@@ -44,8 +44,8 @@ pub fn spring_bouncy() -> Spring {
 const TAB_TRANSITION_RESPONSE: f32 = 0.34;
 const TAB_TRANSITION_DAMPING: f32 = 0.92;
 const TAB_LIST_ITEM_MAX_STAGGER_SLOT: usize = 8;
-const TAB_LIST_ITEM_MAX_STAGGER_MS: u64 = 120;
-const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(800);
+const TAB_LIST_ITEM_MAX_STAGGER_MS: u64 = 180;
+const TAB_LIST_STAGGER_WINDOW: Duration = Duration::from_millis(900);
 
 fn tab_transition_spring() -> Spring {
     apple_spring(TAB_TRANSITION_RESPONSE, TAB_TRANSITION_DAMPING)
@@ -65,6 +65,25 @@ pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
     ))
 }
 
+/// Short outgoing motion used only while an asset-to-asset target is loading.
+///
+/// The previous list moves opposite to the incoming direction and stays partially visible instead
+/// of being replaced by a full-panel loading placeholder.
+pub fn tab_stale_content_motion(from_index: usize, to_index: usize) -> Animation {
+    let direction = if to_index >= from_index { -1.0 } else { 1.0 };
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(180))
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+    .with_property(AnimationProperty::translation_opacity(
+        point(px(0.0), px(0.0)),
+        point(px(8.0 * direction), px(0.0)),
+        1.0,
+        0.72,
+    ))
+}
+
 fn tab_list_item_delay(visible_index: usize) -> Duration {
     let slot = visible_index.min(TAB_LIST_ITEM_MAX_STAGGER_SLOT);
     if slot == 0 {
@@ -72,8 +91,8 @@ fn tab_list_item_delay(visible_index: usize) -> Duration {
     }
 
     let t = slot as f32 / TAB_LIST_ITEM_MAX_STAGGER_SLOT as f32;
-    // Concave ease-out spacing: 0, 28, 52, 73, 90, 103, 112, 118, 120 ms.
-    // Early rows are clearly separated while later rows converge instead of forming a long queue.
+    // Concave ease-out spacing: 0, 42, 79, 110, 135, 155, 169, 177, 180 ms.
+    // The first rows establish a visible rhythm; later rows quickly converge instead of queuing.
     let curved = 1.0 - (1.0 - t).powi(2);
     Duration::from_millis((TAB_LIST_ITEM_MAX_STAGGER_MS as f32 * curved).round() as u64)
 }
@@ -130,9 +149,9 @@ pub fn tab_list_item_motion(
         .delay(tab_list_item_delay(visible_index))
         .fill_mode(FillMode::Both)
         .with_property(AnimationProperty::translation_opacity(
-            point(px(10.0 * direction), px(0.0)),
+            point(px(18.0 * direction), px(4.0)),
             point(px(0.0), px(0.0)),
-            0.0,
+            0.10,
             1.0,
         ))
 }
@@ -155,10 +174,10 @@ pub fn tab_underline_motion(from_index: usize, to_index: usize) -> Animation {
 
 /// Staggered bottom-up reveal for statistics bars without animating bar height/layout.
 pub fn stat_chart_bar_motion(index: usize) -> Animation {
-    let delay = Duration::from_millis(index.min(13) as u64 * 18);
+    let delay = Duration::from_millis(index.min(13) as u64 * 32);
 
     Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(320))
+        AnimationSpec::new(Duration::from_millis(560))
             .delay(delay)
             .fill_mode(FillMode::Both)
             .ease(Easing::OutCubic),
@@ -430,7 +449,7 @@ mod tests {
         let delays = (0..=TAB_LIST_ITEM_MAX_STAGGER_SLOT)
             .map(|index| tab_list_item_delay(index).as_millis() as u64)
             .collect::<Vec<_>>();
-        assert_eq!(delays, vec![0, 28, 52, 73, 90, 103, 112, 118, 120]);
+        assert_eq!(delays, vec![0, 42, 79, 110, 135, 155, 169, 177, 180]);
 
         let gaps = delays
             .windows(2)

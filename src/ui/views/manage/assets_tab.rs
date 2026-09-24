@@ -1,5 +1,7 @@
 use super::*;
-use crate::ui::animation::{tab_list_item_motion, tab_list_stagger_active};
+use crate::ui::animation::{
+    tab_list_item_motion, tab_list_stagger_active, tab_stale_content_motion,
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct AssetListSignature {
@@ -89,6 +91,9 @@ impl ManagePageView {
             state.pack_subtype_anim_seq = state.pack_subtype_anim_seq.wrapping_add(1);
             state.pack_subtype_anim_started_at = Some(started_at);
             state.selected_asset_keys.clear();
+            state.assets_loaded = false;
+            state.assets_loading = false;
+            state.assets_error = None;
             true
         });
         if !changed {
@@ -582,6 +587,35 @@ pub(super) fn render_asset_list(
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>().clone();
+    let frame_now = window.animation_time();
+    let reduced_motion = crate::core::ui_prefs::reduced_motion();
+    let stale_transition = if !state.assets_loaded
+        && !state.assets.is_empty()
+        && !reduced_motion
+    {
+        if state.pack_subtype_animation_active(frame_now) {
+            Some((
+                state.pack_subtype_anim_from.index(),
+                state.pack_subtype.index(),
+                state.pack_subtype_anim_seq,
+                "manage-pack-subtype-stale",
+            ))
+        } else if state.tab_animation_active(frame_now)
+            && is_asset_tab(state.tab_anim_from)
+            && is_asset_tab(state.tab)
+        {
+            Some((
+                state.tab_anim_from.index(),
+                state.tab.index(),
+                state.tab_anim_seq,
+                "manage-asset-tab-stale",
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let missing_gdk_user =
         version.is_gdk() && is_gdk_user_scoped_tab(state.tab) && state.selected_gdk_user.is_none();
 
@@ -627,7 +661,7 @@ pub(super) fn render_asset_list(
         .into_any_element();
     }
 
-    if !state.assets_loaded && state.assets_error.is_none() {
+    if !state.assets_loaded && stale_transition.is_none() && state.assets_error.is_none() {
         return empty_state(
             colors,
             "images/manage/empty.svg",
@@ -705,13 +739,16 @@ pub(super) fn render_asset_list(
         .collect::<HashSet<_>>();
 
     let render_started_at = Instant::now();
-    let reduced_motion = crate::core::ui_prefs::reduced_motion();
-    let primary_rows_animating = state.tab_animation_active(window.animation_time())
+    let primary_rows_animating = state.assets_loaded
+        && state.tab_anim_seq != 0
+        && state.tab_anim_from != state.tab
         && !reduced_motion
         && tab_list_stagger_active(window, cx, "manage-asset-list-stagger", state.tab_anim_seq);
-    let subtype_rows_animating = !primary_rows_animating
+    let subtype_rows_animating = state.assets_loaded
+        && !primary_rows_animating
+        && state.pack_subtype_anim_seq != 0
+        && state.pack_subtype_anim_from != state.pack_subtype
         && !reduced_motion
-        && state.pack_subtype_animation_active(window.animation_time())
         && tab_list_stagger_active(
             window,
             cx,
@@ -812,7 +849,7 @@ pub(super) fn render_asset_list(
         );
     }
 
-    div()
+    let list = div()
         .id("manage-asset-list-scroll")
         .w_full()
         .h_full()
@@ -834,8 +871,19 @@ pub(super) fn render_asset_list(
                 cx.stop_propagation();
             }
         })
-        .child(rows)
-        .into_any_element()
+        .child(rows);
+
+    if let Some((from_index, to_index, sequence, scope)) = stale_transition {
+        list.composite_layer()
+            .with_animation(
+                SharedString::from(format!("{scope}-{sequence}")),
+                tab_stale_content_motion(from_index, to_index),
+                |list, _progress| list,
+            )
+            .into_any_element()
+    } else {
+        list.into_any_element()
+    }
 }
 pub(super) fn render_asset_row(
     colors: &ThemeColors,

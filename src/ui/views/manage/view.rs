@@ -1,5 +1,4 @@
 use super::*;
-use crate::ui::animation::{tab_content_animation_key, tab_content_motion};
 
 pub struct ManagePageView {
     pub(super) _subscriptions: Vec<Subscription>,
@@ -943,50 +942,7 @@ impl ManagePageView {
                                     }
                                 };
 
-                                let reduced_motion = crate::core::ui_prefs::reduced_motion();
-                                if state.tab_animation_active(now) && !reduced_motion {
-                                    div()
-                                        .size_full()
-                                        .min_w(px(0.))
-                                        .min_h(px(0.))
-                                        .child(content)
-                                        .composite_layer()
-                                        .with_animation(
-                                            tab_content_animation_key(
-                                                "manage-tab-content",
-                                                state.tab_anim_seq,
-                                            ),
-                                            tab_content_motion(
-                                                state.tab_anim_from.index(),
-                                                state.tab.index(),
-                                            ),
-                                            |content, _progress| content,
-                                        )
-                                        .into_any_element()
-                                } else if state.pack_subtype_animation_active(now)
-                                    && !reduced_motion
-                                {
-                                    div()
-                                        .size_full()
-                                        .min_w(px(0.))
-                                        .min_h(px(0.))
-                                        .child(content)
-                                        .composite_layer()
-                                        .with_animation(
-                                            tab_content_animation_key(
-                                                "manage-pack-subtype-content",
-                                                state.pack_subtype_anim_seq,
-                                            ),
-                                            tab_content_motion(
-                                                state.pack_subtype_anim_from.index(),
-                                                state.pack_subtype.index(),
-                                            ),
-                                            |content, _progress| content,
-                                        )
-                                        .into_any_element()
-                                } else {
-                                    content
-                                }
+                                content
                             }),
                     ),
             );

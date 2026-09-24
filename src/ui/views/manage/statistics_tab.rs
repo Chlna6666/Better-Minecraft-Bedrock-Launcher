@@ -1,9 +1,11 @@
 use super::*;
-use crate::ui::animation::{ease_out_cubic, raw_progress, stat_chart_bar_motion};
+use crate::ui::animation::{
+    ease_out_cubic, raw_progress, request_layout_animation_frame_if, stat_chart_bar_motion,
+};
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
 
-const STAT_NUMBER_DURATION: Duration = Duration::from_millis(420);
+const STAT_NUMBER_DURATION: Duration = Duration::from_millis(720);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatMetricKind {
@@ -99,11 +101,15 @@ impl AnimatedStatMetricView {
 impl Render for AnimatedStatMetricView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (sample, animating) = self.sample(window.animation_time());
-        let value = sample.max(0.0).round() as u64;
+        request_layout_animation_frame_if(window, animating);
+
         let i18n = cx.global::<I18n>();
         let text = match self.kind {
-            StatMetricKind::Duration => format_duration(i18n, value),
-            StatMetricKind::Count => t!("ManagePage.stats_count", count = value),
+            StatMetricKind::Duration => format_animated_duration(i18n, sample, self.to),
+            StatMetricKind::Count => {
+                let value = sample.max(0.0).round() as u64;
+                t!("ManagePage.stats_count", count = value)
+            }
         };
 
         div()
@@ -112,7 +118,6 @@ impl Render for AnimatedStatMetricView {
             .font_weight(FontWeight::BOLD)
             .text_color(self.colors.text_primary)
             .child(text)
-            .with_layout_animation_target(animating)
     }
 }
 
@@ -421,6 +426,25 @@ fn chart_card(
                         )
                 })),
         )
+}
+
+fn format_animated_duration(
+    _i18n: &I18n,
+    seconds: f64,
+    target_seconds: f64,
+) -> SharedString {
+    let seconds = seconds.max(0.0);
+    if target_seconds >= 3_600.0 {
+        t!(
+            "ManagePage.stats_hours",
+            hours = format!("{:.1}", seconds / 3_600.0)
+        )
+    } else {
+        t!(
+            "ManagePage.stats_minutes",
+            minutes = (seconds / 60.0).round() as u64
+        )
+    }
 }
 
 fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {

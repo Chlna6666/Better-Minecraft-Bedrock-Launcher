@@ -184,7 +184,9 @@ pub(super) fn render_screenshot_list(
         MANAGE_ASSET_HEAVY_BUDGET,
     );
 
-    let animate_rows = state.tab_animation_active(window.animation_time())
+    let animate_rows = state.screenshots_loaded
+        && state.tab_anim_seq != 0
+        && state.tab_anim_from != state.tab
         && !crate::core::ui_prefs::reduced_motion()
         && tab_list_stagger_active(
             window,

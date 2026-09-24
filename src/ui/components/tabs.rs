@@ -148,10 +148,10 @@ impl RenderOnce for UnderlineTabs {
             let item_width_px: f32 = item_width.into();
             let gap_px: f32 = gap.into();
             let step_px = item_width_px + gap_px;
+            let from_left_px = step_px * snapshot.from_slot + 4.0;
             let target_left_px = step_px * snapshot.active_index as f32 + 4.0;
             let indicator = div()
                 .absolute()
-                .left(px(target_left_px))
                 .bottom(px(0.))
                 .w(px((item_width_px - 8.0).max(8.0)))
                 .h(px(2.))
@@ -159,26 +159,24 @@ impl RenderOnce for UnderlineTabs {
                 .bg(colors.accent);
 
             if snapshot.started_at.is_some() && !reduced_motion {
-                let from_x = step_px * (snapshot.from_slot - snapshot.active_index as f32);
                 indicator
-                    .composite_layer()
                     .with_animation(
                         SharedString::from(format!(
                             "{}-shared-underline-{}",
                             tabs_id.as_ref(),
                             snapshot.sequence
                         )),
-                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION).with_property(
-                            AnimationProperty::translation(
-                                point(px(from_x), px(0.0)),
-                                Point::default(),
-                            ),
-                        ),
-                        |indicator, _progress| indicator,
+                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION),
+                        move |indicator, progress| {
+                            let progress = progress.clamp(0.0, 1.0);
+                            let left =
+                                from_left_px + (target_left_px - from_left_px) * progress;
+                            indicator.left(px(left))
+                        },
                     )
                     .into_any_element()
             } else {
-                indicator.into_any_element()
+                indicator.left(px(target_left_px)).into_any_element()
             }
         });
 

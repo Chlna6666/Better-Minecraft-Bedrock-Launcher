@@ -702,6 +702,7 @@ impl ManagePageView {
     ) {
         let request_id = cx.update_global(|state: &mut ManagePageState, _cx| {
             state.assets_loading = true;
+            state.assets_loaded = false;
             state.assets_error = None;
             state.assets_request_id = state.assets_request_id.wrapping_add(1);
             state.assets_request_id
