@@ -180,7 +180,7 @@ impl LineLayout {
             }
             let next_x = glyphs.peek().map_or(self.width, |(_, _, x)| *x);
             if next_x - last_boundary_x > wrap_width && boundary > last_boundary {
-                if max_lines.is_some_and(|limit| boundaries.len() >= limit - 1) {
+                if max_lines.is_some_and(|limit| boundaries.len() >= limit.saturating_sub(1)) {
                     break;
                 }
                 if let Some(candidate) = last_candidate.take() {
