@@ -88,6 +88,8 @@ pub struct App {
     pub(crate) keystroke_observers: SubscriberSet<(), KeystrokeObserver>,
     pub(crate) keystroke_interceptors: SubscriberSet<(), KeystrokeObserver>,
     pub(crate) keyboard_layout_observers: SubscriberSet<(), Handler>,
+    pub(crate) system_sleep_observers: SubscriberSet<(), Handler>,
+    pub(crate) system_wake_observers: SubscriberSet<(), Handler>,
     pub(crate) release_listeners: SubscriberSet<EntityId, ReleaseListener>,
     pub(crate) global_observers: SubscriberSet<TypeId, Handler>,
     pub(crate) quit_observers: SubscriberSet<(), QuitHandler>,
@@ -173,6 +175,8 @@ impl App {
                 keystroke_observers: SubscriberSet::new(),
                 keystroke_interceptors: SubscriberSet::new(),
                 keyboard_layout_observers: SubscriberSet::new(),
+                system_sleep_observers: SubscriberSet::new(),
+                system_wake_observers: SubscriberSet::new(),
                 global_observers: SubscriberSet::new(),
                 quit_observers: SubscriberSet::new(),
                 restart_observers: SubscriberSet::new(),
@@ -203,6 +207,30 @@ impl App {
                     cx.keyboard_layout = cx.platform.keyboard_layout();
                     cx.keyboard_mapper = cx.platform.keyboard_mapper();
                     cx.keyboard_layout_observers
+                        .clone()
+                        .retain(&(), move |callback| (callback)(cx));
+                }
+            }
+        }));
+
+        platform.on_system_sleep(Box::new({
+            let app = Rc::downgrade(&app);
+            move || {
+                if let Some(app) = app.upgrade() {
+                    let cx = &mut app.borrow_mut();
+                    cx.system_sleep_observers
+                        .clone()
+                        .retain(&(), move |callback| (callback)(cx));
+                }
+            }
+        }));
+
+        platform.on_system_wake(Box::new({
+            let app = Rc::downgrade(&app);
+            move || {
+                if let Some(app) = app.upgrade() {
+                    let cx = &mut app.borrow_mut();
+                    cx.system_wake_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));
                 }
@@ -433,6 +461,40 @@ impl App {
             window.set_default_text_style(default_text_style.clone());
         }
         self.refresh_windows();
+    }
+
+    /// Registers a callback invoked when the operating system is about to suspend the process.
+    ///
+    /// Keep this callback short: record state or cancel cadence rather than starting new work.
+    pub fn on_system_sleep(
+        &self,
+        mut callback: impl FnMut(&mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) = self.system_sleep_observers.insert(
+            (),
+            Box::new(move |cx| {
+                callback(cx);
+                true
+            }),
+        );
+        activate();
+        subscription
+    }
+
+    /// Registers a callback invoked after the operating system resumes the process.
+    pub fn on_system_wake(
+        &self,
+        mut callback: impl FnMut(&mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) = self.system_wake_observers.insert(
+            (),
+            Box::new(move |cx| {
+                callback(cx);
+                true
+            }),
+        );
+        activate();
+        subscription
     }
 
     /// Register a callback to be invoked when the application is about to quit.

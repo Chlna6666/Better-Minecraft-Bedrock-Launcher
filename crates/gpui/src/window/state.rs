@@ -442,6 +442,9 @@ pub struct Window {
     pub(super) appearance: WindowAppearance,
     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
     pub(super) active: Rc<Cell<bool>>,
+    pub(super) visibility: WindowVisibility,
+    pub(crate) visibility_observers:
+        SubscriberSet<(), Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
     pub(super) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,

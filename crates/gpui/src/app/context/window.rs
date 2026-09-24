@@ -206,6 +206,29 @@ impl<'a, T: 'static> Context<'a, T> {
         subscription
     }
 
+    /// Registers a callback to be invoked when presentation visibility changes.
+    pub fn observe_window_visibility(
+        &self,
+        window: &mut Window,
+        mut callback: impl FnMut(
+            &mut T,
+            WindowVisibility,
+            &mut Window,
+            &mut Context<T>,
+        ) + 'static,
+    ) -> Subscription {
+        let view = self.weak_entity();
+        let (subscription, activate) = window.visibility_observers.insert(
+            (),
+            Box::new(move |visibility, window, cx| {
+                view.update(cx, |view, cx| callback(view, visibility, window, cx))
+                    .is_ok()
+            }),
+        );
+        activate();
+        subscription
+    }
+
     /// Registers a callback to be invoked when the window appearance changes.
     pub fn observe_window_appearance(
         &self,

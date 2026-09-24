@@ -104,6 +104,7 @@ impl Window {
         let dirty_frame_diagnostics = Rc::new(RefCell::new(DirtyFrameDiagnostics::default()));
         invalidator.set_dirty_frame_diagnostics(dirty_frame_diagnostics.clone());
         let active = Rc::new(Cell::new(platform_window.is_active()));
+        let visibility = platform_window.visibility();
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -169,6 +170,21 @@ impl Window {
                 let _ = ignore_window_not_found(
                     handle.update(&mut cx, |_, window, cx| window.appearance_changed(cx)),
                 );
+            }
+        }));
+        platform_window.on_visibility_change(Box::new({
+            let mut cx = cx.to_async();
+            move |visibility| {
+                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                    if window.visibility == visibility {
+                        return;
+                    }
+                    window.visibility = visibility;
+                    window
+                        .visibility_observers
+                        .clone()
+                        .retain(&(), |callback| callback(visibility, window, cx));
+                }));
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -375,6 +391,8 @@ impl Window {
             appearance,
             appearance_observers: SubscriberSet::new(),
             active,
+            visibility,
+            visibility_observers: SubscriberSet::new(),
             hovered,
             needs_present,
             last_input_timestamp,

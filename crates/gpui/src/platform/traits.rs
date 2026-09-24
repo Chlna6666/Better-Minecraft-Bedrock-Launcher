@@ -29,6 +29,25 @@ use std::{
 };
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+/// Whether the platform is currently presenting a window's frames.
+///
+/// This is separate from activation/focus: a visible inactive tool window can still need
+/// presentation, while a minimized or occluded window should not consume animation cadence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowVisibility {
+    /// At least part of the window is being presented.
+    Visible,
+    /// The platform is not presenting the window.
+    Hidden,
+}
+
+impl WindowVisibility {
+    /// Returns whether frames can currently be presented to the user.
+    pub const fn is_visible(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+}
+
 pub(crate) trait Platform: 'static {
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;
@@ -77,6 +96,10 @@ pub(crate) trait Platform: 'static {
 
     fn on_quit(&self, callback: Box<dyn FnMut()>);
     fn on_reopen(&self, callback: Box<dyn FnMut()>);
+    /// Registers a callback fired immediately before the operating system suspends the process.
+    fn on_system_sleep(&self, _callback: Box<dyn FnMut()>) {}
+    /// Registers a callback fired after the operating system resumes the process.
+    fn on_system_wake(&self, _callback: Box<dyn FnMut()>) {}
 
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap);
     fn menus(&self) -> Option<Vec<OwnedMenu>> {
@@ -128,6 +151,17 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_minimized(&self) -> bool {
         false
     }
+    /// Returns whether the platform is actually presenting this window.
+    ///
+    /// Platforms with richer occlusion information should override this. The fallback preserves
+    /// existing behavior by treating minimization as hidden.
+    fn visibility(&self) -> WindowVisibility {
+        if self.is_minimized() {
+            WindowVisibility::Hidden
+        } else {
+            WindowVisibility::Visible
+        }
+    }
     fn window_bounds(&self) -> WindowBounds;
     fn content_size(&self) -> Size<Pixels>;
     fn resize(&mut self, size: Size<Pixels>);
@@ -174,6 +208,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>);
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
+    /// Registers a callback for presentation visibility transitions.
+    fn on_visibility_change(&self, _callback: Box<dyn FnMut(WindowVisibility)>) {}
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>);
     fn on_resize(&self, callback: Box<dyn FnMut(Size<Pixels>, f32)>);
     fn on_moved(&self, callback: Box<dyn FnMut()>);

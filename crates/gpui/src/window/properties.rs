@@ -33,6 +33,16 @@ impl Window {
         self.active.get()
     }
 
+    /// Returns whether the platform is currently presenting this window's frames.
+    pub fn visibility(&self) -> WindowVisibility {
+        self.visibility
+    }
+
+    /// Returns true when the platform reports that this window can be presented.
+    pub fn is_window_visible(&self) -> bool {
+        self.visibility.is_visible()
+    }
+
     /// Returns whether this window is considered to be the window
     /// that currently owns the mouse cursor.
     /// On mac, this is equivalent to `is_window_active`.

@@ -1,6 +1,22 @@
 use super::*;
 
 impl Window {
+    /// Registers a callback to be invoked when presentation visibility changes.
+    pub fn observe_window_visibility(
+        &self,
+        mut callback: impl FnMut(WindowVisibility, &mut Window, &mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) = self.visibility_observers.insert(
+            (),
+            Box::new(move |visibility, window, cx| {
+                callback(visibility, window, cx);
+                true
+            }),
+        );
+        activate();
+        subscription
+    }
+
     /// Registers a callback to be invoked when the window appearance changes.
     pub fn observe_window_appearance(
         &self,
