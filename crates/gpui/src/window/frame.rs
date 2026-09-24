@@ -202,6 +202,8 @@ pub(crate) struct Frame {
     pub(crate) retained_unstable_identity_count: usize,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) debug_bounds_records: Vec<(String, Bounds<Pixels>)>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -256,6 +258,8 @@ impl PrepaintStateIndex {
 #[derive(Clone, Default)]
 pub(crate) struct PaintIndex {
     pub(super) scene_index: usize,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) debug_bounds_index: usize,
     pub(super) mouse_listeners_index: usize,
     pub(super) input_handlers_index: usize,
     pub(super) cursor_styles_index: usize,
@@ -274,6 +278,12 @@ impl PaintIndex {
     pub(crate) fn rebased_from(&self, source: &Self, target: &Self) -> Option<Self> {
         Some(Self {
             scene_index: rebase_index(self.scene_index, source.scene_index, target.scene_index)?,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: rebase_index(
+                self.debug_bounds_index,
+                source.debug_bounds_index,
+                target.debug_bounds_index,
+            )?,
             mouse_listeners_index: rebase_index(
                 self.mouse_listeners_index, source.mouse_listeners_index, target.mouse_listeners_index,
             )?,
@@ -308,6 +318,16 @@ fn rebase_index(value: usize, source: usize, target: usize) -> Option<usize> {
 }
 
 impl Frame {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn record_debug_bounds(
+        &mut self,
+        selector: String,
+        bounds: Bounds<Pixels>,
+    ) {
+        self.debug_bounds.insert(selector.clone(), bounds);
+        self.debug_bounds_records.push((selector, bounds));
+    }
+
     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
         Frame {
             focus: None,
@@ -334,6 +354,8 @@ impl Frame {
 
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: FxHashMap::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_records: Vec::new(),
 
             #[cfg(any(feature = "inspector", debug_assertions))]
             next_inspector_instance_ids: FxHashMap::default(),
@@ -373,6 +395,12 @@ impl Frame {
         self.deferred_retained_metadata.clear();
         self.tab_stops.clear();
         self.focus = None;
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.debug_bounds.clear();
+            self.debug_bounds_records.clear();
+        }
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         {
@@ -651,8 +679,12 @@ impl Frame {
                     GpuiMemoryTrimLevel::Aggressive
                 ));
                 #[cfg(any(test, feature = "test-support"))]
-                self.debug_bounds
-                    .shrink_to(floor.max(self.debug_bounds.len()));
+                {
+                    self.debug_bounds
+                        .shrink_to(floor.max(self.debug_bounds.len()));
+                    self.debug_bounds_records
+                        .shrink_to(floor.max(self.debug_bounds_records.len()));
+                }
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 {
                     self.next_inspector_instance_ids
@@ -667,7 +699,8 @@ impl Frame {
     fn debug_container_capacity(&self) -> usize {
         let capacity = 0;
         #[cfg(any(test, feature = "test-support"))]
-        let capacity = capacity + self.debug_bounds.capacity();
+        let capacity =
+            capacity + self.debug_bounds.capacity() + self.debug_bounds_records.capacity();
         #[cfg(any(feature = "inspector", debug_assertions))]
         let capacity = capacity
             + self.next_inspector_instance_ids.capacity()

@@ -538,6 +538,8 @@ impl Window {
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: self.next_frame.debug_bounds_records.len(),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -559,6 +561,20 @@ impl Window {
             .range_is_independently_replayable(
                 range.start.scene_index..range.end.scene_index,
             )
+            && {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    frame_range_is_valid(
+                        range.start.debug_bounds_index,
+                        range.end.debug_bounds_index,
+                        self.rendered_frame.debug_bounds_records.len(),
+                    )
+                }
+                #[cfg(not(any(test, feature = "test-support")))]
+                {
+                    true
+                }
+            }
             && frame_range_is_valid(
             range.start.mouse_listeners_index,
             range.end.mouse_listeners_index,
@@ -595,6 +611,16 @@ impl Window {
                 self.handle.window_id().as_u64()
             );
             return false;
+        }
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let records: Vec<_> = self.rendered_frame.debug_bounds_records
+                [range.start.debug_bounds_index..range.end.debug_bounds_index]
+                .to_vec();
+            for (selector, bounds) in records {
+                self.next_frame.record_debug_bounds(selector, bounds);
+            }
         }
 
         self.next_frame.cursor_styles.extend(

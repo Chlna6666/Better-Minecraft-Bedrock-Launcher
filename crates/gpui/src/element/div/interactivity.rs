@@ -307,8 +307,7 @@ impl Interactivity {
                 if let Some(debug_selector) = &self.debug_selector {
                     window
                         .next_frame
-                        .debug_bounds
-                        .insert(debug_selector.clone(), window.visual_bounds(bounds));
+                        .record_debug_bounds(debug_selector.clone(), window.visual_bounds(bounds));
                 }
 
                 self.paint_hover_group_handler(global_id, bounds, window, cx);

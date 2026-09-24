@@ -146,10 +146,12 @@ impl WrappedLineLayout {
                 .unwrapped_layout
                 .closest_index_for_x(position_in_unwrapped_line.x))
         } else {
-            Ok(self
-                .unwrapped_layout
+            // A trailing zero-width wrap-boundary glyph can sit a few ulps past the shaped line
+            // width. In that sliver index_for_x legitimately returns None; treat it as the wrapped
+            // row end instead of panicking during hit testing.
+            self.unwrapped_layout
                 .index_for_x(position_in_unwrapped_line.x)
-                .unwrap())
+                .ok_or(wrapped_line_end_index)
         }
     }
 
