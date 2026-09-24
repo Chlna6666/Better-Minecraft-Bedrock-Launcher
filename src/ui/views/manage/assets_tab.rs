@@ -722,24 +722,28 @@ pub(super) fn render_asset_list(
         let visible_index =
             virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
         let row = div()
-                .w_full()
-                .h(px(MANAGE_ASSET_ROW_PITCH_PX))
-                .pb(px(MANAGE_ASSET_ROW_GAP_PX))
-                .flex_none()
-                .child(render_asset_row(
-                    colors,
-                    state,
-                    version,
-                    asset,
-                    selected_asset_keys.contains(&asset.key),
-                    virtual_list_plan.heavy_slice.contains(virtual_index),
-                    &i18n,
-                    cx,
-                ));
+            .w_full()
+            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+            .flex_none()
+            .child(render_asset_row(
+                colors,
+                state,
+                version,
+                asset,
+                selected_asset_keys.contains(&asset.key),
+                virtual_list_plan.heavy_slice.contains(virtual_index),
+                &i18n,
+                cx,
+            ));
         let row = if animate_row {
             row.composite_layer()
                 .with_animation(
-                    SharedString::from(format!("manage-asset-row-enter-{}-{}", state.tab_anim_seq, asset.key.as_ref())),
+                    SharedString::from(format!(
+                        "manage-asset-row-enter-{}-{}",
+                        state.tab_anim_seq,
+                        asset.key.as_ref()
+                    )),
                     tab_list_item_motion(animation_from, animation_to, visible_index),
                     |row, _progress| row,
                 )

@@ -186,7 +186,12 @@ pub(super) fn render_screenshot_list(
 
     let animate_rows = state.tab_anim_from != state.tab
         && !crate::core::ui_prefs::reduced_motion()
-        && tab_list_stagger_active(window, cx, "manage-screenshot-list-stagger", state.tab_anim_seq);
+        && tab_list_stagger_active(
+            window,
+            cx,
+            "manage-screenshot-list-stagger",
+            state.tab_anim_seq,
+        );
     let animation_from = state.tab_anim_from.index();
     let animation_to = state.tab.index();
 
@@ -212,20 +217,24 @@ pub(super) fn render_screenshot_list(
         let visible_index =
             virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
         let row = div()
-                .w_full()
-                .h(px(MANAGE_ASSET_ROW_PITCH_PX))
-                .pb(px(MANAGE_ASSET_ROW_GAP_PX))
-                .flex_none()
-                .child(render_screenshot_row(
-                    colors,
-                    entry,
-                    virtual_list_plan.heavy_slice.contains(virtual_index),
-                    cx,
-                ));
+            .w_full()
+            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+            .flex_none()
+            .child(render_screenshot_row(
+                colors,
+                entry,
+                virtual_list_plan.heavy_slice.contains(virtual_index),
+                cx,
+            ));
         let row = if animate_row {
             row.composite_layer()
                 .with_animation(
-                    SharedString::from(format!("manage-screenshot-row-enter-{}-{}", state.tab_anim_seq, entry.key.as_ref())),
+                    SharedString::from(format!(
+                        "manage-screenshot-row-enter-{}-{}",
+                        state.tab_anim_seq,
+                        entry.key.as_ref()
+                    )),
                     tab_list_item_motion(animation_from, animation_to, visible_index),
                     |row, _progress| row,
                 )

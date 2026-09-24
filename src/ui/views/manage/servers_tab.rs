@@ -407,15 +407,19 @@ pub(super) fn render_server_list(
         let visible_index =
             virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
         let row = div()
-                .w_full()
-                .h(px(MANAGE_ASSET_ROW_PITCH_PX))
-                .pb(px(MANAGE_ASSET_ROW_GAP_PX))
-                .flex_none()
-                .child(render_server_row(colors, entry, motd_status, cx));
+            .w_full()
+            .h(px(MANAGE_ASSET_ROW_PITCH_PX))
+            .pb(px(MANAGE_ASSET_ROW_GAP_PX))
+            .flex_none()
+            .child(render_server_row(colors, entry, motd_status, cx));
         let row = if animate_row {
             row.composite_layer()
                 .with_animation(
-                    SharedString::from(format!("manage-server-row-enter-{}-{}", state.tab_anim_seq, entry.key.as_ref())),
+                    SharedString::from(format!(
+                        "manage-server-row-enter-{}-{}",
+                        state.tab_anim_seq,
+                        entry.key.as_ref()
+                    )),
                     tab_list_item_motion(animation_from, animation_to, visible_index),
                     |row, _progress| row,
                 )
