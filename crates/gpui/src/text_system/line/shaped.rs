@@ -1,5 +1,5 @@
 use super::{DecorationRun, background::paint_line_background, paint::paint_line};
-use crate::{App, LineLayout, Pixels, Result, SharedString, TextAlign, Window, point, px};
+use crate::{App, LineLayout, Pixels, Point, Result, SharedString, TextAlign, Window, point, px};
 use derive_more::{Deref, DerefMut};
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -167,6 +167,62 @@ impl ShapedLine {
             TextAlign::default(),
             None,
             &self.decoration_runs,
+            &[],
+            window,
+            cx,
+        )
+    }
+}
+
+impl LineLayout {
+    /// Paints this layout using the supplied decoration runs.
+    ///
+    /// This lower-level path avoids rebuilding a `ShapedLine` when callers already cache shaping
+    /// separately from color/underline decoration state.
+    pub fn paint(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        align_width: Option<Pixels>,
+        decoration_runs: &[DecorationRun],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        paint_line(
+            origin,
+            self,
+            line_height,
+            align,
+            align_width,
+            decoration_runs,
+            &[],
+            window,
+            cx,
+        )
+    }
+
+    /// Paints only the decorated text backgrounds for this layout.
+    ///
+    /// Like [`LineLayout::paint`], this is intended for callers that retain the shaped layout and
+    /// update decoration state independently.
+    pub fn paint_background(
+        &self,
+        origin: Point<Pixels>,
+        line_height: Pixels,
+        align: TextAlign,
+        align_width: Option<Pixels>,
+        decoration_runs: &[DecorationRun],
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Result<()> {
+        paint_line_background(
+            origin,
+            self,
+            line_height,
+            align,
+            align_width,
+            decoration_runs,
             &[],
             window,
             cx,
