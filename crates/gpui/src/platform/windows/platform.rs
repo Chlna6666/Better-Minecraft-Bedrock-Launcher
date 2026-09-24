@@ -28,8 +28,8 @@ use windows::{
         Foundation::*,
         Security::Credentials::*,
         System::{
-            Com::*, Ole::*, ProcessStatus::K32EmptyWorkingSet, SystemInformation::*,
-            Threading::GetCurrentProcess,
+            Com::*, Ole::*, Power::{PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND},
+            ProcessStatus::K32EmptyWorkingSet, SystemInformation::*, Threading::GetCurrentProcess,
         },
         UI::{
             HiDpi::{
@@ -160,6 +160,7 @@ pub(crate) struct WindowsPlatformState {
     displays: Vec<WindowsDisplay>,
     primary_display_id: Option<DisplayId>,
     active_window_handle: Option<AnyWindowHandle>,
+    system_suspended: bool,
 }
 
 #[derive(Default)]
@@ -171,6 +172,8 @@ struct PlatformCallbacks {
     will_open_app_menu: Option<Box<dyn FnMut()>>,
     validate_app_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    system_sleep: Option<Box<dyn FnMut()>>,
+    system_wake: Option<Box<dyn FnMut()>>,
 }
 
 impl WindowsPlatformState {
@@ -185,6 +188,7 @@ impl WindowsPlatformState {
             displays: Vec::new(),
             primary_display_id: None,
             active_window_handle: None,
+            system_suspended: false,
             menus: Vec::new(),
         }
     }
@@ -350,9 +354,15 @@ impl WindowsPlatform {
     }
 
     fn generate_creation_info(&self) -> WindowCreationInfo {
+        let platform = Rc::downgrade(&self.inner);
         WindowCreationInfo {
             background_executor: self.background_executor.clone(),
             executor: self.foreground_executor.clone(),
+            power_event: Rc::new(move |wparam| {
+                if let Some(platform) = platform.upgrade() {
+                    platform.handle_power_broadcast(wparam);
+                }
+            }),
             disable_direct_composition: self.disable_direct_composition,
             renderer_backend: self.renderer_backend,
             renderer_options: self.renderer_options.clone(),
@@ -494,6 +504,14 @@ impl Platform for WindowsPlatform {
             .borrow_mut()
             .callbacks
             .keyboard_layout_change = Some(callback);
+    }
+
+    fn on_system_sleep(&self, callback: Box<dyn FnMut()>) {
+        self.inner.state.borrow_mut().callbacks.system_sleep = Some(callback);
+    }
+
+    fn on_system_wake(&self, callback: Box<dyn FnMut()>) {
+        self.inner.state.borrow_mut().callbacks.system_wake = Some(callback);
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
@@ -899,6 +917,40 @@ impl Platform for WindowsPlatform {
 }
 
 impl WindowsPlatformInner {
+    pub(crate) fn handle_power_broadcast(&self, wparam: WPARAM) {
+        let suspended = match wparam.0 as u32 {
+            PBT_APMSUSPEND => true,
+            PBT_APMRESUMEAUTOMATIC => false,
+            _ => return,
+        };
+
+        let callback = {
+            let mut state = self.state.borrow_mut();
+            if state.system_suspended == suspended {
+                return;
+            }
+            state.system_suspended = suspended;
+            if suspended {
+                state.callbacks.system_sleep.take()
+            } else {
+                state.callbacks.system_wake.take()
+            }
+        };
+
+        if let Some(mut callback) = callback {
+            callback();
+            let mut state = self.state.borrow_mut();
+            let slot = if suspended {
+                &mut state.callbacks.system_sleep
+            } else {
+                &mut state.callbacks.system_wake
+            };
+            if slot.is_none() {
+                *slot = Some(callback);
+            }
+        }
+    }
+
     #[inline]
     fn run_foreground_tasks(&self) -> bool {
         let has_pending_tasks = drain_foreground_tasks(
@@ -1508,6 +1560,7 @@ impl Drop for WindowsPlatformState {
 pub(crate) struct WindowCreationInfo {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) executor: ForegroundExecutor,
+    pub(crate) power_event: Rc<dyn Fn(WPARAM)>,
     pub(crate) disable_direct_composition: bool,
     pub(crate) renderer_backend: RendererBackend,
     pub(crate) renderer_options: RendererOptions,

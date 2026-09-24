@@ -35,11 +35,11 @@ use windows::{
             Controls::*,
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
-                HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsZoomed,
-                KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE, SendMessageW,
-                SetForegroundWindow, SetTimer, ShowWindow, USER_TIMER_MINIMUM, WM_ENTERSIZEMOVE,
-                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SETICON, WM_SIZE, WM_TIMER,
-                WM_WINDOWPOSCHANGED,
+                HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsWindowVisible,
+                IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE,
+                SendMessageW, SetForegroundWindow, SetTimer, ShowWindow, USER_TIMER_MINIMUM,
+                WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY,
+                WM_POWERBROADCAST, WM_SETICON, WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
             },
         },
     },
@@ -182,6 +182,12 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
     _subclass_id: usize,
     _reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    if message == WM_POWERBROADCAST
+        && let Some(window) = native_window(hwnd)
+    {
+        (window.0.power_event)(wparam);
+    }
+
     match size_move_loop_action(message, wparam.0) {
         SizeMoveLoopAction::Start => {
             // Track the actual Win32 modal loop as well as GPUI-initiated drag calls. Native
@@ -225,6 +231,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
+                window.schedule_visibility_report();
             }
             return result;
         }
@@ -501,6 +508,44 @@ impl WindowsWindow {
         }
     }
 
+    fn current_visibility(&self) -> WindowVisibility {
+        let is_visible = self.native_hwnd().is_some_and(|hwnd| unsafe {
+            IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool()
+        });
+        if is_visible {
+            WindowVisibility::Visible
+        } else {
+            WindowVisibility::Hidden
+        }
+    }
+
+    fn schedule_visibility_report(&self) {
+        if self.0.state.borrow().last_visibility.get().is_none() {
+            return;
+        }
+        let window = Rc::downgrade(&self.0);
+        self.0.executor
+            .spawn(async move {
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+                let window = WindowsWindow(window);
+                let visibility = window.current_visibility();
+                let mut state = window.0.state.borrow_mut();
+                if state.last_visibility.get() == Some(visibility) {
+                    return;
+                }
+                state.last_visibility.set(Some(visibility));
+                let Some(mut callback) = state.callbacks.visibility_change.take() else {
+                    return;
+                };
+                drop(state);
+                callback(visibility);
+                window.0.state.borrow_mut().callbacks.visibility_change = Some(callback);
+            })
+            .detach();
+    }
+
     pub(crate) fn should_close(&self) -> Option<bool> {
         let mut state = self.0.state.borrow_mut();
         let mut callback = state.callbacks.should_close.take()?;
@@ -610,6 +655,7 @@ pub struct WindowsWindowState {
     pub modifiers: Cell<Modifiers>,
     pub capslock: Cell<Capslock>,
     pub hovered: Cell<bool>,
+    pub last_visibility: Cell<Option<WindowVisibility>>,
     pub logical_size: Cell<Size<Pixels>>,
     pub scale_factor: Cell<f32>,
     background_appearance: Cell<WindowBackgroundAppearance>,
@@ -936,6 +982,7 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) input_handler: RefCell<Option<PlatformInputHandler>>,
     pub(crate) handle: AnyWindowHandle,
     pub(crate) executor: ForegroundExecutor,
+    power_event: Rc<dyn Fn(WPARAM)>,
     renderer: RefCell<WindowsRendererState>,
     renderer_atlas: NovaRendererAtlas,
     presentation_state: Cell<WindowsWindowPresentationState>,
@@ -999,6 +1046,7 @@ pub(crate) struct Callbacks {
     pub(crate) request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     pub(crate) input: Option<Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>>,
     pub(crate) active_status_change: Option<Box<dyn FnMut(bool)>>,
+    pub(crate) visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
     pub(crate) hovered_status_change: Option<Box<dyn FnMut(bool)>>,
     pub(crate) resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     pub(crate) moved: Option<Box<dyn FnMut()>>,
@@ -1018,6 +1066,7 @@ impl WindowsWindow {
         let WindowCreationInfo {
             background_executor,
             executor,
+            power_event,
             disable_direct_composition,
             renderer_backend,
             renderer_options,
@@ -1145,6 +1194,7 @@ impl WindowsWindow {
                 modifiers: Cell::new(Modifiers::default()),
                 capslock: Cell::new(Capslock::default()),
                 hovered: Cell::new(false),
+                last_visibility: Cell::new(None),
                 logical_size: Cell::new(actual_logical_size),
                 scale_factor: Cell::new(scale_factor),
                 background_appearance: Cell::new(params.window_background),
@@ -1154,6 +1204,7 @@ impl WindowsWindow {
             input_handler: RefCell::new(None),
             handle,
             executor,
+            power_event,
             renderer: RefCell::new(WindowsRendererState::Initializing),
             renderer_atlas,
             presentation_state: Cell::new(presentation_state),
@@ -1615,6 +1666,10 @@ impl PlatformWindow for WindowsWindow {
         self.0.window().has_focus()
     }
 
+    fn visibility(&self) -> WindowVisibility {
+        self.current_visibility()
+    }
+
     fn is_hovered(&self) -> bool {
         self.0.state.borrow().hovered.get()
     }
@@ -1725,6 +1780,13 @@ impl PlatformWindow for WindowsWindow {
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         self.0.state.borrow_mut().callbacks.active_status_change = Some(callback);
+    }
+
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        let visibility = self.current_visibility();
+        let mut state = self.0.state.borrow_mut();
+        state.last_visibility.set(Some(visibility));
+        state.callbacks.visibility_change = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
