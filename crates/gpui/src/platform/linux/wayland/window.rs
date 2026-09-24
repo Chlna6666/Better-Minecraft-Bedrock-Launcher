@@ -62,6 +62,7 @@ pub(crate) struct Callbacks {
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     input: Option<Box<dyn FnMut(crate::PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
+    visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
     hover_status_change: Option<Box<dyn FnMut(bool)>>,
     resize: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved: Option<Box<dyn FnMut()>>,
@@ -104,6 +105,7 @@ struct InProgressConfigure {
     fullscreen: bool,
     maximized: bool,
     resizing: bool,
+    visibility: WindowVisibility,
     tiling: Tiling,
 }
 
@@ -128,6 +130,7 @@ pub struct WaylandWindowState {
     background_appearance: WindowBackgroundAppearance,
     fullscreen: bool,
     maximized: bool,
+    visibility: WindowVisibility,
     tiling: Tiling,
     window_bounds: Bounds<Pixels>,
     client: WaylandClientStatePtr,
@@ -255,6 +258,7 @@ impl WaylandWindowState {
             background_appearance: options.window_background,
             fullscreen: false,
             maximized: false,
+            visibility: WindowVisibility::Visible,
             tiling: Tiling::default(),
             window_bounds: options.bounds,
             in_progress_configure: None,
@@ -740,14 +744,16 @@ impl WaylandWindowStatePtr {
                     state.fullscreen = configure.fullscreen;
                     state.maximized = configure.maximized;
                     state.tiling = configure.tiling;
+                    let visibility_changed = state.visibility != configure.visibility;
+                    state.visibility = configure.visibility;
                     state.refresh_client_frame();
-                    // Limit interactive resizes to once per vblank
-                    if configure.resizing && state.resize_throttle {
-                        return;
-                    } else if configure.resizing {
+                    // Limit interactive resizes to once per vblank, but still publish visibility
+                    // changes carried by the same configure event.
+                    let throttled = configure.resizing && state.resize_throttle;
+                    if configure.resizing && !throttled {
                         state.resize_throttle = true;
                     }
-                    if !configure.fullscreen && !configure.maximized {
+                    if !throttled && !configure.fullscreen && !configure.maximized {
                         configure.size = if got_unmaximized {
                             Some(state.window_bounds.size)
                         } else {
@@ -761,6 +767,12 @@ impl WaylandWindowStatePtr {
                         }
                     }
                     drop(state);
+                    if visibility_changed {
+                        self.report_visibility(configure.visibility);
+                    }
+                    if throttled {
+                        return;
+                    }
                     if let Some(size) = configure.size {
                         self.resize(size);
                     }
@@ -856,6 +868,7 @@ impl WaylandWindowStatePtr {
                 let mut fullscreen = false;
                 let mut maximized = false;
                 let mut resizing = false;
+                let mut visibility = WindowVisibility::Visible;
 
                 for state in states {
                     match state {
@@ -866,6 +879,7 @@ impl WaylandWindowStatePtr {
                             fullscreen = true;
                         }
                         xdg_toplevel::State::Resizing => resizing = true,
+                        xdg_toplevel::State::Suspended => visibility = WindowVisibility::Hidden,
                         xdg_toplevel::State::TiledTop => {
                             tiling.top = true;
                         }
@@ -897,6 +911,7 @@ impl WaylandWindowStatePtr {
                     fullscreen,
                     maximized,
                     resizing,
+                    visibility,
                     tiling,
                 });
 
@@ -1117,6 +1132,14 @@ impl WaylandWindowStatePtr {
     pub fn set_hovered(&self, is_hovered: bool) {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().hover_status_change {
             fun(is_hovered);
+        }
+    }
+
+    fn report_visibility(&self, visibility: WindowVisibility) {
+        let callback = self.callbacks.borrow_mut().visibility_change.take();
+        if let Some(mut callback) = callback {
+            callback(visibility);
+            self.callbacks.borrow_mut().visibility_change = Some(callback);
         }
     }
 
@@ -1349,6 +1372,10 @@ impl PlatformWindow for WaylandWindow {
         self.borrow().active
     }
 
+    fn visibility(&self) -> WindowVisibility {
+        self.borrow().visibility
+    }
+
     fn is_hovered(&self) -> bool {
         self.borrow().hovered
     }
@@ -1429,6 +1456,10 @@ impl PlatformWindow for WaylandWindow {
 
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         self.0.callbacks.borrow_mut().active_status_change = Some(callback);
+    }
+
+    fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
+        self.0.callbacks.borrow_mut().visibility_change = Some(callback);
     }
 
     fn on_hover_status_change(&self, callback: Box<dyn FnMut(bool)>) {
