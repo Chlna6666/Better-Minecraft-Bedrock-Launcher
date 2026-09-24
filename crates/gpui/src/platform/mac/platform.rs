@@ -148,6 +148,14 @@ unsafe fn build_classes() {
                 sel!(onKeyboardLayoutChange:),
                 on_keyboard_layout_change as extern "C" fn(&mut Object, Sel, id),
             );
+            decl.add_method(
+                sel!(onSystemSleep:),
+                on_system_sleep as extern "C" fn(&mut Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(onSystemWake:),
+                on_system_wake as extern "C" fn(&mut Object, Sel, id),
+            );
 
             decl.register()
         }
@@ -167,6 +175,9 @@ pub(crate) struct MacPlatformState {
     metadata_pasteboard_type: id,
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    on_system_sleep: Option<Box<dyn FnMut()>>,
+    on_system_wake: Option<Box<dyn FnMut()>>,
+    system_power_observers_registered: bool,
     quit: Option<Box<dyn FnMut()>>,
     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
@@ -204,6 +215,9 @@ impl MacPlatform {
             text_hash_pasteboard_type: unsafe { ns_string("zed-text-hash") },
             metadata_pasteboard_type: unsafe { ns_string("zed-metadata") },
             reopen: None,
+            on_system_sleep: None,
+            on_system_wake: None,
+            system_power_observers_registered: false,
             quit: None,
             menu_command: None,
             validate_menu_command: None,
@@ -216,6 +230,20 @@ impl MacPlatform {
             menus: None,
             keyboard_mapper,
         }))
+    }
+
+    fn ensure_system_power_observers(&self) {
+        if self.0.lock().system_power_observers_registered {
+            return;
+        }
+        unsafe {
+            let app: id = msg_send![APP_CLASS, sharedApplication];
+            let delegate: id = msg_send![app, delegate];
+            if delegate != nil {
+                register_system_power_observers(delegate);
+                self.0.lock().system_power_observers_registered = true;
+            }
+        }
     }
 
     unsafe fn read_from_pasteboard(&self, pasteboard: *mut Object, kind: id) -> Option<&[u8]> {
@@ -853,6 +881,16 @@ impl Platform for MacPlatform {
         self.0.lock().on_keyboard_layout_change = Some(callback);
     }
 
+    fn on_system_sleep(&self, callback: Box<dyn FnMut()>) {
+        self.0.lock().on_system_sleep = Some(callback);
+        self.ensure_system_power_observers();
+    }
+
+    fn on_system_wake(&self, callback: Box<dyn FnMut()>) {
+        self.0.lock().on_system_wake = Some(callback);
+        self.ensure_system_power_observers();
+    }
+
     fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
         self.0.lock().menu_command = Some(callback);
     }
@@ -1390,6 +1428,15 @@ extern "C" fn did_finish_launching(this: &mut Object, _: Sel, _: id) {
         ];
 
         let platform = mac_platform(this);
+        {
+            let mut state = platform.0.lock();
+            if (state.on_system_sleep.is_some() || state.on_system_wake.is_some())
+                && !state.system_power_observers_registered
+            {
+                register_system_power_observers(this as id);
+                state.system_power_observers_registered = true;
+            }
+        }
         let callback = platform.0.lock().finish_launching.take();
         if let Some(callback) = callback {
             callback();
@@ -1437,6 +1484,47 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
         callback();
         let mut lock = platform.0.lock();
         restore_callback(&mut lock.on_keyboard_layout_change, callback);
+    }
+}
+
+unsafe fn register_system_power_observers(observer: id) {
+    unsafe {
+        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let center: id = msg_send![workspace, notificationCenter];
+        let sleep_name = ns_string("NSWorkspaceWillSleepNotification");
+        let wake_name = ns_string("NSWorkspaceDidWakeNotification");
+        let _: () = msg_send![center, addObserver: observer
+            selector: sel!(onSystemSleep:)
+            name: sleep_name
+            object: nil
+        ];
+        let _: () = msg_send![center, addObserver: observer
+            selector: sel!(onSystemWake:)
+            name: wake_name
+            object: nil
+        ];
+    }
+}
+
+extern "C" fn on_system_sleep(this: &mut Object, _: Sel, _: id) {
+    let platform = unsafe { mac_platform(this) };
+    let mut lock = platform.0.lock();
+    if let Some(mut callback) = lock.on_system_sleep.take() {
+        drop(lock);
+        callback();
+        let mut lock = platform.0.lock();
+        restore_callback(&mut lock.on_system_sleep, callback);
+    }
+}
+
+extern "C" fn on_system_wake(this: &mut Object, _: Sel, _: id) {
+    let platform = unsafe { mac_platform(this) };
+    let mut lock = platform.0.lock();
+    if let Some(mut callback) = lock.on_system_wake.take() {
+        drop(lock);
+        callback();
+        let mut lock = platform.0.lock();
+        restore_callback(&mut lock.on_system_wake, callback);
     }
 }
 
