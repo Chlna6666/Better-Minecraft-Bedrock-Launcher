@@ -105,6 +105,7 @@ impl Window {
         invalidator.set_dirty_frame_diagnostics(dirty_frame_diagnostics.clone());
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let visibility = platform_window.visibility();
+        invalidator.reset_dirty_to_present_epoch(visibility.is_visible());
         record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
@@ -181,6 +182,7 @@ impl Window {
                         return;
                     }
                     window.visibility = visibility;
+                    window.reset_dirty_to_present_timing(visibility.is_visible());
                     record_window_visibility(
                         window.handle.window_id().as_u64(),
                         visibility.is_visible(),
@@ -402,6 +404,7 @@ impl Window {
             hovered,
             needs_present,
             last_input_timestamp,
+            active_dirty_to_present_started_at: None,
             touch_gestures: crate::gestures::TouchGestureRecognizer::new(
                 cx.platform.gesture_tuning(),
             ),

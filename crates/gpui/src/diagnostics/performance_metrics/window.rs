@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use super::store::shared_metrics;
 
@@ -10,6 +13,12 @@ pub struct WindowMetricsSnapshot {
     pub window_id: u64,
     /// Per-window present rate in milli-FPS. This is never shared across windows.
     pub present_fps_milli: usize,
+    /// Mean time from the first dirty edge to a submitted presentation, in microseconds.
+    pub dirty_to_present_average_micros: usize,
+    /// Maximum recorded dirty-to-present latency, in microseconds.
+    pub dirty_to_present_max_micros: usize,
+    /// Number of dirty-to-present samples recorded for this window.
+    pub dirty_to_present_count: usize,
     /// Logical drawable width in milli logical-pixels.
     pub logical_width_milli: usize,
     /// Logical drawable height in milli logical-pixels.
@@ -71,9 +80,22 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         0
                     };
 
+                    let dirty_to_present_average_micros =
+                        if metrics.dirty_to_present_count == 0 {
+                            0
+                        } else {
+                            metrics.dirty_to_present_total_micros
+                                / metrics.dirty_to_present_count
+                        };
+
                     WindowMetricsSnapshot {
                         window_id,
                         present_fps_milli,
+                        dirty_to_present_average_micros:
+                            dirty_to_present_average_micros as usize,
+                        dirty_to_present_max_micros:
+                            metrics.dirty_to_present_max_micros as usize,
+                        dirty_to_present_count: metrics.dirty_to_present_count as usize,
                         logical_width_milli: metrics.logical_width_milli as usize,
                         logical_height_milli: metrics.logical_height_milli as usize,
                         physical_width_px: metrics.physical_width_px as usize,
@@ -152,6 +174,30 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
             metrics.skip_count = metrics.skip_count.saturating_add(1);
             metrics.skipped_frame_count = metrics.skipped_frame_count.saturating_add(1);
         }
+    }
+}
+
+/// Records one end-to-end latency sample from the first dirty edge to a submitted presentation.
+pub fn record_window_dirty_to_present(window_id: u64, duration: Duration) {
+    let micros = duration.as_micros().min(u64::MAX as u128) as u64;
+    let shared = shared_metrics();
+    shared
+        .dirty_to_present_total_micros
+        .fetch_add(micros, Ordering::Relaxed);
+    shared
+        .dirty_to_present_count
+        .fetch_add(1, Ordering::Relaxed);
+    shared
+        .dirty_to_present_max_micros
+        .fetch_max(micros, Ordering::Relaxed);
+
+    if let Ok(mut window_metrics) = shared.window_metrics.lock() {
+        let metrics = window_metrics.entry(window_id).or_default();
+        metrics.dirty_to_present_total_micros =
+            metrics.dirty_to_present_total_micros.saturating_add(micros);
+        metrics.dirty_to_present_count = metrics.dirty_to_present_count.saturating_add(1);
+        metrics.dirty_to_present_max_micros =
+            metrics.dirty_to_present_max_micros.max(micros);
     }
 }
 

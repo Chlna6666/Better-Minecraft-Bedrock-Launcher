@@ -22,6 +22,12 @@ pub struct PerformanceMetricsSnapshot {
     pub last_draw_time: Option<Duration>,
     /// Exponentially-smoothed rate of platform presents reported by active renderers.
     pub present_fps: f32,
+    /// Mean time from first dirty invalidation to submitted presentation.
+    pub dirty_to_present_average: Option<Duration>,
+    /// Maximum recorded dirty-to-present latency.
+    pub dirty_to_present_max: Option<Duration>,
+    /// Number of dirty-to-present samples recorded.
+    pub dirty_to_present_count: usize,
     /// Bytes uploaded into platform atlases during the latest reported frame.
     pub atlas_upload_bytes: usize,
     /// Number of atlas tiles uploaded during the latest reported frame.

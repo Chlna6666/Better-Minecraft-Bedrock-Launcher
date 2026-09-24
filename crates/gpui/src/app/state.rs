@@ -219,6 +219,9 @@ impl App {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
                     reset_present_timing_after_interruption();
+                    for window in cx.windows.values_mut().flatten() {
+                        window.reset_dirty_to_present_timing(false);
+                    }
                     cx.system_sleep_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));
@@ -232,6 +235,9 @@ impl App {
                 if let Some(app) = app.upgrade() {
                     let cx = &mut app.borrow_mut();
                     reset_present_timing_after_interruption();
+                    for window in cx.windows.values_mut().flatten() {
+                        window.reset_dirty_to_present_timing(true);
+                    }
                     cx.system_wake_observers
                         .clone()
                         .retain(&(), move |callback| (callback)(cx));

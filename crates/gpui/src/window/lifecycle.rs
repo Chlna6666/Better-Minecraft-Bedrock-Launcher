@@ -71,6 +71,16 @@ impl RetainedInvalidationScope {
 }
 
 impl Window {
+    /// Clears in-flight dirty-to-present timing, optionally starting a fresh epoch for dirty state.
+    ///
+    /// Visibility changes and OS sleep/wake use this boundary so time spent off-screen or suspended
+    /// never appears as foreground UI latency.
+    pub(crate) fn reset_dirty_to_present_timing(&mut self, restart_if_dirty: bool) {
+        self.active_dirty_to_present_started_at = None;
+        self.invalidator
+            .reset_dirty_to_present_epoch(restart_if_dirty);
+    }
+
     /// Invalidates an interactive element without turning an element-local state change into a
     /// general application notification or a forced refresh of every cached view.
     ///
@@ -179,6 +189,8 @@ struct CachedViewRetainedTarget {
 
 struct WindowInvalidatorInner {
     pub dirty: bool,
+    /// First pending dirty edge that has not yet been assigned to a draw cycle.
+    pub dirty_to_present_started_at: Option<Instant>,
     pub draw_phase: DrawPhase,
     pub dirty_views: FxHashSet<EntityId>,
     pub dirty_frame_diagnostics: Rc<RefCell<DirtyFrameDiagnostics>>,
@@ -229,6 +241,7 @@ impl WindowInvalidator {
         WindowInvalidator {
             inner: Rc::new(RefCell::new(WindowInvalidatorInner {
                 dirty: true,
+                dirty_to_present_started_at: Some(Instant::now()),
                 draw_phase: DrawPhase::None,
                 dirty_views: FxHashSet::default(),
                 dirty_frame_diagnostics: Rc::new(RefCell::new(DirtyFrameDiagnostics::default())),
@@ -343,6 +356,9 @@ impl WindowInvalidator {
         );
         diagnostics.record_notify_invalidation(entity);
         drop(diagnostics);
+        inner
+            .dirty_to_present_started_at
+            .get_or_insert_with(Instant::now);
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
             if !inner.dirty {
@@ -432,6 +448,9 @@ impl WindowInvalidator {
             .dirty_frame_diagnostics
             .borrow_mut()
             .record_notify_invalidation(entity);
+        inner
+            .dirty_to_present_started_at
+            .get_or_insert_with(Instant::now);
         inner.dirty_views.insert(entity);
 
         if inner.draw_phase != DrawPhase::None {
@@ -601,6 +620,9 @@ impl WindowInvalidator {
     pub fn set_dirty(&self, is_dirty: bool) {
         let mut inner = self.inner.borrow_mut();
         if is_dirty {
+            inner
+                .dirty_to_present_started_at
+                .get_or_insert_with(Instant::now);
             inner.pending_targeted_replay = false;
             inner.pending_targeted_elements.clear();
             inner.pending_generic_dirty_views.clear();
@@ -644,6 +666,9 @@ impl WindowInvalidator {
     /// upgraded to selective replay.
     pub(in crate::window) fn set_replay_only_dirty(&self) {
         let mut inner = self.inner.borrow_mut();
+        inner
+            .dirty_to_present_started_at
+            .get_or_insert_with(Instant::now);
         if inner.draw_phase != DrawPhase::None {
             inner.dirty = true;
             return;
@@ -655,6 +680,19 @@ impl WindowInvalidator {
             inner.pending_generic_dirty_views.clear();
         }
         inner.dirty = true;
+    }
+
+    pub(in crate::window) fn take_dirty_to_present_start(&self) -> Option<Instant> {
+        self.inner.borrow_mut().dirty_to_present_started_at.take()
+    }
+
+    pub(in crate::window) fn reset_dirty_to_present_epoch(&self, restart_if_dirty: bool) {
+        let mut inner = self.inner.borrow_mut();
+        inner.dirty_to_present_started_at = if restart_if_dirty && inner.dirty {
+            Some(Instant::now())
+        } else {
+            None
+        };
     }
 
     pub(in crate::window) fn active_targeted_replay(&self) -> bool {

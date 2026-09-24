@@ -268,6 +268,9 @@ fn record_debug_window_metrics(window: &Window) {
 struct RealtimeWindowMetric {
     window_id: u64,
     present_fps_milli: usize,
+    dirty_to_present_average_micros: usize,
+    dirty_to_present_max_micros: usize,
+    dirty_to_present_count: usize,
     logical_width_milli: usize,
     logical_height_milli: usize,
     physical_width_px: usize,
@@ -299,6 +302,9 @@ fn main_window_realtime_metric(
     Some(RealtimeWindowMetric {
         window_id: window.window_id,
         present_fps_milli: window.present_fps_milli,
+        dirty_to_present_average_micros: window.dirty_to_present_average_micros,
+        dirty_to_present_max_micros: window.dirty_to_present_max_micros,
+        dirty_to_present_count: window.dirty_to_present_count,
         logical_width_milli: window.logical_width_milli,
         logical_height_milli: window.logical_height_milli,
         physical_width_px: window.physical_width_px,
@@ -540,10 +546,13 @@ fn window_metrics_summary(runtime: &DebugRuntimeSnapshot) -> String {
                 "other"
             };
             format!(
-                "#{} ({}) fps={:.1} active={} minimized={} size={:.0}x{:.0}@{:.2}x redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
+                "#{} ({}) fps={:.1} d2p_avg={:.2}ms d2p_max={:.2}ms d2p_n={} active={} minimized={} size={:.0}x{:.0}@{:.2}x redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
                 window.window_id,
                 role,
                 window.present_fps_milli as f32 / 1000.0,
+                window.dirty_to_present_average_micros as f32 / 1000.0,
+                window.dirty_to_present_max_micros as f32 / 1000.0,
+                window.dirty_to_present_count,
                 window.active,
                 window.minimized,
                 window.logical_width_milli as f32 / 1000.0,

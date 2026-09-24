@@ -448,6 +448,8 @@ pub struct Window {
     pub(super) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
+    /// Earliest dirty edge represented by the frame currently being drawn or awaiting presentation.
+    pub(super) active_dirty_to_present_started_at: Option<Instant>,
     pub(super) touch_gestures: crate::gestures::TouchGestureRecognizer,
     pub(super) long_press_timer: Option<Task<()>>,
     pub(super) animation_time: Cell<Instant>,

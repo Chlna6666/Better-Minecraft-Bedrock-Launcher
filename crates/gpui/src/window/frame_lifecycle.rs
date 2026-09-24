@@ -581,6 +581,17 @@ impl Window {
         let presented_frame = self.execute_frame_work(frame_options, decision, frame_budget, cx);
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
         let window_id = self.handle.window_id().as_u64();
+        if presented_frame {
+            if let Some(started_at) = self.active_dirty_to_present_started_at.take() {
+                record_window_dirty_to_present(
+                    window_id,
+                    Instant::now().saturating_duration_since(started_at),
+                );
+            }
+        } else if decision.drew_frame() && !self.needs_present.get() {
+            // A completed dirty draw that produced no visible change has no presentation to await.
+            self.active_dirty_to_present_started_at = None;
+        }
         record_window_runtime_state(
             window_id,
             self.viewport_size.width / px(1.0),

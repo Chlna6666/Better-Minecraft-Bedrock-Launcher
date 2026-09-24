@@ -99,6 +99,12 @@ impl Window {
         self.last_generation_stats
             .deadline_remaining_at_paint_start_us = None;
         record_window_layout_recompute(self.handle.window_id().as_u64());
+        if let Some(started_at) = self.invalidator.take_dirty_to_present_start() {
+            self.active_dirty_to_present_started_at = Some(
+                self.active_dirty_to_present_started_at
+                    .map_or(started_at, |active| active.min(started_at)),
+            );
+        }
         let directly_dirty_views = self.invalidate_entities();
         self.pending_list_measured_items = 0;
         cx.entities.clear_accessed();

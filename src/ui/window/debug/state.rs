@@ -248,6 +248,9 @@ pub struct DebugRuntimeSnapshot {
 pub struct DebugWindowMetrics {
     pub window_id: u64,
     pub present_fps_milli: usize,
+    pub dirty_to_present_average_micros: usize,
+    pub dirty_to_present_max_micros: usize,
+    pub dirty_to_present_count: usize,
     pub logical_width_milli: usize,
     pub logical_height_milli: usize,
     pub physical_width_px: usize,
@@ -271,6 +274,9 @@ impl From<WindowMetricsSnapshot> for DebugWindowMetrics {
         Self {
             window_id: metrics.window_id,
             present_fps_milli: metrics.present_fps_milli,
+            dirty_to_present_average_micros: metrics.dirty_to_present_average_micros,
+            dirty_to_present_max_micros: metrics.dirty_to_present_max_micros,
+            dirty_to_present_count: metrics.dirty_to_present_count,
             logical_width_milli: metrics.logical_width_milli,
             logical_height_milli: metrics.logical_height_milli,
             physical_width_px: metrics.physical_width_px,

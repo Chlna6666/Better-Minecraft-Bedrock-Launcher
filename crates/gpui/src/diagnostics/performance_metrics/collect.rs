@@ -155,6 +155,15 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         .map(|value| value.clone())
         .unwrap_or_default();
     let window_metrics = super::window::window_metrics_snapshot();
+    let dirty_to_present_count = shared_metrics()
+        .dirty_to_present_count
+        .load(Ordering::Relaxed);
+    let dirty_to_present_total_micros = shared_metrics()
+        .dirty_to_present_total_micros
+        .load(Ordering::Relaxed);
+    let dirty_to_present_max_micros = shared_metrics()
+        .dirty_to_present_max_micros
+        .load(Ordering::Relaxed);
     let present_fps = shared_metrics()
         .last_present_at
         .lock()
@@ -173,6 +182,14 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         atlas_textures: shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize,
         last_draw_time: (last_draw_micros > 0).then(|| Duration::from_micros(last_draw_micros)),
         present_fps,
+        dirty_to_present_average: (dirty_to_present_count > 0).then(|| {
+            Duration::from_micros(
+                dirty_to_present_total_micros / dirty_to_present_count,
+            )
+        }),
+        dirty_to_present_max: (dirty_to_present_count > 0)
+            .then(|| Duration::from_micros(dirty_to_present_max_micros)),
+        dirty_to_present_count: dirty_to_present_count as usize,
         atlas_upload_bytes: shared_metrics().atlas_upload_bytes.load(Ordering::Relaxed) as usize,
         atlas_upload_tiles: shared_metrics().atlas_upload_tiles.load(Ordering::Relaxed) as usize,
         prepared_command_count: shared_metrics()
