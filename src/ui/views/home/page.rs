@@ -267,7 +267,6 @@ impl HomePageView {
             .w_full()
             .h(px(desired_list_h_px * dropdown_factor))
             .relative()
-            .top(px(10.0 * (1.0 - dropdown_factor)))
             .rounded(px(crate::ui::theme::tokens::radius::MD))
             .overflow_hidden()
             .bg(list_bg)
@@ -284,8 +283,19 @@ impl HomePageView {
                 spread_radius: px(-5.0),
                 offset: point(px(0.0), px(20.0)),
             }])
-            .opacity(dropdown_factor.min(1.0))
             .child(div().h_full().p(px(6.0)).child(versions))
+            .composite_layer()
+            .with_stable_sampled_animation(
+                "home-version-panel-motion",
+                AnimationProperty::translation_opacity(
+                    point(px(0.0), px(10.0)),
+                    Point::default(),
+                    0.0,
+                    1.0,
+                ),
+                dropdown_factor,
+                self.dropdown_animating,
+            )
             .into_any_element()
     }
 
