@@ -75,10 +75,10 @@ impl AnimatedStatMetricView {
         let colors_changed = self.colors != colors;
 
         if motion_changed {
-            let current = self.sample(now).0;
+            let (current, currently_animating) = self.sample(now);
             self.from = if !animate {
                 target
-            } else if sequence_changed {
+            } else if sequence_changed && !currently_animating {
                 0.0
             } else {
                 current
@@ -193,6 +193,11 @@ pub(super) fn render_statistics_tab(
         version.folder.as_ref()
     ));
 
+    let direction = crate::ui::animation::tab_transition_direction(
+        state.tab_anim_from.index(),
+        state.tab.index(),
+    );
+
     div()
         .size_full()
         .overflow_y_scrollbar()
@@ -205,70 +210,143 @@ pub(super) fn render_statistics_tab(
                 .grid()
                 .grid_cols(3)
                 .gap(px(10.))
-                .child(stat_card(
-                    colors,
-                    t!("ManagePage.stats_total_play_time"),
-                    AnimatedStatValue::new(
-                        play_time_id,
-                        state.tab_anim_seq,
-                        info.total_play_time,
-                        StatMetricKind::Duration,
+                .child(animate_stat_section(
+                    stat_card(
                         colors,
-                        animate,
-                    ),
-                ))
-                .child(stat_card(
-                    colors,
-                    t!("ManagePage.stats_launch_count"),
-                    AnimatedStatValue::new(
-                        launch_count_id,
-                        state.tab_anim_seq,
-                        info.total_sessions,
-                        StatMetricKind::Count,
-                        colors,
-                        animate,
-                    ),
-                ))
-                .child(stat_card(
-                    colors,
-                    t!("ManagePage.stats_last_launch"),
-                    stat_text(
-                        colors,
-                        info.last_play_time.map_or_else(
-                            || t!("ManagePage.stats_never_launched"),
-                            |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
+                        t!("ManagePage.stats_total_play_time"),
+                        AnimatedStatValue::new(
+                            play_time_id,
+                            state.tab_anim_seq,
+                            info.total_play_time,
+                            StatMetricKind::Duration,
+                            colors,
+                            animate,
                         ),
                     ),
+                    "total-play-time",
+                    state.tab_anim_seq,
+                    0,
+                    direction,
+                    animate,
+                ))
+                .child(animate_stat_section(
+                    stat_card(
+                        colors,
+                        t!("ManagePage.stats_launch_count"),
+                        AnimatedStatValue::new(
+                            launch_count_id,
+                            state.tab_anim_seq,
+                            info.total_sessions,
+                            StatMetricKind::Count,
+                            colors,
+                            animate,
+                        ),
+                    ),
+                    "launch-count",
+                    state.tab_anim_seq,
+                    1,
+                    direction,
+                    animate,
+                ))
+                .child(animate_stat_section(
+                    stat_card(
+                        colors,
+                        t!("ManagePage.stats_last_launch"),
+                        stat_text(
+                            colors,
+                            info.last_play_time.map_or_else(
+                                || t!("ManagePage.stats_never_launched"),
+                                |time| {
+                                    SharedString::from(
+                                        time.format("%Y-%m-%d %H:%M").to_string(),
+                                    )
+                                },
+                            ),
+                        ),
+                    ),
+                    "last-launch",
+                    state.tab_anim_seq,
+                    2,
+                    direction,
+                    animate,
                 )),
         )
-        .child(chart_card(
-            colors,
-            t!("ManagePage.stats_daily_launches"),
-            t!("ManagePage.stats_last_14_days"),
-            "launches",
+        .child(animate_stat_section(
+            chart_card(
+                colors,
+                t!("ManagePage.stats_daily_launches"),
+                t!("ManagePage.stats_last_14_days"),
+                "launches",
+                state.tab_anim_seq,
+                animate,
+                &days,
+                max_sessions,
+                |day| day.sessions,
+                |value| t!("ManagePage.stats_count", count = value),
+                colors.accent,
+            ),
+            "launch-chart",
             state.tab_anim_seq,
+            3,
+            direction,
             animate,
-            &days,
-            max_sessions,
-            |day| day.sessions,
-            |value| t!("ManagePage.stats_count", count = value),
-            colors.accent,
         ))
-        .child(chart_card(
-            colors,
-            t!("ManagePage.stats_daily_play_time"),
-            t!("ManagePage.stats_last_14_days"),
-            "play-time",
+        .child(animate_stat_section(
+            chart_card(
+                colors,
+                t!("ManagePage.stats_daily_play_time"),
+                t!("ManagePage.stats_last_14_days"),
+                "play-time",
+                state.tab_anim_seq,
+                animate,
+                &days,
+                max_play_time,
+                |day| day.play_time,
+                |value| format_duration(i18n, value),
+                colors.stat_green_text,
+            ),
+            "play-time-chart",
             state.tab_anim_seq,
+            4,
+            direction,
             animate,
-            &days,
-            max_play_time,
-            |day| day.play_time,
-            |value| format_duration(i18n, value),
-            colors.stat_green_text,
         ))
         .into_any_element()
 }
+fn animate_stat_section(
+    section: Div,
+    scope: &'static str,
+    sequence: u64,
+    index: usize,
+    direction: f32,
+    animate: bool,
+) -> AnyElement {
+    if !animate {
+        return section.into_any_element();
+    }
+
+    let delay = Duration::from_millis(index.min(4) as u64 * 38);
+    section
+        .with_animation(
+            SharedString::from(format!("manage-stat-section-{scope}-{sequence}")),
+            Animation::from_spec(
+                AnimationSpec::new(Duration::from_millis(360))
+                    .delay(delay)
+                    .fill_mode(FillMode::Both)
+                    .ease(Easing::OutCubic),
+            ),
+            move |section, progress| {
+                let progress = progress.clamp(0.0, 1.0);
+                section
+                    .relative()
+                    .left(px(10.0 * direction * (1.0 - progress)))
+                    .top(px(7.0 * (1.0 - progress)))
+                    .opacity(0.38 + 0.62 * progress)
+            },
+        )
+        .into_any_element()
+}
+
 
 #[derive(Clone, Copy)]
 struct DailyPoint {

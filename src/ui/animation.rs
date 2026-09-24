@@ -51,12 +51,24 @@ fn tab_transition_spring() -> Spring {
     apple_spring(TAB_TRANSITION_RESPONSE, TAB_TRANSITION_DAMPING)
 }
 
+pub fn tab_transition_direction(from_index: usize, to_index: usize) -> f32 {
+    if to_index >= from_index { 1.0 } else { -1.0 }
+}
+
+pub fn tab_toolbar_motion() -> Animation {
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(240))
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+}
+
 /// Shared renderer-owned transition for tab/subpage content.
 ///
 /// Main content and visible list rows intentionally use the same physical spring so their velocity
 /// profile stays coherent. Rows add only a short nonlinear start delay.
 pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
-    let direction = if to_index >= from_index { 1.0 } else { -1.0 };
+    let direction = tab_transition_direction(from_index, to_index);
     spring_motion(tab_transition_spring()).with_property(AnimationProperty::translation_opacity(
         point(px(16.0 * direction), px(0.0)),
         point(px(0.0), px(0.0)),
@@ -143,7 +155,7 @@ pub fn tab_list_item_motion(
     to_index: usize,
     visible_index: usize,
 ) -> Animation {
-    let direction = if to_index >= from_index { 1.0 } else { -1.0 };
+    let direction = tab_transition_direction(from_index, to_index);
 
     spring_motion(tab_transition_spring())
         .delay(tab_list_item_delay(visible_index))

@@ -589,18 +589,20 @@ pub(super) fn render_asset_list(
     let i18n = cx.global::<I18n>().clone();
     let frame_now = window.animation_time();
     let reduced_motion = crate::core::ui_prefs::reduced_motion();
-    let stale_transition = if !state.assets_loaded
-        && !state.assets.is_empty()
-        && !reduced_motion
-    {
-        if state.pack_subtype_animation_active(frame_now) {
+    let stale_transition = if !state.assets_loaded && !state.assets.is_empty() {
+        if state.tab == ManageTab::ResourcePack
+            && state.pack_subtype_anim_seq != 0
+            && state.pack_subtype_anim_from != state.pack_subtype
+        {
             Some((
                 state.pack_subtype_anim_from.index(),
                 state.pack_subtype.index(),
                 state.pack_subtype_anim_seq,
                 "manage-pack-subtype-stale",
+                !reduced_motion && state.pack_subtype_animation_active(frame_now),
             ))
-        } else if state.tab_animation_active(frame_now)
+        } else if state.tab_anim_seq != 0
+            && state.tab_anim_from != state.tab
             && is_asset_tab(state.tab_anim_from)
             && is_asset_tab(state.tab)
         {
@@ -609,6 +611,7 @@ pub(super) fn render_asset_list(
                 state.tab.index(),
                 state.tab_anim_seq,
                 "manage-asset-tab-stale",
+                !reduced_motion && state.tab_animation_active(frame_now),
             ))
         } else {
             None
@@ -873,13 +876,29 @@ pub(super) fn render_asset_list(
         })
         .child(rows);
 
-    if let Some((from_index, to_index, sequence, scope)) = stale_transition {
-        list.composite_layer()
-            .with_animation(
-                SharedString::from(format!("{scope}-{sequence}")),
-                tab_stale_content_motion(from_index, to_index),
-                |list, _progress| list,
-            )
+    if let Some((from_index, to_index, sequence, scope, animating)) = stale_transition {
+        let stale = if animating {
+            list.composite_layer()
+                .with_animation(
+                    SharedString::from(format!("{scope}-{sequence}")),
+                    tab_stale_content_motion(from_index, to_index),
+                    |list, _progress| list,
+                )
+                .into_any_element()
+        } else {
+            let direction =
+                crate::ui::animation::tab_transition_direction(from_index, to_index);
+            list.relative()
+                .left(px(-8.0 * direction))
+                .opacity(0.72)
+                .into_any_element()
+        };
+
+        div()
+            .relative()
+            .size_full()
+            .child(stale)
+            .child(div().absolute().inset_0().occlude())
             .into_any_element()
     } else {
         list.into_any_element()

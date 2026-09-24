@@ -46,7 +46,9 @@ impl ManagePackSubtype {
     }
 }
 
-const TAB_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
+// 13 * 32 ms chart stagger + 560 ms reveal needs ~976 ms; keep a safety margin so an
+// unrelated targeted rerender cannot retire the last bars early.
+const TAB_ANIMATION_WINDOW: Duration = Duration::from_millis(1_200);
 const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

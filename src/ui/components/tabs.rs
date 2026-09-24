@@ -412,22 +412,14 @@ impl RenderOnce for AnimatedSegmentTabs {
             snapshot = *state.read(cx);
         }
 
-        // Fixed-width tabs still hand translation to Nova. On interruption, sample the old
-        // in-flight curve first so the new animation starts at the currently visible position.
-        let (indicator_slot, layout_indicator_animating) = if item_width.is_some() {
-            (snapshot.active_index as f32, false)
-        } else {
-            let (slot, animating) = sample_animated_tab_slot(snapshot, now);
-            (slot, animating && !reduced_motion)
-        };
-
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
+            let from_left_px = item_width_px * snapshot.from_slot + 2.0;
+            let target_left_px = item_width_px * snapshot.active_index as f32 + 2.0;
             let indicator = div()
                 .absolute()
                 .top(px(2.))
                 .bottom(px(2.))
-                .left(px(item_width_px * indicator_slot + 2.0))
                 .w(px(item_width_px - 4.0))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(active_background)
@@ -446,38 +438,31 @@ impl RenderOnce for AnimatedSegmentTabs {
                 });
 
             if snapshot.started_at.is_some() && !reduced_motion {
-                let from_x =
-                    item_width_px * (snapshot.from_slot - snapshot.active_index as f32);
                 indicator
                     .with_animation(
                         SharedString::from(format!(
                             "{}-indicator-{}",
                             self.id, snapshot.sequence
                         )),
-                        ease_out_cubic_motion(ANIMATED_TAB_DURATION).with_property(
-                            AnimationProperty::translation(
-                                point(px(from_x), px(0.0)),
-                                Point::default(),
-                            ),
-                        ),
-                        |this, _progress| this,
+                        ease_out_cubic_motion(ANIMATED_TAB_DURATION),
+                        move |indicator, progress| {
+                            let progress = progress.clamp(0.0, 1.0);
+                            let left =
+                                from_left_px + (target_left_px - from_left_px) * progress;
+                            indicator.left(px(left))
+                        },
                     )
                     .into_any_element()
             } else {
-                indicator.into_any_element()
+                indicator.left(px(target_left_px)).into_any_element()
             }
         } else {
-            let indicator_left = relative(
-                (indicator_slot * segment_width).clamp(0.0, (1.0 - segment_width).max(0.0)),
-            );
-
-            // Only the percentage-based indicator changes layout. Keep the retained target on this
-            // leaf so the static track, labels and icons do not reconcile on every animation frame.
-            div()
+            let from_left = snapshot.from_slot * segment_width;
+            let target_left = snapshot.active_index as f32 * segment_width;
+            let indicator = div()
                 .absolute()
                 .top(px(2.))
                 .bottom(px(2.))
-                .left(indicator_left)
                 .w(relative(segment_width))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(active_background)
@@ -493,9 +478,26 @@ impl RenderOnce for AnimatedSegmentTabs {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                })
-                .with_layout_animation_target(layout_indicator_animating)
-                .into_any_element()
+                });
+
+            if snapshot.started_at.is_some() && !reduced_motion {
+                indicator
+                    .with_animation(
+                        SharedString::from(format!(
+                            "{}-indicator-{}",
+                            self.id, snapshot.sequence
+                        )),
+                        ease_out_cubic_motion(ANIMATED_TAB_DURATION),
+                        move |indicator, progress| {
+                            let progress = progress.clamp(0.0, 1.0);
+                            let left = from_left + (target_left - from_left) * progress;
+                            indicator.left(relative(left))
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                indicator.left(relative(target_left)).into_any_element()
+            }
         };
 
         let mut root = div()

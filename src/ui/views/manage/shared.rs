@@ -644,8 +644,7 @@ pub(super) fn toolbar_glyph_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .opacity(0.92)
-        .hover(|style| style.opacity(1.0))
+        .opacity(0.96)
         .child(
             svg()
                 .path(icon_path)
