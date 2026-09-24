@@ -24,11 +24,15 @@ pub fn spawn_deferred_font_load(cx: &mut App) {
         })
         .await;
 
-        cx.update(|cx| {
-            if text_system.publish_prepared_system_fonts() {
-                cx.refresh_windows();
-            }
-        })?;
+        let font_catalog_changed = cx.update(|_| text_system.publish_prepared_system_fonts())?;
+        if font_catalog_changed {
+            let text_system_for_prewarm = text_system.clone();
+            cx.background_spawn(async move {
+                text_system_for_prewarm.prewarm_loaded_fonts();
+            })
+            .await;
+            cx.update(|cx| cx.refresh_windows())?;
+        }
         Ok::<(), anyhow::Error>(())
     })
     .detach();

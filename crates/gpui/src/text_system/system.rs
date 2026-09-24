@@ -276,6 +276,25 @@ impl TextSystem {
         self.font_names().as_ref().to_vec()
     }
 
+    /// Prewarms platform font-match caches for fonts that GPUI has already resolved.
+    ///
+    /// This does not discover or load additional font families. It is intended for a background
+    /// executor after deferred system-font metadata has been published, so the next foreground text
+    /// shaping pass does not pay the first font-match cache miss.
+    pub fn prewarm_loaded_fonts(&self) {
+        let font_ids = {
+            let cache = self.font_id_cache.read();
+            let mut font_ids = SmallVec::<[FontId; 8]>::new();
+            for font_id in cache.ids_by_font.values().filter_map(|result| result.as_ref().ok()) {
+                if !font_ids.contains(font_id) {
+                    font_ids.push(*font_id);
+                }
+            }
+            font_ids
+        };
+        self.platform_text_system.prewarm_fonts(&font_ids);
+    }
+
     /// Returns whether a font family can be selected by the platform text system.
     pub fn is_font_family_available(&self, family: &str) -> bool {
         let family = family.trim();

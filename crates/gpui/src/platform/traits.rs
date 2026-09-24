@@ -333,6 +333,8 @@ pub(crate) trait PlatformTextSystem: Send + Sync {
     fn platform_font_family(&self) -> SharedString;
     fn all_font_names(&self) -> Vec<String>;
     fn font_id(&self, descriptor: &Font) -> Result<FontId>;
+    /// Prewarms platform font-match caches for already resolved font IDs.
+    fn prewarm_fonts(&self, _font_ids: &[FontId]) {}
     fn font_metrics(&self, font_id: FontId) -> FontMetrics;
     fn typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Bounds<f32>>;
     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>>;

@@ -14,7 +14,7 @@ use cosmic_text::{
     Attrs, AttrsList, CacheKey, CacheKeyFlags, Ellipsize, Family, Font as CosmicTextFont,
     FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine, SwashCache,
     SwashContent, SwashImage,
-    fontdb::{Query, Source, Stretch, Weight},
+    fontdb::{Query, Source, Stretch, Style as FontDbStyle, Weight},
 };
 
 use parking_lot::RwLock;
@@ -128,6 +128,30 @@ struct LoadedFont {
     is_known_emoji_font: bool,
     user_fallback_chain: Arc<[(FontId, SharedString)]>,
     automatic_system_fallback_pending: bool,
+}
+
+#[derive(Clone)]
+struct FontMatchProperties {
+    primary_family_name: SharedString,
+    stretch: Stretch,
+    style: FontDbStyle,
+    weight: Weight,
+    cache_key_flags: CacheKeyFlags,
+    features: CosmicFontFeatures,
+    fallback_chain: Arc<[(FontId, SharedString)]>,
+}
+
+impl FontMatchProperties {
+    fn attrs<'a>(&'a self, font_id: FontId, family_name: &'a str) -> Attrs<'a> {
+        Attrs::new()
+            .metadata(font_id.0)
+            .family(Family::Name(family_name))
+            .stretch(self.stretch)
+            .style(self.style)
+            .weight(self.weight)
+            .cache_key_flags(self.cache_key_flags)
+            .font_features(self.features.clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -247,6 +271,14 @@ impl PlatformTextSystem for CosmicTextSystem {
         };
 
         state.select_font_id(&candidates, font)
+    }
+
+    fn prewarm_fonts(&self, font_ids: &[FontId]) {
+        #[cfg(target_os = "linux")]
+        self.0.write().prewarm_fonts(font_ids);
+
+        #[cfg(not(target_os = "linux"))]
+        let _ = font_ids;
     }
 
     fn font_metrics(&self, font_id: FontId) -> FontMetrics {
@@ -430,6 +462,37 @@ impl CosmicTextSystemState {
 
     fn loaded_font(&self, font_id: FontId) -> &LoadedFont {
         &self.loaded_fonts[font_id.0]
+    }
+
+    #[cfg(target_os = "linux")]
+    fn font_match_properties(&self, font_id: FontId) -> Option<FontMatchProperties> {
+        let loaded_font = self.loaded_fonts.get(font_id.0)?;
+        let face = self.font_system.db().face(loaded_font.font.id())?;
+        let primary_family_name = face.families.first()?.0.clone().into();
+        Some(FontMatchProperties {
+            primary_family_name,
+            stretch: face.stretch,
+            style: face.style,
+            weight: face.weight,
+            cache_key_flags: loaded_font.cache_key_flags,
+            features: loaded_font.features.clone(),
+            fallback_chain: Arc::clone(&loaded_font.user_fallback_chain),
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn prewarm_fonts(&mut self, font_ids: &[FontId]) {
+        for &font_id in font_ids {
+            let Some(properties) = self.font_match_properties(font_id) else {
+                continue;
+            };
+            let primary = properties.attrs(font_id, &properties.primary_family_name);
+            self.font_system.get_font_matches(&primary);
+            for (fallback_id, fallback_name) in properties.fallback_chain.iter() {
+                let fallback = properties.attrs(*fallback_id, fallback_name);
+                self.font_system.get_font_matches(&fallback);
+            }
+        }
     }
 
     fn set_application_font_family(&mut self, family: SharedString) {
