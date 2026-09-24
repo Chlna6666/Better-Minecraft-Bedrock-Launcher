@@ -96,6 +96,17 @@ impl DebugView {
                     let mut runtime = runtime;
                     let debug = cx.global::<DebugState>().clone();
                     bind_window_roles(&mut runtime, &debug);
+
+                    runtime.frame_time_history_ms = this.runtime.frame_time_history_ms.clone();
+                    if runtime.main_frame_time_ms > 0.0 && runtime.main_frame_time_ms.is_finite() {
+                        runtime
+                            .frame_time_history_ms
+                            .push_back(runtime.main_frame_time_ms);
+                        while runtime.frame_time_history_ms.len() > 180 {
+                            let _ = runtime.frame_time_history_ms.pop_front();
+                        }
+                    }
+
                     if this
                         .runtime
                         .gpui_global_image_assets_sampled_at
@@ -233,12 +244,36 @@ fn bind_window_roles(runtime: &mut DebugRuntimeSnapshot, debug: &DebugState) {
         };
 
         let fps = window.present_fps_milli as f32 / 1000.0;
+        let logical_width = window.logical_width_milli as f32 / 1000.0;
+        let logical_height = window.logical_height_milli as f32 / 1000.0;
+        let physical_width = window.physical_width_px as f32;
+        let physical_height = window.physical_height_px as f32;
+        let scale_factor = if window.scale_factor_milli > 0 {
+            window.scale_factor_milli as f32 / 1000.0
+        } else {
+            1.0
+        };
+
         if is_main {
             runtime.main_fps = fps;
             runtime.main_frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
             runtime.gpui_present_fps = fps;
+            if logical_width > 0.0 && logical_height > 0.0 {
+                runtime.main_window_width_px = logical_width;
+                runtime.main_window_height_px = logical_height;
+                runtime.main_window_physical_width_px = physical_width;
+                runtime.main_window_physical_height_px = physical_height;
+                runtime.main_window_scale_factor = scale_factor;
+            }
         } else {
             runtime.debug_fps = fps;
+            if logical_width > 0.0 && logical_height > 0.0 {
+                runtime.debug_window_width_px = logical_width;
+                runtime.debug_window_height_px = logical_height;
+                runtime.debug_window_physical_width_px = physical_width;
+                runtime.debug_window_physical_height_px = physical_height;
+                runtime.debug_window_scale_factor = scale_factor;
+            }
         }
     };
 
@@ -388,10 +423,19 @@ fn window_metrics_summary(runtime: &DebugRuntimeSnapshot) -> String {
                 "other"
             };
             format!(
-                "#{} ({}) fps={:.1} redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
+                "#{} ({}) fps={:.1} active={} minimized={} size={:.0}x{:.0}@{:.2}x redraw={} draw={} present={} skip={} skipped={} reconfig={} errors={} layout={} upload={}",
                 window.window_id,
                 role,
                 window.present_fps_milli as f32 / 1000.0,
+                window.active,
+                window.minimized,
+                window.logical_width_milli as f32 / 1000.0,
+                window.logical_height_milli as f32 / 1000.0,
+                if window.scale_factor_milli > 0 {
+                    window.scale_factor_milli as f32 / 1000.0
+                } else {
+                    1.0
+                },
                 window.request_redraw_count,
                 window.draw_count,
                 window.present_count,
