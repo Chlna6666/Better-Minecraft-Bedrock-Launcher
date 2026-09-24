@@ -589,6 +589,7 @@ features = [
     "settings",
     "file_chooser",
     "open_uri",
+    "inhibit",
 ]
 optional = true
 default-features = false
@@ -617,6 +618,9 @@ optional = true
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.filedescriptor]
 version = "0.8.2"
 optional = true
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.enumflags2]
+version = "0.7.12"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.flume]
 version = "0.12.0"

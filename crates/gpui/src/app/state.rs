@@ -307,6 +307,14 @@ impl App {
         subscription
     }
 
+    /// Prevents idle system sleep while the returned guard is held.
+    ///
+    /// Acquiring the inhibitor can be asynchronous on portal-based Linux desktops. Callers should
+    /// keep the returned guard alive for exactly the lifetime of the long-running operation.
+    pub fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<crate::ActivityGuard>> {
+        self.platform.prevent_idle_sleep(reason)
+    }
+
     /// Gracefully quit the application via the platform's standard routine.
     pub fn quit(&self) {
         self.platform.quit();

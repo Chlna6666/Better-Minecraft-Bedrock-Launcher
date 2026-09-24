@@ -148,6 +148,15 @@ pub(crate) trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+
+    /// Prevents idle system sleep while the returned guard is held.
+    ///
+    /// Platforms that cannot provide an inhibitor return an error without changing system policy.
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<crate::ActivityGuard>> {
+        Task::ready(Err(anyhow::anyhow!(
+            "idle sleep prevention is not supported for {reason:?} on this platform"
+        )))
+    }
 }
 
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {

@@ -12,15 +12,23 @@ use std::{
 use std::{ffi::OsString, fs::File, os::fd::AsFd, time::Duration};
 
 use anyhow::{Context as _, anyhow};
+#[cfg(any(feature = "wayland", feature = "x11"))]
+use ashpd::desktop::{
+    Request,
+    inhibit::{InhibitFlags, InhibitOptions, InhibitProxy},
+};
 use calloop::{LoopHandle, LoopSignal, channel::Channel};
+#[cfg(any(feature = "wayland", feature = "x11"))]
+use enumflags2::BitFlags;
 use futures::channel::oneshot;
 use util::ResultExt as _;
 #[cfg(any(feature = "wayland", feature = "x11"))]
 use xkbcommon::xkb::{self, Keycode, Keysym, State};
 
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DisplayId,
-    ForegroundExecutor, ForegroundTaskQueue, Keymap, LinuxDispatcher, Menu, MenuItem, OwnedMenu,
+    Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
+    DisplayId, ForegroundExecutor, ForegroundTaskQueue, Keymap, LinuxDispatcher, Menu, MenuItem,
+    OwnedMenu,
     PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, Result, Task,
     WindowAppearance, WindowParams, px,
@@ -260,6 +268,40 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
         self.active_window()
+    }
+
+    #[cfg(any(feature = "wayland", feature = "x11"))]
+    fn prevent_idle_sleep(&self, reason: &str) -> Task<Result<ActivityGuard>> {
+        let executor = self.background_executor();
+        let reason = reason.to_owned();
+        let executor_for_release = executor.clone();
+        executor.spawn(async move {
+            let proxy = InhibitProxy::new()
+                .await
+                .context("idle sleep prevention portal is unavailable")?;
+            let request = proxy
+                .inhibit(
+                    None,
+                    BitFlags::from(InhibitFlags::Suspend),
+                    InhibitOptions::default().set_reason(reason.as_str()),
+                )
+                .await
+                .context("failed to request idle sleep prevention")?;
+            request
+                .response()
+                .context("idle sleep prevention request was rejected")?;
+            Ok(ActivityGuard::new(move || {
+                executor_for_release
+                    .spawn(async move {
+                        request
+                            .close()
+                            .await
+                            .context("failed to release idle sleep prevention")
+                            .log_err();
+                    })
+                    .detach();
+            }))
+        })
     }
 
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>> {

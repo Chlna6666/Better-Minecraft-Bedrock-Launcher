@@ -17,6 +17,37 @@ mod winit;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
+/// Keeps an operating-system activity alive until the guard is dropped.
+///
+/// GPUI uses this for scoped policies such as preventing idle system sleep during long-running
+/// foreground work. Dropping the guard releases the platform request exactly once.
+pub struct ActivityGuard {
+    release: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl ActivityGuard {
+    /// Creates a guard that invokes `release` when dropped.
+    pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            release: Some(Box::new(release)),
+        }
+    }
+
+    /// Creates a guard that performs no platform action when dropped.
+    pub fn noop() -> Self {
+        Self::new(|| {})
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+}
+
+
 #[cfg(target_os = "windows")]
 static TEXT_RASTERIZATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
