@@ -227,6 +227,16 @@ impl Window {
         .detach();
     }
 
+    /// Overrides the dirty-redraw retry interval while this window is visible but inactive.
+    ///
+    /// This does not enable background animation by itself. It only controls how quickly an
+    /// already-dirty inactive window may publish a refreshed frame. Passing None restores the
+    /// framework default. Values below one display-frame budget are clamped to 16 ms.
+    pub fn set_inactive_dirty_frame_retry_interval(&mut self, interval: Option<Duration>) {
+        self.inactive_dirty_frame_retry_interval =
+            interval.map(|interval| interval.max(Duration::from_millis(16)));
+    }
+
     /// Opt a window into retained paint/GPU animation while it is visible but inactive.
     ///
     /// This is intended for NOACTIVATE panels such as desktop lyrics or HUD windows. The default is

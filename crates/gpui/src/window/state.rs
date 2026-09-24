@@ -450,6 +450,11 @@ pub struct Window {
     pub(super) dirty_frame_scheduled: bool,
     pub(super) dirty_frame_throttle_pending: bool,
     pub(super) dirty_frame_deferred_pending: bool,
+    /// Optional per-window override for visible inactive dirty redraw pacing.
+    ///
+    /// Ordinary windows keep the framework default. Tool and diagnostic windows may opt into a
+    /// tighter interval without changing the process-wide inactive-window policy.
+    pub(super) inactive_dirty_frame_retry_interval: Option<Duration>,
     pub(super) async_app: AsyncApp,
     pub(super) frame_watchdog: Rc<Cell<FrameWatchdog>>,
     pub(super) platform_frame_watchdog_task: RefCell<Option<Task<()>>>,

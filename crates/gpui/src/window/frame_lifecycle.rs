@@ -306,7 +306,8 @@ impl Window {
         if self.platform_window.is_minimized() {
             MINIMIZED_PROGRESSIVE_FRAME_RETRY
         } else if !self.active.get() {
-            BACKGROUND_PROGRESSIVE_FRAME_RETRY
+            self.inactive_dirty_frame_retry_interval
+                .unwrap_or(BACKGROUND_PROGRESSIVE_FRAME_RETRY)
         } else {
             self.frame_throttle.retry_delay()
         }

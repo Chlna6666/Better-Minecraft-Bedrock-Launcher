@@ -383,6 +383,7 @@ impl Window {
             dirty_frame_scheduled: false,
             dirty_frame_throttle_pending: false,
             dirty_frame_deferred_pending: false,
+            inactive_dirty_frame_retry_interval: None,
             async_app,
             frame_watchdog,
             platform_frame_watchdog_task: RefCell::new(None),
