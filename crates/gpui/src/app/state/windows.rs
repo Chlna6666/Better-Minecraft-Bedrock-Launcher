@@ -64,17 +64,42 @@ impl App {
         })
     }
 
+    #[inline(always)]
     pub(in crate::app) fn update_window_id<T, F>(&mut self, id: WindowId, update: F) -> Result<T>
     where
         F: FnOnce(AnyView, &mut Window, &mut App) -> T,
     {
+        let mut update = Some(update);
+        let mut result = None;
+        self.update_window_erased(id, &mut |arguments| {
+            if let Some((root_view, window, cx)) = arguments {
+                result = Some(update.take().expect("window update callback runs once")(
+                    root_view, window, cx,
+                ));
+            } else {
+                drop(update.take());
+                drop(result.take());
+            }
+        });
+        result.ok_or_else(|| anyhow!("window not found"))
+    }
+
+    #[inline(never)]
+    fn update_window_erased(
+        &mut self,
+        id: WindowId,
+        update: &mut dyn FnMut(Option<(AnyView, &mut Window, &mut App)>),
+    ) {
         self.update(|cx| {
-            let mut window = cx.windows.get_mut(id)?.take()?;
+            let Some(mut window) = cx.windows.get_mut(id).and_then(Option::take) else {
+                update(None);
+                return;
+            };
 
             let root_view = window.root.clone().unwrap();
 
             cx.window_update_stack.push(window.handle.id);
-            let result = update(root_view, &mut window, cx);
+            update(Some((root_view, &mut window, cx)));
             cx.window_update_stack.pop();
 
             if window.removed {
@@ -85,12 +110,11 @@ impl App {
                     callback(cx);
                     true
                 });
+            } else if let Some(window_slot) = cx.windows.get_mut(id) {
+                window_slot.replace(window);
             } else {
-                cx.windows.get_mut(id)?.replace(window);
+                update(None);
             }
-
-            Some(result)
-        })
-        .ok_or_else(|| anyhow!("window not found"))
+        });
     }
 }
