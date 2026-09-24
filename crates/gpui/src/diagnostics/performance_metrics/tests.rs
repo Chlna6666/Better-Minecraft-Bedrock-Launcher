@@ -406,6 +406,7 @@ fn records_window_scoped_metrics() {
             skipped_frame: true,
         },
     );
+    record_window_runtime_state(10, 972.0, 600.0, 1.25, true, false);
     record_window_gpu_surface_metrics(10, 4, 1);
     record_window_layout_recompute(10);
     record_window_upload_bytes(10, 2048);
@@ -417,6 +418,13 @@ fn records_window_scoped_metrics() {
         .find(|window| window.window_id == 10)
         .expect("window metrics should be tracked");
 
+    assert_eq!(window.logical_width_milli, 972_000);
+    assert_eq!(window.logical_height_milli, 600_000);
+    assert_eq!(window.physical_width_px, 1_215);
+    assert_eq!(window.physical_height_px, 750);
+    assert_eq!(window.scale_factor_milli, 1_250);
+    assert!(window.active);
+    assert!(!window.minimized);
     assert!(window.request_redraw_count >= 1);
     assert!(window.draw_count >= 1);
     assert!(window.present_count >= 1);
