@@ -168,7 +168,7 @@ pub(super) struct ImagePaintTileCacheKey {
 #[derive(Clone, Debug, Default)]
 pub(super) struct ModifierState {
     pub(super) modifiers: Modifiers,
-    pub(super) saw_keystroke: bool,
+    pub(super) saw_other_input: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

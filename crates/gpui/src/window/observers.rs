@@ -35,20 +35,16 @@ impl Window {
 
     pub(crate) fn dispatch_keystroke_observers(
         &mut self,
-        event: &dyn Any,
-        action: Option<Box<dyn Action>>,
+        keystroke: &Keystroke,
+        action: Option<&dyn Action>,
         context_stack: Vec<KeyContext>,
         cx: &mut App,
     ) {
-        let Some(key_down_event) = event.downcast_ref::<KeyDownEvent>() else {
-            return;
-        };
-
         cx.keystroke_observers.clone().retain(&(), move |callback| {
             (callback)(
                 &KeystrokeEvent {
-                    keystroke: key_down_event.keystroke.clone(),
-                    action: action.as_ref().map(|action| action.boxed_clone()),
+                    keystroke: keystroke.clone(),
+                    action: action.map(|action| action.boxed_clone()),
                     context_stack: context_stack.clone(),
                 },
                 self,
@@ -59,20 +55,16 @@ impl Window {
 
     pub(crate) fn dispatch_keystroke_interceptors(
         &mut self,
-        event: &dyn Any,
+        keystroke: &Keystroke,
         context_stack: Vec<KeyContext>,
         cx: &mut App,
     ) {
-        let Some(key_down_event) = event.downcast_ref::<KeyDownEvent>() else {
-            return;
-        };
-
         cx.keystroke_interceptors
             .clone()
             .retain(&(), move |callback| {
                 (callback)(
                     &KeystrokeEvent {
-                        keystroke: key_down_event.keystroke.clone(),
+                        keystroke: keystroke.clone(),
                         action: None,
                         context_stack: context_stack.clone(),
                     },
