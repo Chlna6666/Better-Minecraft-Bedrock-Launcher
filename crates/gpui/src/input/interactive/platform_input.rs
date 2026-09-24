@@ -2,7 +2,7 @@ use std::any::Any;
 
 use super::{
     FileDropEvent, KeyDownEvent, KeyUpEvent, LongPressEvent, ModifiersChangedEvent, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, TouchEvent,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, TouchDragEvent, TouchEvent,
 };
 
 /// An enum corresponding to all kinds of platform input events.
@@ -30,6 +30,8 @@ pub enum PlatformInput {
     Touch(TouchEvent),
     /// A long-press gesture recognized from touch input.
     LongPress(LongPressEvent),
+    /// A direct touch drag claimed by an element.
+    TouchDrag(TouchDragEvent),
 }
 
 impl PlatformInput {
@@ -47,9 +49,9 @@ impl PlatformInput {
             | PlatformInput::KeyUp(_)
             | PlatformInput::ModifiersChanged(_) => PlatformInputDispatchClass::Keyboard,
             PlatformInput::FileDrop(_) => PlatformInputDispatchClass::DragDrop,
-            PlatformInput::Touch(_) | PlatformInput::LongPress(_) => {
-                PlatformInputDispatchClass::InteractivePointerMove
-            }
+            PlatformInput::Touch(_)
+            | PlatformInput::LongPress(_)
+            | PlatformInput::TouchDrag(_) => PlatformInputDispatchClass::InteractivePointerMove,
             PlatformInput::MouseExited(_) => PlatformInputDispatchClass::PassivePointerMove,
         }
     }
@@ -69,6 +71,7 @@ impl PlatformInput {
             PlatformInput::MouseExited(event) => Some(event),
             PlatformInput::ScrollWheel(event) => Some(event),
             PlatformInput::LongPress(event) => Some(event),
+            PlatformInput::TouchDrag(event) => Some(event),
             PlatformInput::FileDrop(event) => Some(event),
             PlatformInput::Touch(_) => None,
         }
@@ -85,6 +88,7 @@ impl PlatformInput {
             PlatformInput::MouseExited(_) => None,
             PlatformInput::ScrollWheel(_) => None,
             PlatformInput::LongPress(_) => None,
+            PlatformInput::TouchDrag(_) => None,
             PlatformInput::FileDrop(_) => None,
             PlatformInput::Touch(_) => None,
         }

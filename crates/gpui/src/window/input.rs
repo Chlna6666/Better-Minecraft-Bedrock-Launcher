@@ -279,6 +279,10 @@ impl Window {
                 self.mouse_position = long_press.start_position;
                 PlatformInput::LongPress(long_press)
             }
+            PlatformInput::TouchDrag(touch_drag) => {
+                self.mouse_position = touch_drag.start_position;
+                PlatformInput::TouchDrag(touch_drag)
+            }
             PlatformInput::FileDrop(file_drop) => match file_drop {
                 FileDropEvent::Entered { position, paths } => {
                     self.mouse_position = position;
@@ -392,6 +396,12 @@ impl Window {
             self.dispatch_recognized_touch_gesture(gesture, cx);
         }
 
+        if event.phase == TouchPhase::Started
+            && let Some(touch_drag) = self.touch_gestures.offer_touch_drag(event.id)
+        {
+            self.dispatch_recognized_touch_gesture(touch_drag, cx);
+        }
+
         if event.phase == TouchPhase::Started {
             self.schedule_long_press_timer(cx);
         } else if self.touch_gestures.pending_long_press().is_none() {
@@ -424,6 +434,17 @@ impl Window {
                 self.dispatch_mouse_event(&down, cx);
                 cx.propagate_event = true;
                 self.dispatch_mouse_event(&up, cx);
+            }
+            RecognizedTouchGesture::TouchDrag(touch_drag) => {
+                self.mouse_position = touch_drag.start_position;
+                cx.propagate_event = true;
+                self.default_prevented = false;
+                let started = touch_drag.phase == TouchPhase::Started;
+                self.dispatch_mouse_event(&touch_drag, cx);
+                if started {
+                    self.touch_gestures
+                        .resolve_touch_drag(self.default_prevented);
+                }
             }
             RecognizedTouchGesture::LongPress(long_press) => {
                 self.mouse_position = long_press.start_position;

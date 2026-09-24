@@ -31,6 +31,37 @@ impl InputEvent for TouchEvent {
     }
 }
 
+
+/// A direct touch drag claimed by an element before the contact becomes a tap, long press, or pan.
+#[derive(Clone, Debug)]
+pub struct TouchDragEvent {
+    /// Gesture phase.
+    pub phase: TouchPhase,
+    /// Position where the touch began. Hit testing remains anchored here for the drag lifetime.
+    pub start_position: Point<Pixels>,
+    /// Current raw touch position.
+    pub position: Point<Pixels>,
+}
+
+impl Default for TouchDragEvent {
+    fn default() -> Self {
+        Self {
+            phase: TouchPhase::Started,
+            start_position: Point::default(),
+            position: Point::default(),
+        }
+    }
+}
+
+impl Sealed for TouchDragEvent {}
+impl InputEvent for TouchDragEvent {
+    fn to_platform_input(self) -> PlatformInput {
+        PlatformInput::TouchDrag(self)
+    }
+}
+impl GestureEvent for TouchDragEvent {}
+impl MouseEvent for TouchDragEvent {}
+
 /// A phased long-press gesture recognized from raw touch input.
 ///
 /// Hit testing stays anchored to start_position while position reports the current contact.

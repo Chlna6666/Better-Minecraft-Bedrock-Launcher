@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::{
     Axis, LongPressEvent, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, TouchEvent, TouchId, TouchPhase, point, px,
+    ScrollDelta, ScrollWheelEvent, TouchDragEvent, TouchEvent, TouchId, TouchPhase, point, px,
 };
 
 const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
@@ -300,6 +300,7 @@ pub(crate) enum RecognizedTouchGesture {
         down: MouseDownEvent,
         up: MouseUpEvent,
     },
+    TouchDrag(TouchDragEvent),
     LongPress(LongPressEvent),
 }
 
@@ -309,12 +310,14 @@ enum TouchGestureState {
         touch: ActiveTouch,
         deadline: Instant,
         long_press_offered: bool,
+        touch_drag_offered: bool,
     },
     Panning {
         touch: ActiveTouch,
         axis: Axis,
     },
     LongPressing(ActiveTouch),
+    TouchDragging(ActiveTouch),
 }
 
 struct ActiveTouch {
@@ -405,6 +408,7 @@ impl TouchGestureRecognizer {
                             touch,
                             deadline: now + self.tuning.long_press_duration,
                             long_press_offered: false,
+                            touch_drag_offered: false,
                         };
                     }
                 }
@@ -415,6 +419,7 @@ impl TouchGestureRecognizer {
                         mut touch,
                         deadline,
                         long_press_offered,
+                        touch_drag_offered,
                     } if touch.id == event.id => {
                         touch.velocity_tracker.push(now, event.position);
                         touch.raw_position = event.position;
@@ -445,6 +450,7 @@ impl TouchGestureRecognizer {
                                 touch,
                                 deadline,
                                 long_press_offered,
+                                touch_drag_offered,
                             };
                         }
                     }
@@ -498,6 +504,19 @@ impl TouchGestureRecognizer {
                             },
                         ));
                         self.state = TouchGestureState::LongPressing(touch);
+                    }
+                    TouchGestureState::TouchDragging(mut touch)
+                        if touch.id == event.id =>
+                    {
+                        touch.raw_position = event.position;
+                        recognized.push(RecognizedTouchGesture::TouchDrag(
+                            TouchDragEvent {
+                                phase: TouchPhase::Moved,
+                                start_position: touch.start_position,
+                                position: event.position,
+                            },
+                        ));
+                        self.state = TouchGestureState::TouchDragging(touch);
                     }
                     other => self.state = other,
                 }
@@ -630,6 +649,17 @@ impl TouchGestureRecognizer {
                             },
                         ));
                     }
+                    TouchGestureState::TouchDragging(touch)
+                        if touch.id == event.id =>
+                    {
+                        recognized.push(RecognizedTouchGesture::TouchDrag(
+                            TouchDragEvent {
+                                phase: TouchPhase::Ended,
+                                start_position: touch.start_position,
+                                position: event.position,
+                            },
+                        ));
+                    }
                     other => self.state = other,
                 }
             }
@@ -655,6 +685,17 @@ impl TouchGestureRecognizer {
                             },
                         ));
                     }
+                    TouchGestureState::TouchDragging(touch)
+                        if touch.id == event.id =>
+                    {
+                        recognized.push(RecognizedTouchGesture::TouchDrag(
+                            TouchDragEvent {
+                                phase: TouchPhase::Cancelled,
+                                start_position: touch.start_position,
+                                position: event.position,
+                            },
+                        ));
+                    }
                     TouchGestureState::Pending { touch, .. }
                         if touch.id == event.id => {}
                     other => self.state = other,
@@ -669,6 +710,7 @@ impl TouchGestureRecognizer {
             touch,
             deadline,
             long_press_offered: false,
+            ..
         } = &self.state
         else {
             return None;
@@ -713,6 +755,44 @@ impl TouchGestureRecognizer {
                 long_press_offered: true,
                 ..
             } => TouchGestureState::LongPressing(touch),
+            other => other,
+        };
+    }
+
+    pub(crate) fn offer_touch_drag(
+        &mut self,
+        id: TouchId,
+    ) -> Option<RecognizedTouchGesture> {
+        let TouchGestureState::Pending {
+            touch,
+            touch_drag_offered,
+            ..
+        } = &mut self.state
+        else {
+            return None;
+        };
+        if touch.id != id || *touch_drag_offered {
+            return None;
+        }
+        *touch_drag_offered = true;
+        Some(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+            phase: TouchPhase::Started,
+            start_position: touch.start_position,
+            position: touch.raw_position,
+        }))
+    }
+
+    pub(crate) fn resolve_touch_drag(&mut self, claimed: bool) {
+        if !claimed {
+            return;
+        }
+        let state = mem::replace(&mut self.state, TouchGestureState::Idle);
+        self.state = match state {
+            TouchGestureState::Pending {
+                touch,
+                touch_drag_offered: true,
+                ..
+            } => TouchGestureState::TouchDragging(touch),
             other => other,
         };
     }
@@ -896,6 +976,73 @@ mod tests {
             panic!("expected scroll gesture");
         };
         scroll.delta.pixel_delta(px(16.0))
+    }
+
+    #[test]
+    fn claimed_touch_drag_emits_phased_stream_without_pan_or_tap() {
+        let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+        let now = Instant::now();
+        let id = TouchId(11);
+
+        recognizer.handle_event_at(
+            &touch_event(id, TouchPhase::Started, 20.0, None),
+            now,
+        );
+        let Some(RecognizedTouchGesture::TouchDrag(started)) =
+            recognizer.offer_touch_drag(id)
+        else {
+            panic!("expected touch drag offer");
+        };
+        assert_eq!(started.phase, TouchPhase::Started);
+        assert_eq!(started.position.y, px(20.0));
+        recognizer.resolve_touch_drag(true);
+
+        let moved = recognizer.handle_event_at(
+            &touch_event(id, TouchPhase::Moved, 40.0, None),
+            now + Duration::from_millis(10),
+        );
+        let [RecognizedTouchGesture::TouchDrag(moved)] = moved.as_slice() else {
+            panic!("expected moved touch drag");
+        };
+        assert_eq!(moved.phase, TouchPhase::Moved);
+        assert_eq!(moved.position.y, px(40.0));
+
+        let ended = recognizer.handle_event_at(
+            &touch_event(id, TouchPhase::Ended, 45.0, None),
+            now + Duration::from_millis(20),
+        );
+        let [RecognizedTouchGesture::TouchDrag(ended)] = ended.as_slice() else {
+            panic!("expected ended touch drag");
+        };
+        assert_eq!(ended.phase, TouchPhase::Ended);
+        assert_eq!(ended.position.y, px(45.0));
+        assert!(!recognizer.has_momentum());
+    }
+
+    #[test]
+    fn unclaimed_touch_drag_stays_eligible_for_pan() {
+        let mut recognizer = TouchGestureRecognizer::new(GestureTuning::default());
+        let now = Instant::now();
+        let id = TouchId(12);
+
+        recognizer.handle_event_at(
+            &touch_event(id, TouchPhase::Started, 0.0, None),
+            now,
+        );
+        assert!(recognizer.offer_touch_drag(id).is_some());
+        recognizer.resolve_touch_drag(false);
+
+        let moved = recognizer.handle_event_at(
+            &touch_event(id, TouchPhase::Moved, 20.0, None),
+            now + Duration::from_millis(10),
+        );
+        assert!(matches!(
+            moved.as_slice(),
+            [RecognizedTouchGesture::Scroll(ScrollWheelEvent {
+                touch_phase: TouchPhase::Started,
+                ..
+            })]
+        ));
     }
 
     #[test]

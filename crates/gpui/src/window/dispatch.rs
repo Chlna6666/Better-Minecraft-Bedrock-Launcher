@@ -15,6 +15,7 @@ pub(super) fn platform_input_name(event: &PlatformInput) -> &'static str {
         PlatformInput::ScrollWheel(_) => "scroll_wheel",
         PlatformInput::Touch(_) => "touch",
         PlatformInput::LongPress(_) => "long_press",
+        PlatformInput::TouchDrag(_) => "touch_drag",
         PlatformInput::FileDrop(_) => "file_drop",
     }
 }
