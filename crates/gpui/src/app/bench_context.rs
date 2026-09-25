@@ -218,10 +218,11 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
 
     /// Measures an unpaced root-view update and the platform frame it schedules.
     ///
-    /// This measures GPUI update/render work, not display latency or vsync pacing. One ready task
-    /// is serviced before the update so already-queued foreground work can delay the frame as it
-    /// does in production. The scheduled frame is then delivered through the platform callback
-    /// instead of calling `Window::draw` synchronously from the benchmark.
+    /// This measures GPUI update/render work, not display latency or vsync pacing. At most the
+    /// foreground tasks already queued when the iteration begins are serviced before the update,
+    /// so self-requeuing work cannot monopolize one measured frame and background worker tasks are
+    /// not executed on the simulated UI thread. The scheduled frame is then delivered through the
+    /// platform callback instead of calling `Window::draw` synchronously from the benchmark.
     pub fn bench_renderer<V>(
         &mut self,
         window: WindowHandle<V>,
