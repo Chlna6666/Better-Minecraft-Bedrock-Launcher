@@ -1,0 +1,44 @@
+[package]
+name = "gpui-macros"
+version = "0.2.3"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "Apache-2.0"
+description = "BMCBL-maintained mirror of GPUI procedural macros"
+repository = "https://github.com/Chlna6666/Better-Minecraft-Bedrock-Launcher"
+
+[package.metadata.upstream]
+project = "GPUI"
+repository = "https://github.com/zed-industries/zed"
+revision = "7ea077c78b865d17854cee812bb775dbe64a925a"
+license = "Apache-2.0"
+maintainer = "Zed Industries, Inc."
+
+[package.metadata.bmcbl]
+role = "gpui-proc-macro-mirror"
+local_contract = "Component<RenderOnce> + Result-bearing AppContext + BMCBL VisualContext"
+
+[features]
+default = []
+inspector = []
+
+[lib]
+path = "src/gpui_macros.rs"
+proc-macro = true
+doctest = true
+test = false
+
+[dependencies]
+heck = "0.5"
+proc-macro2 = "1.0.93"
+quote = "1.0.9"
+syn = { version = "2.0.101", features = ["full", "extra-traits", "visit-mut"] }
+
+[lints.rust]
+unsafe_code = "deny"
+unused_unsafe = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

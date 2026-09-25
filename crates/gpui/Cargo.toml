@@ -347,7 +347,8 @@ version = "0.7.0"
 version = "0.3"
 
 [dependencies.gpui_macros]
-version = "0.2.2"
+version = "0.2.3"
+path = "../gpui-macros"
 package = "gpui-macros"
 
 [dependencies.http_client]

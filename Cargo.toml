@@ -133,6 +133,7 @@ members = [
     "crates/egpui-build",
     "crates/egpui-manifest",
     "crates/gpui",
+    "crates/gpui-macros",
     "crates/gpui_tokio",
     "crates/bmcbl-plugin-api",
     "crates/bmcbl-plugin-macros",
