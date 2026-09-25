@@ -26,9 +26,6 @@ struct CachedViewState {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     metadata_range: Range<usize>,
-    replay_source_prepaint_range: Option<Range<PrepaintStateIndex>>,
-    replay_source_paint_range: Option<Range<PaintIndex>>,
-    replay_source_metadata_range: Option<Range<usize>>,
     cache_key: CachedViewCacheKey,
     accessed_entities: FxHashSet<EntityId>,
 }
@@ -57,7 +54,11 @@ pub struct CachedViewPrepaintState(CachedViewPrepaintStateKind);
 
 enum CachedViewPrepaintStateKind {
     Fresh(AnyElement),
-    Replay,
+    Replay {
+        source_prepaint_range: Range<PrepaintStateIndex>,
+        source_paint_range: Range<PaintIndex>,
+        source_metadata_range: Range<usize>,
+    },
     Selective(Box<SelectiveCachedViewPatch>),
 }
 
@@ -715,9 +716,6 @@ impl Element for CachedView {
                             .take()
                             .expect("selective traversal requires an existing cache state");
                         state.prepaint_range = patch.parent_prepaint_range.clone();
-                        state.replay_source_prepaint_range = None;
-                        state.replay_source_paint_range = None;
-                        state.replay_source_metadata_range = None;
                         return (
                             CachedViewPrepaintState(CachedViewPrepaintStateKind::Selective(Box::new(patch))),
                             state,
@@ -803,21 +801,30 @@ impl Element for CachedView {
                                 cx,
                             );
                             window.degrade_current_draw();
-                            return (CachedViewPrepaintState(CachedViewPrepaintStateKind::Replay), element_state);
+                            return (
+                                CachedViewPrepaintState(CachedViewPrepaintStateKind::Replay {
+                                    source_prepaint_range,
+                                    source_paint_range,
+                                    source_metadata_range,
+                                }),
+                                element_state,
+                            );
                         }
                         cx.entities
                             .extend_accessed(&element_state.accessed_entities);
                         let prepaint_end = window.prepaint_index();
                         if !window.draw_was_degraded() {
                             element_state.prepaint_range = prepaint_start..prepaint_end;
-                            element_state.replay_source_prepaint_range =
-                                Some(source_prepaint_range);
-                            element_state.replay_source_paint_range = Some(source_paint_range);
-                            element_state.replay_source_metadata_range =
-                                Some(source_metadata_range);
                         }
 
-                        return (CachedViewPrepaintState(CachedViewPrepaintStateKind::Replay), element_state);
+                        return (
+                            CachedViewPrepaintState(CachedViewPrepaintStateKind::Replay {
+                                source_prepaint_range,
+                                source_paint_range,
+                                source_metadata_range,
+                            }),
+                            element_state,
+                        );
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
@@ -850,9 +857,6 @@ impl Element for CachedView {
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
                             metadata_range: 0..0,
-                            replay_source_prepaint_range: None,
-                            replay_source_paint_range: None,
-                            replay_source_metadata_range: None,
                             cache_key: CachedViewCacheKey {
                                 bounds,
                                 content_mask,
@@ -897,23 +901,15 @@ impl Element for CachedView {
                                 element.paint(window, cx);
                                 window.refreshing = refreshing;
                             }
-                            CachedViewPrepaintStateKind::Replay => {
+                            CachedViewPrepaintStateKind::Replay {
+                                source_prepaint_range,
+                                source_paint_range,
+                                source_metadata_range,
+                            } => {
                                 // Full cached subtree replay: replace Drawable's provisional red
                                 // marker with a retained-green marker before copying prior ranges.
                                 window.record_debug_element_self_scene_replay(bounds, cx);
-                                let source_prepaint = element_state
-                                    .replay_source_prepaint_range
-                                    .take()
-                                    .unwrap_or_else(|| element_state.prepaint_range.clone());
-                                let source_paint = element_state
-                                    .replay_source_paint_range
-                                    .take()
-                                    .unwrap_or_else(|| element_state.paint_range.clone());
-                                let source_metadata = element_state
-                                    .replay_source_metadata_range
-                                    .take()
-                                    .unwrap_or_else(|| element_state.metadata_range.clone());
-                                if !window.reuse_paint(source_paint.clone()) {
+                                if !window.reuse_paint((*source_paint_range).clone()) {
                                     window.record_debug_view_cache_status(
                                         bounds,
                                         ViewCacheDebugStatus::ReuseFailed,
@@ -922,11 +918,11 @@ impl Element for CachedView {
                                     window.degrade_current_draw();
                                 } else {
                                     let target_paint = paint_start.clone()..window.paint_index();
-                                    if !source_metadata.is_empty()
+                                    if !source_metadata_range.is_empty()
                                         && !window.replay_retained_element_metadata(
-                                            &source_prepaint,
-                                            &source_paint,
-                                            &source_metadata,
+                                            &*source_prepaint_range,
+                                            &*source_paint_range,
+                                            &*source_metadata_range,
                                             &element_state.prepaint_range,
                                             &target_paint,
                                         )
@@ -1021,9 +1017,6 @@ impl Element for CachedView {
                             element_state.paint_range = paint_start..paint_end;
                             element_state.metadata_range =
                                 metadata_start..window.retained_element_metadata_len();
-                            element_state.replay_source_prepaint_range = None;
-                            element_state.replay_source_paint_range = None;
-                            element_state.replay_source_metadata_range = None;
                         }
 
                         ((), element_state)
@@ -1033,7 +1026,7 @@ impl Element for CachedView {
                 window.record_debug_element_traversal_only(bounds, cx);
                 match &mut element.0 {
                     CachedViewPrepaintStateKind::Fresh(element) => element.paint(window, cx),
-                    CachedViewPrepaintStateKind::Replay
+                    CachedViewPrepaintStateKind::Replay { .. }
                     | CachedViewPrepaintStateKind::Selective(_) => {
                         unreachable!("inspector cache bypass must carry fresh prepaint state")
                     }
