@@ -262,6 +262,7 @@ pub(super) fn render_tab_bar(
     )
     .gap(px(8.))
     .item_width(px(72.))
+    .defer_selection_until_next_frame()
     .into_any_element()
 }
 
@@ -307,6 +308,7 @@ pub(super) fn render_pack_subtype_switch(
     .height(px(28.))
     .item_width(px(96.))
     .without_indicator_shadow()
+    .defer_selection_until_next_frame()
     .into_any_element()
 }
 
