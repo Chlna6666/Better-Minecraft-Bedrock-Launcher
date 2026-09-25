@@ -227,7 +227,7 @@ impl<'a, T: 'static> Context<'a, T> {
     /// The function is provided a weak handle to the entity owned by this context and a context that can be held across await points.
     /// The returned task must be held or detached.
     #[track_caller]
-    #[inline(always)]
+    #[inline]
     pub fn spawn<AsyncFn, R>(&self, f: AsyncFn) -> Task<R>
     where
         T: 'static,

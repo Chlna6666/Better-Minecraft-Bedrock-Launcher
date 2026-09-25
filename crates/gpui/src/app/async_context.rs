@@ -221,7 +221,7 @@ impl AsyncApp {
 
     /// Schedule a future to be polled in the background.
     #[track_caller]
-    #[inline(always)]
+    #[inline]
     pub fn spawn<AsyncFn, R>(&self, f: AsyncFn) -> Task<R>
     where
         AsyncFn: AsyncFnOnce(&mut AsyncApp) -> R + 'static,
@@ -362,7 +362,7 @@ impl AsyncWindowContext {
     /// Schedule a future to be executed on the main thread. This is used for collecting
     /// the results of background tasks and updating the UI.
     #[track_caller]
-    #[inline(always)]
+    #[inline]
     pub fn spawn<AsyncFn, R>(&self, f: AsyncFn) -> Task<R>
     where
         AsyncFn: AsyncFnOnce(&mut AsyncWindowContext) -> R + 'static,

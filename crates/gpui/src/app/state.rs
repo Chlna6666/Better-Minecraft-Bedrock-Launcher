@@ -392,7 +392,7 @@ impl App {
     /// Spawns the future returned by the given function on the main thread. The closure will be invoked
     /// with [AsyncApp], which allows the application state to be accessed across await points.
     #[track_caller]
-    #[inline(always)]
+    #[inline]
     pub fn spawn<AsyncFn, R>(&self, f: AsyncFn) -> Task<R>
     where
         AsyncFn: AsyncFnOnce(&mut AsyncApp) -> R + 'static,
