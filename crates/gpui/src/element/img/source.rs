@@ -5,7 +5,7 @@ use crate::{
     SharedString, SharedUri, Window, hash,
 };
 use anyhow::Result;
-use futures::{Future, FutureExt};
+use futures::Future;
 use std::{
     any::TypeId,
     path::{Path, PathBuf},
@@ -52,7 +52,7 @@ impl CompressedImageBytes {
 }
 
 pub(super) enum SizedImageInput {
-    PreloadedBytes(CompressedImageTask),
+    PreloadedBytes(CompressedImagePreload),
 }
 
 /// A source of image content.
@@ -210,24 +210,24 @@ impl ImageSource {
     pub fn remove_asset(&self, cx: &mut App) {
         match self {
             ImageSource::Asset(resource) => {
-                if let Some(task) = cx.take_asset::<ResourceImageLoader>(resource)
-                    && let Some(Ok(image)) = task.now_or_never()
+                if let Some(preload) = cx.take_asset::<ResourceImageLoader>(resource)
+                    && let Some(Ok(image)) = preload.get()
                 {
                     cx.drop_image(image, None);
                 }
             }
             ImageSource::Loader(_) | ImageSource::RenderImage(_) => {}
             ImageSource::Clipboard(clipboard_image) => {
-                if let Some(task) =
+                if let Some(preload) =
                     cx.take_asset::<AssetLogger<ClipboardImageLoader>>(clipboard_image)
-                    && let Some(Ok(image)) = task.now_or_never()
+                    && let Some(Ok(image)) = preload.get()
                 {
                     cx.drop_image(image, None);
                 }
             }
             ImageSource::Encoded(encoded_image) => {
-                if let Some(task) = cx.take_asset::<AssetLogger<EncodedImageLoader>>(encoded_image)
-                    && let Some(Ok(image)) = task.now_or_never()
+                if let Some(preload) = cx.take_asset::<AssetLogger<EncodedImageLoader>>(encoded_image)
+                    && let Some(Ok(image)) = preload.get()
                 {
                     cx.drop_image(image, None);
                 }

@@ -1455,9 +1455,9 @@ fn completed_asset_load_requests_dirty_frame(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn completed_preloaded_asset_load_requests_dirty_frame(cx: &mut TestAppContext) {
-    let mut preload_task = None;
+    let mut preload = None;
     cx.update(|cx| {
-        preload_task = Some(cx.fetch_asset::<TestUseAssetLoader>(&2).0);
+        preload = Some(cx.fetch_asset::<TestUseAssetLoader>(&2));
     });
     let (_view, cx) = cx.add_window_view(|_, _| UseAssetView {
         source: 2,
@@ -1473,7 +1473,7 @@ fn completed_preloaded_asset_load_requests_dirty_frame(cx: &mut TestAppContext) 
         .advance_clock(Duration::from_millis(1));
     cx.run_until_parked();
 
-    drop(preload_task);
+    drop(preload);
     assert!(test_window.requested_frame_count() > baseline);
 }
 

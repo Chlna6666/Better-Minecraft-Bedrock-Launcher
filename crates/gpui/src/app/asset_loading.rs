@@ -1,35 +1,138 @@
-use std::{any::TypeId, sync::Arc};
+use std::{
+    any::{Any, TypeId},
+    cell::RefCell,
+    rc::Rc,
+    sync::Arc,
+};
 
 use anyhow::Result;
-use collections::FxHashMap;
-use futures::{FutureExt, future::Shared};
-
+use collections::{FxHashMap, FxHashSet};
 use crate::{
-    Asset, AssetLocation, CompressedImageSource, CompressedImageTask, ImageCacheError,
-    ImageMemoryTrimLevel, ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage,
-    Size, SizedImageTask, Task, Window, drop_image_asset_retained, hash,
+    AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
+    CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError, ImageMemoryTrimLevel,
+    ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage, Size,
+    SizedImagePreload, Window, WindowId, drop_image_asset_retained, hash,
 };
 
 use super::App;
 
 type AssetId = (TypeId, u64);
 
-#[derive(Default)]
-struct TransientAssetGenerations {
-    next_generation: u64,
-    current: FxHashMap<AssetId, u64>,
+struct AssetWindowObservers {
+    window: AnyWindowHandle,
+    views: FxHashSet<EntityId>,
 }
 
-impl TransientAssetGenerations {
-    fn issue(&mut self, asset_id: AssetId) -> u64 {
-        let generation = self.next_generation;
-        self.next_generation = self
-            .next_generation
-            .checked_add(1)
-            .expect("transient asset generation overflow");
-        self.current.insert(asset_id, generation);
-        generation
+enum OwnedAssetState {
+    Loading {
+        observers: FxHashMap<WindowId, AssetWindowObservers>,
+    },
+    Ready,
+}
+
+struct OwnedAssetEntry<T>
+where
+    T: Clone + Send + 'static,
+{
+    state: Rc<RefCell<OwnedAssetState>>,
+    lease: AssetLease<T>,
+}
+
+impl<T> OwnedAssetEntry<T>
+where
+    T: Clone + Send + 'static,
+{
+    fn new<A>(source: &A::Source, asset_id: AssetId, cx: &mut App) -> Self
+    where
+        A: Asset<Output = T>,
+    {
+        let lease = AssetLease::spawn(A::load(source.clone(), cx), cx);
+        let completion = lease.completion_signal();
+        let state = Rc::new(RefCell::new(OwnedAssetState::Loading {
+            observers: FxHashMap::default(),
+        }));
+        let weak_state = Rc::downgrade(&state);
+
+        cx.spawn(async move |cx| {
+            if completion.await.is_err() {
+                return;
+            }
+            let Some(state) = weak_state.upgrade() else {
+                return;
+            };
+            let observers = {
+                let mut state = state.borrow_mut();
+                match std::mem::replace(&mut *state, OwnedAssetState::Ready) {
+                    OwnedAssetState::Loading { observers } => observers,
+                    OwnedAssetState::Ready => return,
+                }
+            };
+
+            let _ = cx.update(move |cx| {
+                for observer in observers.into_values() {
+                    let views = observer.views;
+                    let _ = observer.window.update(cx, move |_, window, _| {
+                        window.schedule_asset_ready_views(views);
+                    });
+                }
+
+                if A::RETENTION == AssetRetentionPolicy::TransientAfterReady {
+                    let is_same_entry = cx
+                        .loading_assets
+                        .get(&asset_id)
+                        .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<T>>())
+                        .is_some_and(|entry| Rc::ptr_eq(&entry.state, &state));
+                    if is_same_entry {
+                        cx.loading_assets.remove(&asset_id);
+                    }
+                }
+            });
+        })
+        .detach();
+
+        Self { state, lease }
     }
+
+    fn get(&self) -> Option<T> {
+        self.lease.get()
+    }
+
+    fn lease(&self) -> AssetLease<T> {
+        self.lease.clone()
+    }
+
+    fn into_lease(self) -> AssetLease<T> {
+        self.lease
+    }
+
+    fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
+        if let Some(value) = self.lease.get() {
+            return Some(value);
+        }
+
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            OwnedAssetState::Loading { observers } => {
+                observers
+                    .entry(window.window_id())
+                    .or_insert_with(|| AssetWindowObservers {
+                        window,
+                        views: FxHashSet::default(),
+                    })
+                    .views
+                    .insert(view);
+                None
+            }
+            OwnedAssetState::Ready => self.lease.get(),
+        }
+    }
+}
+
+pub(super) fn cached_asset_output<T>(entry: &dyn Any) -> Option<T>
+where
+    T: Clone + Send + 'static,
+{
+    entry.downcast_ref::<OwnedAssetEntry<T>>()?.get()
 }
 
 #[derive(Default)]
@@ -69,36 +172,6 @@ impl SizedImageElementOwners {
     }
 }
 
-fn transient_asset_state(cx: &mut App) -> &mut TransientAssetGenerations {
-    cx.globals_by_type
-        .entry(TypeId::of::<TransientAssetGenerations>())
-        .or_insert_with(|| Box::new(TransientAssetGenerations::default()))
-        .downcast_mut::<TransientAssetGenerations>()
-        .expect("transient asset generation state type mismatch")
-}
-
-fn issue_transient_asset_generation(cx: &mut App, asset_id: AssetId) -> u64 {
-    transient_asset_state(cx).issue(asset_id)
-}
-
-fn transient_asset_generation(cx: &App, asset_id: AssetId) -> Option<u64> {
-    cx.globals_by_type
-        .get(&TypeId::of::<TransientAssetGenerations>())
-        .and_then(|state| state.downcast_ref::<TransientAssetGenerations>())
-        .and_then(|state| state.current.get(&asset_id).copied())
-}
-
-fn clear_transient_asset_generation(cx: &mut App, asset_id: AssetId) {
-    let Some(state) = cx
-        .globals_by_type
-        .get_mut(&TypeId::of::<TransientAssetGenerations>())
-        .and_then(|state| state.downcast_mut::<TransientAssetGenerations>())
-    else {
-        return;
-    };
-    state.current.remove(&asset_id);
-}
-
 fn sized_image_owner_state(cx: &mut App) -> &mut SizedImageElementOwners {
     cx.globals_by_type
         .entry(TypeId::of::<SizedImageElementOwners>())
@@ -119,6 +192,38 @@ fn sized_image_element_ref_count(cx: &App, asset_id: AssetId) -> usize {
 mod asset_loading_tests;
 
 impl App {
+    fn asset_entry<A: Asset>(&mut self, source: &A::Source) -> &OwnedAssetEntry<A::Output> {
+        let asset_id = (TypeId::of::<A>(), hash(source));
+        if !self.loading_assets.contains_key(&asset_id) {
+            let entry = OwnedAssetEntry::new::<A>(source, asset_id, self);
+            self.loading_assets.insert(asset_id, Box::new(entry));
+        }
+        self.loading_assets
+            .get(&asset_id)
+            .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
+            .expect("asset cache entries are keyed by asset type")
+    }
+
+    pub(crate) fn cached_asset_lease<A: Asset>(
+        &self,
+        source: &A::Source,
+    ) -> Option<AssetLease<A::Output>> {
+        let asset_id = (TypeId::of::<A>(), hash(source));
+        self.loading_assets
+            .get(&asset_id)
+            .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
+            .map(OwnedAssetEntry::lease)
+    }
+
+    pub(crate) fn use_asset_in_window<A: Asset>(
+        &mut self,
+        source: &A::Source,
+        window: AnyWindowHandle,
+        view: EntityId,
+    ) -> Option<A::Output> {
+        self.asset_entry::<A>(source).use_by(window, view)
+    }
+
     /// Trims idle image state without applying byte ceilings to active images.
     pub fn trim_image_memory(&mut self, level: ImageMemoryTrimLevel) {
         let bitmap_pool_limit = match level {
@@ -137,37 +242,12 @@ impl App {
             return;
         }
 
-        // Completed compressed-image tasks are reusable cache state rather than active image
-        // ownership. Moderate/aggressive trims release those strong task outputs; the global
-        // compressed cache contains only Weak references, so bytes disappear when no decode or
-        // explicit preload still owns them.
-        let compressed_type = TypeId::of::<crate::CompressedImageLoader>();
-        let completed_compressed = self
-            .loading_assets
-            .iter()
-            .filter_map(|(asset_id, task)| {
-                if asset_id.0 != compressed_type {
-                    return None;
-                }
-                task.downcast_ref::<
-                    Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
-                >()
-                .is_some_and(|task| task.clone().now_or_never().is_some())
-                .then_some(*asset_id)
-            })
-            .collect::<Vec<_>>();
-        for asset_id in completed_compressed {
-            self.loading_assets.remove(&asset_id);
-            clear_transient_asset_generation(self, asset_id);
-        }
-        crate::trim_compressed_cache();
-
         let resource_type = TypeId::of::<crate::ResourceImageLoader>();
         let inline_type = TypeId::of::<crate::AssetLogger<crate::ClipboardImageLoader>>();
         let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageLoader>>();
         let target_type = TypeId::of::<crate::SizedImageLoader>();
         let mut evicted = Vec::new();
-        for (asset_id, task) in &self.loading_assets {
+        for (asset_id, entry) in &self.loading_assets {
             let is_image = matches!(
                 asset_id.0,
                 id if id == resource_type
@@ -178,12 +258,9 @@ impl App {
             if !is_image || sized_image_element_ref_count(self, *asset_id) != 0 {
                 continue;
             }
-            let Some(task) =
-                task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
+            let Some(Ok(image)) =
+                cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
             else {
-                continue;
-            };
-            let Some(Ok(image)) = task.clone().now_or_never() else {
                 continue;
             };
             if Arc::strong_count(&image) <= 2 {
@@ -198,6 +275,7 @@ impl App {
                 drop_image_asset_retained(asset_id.1);
             }
         }
+        crate::trim_compressed_cache();
     }
 
     pub(crate) fn retain_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
@@ -223,9 +301,12 @@ impl App {
         let cached_image = self
             .loading_assets
             .remove(&asset_id)
-            .and_then(|task| task.downcast::<SizedImageTask>().ok())
-            .map(|task| *task)
-            .and_then(|task| task.now_or_never())
+            .and_then(|entry| {
+                entry
+                    .downcast::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
+                    .ok()
+            })
+            .and_then(|entry| entry.get())
             .and_then(Result::ok);
 
         if let Some(image) = fallback_image.or(cached_image) {
@@ -245,129 +326,74 @@ impl App {
 
     /// Remove an asset from GPUI's cache.
     pub fn remove_asset<A: Asset>(&mut self, source: &A::Source) {
-        self.take_asset::<A>(source);
+        drop(self.take_asset::<A>(source));
     }
 
-    /// Remove an asset from GPUI's cache and return its task if it exists.
+    /// Removes an asset cache entry and transfers its load ownership to the caller.
     ///
-    /// Size-aware image tasks remain registered while one or more live image elements still own
-    /// the same request. In that case this returns a clone of the task instead of invalidating a
-    /// resource another element is currently displaying.
-    pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<Shared<Task<A::Output>>> {
+    /// Element-owned assets remain registered while at least one live element lease references
+    /// the same key.
+    pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<AssetLease<A::Output>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
-            clear_transient_asset_generation(self, asset_id);
-        }
-        if TypeId::of::<A>() == TypeId::of::<crate::SizedImageLoader>()
+        if A::RETENTION == AssetRetentionPolicy::ElementOwned
             && sized_image_element_ref_count(self, asset_id) != 0
         {
-            return self
-                .loading_assets
-                .get(&asset_id)
-                .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
-                .cloned();
+            return self.cached_asset_lease::<A>(source);
         }
+
         self.loading_assets
             .remove(&asset_id)
-            .map(|boxed_task| *boxed_task.downcast::<Shared<Task<A::Output>>>().unwrap())
+            .and_then(|entry| entry.downcast::<OwnedAssetEntry<A::Output>>().ok())
+            .map(|entry| (*entry).into_lease())
     }
 
-    /// Asynchronously load an asset, if the asset hasn't finished loading this will return None.
+    /// Returns an explicit ownership lease for an asset load.
     ///
-    /// Multiple calls only result in one `Asset::load` call at a time, and the result is shared
-    /// through the normal GPUI asset task cache. Compressed image byte tasks are transient: GPUI
-    /// keeps them only while I/O is in flight, then retires its internal strong task reference so
-    /// completed bytes follow the lifetime of active decodes and explicit preload handles.
-    pub fn fetch_asset<A: Asset>(&mut self, source: &A::Source) -> (Shared<Task<A::Output>>, bool) {
-        let asset_id = (TypeId::of::<A>(), hash(source));
-        // Fast path: clone an already registered task without removing and re-boxing it.
-        let existing = self
-            .loading_assets
-            .get(&asset_id)
-            .and_then(|task| task.downcast_ref::<Shared<Task<A::Output>>>())
-            .cloned();
-        let mut is_first = false;
-        let mut transient_generation = None;
-        let task = existing.unwrap_or_else(|| {
-            is_first = true;
-            let future = A::load(source.clone(), self);
-            let task = self.background_executor().spawn(future).shared();
-            if TypeId::of::<A>() == TypeId::of::<crate::CompressedImageLoader>() {
-                transient_generation = Some(issue_transient_asset_generation(self, asset_id));
-            }
-            self.loading_assets.insert(asset_id, Box::new(task.clone()));
-            task
-        });
-
-        if let Some(transient_generation) = transient_generation {
-            let completion = task.clone();
-            self.spawn(async move |cx| {
-                let _ = completion.await;
-
-                // The same source may have been explicitly removed and requested again before the
-                // old load completed. The generation is recorded outside the Shared future because
-                // futures::Shared deliberately stops exposing pointer identity after termination.
-                let _ = cx.update(|cx| {
-                    if transient_asset_generation(cx, asset_id) == Some(transient_generation) {
-                        cx.loading_assets.remove(&asset_id);
-                        clear_transient_asset_generation(cx, asset_id);
-                    }
-                });
-            })
-            .detach();
-        }
-
-        (task, is_first)
+    /// Multiple calls share one cache-owned load. Dropping the final cache or lease owner cancels
+    /// pending work. Completed transient assets leave the App cache while explicit leases retain
+    /// their result.
+    pub fn fetch_asset<A: Asset>(&mut self, source: &A::Source) -> AssetLease<A::Output> {
+        self.asset_entry::<A>(source).lease()
     }
 
     /// Starts loading resource images into GPUI's global image asset cache.
     pub fn preload_image_resources(
         &mut self,
         sources: impl IntoIterator<Item = AssetLocation>,
-    ) -> Vec<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>> {
+    ) -> Vec<AssetLease<Result<Arc<RenderImage>, ImageCacheError>>> {
         sources
             .into_iter()
-            .map(|source| self.fetch_asset::<crate::ResourceImageLoader>(&source).0)
+            .map(|source| self.fetch_asset::<crate::ResourceImageLoader>(&source))
             .collect()
     }
 
-    /// Starts loading compressed image bytes into GPUI's global image asset cache.
+    /// Starts loading compressed image bytes for bounds-aware decoding.
     ///
-    /// This is intended for images that will later be rendered with
-    /// [`StyledImage::render_to_bounds`](crate::StyledImage::render_to_bounds). The final decode
-    /// still happens after layout determines the target size, but file/network I/O can begin
-    /// earlier and the task output is shared with target-size decodes while it remains owned.
-    /// Holding the returned task keeps completed compressed bytes strongly resident; GPUI's own
-    /// task-cache reference is released automatically when the load settles.
+    /// Returned leases explicitly retain pending work and completed bytes. The App cache drops its
+    /// own transient ownership when each load settles.
     pub fn preload_compressed_image_resources(
         &mut self,
         sources: impl IntoIterator<Item = AssetLocation>,
-    ) -> Vec<CompressedImageTask> {
+    ) -> Vec<CompressedImagePreload> {
         sources
             .into_iter()
             .map(|resource| {
                 self.fetch_asset::<crate::CompressedImageLoader>(&CompressedImageSource::new(
                     resource,
                 ))
-                .0
             })
             .collect()
     }
 
-    /// Removes compressed image bytes previously requested through
-    /// [`preload_compressed_image_resources`](Self::preload_compressed_image_resources).
+    /// Removes the App cache ownership for compressed image bytes.
     pub fn remove_compressed_image_resource(
         &mut self,
         source: &AssetLocation,
-    ) -> Option<CompressedImageTask> {
+    ) -> Option<CompressedImagePreload> {
         self.take_asset::<crate::CompressedImageLoader>(&CompressedImageSource::new(source.clone()))
     }
 
     /// Builds the opaque target-size image source GPUI uses for bounds-aware resource decoding.
-    ///
-    /// Applications that need to coordinate preloading across resize events can store the returned
-    /// value and compare it before replacing a preload. Adjacent logical sizes may intentionally
-    /// map to the same target because GPUI buckets decode dimensions internally.
     pub fn image_render_request(
         &self,
         source: AssetLocation,
@@ -380,57 +406,46 @@ impl App {
     }
 
     /// Starts decoding a resource image for a previously computed GPUI target-size source.
-    pub fn preload_sized_image(&mut self, target_source: ImageRenderRequest) -> SizedImageTask {
+    pub fn preload_sized_image(&mut self, target_source: ImageRenderRequest) -> SizedImagePreload {
         self.fetch_asset::<crate::SizedImageLoader>(&target_source)
-            .0
     }
 
     /// Starts decoding resource images to a concrete target size in GPUI's global image asset cache.
-    ///
-    /// This is useful when an application already knows the expected paint size before the first
-    /// frame. The resulting cache entry is shared with
-    /// [`StyledImage::render_to_bounds`](crate::StyledImage::render_to_bounds), so the element can
-    /// paint as soon as the matching target decode completes.
     pub fn preload_sized_images(
         &mut self,
         sources: impl IntoIterator<Item = AssetLocation>,
         logical_size: Size<Pixels>,
         scale_factor: f32,
         object_fit: ObjectFit,
-    ) -> Vec<SizedImageTask> {
-        let mut tasks = Vec::new();
+    ) -> Vec<SizedImagePreload> {
+        let mut preloads = Vec::new();
         for resource in sources {
             let Some(target_source) =
                 self.image_render_request(resource, logical_size, scale_factor, object_fit)
             else {
                 continue;
             };
-            tasks.push(self.preload_sized_image(target_source));
+            preloads.push(self.preload_sized_image(target_source));
         }
-        tasks
+        preloads
     }
 
-    /// Removes a target-size image processing previously requested through
-    /// [`preload_sized_image`](Self::preload_sized_image).
-    ///
-    /// If a live image element owns the same target this returns the shared task but defers physical
-    /// eviction until the last element lease is released.
+    /// Removes the App cache ownership for a target-size image processing.
     pub fn remove_image_render_request(
         &mut self,
         target_source: &ImageRenderRequest,
-    ) -> Option<SizedImageTask> {
+    ) -> Option<SizedImagePreload> {
         self.take_asset::<crate::SizedImageLoader>(target_source)
     }
 
-    /// Removes a target-size image processing previously requested through
-    /// [`preload_sized_images`](Self::preload_sized_images).
+    /// Removes the App cache ownership for a target-size image processing.
     pub fn remove_sized_image(
         &mut self,
         source: &AssetLocation,
         logical_size: Size<Pixels>,
         scale_factor: f32,
         object_fit: ObjectFit,
-    ) -> Option<SizedImageTask> {
+    ) -> Option<SizedImagePreload> {
         let target_source =
             self.image_render_request(source.clone(), logical_size, scale_factor, object_fit)?;
         self.remove_image_render_request(&target_source)
@@ -444,26 +459,22 @@ impl App {
         &mut self,
         target_source: &ImageRenderRequest,
         current_window: Option<&mut Window>,
-    ) -> Option<SizedImageTask> {
+    ) -> Option<SizedImagePreload> {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(target_source));
         let has_element_owners = sized_image_element_ref_count(self, asset_id) != 0;
-        let task = self.remove_image_render_request(target_source)?;
+        let preload = self.remove_image_render_request(target_source)?;
 
         if !has_element_owners {
-            if let Some(Ok(image)) = task.clone().now_or_never() {
+            if let Some(Ok(image)) = preload.get() {
                 self.drop_image(image, current_window);
             }
             drop_image_asset_retained(asset_id.1);
         }
 
-        Some(task)
+        Some(preload)
     }
 
     /// Removes a target-size image processing and drops its completed render image from window atlases.
-    ///
-    /// This should be preferred over [`remove_sized_image`](Self::remove_sized_image)
-    /// when a caller has the current window available, such as when replacing a bounds-aware
-    /// background image.
     pub fn remove_sized_image_from_windows(
         &mut self,
         source: &AssetLocation,
@@ -471,25 +482,17 @@ impl App {
         scale_factor: f32,
         object_fit: ObjectFit,
         current_window: Option<&mut Window>,
-    ) -> Option<SizedImageTask> {
+    ) -> Option<SizedImagePreload> {
         let target_source =
             self.image_render_request(source.clone(), logical_size, scale_factor, object_fit)?;
         self.remove_image_render_request_in(&target_source, current_window)
     }
 
     /// Retires an image's window-side lookup state and GPU atlas allocations.
-    ///
-    /// Backends defer the physical GPU resource destruction until it is safe for submitted frames;
-    /// a quick repaint can cancel a still-pending image retirement and reuse the existing upload.
-    /// If the current window is being updated, it will be removed from `App.windows`; use
-    /// `current_window` to include it explicitly.
     pub fn drop_image(&mut self, image: Arc<RenderImage>, current_window: Option<&mut Window>) {
-        // Remove the texture from all other windows.
         for window in self.windows.values_mut().flatten() {
             _ = window.drop_image(image.clone());
         }
-
-        // Remove the texture from the current window.
         if let Some(window) = current_window {
             _ = window.drop_image(image);
         }

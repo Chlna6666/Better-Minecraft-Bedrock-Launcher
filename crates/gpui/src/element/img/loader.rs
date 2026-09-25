@@ -142,6 +142,9 @@ impl Asset for CompressedImageAssetLoader {
     type Source = CompressedImageSource;
     type Output = Result<CompressedImageBytes, ImageCacheError>;
 
+    const RETENTION: crate::AssetRetentionPolicy =
+        crate::AssetRetentionPolicy::TransientAfterReady;
+
     fn load(
         source: Self::Source,
         cx: &mut App,
@@ -226,15 +229,14 @@ impl Asset for ImageAssetLoader {
         source: Self::Source,
         cx: &mut App,
     ) -> impl Future<Output = Self::Output> + Send + 'static {
-        let compressed_task = cx
-            .fetch_asset::<CompressedImageLoader>(&CompressedImageSource::new(source.clone()))
-            .0;
+        let compressed_preload =
+            cx.fetch_asset::<CompressedImageLoader>(&CompressedImageSource::new(source.clone()));
         let svg_renderer = cx.svg_renderer();
         let pipeline_config = cx.image_pipeline_config();
         let image_config = pipeline_config.animated;
         let slow_image_threshold = pipeline_config.slow_image_threshold;
         async move {
-            let source_bytes = compressed_task.await?;
+            let source_bytes = compressed_preload.wait().await?;
             let bytes = source_bytes.as_bytes();
             let compressed_len = source_bytes.len();
 
@@ -292,6 +294,8 @@ impl Asset for SizedImageAssetLoader {
     type Source = ImageRenderRequest;
     type Output = Result<Arc<RenderImage>, ImageCacheError>;
 
+    const RETENTION: crate::AssetRetentionPolicy = crate::AssetRetentionPolicy::ElementOwned;
+
     fn load(
         source: Self::Source,
         cx: &mut App,
@@ -303,8 +307,7 @@ impl Asset for SizedImageAssetLoader {
         let image_input = SizedImageInput::PreloadedBytes(
             cx.fetch_asset::<CompressedImageLoader>(&CompressedImageSource {
                 resource: source.resource.clone(),
-            })
-            .0,
+            }),
         );
         async move {
             let processing_started = Instant::now();
@@ -364,8 +367,8 @@ async fn render_sized_input(
     object_fit: ObjectFit,
 ) -> Result<(RenderImage, crate::ImageRenderInfo, usize), ImageCacheError> {
     match source {
-        SizedImageInput::PreloadedBytes(compressed_task) => {
-            let compressed_bytes = compressed_task.await?;
+        SizedImageInput::PreloadedBytes(compressed_preload) => {
+            let compressed_bytes = compressed_preload.wait().await?;
             let compressed_len = compressed_bytes.len();
             let (image, metadata) = render_sized_bytes(
                 compressed_bytes.as_bytes(),

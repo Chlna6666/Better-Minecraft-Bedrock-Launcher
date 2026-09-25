@@ -1,8 +1,8 @@
 use crate::{
-    AnyImageCache, App, AssetLogger, Bounds, DefiniteLength, Element, ElementId, Entity,
+    AnyImageCache, App, AssetLease, AssetLogger, Bounds, DefiniteLength, Element, ElementId, Entity,
     GlobalElementId, Hitbox, ImageBoundsPolicy, ImageCache, InspectorElementId, InteractiveElement,
     Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, StyleRefinement,
-    Styled, Task, Window, px,
+    Styled, Window, px,
 };
 use anyhow::Result;
 
@@ -38,19 +38,15 @@ pub type SizedImageLoader = AssetLogger<SizedImageAssetLoader>;
 
 pub(crate) type CompressedImageLoader = AssetLogger<CompressedImageAssetLoader>;
 
-/// A handle to compressed image bytes retained in GPUI's global asset cache.
+/// An explicit preload lease for compressed image bytes.
 ///
-/// This can be used by applications to prefetch file, embedded, or network image bytes before an
-/// [`img()`] element knows its final paint bounds. Bounds-aware image elements reuse this task and
-/// only perform the final target-size decode once layout has produced concrete dimensions.
-pub type CompressedImageTask =
-    futures::future::Shared<Task<Result<CompressedImageBytes, ImageCacheError>>>;
+/// Holding the lease retains pending work or completed bytes independently of the App cache.
+pub type CompressedImagePreload = AssetLease<Result<CompressedImageBytes, ImageCacheError>>;
 
-/// A handle to a target-size image processing retained in GPUI's global asset cache.
+/// An explicit preload lease for a target-size rendered image.
 ///
-/// Applications can use this to prewarm images whose target size is known before the element tree
-/// reaches paint. The same cache entry is reused by [`StyledImage::render_to_bounds`].
-pub type SizedImageTask = futures::future::Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>;
+/// Holding the lease retains a pending decode or completed image independently of the App cache.
+pub type SizedImagePreload = AssetLease<Result<Arc<RenderImage>, ImageCacheError>>;
 
 /// An image element.
 pub struct Img {

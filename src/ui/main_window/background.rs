@@ -39,7 +39,7 @@ pub(super) struct AppBackgroundView {
     animation_suppressed: bool,
     startup_first_paint_logged: bool,
     preloaded_background_resource: Option<AssetLocation>,
-    preloaded_background_task: Option<CompressedImageTask>,
+    preloaded_background_preload: Option<CompressedImagePreload>,
 }
 
 impl AppBackgroundView {
@@ -71,7 +71,7 @@ impl AppBackgroundView {
             animation_suppressed: false,
             startup_first_paint_logged: false,
             preloaded_background_resource: None,
-            preloaded_background_task: None,
+            preloaded_background_preload: None,
         }
     }
 
@@ -213,7 +213,7 @@ impl AppBackgroundView {
         }
 
         if let Some(previous_resource) = self.preloaded_background_resource.take() {
-            self.preloaded_background_task.take();
+            self.preloaded_background_preload.take();
             if next_resource.as_ref() != Some(&previous_resource) {
                 cx.remove_compressed_image_resource(&previous_resource);
             }
@@ -225,7 +225,7 @@ impl AppBackgroundView {
                 .into_iter()
                 .next();
             self.preloaded_background_resource = Some(resource);
-            self.preloaded_background_task = task;
+            self.preloaded_background_preload = task;
         }
     }
 }

@@ -11,13 +11,13 @@ fn compressed_image_preload_reuses_and_removes_global_asset() {
         let _ = cx
             .preload_compressed_image_resources([source.clone()])
             .pop()
-            .expect("preload task should be returned");
+            .expect("preload lease should be returned");
         let after_first_preload = cx.loading_assets.len();
 
         let _ = cx
             .preload_compressed_image_resources([source.clone()])
             .pop()
-            .expect("preload task should be returned");
+            .expect("preload lease should be returned");
         let after_second_preload = cx.loading_assets.len();
 
         let _ = cx
@@ -28,7 +28,7 @@ fn compressed_image_preload_reuses_and_removes_global_asset() {
         let _ = cx
             .preload_compressed_image_resources([source])
             .pop()
-            .expect("preload task should be returned");
+            .expect("preload lease should be returned");
         let after_third_preload = cx.loading_assets.len();
 
         assert_eq!(after_first_preload, initial_assets + 1);
@@ -39,30 +39,30 @@ fn compressed_image_preload_reuses_and_removes_global_asset() {
 }
 
 #[test]
-fn completed_compressed_preload_retires_internal_task_entry() {
+fn completed_compressed_preload_retires_internal_cache_entry() {
     let mut cx = TestAppContext::single();
     let source = AssetLocation::Embedded(SharedString::from("missing-completed-background.webp"));
     let initial_assets = cx.read(|cx| cx.loading_assets.len());
-    let task = cx.update(|cx| {
-        let task = cx
+    let preload = cx.update(|cx| {
+        let preload = cx
             .preload_compressed_image_resources([source.clone()])
             .pop()
-            .expect("preload task should be returned");
+            .expect("preload lease should be returned");
         assert_eq!(cx.loading_assets.len(), initial_assets + 1);
-        task
+        preload
     });
 
     cx.run_until_parked();
 
     assert!(
-        task.peek().is_some(),
-        "preload handle should keep the settled task alive"
+        preload.get().is_some(),
+        "preload lease should keep the settled result alive"
     );
     cx.read(|cx| assert_eq!(cx.loading_assets.len(), initial_assets));
     cx.update(|cx| {
         assert!(
             cx.remove_compressed_image_resource(&source).is_none(),
-            "completed transient task should no longer be retained by the app cache"
+            "completed transient entry should no longer be retained by the app cache"
         );
     });
 }
@@ -79,13 +79,13 @@ fn sized_image_preload_reuses_target_and_compressed_cache() {
         let _ = cx
             .preload_sized_images([source.clone()], logical_size, 1.0, ObjectFit::Cover)
             .pop()
-            .expect("target preload task should be returned");
+            .expect("target preload lease should be returned");
         let after_first_preload = cx.loading_assets.len();
 
         let _ = cx
             .preload_sized_images([source.clone()], logical_size, 1.0, ObjectFit::Cover)
             .pop()
-            .expect("target preload task should be returned");
+            .expect("target preload lease should be returned");
         let after_second_preload = cx.loading_assets.len();
 
         let _ = cx
@@ -120,10 +120,10 @@ fn sized_image_preload_reuses_equivalent_scale_factor_targets() {
         assert_eq!(first_target, equivalent_target);
 
         let initial_assets = cx.loading_assets.len();
-        let _first_task = cx.preload_sized_image(first_target);
+        let _first_preload = cx.preload_sized_image(first_target);
         let after_first_preload = cx.loading_assets.len();
 
-        let _equivalent_task = cx.preload_sized_image(equivalent_target.clone());
+        let _equivalent_preload = cx.preload_sized_image(equivalent_target.clone());
         let after_second_preload = cx.loading_assets.len();
 
         cx.remove_image_render_request_in(&equivalent_target, None);
@@ -148,14 +148,14 @@ fn sized_image_preload_allows_releasing_compressed_preload() {
         let _ = cx
             .preload_compressed_image_resources([source.clone()])
             .pop()
-            .expect("compressed preload task should be returned");
+            .expect("compressed preload lease should be returned");
         let after_compressed_preload = cx.loading_assets.len();
 
         let target = cx
             .image_render_request(source.clone(), logical_size, 1.25, ObjectFit::Cover)
             .expect("target source should be created");
         let compressed_resource = target.resource().clone();
-        let _target_task = cx.preload_sized_image(target);
+        let _target_preload = cx.preload_sized_image(target);
         let after_target_preload = cx.loading_assets.len();
         cx.remove_compressed_image_resource(&compressed_resource);
         let after_compressed_remove = cx.loading_assets.len();

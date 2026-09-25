@@ -1,9 +1,7 @@
 use std::{any::TypeId, sync::Arc};
 
-use futures::FutureExt;
-
 use crate::{
-    ImageRenderRequest, RenderImage, SizedImageLoader, SizedImageTask, Window,
+    ImageRenderRequest, RenderImage, SizedImageLoader, Window,
     drop_image_asset_retained, hash,
 };
 
@@ -23,16 +21,13 @@ impl App {
         current_window: Option<&mut Window>,
     ) {
         let asset_id = (TypeId::of::<SizedImageLoader>(), hash(request));
-        let pending_task = self
-            .loading_assets
-            .get(&asset_id)
-            .and_then(|task| task.downcast_ref::<SizedImageTask>())
-            .cloned()
-            .filter(|task| task.clone().now_or_never().is_none());
+        let pending_preload = self
+            .cached_asset_lease::<SizedImageLoader>(request)
+            .filter(|preload| preload.get().is_none());
 
         self.release_sized_image_element_request(request, fallback_image, current_window);
 
-        let Some(pending_task) = pending_task else {
+        let Some(pending_preload) = pending_preload else {
             return;
         };
         if self.loading_assets.contains_key(&asset_id) {
@@ -42,7 +37,7 @@ impl App {
         }
 
         self.spawn(async move |cx| {
-            let result = pending_task.await;
+            let result = pending_preload.wait().await;
             let _ = cx.update(|cx| {
                 // A later request with the same source hash supersedes this orphaned completion.
                 if cx.loading_assets.contains_key(&asset_id) {

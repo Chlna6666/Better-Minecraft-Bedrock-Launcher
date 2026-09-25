@@ -1,12 +1,12 @@
 use std::{any::TypeId, sync::Arc};
 
 use anyhow::Result;
-use futures::{FutureExt, future::Shared};
-
 use crate::{
-    AnimationQueueSnapshot, App, BitmapPoolSnapshot, ImageCacheError, RenderImage, Task,
+    AnimationQueueSnapshot, App, BitmapPoolSnapshot, ImageCacheError, RenderImage,
     compressed_cache_snapshot, performance_metrics_snapshot,
 };
+
+use super::asset_loading::cached_asset_output;
 
 /// Retained image asset totals in GPUI's global asset cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,9 +137,8 @@ impl App {
 
         for ((type_id, _), task) in &self.loading_assets {
             if *type_id == resource_type {
-                if let Some(task) =
-                    task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
-                    && let Some(Ok(image)) = task.clone().now_or_never()
+                if let Some(Ok(image)) =
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
                 {
                     snapshot.resource_count = snapshot.resource_count.saturating_add(1);
                     snapshot.resource_resident_bytes = snapshot
@@ -147,9 +146,8 @@ impl App {
                         .saturating_add(image.resident_byte_len());
                 }
             } else if *type_id == inline_type || *type_id == inline_bytes_type {
-                if let Some(task) =
-                    task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
-                    && let Some(Ok(image)) = task.clone().now_or_never()
+                if let Some(Ok(image)) =
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
                 {
                     snapshot.inline_count = snapshot.inline_count.saturating_add(1);
                     snapshot.inline_resident_bytes = snapshot
@@ -157,18 +155,18 @@ impl App {
                         .saturating_add(image.resident_byte_len());
                 }
             } else if *type_id == compressed_type {
-                if let Some(task) = task.downcast_ref::<
-                    Shared<Task<Result<crate::CompressedImageBytes, ImageCacheError>>>,
-                >() && let Some(Ok(bytes)) = task.clone().now_or_never()
+                if let Some(Ok(bytes)) =
+                    cached_asset_output::<Result<crate::CompressedImageBytes, ImageCacheError>>(
+                        task.as_ref(),
+                    )
                 {
                     snapshot.compressed_count = snapshot.compressed_count.saturating_add(1);
                     snapshot.compressed_bytes =
                         snapshot.compressed_bytes.saturating_add(bytes.len());
                 }
             } else if *type_id == target_type
-                && let Some(task) =
-                    task.downcast_ref::<Shared<Task<Result<Arc<RenderImage>, ImageCacheError>>>>()
-                && let Some(Ok(image)) = task.clone().now_or_never()
+                && let Some(Ok(image)) =
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
             {
                 snapshot.sized_count = snapshot.sized_count.saturating_add(1);
                 snapshot.sized_resident_bytes = snapshot

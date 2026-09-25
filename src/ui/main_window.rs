@@ -91,7 +91,7 @@ pub(crate) fn preload_startup_background_target_from_values(
         })
         .map(|target| {
             let resource = target.resource().clone();
-            let _task = cx.preload_sized_image(target);
+            let _preload = cx.preload_sized_image(target);
             cx.remove_compressed_image_resource(&resource);
             1
         })
