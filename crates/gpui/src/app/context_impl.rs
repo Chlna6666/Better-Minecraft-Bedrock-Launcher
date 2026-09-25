@@ -26,6 +26,24 @@ impl App {
             cx.entities.end_lease_erased(handle.entity_id(), lease);
         });
     }
+
+    #[inline(never)]
+    fn update_entity_typed<T: 'static, R>(
+        &mut self,
+        handle: &Entity<T>,
+        update: &mut dyn FnMut(&mut T, &mut Context<T>) -> R,
+    ) -> R {
+        let mut result = None;
+        self.update_entity_erased(handle, &mut |entity, cx| {
+            result = Some(update(
+                entity
+                    .downcast_mut::<T>()
+                    .expect("entity type must match its typed handle"),
+                &mut Context::new_context(cx, handle.downgrade()),
+            ));
+        });
+        result.expect("entity update callback produces a result")
+    }
 }
 
 impl AppContext for App {
@@ -77,18 +95,11 @@ impl AppContext for App {
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> R {
         let mut update = Some(update);
-        let mut result = None;
-        self.update_entity_erased(handle, &mut |entity, cx| {
-            result = Some(
-                update.take().expect("entity update callback runs once")(
-                    entity
-                        .downcast_mut::<T>()
-                        .expect("entity type must match its typed handle"),
-                    &mut Context::new_context(cx, handle.downgrade()),
-                ),
-            );
-        });
-        result.expect("entity update callback produces a result")
+        self.update_entity_typed(handle, &mut |entity, cx| {
+            update
+                .take()
+                .expect("entity update callback runs once")(entity, cx)
+        })
     }
 
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
