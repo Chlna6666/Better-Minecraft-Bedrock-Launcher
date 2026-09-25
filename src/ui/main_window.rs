@@ -121,8 +121,7 @@ where
     view.map_or_else(
         || Empty {}.into_any_element(),
         |view| {
-            AnyView::from(view)
-                .cached_by(
+            view.cached_by(
                     StyleRefinement::default().size_full(),
                     &(route_key, type_name::<T>()),
                 )
@@ -497,7 +496,7 @@ impl MainWindowView {
             .size_full()
             .bg(gpui::transparent_black())
             .child(
-                AnyView::from(self.background_view.clone())
+                self.background_view.clone()
                     .cached_absolute_by(&"main-window-background")
                     .reuse_on_window_refresh()
                     .critical()

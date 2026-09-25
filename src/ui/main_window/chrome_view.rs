@@ -100,7 +100,7 @@ impl Render for AppChromeView {
         chrome::render_shell(
             &colors,
             self.glass_effect_enabled,
-            AnyView::from(self.brand.clone())
+            self.brand.clone()
                 .cached_by(
                     StyleRefinement::default()
                         .w(px(300.))
@@ -109,7 +109,7 @@ impl Render for AppChromeView {
                     &"chrome-brand",
                 )
                 .into_any_element(),
-            AnyView::from(self.controls.clone())
+            self.controls.clone()
                 .cached_by(
                     StyleRefinement::default()
                         .w(px(124.))
@@ -118,10 +118,10 @@ impl Render for AppChromeView {
                     &"chrome-controls",
                 )
                 .into_any_element(),
-            AnyView::from(self.nav.clone())
+            self.nav.clone()
                 .cached_by(StyleRefinement::default().size_full(), &"chrome-nav")
                 .into_any_element(),
-            AnyView::from(self.auth.clone())
+            self.auth.clone()
                 .cached_absolute_by(&"chrome-auth")
                 .into_any_element(),
         )

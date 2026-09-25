@@ -436,7 +436,7 @@ fn cached_absolute_layer<V: Render + 'static, R: std::hash::Hash>(
     frame_revision: R,
 ) -> CachedView {
     let cache_key = (layer.entity_id().as_u64(), frame_revision);
-    AnyView::from(layer.clone())
+    layer.clone()
         .cached_absolute_by(&cache_key)
         .reuse_on_window_refresh()
         .progressive()
