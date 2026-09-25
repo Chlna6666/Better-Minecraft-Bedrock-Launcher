@@ -19,7 +19,7 @@ use ::util::{ResultExt, paths::SanitizedPath};
 use anyhow::{Context as _, Result, anyhow, bail};
 use async_task::Runnable;
 use collections::FxHashMap;
-use futures::channel::oneshot::{self, Receiver};
+use futures::channel::oneshot::Receiver;
 use itertools::Itertools;
 use smallvec::SmallVec;
 use windows::{
@@ -59,7 +59,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 
 use super::{
     apply_cursor_style_to_window, keystroke_from_winit, modifiers_from_winit,
-    mouse_button_from_winit,
+    mouse_button_from_winit, spawn_sta_dialog,
 };
 use crate::*;
 
@@ -741,15 +741,15 @@ impl Platform for WindowsPlatform {
         &self,
         options: PathPromptOptions,
     ) -> Receiver<Result<Option<Vec<PathBuf>>>> {
-        let (tx, rx) = oneshot::channel();
-        let window = with_active_context(|_event_loop, app| app.focused_window_hwnd()).flatten();
-        self.foreground_executor()
-            .spawn(async move {
-                let _ = tx.send(file_open_dialog(options, window));
-            })
-            .detach();
-
-        rx
+        // HWND is a process-local opaque handle. Move only its integer value across the worker
+        // boundary so the windows crate's raw handle wrapper itself does not need to be Send.
+        let owner = with_active_context(|_event_loop, app| app.focused_window_hwnd())
+            .flatten()
+            .map(|hwnd| hwnd.0 as isize);
+        spawn_sta_dialog("gpui-file-open-dialog", move || {
+            let owner = owner.map(|raw| HWND(raw as *mut _));
+            file_open_dialog(options, owner)
+        })
     }
 
     fn prompt_for_new_path(
@@ -758,16 +758,14 @@ impl Platform for WindowsPlatform {
         suggested_name: Option<&str>,
     ) -> Receiver<Result<Option<PathBuf>>> {
         let directory = directory.to_owned();
-        let suggested_name = suggested_name.map(|s| s.to_owned());
-        let (tx, rx) = oneshot::channel();
-        let window = with_active_context(|_event_loop, app| app.focused_window_hwnd()).flatten();
-        self.foreground_executor()
-            .spawn(async move {
-                let _ = tx.send(file_save_dialog(directory, suggested_name, window));
-            })
-            .detach();
-
-        rx
+        let suggested_name = suggested_name.map(str::to_owned);
+        let owner = with_active_context(|_event_loop, app| app.focused_window_hwnd())
+            .flatten()
+            .map(|hwnd| hwnd.0 as isize);
+        spawn_sta_dialog("gpui-file-save-dialog", move || {
+            let owner = owner.map(|raw| HWND(raw as *mut _));
+            file_save_dialog(directory, suggested_name, owner)
+        })
     }
 
     fn can_select_mixed_files_and_dirs(&self) -> bool {
@@ -1735,9 +1733,11 @@ fn file_open_dialog(
             folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
         }
 
-        if folder_dialog.Show(window).is_err() {
-            // User cancelled
-            return Ok(None);
+        if let Err(error) = folder_dialog.Show(window) {
+            if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
+                return Ok(None);
+            }
+            return Err(error.into());
         }
     }
 
@@ -1795,9 +1795,11 @@ fn file_save_dialog(
             pszName: windows::core::w!("All files"),
             pszSpec: windows::core::w!("*.*"),
         }])?;
-        if dialog.Show(window).is_err() {
-            // User cancelled
-            return Ok(None);
+        if let Err(error) = dialog.Show(window) {
+            if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
+                return Ok(None);
+            }
+            return Err(error.into());
         }
     }
     let shell_item = unsafe { dialog.GetResult()? };

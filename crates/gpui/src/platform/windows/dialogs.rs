@@ -1,15 +1,86 @@
 #![expect(unsafe_code, reason = "native dialogs call Win32 and COM interfaces")]
 
-use anyhow::Context;
+use std::{sync::{Arc, Mutex}, thread};
+
+use anyhow::{Context, Result};
+use futures::channel::oneshot;
 use windows::{
     Win32::{
-        System::LibraryLoader::GetProcAddress,
+        System::{
+            Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
+            LibraryLoader::GetProcAddress,
+        },
         UI::{Controls::*, WindowsAndMessaging::*},
     },
     core::{BOOL, HRESULT, HSTRING},
 };
 
 use super::with_dll_library;
+
+struct StaApartment;
+
+impl StaApartment {
+    fn enter() -> Result<Self> {
+        // SAFETY: This runs on a freshly created worker thread before any dialog COM object is
+        // created. The matching CoUninitialize executes on the same thread in Drop.
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+        Ok(Self)
+    }
+}
+
+impl Drop for StaApartment {
+    fn drop(&mut self) {
+        // SAFETY: Paired with the successful CoInitializeEx call on this same worker thread.
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// Runs one synchronous native dialog on a dedicated COM STA thread.
+///
+/// File pickers and modal Win32 dialogs can remain open for seconds or minutes while the user
+/// decides. Executing their native modal loops from GPUI's foreground executor turns that whole
+/// interval into one giant foreground task poll and blocks input/frame scheduling. The returned
+/// receiver preserves the existing asynchronous platform API while the foreground thread remains
+/// free to pump windows and frames.
+pub(crate) fn spawn_sta_dialog<T>(
+    thread_name: &'static str,
+    dialog: impl FnOnce() -> Result<T> + Send + 'static,
+) -> oneshot::Receiver<Result<T>>
+where
+    T: Send + 'static,
+{
+    let (sender, receiver) = oneshot::channel();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let worker_sender = sender.clone();
+
+    let spawn_result = thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(move || {
+            let result = (|| {
+                let _apartment = StaApartment::enter()?;
+                dialog()
+            })();
+
+            if let Some(sender) = worker_sender
+                .lock()
+                .expect("Windows dialog result sender lock poisoned")
+                .take()
+            {
+                let _ = sender.send(result);
+            }
+        });
+
+    if let Err(error) = spawn_result
+        && let Some(sender) = sender
+            .lock()
+            .expect("Windows dialog result sender lock poisoned")
+            .take()
+    {
+        let _ = sender.send(Err(error.into()));
+    }
+
+    receiver
+}
 
 pub(crate) fn show_error(title: &str, content: String) {
     let _ = unsafe {
