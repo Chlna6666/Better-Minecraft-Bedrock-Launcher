@@ -97,80 +97,85 @@ impl Window {
     where
         S: 'static,
     {
+        fn empty_state_slot<S: 'static>() -> Box<dyn Any> {
+            Box::new(None::<S>)
+        }
+
         let mut f = Some(f);
         let mut result = None;
-        self.with_element_state_erased(global_id, &mut |state, window| {
-            let (value, state) = f
-                .take()
-                .expect("element state callback must execute exactly once")(state, window);
-            result = Some(value);
-            state
-        });
+        self.with_element_state_erased(
+            global_id,
+            TypeId::of::<S>(),
+            TypeId::of::<Option<S>>(),
+            std::any::type_name::<S>(),
+            empty_state_slot::<S>,
+            &mut |initialized, state_slot, window| {
+                let state_slot = state_slot
+                    .downcast_mut::<Option<S>>()
+                    .expect("element state slot type was validated before callback");
+                let state = if initialized {
+                    Some(state_slot.take().expect(
+                        "reentrant call to with_element_state for the same state type and element id",
+                    ))
+                } else {
+                    debug_assert!(state_slot.is_none());
+                    None
+                };
+                let (value, state) = f
+                    .take()
+                    .expect("element state callback must execute exactly once")(state, window);
+                result = Some(value);
+                state_slot.replace(state);
+            },
+        );
         result.expect("element state callback must produce a result")
     }
 
     #[inline(never)]
-    fn with_element_state_erased<S: 'static>(
+    fn with_element_state_erased(
         &mut self,
         global_id: &GlobalElementId,
-        f: &mut dyn FnMut(Option<S>, &mut Self) -> S,
+        state_type: TypeId,
+        state_slot_type: TypeId,
+        requested_type_name: &'static str,
+        empty_state_slot: fn() -> Box<dyn Any>,
+        f: &mut dyn FnMut(bool, &mut dyn Any, &mut Self),
     ) {
         self.invalidator.debug_assert_paint_or_prepaint();
 
-        let (key, state) = self.take_element_state(global_id, TypeId::of::<S>());
-
-        if let Some(any) = state {
+        let (key, state) = self.take_element_state(global_id, state_type);
+        let (mut inner, initialized) = if let Some(any) = state {
             let ElementStateBox {
                 inner,
                 #[cfg(debug_assertions)]
                 type_name,
             } = any;
-            // Using the extra inner option to avoid needing to reallocate a new box.
-            let mut state_box = inner
-                .downcast::<Option<S>>()
-                .map_err(|_| {
-                    #[cfg(debug_assertions)]
-                    {
-                        anyhow::anyhow!(
-                            "invalid element state type for id, requested {:?}, actual: {:?}",
-                            std::any::type_name::<S>(),
-                            type_name
-                        )
-                    }
-
-                    #[cfg(not(debug_assertions))]
-                    {
-                        anyhow::anyhow!(
-                            "invalid element state type for id, requested {:?}",
-                            std::any::type_name::<S>(),
-                        )
-                    }
-                })
-                .unwrap();
-
-            let state = state_box.take().expect(
-                "reentrant call to with_element_state for the same state type and element id",
-            );
-            state_box.replace(f(Some(state), self));
-            self.insert_element_state(
-                key,
-                ElementStateBox {
-                    inner: state_box,
-                    #[cfg(debug_assertions)]
-                    type_name,
-                },
-            );
+            if inner.as_ref().type_id() != state_slot_type {
+                #[cfg(debug_assertions)]
+                panic!(
+                    "invalid element state type for id, requested {:?}, actual: {:?}",
+                    requested_type_name, type_name
+                );
+                #[cfg(not(debug_assertions))]
+                panic!(
+                    "invalid element state type for id, requested {:?}",
+                    requested_type_name
+                );
+            }
+            (inner, true)
         } else {
-            let state = f(None, self);
-            self.insert_element_state(
-                key,
-                ElementStateBox {
-                    inner: Box::new(Some(state)),
-                    #[cfg(debug_assertions)]
-                    type_name: std::any::type_name::<S>(),
-                },
-            );
-        }
+            (empty_state_slot(), false)
+        };
+
+        f(initialized, inner.as_mut(), self);
+        self.insert_element_state(
+            key,
+            ElementStateBox {
+                inner,
+                #[cfg(debug_assertions)]
+                type_name: requested_type_name,
+            },
+        );
     }
 
     /// A variant of `with_element_state` that allows the element's id to be optional. This is a convenience
