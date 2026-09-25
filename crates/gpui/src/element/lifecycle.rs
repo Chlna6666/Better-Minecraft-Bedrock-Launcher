@@ -166,6 +166,7 @@ fn prepare_inspector_id(
     window.build_inspector_element_id(path)
 }
 
+#[inline(never)]
 fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
 }
@@ -382,6 +383,36 @@ fn record_retained_painted_element(
             .next_frame
             .retained_unstable_identity_count
             .saturating_add(1);
+    }
+}
+
+#[inline(never)]
+fn paint_retained_element(
+    bounds: Bounds<Pixels>,
+    source_prepaint_range: Range<PrepaintStateIndex>,
+    source_paint_range: Range<PaintIndex>,
+    source_metadata_range: Range<usize>,
+    prepaint_range: Range<PrepaintStateIndex>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let paint_start = window.paint_index();
+    if window.reuse_paint(source_paint_range.clone()) {
+        let paint_end = window.paint_index();
+        let paint_range = paint_start..paint_end;
+        if window.replay_retained_element_metadata(
+            &source_prepaint_range,
+            &source_paint_range,
+            &source_metadata_range,
+            &prepaint_range,
+            &paint_range,
+        ) {
+            window.record_debug_view_cache_status(bounds, ViewCacheDebugStatus::Hit, cx);
+        } else {
+            window.degrade_current_draw();
+        }
+    } else {
+        window.degrade_current_draw();
     }
 }
 
@@ -646,28 +677,15 @@ impl<E: Element> Drawable<E> {
                 source_metadata_range,
                 prepaint_range,
             } => {
-                let paint_start = window.paint_index();
-                if window.reuse_paint(source_paint_range.clone()) {
-                    let paint_end = window.paint_index();
-                    let paint_range = paint_start..paint_end;
-                    if window.replay_retained_element_metadata(
-                        &source_prepaint_range,
-                        &source_paint_range,
-                        &source_metadata_range,
-                        &prepaint_range,
-                        &paint_range,
-                    ) {
-                        window.record_debug_view_cache_status(
-                            bounds,
-                            ViewCacheDebugStatus::Hit,
-                            cx,
-                        );
-                    } else {
-                        window.degrade_current_draw();
-                    }
-                } else {
-                    window.degrade_current_draw();
-                }
+                paint_retained_element(
+                    bounds,
+                    source_prepaint_range,
+                    source_paint_range,
+                    source_metadata_range,
+                    prepaint_range,
+                    window,
+                    cx,
+                );
                 self.phase = ElementDrawPhase::Painted;
             }
             _ => panic!("must call prepaint before paint"),
