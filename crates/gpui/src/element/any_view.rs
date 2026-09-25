@@ -1144,6 +1144,12 @@ impl<V: 'static + Render> IntoElement for Entity<V> {
     fn into_element(self) -> Self::Element {
         self
     }
+
+    #[track_caller]
+    #[inline(never)]
+    fn into_any_element(self) -> AnyElement {
+        self.into_element().into_any()
+    }
 }
 
 impl IntoElement for AnyView {
