@@ -34,6 +34,25 @@ thread_local! {
     pub(crate) static ELEMENT_ARENA: RefCell<Arena> = RefCell::new(Arena::new(64 * 1024));
 }
 
+#[inline(always)]
+pub(crate) fn with_element_arena<R>(callback: impl FnOnce(&mut Arena) -> R) -> R {
+    let mut callback = Some(callback);
+    let mut result = None;
+    with_element_arena_erased(&mut |arena| {
+        result = Some(
+            callback
+                .take()
+                .expect("element arena callback runs exactly once")(arena),
+        );
+    });
+    result.expect("element arena callback produces a result")
+}
+
+#[inline(never)]
+fn with_element_arena_erased(callback: &mut dyn FnMut(&mut Arena)) {
+    ELEMENT_ARENA.with_borrow_mut(callback);
+}
+
 pub(crate) struct ElementArenaScope;
 
 impl ElementArenaScope {

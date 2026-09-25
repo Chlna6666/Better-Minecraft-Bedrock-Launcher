@@ -1,6 +1,6 @@
 use crate::{
-    App, ArenaBox, AvailableSpace, Bounds, Context, ELEMENT_ARENA, ElementId, FocusHandle,
-    InspectorElementId, LayoutId, Pixels, Point, Size, Style, Window,
+    App, ArenaBox, AvailableSpace, Bounds, Context, ElementId, FocusHandle, InspectorElementId,
+    LayoutId, Pixels, Point, Size, Style, Window, with_element_arena,
 };
 use std::{
     any::{Any, type_name},
@@ -118,8 +118,7 @@ impl AnyElement {
         E: 'static + Element,
         E::RequestLayoutState: Any,
     {
-        let element = ELEMENT_ARENA
-            .with_borrow_mut(|arena| arena.alloc(|| Drawable::new(element)))
+        let element = with_element_arena(|arena| arena.alloc(|| Drawable::new(element)))
             .map(|element| element as &mut dyn ElementObject);
         AnyElement(element)
     }

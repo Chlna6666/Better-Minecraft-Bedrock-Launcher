@@ -116,6 +116,7 @@ pub(crate) use element_context::RetainedElementIdentity;
 pub use element_id::ElementId;
 pub(crate) use focus::{
     AnyWindowFocusListener, ELEMENT_ARENA, ElementArenaScope, FocusMap, WindowFocusEvent,
+    with_element_arena,
 };
 pub use focus::{
     ArenaClearNeeded, DismissEvent, FocusHandle, FocusId, FocusOutEvent, Focusable, ManagedView,
