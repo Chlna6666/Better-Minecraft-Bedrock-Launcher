@@ -34,7 +34,7 @@ fn test_reset_after_paint_before_scroll(cx: &mut TestAppContext) {
 
     // Paint
     cx.draw(point(px(0.), px(0.)), size(px(100.), px(20.)), |_, cx| {
-        cx.new(|_| TestView(state.clone()))
+        cx.new(|_| TestView(state.clone())).into_element()
     });
 
     // Reset
@@ -76,7 +76,7 @@ fn test_scroll_by_positive_and_negative_distance(cx: &mut TestAppContext) {
 
     // Paint
     cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
-        cx.new(|_| TestView(state.clone()))
+        cx.new(|_| TestView(state.clone())).into_element()
     });
 
     // Test positive distance: start at item 1, move down 30px
@@ -131,7 +131,7 @@ fn test_scroll_handler_receives_updated_visible_range(cx: &mut TestAppContext) {
     }
 
     cx.draw(point(px(0.), px(0.)), size(px(100.), px(20.)), |_, cx| {
-        cx.new(|_| TestView(state.clone()))
+        cx.new(|_| TestView(state.clone())).into_element()
     });
 
     cx.update(|window, cx| {

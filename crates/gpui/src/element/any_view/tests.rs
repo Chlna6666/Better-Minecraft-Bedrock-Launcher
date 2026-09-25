@@ -999,3 +999,16 @@ fn reuse_on_window_refresh_cached_view_preserves_flag_through_weak_upgrade(
     assert!(upgraded.reuse_on_window_refresh);
     assert!(upgraded.cache_fingerprint().is_some());
 }
+
+
+#[test]
+fn plain_entity_erasure_preserves_retained_boundary_semantics() {
+    assert_eq!(
+        <ViewElement as Element>::RETAINED_REPLAY_CAPABILITY,
+        crate::RetainedReplayCapability::Normal,
+    );
+    assert_eq!(
+        <AnyView as Element>::RETAINED_REPLAY_CAPABILITY,
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
+    );
+}

@@ -50,12 +50,42 @@ struct ViewCacheKey {
     fingerprint: Option<u64>,
 }
 
-impl<V: Render> Element for Entity<V> {
+/// Shared lifecycle proxy for ordinary rendered entities.
+///
+/// This deliberately remains a normal retained-replay boundary. Cached `AnyView` keeps its
+/// stronger frame-local cache boundary, while ordinary `Entity<V>` values share one concrete
+/// Element implementation instead of monomorphizing layout/prepaint/paint for every view type.
+#[doc(hidden)]
+pub struct ViewElement {
+    entity: AnyEntity,
+    render: fn(&AnyEntity, &mut Window, &mut App) -> AnyElement,
+}
+
+impl ViewElement {
+    #[inline]
+    fn new<V: Render>(view: Entity<V>) -> Self {
+        Self {
+            entity: view.into_any(),
+            render: render_entity::<V>,
+        }
+    }
+}
+
+impl IntoElement for ViewElement {
+    type Element = Self;
+
+    #[inline]
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for ViewElement {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::View(self.entity_id()))
+        Some(ElementId::View(self.entity.entity_id()))
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -69,9 +99,12 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let entity_id = self.entity_id();
-        window.record_rendered_view(entity_id, std::any::type_name::<V>());
-        let element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
+        let entity_id = self.entity.entity_id();
+        window.record_rendered_view(
+            entity_id,
+            cx.entities.type_name_for_id(entity_id).unwrap_or("unknown"),
+        );
+        let element = (self.render)(&self.entity, window, cx);
         request_layout_rendered_entity(entity_id, element, window, cx)
     }
 
@@ -84,7 +117,7 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        prepaint_rendered_entity(self.entity_id(), element, window, cx);
+        prepaint_rendered_entity(self.entity.entity_id(), element, window, cx);
     }
 
     fn paint(
@@ -97,8 +130,39 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        paint_rendered_entity(self.entity_id(), bounds, element, window, cx);
+        paint_rendered_entity(self.entity.entity_id(), bounds, element, window, cx);
     }
+}
+
+#[inline(never)]
+fn render_entity<V: Render>(
+    entity: &AnyEntity,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let mut weak = Some(
+        entity
+            .downgrade()
+            .downcast::<V>()
+            .expect("rendered entity type must match its render function"),
+    );
+    let mut element = None;
+    cx.update_entity_erased(
+        entity,
+        std::any::type_name::<V>(),
+        &mut |entity, cx| {
+            let view = entity
+                .downcast_mut::<V>()
+                .expect("rendered entity type must match its render function");
+            let mut view_cx = Context::new_context(
+                cx,
+                weak.take()
+                    .expect("rendered entity callback must execute exactly once"),
+            );
+            element = Some(view.render(window, &mut view_cx).into_any_element());
+        },
+    );
+    element.expect("rendered entity callback must produce an element")
 }
 
 #[inline(never)]
@@ -1139,16 +1203,17 @@ impl Element for AnyView {
 }
 
 impl<V: 'static + Render> IntoElement for Entity<V> {
-    type Element = Entity<V>;
+    type Element = ViewElement;
 
+    #[inline]
     fn into_element(self) -> Self::Element {
-        self
+        ViewElement::new(self)
     }
 
     #[track_caller]
     #[inline(never)]
     fn into_any_element(self) -> AnyElement {
-        <Self as Element>::into_any(self)
+        <ViewElement as Element>::into_any(ViewElement::new(self))
     }
 }
 
@@ -1224,8 +1289,7 @@ mod any_view {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let view = view.clone().downcast::<V>().unwrap();
-        view.update(cx, |view, cx| view.render(window, cx).into_any_element())
+        super::render_entity::<V>(&view.entity, window, cx)
     }
 }
 

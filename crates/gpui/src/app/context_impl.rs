@@ -9,7 +9,7 @@ use crate::{
 
 impl App {
     #[inline(never)]
-    fn update_entity_erased(
+    pub(crate) fn update_entity_erased(
         &mut self,
         handle: &AnyEntity,
         entity_type: &str,
