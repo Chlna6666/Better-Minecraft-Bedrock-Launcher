@@ -1,6 +1,4 @@
-use crate::ui::animation::{
-    apple_spring, request_layout_animation_frame_if, tab_underline_motion, SpringValue,
-};
+use crate::ui::animation::{apple_spring, tab_underline_motion, SpringValue};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::AnimationExt as _;
@@ -100,9 +98,17 @@ impl UnderlineTabs {
 const OPTIMISTIC_TAB_SYNC_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn tab_indicator_spring() -> Spring {
-    // Short, heavily damped response: immediate motion on press, but still preserves velocity
-    // when the user redirects before the previous transition settles.
+    // Short, heavily damped response: immediate motion on press, while SpringValue preserves
+    // position + velocity when the target changes mid-flight.
     apple_spring(0.22, 0.90)
+}
+
+fn symmetric_sample_progress(offset: f32, max_offset: f32) -> f32 {
+    if max_offset <= f32::EPSILON {
+        0.5
+    } else {
+        0.5 + offset / (2.0 * max_offset)
+    }
 }
 
 struct UnderlineTabsView {
@@ -235,7 +241,6 @@ impl Render for UnderlineTabsView {
 
         let now = window.animation_time();
         let slot_sample = self.slot.sample(now);
-        request_layout_animation_frame_if(window, !slot_sample.done);
 
         let colors = self.colors;
         let reduced_motion = crate::core::ui_prefs::reduced_motion();
@@ -252,14 +257,32 @@ impl Render for UnderlineTabsView {
             let item_width_px: f32 = item_width.into();
             let gap_px: f32 = gap.into();
             let step_px = item_width_px + gap_px;
+            let max_slot = self.items.len().saturating_sub(1) as f32;
+            let max_offset_px = step_px * max_slot;
+            let target_left_px = step_px * active_index as f32 + 4.0;
+            let visual_offset_px = step_px * (slot_sample.value - active_index as f32);
+            let progress = symmetric_sample_progress(visual_offset_px, max_offset_px);
+
             div()
                 .absolute()
-                .left(px(step_px * slot_sample.value + 4.0))
+                // Layout snaps to the newest target immediately. While the spring is moving, the
+                // retained translation exactly cancels that snap back to the current visible slot.
+                // Retargeting therefore changes only the spring force, never the visible position.
+                .left(px(target_left_px))
                 .bottom(px(0.))
                 .w(px((item_width_px - 8.0).max(8.0)))
                 .h(px(2.))
                 .rounded(px(1.))
                 .bg(colors.accent)
+                .with_stable_sampled_animation(
+                    SharedString::from(format!("{}-shared-underline-motion", tabs_id.as_ref())),
+                    AnimationProperty::translation(
+                        point(px(-max_offset_px), px(0.0)),
+                        point(px(max_offset_px), px(0.0)),
+                    ),
+                    progress,
+                    !slot_sample.done && !reduced_motion,
+                )
                 .into_any_element()
         });
 
@@ -364,7 +387,10 @@ impl Render for UnderlineTabsView {
                             MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
                                 let reduced_motion = crate::core::ui_prefs::reduced_motion();
-                                let now = window.animation_time();
+                                // Input transitions use real monotonic event time. animation_time()
+                                // is intentionally frozen for a platform frame, so using it here
+                                // would collapse multiple rapid retargets onto one timestamp.
+                                let now = Instant::now();
                                 let Some(generation) =
                                     this.begin_user_selection(index, now, reduced_motion)
                                 else {
@@ -630,7 +656,6 @@ impl Render for AnimatedSegmentTabsView {
 
         let now = window.animation_time();
         let slot_sample = self.slot.sample(now);
-        request_layout_animation_frame_if(window, !slot_sample.done);
 
         let colors = self.colors;
         let dark_mode = colors.bg.l < 0.5;
@@ -666,11 +691,17 @@ impl Render for AnimatedSegmentTabsView {
         let active_index = self.active_index;
         let defer_select_until_next_frame = self.defer_select_until_next_frame;
 
+        let max_slot = item_count.saturating_sub(1) as f32;
+        let slot_offset = slot_sample.value - active_index as f32;
+        let sampled_progress = symmetric_sample_progress(slot_offset, max_slot);
+        let indicator_animating = !slot_sample.done && !crate::core::ui_prefs::reduced_motion();
+
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
+            let max_offset_px = item_width_px * max_slot;
             div()
                 .absolute()
-                .left(px(item_width_px * slot_sample.value + 2.0))
+                .left(px(item_width_px * active_index as f32 + 2.0))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(px(item_width_px - 4.0))
@@ -689,11 +720,20 @@ impl Render for AnimatedSegmentTabsView {
                         offset: point(px(0.), px(2.)),
                     }])
                 })
+                .with_stable_sampled_animation(
+                    SharedString::from(format!("{}-indicator-motion", self.id.as_ref())),
+                    AnimationProperty::translation(
+                        point(px(-max_offset_px), px(0.0)),
+                        point(px(max_offset_px), px(0.0)),
+                    ),
+                    sampled_progress,
+                    indicator_animating,
+                )
                 .into_any_element()
         } else {
             div()
                 .absolute()
-                .left(relative(slot_sample.value * segment_width))
+                .left(relative(active_index as f32 * segment_width))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(relative(segment_width))
@@ -712,6 +752,15 @@ impl Render for AnimatedSegmentTabsView {
                         offset: point(px(0.), px(2.)),
                     }])
                 })
+                .with_stable_sampled_animation(
+                    SharedString::from(format!("{}-indicator-motion", self.id.as_ref())),
+                    AnimationProperty::relative_translation(
+                        point(-max_slot, 0.0),
+                        point(max_slot, 0.0),
+                    ),
+                    sampled_progress,
+                    indicator_animating,
+                )
                 .into_any_element()
         };
 
@@ -799,7 +848,7 @@ impl Render for AnimatedSegmentTabsView {
                             cx.listener(move |this, _event, window, cx| {
                                 let reduced_motion =
                                     crate::core::ui_prefs::reduced_motion();
-                                let now = window.animation_time();
+                                let now = Instant::now();
                                 let Some(generation) =
                                     this.begin_user_selection(index, now, reduced_motion)
                                 else {
@@ -892,5 +941,59 @@ impl RenderOnce for AnimatedSegmentTabs {
                 )
             })
             .into_any_element()
+    }
+}
+
+
+#[cfg(test)]
+mod interruptible_tab_tests {
+    use super::*;
+
+    #[test]
+    fn spring_retarget_is_position_continuous() {
+        let t0 = Instant::now();
+        let spring = tab_indicator_spring();
+        let mut slot = SpringValue::new(0.0).with_spring(spring);
+
+        slot.retarget_with_spring(5.0, spring, t0);
+        let mid = t0 + Duration::from_millis(70);
+        let before = slot.sample(mid);
+
+        slot.retarget_with_spring(1.0, spring, mid);
+        let after = slot.sample(mid);
+
+        assert!((before.value - after.value).abs() < 1e-4);
+    }
+
+    #[test]
+    fn target_relative_translation_keeps_retarget_frame_stationary() {
+        let visible_slot = 2.35;
+        let old_target = 5.0;
+        let new_target = 1.0;
+        let max_slot = 6.0;
+
+        let old_offset = visible_slot - old_target;
+        let old_progress = symmetric_sample_progress(old_offset, max_slot);
+        let old_translation = -max_slot + old_progress * (2.0 * max_slot);
+
+        let new_offset = visible_slot - new_target;
+        let new_progress = symmetric_sample_progress(new_offset, max_slot);
+        let new_translation = -max_slot + new_progress * (2.0 * max_slot);
+
+        assert!(((old_target + old_translation) - visible_slot).abs() < 1e-5);
+        assert!(((new_target + new_translation) - visible_slot).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rapid_retargets_keep_latest_target() {
+        let t0 = Instant::now();
+        let spring = tab_indicator_spring();
+        let mut slot = SpringValue::new(0.0).with_spring(spring);
+
+        slot.retarget_with_spring(4.0, spring, t0);
+        slot.retarget_with_spring(2.0, spring, t0 + Duration::from_millis(4));
+        slot.retarget_with_spring(6.0, spring, t0 + Duration::from_millis(9));
+
+        assert!((slot.target() - 6.0).abs() < f32::EPSILON);
     }
 }
