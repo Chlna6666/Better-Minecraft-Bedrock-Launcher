@@ -20,6 +20,50 @@ pub struct AsyncApp {
     pub(crate) foreground_executor: ForegroundExecutor,
 }
 
+impl AsyncApp {
+    #[inline(never)]
+    fn with_app_mut_erased(&self, callback: &mut dyn FnMut(&mut App)) -> Result<()> {
+        let app = self.app.upgrade().context("app was released")?;
+        let mut app = app.borrow_mut();
+        callback(&mut *app);
+        Ok(())
+    }
+
+    #[inline]
+    fn with_app_mut<R>(&self, f: impl FnOnce(&mut App) -> R) -> Result<R> {
+        let mut f = Some(f);
+        let mut result = None;
+        self.with_app_mut_erased(&mut |app| {
+            result = Some(
+                f.take()
+                    .expect("async app callback must execute exactly once")(app),
+            );
+        })?;
+        Ok(result.expect("async app callback must produce a result"))
+    }
+
+    #[inline(never)]
+    fn with_app_erased(&self, callback: &mut dyn FnMut(&App)) -> Result<()> {
+        let app = self.app.upgrade().context("app was released")?;
+        let app = app.borrow();
+        callback(&*app);
+        Ok(())
+    }
+
+    #[inline]
+    fn with_app<R>(&self, f: impl FnOnce(&App) -> R) -> Result<R> {
+        let mut f = Some(f);
+        let mut result = None;
+        self.with_app_erased(&mut |app| {
+            result = Some(
+                f.take()
+                    .expect("async app callback must execute exactly once")(app),
+            );
+        })?;
+        Ok(result.expect("async app callback must produce a result"))
+    }
+}
+
 impl AppContext for AsyncApp {
     type Result<T> = Result<T>;
 
@@ -27,15 +71,11 @@ impl AppContext for AsyncApp {
         &mut self,
         build_entity: impl FnOnce(&mut Context<T>) -> T,
     ) -> Self::Result<Entity<T>> {
-        let app = self.app.upgrade().context("app was released")?;
-        let mut app = app.borrow_mut();
-        Ok(app.new(build_entity))
+        self.with_app_mut(|app| app.new(build_entity))
     }
 
     fn reserve_entity<T: 'static>(&mut self) -> Result<Reservation<T>> {
-        let app = self.app.upgrade().context("app was released")?;
-        let mut app = app.borrow_mut();
-        Ok(app.reserve_entity())
+        self.with_app_mut(|app| app.reserve_entity())
     }
 
     fn insert_entity<T: 'static>(
@@ -43,20 +83,16 @@ impl AppContext for AsyncApp {
         reservation: Reservation<T>,
         build_entity: impl FnOnce(&mut Context<T>) -> T,
     ) -> Result<Entity<T>> {
-        let app = self.app.upgrade().context("app was released")?;
-        let mut app = app.borrow_mut();
-        Ok(app.insert_entity(reservation, build_entity))
+        self.with_app_mut(|app| app.insert_entity(reservation, build_entity))
     }
 
-    #[inline(always)]
+    #[inline]
     fn update_entity<T: 'static, R>(
         &mut self,
         handle: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> Self::Result<R> {
-        let app = self.app.upgrade().context("app was released")?;
-        let mut app = app.borrow_mut();
-        Ok(app.update_entity(handle, update))
+        self.with_app_mut(|app| app.update_entity(handle, update))
     }
 
     fn as_mut<'a, T>(&'a mut self, _handle: &Entity<T>) -> Self::Result<super::GpuiBorrow<'a, T>>
@@ -68,7 +104,7 @@ impl AppContext for AsyncApp {
         ))
     }
 
-    #[inline(always)]
+    #[inline]
     fn read_entity<T, R>(
         &self,
         handle: &Entity<T>,
@@ -77,9 +113,7 @@ impl AppContext for AsyncApp {
     where
         T: 'static,
     {
-        let app = self.app.upgrade().context("app was released")?;
-        let lock = app.borrow();
-        Ok(lock.read_entity(handle, callback))
+        self.with_app(|app| app.read_entity(handle, callback))
     }
 
     #[inline(always)]
@@ -100,9 +134,7 @@ impl AppContext for AsyncApp {
     where
         T: 'static,
     {
-        let app = self.app.upgrade().context("app was released")?;
-        let lock = app.borrow();
-        lock.read_window(window, read)
+        self.with_app(|app| app.read_window(window, read))?
     }
 
     fn background_spawn<R>(&self, future: impl Future<Output = R> + Send + 'static) -> Task<R>
@@ -142,11 +174,9 @@ impl AsyncApp {
     }
 
     /// Invoke the given function in the context of the app, then flush any effects produced during its invocation.
-    #[inline(always)]
+    #[inline]
     pub fn update<R>(&self, f: impl FnOnce(&mut App) -> R) -> Result<R> {
-        let app = self.app.upgrade().context("app was released")?;
-        let mut lock = app.borrow_mut();
-        Ok(lock.update(f))
+        self.with_app_mut(|app| app.update(f))
     }
 
     /// Arrange for the given callback to be invoked whenever the given entity emits an event of a given type.
