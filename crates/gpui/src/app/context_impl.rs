@@ -1,11 +1,33 @@
-use std::{any::TypeId, future::Future};
+use std::{any::{Any, TypeId, type_name}, future::Future};
 
 use anyhow::{Context as _, Result, anyhow};
 
 use crate::{
-    AnyView, AnyWindowHandle, App, AppContext, Context, Effect, Entity, Global, GpuiBorrow,
-    Reservation, Task, Window, WindowHandle,
+    AnyEntity, AnyView, AnyWindowHandle, App, AppContext, Context, Effect, Entity, Global,
+    GpuiBorrow, Reservation, Task, Window, WindowHandle,
 };
+
+impl App {
+    #[inline(never)]
+    fn update_entity_erased(
+        &mut self,
+        handle: &AnyEntity,
+        entity_type: &str,
+        update: &mut dyn FnMut(&mut dyn Any, &mut App),
+    ) {
+        self.update(|cx| {
+            let mut lease = cx.entities.lease_erased(handle, entity_type);
+            update(
+                lease
+                    .entity
+                    .as_deref_mut()
+                    .expect("active entity lease must contain its entity"),
+                cx,
+            );
+            cx.entities.end_lease_erased(handle.entity_id(), lease);
+        });
+    }
+}
 
 impl AppContext for App {
     type Result<T> = T;
@@ -49,20 +71,25 @@ impl AppContext for App {
 
     /// Updates the entity referenced by the given handle. The function is passed a mutable reference to the
     /// entity along with a `Context` for the entity.
+    #[inline(always)]
     fn update_entity<T: 'static, R>(
         &mut self,
         handle: &Entity<T>,
         update: impl FnOnce(&mut T, &mut Context<T>) -> R,
     ) -> R {
-        self.update(|cx| {
-            let mut entity = cx.entities.lease(handle);
-            let result = update(
-                &mut entity,
-                &mut Context::new_context(cx, handle.downgrade()),
+        let mut update = Some(update);
+        let mut result = None;
+        self.update_entity_erased(handle, type_name::<T>(), &mut |entity, cx| {
+            result = Some(
+                update.take().expect("entity update callback runs once")(
+                    entity
+                        .downcast_mut::<T>()
+                        .expect("entity type must match its typed handle"),
+                    &mut Context::new_context(cx, handle.downgrade()),
+                ),
             );
-            cx.entities.end_lease(entity);
-            result
-        })
+        });
+        result.expect("entity update callback produces a result")
     }
 
     fn as_mut<'a, T>(&'a mut self, handle: &Entity<T>) -> GpuiBorrow<'a, T>
