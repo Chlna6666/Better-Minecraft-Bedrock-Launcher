@@ -208,6 +208,85 @@ fn retained_plain_text_key(
     })
 }
 
+struct RetainedElementMount {
+    global_id: Option<GlobalElementId>,
+    retained_segment: ElementId,
+    retained_id: GlobalElementId,
+    retained_identity_ambiguity: SmallVec<[Rc<Cell<bool>>; 4]>,
+    inspector_id: Option<InspectorElementId>,
+}
+
+#[inline(never)]
+fn begin_retained_element_mount(
+    element_id: Option<ElementId>,
+    element_source_location: Option<&'static core::panic::Location<'static>>,
+    retained_source_location: Option<&'static core::panic::Location<'static>>,
+    retained_source_ordinal: Option<u32>,
+    element_type: TypeId,
+    window: &mut Window,
+) -> RetainedElementMount {
+    let retained_identity = if let Some(element_id) = element_id.clone() {
+        RetainedElementIdentity::Explicit(element_id)
+    } else if retained_source_location.is_some() || element_source_location.is_some() {
+        RetainedElementIdentity::Auto {
+            mount: retained_source_location,
+            source: element_source_location,
+            element_type,
+            ordinal: retained_source_ordinal,
+        }
+    } else {
+        RetainedElementIdentity::Positional
+    };
+    let (retained_segment, retained_id, retained_identity_ambiguity) =
+        window.begin_retained_element(retained_identity);
+    let global_id = element_id.map(|element_id| prepare_element_id(element_id, window));
+
+    let inspector_id;
+    #[cfg(any(feature = "inspector", debug_assertions))]
+    {
+        inspector_id = if window.inspector_enabled() {
+            element_source_location.map(|source| prepare_inspector_id(source, window))
+        } else {
+            None
+        };
+    }
+    #[cfg(not(any(feature = "inspector", debug_assertions)))]
+    {
+        inspector_id = None;
+    }
+
+    RetainedElementMount {
+        global_id,
+        retained_segment,
+        retained_id,
+        retained_identity_ambiguity,
+        inspector_id,
+    }
+}
+
+#[inline(never)]
+fn finish_retained_element_layout(
+    mount: &RetainedElementMount,
+    layout_id: LayoutId,
+    request_layout: &dyn Any,
+    plain_text_semantics: Option<(SharedString, TextStyle, Pixels)>,
+    window: &mut Window,
+) {
+    window.register_retained_layout_semantics(
+        &mount.retained_id,
+        &mount.retained_segment,
+        layout_id,
+        request_layout,
+        plain_text_semantics,
+        mount.retained_identity_ambiguity.clone(),
+    );
+
+    if mount.global_id.is_some() {
+        window.element_id_stack.pop();
+    }
+    window.end_retained_element();
+}
+
 #[inline(never)]
 fn try_reuse_retained_element(
     outer_replay_safe: bool,
@@ -337,71 +416,39 @@ impl<E: Element> Drawable<E> {
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
-                let element_id = self.element.id();
                 let element_source_location = self.element.source_location();
-                let mount = self.retained_source_location.copied();
-                let source = element_source_location.copied();
-                let retained_identity = if let Some(element_id) = element_id.clone() {
-                    RetainedElementIdentity::Explicit(element_id)
-                } else if mount.is_some() || source.is_some() {
-                    RetainedElementIdentity::Auto {
-                        mount,
-                        source,
-                        element_type: TypeId::of::<E>(),
-                        ordinal: self.retained_source_ordinal,
-                    }
-                } else {
-                    RetainedElementIdentity::Positional
-                };
-                let (retained_segment, retained_id, retained_identity_ambiguity) =
-                    window.begin_retained_element(retained_identity);
-                let global_id =
-                    element_id.map(|element_id| prepare_element_id(element_id, window));
-
-                let inspector_id;
-                #[cfg(any(feature = "inspector", debug_assertions))]
-                {
-                    inspector_id = if window.inspector_enabled() {
-                        element_source_location
-                            .map(|source| prepare_inspector_id(source, window))
-                    } else {
-                        None
-                    };
-                }
-                #[cfg(not(any(feature = "inspector", debug_assertions)))]
-                {
-                    inspector_id = None;
-                }
+                let mount = begin_retained_element_mount(
+                    self.element.id(),
+                    element_source_location,
+                    self.retained_source_location.copied(),
+                    self.retained_source_ordinal,
+                    TypeId::of::<E>(),
+                    window,
+                );
 
                 let (layout_id, request_layout) = self.element.request_layout(
-                    global_id.as_ref(),
-                    inspector_id.as_ref(),
+                    mount.global_id.as_ref(),
+                    mount.inspector_id.as_ref(),
                     window,
                     cx,
                 );
                 let plain_text_semantics =
                     retained_plain_text_semantics(&self.element as &dyn Any, window);
-                window.register_retained_layout_semantics(
-                    &retained_id,
-                    &retained_segment,
+                finish_retained_element_layout(
+                    &mount,
                     layout_id,
                     &request_layout as &dyn Any,
                     plain_text_semantics,
-                    retained_identity_ambiguity.clone(),
+                    window,
                 );
-
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
-                window.end_retained_element();
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
-                    global_id,
-                    retained_segment,
-                    retained_id,
-                    retained_identity_ambiguity,
-                    inspector_id,
+                    global_id: mount.global_id,
+                    retained_segment: mount.retained_segment,
+                    retained_id: mount.retained_id,
+                    retained_identity_ambiguity: mount.retained_identity_ambiguity,
+                    inspector_id: mount.inspector_id,
                     request_layout,
                 };
                 layout_id
