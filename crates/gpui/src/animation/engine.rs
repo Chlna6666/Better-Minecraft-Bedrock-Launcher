@@ -13,6 +13,7 @@ use std::{fmt, rc::Rc, time::{Duration, Instant}};
 
 const MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE: f32 = 1.0 / 4096.0;
 const SCENE_TEXT_RASTER_SCALE_EPSILON: f32 = 0.0001;
+const MAX_SCENE_RETARGET_NORMALIZED_VELOCITY: f32 = 24.0;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct AnimationTimelineKey {
@@ -24,6 +25,7 @@ struct AnimationTimelineKey {
 struct AnimationTimeline {
     spec: AnimationSpec,
     spring: Option<super::Spring>,
+    spring_initial_velocity: f32,
     started_at: Instant,
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
@@ -34,28 +36,42 @@ struct AnimationTimeline {
 }
 
 impl AnimationTimeline {
-    fn sample(&self, now: Instant) -> TimelineSample {
+    fn sample_with_velocity(&self, now: Instant) -> (TimelineSample, f32) {
         let elapsed = now.saturating_duration_since(self.started_at);
         if let Some(spring) = self.spring {
             if elapsed < self.spec.delay {
-                return TimelineSample {
-                    raw_progress: 0.0,
-                    eased_progress: 0.0,
-                    done: false,
-                    applies: self.spec.fill_mode.fills_backwards(),
-                };
+                return (
+                    TimelineSample {
+                        raw_progress: 0.0,
+                        eased_progress: 0.0,
+                        done: false,
+                        applies: self.spec.fill_mode.fills_backwards(),
+                    },
+                    0.0,
+                );
             }
 
             let active_elapsed = elapsed.saturating_sub(self.spec.delay);
-            let sample = spring.sample_with_velocity(active_elapsed.as_secs_f32(), 0.0);
-            return TimelineSample {
-                raw_progress: sample.progress,
-                eased_progress: if sample.done { 1.0 } else { sample.progress },
-                done: sample.done,
-                applies: !sample.done || self.spec.fill_mode.fills_forwards(),
-            };
+            let sample = spring.sample_with_velocity(
+                active_elapsed.as_secs_f32(),
+                self.spring_initial_velocity,
+            );
+            return (
+                TimelineSample {
+                    raw_progress: sample.progress,
+                    eased_progress: if sample.done { 1.0 } else { sample.progress },
+                    done: sample.done,
+                    applies: !sample.done || self.spec.fill_mode.fills_forwards(),
+                },
+                if sample.done { 0.0 } else { sample.velocity },
+            );
         }
-        self.spec.sample_elapsed(elapsed)
+
+        (self.spec.sample_elapsed(elapsed), 0.0)
+    }
+
+    fn sample(&self, now: Instant) -> TimelineSample {
+        self.sample_with_velocity(now).0
     }
 }
 
@@ -64,6 +80,12 @@ struct SceneAnimation {
     id: SceneAnimationId,
     from: [f32; 4],
     to: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SceneRetargetSample {
+    value: [f32; 4],
+    velocity: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -228,6 +250,7 @@ impl AnimationEngine {
             AnimationTimeline {
                 spec,
                 spring: None,
+                spring_initial_velocity: 0.0,
                 started_at,
                 driver,
                 bounds,
@@ -242,6 +265,93 @@ impl AnimationEngine {
         if !indexed_properties.contains(&property) {
             indexed_properties.push(property);
         }
+    }
+
+    /// Start or retarget a renderer-owned scene transition.
+    ///
+    /// Unlike `start_transition` replacement, this preserves the current presented property
+    /// value when the endpoints change. For physical springs it also projects the current scene
+    /// velocity onto the new target vector, so a rapid direction change is C0/C1 continuous
+    /// instead of restarting from the previous logical endpoint.
+    pub(crate) fn start_scene_transition(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spec: AnimationSpec,
+        spring: Option<super::Spring>,
+        now: Instant,
+        bounds: Bounds<Pixels>,
+        animation_id: SceneAnimationId,
+        requested_from: [f32; 4],
+        requested_to: [f32; 4],
+    ) {
+        let previous = self.sample_scene_transition(element_id, property, now);
+
+        self.start_transition(element_id, property, spec, now);
+        self.set_transition_bounds(element_id, property, bounds);
+
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return;
+        };
+        let key = AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        };
+
+        let (from, initial_velocity) = previous.map_or((requested_from, 0.0), |previous| {
+            let delta = subtract_scene_values(requested_to, previous.value);
+            (
+                previous.value,
+                project_scene_velocity(previous.velocity, delta),
+            )
+        });
+
+        if let Some(timeline) = self.timelines.get_mut(&key) {
+            // Scene retargeting always starts a new physical segment at the current presentation
+            // value. Carrying the previous raw timeline progress is correct only when endpoints are
+            // unchanged; once the target changes it produces a visible jump.
+            timeline.started_at = now;
+            timeline.spring = spring;
+            timeline.spring_initial_velocity = if spring.is_some() {
+                initial_velocity
+            } else {
+                0.0
+            };
+        }
+
+        self.bind_scene_animation(
+            element_id,
+            property,
+            animation_id,
+            from,
+            requested_to,
+        );
+    }
+
+    fn sample_scene_transition(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        now: Instant,
+    ) -> Option<SceneRetargetSample> {
+        let indexed_element_id = self.indexed_element_id(element_id)?;
+        let timeline = self.timelines.get(&AnimationTimelineKey {
+            element_id: indexed_element_id.clone(),
+            property,
+        })?;
+        let scene = timeline.scene_animation?;
+        let (sample, normalized_velocity) = timeline.sample_with_velocity(now);
+        let progress = sample.eased_progress;
+        let mut value = [0.0; 4];
+        let mut velocity = [0.0; 4];
+
+        for lane in 0..4 {
+            let delta = scene.to[lane] - scene.from[lane];
+            value[lane] = scene.from[lane] + delta * progress;
+            velocity[lane] = delta * normalized_velocity;
+        }
+
+        Some(SceneRetargetSample { value, velocity })
     }
 
     /// Start a sequence group and return its engine-owned id.
@@ -488,6 +598,7 @@ impl AnimationEngine {
             property,
         }) {
             timeline.spring = Some(spring);
+            timeline.spring_initial_velocity = 0.0;
         }
     }
 
@@ -835,6 +946,33 @@ impl AnimationEngine {
     }
 }
 
+fn subtract_scene_values(to: [f32; 4], from: [f32; 4]) -> [f32; 4] {
+    [
+        to[0] - from[0],
+        to[1] - from[1],
+        to[2] - from[2],
+        to[3] - from[3],
+    ]
+}
+
+fn project_scene_velocity(velocity: [f32; 4], delta: [f32; 4]) -> f32 {
+    let dot = velocity
+        .iter()
+        .zip(delta.iter())
+        .map(|(velocity, delta)| velocity * delta)
+        .sum::<f32>();
+    let magnitude_squared = delta.iter().map(|delta| delta * delta).sum::<f32>();
+
+    if !dot.is_finite() || !magnitude_squared.is_finite() || magnitude_squared <= 1e-8 {
+        return 0.0;
+    }
+
+    (dot / magnitude_squared).clamp(
+        -MAX_SCENE_RETARGET_NORMALIZED_VELOCITY,
+        MAX_SCENE_RETARGET_NORMALIZED_VELOCITY,
+    )
+}
+
 fn resolve_specs_driver<'a>(specs: impl IntoIterator<Item = &'a AnimationSpec>) -> AnimationDriver {
     let mut has_gpu_driver = false;
     let mut requires_cpu_driver = false;
@@ -853,5 +991,107 @@ fn resolve_specs_driver<'a>(specs: impl IntoIterator<Item = &'a AnimationSpec>) 
         AnimationDriver::Gpu
     } else {
         AnimationDriver::Paint
+    }
+}
+
+
+#[cfg(test)]
+mod retarget_tests {
+    use super::*;
+    use crate::{ElementId, GlobalElementId};
+    use smallvec::smallvec;
+
+    fn element_id(name: &'static str) -> GlobalElementId {
+        GlobalElementId(smallvec![ElementId::from(name)])
+    }
+
+    #[test]
+    fn scene_retarget_starts_from_current_presented_value() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let element = element_id("scene-retarget-value");
+        let spec = AnimationSpec::new(Duration::from_secs(1));
+
+        engine.start_scene_transition(
+            &element,
+            TransitionProperty::Translation,
+            spec.clone(),
+            None,
+            now,
+            Bounds::default(),
+            SceneAnimationId(1),
+            [0.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0, 0.0],
+        );
+
+        let mid = now + Duration::from_millis(500);
+        engine.start_scene_transition(
+            &element,
+            TransitionProperty::Translation,
+            spec,
+            None,
+            mid,
+            Bounds::default(),
+            SceneAnimationId(2),
+            [100.0, 0.0, 0.0, 0.0],
+            [200.0, 0.0, 0.0, 0.0],
+        );
+
+        let timeline = engine
+            .timelines
+            .values()
+            .next()
+            .expect("retargeted timeline");
+        let scene = timeline.scene_animation.expect("scene binding");
+        assert!((scene.from[0] - 50.0).abs() < 0.001);
+        assert!((scene.to[0] - 200.0).abs() < 0.001);
+        assert_eq!(timeline.started_at, mid);
+    }
+
+    #[test]
+    fn spring_scene_retarget_preserves_projected_velocity() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let element = element_id("scene-retarget-spring");
+        let spring = super::super::Spring::default();
+        let spec = AnimationSpec::new(Duration::from_secs(1));
+
+        engine.start_scene_transition(
+            &element,
+            TransitionProperty::Translation,
+            spec.clone(),
+            Some(spring),
+            now,
+            Bounds::default(),
+            SceneAnimationId(3),
+            [0.0, 0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0, 0.0],
+        );
+
+        let mid = now + Duration::from_millis(80);
+        let before = engine
+            .sample_scene_transition(&element, TransitionProperty::Translation, mid)
+            .expect("active scene sample");
+        assert!(before.velocity[0].abs() > 0.0);
+
+        engine.start_scene_transition(
+            &element,
+            TransitionProperty::Translation,
+            spec,
+            Some(spring),
+            mid,
+            Bounds::default(),
+            SceneAnimationId(4),
+            [100.0, 0.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0, 0.0],
+        );
+
+        let timeline = engine
+            .timelines
+            .values()
+            .next()
+            .expect("retargeted spring timeline");
+        assert!(timeline.spring_initial_velocity.is_finite());
+        assert_ne!(timeline.spring_initial_velocity, 0.0);
     }
 }

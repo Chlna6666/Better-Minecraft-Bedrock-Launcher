@@ -1101,17 +1101,15 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                         (state, binding_changed, active)
                     }
                     _ => {
-                        let animation_id = window.start_scene_animation(
+                        let animation_id = window.start_scene_animation_with_spring(
                             global_id,
                             property.property,
                             spec.clone(),
+                            spring,
                             dirty_bounds,
                             from,
                             to,
                         );
-                        if let Some(spring) = spring {
-                            window.set_scene_animation_spring(global_id, property.property, spring);
-                        }
                         (
                             SceneAnimationState {
                                 animation_id,
