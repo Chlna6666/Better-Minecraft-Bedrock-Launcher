@@ -59,7 +59,11 @@ impl WindowsDispatcher {
                 Ok(())
             })
         };
-        if let Err(error) = ThreadPool::RunWithPriorityAsync(&handler, WorkItemPriority::High) {
+        // Ordinary GPUI background work should not compete with input/render work at the
+        // WinRT thread pool's high callback priority. This matches upstream's default
+        // `Priority::Medium -> TP_CALLBACK_PRIORITY_NORMAL` behavior while preserving
+        // asynchronous execution and scheduler semantics.
+        if let Err(error) = ThreadPool::RunWithPriorityAsync(&handler, WorkItemPriority::Normal) {
             log::error!(
                 "WindowsDispatcher::dispatch_on_threadpool failed: {:?}",
                 error
