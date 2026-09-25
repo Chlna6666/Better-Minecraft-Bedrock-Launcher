@@ -146,7 +146,7 @@ fn glyph_atlas_insert_update_remove() {
     });
     let texture_kind = key.texture_kind();
     let inserted = atlas
-        .ensure_tile_with(&key, &mut || {
+        .ensure_tile_with(key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
                 Cow::Owned(glyph_test_bytes(texture_kind, 4, 255)),
@@ -167,7 +167,7 @@ fn glyph_atlas_insert_update_remove() {
     assert_eq!(atlas.pending_upload_count_for_test(), 2);
     atlas.remove(&key);
     let missing = atlas
-        .ensure_tile_with(&key, &mut || Ok(None))
+        .ensure_tile_with(key.clone(), &mut || Ok(None))
         .expect("lookup should succeed");
     assert!(missing.is_none());
 }
@@ -213,7 +213,7 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
     });
     let existing_texture_kind = existing_key.texture_kind();
     atlas
-        .ensure_tile_with(&existing_key, &mut || {
+        .ensure_tile_with(existing_key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
                 Cow::Owned(glyph_test_bytes(existing_texture_kind, 4, 255)),
@@ -248,7 +248,7 @@ fn glyph_atlas_preserves_existing_tiles_when_full() {
     assert_eq!(fallback, fallback_tile(&atlas, texture_kind));
     assert!(
         atlas
-            .ensure_tile_with(&existing_key, &mut || Ok(None))
+            .ensure_tile_with(existing_key.clone(), &mut || Ok(None))
             .expect("existing tile lookup should not error")
             .is_some()
     );
@@ -264,7 +264,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
         pixel_format: ImagePixelFormat::Rgba8,
     });
     atlas
-        .ensure_tile_with(&existing_key, &mut || {
+        .ensure_tile_with(existing_key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
                 Cow::Borrowed(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
@@ -281,7 +281,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
         pixel_format: ImagePixelFormat::Rgba8,
     });
     let missing = atlas
-        .ensure_tile_with(&small_key, &mut || {
+        .ensure_tile_with(small_key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
                 Cow::Borrowed(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
@@ -293,7 +293,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
     assert_eq!(fallback, fallback_tile(&atlas, AtlasTextureKind::Rgba));
     assert_eq!(
         atlas
-            .ensure_tile_with(&small_key, &mut || {
+            .ensure_tile_with(small_key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(2), DevicePixels(2)),
                     Cow::Borrowed(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
@@ -304,7 +304,7 @@ fn image_atlas_preserves_existing_tiles_when_full() {
     );
     assert!(
         atlas
-            .ensure_tile_with(&existing_key, &mut || Ok(None))
+            .ensure_tile_with(existing_key.clone(), &mut || Ok(None))
             .expect("existing tile lookup should not error")
             .is_some()
     );
@@ -449,7 +449,7 @@ fn image_atlas_insert_returns_tile_for_rgba_and_bgra() {
         pixel_format: ImagePixelFormat::Rgba8,
     });
     let rgba_tile = atlas
-        .ensure_tile_with(&rgba_key, &mut || {
+        .ensure_tile_with(rgba_key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(1), DevicePixels(1)),
                 Cow::Borrowed(&[10, 20, 30, 40]),
@@ -479,7 +479,7 @@ fn image_atlas_insert_returns_tile_for_rgba_and_bgra() {
         pixel_format: ImagePixelFormat::Bgra8,
     });
     let bgra_tile = atlas
-        .ensure_tile_with(&bgra_key, &mut || {
+        .ensure_tile_with(bgra_key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(1), DevicePixels(1)),
                 Cow::Borrowed(&[1, 2, 3, 4]),
@@ -516,7 +516,7 @@ fn image_atlas_packs_large_tile_images_into_one_default_page() {
             pixel_format: ImagePixelFormat::Rgba8,
         });
         let tile = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(512), DevicePixels(512)),
                     Cow::Borrowed(pixels.as_slice()),
@@ -546,7 +546,7 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
         pixel_format: ImagePixelFormat::Rgba8,
     });
     let tile = atlas
-        .ensure_tile_with(&key, &mut || {
+        .ensure_tile_with(key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(2), DevicePixels(2)),
                 Cow::Borrowed(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
@@ -612,7 +612,7 @@ fn pending_atlas_upload_updates_existing_tile_in_place() {
         pixel_format: ImagePixelFormat::Rgba8,
     });
     atlas
-        .ensure_tile_with(&key, &mut || {
+        .ensure_tile_with(key.clone(), &mut || {
             Ok(Some((
                 size(DevicePixels(1), DevicePixels(1)),
                 Cow::Borrowed(&[1, 2, 3, 4]),

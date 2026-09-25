@@ -179,7 +179,7 @@ impl NovaAtlas {
 
     fn lookup_or_restore_tile(&self, key: &AtlasKey) -> Option<AtlasTile> {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Some(*tile);
         }
 
@@ -302,14 +302,14 @@ impl NovaAtlas {
 impl PlatformAtlas for NovaAtlas {
     fn ensure_tile_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
-        if let Some(tile) = self.lookup_or_restore_tile(key) {
+        if let Some(tile) = self.lookup_or_restore_tile(&key) {
             return Ok(Some(tile));
         }
 
-        let build_entry = self.build_entry(key);
+        let build_entry = self.build_entry(&key);
         let _build_guard = build_entry
             .build
             .lock()
@@ -317,7 +317,7 @@ impl PlatformAtlas for NovaAtlas {
 
         // Another caller for this exact key may have completed while we waited on the per-key
         // gate. Re-check before doing any expensive rasterization/decoding.
-        if let Some(tile) = self.lookup_or_restore_tile(key) {
+        if let Some(tile) = self.lookup_or_restore_tile(&key) {
             return Ok(Some(tile));
         }
 
@@ -332,14 +332,14 @@ impl PlatformAtlas for NovaAtlas {
         // happened while the expensive builder was running, its output belongs to the old
         // generation and must never repopulate the atlas after removal.
         if build_entry.generation.load(AtomicOrdering::Acquire) != generation {
-            return Ok(state.tiles.get(key).copied());
+            return Ok(state.tiles.get(&key).copied());
         }
 
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(*tile));
         }
 
-        let Some(tile) = state.allocate_and_upload(key, size, &bytes) else {
+        let Some(tile) = state.allocate_and_upload(&key, size, &bytes) else {
             let texture_kind = key.texture_kind();
             if state.full_kinds_logged.insert(texture_kind) {
                 log::warn!(
@@ -356,7 +356,7 @@ impl PlatformAtlas for NovaAtlas {
             self.publish_state_flags(&state);
             return Ok(fallback);
         };
-        state.tiles.insert(key.clone(), tile);
+        state.tiles.insert(key, tile);
         self.publish_state_flags(&state);
         Ok(Some(tile))
     }
@@ -498,7 +498,7 @@ impl PlatformAtlas for NovaAtlas {
                 Ok(Some((size, Cow::Owned(bytes))))
             }
         };
-        self.ensure_tile_with(&key, &mut build_tile)
+        self.ensure_tile_with(key, &mut build_tile)
     }
 
     fn clear_glyphs(&self) {
@@ -923,7 +923,7 @@ mod tests {
         });
         let pixels = vec![255; 64 * 64 * NOVA_ATLAS_BYTES_PER_PIXEL];
         let first_tile = atlas
-            .ensure_tile_with(&first_key, &mut || {
+            .ensure_tile_with(first_key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(64), DevicePixels(64)),
                     Cow::Borrowed(pixels.as_slice()),
@@ -935,7 +935,7 @@ mod tests {
         atlas.remove(&first_key);
         assert!(atlas.has_pending_removals());
         let second_tile = atlas
-            .ensure_tile_with(&second_key, &mut || {
+            .ensure_tile_with(second_key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(64), DevicePixels(64)),
                     Cow::Borrowed(pixels.as_slice()),
@@ -959,7 +959,7 @@ mod tests {
             pixel_format: ImagePixelFormat::Rgba8,
         });
         let tile = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(1), DevicePixels(1)),
                     Cow::Borrowed(&[1, 2, 3, 4]),
@@ -979,7 +979,7 @@ mod tests {
 
         let build_called = std::cell::Cell::new(false);
         let restored = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 build_called.set(true);
                 Ok(Some((
                     size(DevicePixels(1), DevicePixels(1)),
@@ -1012,7 +1012,7 @@ mod tests {
                 pixel_format: ImagePixelFormat::Rgba8,
             });
             atlas
-                .ensure_tile_with(&key, &mut || {
+                .ensure_tile_with(key.clone(), &mut || {
                     Ok(Some((
                         size(DevicePixels(64), DevicePixels(64)),
                         Cow::Borrowed(pixels.as_slice()),
@@ -1042,7 +1042,7 @@ mod tests {
             pixel_format: ImagePixelFormat::Rgba8,
         });
         let original_tile = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(1), DevicePixels(1)),
                     Cow::Borrowed(&[1, 2, 3, 4]),
@@ -1054,7 +1054,7 @@ mod tests {
 
         let build_called = std::cell::Cell::new(false);
         let restored_tile = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 build_called.set(true);
                 Ok(Some((
                     size(DevicePixels(1), DevicePixels(1)),
@@ -1130,7 +1130,7 @@ mod tests {
         let build_calls_first = build_calls.clone();
         let first = std::thread::spawn(move || {
             atlas_first
-                .ensure_tile_with(&key_first, &mut || {
+                .ensure_tile_with(key_first.clone(), &mut || {
                     build_calls_first.fetch_add(1, Ordering::SeqCst);
                     first_entered_tx
                         .send(())
@@ -1161,7 +1161,7 @@ mod tests {
                 .send(())
                 .expect("test should observe the second request");
             atlas_second
-                .ensure_tile_with(&key_second, &mut || {
+                .ensure_tile_with(key_second.clone(), &mut || {
                     build_calls_second.fetch_add(1, Ordering::SeqCst);
                     duplicate_builder_tx
                         .send(())
@@ -1217,7 +1217,7 @@ mod tests {
         let worker_key = key.clone();
         let worker = std::thread::spawn(move || {
             worker_atlas
-                .ensure_tile_with(&worker_key, &mut || {
+                .ensure_tile_with(worker_key.clone(), &mut || {
                     entered_tx
                         .send(())
                         .expect("test should observe the in-flight builder");
@@ -1317,7 +1317,7 @@ mod tests {
             pixel_format: ImagePixelFormat::Rgba8,
         });
         let tile = atlas
-            .ensure_tile_with(&key, &mut || {
+            .ensure_tile_with(key.clone(), &mut || {
                 Ok(Some((
                     size(DevicePixels(1), DevicePixels(1)),
                     Cow::Borrowed(&[1, 2, 3, 4]),

@@ -517,13 +517,13 @@ impl TestAtlas {
 impl PlatformAtlas for TestAtlas {
     fn ensure_tile_with<'a>(
         &self,
-        key: &crate::AtlasKey,
+        key: crate::AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(Size<crate::DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<crate::AtlasTile>> {
         let mut state = self.0.lock();
-        if let Some(tile) = state.tiles.get(key) {
+        if let Some(tile) = state.tiles.get(&key) {
             return Ok(Some(*tile));
         }
         drop(state);
@@ -538,23 +538,21 @@ impl PlatformAtlas for TestAtlas {
         state.next_id += 1;
         let tile_id = state.next_id;
 
-        state.tiles.insert(
-            key.clone(),
-            crate::AtlasTile {
-                texture_id: AtlasTextureId {
-                    index: texture_id,
-                    kind: key.texture_kind(),
-                },
-                tile_id: TileId(tile_id),
-                padding: 0,
-                bounds: crate::Bounds {
-                    origin: Point::default(),
-                    size,
-                },
+        let tile = crate::AtlasTile {
+            texture_id: AtlasTextureId {
+                index: texture_id,
+                kind: key.texture_kind(),
             },
-        );
+            tile_id: TileId(tile_id),
+            padding: 0,
+            bounds: crate::Bounds {
+                origin: Point::default(),
+                size,
+            },
+        };
+        state.tiles.insert(key, tile);
 
-        Ok(Some(state.tiles[key]))
+        Ok(Some(tile))
     }
 
     fn refresh_tile_with<'a>(
@@ -575,7 +573,7 @@ impl PlatformAtlas for TestAtlas {
         }
         drop(state);
         self.remove(key);
-        self.ensure_tile_with(key, &mut || {
+        self.ensure_tile_with(key.clone(), &mut || {
             Ok(Some((size, std::borrow::Cow::Borrowed(&[]))))
         })
     }

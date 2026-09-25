@@ -221,7 +221,7 @@ impl Window {
 
         let Some(tile) = self
             .sprite_atlas
-            .ensure_tile_with(&params.clone().into(), &mut || {
+            .ensure_tile_with(params.clone().into(), &mut || {
                 let rendered = match data {
                     Some(data) => Some(cx.svg_renderer.render_bytes(&params, data)?),
                     None => cx.svg_renderer.render(&params)?,
@@ -511,7 +511,7 @@ impl Window {
             self.sprite_atlas
                 .refresh_tile_with(&atlas_key, &mut build)?
         } else {
-            self.sprite_atlas.ensure_tile_with(&atlas_key, &mut build)?
+            self.sprite_atlas.ensure_tile_with(atlas_key, &mut build)?
         };
         let Some(tile) = tile else {
             log::warn!(

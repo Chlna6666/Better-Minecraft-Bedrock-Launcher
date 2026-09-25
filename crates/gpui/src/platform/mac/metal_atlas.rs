@@ -39,11 +39,11 @@ struct MetalAtlasState {
 impl PlatformAtlas for MetalAtlas {
     fn ensure_tile_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
         let mut lock = self.0.lock();
-        if let Some(tile) = lock.tiles_by_key.get(key) {
+        if let Some(tile) = lock.tiles_by_key.get(&key) {
             Ok(Some(tile.clone()))
         } else {
             let Some((size, bytes)) = build()? else {
@@ -54,7 +54,7 @@ impl PlatformAtlas for MetalAtlas {
                 .context("failed to allocate")?;
             let texture = lock.texture(tile.texture_id);
             texture.upload(tile.bounds, &bytes);
-            lock.tiles_by_key.insert(key.clone(), tile.clone());
+            lock.tiles_by_key.insert(key, tile.clone());
             Ok(Some(tile))
         }
     }
@@ -77,7 +77,7 @@ impl PlatformAtlas for MetalAtlas {
         }
         drop(lock);
         self.remove(key);
-        self.ensure_tile_with(key, &mut || Ok(Some((size, bytes.clone()))))
+        self.ensure_tile_with(key.clone(), &mut || Ok(Some((size, bytes.clone()))))
     }
 
     fn clear_glyphs(&self) {

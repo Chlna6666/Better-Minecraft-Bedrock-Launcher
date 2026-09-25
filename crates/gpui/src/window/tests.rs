@@ -371,7 +371,7 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
             let build_called = Cell::new(false);
             window
                 .sprite_atlas
-                .ensure_tile_with(&atlas_key, &mut || {
+                .ensure_tile_with(atlas_key.clone(), &mut || {
                     build_called.set(true);
                     Ok(Some((
                         size(DevicePixels(1), DevicePixels(1)),

@@ -59,7 +59,7 @@ impl AtlasUploadBenchmarkCore {
                 pixel_format: ImagePixelFormat::Rgba8,
             });
             atlas
-                .ensure_tile_with(&key, &mut || {
+                .ensure_tile_with(key.clone(), &mut || {
                     Ok(Some((
                         size(DevicePixels(tile_extent), DevicePixels(tile_extent)),
                         Cow::Borrowed(&pixels),

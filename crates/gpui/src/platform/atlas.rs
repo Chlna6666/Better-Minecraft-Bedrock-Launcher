@@ -61,9 +61,13 @@ impl From<RenderImageParams> for AtlasKey {
 }
 
 pub(crate) trait PlatformAtlas: Send + Sync {
+    /// Ensures a tile exists for an owned key.
+    ///
+    /// Taking ownership lets hot miss paths insert the same key into backend maps without
+    /// cloning a freshly constructed glyph/SVG/image key.
     fn ensure_tile_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
 
@@ -77,7 +81,7 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         };
         let bytes = bytes.into_owned();
         self.remove(key);
-        self.ensure_tile_with(key, &mut || {
+        self.ensure_tile_with(key.clone(), &mut || {
             Ok(Some((size, Cow::Borrowed(bytes.as_slice()))))
         })
     }
@@ -87,7 +91,7 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         params: &RenderGlyphParams,
         build: &mut dyn FnMut() -> Result<GlyphRasterization>,
     ) -> Result<Option<AtlasTile>> {
-        self.ensure_tile_with(&params.clone().into(), &mut || match build()? {
+        self.ensure_tile_with(params.clone().into(), &mut || match build()? {
             GlyphRasterization::Bitmap { size, bytes } => Ok(Some((size, Cow::Owned(bytes)))),
             GlyphRasterization::ColorLayers { fallback, .. } => {
                 Ok(Some((fallback.size, Cow::Owned(fallback.bytes))))
