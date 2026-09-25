@@ -170,11 +170,11 @@ fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
 }
 
-fn retained_plain_text_semantics<E: Element>(
-    element: &E,
+#[inline(never)]
+fn retained_plain_text_semantics(
+    element: &dyn Any,
     window: &Window,
 ) -> Option<(SharedString, TextStyle, Pixels)> {
-    let element = element as &dyn Any;
     let text = if let Some(text) = element.downcast_ref::<SharedString>() {
         text.clone()
     } else if let Some(text) = element.downcast_ref::<&'static str>() {
@@ -185,12 +185,12 @@ fn retained_plain_text_semantics<E: Element>(
     Some((text, window.text_style(), window.rem_size()))
 }
 
-fn retained_plain_text_key<E: Element>(
-    element: &E,
-    request_layout: &E::RequestLayoutState,
+#[inline(never)]
+fn retained_plain_text_key(
+    element: &dyn Any,
+    request_layout: &dyn Any,
     window: &Window,
 ) -> Option<RetainedPlainTextKey> {
-    let element = element as &dyn Any;
     let text = if let Some(text) = element.downcast_ref::<SharedString>() {
         text.clone()
     } else if let Some(text) = element.downcast_ref::<&'static str>() {
@@ -199,13 +199,111 @@ fn retained_plain_text_key<E: Element>(
         return None;
     };
 
-    let text_layout = (request_layout as &dyn Any).downcast_ref::<TextLayout>()?;
+    let text_layout = request_layout.downcast_ref::<TextLayout>()?;
     Some(RetainedPlainTextKey {
         text,
         text_style: window.text_style(),
         rem_size: window.rem_size(),
         line_layouts: text_layout.retained_line_layouts(),
     })
+}
+
+#[inline(never)]
+fn try_reuse_retained_element(
+    outer_replay_safe: bool,
+    identity_stable: bool,
+    retained_segment: &ElementId,
+    retained_id: &GlobalElementId,
+    bounds: Bounds<Pixels>,
+    layout_id: LayoutId,
+    layout_fingerprint: Option<u64>,
+    plain_text_key: Option<&RetainedPlainTextKey>,
+    window: &mut Window,
+) -> Option<(
+    Range<PrepaintStateIndex>,
+    Range<PaintIndex>,
+    Range<usize>,
+    Range<PrepaintStateIndex>,
+)> {
+    if !outer_replay_safe || (!identity_stable && plain_text_key.is_none()) {
+        return None;
+    }
+
+    let retained = window.with_retained_element_segment(retained_segment, |window| {
+        window.reusable_retained_element(
+            retained_id,
+            bounds,
+            layout_id,
+            layout_fingerprint,
+            plain_text_key,
+        )
+    })?;
+
+    let source_prepaint_range = retained.prepaint_range.clone();
+    let prepaint_start = window.prepaint_index();
+    if !window.reuse_prepaint(source_prepaint_range.clone()) {
+        return None;
+    }
+    let prepaint_end = window.prepaint_index();
+
+    Some((
+        source_prepaint_range,
+        retained.paint_range,
+        retained.metadata_range,
+        prepaint_start..prepaint_end,
+    ))
+}
+
+#[inline(never)]
+fn retained_div_self_scene(prepaint: &dyn Any) -> Option<super::RetainedDivSelfScene> {
+    prepaint
+        .downcast_ref::<DivPrepaint>()
+        .and_then(DivPrepaint::retained_self_scene)
+}
+
+#[inline(never)]
+fn record_retained_painted_element(
+    retained_id: GlobalElementId,
+    bounds: Bounds<Pixels>,
+    layout_id: LayoutId,
+    layout_fingerprint: Option<u64>,
+    prepaint_range: Range<PrepaintStateIndex>,
+    paint_range: Range<PaintIndex>,
+    metadata_start: usize,
+    div_self_scene: Option<super::RetainedDivSelfScene>,
+    plain_text_key: Option<RetainedPlainTextKey>,
+    identity_stable: bool,
+    outer_replay_safe: bool,
+    unstable_identity_start: usize,
+    window: &mut Window,
+) {
+    let subtree_stable = identity_stable
+        && outer_replay_safe
+        && window.next_frame.retained_unstable_identity_count == unstable_identity_start;
+    window.record_retained_element_range(
+        retained_id,
+        bounds,
+        layout_id,
+        layout_fingerprint,
+        prepaint_range,
+        paint_range,
+        metadata_start,
+        div_self_scene,
+        plain_text_key,
+        identity_stable,
+        subtree_stable,
+    );
+
+    // Reuse the existing O(1) subtree-stability propagation counter for explicit replay barriers
+    // as well as ambiguous identities. Ancestors snapshot this counter before painting children,
+    // so a frame-local cache boundary prevents an unrelated ancestor from replaying across it while
+    // the boundary's own internal cache remains usable.
+    if !outer_replay_safe {
+        window.next_frame.retained_unstable_identity_count = window
+            .next_frame
+            .retained_unstable_identity_count
+            .saturating_add(1);
+    }
 }
 
 /// A wrapper around an implementer of [`Element`] that allows it to be drawn in a window.
@@ -281,7 +379,8 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
-                let plain_text_semantics = retained_plain_text_semantics(&self.element, window);
+                let plain_text_semantics =
+                    retained_plain_text_semantics(&self.element as &dyn Any, window);
                 window.register_retained_layout_semantics(
                     &retained_id,
                     &retained_segment,
@@ -340,41 +439,43 @@ impl<E: Element> Drawable<E> {
                 // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
                 // this helper after two cheap type checks; safe Divs use semantic generations.
                 let mut plain_text_key =
-                    retained_plain_text_key(&self.element, &request_layout, window);
-                let may_reconcile = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay()
-                    && (identity_stable || plain_text_key.is_some());
-
-                let retained = may_reconcile
-                    .then(|| {
-                        window.with_retained_element_segment(&retained_segment, |window| {
-                            window.reusable_retained_element(
-                                &retained_id,
-                                bounds,
-                                layout_id,
-                                layout_fingerprint,
-                                plain_text_key.as_ref(),
-                            )
-                        })
-                    })
-                    .flatten();
-                if let Some(retained) = retained {
-                    let source_prepaint_range = retained.prepaint_range.clone();
-                    let prepaint_start = window.prepaint_index();
-                    if window.reuse_prepaint(source_prepaint_range.clone()) {
-                        let prepaint_end = window.prepaint_index();
-                        self.phase = ElementDrawPhase::Retained {
-                            bounds,
-                            source_prepaint_range,
-                            source_paint_range: retained.paint_range,
-                            source_metadata_range: retained.metadata_range,
-                            prepaint_range: prepaint_start..prepaint_end,
-                        };
-                        return;
-                    }
+                    retained_plain_text_key(
+                        &self.element as &dyn Any,
+                        &request_layout as &dyn Any,
+                        window,
+                    );
+                if let Some((
+                    source_prepaint_range,
+                    source_paint_range,
+                    source_metadata_range,
+                    prepaint_range,
+                )) = try_reuse_retained_element(
+                    E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
+                    identity_stable,
+                    &retained_segment,
+                    &retained_id,
+                    bounds,
+                    layout_id,
+                    layout_fingerprint,
+                    plain_text_key.as_ref(),
+                    window,
+                ) {
+                    self.phase = ElementDrawPhase::Retained {
+                        bounds,
+                        source_prepaint_range,
+                        source_paint_range,
+                        source_metadata_range,
+                        prepaint_range,
+                    };
+                    return;
                 }
 
                 if plain_text_key.is_none() && (!targeted_replay || !identity_stable) {
-                    plain_text_key = retained_plain_text_key(&self.element, &request_layout, window);
+                    plain_text_key = retained_plain_text_key(
+                        &self.element as &dyn Any,
+                        &request_layout as &dyn Any,
+                        window,
+                    );
                 }
 
                 if let Some(element_id) = self.element.id() {
@@ -460,18 +561,10 @@ impl<E: Element> Drawable<E> {
                     );
                 });
                 let paint_end = window.paint_index();
-                let div_self_scene = (&prepaint as &dyn Any)
-                    .downcast_ref::<DivPrepaint>()
-                    .and_then(DivPrepaint::retained_self_scene);
-
+                let div_self_scene = retained_div_self_scene(&prepaint as &dyn Any);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
-                let outer_replay_safe = E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay();
-                let subtree_stable = identity_stable
-                    && outer_replay_safe
-                    && window.next_frame.retained_unstable_identity_count
-                        == unstable_identity_start;
-                window.record_retained_element_range(
+                record_retained_painted_element(
                     retained_id,
                     bounds,
                     layout_id,
@@ -482,19 +575,10 @@ impl<E: Element> Drawable<E> {
                     div_self_scene,
                     plain_text_key,
                     identity_stable,
-                    subtree_stable,
+                    E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
+                    unstable_identity_start,
+                    window,
                 );
-
-                // Reuse the existing O(1) subtree-stability propagation counter for explicit replay
-                // barriers as well as ambiguous identities. Ancestors snapshot this counter before
-                // painting children, so a frame-local cache boundary prevents an unrelated ancestor
-                // from replaying across it while the boundary's own internal cache remains usable.
-                if !outer_replay_safe {
-                    window.next_frame.retained_unstable_identity_count = window
-                        .next_frame
-                        .retained_unstable_identity_count
-                        .saturating_add(1);
-                }
 
                 if global_id.is_some() {
                     window.element_id_stack.pop();
