@@ -1,7 +1,10 @@
 use super::*;
 
 use etagere::{AllocId, BucketedAtlasAllocator};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{
+    Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+};
 
 #[cfg(test)]
 pub(super) use super::upload_encoding::encode_bgra_upload;
@@ -27,6 +30,10 @@ pub(super) const NOVA_ATLAS_TEXTURE_KINDS: [AtlasTextureKind; NOVA_ATLAS_KIND_CO
 
 pub(super) struct NovaAtlas {
     pub(super) state: Mutex<NovaAtlasState>,
+    /// Per-key ownership gates for cache-miss construction. Expensive builders run while holding
+    /// only their key's gate, never the global atlas mutex, so unrelated misses stay parallel while
+    /// duplicate misses for one key share a single build.
+    build_entries: Mutex<FxHashMap<AtlasKey, Weak<AtlasBuildEntry>>>,
     /// Lock-free mirror of [`NovaAtlasState::texture_set_generation`], refreshed by every atlas
     /// method that can change the texture set. The renderer polls this each frame to skip the
     /// texture sync (mutex + allocations) when nothing changed.
@@ -92,6 +99,12 @@ struct PendingAtlasRemoval {
     tile: AtlasTile,
 }
 
+#[derive(Default)]
+struct AtlasBuildEntry {
+    build: Mutex<()>,
+    generation: AtomicU64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct NovaAtlasTextureInfo {
     pub(super) id: AtlasTextureId,
@@ -102,6 +115,7 @@ impl NovaAtlas {
     pub(super) fn new() -> Self {
         let state = NovaAtlasState::with_fallback_tiles();
         Self {
+            build_entries: Mutex::new(FxHashMap::default()),
             texture_set_generation: AtomicU64::new(state.texture_set_generation),
             content_generation: AtomicU64::new(state.content_generation),
             pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
@@ -120,6 +134,70 @@ impl NovaAtlas {
             .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
     }
 
+    fn build_entry(&self, key: &AtlasKey) -> Arc<AtlasBuildEntry> {
+        let mut entries = self
+            .build_entries
+            .lock()
+            .expect("nova atlas build-entry lock poisoned");
+        if let Some(entry) = entries.get(key).and_then(Weak::upgrade) {
+            return entry;
+        }
+
+        entries.retain(|_, entry| entry.strong_count() != 0);
+        let entry = Arc::new(AtlasBuildEntry::default());
+        entries.insert(key.clone(), Arc::downgrade(&entry));
+        entry
+    }
+
+    fn invalidate_build(&self, key: &AtlasKey) {
+        let entry = self
+            .build_entries
+            .lock()
+            .expect("nova atlas build-entry lock poisoned")
+            .get(key)
+            .and_then(Weak::upgrade);
+        if let Some(entry) = entry {
+            entry.generation.fetch_add(1, AtomicOrdering::AcqRel);
+        }
+    }
+
+    fn invalidate_builds_matching(&self, mut matches: impl FnMut(&AtlasKey) -> bool) {
+        let mut entries = self
+            .build_entries
+            .lock()
+            .expect("nova atlas build-entry lock poisoned");
+        entries.retain(|key, weak| {
+            let Some(entry) = weak.upgrade() else {
+                return false;
+            };
+            if matches(key) {
+                entry.generation.fetch_add(1, AtomicOrdering::AcqRel);
+            }
+            true
+        });
+    }
+
+    fn lookup_or_restore_tile(&self, key: &AtlasKey) -> Option<AtlasTile> {
+        let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        if let Some(tile) = state.tiles.get(key) {
+            return Some(*tile);
+        }
+
+        if matches!(key, AtlasKey::Image(_))
+            && let Some(index) = state
+                .pending_removals
+                .iter()
+                .rposition(|pending| pending.key == *key)
+        {
+            let pending = state.pending_removals.swap_remove(index);
+            state.tiles.insert(pending.key, pending.tile);
+            self.publish_state_flags(&state);
+            return Some(pending.tile);
+        }
+
+        None
+    }
+
     /// Monotonic counter identifying the current set of atlas textures without locking.
     pub(super) fn texture_set_generation(&self) -> u64 {
         self.texture_set_generation.load(AtomicOrdering::Acquire)
@@ -130,6 +208,10 @@ impl NovaAtlas {
     }
 
     pub(super) fn trim(&self, level: GpuiMemoryTrimLevel) {
+        if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            self.invalidate_builds_matching(|_| true);
+        }
+
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         match level {
             GpuiMemoryTrimLevel::Light | GpuiMemoryTrimLevel::Moderate => {
@@ -223,42 +305,40 @@ impl PlatformAtlas for NovaAtlas {
         key: &AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("nova placeholder atlas lock poisoned");
-        if let Some(tile) = state.tiles.get(key) {
-            return Ok(Some(*tile));
+        if let Some(tile) = self.lookup_or_restore_tile(key) {
+            return Ok(Some(tile));
         }
-        // Repainting an image whose removal is still queued cancels the
-        // removal instead of re-decoding and re-uploading. Non-image keys
-        // (glyphs cleared on DPI changes, probe-only lookups) must observe
-        // removals immediately, so they never resurrect.
-        if matches!(key, AtlasKey::Image(_))
-            && let Some(index) = state
-                .pending_removals
-                .iter()
-                .rposition(|pending| pending.key == *key)
-        {
-            let pending = state.pending_removals.swap_remove(index);
-            state.tiles.insert(pending.key, pending.tile);
-            self.publish_state_flags(&state);
-            return Ok(Some(pending.tile));
-        }
-        drop(state);
 
+        let build_entry = self.build_entry(key);
+        let _build_guard = build_entry
+            .build
+            .lock()
+            .expect("nova atlas per-key build lock poisoned");
+
+        // Another caller for this exact key may have completed while we waited on the per-key
+        // gate. Re-check before doing any expensive rasterization/decoding.
+        if let Some(tile) = self.lookup_or_restore_tile(key) {
+            return Ok(Some(tile));
+        }
+
+        let generation = build_entry.generation.load(AtomicOrdering::Acquire);
         let Some((size, bytes)) = build()? else {
             return Ok(None);
         };
 
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        // `build` intentionally runs without the atlas mutex so expensive glyph rasterization or
-        // image decoding cannot serialize unrelated cache misses. Another thread may have filled
-        // this exact key while we were building, so re-check before allocating/uploading to avoid
-        // duplicate tiles and orphaned GPU atlas space under concurrent misses.
+
+        // remove/clear/trim invalidates in-flight ownership before mutating atlas state. If that
+        // happened while the expensive builder was running, its output belongs to the old
+        // generation and must never repopulate the atlas after removal.
+        if build_entry.generation.load(AtomicOrdering::Acquire) != generation {
+            return Ok(state.tiles.get(key).copied());
+        }
+
         if let Some(tile) = state.tiles.get(key) {
             return Ok(Some(*tile));
         }
+
         let Some(tile) = state.allocate_and_upload(key, size, &bytes) else {
             let texture_kind = key.texture_kind();
             if state.full_kinds_logged.insert(texture_kind) {
@@ -286,10 +366,20 @@ impl PlatformAtlas for NovaAtlas {
         key: &AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
+        let build_entry = self.build_entry(key);
+        let _build_guard = build_entry
+            .build
+            .lock()
+            .expect("nova atlas per-key build lock poisoned");
+        let generation = build_entry.generation.load(AtomicOrdering::Acquire);
+
         let Some((size, bytes)) = build()? else {
             return Ok(None);
         };
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        if build_entry.generation.load(AtomicOrdering::Acquire) != generation {
+            return Ok(state.tiles.get(key).copied());
+        }
         if let Some(tile) = state.tiles.get(key).copied() {
             if tile.bounds.size == size {
                 if state.enqueue_tile_upload(
@@ -412,6 +502,7 @@ impl PlatformAtlas for NovaAtlas {
     }
 
     fn clear_glyphs(&self) {
+        self.invalidate_builds_matching(|key| matches!(key, AtlasKey::Glyph(_)));
         let keys = {
             let state = self.state.lock().expect("nova atlas lock poisoned");
             state
@@ -427,6 +518,7 @@ impl PlatformAtlas for NovaAtlas {
     }
 
     fn remove(&self, key: &AtlasKey) {
+        self.invalidate_build(key);
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         if let Some(tile) = state.tiles.remove(key) {
             if !state.is_fallback_tile(tile) {
@@ -440,6 +532,9 @@ impl PlatformAtlas for NovaAtlas {
     }
 
     fn remove_image(&self, image_id: ImageId) {
+        self.invalidate_builds_matching(
+            |key| matches!(key, AtlasKey::Image(params) if params.image_id == image_id),
+        );
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         let keys = state
             .tiles
@@ -972,6 +1067,213 @@ mod tests {
         assert_eq!(restored_tile, original_tile);
         assert!(!build_called.get());
         assert!(!atlas.has_pending_removals());
+    }
+
+    #[test]
+    fn same_key_build_requests_share_one_gate() {
+        let atlas = NovaAtlas::new();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(40),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+
+        let first = atlas.build_entry(&key);
+        let second = atlas.build_entry(&key);
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn different_keys_keep_independent_build_gates() {
+        let atlas = NovaAtlas::new();
+        let first = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(41),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+        let second = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(42),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+
+        assert!(!Arc::ptr_eq(
+            &atlas.build_entry(&first),
+            &atlas.build_entry(&second)
+        ));
+    }
+
+    #[test]
+    fn concurrent_same_key_miss_runs_builder_once() {
+        use std::{
+            sync::{
+                Arc as StdArc,
+                atomic::{AtomicUsize, Ordering},
+                mpsc,
+            },
+            time::Duration,
+        };
+
+        let atlas = StdArc::new(NovaAtlas::new());
+        atlas.clear_pending_uploads_for_test();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(44),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+        let build_calls = StdArc::new(AtomicUsize::new(0));
+
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let atlas_first = atlas.clone();
+        let key_first = key.clone();
+        let build_calls_first = build_calls.clone();
+        let first = std::thread::spawn(move || {
+            atlas_first
+                .ensure_tile_with(&key_first, &mut || {
+                    build_calls_first.fetch_add(1, Ordering::SeqCst);
+                    first_entered_tx
+                        .send(())
+                        .expect("test should observe the first builder");
+                    release_first_rx
+                        .recv()
+                        .expect("test should release the first builder");
+                    Ok(Some((
+                        size(DevicePixels(1), DevicePixels(1)),
+                        Cow::Owned(vec![1, 2, 3, 4]),
+                    )))
+                })
+                .expect("first concurrent atlas request should succeed")
+                .expect("first concurrent atlas request should produce a tile")
+        });
+
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first builder should enter");
+
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (duplicate_builder_tx, duplicate_builder_rx) = mpsc::channel();
+        let atlas_second = atlas.clone();
+        let key_second = key.clone();
+        let build_calls_second = build_calls.clone();
+        let second = std::thread::spawn(move || {
+            second_started_tx
+                .send(())
+                .expect("test should observe the second request");
+            atlas_second
+                .ensure_tile_with(&key_second, &mut || {
+                    build_calls_second.fetch_add(1, Ordering::SeqCst);
+                    duplicate_builder_tx
+                        .send(())
+                        .expect("duplicate builder observation channel should be live");
+                    Ok(Some((
+                        size(DevicePixels(1), DevicePixels(1)),
+                        Cow::Owned(vec![5, 6, 7, 8]),
+                    )))
+                })
+                .expect("second concurrent atlas request should succeed")
+                .expect("second concurrent atlas request should produce a tile")
+        });
+
+        second_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second request should start");
+        let duplicate_builder_started = duplicate_builder_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+
+        release_first_tx
+            .send(())
+            .expect("first builder should still be waiting");
+
+        let first_tile = first.join().expect("first atlas thread should not panic");
+        let second_tile = second.join().expect("second atlas thread should not panic");
+        assert!(
+            !duplicate_builder_started,
+            "same-key request must wait for the in-flight builder instead of starting another one"
+        );
+        assert_eq!(first_tile, second_tile);
+        assert_eq!(build_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn removal_during_build_does_not_repopulate_the_key() {
+        use std::{
+            sync::{Arc as StdArc, mpsc},
+            time::Duration,
+        };
+
+        let atlas = StdArc::new(NovaAtlas::new());
+        atlas.clear_pending_uploads_for_test();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(45),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_atlas = atlas.clone();
+        let worker_key = key.clone();
+        let worker = std::thread::spawn(move || {
+            worker_atlas
+                .ensure_tile_with(&worker_key, &mut || {
+                    entered_tx
+                        .send(())
+                        .expect("test should observe the in-flight builder");
+                    release_rx
+                        .recv()
+                        .expect("test should release the in-flight builder");
+                    Ok(Some((
+                        size(DevicePixels(1), DevicePixels(1)),
+                        Cow::Owned(vec![1, 2, 3, 4]),
+                    )))
+                })
+                .expect("invalidated build should not become an atlas error")
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("builder should enter before removal");
+        atlas.remove(&key);
+        release_tx
+            .send(())
+            .expect("builder should still be waiting");
+
+        assert_eq!(
+            worker.join().expect("atlas build thread should not panic"),
+            None,
+            "a build invalidated by removal must not publish a tile"
+        );
+        assert!(
+            !atlas
+                .state
+                .lock()
+                .expect("nova atlas lock poisoned")
+                .tiles
+                .contains_key(&key),
+            "removed key must stay absent after the stale builder completes"
+        );
+    }
+
+    #[test]
+    fn removing_key_invalidates_in_flight_build_generation() {
+        let atlas = NovaAtlas::new();
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(43),
+            frame_slot: 0,
+            pixel_format: ImagePixelFormat::Rgba8,
+        });
+        let entry = atlas.build_entry(&key);
+        let generation = entry.generation.load(AtomicOrdering::Acquire);
+
+        atlas.remove(&key);
+
+        assert_ne!(
+            entry.generation.load(AtomicOrdering::Acquire),
+            generation,
+            "removal must invalidate a builder that could otherwise repopulate the removed key"
+        );
     }
 
     #[test]
