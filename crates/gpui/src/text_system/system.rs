@@ -22,8 +22,9 @@ use std::{
 
 use super::{
     DecorationRun, Font, FontId, FontMetrics, FontRun, FontWeight, LineLayout, LineLayoutCache,
-    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, RenderGlyphParams, ShapedLine, TextRun,
-    WrappedLine, font, font_catalog::FontCatalog,
+    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyph, MissingGlyphReceiver,
+    MissingGlyphReporter, RenderGlyphParams, ShapedLine, TextRun, WrappedLine, font,
+    font_catalog::FontCatalog, missing_glyph_channel,
 };
 
 pub(super) const MAX_WRAPPER_POOL_KEYS: usize = 128;
@@ -51,6 +52,8 @@ pub struct TextSystem {
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
     font_runs_pool: Mutex<VecDeque<Vec<FontRun>>>,
     font_catalog: FontCatalog,
+    missing_glyph_reporter: Arc<MissingGlyphReporter>,
+    missing_glyph_receiver: Mutex<Option<MissingGlyphReceiver>>,
 }
 
 #[derive(Default)]
@@ -251,6 +254,7 @@ impl RasterBoundsCache {
 
 impl TextSystem {
     pub(crate) fn new(platform_text_system: Arc<dyn PlatformTextSystem>) -> Self {
+        let (missing_glyph_reporter, missing_glyph_receiver) = missing_glyph_channel();
         TextSystem {
             platform_text_system,
             system_font_family: RwLock::default(),
@@ -262,6 +266,8 @@ impl TextSystem {
             wrapper_pool: Mutex::default(),
             font_runs_pool: Mutex::default(),
             font_catalog: FontCatalog::default(),
+            missing_glyph_reporter,
+            missing_glyph_receiver: Mutex::new(Some(missing_glyph_receiver)),
         }
     }
 
@@ -320,6 +326,32 @@ impl TextSystem {
         self.font_catalog.invalidate_available_names();
         self.clear_caches();
         Ok(())
+    }
+
+    /// Takes the single receiver for missing-glyph reports.
+    ///
+    /// The receiver is normally consumed once by App::on_missing_glyphs. A nonblocking try-lock
+    /// avoids making callback registration wait behind unrelated text-system maintenance.
+    pub(crate) fn take_missing_glyph_receiver(&self) -> Option<MissingGlyphReceiver> {
+        self.missing_glyph_receiver
+            .try_lock()
+            .and_then(|mut receiver| receiver.take())
+    }
+
+    pub(crate) fn enable_missing_glyph_reporting(&self) {
+        self.platform_text_system
+            .set_missing_glyph_sink(Some(self.missing_glyph_reporter.clone()));
+    }
+
+    pub(crate) fn disable_missing_glyph_reporting(&self) {
+        self.platform_text_system.set_missing_glyph_sink(None);
+        self.missing_glyph_reporter.reset();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn report_missing_glyphs_in_test(&self, missing_glyphs: Vec<MissingGlyph>) {
+        self.missing_glyph_reporter
+            .report_for_test(missing_glyphs);
     }
 
     /// Add font files to the text system by path.
@@ -414,6 +446,7 @@ impl TextSystem {
         font_id_cache.fonts_by_id.clear();
         font_metrics.clear();
         self.font_cache_generation.fetch_add(1, Ordering::Release);
+        self.missing_glyph_reporter.reset();
         drop(font_metrics);
         drop(font_id_cache);
         self.raster_bounds.write().clear();

@@ -10,8 +10,9 @@ use super::{TestDispatcher, TestWindow};
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DevicePixels,
     DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs,
-    GestureTuning, GpuiMemoryTrimLevel, Keymap, LineLayout, Modifiers, Pixels, PlatformInput,
-    Point, RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, Task, TaskLabel,
+    GestureTuning, GpuiMemoryTrimLevel, Keymap, LineLayout, MissingGlyphSink, Modifiers, Pixels,
+    PlatformInput, Point, RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, Task,
+    TaskLabel,
     WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
     WindowDecorations, WindowParams, WindowTab, point, px, size,
     window::{Decorations, ResizeEdge},
@@ -330,6 +331,8 @@ pub enum TextRenderingMode {
 pub(crate) trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()>;
+    /// Installs a nonblocking sink for grapheme clusters that exhaust platform font fallback.
+    fn set_missing_glyph_sink(&self, _sink: Option<Arc<dyn MissingGlyphSink>>) {}
     /// Performs expensive platform font discovery without mutating the live text system.
     fn prepare_system_fonts(&self) {}
     /// Publishes previously prepared platform font metadata into the live text system.

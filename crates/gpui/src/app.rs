@@ -19,6 +19,7 @@ mod globals;
 mod lifecycle;
 mod memory;
 mod menus;
+mod missing_glyphs;
 mod network;
 #[cfg(doc)]
 pub mod ownership_and_data_flow;

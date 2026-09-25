@@ -4064,6 +4064,7 @@ dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
  "ashpd",
+ "async-channel 2.5.0",
  "async-task",
  "backtrace",
  "bindgen 0.73.2",

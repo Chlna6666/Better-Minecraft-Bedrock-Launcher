@@ -1,7 +1,8 @@
 use crate::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, Point,
-    RenderGlyphParams, Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size,
+    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
+    FontRun, FontStyle, FontWeight, GlyphId, LineLayout, MissingGlyph, MissingGlyphSink, Pixels,
+    PlatformTextSystem, Point, RenderGlyphParams, Result, SUBPIXEL_VARIANTS_X, ShapedGlyph,
+    ShapedRun, SharedString, Size,
     point, px, size, swap_rgba_pa_to_bgra_buffer,
 };
 use anyhow::anyhow;
@@ -44,6 +45,7 @@ use pathfinder_geometry::{
 };
 use smallvec::SmallVec;
 use std::{borrow::Cow, char, convert::TryFrom, path::PathBuf, sync::Arc};
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::open_type::apply_features_and_fallbacks;
 
@@ -69,6 +71,7 @@ struct MacTextSystemState {
     postscript_names_by_font_id: HashMap<FontId, String>,
     /// UTF-16 indices of ZWNJS
     zwnjs_scratch_space: Vec<usize>,
+    missing_glyph_sink: Option<Arc<dyn MissingGlyphSink>>,
 }
 
 impl MacTextSystem {
@@ -82,6 +85,7 @@ impl MacTextSystem {
             font_ids_by_font_key: HashMap::default(),
             postscript_names_by_font_id: HashMap::default(),
             zwnjs_scratch_space: Vec::new(),
+            missing_glyph_sink: None,
         }))
     }
 }
@@ -99,6 +103,10 @@ impl PlatformTextSystem for MacTextSystem {
 
     fn add_font_paths(&self, paths: Vec<PathBuf>) -> Result<()> {
         self.0.write().add_font_paths(paths)
+    }
+
+    fn set_missing_glyph_sink(&self, sink: Option<Arc<dyn MissingGlyphSink>>) {
+        self.0.write().missing_glyph_sink = sink;
     }
 
     fn set_application_font_family(&self, _family: SharedString) {}
@@ -510,6 +518,7 @@ impl MacTextSystemState {
         let line = CTLine::new_with_attributed_string(string.as_concrete_TypeRef());
         let glyph_runs = line.glyph_runs();
         let mut runs = <Vec<ShapedRun>>::with_capacity(glyph_runs.len() as usize);
+        let mut missing_text_indices = self.missing_glyph_sink.is_some().then(Vec::new);
         let mut ix_converter = StringIndexConverter::new(text);
         for run in glyph_runs.into_iter() {
             let attributes = run.attributes().unwrap();
@@ -520,6 +529,8 @@ impl MacTextSystemState {
                     .unwrap()
             };
             let font_id = self.id_for_native_font(font);
+            let is_last_resort =
+                missing_text_indices.is_some() && self.is_last_resort_font(font_id);
 
             let mut glyphs = match runs.last_mut() {
                 Some(run) if run.font_id == font_id => &mut run.glyphs,
@@ -552,6 +563,11 @@ impl MacTextSystemState {
                     ix_converter = StringIndexConverter::new(text);
                 }
                 ix_converter.advance_to_utf16_ix(glyph_utf16_ix);
+                if (glyph_id == 0 || is_last_resort)
+                    && let Some(missing_text_indices) = missing_text_indices.as_mut()
+                {
+                    missing_text_indices.push(ix_converter.utf8_ix);
+                }
                 glyphs.push(ShapedGlyph {
                     id: GlyphId(glyph_id as u32),
                     position: point(position.x as f32, position.y as f32).map(px),
@@ -563,6 +579,12 @@ impl MacTextSystemState {
                 });
             }
         }
+        if let Some((sink, missing_text_indices)) =
+            self.missing_glyph_sink.as_ref().zip(missing_text_indices)
+        {
+            sink.report(self.missing_glyphs(text, font_runs, missing_text_indices));
+        }
+
         let typographic_bounds = line.get_typographic_bounds();
         LineLayout {
             runs,
@@ -572,6 +594,85 @@ impl MacTextSystemState {
             descent: max_descent.into(),
             len: text.len(),
         }
+    }
+
+    fn is_last_resort_font(&self, font_id: FontId) -> bool {
+        let Some(font) = self.fonts.get(font_id.0) else {
+            return false;
+        };
+        if font.family_name().eq_ignore_ascii_case("LastResort") {
+            return true;
+        }
+        font.postscript_name()
+            .as_deref()
+            .is_some_and(|name| name.trim_start_matches('.').eq_ignore_ascii_case("LastResort"))
+    }
+
+    fn missing_glyphs(
+        &self,
+        text: &str,
+        font_runs: &[FontRun],
+        missing_text_indices: impl IntoIterator<Item = usize>,
+    ) -> Vec<MissingGlyph> {
+        let mut missing_text_indices = missing_text_indices.into_iter().peekable();
+        if missing_text_indices.peek().is_none() {
+            return Vec::new();
+        }
+
+        let mut missing_text_indices = missing_text_indices.collect::<Vec<_>>();
+        missing_text_indices.sort_unstable();
+        missing_text_indices.dedup();
+
+        let mut font_run_index = 0;
+        let mut font_run_end = font_runs.first().map_or(0, |run| run.len);
+        let mut missing_glyphs = Vec::new();
+        let mut missing_index = 0;
+
+        for (grapheme_start, grapheme) in text.grapheme_indices(true) {
+            let grapheme_end = grapheme_start + grapheme.len();
+            while missing_text_indices
+                .get(missing_index)
+                .is_some_and(|text_index| *text_index < grapheme_start)
+            {
+                missing_index += 1;
+            }
+
+            let Some(&text_index) = missing_text_indices.get(missing_index) else {
+                break;
+            };
+            if text_index >= grapheme_end {
+                continue;
+            }
+
+            while font_run_end <= text_index && font_run_index + 1 < font_runs.len() {
+                font_run_index += 1;
+                font_run_end += font_runs[font_run_index].len;
+            }
+
+            let font_class = font_runs
+                .get(font_run_index)
+                .or_else(|| font_runs.last())
+                .map(|run| run.font_id)
+                .and_then(|font_id| self.fonts.get(font_id.0))
+                .map(|font| {
+                    if font.is_monospace() {
+                        FallbackFontClass::Monospace
+                    } else {
+                        FallbackFontClass::Proportional
+                    }
+                })
+                .unwrap_or(FallbackFontClass::Proportional);
+
+            missing_glyphs.push(MissingGlyph::new(grapheme.into(), font_class));
+            while missing_text_indices
+                .get(missing_index)
+                .is_some_and(|text_index| *text_index < grapheme_end)
+            {
+                missing_index += 1;
+            }
+        }
+
+        missing_glyphs
     }
 }
 

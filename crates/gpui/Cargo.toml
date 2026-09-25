@@ -277,6 +277,9 @@ path = "tests/action_macros.rs"
 [dependencies.anyhow]
 version = "1.0.86"
 
+[dependencies.async-channel]
+version = "2.5"
+
 [dependencies.async-task]
 version = "4.7"
 

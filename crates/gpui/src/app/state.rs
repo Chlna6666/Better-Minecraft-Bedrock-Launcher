@@ -13,7 +13,10 @@ use futures::{Future, FutureExt, Stream, StreamExt, future::LocalBoxFuture};
 use parking_lot::RwLock;
 use slotmap::SlotMap;
 
-use super::{AppCell, KeystrokeObserver, application::load_default_font_config};
+use super::{
+    AppCell, KeystrokeObserver, application::load_default_font_config,
+    missing_glyphs::MissingGlyphCallbackSlot,
+};
 use ::util::debug_panic;
 use collections::{FxHashMap, FxHashSet, VecDeque};
 use http_client::HttpClient;
@@ -88,6 +91,7 @@ pub struct App {
     pub(crate) keystroke_observers: SubscriberSet<(), KeystrokeObserver>,
     pub(crate) keystroke_interceptors: SubscriberSet<(), KeystrokeObserver>,
     pub(crate) keyboard_layout_observers: SubscriberSet<(), Handler>,
+    pub(super) missing_glyph_callback: Rc<MissingGlyphCallbackSlot>,
     pub(crate) system_sleep_observers: SubscriberSet<(), Handler>,
     pub(crate) system_wake_observers: SubscriberSet<(), Handler>,
     pub(crate) release_listeners: SubscriberSet<EntityId, ReleaseListener>,
@@ -175,6 +179,7 @@ impl App {
                 keystroke_observers: SubscriberSet::new(),
                 keystroke_interceptors: SubscriberSet::new(),
                 keyboard_layout_observers: SubscriberSet::new(),
+                missing_glyph_callback: Rc::default(),
                 system_sleep_observers: SubscriberSet::new(),
                 system_wake_observers: SubscriberSet::new(),
                 global_observers: SubscriberSet::new(),
