@@ -104,7 +104,7 @@ fn request_layout_component(
     cx: &mut App,
     render: &mut dyn FnMut(&mut Window, &mut App) -> AnyElement,
 ) -> (LayoutId, AnyElement) {
-    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+    window.with_id(ElementId::Name(name.into()), |window| {
         let mut element = render(window, cx);
         let layout_id = element.request_layout(window, cx);
         (layout_id, element)
@@ -118,7 +118,7 @@ fn prepaint_component(
     window: &mut Window,
     cx: &mut App,
 ) {
-    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+    window.with_id(ElementId::Name(name.into()), |window| {
         element.prepaint(window, cx);
     });
 }
@@ -133,7 +133,7 @@ fn paint_component(
 ) {
     // Component is a lifecycle wrapper only; the rendered child owns every scene primitive.
     window.record_debug_element_traversal_only(bounds, cx);
-    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+    window.with_id(ElementId::Name(name.into()), |window| {
         element.paint(window, cx);
     });
 }

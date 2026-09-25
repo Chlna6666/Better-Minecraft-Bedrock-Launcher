@@ -775,9 +775,15 @@ impl Window {
         result
     }
 
-    /// Immediately push an element ID onto the stack. Useful for simplifying IDs in lists
+    /// Immediately push an element ID onto the stack. Useful for simplifying IDs in lists.
+    ///
+    /// Unlike `with_global_id`, this does not materialize the full element path when the caller
+    /// only needs a namespace for descendants.
     pub fn with_id<R>(&mut self, id: impl Into<ElementId>, f: impl FnOnce(&mut Self) -> R) -> R {
-        self.with_global_id(id.into(), |_, window| f(window))
+        self.element_id_stack.push(id.into());
+        let result = f(self);
+        self.element_id_stack.pop();
+        result
     }
 
     /// Executes the given closure within the context of a tab group.
