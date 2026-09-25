@@ -663,7 +663,7 @@ impl MacTextSystemState {
                 })
                 .unwrap_or(FallbackFontClass::Proportional);
 
-            missing_glyphs.push(MissingGlyph::new(grapheme.into(), font_class));
+            missing_glyphs.push(MissingGlyph::new(grapheme.to_owned().into(), font_class));
             while missing_text_indices
                 .get(missing_index)
                 .is_some_and(|text_index| *text_index < grapheme_end)

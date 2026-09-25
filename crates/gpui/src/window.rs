@@ -115,7 +115,7 @@ use dispatch::{log_timed_gpui_event, platform_input_name};
 pub(crate) use element_context::RetainedElementIdentity;
 pub use element_id::ElementId;
 pub(crate) use focus::{
-    AnyWindowFocusListener, ELEMENT_ARENA, ElementArenaScope, FocusMap, WindowFocusEvent,
+    AnyWindowFocusListener, ElementArenaScope, FocusMap, WindowFocusEvent,
     with_element_arena,
 };
 pub use focus::{

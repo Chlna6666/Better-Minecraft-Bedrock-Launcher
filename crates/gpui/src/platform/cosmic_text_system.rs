@@ -1435,7 +1435,7 @@ impl CosmicTextSystemState {
                     .or_else(|| font_runs.last())
                     .map(|run| run.font_id),
             );
-            missing_glyphs.push(MissingGlyph::new(grapheme.into(), font_class));
+            missing_glyphs.push(MissingGlyph::new(grapheme.to_owned().into(), font_class));
 
             while missing_text_indices
                 .get(missing_index)

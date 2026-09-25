@@ -116,14 +116,14 @@ impl MissingGlyphReporter {
 }
 
 /// Single-consumer endpoint that owns cross-report deduplication state.
-pub(super) struct MissingGlyphReceiver {
+pub(crate) struct MissingGlyphReceiver {
     state: MissingGlyphState,
     generation: Arc<AtomicUsize>,
     receiver: async_channel::Receiver<QueuedMissingGlyph>,
 }
 
 impl MissingGlyphReceiver {
-    pub(super) async fn recv(
+    pub(crate) async fn recv(
         &mut self,
     ) -> std::result::Result<Vec<MissingGlyph>, async_channel::RecvError> {
         loop {

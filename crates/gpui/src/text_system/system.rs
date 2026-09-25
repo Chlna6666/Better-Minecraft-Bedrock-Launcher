@@ -20,9 +20,12 @@ use std::{
     },
 };
 
+#[cfg(test)]
+use super::MissingGlyph;
+
 use super::{
     DecorationRun, Font, FontId, FontMetrics, FontRun, FontWeight, LineLayout, LineLayoutCache,
-    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyph, MissingGlyphReceiver,
+    LineLayoutFrameMetrics, LineLayoutIndex, LineWrapper, MissingGlyphReceiver,
     MissingGlyphReporter, RenderGlyphParams, ShapedLine, TextRun, WrappedLine, font,
     font_catalog::FontCatalog, missing_glyph_channel,
 };

@@ -1255,7 +1255,7 @@ fn missing_glyphs_for_text(
             .or_else(|| font_runs.last())
             .map(|run| font_class(run.font_id))
             .unwrap_or(FallbackFontClass::Proportional);
-        missing_glyphs.push(MissingGlyph::new(grapheme.into(), class));
+        missing_glyphs.push(MissingGlyph::new(grapheme.to_owned().into(), class));
 
         while missing_text_indices
             .get(missing_index)
