@@ -571,17 +571,17 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_elements.len()
     }
 
-    /// Returns every active ReconcileSubtree target strictly below ancestor.
+    /// Returns the only active ReconcileSubtree target strictly below ancestor.
     ///
-    /// Targets outside this ancestor belong to a different retained root (for example a prompt or
-    /// overlay) and do not block local reconciliation here. Generic dirty views or an unsupported
-    /// invalidation scope remain conservative and fall back to normal traversal.
-    pub(crate) fn reconcile_targets_below(
+    /// Selective cached-view splice is intentionally single-target. A second matching target,
+    /// unsupported invalidation scope, or route-local generic dirtiness makes the ancestor rebuild
+    /// normally instead of materializing a target collection that cannot be consumed.
+    pub(crate) fn single_reconcile_target_below(
         &self,
         ancestor: &GlobalElementId,
         ancestor_owner: EntityId,
         dispatch_tree: &DispatchTree,
-    ) -> Option<SmallVec<[(EntityId, GlobalElementId); 4]>> {
+    ) -> Option<(EntityId, GlobalElementId)> {
         let inner = self.inner.borrow();
         if !inner.active_targeted_replay {
             return None;
@@ -598,17 +598,17 @@ impl WindowInvalidator {
             return None;
         }
 
-        let mut targets = SmallVec::new();
+        let mut selected = None;
         for ((owner, target), scope) in &inner.active_targeted_elements {
             if !global_element_path_is_strict_prefix(ancestor, target) {
                 continue;
             }
-            if *scope != RetainedInvalidationScope::ReconcileSubtree {
+            if *scope != RetainedInvalidationScope::ReconcileSubtree || selected.is_some() {
                 return None;
             }
-            targets.push((*owner, target.clone()));
+            selected = Some((*owner, target.clone()));
         }
-        (!targets.is_empty()).then_some(targets)
+        selected
     }
 
     pub fn is_dirty(&self) -> bool {

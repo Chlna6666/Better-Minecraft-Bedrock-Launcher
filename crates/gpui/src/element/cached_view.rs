@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::{any::TypeId, ops::Range};
 
 struct CachedViewState {
-    owner_id: EntityId,
     retained_id: GlobalElementId,
     weak_view: CachedWeakView,
     traversal_context: CachedViewTraversalContext,
@@ -99,18 +98,11 @@ fn selective_cached_view_target(
     ancestor_retained_id: &GlobalElementId,
     parent_state: &CachedViewState,
 ) -> Option<SelectiveCachedViewTarget> {
-    let raw_targets = window.invalidator.reconcile_targets_below(
+    let (owner_id, retained_id) = window.invalidator.single_reconcile_target_below(
         ancestor_retained_id,
-        parent_state.owner_id,
+        parent_state.weak_view.entity_id(),
         &window.rendered_frame.dispatch_tree,
     )?;
-
-    // Selective splice is deliberately a single-target contract. Multiple dirty targets rebuild
-    // their cached ancestor instead of carrying dormant multi-target scene-surgery machinery.
-    if raw_targets.len() != 1 {
-        return None;
-    }
-    let (owner_id, retained_id) = raw_targets.into_iter().next()?;
     if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
         return None;
     }
@@ -138,7 +130,7 @@ fn selective_cached_view_target(
         .inner
         .downcast_ref::<Option<CachedViewState>>()?
         .as_ref()?;
-    if state.owner_id != owner_id || state.retained_id != retained_id {
+    if state.weak_view.entity_id() != owner_id || state.retained_id != retained_id {
         return None;
     }
 
@@ -505,7 +497,6 @@ impl Element for CachedView {
                         .expect("CachedView must have a retained identity");
                     let traversal_context = traversal_context.clone();
                     if let Some(state) = element_state.as_mut() {
-                        state.owner_id = self.entity_id();
                         state.retained_id = retained_id.clone();
                         state.weak_view = self.downgrade();
                         state.traversal_context = traversal_context.clone();
@@ -743,7 +734,6 @@ impl Element for CachedView {
                     (
                         CachedViewPrepaintState(CachedViewPrepaintStateKind::Fresh(element)),
                         CachedViewState {
-                            owner_id: self.entity_id(),
                             retained_id,
                             weak_view: self.downgrade(),
                             traversal_context,
