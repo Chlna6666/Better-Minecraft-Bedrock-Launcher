@@ -71,7 +71,7 @@ impl Window {
         cx: &mut App,
     ) -> Option<AnyElement> {
         if let Some(inspector) = self.inspector.take() {
-            let mut inspector_element = AnyView::from(inspector.clone()).into_any_element();
+            let mut inspector_element = inspector.clone().into_any_element();
             inspector_element.prepaint_as_root(
                 point(self.viewport_size.width - inspector_width, px(0.0)),
                 size(inspector_width, self.viewport_size.height).into(),

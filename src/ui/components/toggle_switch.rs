@@ -229,7 +229,7 @@ impl RenderOnce for ToggleSwitch {
                 cx.notify();
             }
         });
-        AnyView::from(view)
+        view
     }
 }
 
