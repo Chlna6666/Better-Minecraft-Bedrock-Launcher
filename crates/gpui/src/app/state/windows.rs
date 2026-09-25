@@ -64,7 +64,7 @@ impl App {
         })
     }
 
-    #[inline(always)]
+    #[inline]
     pub(in crate::app) fn update_window_id<T, F>(&mut self, id: WindowId, update: F) -> Result<T>
     where
         F: FnOnce(AnyView, &mut Window, &mut App) -> T,
