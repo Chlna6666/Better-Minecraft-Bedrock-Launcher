@@ -496,6 +496,20 @@ fn paint_retained_element(
     }
 }
 
+#[inline(never)]
+fn compute_element_root_layout(
+    layout_id: LayoutId,
+    available_space: Size<AvailableSpace>,
+    previous_available_space: Option<Size<AvailableSpace>>,
+    global_id: Option<&GlobalElementId>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if previous_available_space != Some(available_space) {
+        window.compute_layout_with_diagnostic_id(layout_id, available_space, global_id, cx);
+    }
+}
+
 /// A wrapper around an implementer of [`Element`] that allows it to be drawn in a window.
 impl<E: Element> Drawable<E> {
     pub(crate) fn new(element: E) -> Self {
@@ -764,7 +778,16 @@ impl<E: Element> Drawable<E> {
             self.request_layout(window, cx);
         }
 
-        let layout_id = match mem::take(&mut self.phase) {
+        let (
+            layout_id,
+            global_id,
+            retained_segment,
+            retained_id,
+            retained_identity_ambiguity,
+            inspector_id,
+            previous_available_space,
+            request_layout,
+        ) = match mem::take(&mut self.phase) {
             ElementDrawPhase::RequestLayout {
                 layout_id,
                 global_id,
@@ -773,25 +796,16 @@ impl<E: Element> Drawable<E> {
                 retained_identity_ambiguity,
                 inspector_id,
                 request_layout,
-            } => {
-                window.compute_layout_with_diagnostic_id(
-                    layout_id,
-                    available_space,
-                    global_id.as_ref(),
-                    cx,
-                );
-                self.phase = ElementDrawPhase::LayoutComputed {
-                    layout_id,
-                    global_id,
-                    retained_segment,
-                    retained_id,
-                    retained_identity_ambiguity,
-                    inspector_id,
-                    available_space,
-                    request_layout,
-                };
-                layout_id
-            }
+            } => (
+                layout_id,
+                global_id,
+                retained_segment,
+                retained_id,
+                retained_identity_ambiguity,
+                inspector_id,
+                None,
+                request_layout,
+            ),
             ElementDrawPhase::LayoutComputed {
                 layout_id,
                 global_id,
@@ -799,30 +813,38 @@ impl<E: Element> Drawable<E> {
                 retained_id,
                 retained_identity_ambiguity,
                 inspector_id,
-                available_space: prev_available_space,
+                available_space: previous_available_space,
                 request_layout,
-            } => {
-                if available_space != prev_available_space {
-                    window.compute_layout_with_diagnostic_id(
-                        layout_id,
-                        available_space,
-                        global_id.as_ref(),
-                        cx,
-                    );
-                }
-                self.phase = ElementDrawPhase::LayoutComputed {
-                    layout_id,
-                    global_id,
-                    retained_segment,
-                    retained_id,
-                    retained_identity_ambiguity,
-                    inspector_id,
-                    available_space,
-                    request_layout,
-                };
-                layout_id
-            }
+            } => (
+                layout_id,
+                global_id,
+                retained_segment,
+                retained_id,
+                retained_identity_ambiguity,
+                inspector_id,
+                Some(previous_available_space),
+                request_layout,
+            ),
             _ => panic!("cannot measure after painting"),
+        };
+
+        compute_element_root_layout(
+            layout_id,
+            available_space,
+            previous_available_space,
+            global_id.as_ref(),
+            window,
+            cx,
+        );
+        self.phase = ElementDrawPhase::LayoutComputed {
+            layout_id,
+            global_id,
+            retained_segment,
+            retained_id,
+            retained_identity_ambiguity,
+            inspector_id,
+            available_space,
+            request_layout,
         };
 
         window.layout_bounds(layout_id).size
