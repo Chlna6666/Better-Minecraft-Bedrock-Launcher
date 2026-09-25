@@ -179,7 +179,7 @@ impl NovaAtlas {
 
     fn lookup_or_restore_tile(&self, key: &AtlasKey) -> Option<AtlasTile> {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        if let Some(tile) = state.tiles.get(&key) {
+        if let Some(tile) = state.tiles.get(key) {
             return Some(*tile);
         }
 
