@@ -505,14 +505,10 @@ impl MainWindowView {
 
         root = root.child(page);
         if let Some(chrome_view) = &self.chrome_view {
-            root = root.child(
-                AnyView::from(chrome_view.clone())
-                    // Keep the chrome root traversable so its brand/nav/auth/control cache
-                    // boundaries can reconcile independently. Caching this whole absolute
-                    // surface can replay a stale blur/text scene after a partial frame.
-                    .critical()
-                    .into_any_element(),
-            );
+            // Keep the chrome root as a normal reactive view so its brand/nav/auth/control
+            // cache boundaries can reconcile independently. Caching or marking the whole surface
+            // as a cache policy boundary can replay a stale blur/text scene after a partial frame.
+            root = root.child(chrome_view.clone().into_any_element());
         }
 
         if model.builtin_route == AppRoute::Download
