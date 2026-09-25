@@ -59,13 +59,13 @@ pub enum AssetRetentionPolicy {
 }
 
 enum AssetLeaseState<T> {
-    Loading,
-    Ready(T),
-}
-
-#[derive(Default)]
-struct AssetLeaseObservers {
-    windows: FxHashMap<WindowId, AssetLeaseWindowObservers>,
+    Loading {
+        observers: FxHashMap<WindowId, AssetLeaseWindowObservers>,
+    },
+    Ready {
+        value: T,
+        observers: FxHashMap<WindowId, AssetLeaseWindowObservers>,
+    },
 }
 
 struct AssetLeaseWindowObservers {
@@ -105,7 +105,6 @@ where
     T: Clone + Send + 'static,
 {
     state: Arc<parking_lot::Mutex<AssetLeaseState<T>>>,
-    observers: Arc<parking_lot::Mutex<AssetLeaseObservers>>,
     completion: Shared<Task<Result<(), Aborted>>>,
     owner: Arc<AssetLoadOwner>,
 }
@@ -117,7 +116,6 @@ where
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            observers: self.observers.clone(),
             completion: self.completion.clone(),
             owner: self.owner.clone(),
         }
@@ -170,8 +168,9 @@ where
         future: impl Future<Output = T> + Send + 'static,
         cx: &App,
     ) -> Self {
-        let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Loading));
-        let observers = Arc::new(parking_lot::Mutex::new(AssetLeaseObservers::default()));
+        let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Loading {
+            observers: FxHashMap::default(),
+        }));
         let weak_state = Arc::downgrade(&state);
         let (abort, registration) = AbortHandle::new_pair();
         let completion = cx
@@ -180,23 +179,37 @@ where
                 async move {
                     let output = future.await;
                     if let Some(state) = weak_state.upgrade() {
-                        *state.lock() = AssetLeaseState::Ready(output);
+                        let mut state = state.lock();
+                        let observers = match &mut *state {
+                            AssetLeaseState::Loading { observers } => std::mem::take(observers),
+                            AssetLeaseState::Ready { .. } => return,
+                        };
+                        *state = AssetLeaseState::Ready {
+                            value: output,
+                            observers,
+                        };
                     }
                 },
                 registration,
             ))
             .shared();
 
-        let weak_observers = Arc::downgrade(&observers);
+        let weak_state = Arc::downgrade(&state);
         let ready = completion.clone();
         cx.spawn(async move |cx| {
             if ready.await.is_err() {
                 return;
             }
-            let Some(observers) = weak_observers.upgrade() else {
+            let Some(state) = weak_state.upgrade() else {
                 return;
             };
-            let windows = std::mem::take(&mut observers.lock().windows);
+            let windows = {
+                let mut state = state.lock();
+                match &mut *state {
+                    AssetLeaseState::Ready { observers, .. } => std::mem::take(observers),
+                    AssetLeaseState::Loading { .. } => return,
+                }
+            };
             let _ = cx.update(move |cx| {
                 for observer in windows.into_values() {
                     let views = observer.views;
@@ -210,7 +223,6 @@ where
 
         Self {
             state,
-            observers,
             completion,
             owner: Arc::new(AssetLoadOwner {
                 abort,
@@ -220,11 +232,13 @@ where
     }
 
     pub(crate) fn ready(value: T) -> Self {
-        let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Ready(value)));
+        let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Ready {
+            value,
+            observers: FxHashMap::default(),
+        }));
         let (abort, _registration) = AbortHandle::new_pair();
         Self {
             state,
-            observers: Arc::new(parking_lot::Mutex::new(AssetLeaseObservers::default())),
             completion: Task::ready(Ok(())).shared(),
             owner: Arc::new(AssetLoadOwner {
                 abort,
@@ -255,28 +269,28 @@ where
     }
 
     pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
-        if let Some(value) = self.get() {
-            return Some(value);
+        let mut state = self.state.lock();
+        match &mut *state {
+            AssetLeaseState::Loading { observers } => {
+                observers
+                    .entry(window.window_id())
+                    .or_insert_with(|| AssetLeaseWindowObservers {
+                        window,
+                        views: FxHashSet::default(),
+                    })
+                    .views
+                    .insert(view);
+                None
+            }
+            AssetLeaseState::Ready { value, .. } => Some(value.clone()),
         }
-
-        self.observers
-            .lock()
-            .windows
-            .entry(window.window_id())
-            .or_insert_with(|| AssetLeaseWindowObservers {
-                window,
-                views: FxHashSet::default(),
-            })
-            .views
-            .insert(view);
-        None
     }
 
     /// Returns the completed value without waiting, or None while the load is still pending.
     pub fn get(&self) -> Option<T> {
         match &*self.state.lock() {
-            AssetLeaseState::Loading => None,
-            AssetLeaseState::Ready(value) => Some(value.clone()),
+            AssetLeaseState::Loading { .. } => None,
+            AssetLeaseState::Ready { value, .. } => Some(value.clone()),
         }
     }
 
