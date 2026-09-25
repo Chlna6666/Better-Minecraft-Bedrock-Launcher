@@ -55,7 +55,6 @@ log = "0.4"
 pollster = { version = "0.4.0", optional = true }
 rayon = "1.11.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }
-sysinfo = "0.38.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
 wgpu = { version = "29.0.3", default-features = false, optional = true }
