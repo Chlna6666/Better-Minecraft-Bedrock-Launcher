@@ -99,6 +99,7 @@ impl AppContext for App {
         GpuiBorrow::new(handle.clone(), self)
     }
 
+    #[inline(always)]
     fn read_entity<T, R>(
         &self,
         handle: &Entity<T>,
@@ -111,6 +112,7 @@ impl AppContext for App {
         read(entity, self)
     }
 
+    #[inline(always)]
     fn update_window<T, F>(&mut self, handle: AnyWindowHandle, update: F) -> Result<T>
     where
         F: FnOnce(AnyView, &mut Window, &mut App) -> T,
