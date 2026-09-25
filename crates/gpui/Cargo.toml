@@ -331,7 +331,7 @@ features = [
     "render",
     "scale",
 ]
-version = "0.2.6"
+version = "0.2.10"
 
 [dependencies.derive_more]
 features = ["full"]
