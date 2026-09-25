@@ -70,7 +70,7 @@ impl AppContext for App {
 
     /// Updates the entity referenced by the given handle. The function is passed a mutable reference to the
     /// entity along with a `Context` for the entity.
-    #[inline(always)]
+    #[inline]
     fn update_entity<T: 'static, R>(
         &mut self,
         handle: &Entity<T>,
@@ -98,7 +98,7 @@ impl AppContext for App {
         GpuiBorrow::new(handle.clone(), self)
     }
 
-    #[inline(always)]
+    #[inline]
     fn read_entity<T, R>(
         &self,
         handle: &Entity<T>,
