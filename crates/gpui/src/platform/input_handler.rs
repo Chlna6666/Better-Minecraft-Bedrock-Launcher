@@ -131,6 +131,20 @@ impl PlatformInputHandler {
             .flatten()
     }
 
+    /// Returns whether printable keys should be routed through the IME before keybinding
+    /// matching for the current focused text handler.
+    ///
+    /// A pending multi-stroke binding always wins temporarily: the next printable key may complete
+    /// a chord whose prefix already bypassed the IME.
+    pub fn query_prefers_ime_for_printable_keys(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| {
+                !window.has_pending_keystrokes()
+                    && self.handler.prefers_ime_for_printable_keys(window, cx)
+            })
+            .unwrap_or(false)
+    }
+
     #[allow(dead_code)]
     fn apple_press_and_hold_enabled(&mut self) -> bool {
         self.handler.apple_press_and_hold_enabled()
@@ -276,6 +290,15 @@ pub trait InputHandler: 'static {
         _cx: &mut App,
     ) -> Option<Range<usize>> {
         None
+    }
+
+    /// Returns whether printable keys should be routed to a composition-based IME before
+    /// keybinding matching when such an input source is active.
+    ///
+    /// Defaults to `false` so terminal/raw-key handlers retain direct key semantics. Editable
+    /// [`EntityInputHandler`](crate::EntityInputHandler) implementations opt in by default.
+    fn prefers_ime_for_printable_keys(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
+        false
     }
 
     /// Allows a given input context to opt into getting raw key repeats instead of

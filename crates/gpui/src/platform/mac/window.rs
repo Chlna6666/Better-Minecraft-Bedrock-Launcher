@@ -1,4 +1,8 @@
-use super::{BoolExt, MacDisplay, NSRange, NSStringExt, ns_string, renderer};
+use super::{
+    BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
+    TISGetInputSourceProperty, kTISPropertyInputSourceIsASCIICapable,
+    kTISPropertyInputSourceType, kTISTypeKeyboardInputMode, ns_string, renderer,
+};
 use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
@@ -26,6 +30,9 @@ use cocoa::{
     },
 };
 
+use core_foundation::base::{CFRelease, CFTypeRef};
+use core_foundation_sys::base::CFEqual;
+use core_foundation_sys::number::{CFBooleanGetValue, CFBooleanRef};
 use core_graphics::display::{CGDirectDisplayID, CGPoint, CGRect};
 use ctor::ctor;
 use futures::channel::oneshot;
@@ -1699,6 +1706,38 @@ extern "C" fn handle_key_up(this: &Object, _: Sel, native_event: id) {
 //   - in vim mode `option-4`  should go to end of line (same as $)
 //  Japanese (Romaji) layout:
 //   - type `a i left down up enter enter` should create an unmarked text "愛"
+/// Returns true when the current macOS input source is a composition-based, non-ASCII IME.
+///
+/// Plain keyboard layouts must stay on GPUI's normal keybinding-first path; only keyboard input
+/// modes such as Japanese/Korean/Chinese composition sources need printable keys offered to IME
+/// before multi-stroke keybinding matching.
+unsafe fn is_ime_input_source_active() -> bool {
+    unsafe {
+        let source = TISCopyCurrentKeyboardInputSource();
+        if source.is_null() {
+            return false;
+        }
+
+        let source_type =
+            TISGetInputSourceProperty(source, kTISPropertyInputSourceType as *const c_void);
+        let is_input_mode = !source_type.is_null()
+            && CFEqual(
+                source_type as CFTypeRef,
+                kTISTypeKeyboardInputMode as CFTypeRef,
+            ) != 0;
+
+        let is_ascii = TISGetInputSourceProperty(
+            source,
+            kTISPropertyInputSourceIsASCIICapable as *const c_void,
+        );
+        let is_ascii_capable =
+            !is_ascii.is_null() && CFBooleanGetValue(is_ascii as CFBooleanRef);
+
+        CFRelease(source as CFTypeRef);
+        is_input_mode && !is_ascii_capable
+    }
+}
+
 extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: bool) -> BOOL {
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.as_ref().lock();
@@ -1740,18 +1779,32 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                     .flatten()
                     .is_some();
 
-            // If we're composing, send the key to the input handler first;
-            // otherwise we only send to the input handler if we don't have a matching binding.
-            // The input handler may call `do_command_by_selector` if it doesn't know how to handle
-            // a key. If it does so, it will return YES so we won't send the key twice.
-            // We also do this for non-printing keys (like arrow keys and escape) as the IME menu
-            // may need them even if there is no marked text;
-            // however we skip keys with control or the input handler adds control-characters to the buffer.
-            // and keys with function, as the input handler swallows them.
+            // Composition keeps IME-first semantics. Outside an active composition, printable
+            // keys also go to IME first when a non-ASCII composition source is active and the
+            // focused input handler opts in. PlatformInputHandler suppresses this preference while
+            // a multi-stroke GPUI keybinding is pending so its next printable key can complete the
+            // already-started chord.
+            let is_ime_printable_key = !is_composing
+                && key_down_event
+                    .keystroke
+                    .key_char
+                    .as_ref()
+                    .is_some_and(|key_char| key_char.chars().all(|c| !c.is_control()))
+                && !key_down_event.keystroke.modifiers.control
+                && !key_down_event.keystroke.modifiers.function
+                && !key_down_event.keystroke.modifiers.platform
+                && unsafe { is_ime_input_source_active() }
+                && with_input_handler(this, |input_handler| {
+                    input_handler.query_prefers_ime_for_printable_keys()
+                })
+                .unwrap_or(false);
+
             if is_composing
+                || is_ime_printable_key
                 || (key_down_event.keystroke.key_char.is_none()
                     && !key_down_event.keystroke.modifiers.control
-                    && !key_down_event.keystroke.modifiers.function)
+                    && !key_down_event.keystroke.modifiers.function
+                    && !key_down_event.keystroke.modifiers.platform)
             {
                 {
                     let mut lock = window_state.as_ref().lock();

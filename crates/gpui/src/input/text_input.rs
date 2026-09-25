@@ -71,6 +71,19 @@ pub trait EntityInputHandler: 'static + Sized {
         cx: &mut Context<Self>,
     ) -> Option<usize>;
 
+    /// See [`InputHandler::prefers_ime_for_printable_keys`] for details.
+    ///
+    /// Entity input handlers represent editable text targets, so they opt into IME-first routing
+    /// for printable keys by default. Raw-key handlers that implement [`InputHandler`] directly
+    /// keep that trait's conservative `false` default.
+    fn prefers_ime_for_printable_keys(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        true
+    }
+
     /// See [`InputHandler::text_input_editable_range`] for details.
     fn text_input_editable_range(
         &mut self,
@@ -185,6 +198,11 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
         self.view.update(cx, |view, cx| {
             view.character_index_for_point(point, window, cx)
         })
+    }
+
+    fn prefers_ime_for_printable_keys(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.view
+            .update(cx, |view, cx| view.prefers_ime_for_printable_keys(window, cx))
     }
 
     fn text_input_editable_range(
