@@ -337,6 +337,10 @@ impl Window {
                             cursor_offset: position,
                             cursor_style: None,
                         });
+                        // The first drag frame must visit interactive application content once so
+                        // drag-over/group-drag-over transition listeners are installed. Subsequent
+                        // drag motion can stay replay-only and invalidate only changed hit targets.
+                        self.refresh();
                     }
                     PlatformInput::MouseMove(MouseMoveEvent {
                         position,
@@ -364,9 +368,9 @@ impl Window {
                 }
                 FileDropEvent::Exited => {
                     cx.active_drag.take();
-                    // External drag leave has no following MouseMove/MouseUp event. Force one
-                    // refreshed frame so drag previews, drag-over styles and view-owned hover
-                    // affordances disappear immediately instead of waiting for unrelated UI work.
+                    // Drag end changes normal-hover/drag-over semantics across interactive content,
+                    // so keep one conservative refresh here. High-frequency drag movement itself
+                    // stays replay-only in dispatch_mouse_event.
                     self.refresh();
                     PlatformInput::FileDrop(FileDropEvent::Exited)
                 }
@@ -644,6 +648,7 @@ impl Window {
             return;
         }
 
+        let active_drag_before_dispatch = cx.has_active_drag();
         let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
         let event_type = event.type_id();
 
@@ -682,12 +687,21 @@ impl Window {
 
         if cx.has_active_drag() {
             if event.is::<MouseMoveEvent>() {
-                // If this was a mouse move event, redraw the window so that the
-                // active drag can follow the mouse cursor.
-                self.refresh();
+                if active_drag_before_dispatch {
+                    // The drag preview is a window-owned overlay. Drag-over style targets installed
+                    // by the first conservative drag frame are invalidated by hit-test transition
+                    // listeners, so ordinary movement must not force every cached application view
+                    // through MissRefresh.
+                    self.redraw_without_view_cache_refresh();
+                } else {
+                    // A drag created by this mouse move changes global interaction semantics:
+                    // normal hover is suppressed and drag-over listeners must be installed across
+                    // the application tree. Pay one conservative refresh at drag start only.
+                    self.refresh();
+                }
             } else if event.is::<MouseUpEvent>() {
-                // If this was a mouse up event, cancel the active drag and redraw
-                // the window.
+                // Ending a drag restores normal hover semantics across interactive content. Keep
+                // this one transition conservative; high-frequency drag movement above is local.
                 cx.active_drag = None;
                 self.refresh();
             }

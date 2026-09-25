@@ -138,16 +138,37 @@ impl Interactivity {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let group_hitbox = self
+        let mut group_hitboxes = SmallVec::<[HitboxId; 4]>::new();
+        if let Some(group_hitbox) = self
             .group_hover_style
             .as_ref()
-            .and_then(|group_hover| GroupHitboxes::get(&group_hover.group, cx));
+            .and_then(|group_hover| GroupHitboxes::get(&group_hover.group, cx))
+        {
+            group_hitboxes.push(group_hitbox);
+        }
 
-        if let Some(group_hitbox) = group_hitbox {
+        // Once a drag is active, group drag-over styles have the same hit-test dependency as
+        // ordinary group-hover styles. Register their exact group hitboxes so pointer movement can
+        // invalidate only affected retained regions instead of requiring a Window::refresh.
+        if let Some(active_drag) = cx.active_drag.as_ref() {
+            let drag_type = active_drag.value.as_ref().type_id();
+            for (state_type, group_drag_style) in &self.group_drag_over_styles {
+                if *state_type != drag_type {
+                    continue;
+                }
+                if let Some(group_hitbox) = GroupHitboxes::get(&group_drag_style.group, cx)
+                    && !group_hitboxes.contains(&group_hitbox)
+                {
+                    group_hitboxes.push(group_hitbox);
+                }
+            }
+        }
+
+        let current_view = window.current_view();
+        let descendants_dirty = self.interaction_affects_descendants();
+        for group_hitbox in group_hitboxes {
             let was_hovered = group_hitbox.is_hovered(window);
-            let current_view = window.current_view();
             let retained_path = window.current_retained_element_id();
-            let descendants_dirty = self.interaction_affects_descendants();
 
             if was_hovered {
                 let exit_retained_path = retained_path.clone();

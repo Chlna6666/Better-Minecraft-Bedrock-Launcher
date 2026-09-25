@@ -911,6 +911,35 @@ fn mouse_hit_test_uses_event_position(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn active_drag_mouse_move_replays_overlay_without_full_cache_refresh(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+
+    window.update(|window, cx| {
+        window.test_set_active_drag(cx, point(px(2.), px(3.)));
+        window.force_view_cache_refresh = false;
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(20.), px(24.)),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+
+        assert!(cx.has_active_drag());
+        assert!(window.invalidator.is_dirty());
+        assert!(
+            !window.force_view_cache_refresh,
+            "steady-state drag motion should redraw only the overlay and changed drag-over targets"
+        );
+    });
+}
+
+#[gpui::test]
 fn input_modality_change_reconciles_framework_hover_without_full_cache_refresh(
     cx: &mut TestAppContext,
 ) {
