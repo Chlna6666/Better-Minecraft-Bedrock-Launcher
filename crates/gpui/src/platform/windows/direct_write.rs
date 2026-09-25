@@ -1738,10 +1738,11 @@ fn apply_font_features(
     features: &FontFeatures,
 ) -> Result<()> {
     let tag_values = features.tag_value_list();
-    if tag_values.is_empty() {
-        return Ok(());
-    }
 
+    // DirectWrite treats a non-empty typography object differently from its implicit defaults.
+    // Always install the default-on ligature/contextual features, even when the caller did not
+    // request explicit overrides, so the GPUI typography object preserves DirectWrite's normal
+    // shaping behavior.
     let mut feature_liga = make_direct_write_feature("liga", 1);
     let mut feature_clig = make_direct_write_feature("clig", 1);
     let mut feature_calt = make_direct_write_feature("calt", 1);
