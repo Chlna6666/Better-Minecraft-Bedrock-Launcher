@@ -316,6 +316,8 @@ pub struct PerformanceMetricsSnapshot {
     pub pod_upload_bytes: usize,
     /// Number of platform scheduler wakeups since process start.
     pub scheduler_wakeups: usize,
+    /// Number of foreground task-pump turns that yielded while runnable work remained queued.
+    pub foreground_task_budget_exhaustions: usize,
     /// Time spent with the on-demand platform scheduler asleep since process start.
     pub idle_sleep_time: Option<Duration>,
     /// Number of frame requests that reached window scheduling since process start.

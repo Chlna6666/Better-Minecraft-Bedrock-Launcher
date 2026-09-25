@@ -3069,8 +3069,9 @@ impl Render for DebugView {
                                 (
                                     SharedString::from("调度器"),
                                     SharedString::from(format!(
-                                        "{} wakeup / {:.2} ms idle / refresh {} / effects {} / fallback {}",
+                                        "{} wakeup / {} foreground-yield / {:.2} ms idle / refresh {} / effects {} / fallback {}",
                                         runtime.gpui_scheduler_wakeups,
+                                        runtime.gpui_foreground_task_budget_exhaustions,
                                         runtime.gpui_idle_sleep_time_ms,
                                         runtime.gpui_coalesced_refresh_count,
                                         runtime.gpui_coalesced_refresh_effect_count,

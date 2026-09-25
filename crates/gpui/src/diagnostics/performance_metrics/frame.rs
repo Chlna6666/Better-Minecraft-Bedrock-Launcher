@@ -184,6 +184,12 @@ pub fn record_scheduler_wakeup() {
         .scheduler_wakeups
         .fetch_add(1, Ordering::Relaxed);
 }
+/// Records one foreground task-pump turn that yielded with runnable work still queued.
+pub fn record_foreground_task_budget_exhaustion() {
+    shared_metrics()
+        .foreground_task_budget_exhaustions
+        .fetch_add(1, Ordering::Relaxed);
+}
 
 /// Records time spent with an on-demand platform frame scheduler parked.
 pub fn record_scheduler_idle_sleep(duration: Duration) {

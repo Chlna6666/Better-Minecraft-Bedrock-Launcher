@@ -195,6 +195,7 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_image_drop_count: usize,
     pub gpui_atlas_remove_count: usize,
     pub gpui_scheduler_wakeups: usize,
+    pub gpui_foreground_task_budget_exhaustions: usize,
     pub gpui_idle_sleep_time_ms: f32,
     pub gpui_frame_request_count: usize,
     pub gpui_draw_count: usize,
@@ -646,6 +647,8 @@ pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
     snapshot.gpui_image_drop_count = gpui_metrics.image_drop_count;
     snapshot.gpui_atlas_remove_count = gpui_metrics.atlas_remove_count;
     snapshot.gpui_scheduler_wakeups = gpui_metrics.scheduler_wakeups;
+    snapshot.gpui_foreground_task_budget_exhaustions =
+        gpui_metrics.foreground_task_budget_exhaustions;
     snapshot.gpui_idle_sleep_time_ms = duration_to_ms(gpui_metrics.idle_sleep_time);
     snapshot.gpui_frame_request_count = gpui_metrics.frame_request_count;
     snapshot.gpui_draw_count = gpui_metrics.draw_count;

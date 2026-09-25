@@ -497,6 +497,9 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         atlas_remove_count: shared_metrics().atlas_remove_count.load(Ordering::Relaxed) as usize,
         pod_upload_bytes: shared_metrics().pod_upload_bytes.load(Ordering::Relaxed) as usize,
         scheduler_wakeups: shared_metrics().scheduler_wakeups.load(Ordering::Relaxed) as usize,
+        foreground_task_budget_exhaustions: shared_metrics()
+            .foreground_task_budget_exhaustions
+            .load(Ordering::Relaxed) as usize,
         idle_sleep_time: (idle_sleep_micros > 0).then(|| Duration::from_micros(idle_sleep_micros)),
         frame_request_count: shared_metrics().frame_request_count.load(Ordering::Relaxed) as usize,
         draw_count: shared_metrics().draw_count.load(Ordering::Relaxed) as usize,

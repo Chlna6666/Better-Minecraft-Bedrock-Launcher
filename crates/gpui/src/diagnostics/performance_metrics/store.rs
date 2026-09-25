@@ -150,6 +150,7 @@ pub(super) struct SharedMetrics {
     pub(super) atlas_remove_count: AtomicU64,
     pub(super) pod_upload_bytes: AtomicU64,
     pub(super) scheduler_wakeups: AtomicU64,
+    pub(super) foreground_task_budget_exhaustions: AtomicU64,
     pub(super) idle_sleep_micros: AtomicU64,
     pub(super) frame_request_count: AtomicU64,
     pub(super) draw_count: AtomicU64,

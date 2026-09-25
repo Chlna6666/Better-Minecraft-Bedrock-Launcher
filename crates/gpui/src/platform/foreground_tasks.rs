@@ -54,6 +54,9 @@ pub(crate) fn drain_foreground_tasks(
     }
 
     let has_pending = has_pending_runnables();
+    if has_pending {
+        crate::diagnostics::performance_metrics::record_foreground_task_budget_exhaustion();
+    }
     #[cfg(feature = "profiler")]
     if !has_pending {
         crate::diagnostics::foreground_profiler::record_foreground_idle();
@@ -117,5 +120,34 @@ impl Drop for ForegroundTaskQueue {
         for runnable in queue.drain(..) {
             mem::forget(runnable);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn foreground_budget_always_allows_initial_progress() {
+        let mut budget = ForegroundTaskBudget {
+            started_at: Instant::now() - MAX_FOREGROUND_TASK_DRAIN_DURATION * 2,
+            task_count: 0,
+        };
+
+        assert!(budget.can_run_next());
+        budget.did_run_task();
+        assert!(!budget.can_run_next());
+    }
+
+    #[test]
+    fn foreground_budget_enforces_task_count_cap() {
+        let mut budget = ForegroundTaskBudget {
+            started_at: Instant::now(),
+            task_count: MAX_FOREGROUND_TASKS_PER_DRAIN - 1,
+        };
+
+        assert!(budget.can_run_next());
+        budget.did_run_task();
+        assert!(!budget.can_run_next());
     }
 }
