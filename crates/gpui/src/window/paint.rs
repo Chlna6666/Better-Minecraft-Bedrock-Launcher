@@ -282,7 +282,7 @@ impl Window {
                 crate::TransitionProperty::Translation,
             ])
         });
-        self.next_frame.scene.insert_primitive(Quad {
+        let quad = Quad {
             order: 0,
             animation_id,
             bounds: self.visual_bounds(quad.bounds).scale(scale_factor),
@@ -292,7 +292,70 @@ impl Window {
             corner_radii: quad.corner_radii.scale(scale_factor * visual_scale),
             border_widths: quad.border_widths.scale(scale_factor * visual_scale),
             border_style: quad.border_style,
-        });
+        };
+
+        if !quad.background.is_transparent() {
+            self.next_frame.scene.insert_primitive(quad);
+            return;
+        }
+
+        // A transparent interior still runs the quad fragment shader across the whole primitive.
+        // For border-only quads, keep the exact transformed/raster-space geometry but restrict
+        // fragment coverage to four non-overlapping strips around the border and rounded corners.
+        let radii = &quad.corner_radii;
+        let widths = &quad.border_widths;
+        let antialias_slack = point(ScaledPixels(1.0), ScaledPixels(1.0));
+        let top_left_inset = point(
+            widths.left,
+            widths.top.max(radii.top_left).max(radii.top_right),
+        ) + antialias_slack;
+        let bottom_right_inset = point(
+            widths.right,
+            widths.bottom.max(radii.bottom_left).max(radii.bottom_right),
+        ) + antialias_slack;
+
+        let outer_bounds = quad.bounds;
+        let inner_bounds = Bounds::from_corners(
+            outer_bounds.origin + top_left_inset,
+            outer_bounds.bottom_right() - bottom_right_inset,
+        );
+        if inner_bounds.is_empty() {
+            self.next_frame.scene.insert_primitive(quad);
+            return;
+        }
+
+        let strips = [
+            Bounds::from_corners(
+                outer_bounds.origin,
+                point(outer_bounds.right(), inner_bounds.top()),
+            ),
+            Bounds::from_corners(
+                point(outer_bounds.left(), inner_bounds.bottom()),
+                outer_bounds.bottom_right(),
+            ),
+            Bounds::from_corners(
+                point(outer_bounds.left(), inner_bounds.top()),
+                inner_bounds.bottom_left(),
+            ),
+            Bounds::from_corners(
+                inner_bounds.top_right(),
+                point(outer_bounds.right(), inner_bounds.bottom()),
+            ),
+        ];
+
+        for strip in strips {
+            let clipped_bounds = quad.content_mask.bounds.intersect(&strip);
+            if clipped_bounds.is_empty() {
+                continue;
+            }
+            self.next_frame.scene.insert_primitive(Quad {
+                content_mask: ContentMask {
+                    bounds: clipped_bounds,
+                    ..quad.content_mask
+                },
+                ..quad
+            });
+        }
     }
 
     /// Paint the given `Path` into the scene for the next frame at the current z-index.
