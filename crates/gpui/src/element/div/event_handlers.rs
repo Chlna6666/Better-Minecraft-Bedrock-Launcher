@@ -195,6 +195,7 @@ impl Interactivity {
     }
 
     #[allow(missing_docs)]
+    #[inline(always)]
     pub fn on_action<A: Action>(&mut self, listener: impl Fn(&A, &mut Window, &mut App) + 'static) {
         self.action_listeners.push((
             TypeId::of::<A>(),
@@ -277,20 +278,16 @@ impl Interactivity {
         &mut self,
         listener: impl Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static,
     ) {
-        self.modifiers_changed_listeners
-            .push(Box::new(move |event, window, cx| {
-                listener(event, window, cx);
-            }));
+        self.modifiers_changed_listeners.push(Box::new(listener));
     }
 
     #[allow(missing_docs)]
+    #[inline(always)]
     pub fn on_click(&mut self, listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static)
     where
         Self: Sized,
     {
-        self.click_listeners.push(Rc::new(move |event, window, cx| {
-            listener(event, window, cx);
-        }));
+        self.click_listeners.push(Rc::new(listener));
     }
 
     #[allow(missing_docs)]

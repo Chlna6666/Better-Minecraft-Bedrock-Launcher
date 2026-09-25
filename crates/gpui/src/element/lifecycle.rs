@@ -147,6 +147,25 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     Painted,
 }
 
+#[inline(never)]
+fn prepare_element_id(element_id: ElementId, window: &mut Window) -> GlobalElementId {
+    window.element_id_stack.push(element_id);
+    GlobalElementId(window.element_id_stack.clone())
+}
+
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(never)]
+fn prepare_inspector_id(
+    source: &'static core::panic::Location<'static>,
+    window: &mut Window,
+) -> InspectorElementId {
+    let path = crate::InspectorElementPath {
+        global_id: GlobalElementId(window.element_id_stack.clone()),
+        source_location: source,
+    };
+    window.build_inspector_element_id(path)
+}
+
 fn retained_identity_is_stable(ambiguity: &[Rc<Cell<bool>>]) -> bool {
     ambiguity.iter().all(|flag| !flag.get())
 }
@@ -238,22 +257,15 @@ impl<E: Element> Drawable<E> {
                 };
                 let (retained_segment, retained_id, retained_identity_ambiguity) =
                     window.begin_retained_element(retained_identity);
-                let global_id = element_id.map(|element_id| {
-                    window.element_id_stack.push(element_id);
-                    GlobalElementId(window.element_id_stack.clone())
-                });
+                let global_id =
+                    element_id.map(|element_id| prepare_element_id(element_id, window));
 
                 let inspector_id;
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 {
                     inspector_id = if window.inspector_enabled() {
-                        element_source_location.map(|source| {
-                            let path = crate::InspectorElementPath {
-                                global_id: GlobalElementId(window.element_id_stack.clone()),
-                                source_location: source,
-                            };
-                            window.build_inspector_element_id(path)
-                        })
+                        element_source_location
+                            .map(|source| prepare_inspector_id(source, window))
                     } else {
                         None
                     };

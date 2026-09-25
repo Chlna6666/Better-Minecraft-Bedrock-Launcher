@@ -110,6 +110,7 @@ pub trait InteractiveElement: Sized {
         self
     }
 
+    #[inline(always)]
     fn on_mouse_down(
         mut self,
         button: MouseButton,
@@ -201,6 +202,7 @@ pub trait InteractiveElement: Sized {
         self
     }
 
+    #[inline(always)]
     fn on_action<A: Action>(
         mut self,
         listener: impl Fn(&A, &mut Window, &mut App) + 'static,
@@ -250,6 +252,7 @@ pub trait InteractiveElement: Sized {
         self
     }
 
+    #[inline(always)]
     fn on_modifiers_changed(
         mut self,
         listener: impl Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static,
@@ -391,6 +394,7 @@ pub trait StatefulInteractiveElement: InteractiveElement {
     }
 
     /// Bind the given callback to click events of this element.
+    #[inline(always)]
     fn on_click(mut self, listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self
     where
         Self: Sized,
