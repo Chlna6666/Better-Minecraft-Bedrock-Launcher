@@ -135,10 +135,10 @@ impl App {
         let compressed_type = TypeId::of::<crate::CompressedImageLoader>();
         let target_type = TypeId::of::<crate::SizedImageLoader>();
 
-        for ((type_id, _), task) in &self.loading_assets {
+        for ((type_id, _), entry) in &self.asset_entries {
             if *type_id == resource_type {
                 if let Some(Ok(image)) =
-                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
                 {
                     snapshot.resource_count = snapshot.resource_count.saturating_add(1);
                     snapshot.resource_resident_bytes = snapshot
@@ -147,7 +147,7 @@ impl App {
                 }
             } else if *type_id == inline_type || *type_id == inline_bytes_type {
                 if let Some(Ok(image)) =
-                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
                 {
                     snapshot.inline_count = snapshot.inline_count.saturating_add(1);
                     snapshot.inline_resident_bytes = snapshot
@@ -157,7 +157,7 @@ impl App {
             } else if *type_id == compressed_type {
                 if let Some(Ok(bytes)) =
                     cached_asset_output::<Result<crate::CompressedImageBytes, ImageCacheError>>(
-                        task.as_ref(),
+                        entry.as_ref(),
                     )
                 {
                     snapshot.compressed_count = snapshot.compressed_count.saturating_add(1);
@@ -166,7 +166,7 @@ impl App {
                 }
             } else if *type_id == target_type
                 && let Some(Ok(image)) =
-                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(task.as_ref())
+                    cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
             {
                 snapshot.sized_count = snapshot.sized_count.saturating_add(1);
                 snapshot.sized_resident_bytes = snapshot

@@ -47,12 +47,12 @@ where
                 };
                 let _ = cx.update(move |cx| {
                     let is_same_entry = cx
-                        .loading_assets
+                        .asset_entries
                         .get(&asset_id)
                         .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<T>>())
                         .is_some_and(|entry| Rc::ptr_eq(&entry.identity, &identity));
                     if is_same_entry {
-                        cx.loading_assets.remove(&asset_id);
+                        cx.asset_entries.remove(&asset_id);
                     }
                 });
             })
@@ -101,11 +101,11 @@ mod asset_loading_tests;
 impl App {
     fn asset_entry<A: Asset>(&mut self, source: &A::Source) -> &OwnedAssetEntry<A::Output> {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        if !self.loading_assets.contains_key(&asset_id) {
+        if !self.asset_entries.contains_key(&asset_id) {
             let entry = OwnedAssetEntry::new::<A>(source, asset_id, self);
-            self.loading_assets.insert(asset_id, Box::new(entry));
+            self.asset_entries.insert(asset_id, Box::new(entry));
         }
-        self.loading_assets
+        self.asset_entries
             .get(&asset_id)
             .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
             .expect("asset cache entries are keyed by asset type")
@@ -116,7 +116,7 @@ impl App {
         source: &A::Source,
     ) -> Option<AssetLease<A::Output>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
-        self.loading_assets
+        self.asset_entries
             .get(&asset_id)
             .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
             .map(OwnedAssetEntry::lease)
@@ -154,7 +154,7 @@ impl App {
         let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageLoader>>();
         let target_type = TypeId::of::<crate::SizedImageLoader>();
         let mut evicted = Vec::new();
-        for (asset_id, entry) in &self.loading_assets {
+        for (asset_id, entry) in &self.asset_entries {
             let is_image = matches!(
                 asset_id.0,
                 id if id == resource_type
@@ -180,7 +180,7 @@ impl App {
         }
 
         for (asset_id, image) in evicted {
-            self.loading_assets.remove(&asset_id);
+            self.asset_entries.remove(&asset_id);
             self.drop_image(image, None);
             if asset_id.0 == target_type {
                 drop_image_asset_retained(asset_id.1);
@@ -205,7 +205,7 @@ impl App {
     ) {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
         let should_retire = self
-            .loading_assets
+            .asset_entries
             .get(&asset_id)
             .and_then(|entry| {
                 entry.downcast_ref::<
@@ -219,7 +219,7 @@ impl App {
         }
 
         let cached_image = self
-            .loading_assets
+            .asset_entries
             .remove(&asset_id)
             .and_then(|entry| {
                 entry
@@ -241,7 +241,7 @@ impl App {
         request: &ImageRenderRequest,
     ) -> usize {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        self.loading_assets
+        self.asset_entries
             .get(&asset_id)
             .and_then(|entry| {
                 entry.downcast_ref::<
@@ -264,7 +264,7 @@ impl App {
         let asset_id = (TypeId::of::<A>(), hash(source));
         if A::RETENTION == AssetRetentionPolicy::ElementOwned
             && self
-                .loading_assets
+                .asset_entries
                 .get(&asset_id)
                 .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
                 .is_some_and(|entry| entry.pin_count() != 0)
@@ -272,7 +272,7 @@ impl App {
             return self.cached_asset_lease::<A>(source);
         }
 
-        self.loading_assets
+        self.asset_entries
             .remove(&asset_id)
             .and_then(|entry| entry.downcast::<OwnedAssetEntry<A::Output>>().ok())
             .map(|entry| (*entry).into_lease())
@@ -393,7 +393,7 @@ impl App {
     ) -> Option<SizedImagePreload> {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(target_source));
         let has_element_pins = self
-            .loading_assets
+            .asset_entries
             .get(&asset_id)
             .and_then(|entry| {
                 entry.downcast_ref::<
