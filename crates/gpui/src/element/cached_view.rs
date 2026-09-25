@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::{any::TypeId, ops::Range};
 
 struct CachedViewState {
-    retained_id: GlobalElementId,
     weak_view: CachedWeakView,
     traversal_context: CachedViewTraversalContext,
     prepaint_range: Range<PrepaintStateIndex>,
@@ -130,7 +129,7 @@ fn selective_cached_view_target(
         .inner
         .downcast_ref::<Option<CachedViewState>>()?
         .as_ref()?;
-    if state.weak_view.entity_id() != owner_id || state.retained_id != retained_id {
+    if state.weak_view.entity_id() != owner_id {
         return None;
     }
 
@@ -497,7 +496,6 @@ impl Element for CachedView {
                         .expect("CachedView must have a retained identity");
                     let traversal_context = traversal_context.clone();
                     if let Some(state) = element_state.as_mut() {
-                        state.retained_id = retained_id.clone();
                         state.weak_view = self.downgrade();
                         state.traversal_context = traversal_context.clone();
                     }
@@ -734,7 +732,6 @@ impl Element for CachedView {
                     (
                         CachedViewPrepaintState(CachedViewPrepaintStateKind::Fresh(element)),
                         CachedViewState {
-                            retained_id,
                             weak_view: self.downgrade(),
                             traversal_context,
                             accessed_entities,
