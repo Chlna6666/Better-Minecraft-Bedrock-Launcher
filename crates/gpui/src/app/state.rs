@@ -24,7 +24,7 @@ use http_client::HttpClient;
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::InspectorElementRegistry;
 use crate::{
-    ActionRegistry, AnyDrag, AnyEntity, AnyView, AnyWindowHandle, AssetSource, AsyncApp,
+    ActionRegistry, AnyDrag, AnyEntity, AnyView, AnyWindowHandle, Arena, AssetSource, AsyncApp,
     BackgroundExecutor, Context, DefaultFontConfig, DispatchPhase, Effect, Entity, EntityId,
     EntityMap, EventEmitter, FocusMap, FontFallbacks, ForegroundExecutor, ImagePipelineConfig,
     Keymap, LayoutId, Platform, PlatformKeyboardLayout, PlatformKeyboardMapper, PromptBuilder,
@@ -81,6 +81,7 @@ pub struct App {
     pub(crate) global_action_listeners:
         FxHashMap<TypeId, Vec<Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Self)>>>,
     pub(in crate::app) pending_effects: VecDeque<Effect>,
+    pub(in crate::app) event_arena: Arena,
     pub(crate) pending_notifications: FxHashSet<EntityId>,
     pub(crate) pending_global_notifications: FxHashSet<TypeId>,
     pub(in crate::app) notifying_global_observers: FxHashSet<TypeId>,
@@ -167,6 +168,7 @@ impl App {
                 keyboard_mapper,
                 global_action_listeners: FxHashMap::default(),
                 pending_effects: VecDeque::new(),
+                event_arena: Arena::new(64 * 1024),
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: FxHashSet::default(),
                 notifying_global_observers: FxHashSet::default(),

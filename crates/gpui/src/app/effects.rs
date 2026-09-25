@@ -5,7 +5,7 @@ use std::{
 
 use util::ResultExt;
 
-use crate::{AppContext, EntityId, WindowId};
+use crate::{AppContext, ArenaBox, EntityId, WindowId};
 
 use super::{AnyEntity, App};
 
@@ -71,7 +71,7 @@ impl App {
                         emitter,
                         event_type,
                         event,
-                    } => self.apply_emit_effect(emitter, event_type, event),
+                    } => self.apply_emit_effect(emitter, event_type, &*event),
 
                     Effect::RefreshWindows => {
                         self.apply_refresh_effect();
@@ -111,6 +111,7 @@ impl App {
 
                 if self.pending_effects.is_empty() {
                     self.global_notification_counts.clear();
+                    self.event_arena.clear();
                     break;
                 }
             }
@@ -185,12 +186,12 @@ impl App {
             .retain(&emitter, |handler| handler(self));
     }
 
-    fn apply_emit_effect(&mut self, emitter: EntityId, event_type: TypeId, event: Box<dyn Any>) {
+    fn apply_emit_effect(&mut self, emitter: EntityId, event_type: TypeId, event: &dyn Any) {
         self.event_listeners
             .clone()
             .retain(&emitter, |(stored_type, handler)| {
                 if *stored_type == event_type {
-                    handler(event.as_ref(), self)
+                    handler(event, self)
                 } else {
                     true
                 }
@@ -268,7 +269,7 @@ pub(crate) enum Effect {
     Emit {
         emitter: EntityId,
         event_type: TypeId,
-        event: Box<dyn Any>,
+        event: ArenaBox<dyn Any>,
     },
     RefreshWindows,
     NotifyGlobalObservers {
