@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows multimedia timer resolution uses audited Win32 FFI"
+)]
+
 use std::{
     cell::RefCell,
     sync::{
@@ -10,13 +15,16 @@ use std::{
 
 use async_task::Runnable;
 use flume::Sender;
-use windows::System::Threading::{
-    ThreadPool, ThreadPoolTimer, TimerElapsedHandler, WorkItemHandler, WorkItemPriority,
+use windows::{
+    System::Threading::{
+        ThreadPool, ThreadPoolTimer, TimerElapsedHandler, WorkItemHandler, WorkItemPriority,
+    },
+    Win32::Media::{timeBeginPeriod, timeEndPeriod},
 };
 use winit::event_loop::EventLoopProxy;
 
 use super::WindowsUserEvent;
-use crate::{PlatformDispatcher, TaskLabel};
+use crate::{PlatformDispatcher, TaskLabel, TimerResolutionGuard};
 
 pub(crate) struct WindowsDispatcher {
     main_sender: Sender<Runnable>,
@@ -132,5 +140,26 @@ impl PlatformDispatcher for WindowsDispatcher {
 
     fn dispatch_after(&self, duration: Duration, runnable: Runnable) {
         self.dispatch_on_threadpool_after(runnable, duration);
+    }
+
+    fn increase_timer_resolution(&self) -> TimerResolutionGuard {
+        const TIMER_PERIOD_MS: u32 = 1;
+
+        // SAFETY: timeBeginPeriod accepts a period in milliseconds and carries no pointer
+        // invariants. A successful request is paired with timeEndPeriod by the returned guard.
+        let result = unsafe { timeBeginPeriod(TIMER_PERIOD_MS) };
+        if result != 0 {
+            log::debug!(
+                "WindowsDispatcher::increase_timer_resolution failed period={}ms result={}",
+                TIMER_PERIOD_MS,
+                result
+            );
+            return TimerResolutionGuard::noop();
+        }
+
+        TimerResolutionGuard::new(|| {
+            // SAFETY: paired with the successful timeBeginPeriod call above using the same period.
+            let _ = unsafe { timeEndPeriod(TIMER_PERIOD_MS) };
+        })
     }
 }

@@ -298,6 +298,32 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
 }
 
+/// Guard returned by `PlatformDispatcher::increase_timer_resolution`.
+///
+/// The default dispatcher implementation is a no-op. Platforms that temporarily increase timer
+/// precision attach their matching release operation so the higher-resolution request is scoped
+/// exactly to the blocking wait that needs it.
+#[doc(hidden)]
+pub struct TimerResolutionGuard(Option<Box<dyn FnOnce() + Send>>);
+
+impl TimerResolutionGuard {
+    pub(crate) fn new(release: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(release)))
+    }
+
+    pub(crate) fn noop() -> Self {
+        Self(None)
+    }
+}
+
+impl Drop for TimerResolutionGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.0.take() {
+            release();
+        }
+    }
+}
+
 /// This type is public so that our test macro can generate and use it, but it should not
 /// be considered part of our public API.
 #[doc(hidden)]
@@ -308,6 +334,13 @@ pub trait PlatformDispatcher: Send + Sync {
     fn dispatch_after(&self, duration: Duration, runnable: Runnable);
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    /// Temporarily requests finer timer granularity while a timed blocking wait is active.
+    ///
+    /// Platforms without a process timer-resolution concept keep the default no-op guard.
+    fn increase_timer_resolution(&self) -> TimerResolutionGuard {
+        TimerResolutionGuard::noop()
     }
 
     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]

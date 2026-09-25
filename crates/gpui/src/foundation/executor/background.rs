@@ -124,6 +124,10 @@ impl BackgroundExecutor {
                     let timeout =
                         deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
                     if let Some(timeout) = timeout {
+                        // Windows' default timer granularity can make short timeout waits
+                        // overshoot noticeably. The dispatcher guard raises timer precision only
+                        // for the lifetime of this blocking wait; other platforms are a no-op.
+                        let _timer_resolution = self.dispatcher.increase_timer_resolution();
                         if !parker.park_timeout(timeout)
                             && deadline.is_some_and(|deadline| deadline < Instant::now())
                         {
