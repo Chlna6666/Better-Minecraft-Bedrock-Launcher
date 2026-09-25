@@ -69,12 +69,10 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        window.record_rendered_view(self.entity_id(), std::any::type_name::<V>());
-        let mut element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
-        let layout_id = window.with_rendered_view(self.entity_id(), |window| {
-            element.request_layout(window, cx)
-        });
-        (layout_id, element)
+        let entity_id = self.entity_id();
+        window.record_rendered_view(entity_id, std::any::type_name::<V>());
+        let element = self.update(cx, |view, cx| view.render(window, cx).into_any_element());
+        request_layout_rendered_entity(entity_id, element, window, cx)
     }
 
     fn prepaint(
@@ -86,8 +84,7 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.set_view_id(self.entity_id());
-        window.with_rendered_view(self.entity_id(), |window| element.prepaint(window, cx));
+        prepaint_rendered_entity(self.entity_id(), element, window, cx);
     }
 
     fn paint(
@@ -100,10 +97,44 @@ impl<V: Render> Element for Entity<V> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // Entity is a lifecycle proxy. Its rendered element owns all actual scene primitives.
-        window.record_debug_element_traversal_only(bounds, cx);
-        window.with_rendered_view(self.entity_id(), |window| element.paint(window, cx));
+        paint_rendered_entity(self.entity_id(), bounds, element, window, cx);
     }
+}
+
+#[inline(never)]
+fn request_layout_rendered_entity(
+    entity_id: EntityId,
+    mut element: AnyElement,
+    window: &mut Window,
+    cx: &mut App,
+) -> (LayoutId, AnyElement) {
+    let layout_id =
+        window.with_rendered_view(entity_id, |window| element.request_layout(window, cx));
+    (layout_id, element)
+}
+
+#[inline(never)]
+fn prepaint_rendered_entity(
+    entity_id: EntityId,
+    element: &mut AnyElement,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.set_view_id(entity_id);
+    window.with_rendered_view(entity_id, |window| element.prepaint(window, cx));
+}
+
+#[inline(never)]
+fn paint_rendered_entity(
+    entity_id: EntityId,
+    bounds: Bounds<Pixels>,
+    element: &mut AnyElement,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // Entity is a lifecycle proxy. Its rendered element owns all actual scene primitives.
+    window.record_debug_element_traversal_only(bounds, cx);
+    window.with_rendered_view(entity_id, |window| element.paint(window, cx));
 }
 
 /// A dynamically-typed handle to a view, which can be downcast to an Entity for a specific type.

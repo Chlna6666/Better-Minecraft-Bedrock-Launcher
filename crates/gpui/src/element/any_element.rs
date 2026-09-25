@@ -56,17 +56,19 @@ impl<C: RenderOnce> Element for Component<C> {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        window.with_global_id(ElementId::Name(type_name::<C>().into()), |_, window| {
-            let mut element = self
-                .component
-                .take()
-                .unwrap()
-                .render(window, cx)
-                .into_any_element();
-
-            let layout_id = element.request_layout(window, cx);
-            (layout_id, element)
-        })
+        let component = &mut self.component;
+        request_layout_component(
+            type_name::<C>(),
+            window,
+            cx,
+            &mut |window, cx| {
+                component
+                    .take()
+                    .unwrap()
+                    .render(window, cx)
+                    .into_any_element()
+            },
+        )
     }
 
     fn prepaint(
@@ -78,9 +80,7 @@ impl<C: RenderOnce> Element for Component<C> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.with_global_id(ElementId::Name(type_name::<C>().into()), |_, window| {
-            element.prepaint(window, cx);
-        })
+        prepaint_component(type_name::<C>(), element, window, cx);
     }
 
     fn paint(
@@ -93,12 +93,49 @@ impl<C: RenderOnce> Element for Component<C> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // Component is a lifecycle wrapper only; the rendered child owns every scene primitive.
-        window.record_debug_element_traversal_only(bounds, cx);
-        window.with_global_id(ElementId::Name(type_name::<C>().into()), |_, window| {
-            element.paint(window, cx);
-        })
+        paint_component(type_name::<C>(), bounds, element, window, cx);
     }
+}
+
+#[inline(never)]
+fn request_layout_component(
+    name: &'static str,
+    window: &mut Window,
+    cx: &mut App,
+    render: &mut dyn FnMut(&mut Window, &mut App) -> AnyElement,
+) -> (LayoutId, AnyElement) {
+    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+        let mut element = render(window, cx);
+        let layout_id = element.request_layout(window, cx);
+        (layout_id, element)
+    })
+}
+
+#[inline(never)]
+fn prepaint_component(
+    name: &'static str,
+    element: &mut AnyElement,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+        element.prepaint(window, cx);
+    });
+}
+
+#[inline(never)]
+fn paint_component(
+    name: &'static str,
+    bounds: Bounds<Pixels>,
+    element: &mut AnyElement,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    // Component is a lifecycle wrapper only; the rendered child owns every scene primitive.
+    window.record_debug_element_traversal_only(bounds, cx);
+    window.with_global_id(ElementId::Name(name.into()), |_, window| {
+        element.paint(window, cx);
+    });
 }
 
 impl<C: RenderOnce> IntoElement for Component<C> {
