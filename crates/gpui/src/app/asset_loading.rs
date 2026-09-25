@@ -1,40 +1,27 @@
 use std::{
     any::{Any, TypeId},
-    cell::RefCell,
     rc::Rc,
     sync::Arc,
 };
 
 use anyhow::Result;
-use collections::{FxHashMap, FxHashSet};
+use collections::FxHashMap;
 use crate::{
     AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
     CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError, ImageMemoryTrimLevel,
     ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage, Size,
-    SizedImagePreload, Window, WindowId, drop_image_asset_retained, hash,
+    SizedImagePreload, Window, drop_image_asset_retained, hash,
 };
 
 use super::App;
 
 type AssetId = (TypeId, u64);
 
-struct AssetWindowObservers {
-    window: AnyWindowHandle,
-    views: FxHashSet<EntityId>,
-}
-
-enum OwnedAssetState {
-    Loading {
-        observers: FxHashMap<WindowId, AssetWindowObservers>,
-    },
-    Ready,
-}
-
 struct OwnedAssetEntry<T>
 where
     T: Clone + Send + 'static,
 {
-    state: Rc<RefCell<OwnedAssetState>>,
+    identity: Rc<()>,
     lease: AssetLease<T>,
 }
 
@@ -47,50 +34,33 @@ where
         A: Asset<Output = T>,
     {
         let lease = AssetLease::spawn(A::load(source.clone(), cx), cx);
-        let completion = lease.completion_signal();
-        let state = Rc::new(RefCell::new(OwnedAssetState::Loading {
-            observers: FxHashMap::default(),
-        }));
-        let weak_state = Rc::downgrade(&state);
+        let identity = Rc::new(());
 
-        cx.spawn(async move |cx| {
-            if completion.await.is_err() {
-                return;
-            }
-            let Some(state) = weak_state.upgrade() else {
-                return;
-            };
-            let observers = {
-                let mut state = state.borrow_mut();
-                match std::mem::replace(&mut *state, OwnedAssetState::Ready) {
-                    OwnedAssetState::Loading { observers } => observers,
-                    OwnedAssetState::Ready => return,
+        if A::RETENTION == AssetRetentionPolicy::TransientAfterReady {
+            let completion = lease.completion_signal();
+            let weak_identity = Rc::downgrade(&identity);
+            cx.spawn(async move |cx| {
+                if !completion.wait().await {
+                    return;
                 }
-            };
-
-            let _ = cx.update(move |cx| {
-                for observer in observers.into_values() {
-                    let views = observer.views;
-                    let _ = observer.window.update(cx, move |_, window, _| {
-                        window.schedule_asset_ready_views(views);
-                    });
-                }
-
-                if A::RETENTION == AssetRetentionPolicy::TransientAfterReady {
+                let Some(identity) = weak_identity.upgrade() else {
+                    return;
+                };
+                let _ = cx.update(move |cx| {
                     let is_same_entry = cx
                         .loading_assets
                         .get(&asset_id)
                         .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<T>>())
-                        .is_some_and(|entry| Rc::ptr_eq(&entry.state, &state));
+                        .is_some_and(|entry| Rc::ptr_eq(&entry.identity, &identity));
                     if is_same_entry {
                         cx.loading_assets.remove(&asset_id);
                     }
-                }
-            });
-        })
-        .detach();
+                });
+            })
+            .detach();
+        }
 
-        Self { state, lease }
+        Self { identity, lease }
     }
 
     fn get(&self) -> Option<T> {
@@ -106,25 +76,7 @@ where
     }
 
     fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
-        if let Some(value) = self.lease.get() {
-            return Some(value);
-        }
-
-        let mut state = self.state.borrow_mut();
-        match &mut *state {
-            OwnedAssetState::Loading { observers } => {
-                observers
-                    .entry(window.window_id())
-                    .or_insert_with(|| AssetWindowObservers {
-                        window,
-                        views: FxHashSet::default(),
-                    })
-                    .views
-                    .insert(view);
-                None
-            }
-            OwnedAssetState::Ready => self.lease.get(),
-        }
+        self.lease.use_by(window, view)
     }
 }
 

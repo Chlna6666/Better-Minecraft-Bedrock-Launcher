@@ -1,4 +1,4 @@
-use crate::{App, SharedString, SharedUri, Task};
+use crate::{AnyWindowHandle, App, EntityId, SharedString, SharedUri, Task, WindowId};
 use futures::{
     Future, FutureExt, TryFutureExt,
     future::{AbortHandle, Aborted, Shared},
@@ -9,6 +9,8 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use collections::{FxHashMap, FxHashSet};
 
 /// An enum representing
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -58,6 +60,16 @@ enum AssetLeaseState<T> {
     Ready(T),
 }
 
+#[derive(Default)]
+struct AssetLeaseObservers {
+    windows: FxHashMap<WindowId, AssetLeaseWindowObservers>,
+}
+
+struct AssetLeaseWindowObservers {
+    window: AnyWindowHandle,
+    views: FxHashSet<EntityId>,
+}
+
 struct AssetLoadOwner {
     abort: AbortHandle,
 }
@@ -68,16 +80,28 @@ impl Drop for AssetLoadOwner {
     }
 }
 
+pub(crate) struct AssetCompletion {
+    completion: Shared<Task<Result<(), Aborted>>>,
+}
+
+impl AssetCompletion {
+    pub(crate) async fn wait(self) -> bool {
+        self.completion.await.is_ok()
+    }
+}
+
 /// An explicit ownership lease for an asynchronous asset load.
 ///
 /// The application cache and every returned lease are owners of the underlying load. Dropping the
 /// final owner cancels pending work. Completed values live in an explicit ready state rather than
-/// in the executor task, and a lease can outlive cache eviction without exposing that task.
+/// in the executor task. Views that use a pending lease are deduplicated per window and receive an
+/// exact retained-subtree invalidation when the value becomes ready.
 pub struct AssetLease<T>
 where
     T: Clone + Send + 'static,
 {
     state: Arc<parking_lot::Mutex<AssetLeaseState<T>>>,
+    observers: Arc<parking_lot::Mutex<AssetLeaseObservers>>,
     completion: Shared<Task<Result<(), Aborted>>>,
     owner: Arc<AssetLoadOwner>,
 }
@@ -89,6 +113,7 @@ where
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
+            observers: self.observers.clone(),
             completion: self.completion.clone(),
             owner: self.owner.clone(),
         }
@@ -104,6 +129,7 @@ where
         cx: &App,
     ) -> Self {
         let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Loading));
+        let observers = Arc::new(parking_lot::Mutex::new(AssetLeaseObservers::default()));
         let weak_state = Arc::downgrade(&state);
         let (abort, registration) = AbortHandle::new_pair();
         let completion = cx
@@ -119,15 +145,68 @@ where
             ))
             .shared();
 
+        let weak_observers = Arc::downgrade(&observers);
+        let ready = completion.clone();
+        cx.spawn(async move |cx| {
+            if ready.await.is_err() {
+                return;
+            }
+            let Some(observers) = weak_observers.upgrade() else {
+                return;
+            };
+            let windows = std::mem::take(&mut observers.lock().windows);
+            let _ = cx.update(move |cx| {
+                for observer in windows.into_values() {
+                    let views = observer.views;
+                    let _ = observer.window.update(cx, move |_, window, _| {
+                        window.schedule_asset_ready_views(views);
+                    });
+                }
+            });
+        })
+        .detach();
+
         Self {
             state,
+            observers,
             completion,
             owner: Arc::new(AssetLoadOwner { abort }),
         }
     }
 
-    pub(crate) fn completion_signal(&self) -> Shared<Task<Result<(), Aborted>>> {
-        self.completion.clone()
+    pub(crate) fn ready(value: T) -> Self {
+        let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Ready(value)));
+        let (abort, _registration) = AbortHandle::new_pair();
+        Self {
+            state,
+            observers: Arc::new(parking_lot::Mutex::new(AssetLeaseObservers::default())),
+            completion: Task::ready(Ok(())).shared(),
+            owner: Arc::new(AssetLoadOwner { abort }),
+        }
+    }
+
+    pub(crate) fn completion_signal(&self) -> AssetCompletion {
+        AssetCompletion {
+            completion: self.completion.clone(),
+        }
+    }
+
+    pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
+        if let Some(value) = self.get() {
+            return Some(value);
+        }
+
+        self.observers
+            .lock()
+            .windows
+            .entry(window.window_id())
+            .or_insert_with(|| AssetLeaseWindowObservers {
+                window,
+                views: FxHashSet::default(),
+            })
+            .views
+            .insert(view);
+        None
     }
 
     /// Returns the completed value without waiting, or None while the load is still pending.
@@ -192,6 +271,41 @@ where
     ) -> impl Future<Output = Self::Output> + Send + 'static {
         let load = T::load(source, cx);
         load.inspect_err(|e| log::error!("Failed to load asset: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use crate::TestAppContext;
+    use futures::channel::oneshot;
+
+    #[gpui::test]
+    fn asset_lease_transitions_to_ready(cx: &mut TestAppContext) {
+        let lease = cx.update(|cx| AssetLease::spawn(async { 42usize }, cx));
+        assert_eq!(lease.get(), None);
+        cx.run_until_parked();
+        assert_eq!(lease.get(), Some(42));
+    }
+
+    #[gpui::test]
+    fn dropping_last_asset_lease_cancels_pending_load(cx: &mut TestAppContext) {
+        let (sender, receiver) = oneshot::channel::<usize>();
+        let lease = cx.update(|cx| {
+            AssetLease::spawn(
+                async move { receiver.await.expect("sender is kept alive until cancellation") },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        drop(lease);
+        cx.run_until_parked();
+
+        assert!(
+            sender.send(7).is_err(),
+            "dropping the final lease must cancel and drop the pending future"
+        );
     }
 }
 

@@ -1,11 +1,7 @@
 use crate::{
-    App, AppContext, Asset, AssetLocation, AssetLogger, ElementId, Entity, ImageAssetLoader,
-    ImageCacheError, RenderImage, Window, drop_image_cache_metrics, hash,
+    App, AppContext, AssetLocation, ElementId, Entity, ImageCacheError, RenderImage, Window,
+    drop_image_cache_metrics, hash,
     record_image_cache_eviction, record_image_cache_metrics,
-};
-use futures::{
-    FutureExt,
-    future::{AbortHandle, Abortable},
 };
 use linked_hash_map::LinkedHashMap;
 use std::{
@@ -39,7 +35,6 @@ impl Default for BoundedImageCacheConfig {
 struct BoundedImageCacheEntry {
     item: ImageCacheItem,
     estimated_bytes: usize,
-    load_abort: Option<AbortHandle>,
 }
 
 /// An LRU image cache that releases decoded images and atlas tiles when limits are exceeded.
@@ -107,66 +102,38 @@ impl BoundedImageCache {
         let image_hash = hash(source);
 
         if let Some(entry) = self.entries.get_refresh(&image_hash) {
-            let result = {
-                let result = entry.item.get();
-                if let Some(Ok(image)) = result.as_ref() {
-                    let current_bytes = estimated_render_image_bytes(image);
-                    self.estimated_bytes = self
-                        .estimated_bytes
-                        .saturating_sub(entry.estimated_bytes)
-                        .saturating_add(current_bytes);
-                    entry.estimated_bytes = current_bytes;
-                }
-                if result.is_some() {
-                    entry.load_abort = None;
-                }
-                result
-            };
+            let result = entry.item.use_image(window);
+            if let Some(Ok(image)) = result.as_ref() {
+                let current_bytes = estimated_render_image_bytes(image);
+                self.estimated_bytes = self
+                    .estimated_bytes
+                    .saturating_sub(entry.estimated_bytes)
+                    .saturating_add(current_bytes);
+                entry.estimated_bytes = current_bytes;
+            }
             self.enforce_limits(Some(image_hash), window, cx);
             self.record_metrics();
             return result;
         }
 
-        let (load_abort, load_registration) = AbortHandle::new_pair();
-        let fut = Abortable::new(
-            AssetLogger::<ImageAssetLoader>::load(source.clone(), cx),
-            load_registration,
-        )
-        .map(|result| result.unwrap_or(Err(ImageCacheError::Cancelled)));
-        let task = cx.background_executor().spawn(fut).shared();
+        let item = ImageCacheItem::new(source, cx);
+        let result = item.use_image(window);
+        let estimated_bytes = result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map_or(0, |image| estimated_render_image_bytes(image));
         self.entries.insert(
             image_hash,
             BoundedImageCacheEntry {
-                item: ImageCacheItem::Loading(task.clone()),
-                estimated_bytes: 0,
-                load_abort: Some(load_abort),
+                item,
+                estimated_bytes,
             },
         );
+        self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
         self.enforce_limits(Some(image_hash), window, cx);
         self.record_metrics();
 
-        let entity = window.current_view();
-        window
-            .spawn(cx, {
-                async move |cx| {
-                    match task.await {
-                        Err(ImageCacheError::Cancelled) => return,
-                        Err(error) => log::debug!("bounded image cache load failed: {error}"),
-                        Ok(_) => {}
-                    }
-                    cx.update(move |window, _cx| {
-                        // Match Window::use_asset: asset readiness must directly dirty the exact
-                        // observing window/view before requesting presentation. Relying on
-                        // App::notify here has the same first-frame registration race that can leave
-                        // a ready bitmap hidden behind retained replay until unrelated input.
-                        window.schedule_asset_ready_views([entity]);
-                    })
-                    .ok();
-                }
-            })
-            .detach();
-
-        None
+        result
     }
 
     /// Clear the image cache.
@@ -286,13 +253,10 @@ impl ImageCacheProvider for BoundedImageCacheProvider {
 }
 
 fn drop_cache_entry(
-    mut entry: BoundedImageCacheEntry,
+    entry: BoundedImageCacheEntry,
     current_window: Option<&mut Window>,
     cx: &mut App,
 ) {
-    if let Some(load_abort) = entry.load_abort.take() {
-        load_abort.abort();
-    }
     if let Some(Ok(image)) = entry.item.get() {
         cx.drop_image(image, current_window);
     }
@@ -331,17 +295,15 @@ mod tests {
             cache.entries.insert(
                 image_hash,
                 BoundedImageCacheEntry {
-                    item: ImageCacheItem::Loaded(Ok(image)),
+                    item: ImageCacheItem::ready(Ok(image)),
                     estimated_bytes: 4,
-                    load_abort: None,
                 },
             );
             cache.entries.insert(
                 protected_hash,
                 BoundedImageCacheEntry {
-                    item: ImageCacheItem::Loaded(Err(ImageCacheError::Asset("protected".into()))),
+                    item: ImageCacheItem::ready(Err(ImageCacheError::Asset("protected".into()))),
                     estimated_bytes: 0,
-                    load_abort: None,
                 },
             );
 
@@ -372,17 +334,15 @@ mod tests {
             cache.entries.insert(
                 1,
                 BoundedImageCacheEntry {
-                    item: ImageCacheItem::Loaded(Err(ImageCacheError::Asset("one".into()))),
+                    item: ImageCacheItem::ready(Err(ImageCacheError::Asset("one".into()))),
                     estimated_bytes: 1,
-                    load_abort: None,
                 },
             );
             cache.entries.insert(
                 2,
                 BoundedImageCacheEntry {
-                    item: ImageCacheItem::Loaded(Err(ImageCacheError::Asset("two".into()))),
+                    item: ImageCacheItem::ready(Err(ImageCacheError::Asset("two".into()))),
                     estimated_bytes: 1,
-                    load_abort: None,
                 },
             );
             _ = cache.entries.get_refresh(&1);
@@ -393,21 +353,5 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn dropping_loading_entry_aborts_the_load(cx: &mut TestAppContext) {
-        let window = cx.add_empty_window();
-        window.update(|window, cx| {
-            let (load_abort, _load_registration) = AbortHandle::new_pair();
-            let abort_probe = load_abort.clone();
-            let entry = BoundedImageCacheEntry {
-                item: ImageCacheItem::Loaded(Err(ImageCacheError::Cancelled)),
-                estimated_bytes: 0,
-                load_abort: Some(load_abort),
-            };
 
-            drop_cache_entry(entry, Some(window), cx);
-
-            assert!(abort_probe.is_aborted());
-        });
-    }
 }
