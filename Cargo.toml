@@ -113,7 +113,9 @@ secrecy = "0.10.3"
 gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-vulkan", "wayland", "x11"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-dx12", "nova-gfx-vulkan"] }
+# Keep Vulkan opt-in on Windows. The `gpui-windows-vulkan` feature below adds
+# `gpui/nova-gfx-vulkan` when explicit Vulkan fallback/testing is required.
+gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-metal"] }
