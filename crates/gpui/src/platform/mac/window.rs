@@ -2572,6 +2572,18 @@ extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {
     );
 }
 
+fn synthetic_drag_button_is_pressed(button: Option<MouseButton>, pressed: NSUInteger) -> bool {
+    let bit = match button {
+        Some(MouseButton::Left) => 0,
+        Some(MouseButton::Right) => 1,
+        Some(MouseButton::Middle) => 2,
+        Some(MouseButton::Navigate(crate::NavigationDirection::Back)) => 3,
+        Some(MouseButton::Navigate(crate::NavigationDirection::Forward)) => 4,
+        None => return false,
+    };
+    pressed & (1 << bit) != 0
+}
+
 async fn synthetic_drag(
     window_state: Weak<Mutex<MacWindowState>>,
     drag_id: usize,
@@ -2579,17 +2591,27 @@ async fn synthetic_drag(
 ) {
     loop {
         Timer::after(Duration::from_millis(16)).await;
-        if let Some(window_state) = window_state.upgrade() {
-            let mut lock = window_state.lock();
-            if lock.synthetic_drag_counter == drag_id {
-                if let Some(mut callback) = lock.event_callback.take() {
-                    drop(lock);
-                    callback(PlatformInput::MouseMove(event.clone()));
-                    window_state.lock().event_callback = Some(callback);
-                }
-            } else {
-                break;
-            }
+        let Some(window_state) = window_state.upgrade() else {
+            break;
+        };
+        let mut lock = window_state.lock();
+        if lock.synthetic_drag_counter != drag_id {
+            break;
+        }
+
+        // Native menu tracking can consume mouse-up. Stop replaying the captured drag as soon as
+        // its original button is no longer physically down, otherwise stale coordinates can
+        // alternate with real mouse moves and flicker hover state.
+        let pressed: NSUInteger = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+        if !synthetic_drag_button_is_pressed(event.pressed_button, pressed) {
+            lock.synthetic_drag_counter = lock.synthetic_drag_counter.wrapping_add(1);
+            break;
+        }
+
+        if let Some(mut callback) = lock.event_callback.take() {
+            drop(lock);
+            callback(PlatformInput::MouseMove(event.clone()));
+            window_state.lock().event_callback = Some(callback);
         }
     }
 }
