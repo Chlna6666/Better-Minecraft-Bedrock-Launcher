@@ -147,7 +147,7 @@ pub fn enumerate_gpu_adapters(_backend: RendererBackend) -> Vec<crate::GpuAdapte
     Vec::new()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub use super::test::TestDispatcher;
 
 /// Returns a background executor for the current platform.

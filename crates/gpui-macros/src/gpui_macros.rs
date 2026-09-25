@@ -197,9 +197,9 @@ pub fn test(args: TokenStream, function: TokenStream) -> TokenStream {
 /// `bench_with_input`. `group`, `input_name`, and `sample_size` can customize
 /// the generated input benchmark group.
 ///
-/// The benchmark crate must add `criterion` and `gpui_platform` (with its
-/// `test-support` feature) to its dev-dependencies and enable gpui's `bench`
-/// feature, since the generated code references all three.
+/// The benchmark crate must add `criterion` to its dev-dependencies and enable GPUI's
+/// `bench-support` feature. The generated harness uses GPUI's benchmark-only platform
+/// internally and does not require a separate platform crate.
 #[proc_macro_attribute]
 pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
     bench::bench(args, function)

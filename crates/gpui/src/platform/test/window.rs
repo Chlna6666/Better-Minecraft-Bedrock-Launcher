@@ -197,6 +197,27 @@ impl TestWindow {
         self.0.lock().request_frame_callback = Some(callback);
     }
 
+    #[cfg(feature = "bench-support")]
+    pub(crate) fn frame_scheduled(&self) -> bool {
+        self.0.lock().last_requested_frame.get().is_some()
+    }
+
+    #[cfg(feature = "bench-support")]
+    pub(crate) fn simulate_scheduled_frame(&self) -> bool {
+        let mut lock = self.0.lock();
+        let Some(options) = lock.last_requested_frame.take() else {
+            return false;
+        };
+        let Some(mut callback) = lock.request_frame_callback.take() else {
+            lock.last_requested_frame.set(Some(options));
+            return false;
+        };
+        drop(lock);
+        callback(options);
+        self.0.lock().request_frame_callback = Some(callback);
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn present_framebuffer_only_count(&self) -> usize {
         self.0.lock().present_framebuffer_only_count.get()

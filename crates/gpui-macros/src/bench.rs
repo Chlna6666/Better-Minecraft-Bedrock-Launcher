@@ -90,17 +90,11 @@ pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
                 group.bench_with_input(criterion::BenchmarkId::new(#input_name, &input), &input, {
                     let report = report.clone();
                     move |bencher, input| {
-                        let mut cx = gpui::BenchAppContext::new_with_platform_and_report(
-                            gpui::bench_platform(
-                                Some(Box::new(|| {
-                                    gpui_platform::current_headless_renderer()
-                                })),
-                                gpui_platform::current_platform(true).text_system(),
-                            ),
-                            Some(stringify!(#outer_fn_name)),
-                            bencher,
-                            report.clone(),
-                        );
+                        let mut cx = gpui::BenchAppContext::new_with_report(
+                        Some(stringify!(#outer_fn_name)),
+                        bencher,
+                        report.clone(),
+                    );
                         #inner_fn_name(input, &mut cx);
                         cx.teardown();
                     }
@@ -133,13 +127,7 @@ pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
             criterion.bench_function(stringify!(#outer_fn_name), {
                 let report = report.clone();
                 move |bencher| {
-                    let mut cx = gpui::BenchAppContext::new_with_platform_and_report(
-                        gpui::bench_platform(
-                            Some(Box::new(|| {
-                                gpui_platform::current_headless_renderer()
-                            })),
-                            gpui_platform::current_platform(true).text_system(),
-                        ),
+                    let mut cx = gpui::BenchAppContext::new_with_report(
                         Some(stringify!(#outer_fn_name)),
                         bencher,
                         report.clone(),

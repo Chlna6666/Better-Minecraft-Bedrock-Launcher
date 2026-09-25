@@ -41,7 +41,7 @@ default = [
     "nova-gfx-dx12",
     "build-shader-validation",
 ]
-bench-support = ["dep:criterion"]
+bench-support = ["dep:criterion", "dep:backtrace", "dep:rand"]
 build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
@@ -121,6 +121,12 @@ required-features = ["bench-support"]
 [[bench]]
 name = "frame_upload"
 path = "benches/frame_upload.rs"
+harness = false
+required-features = ["bench-support"]
+
+[[bench]]
+name = "renderer"
+path = "benches/renderer.rs"
 harness = false
 required-features = ["bench-support"]
 

@@ -5,7 +5,7 @@ use super::{
     PlatformAtlas, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
     PromptButton, PromptLevel,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 use super::{TestDispatcher, TestWindow};
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DevicePixels,
@@ -292,7 +292,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None
     }
@@ -310,7 +310,7 @@ pub trait PlatformDispatcher: Send + Sync {
         Instant::now()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     fn as_test(&self) -> Option<&TestDispatcher> {
         None
     }

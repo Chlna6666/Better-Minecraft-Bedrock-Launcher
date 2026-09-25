@@ -3,6 +3,8 @@ mod application;
 mod asset_loading;
 mod async_context;
 mod borrow;
+#[cfg(feature = "bench-support")]
+mod bench_context;
 mod cell;
 mod clipboard;
 mod context;
@@ -38,6 +40,8 @@ mod urls;
 mod window_tab_registry;
 
 pub use application::*;
+#[cfg(feature = "bench-support")]
+pub use bench_context::{BenchAppContext, BenchReport};
 pub use async_context::*;
 pub use borrow::*;
 pub use cell::*;

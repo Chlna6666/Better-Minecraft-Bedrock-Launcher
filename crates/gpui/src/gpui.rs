@@ -63,7 +63,27 @@ pub use element::*;
 pub use foundation::*;
 pub use geometry::*;
 pub use gestures::*;
+#[cfg(feature = "bench-support")]
+pub use gpui_macros::bench;
 pub use gpui_macros::{AppContext, IntoElement, Render, VisualContext, register_action, test};
+
+/// Defines a Criterion benchmark group for functions annotated with `gpui::bench`.
+#[cfg(feature = "bench-support")]
+#[macro_export]
+macro_rules! bench_group {
+    ($($tokens:tt)*) => {
+        criterion::criterion_group!($($tokens)*);
+    };
+}
+
+/// Defines the entry point for GPUI Criterion benchmark groups.
+#[cfg(feature = "bench-support")]
+#[macro_export]
+macro_rules! bench_main {
+    ($($tokens:tt)*) => {
+        criterion::criterion_main!($($tokens)*);
+    };
+}
 pub use http_client;
 pub use image;
 pub use input::*;

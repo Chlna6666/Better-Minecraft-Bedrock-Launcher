@@ -80,7 +80,7 @@ mod mac;
 #[cfg(all(target_os = "macos", feature = "macos-blade"))]
 mod blade;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod test;
 
 #[cfg(target_os = "windows")]
@@ -88,7 +88,7 @@ mod windows;
 
 pub use app_menu::*;
 pub(crate) use atlas::*;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) use bootstrap::TestDispatcher;
 pub(crate) use bootstrap::current_platform;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -118,7 +118,7 @@ pub(crate) use mac::*;
 ))]
 pub(crate) use nova::*;
 pub use semantic_version::SemanticVersion;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) use test::*;
 pub use traits::*;
 #[cfg(target_os = "windows")]
