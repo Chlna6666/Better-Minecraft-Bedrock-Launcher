@@ -1,11 +1,10 @@
-use crate::ui::animation::{apple_spring, settled_animation, spring_motion};
+use crate::ui::animation::{apple_spring, request_layout_animation_frame_if, SpringValue};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
-use gpui::AnimationExt as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct TabItem {
@@ -38,7 +37,6 @@ impl TabItem {
     }
 }
 
-
 fn tab_items_visually_equal(left: &[TabItem], right: &[TabItem]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -52,6 +50,13 @@ fn selected_tab_index(items: &[TabItem]) -> usize {
     items.iter().position(|item| item.active).unwrap_or(0)
 }
 
+fn tab_indicator_spring() -> Spring {
+    // Tab selection should react immediately. A critically-near-damped spring gives the Apple-like
+    // continuity without allowing old momentum to dominate a newly selected target.
+    apple_spring(0.18, 0.94)
+}
+
+
 #[derive(IntoElement)]
 pub struct UnderlineTabs {
     id: SharedString,
@@ -59,7 +64,6 @@ pub struct UnderlineTabs {
     colors: ThemeColors,
     gap: Pixels,
     item_width: Option<Pixels>,
-    defer_select_until_next_frame: bool,
 }
 
 impl UnderlineTabs {
@@ -74,7 +78,6 @@ impl UnderlineTabs {
             colors: *colors,
             gap: px(14.),
             item_width: None,
-            defer_select_until_next_frame: false,
         }
     }
 
@@ -83,22 +86,10 @@ impl UnderlineTabs {
         self
     }
 
-    /// Use equal-width tab slots so the underline can move as one continuous retained indicator.
     pub fn item_width(mut self, item_width: Pixels) -> Self {
         self.item_width = Some(item_width);
         self
     }
-
-    pub fn defer_selection_until_next_frame(mut self) -> Self {
-        self.defer_select_until_next_frame = true;
-        self
-    }
-}
-
-const OPTIMISTIC_TAB_SYNC_TIMEOUT: Duration = Duration::from_millis(500);
-
-fn tab_indicator_spring() -> Spring {
-    apple_spring(0.22, 0.90)
 }
 
 struct UnderlineTabsView {
@@ -107,11 +98,8 @@ struct UnderlineTabsView {
     colors: ThemeColors,
     gap: Pixels,
     item_width: Option<Pixels>,
-    defer_select_until_next_frame: bool,
+    slot: SpringValue,
     active_index: usize,
-    from_index: usize,
-    optimistic_target: Option<(usize, Instant)>,
-    selection_generation: u64,
 }
 
 impl UnderlineTabsView {
@@ -121,7 +109,6 @@ impl UnderlineTabsView {
         colors: ThemeColors,
         gap: Pixels,
         item_width: Option<Pixels>,
-        defer_select_until_next_frame: bool,
     ) -> Self {
         let active_index = selected_tab_index(&items);
         Self {
@@ -130,34 +117,24 @@ impl UnderlineTabsView {
             colors,
             gap,
             item_width,
-            defer_select_until_next_frame,
+            slot: SpringValue::new(active_index as f32).with_spring(tab_indicator_spring()),
             active_index,
-            from_index: active_index,
-            optimistic_target: None,
-            selection_generation: 0,
         }
     }
 
-    fn retarget(&mut self, target_index: usize) -> bool {
+    fn retarget(&mut self, target_index: usize, now: Instant, reduced_motion: bool) -> bool {
         if self.active_index == target_index {
             return false;
         }
-        self.from_index = self.active_index;
+
         self.active_index = target_index;
+        if reduced_motion {
+            self.slot.snap_to(target_index as f32);
+        } else {
+            self.slot
+                .retarget_with_spring(target_index as f32, tab_indicator_spring(), now);
+        }
         true
-    }
-
-    fn begin_user_selection(&mut self, target_index: usize, now: Instant) -> Option<u64> {
-        if self.active_index == target_index {
-            return None;
-        }
-
-        if self.defer_select_until_next_frame {
-            self.optimistic_target = Some((target_index, now));
-        }
-        self.selection_generation = self.selection_generation.wrapping_add(1);
-        self.retarget(target_index);
-        Some(self.selection_generation)
     }
 
     fn sync(
@@ -166,36 +143,21 @@ impl UnderlineTabsView {
         colors: ThemeColors,
         gap: Pixels,
         item_width: Option<Pixels>,
-        defer_select_until_next_frame: bool,
         now: Instant,
+        reduced_motion: bool,
         cx: &mut Context<Self>,
     ) {
-        let external_target = selected_tab_index(&items);
+        let target_index = selected_tab_index(&items);
         let visual_changed = self.colors != colors
             || self.gap != gap
             || self.item_width != item_width
-            || self.defer_select_until_next_frame != defer_select_until_next_frame
             || !tab_items_visually_equal(&self.items, &items);
-
-        let target_changed = if let Some((pending_target, pending_since)) = self.optimistic_target {
-            if external_target == pending_target {
-                self.optimistic_target = None;
-                false
-            } else if now.saturating_duration_since(pending_since) >= OPTIMISTIC_TAB_SYNC_TIMEOUT {
-                self.optimistic_target = None;
-                self.retarget(external_target)
-            } else {
-                false
-            }
-        } else {
-            self.retarget(external_target)
-        };
+        let target_changed = self.retarget(target_index, now, reduced_motion);
 
         self.items = items;
         self.colors = colors;
         self.gap = gap;
         self.item_width = item_width;
-        self.defer_select_until_next_frame = defer_select_until_next_frame;
 
         if visual_changed || target_changed {
             cx.notify();
@@ -204,46 +166,38 @@ impl UnderlineTabsView {
 }
 
 impl Render for UnderlineTabsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.items.is_empty() {
             return div().into_any_element();
         }
 
-        let colors = self.colors;
+        let now = window.animation_time();
         let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        let tabs_id = self.id.clone();
+        let slot_sample = if reduced_motion {
+            self.slot.snap_to(self.active_index as f32);
+            self.slot.sample(now)
+        } else {
+            self.slot.sample(now)
+        };
+        request_layout_animation_frame_if(window, !slot_sample.done && !reduced_motion);
+
+        let colors = self.colors;
         let active_index = self.active_index;
-        let from_index = self.from_index;
         let item_width = self.item_width;
         let gap = self.gap;
-        let defer_select_until_next_frame = self.defer_select_until_next_frame;
 
         let shared_underline = item_width.map(|item_width| {
             let item_width_px: f32 = item_width.into();
             let gap_px: f32 = gap.into();
             let step_px = item_width_px + gap_px;
-            let from = point(px(step_px * from_index as f32), px(0.0));
-            let to = point(px(step_px * active_index as f32), px(0.0));
-            let indicator = div()
+            div()
                 .absolute()
-                .left(px(4.0))
+                .left(px(step_px * slot_sample.value + 4.0))
                 .bottom(px(0.))
                 .w(px((item_width_px - 8.0).max(8.0)))
                 .h(px(2.))
                 .rounded(px(1.))
-                .bg(colors.accent);
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!("{}-shared-underline-motion", tabs_id.as_ref())),
-                    if reduced_motion || from_index == active_index {
-                        settled_animation().with_property(AnimationProperty::translation(to, to))
-                    } else {
-                        spring_motion(tab_indicator_spring())
-                            .with_property(AnimationProperty::translation(from, to))
-                    },
-                    |indicator, _progress| indicator,
-                )
+                .bg(colors.accent)
                 .into_any_element()
         });
 
@@ -331,31 +285,16 @@ impl Render for UnderlineTabsView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
-                                let now = Instant::now();
-                                let Some(generation) = this.begin_user_selection(index, now) else {
-                                    cx.stop_propagation();
-                                    return;
-                                };
-
-                                cx.notify();
-                                cx.stop_propagation();
-
-                                if defer_select_until_next_frame {
-                                    let deferred_select = on_select.clone();
-                                    let view = cx.entity().downgrade();
-                                    window.on_next_frame(move |window, cx| {
-                                        let still_current = view.upgrade().is_some_and(|view| {
-                                            let view = view.read(cx);
-                                            view.selection_generation == generation
-                                                && view.active_index == index
-                                        });
-                                        if still_current {
-                                            (deferred_select)(window, cx);
-                                        }
-                                    });
-                                } else {
-                                    (on_select)(window, cx);
+                                let reduced_motion = crate::core::ui_prefs::reduced_motion();
+                                if this.retarget(index, Instant::now(), reduced_motion) {
+                                    cx.notify();
                                 }
+
+                                // One authoritative selection update. Do not defer it and do not keep
+                                // an optimistic second tab state: the tab highlight, content and
+                                // ManagePageState must commit from the same input event.
+                                cx.stop_propagation();
+                                (on_select)(window, cx);
                             }),
                         )
                 }),
@@ -370,16 +309,16 @@ impl RenderOnce for UnderlineTabs {
             return div().into_any_element();
         }
 
-        let state_key = ElementId::Name(
-            format!("{}-detached-tabs-view", self.id.as_ref()).into(),
-        );
+        let state_key =
+            ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
         let id = self.id;
         let items = self.items;
         let colors = self.colors;
         let gap = self.gap;
         let item_width = self.item_width;
-        let defer_select_until_next_frame = self.defer_select_until_next_frame;
         let now = window.animation_time();
+        let reduced_motion = crate::core::ui_prefs::reduced_motion();
+
         window
             .with_global_id(state_key, |global_id, window| {
                 window.with_element_state::<Entity<UnderlineTabsView>, _>(
@@ -392,22 +331,15 @@ impl RenderOnce for UnderlineTabs {
                                     colors,
                                     gap,
                                     item_width,
-                                    defer_select_until_next_frame,
                                     now,
+                                    reduced_motion,
                                     cx,
                                 );
                             });
                             view
                         } else {
                             cx.new(|_| {
-                                UnderlineTabsView::new(
-                                    id,
-                                    items,
-                                    colors,
-                                    gap,
-                                    item_width,
-                                    defer_select_until_next_frame,
-                                )
+                                UnderlineTabsView::new(id, items, colors, gap, item_width)
                             })
                         };
                         (view.clone(), view)
@@ -426,7 +358,6 @@ pub struct AnimatedSegmentTabs {
     height: Pixels,
     item_width: Option<Pixels>,
     indicator_shadow: bool,
-    defer_select_until_next_frame: bool,
 }
 
 impl AnimatedSegmentTabs {
@@ -438,7 +369,6 @@ impl AnimatedSegmentTabs {
             height: px(34.),
             item_width: None,
             indicator_shadow: true,
-            defer_select_until_next_frame: false,
         }
     }
 
@@ -456,11 +386,6 @@ impl AnimatedSegmentTabs {
         self.indicator_shadow = false;
         self
     }
-
-    pub fn defer_selection_until_next_frame(mut self) -> Self {
-        self.defer_select_until_next_frame = true;
-        self
-    }
 }
 
 struct AnimatedSegmentTabsView {
@@ -470,11 +395,8 @@ struct AnimatedSegmentTabsView {
     height: Pixels,
     item_width: Option<Pixels>,
     indicator_shadow: bool,
-    defer_select_until_next_frame: bool,
+    slot: SpringValue,
     active_index: usize,
-    from_index: usize,
-    optimistic_target: Option<(usize, Instant)>,
-    selection_generation: u64,
 }
 
 impl AnimatedSegmentTabsView {
@@ -485,7 +407,6 @@ impl AnimatedSegmentTabsView {
         height: Pixels,
         item_width: Option<Pixels>,
         indicator_shadow: bool,
-        defer_select_until_next_frame: bool,
     ) -> Self {
         let active_index = selected_tab_index(&items);
         Self {
@@ -495,34 +416,24 @@ impl AnimatedSegmentTabsView {
             height,
             item_width,
             indicator_shadow,
-            defer_select_until_next_frame,
+            slot: SpringValue::new(active_index as f32).with_spring(tab_indicator_spring()),
             active_index,
-            from_index: active_index,
-            optimistic_target: None,
-            selection_generation: 0,
         }
     }
 
-    fn retarget(&mut self, target_index: usize) -> bool {
+    fn retarget(&mut self, target_index: usize, now: Instant, reduced_motion: bool) -> bool {
         if self.active_index == target_index {
             return false;
         }
-        self.from_index = self.active_index;
+
         self.active_index = target_index;
+        if reduced_motion {
+            self.slot.snap_to(target_index as f32);
+        } else {
+            self.slot
+                .retarget_with_spring(target_index as f32, tab_indicator_spring(), now);
+        }
         true
-    }
-
-    fn begin_user_selection(&mut self, target_index: usize, now: Instant) -> Option<u64> {
-        if self.active_index == target_index {
-            return None;
-        }
-
-        if self.defer_select_until_next_frame {
-            self.optimistic_target = Some((target_index, now));
-        }
-        self.selection_generation = self.selection_generation.wrapping_add(1);
-        self.retarget(target_index);
-        Some(self.selection_generation)
     }
 
     fn sync(
@@ -532,38 +443,23 @@ impl AnimatedSegmentTabsView {
         height: Pixels,
         item_width: Option<Pixels>,
         indicator_shadow: bool,
-        defer_select_until_next_frame: bool,
         now: Instant,
+        reduced_motion: bool,
         cx: &mut Context<Self>,
     ) {
-        let external_target = selected_tab_index(&items);
+        let target_index = selected_tab_index(&items);
         let visual_changed = self.colors != colors
             || self.height != height
             || self.item_width != item_width
             || self.indicator_shadow != indicator_shadow
-            || self.defer_select_until_next_frame != defer_select_until_next_frame
             || !tab_items_visually_equal(&self.items, &items);
-
-        let target_changed = if let Some((pending_target, pending_since)) = self.optimistic_target {
-            if external_target == pending_target {
-                self.optimistic_target = None;
-                false
-            } else if now.saturating_duration_since(pending_since) >= OPTIMISTIC_TAB_SYNC_TIMEOUT {
-                self.optimistic_target = None;
-                self.retarget(external_target)
-            } else {
-                false
-            }
-        } else {
-            self.retarget(external_target)
-        };
+        let target_changed = self.retarget(target_index, now, reduced_motion);
 
         self.items = items;
         self.colors = colors;
         self.height = height;
         self.item_width = item_width;
         self.indicator_shadow = indicator_shadow;
-        self.defer_select_until_next_frame = defer_select_until_next_frame;
 
         if visual_changed || target_changed {
             cx.notify();
@@ -572,10 +468,20 @@ impl AnimatedSegmentTabsView {
 }
 
 impl Render for AnimatedSegmentTabsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.items.is_empty() {
             return div().into_any_element();
         }
+
+        let now = window.animation_time();
+        let reduced_motion = crate::core::ui_prefs::reduced_motion();
+        let slot_sample = if reduced_motion {
+            self.slot.snap_to(self.active_index as f32);
+            self.slot.sample(now)
+        } else {
+            self.slot.sample(now)
+        };
+        request_layout_animation_frame_if(window, !slot_sample.done && !reduced_motion);
 
         let colors = self.colors;
         let dark_mode = colors.bg.l < 0.5;
@@ -609,17 +515,12 @@ impl Render for AnimatedSegmentTabsView {
             ..colors.text_secondary
         };
         let active_index = self.active_index;
-        let from_index = self.from_index;
-        let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        let defer_select_until_next_frame = self.defer_select_until_next_frame;
 
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
-            let from = point(px(item_width_px * from_index as f32), px(0.0));
-            let to = point(px(item_width_px * active_index as f32), px(0.0));
-            let indicator = div()
+            div()
                 .absolute()
-                .left(px(2.0))
+                .left(px(item_width_px * slot_sample.value + 2.0))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(px(item_width_px - 4.0))
@@ -637,26 +538,12 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                });
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!("{}-indicator-motion", self.id.as_ref())),
-                    if reduced_motion || from_index == active_index {
-                        settled_animation().with_property(AnimationProperty::translation(to, to))
-                    } else {
-                        spring_motion(tab_indicator_spring())
-                            .with_property(AnimationProperty::translation(from, to))
-                    },
-                    |indicator, _progress| indicator,
-                )
+                })
                 .into_any_element()
         } else {
-            let from = point(from_index as f32, 0.0);
-            let to = point(active_index as f32, 0.0);
-            let indicator = div()
+            div()
                 .absolute()
-                .left(relative(0.0))
+                .left(relative(slot_sample.value * segment_width))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(relative(segment_width))
@@ -674,20 +561,7 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                });
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!("{}-indicator-motion", self.id.as_ref())),
-                    if reduced_motion || from_index == active_index {
-                        settled_animation()
-                            .with_property(AnimationProperty::relative_translation(to, to))
-                    } else {
-                        spring_motion(tab_indicator_spring())
-                            .with_property(AnimationProperty::relative_translation(from, to))
-                    },
-                    |indicator, _progress| indicator,
-                )
+                })
                 .into_any_element()
         };
 
@@ -773,31 +647,14 @@ impl Render for AnimatedSegmentTabsView {
                         tab.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
-                                let now = Instant::now();
-                                let Some(generation) = this.begin_user_selection(index, now) else {
-                                    cx.stop_propagation();
-                                    return;
-                                };
-
-                                cx.notify();
-                                cx.stop_propagation();
-
-                                if defer_select_until_next_frame {
-                                    let deferred_select = on_select.clone();
-                                    let view = cx.entity().downgrade();
-                                    window.on_next_frame(move |window, cx| {
-                                        let still_current = view.upgrade().is_some_and(|view| {
-                                            let view = view.read(cx);
-                                            view.selection_generation == generation
-                                                && view.active_index == index
-                                        });
-                                        if still_current {
-                                            (deferred_select)(window, cx);
-                                        }
-                                    });
-                                } else {
-                                    (on_select)(window, cx);
+                                let reduced_motion =
+                                    crate::core::ui_prefs::reduced_motion();
+                                if this.retarget(index, Instant::now(), reduced_motion) {
+                                    cx.notify();
                                 }
+
+                                cx.stop_propagation();
+                                (on_select)(window, cx);
                             }),
                         )
                     }),
@@ -812,17 +669,16 @@ impl RenderOnce for AnimatedSegmentTabs {
             return div().into_any_element();
         }
 
-        let state_key = ElementId::Name(
-            format!("{}-detached-tabs-view", self.id.as_ref()).into(),
-        );
+        let state_key =
+            ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
         let id = self.id;
         let items = self.items;
         let colors = self.colors;
         let height = self.height;
         let item_width = self.item_width;
         let indicator_shadow = self.indicator_shadow;
-        let defer_select_until_next_frame = self.defer_select_until_next_frame;
         let now = window.animation_time();
+        let reduced_motion = crate::core::ui_prefs::reduced_motion();
 
         window
             .with_global_id(state_key, |global_id, window| {
@@ -837,8 +693,8 @@ impl RenderOnce for AnimatedSegmentTabs {
                                     height,
                                     item_width,
                                     indicator_shadow,
-                                    defer_select_until_next_frame,
                                     now,
+                                    reduced_motion,
                                     cx,
                                 );
                             });
@@ -852,7 +708,6 @@ impl RenderOnce for AnimatedSegmentTabs {
                                     height,
                                     item_width,
                                     indicator_shadow,
-                                    defer_select_until_next_frame,
                                 )
                             })
                         };

@@ -480,48 +480,30 @@ impl Window {
         from: [f32; 4],
         to: [f32; 4],
     ) -> SceneAnimationId {
-        self.start_scene_animation_with_spring(
-            element_id,
-            property,
-            spec,
-            None,
-            bounds,
-            from,
-            to,
-        )
-    }
-
-    pub(crate) fn start_scene_animation_with_spring(
-        &self,
-        element_id: &GlobalElementId,
-        property: TransitionProperty,
-        spec: AnimationSpec,
-        spring: Option<crate::Spring>,
-        bounds: Bounds<Pixels>,
-        from: [f32; 4],
-        to: [f32; 4],
-    ) -> SceneAnimationId {
         let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
         self.next_scene_animation_id
             .set(self.next_scene_animation_id.get().wrapping_add(1));
         let mut engine = self.animation_engine.borrow_mut();
-        engine.start_scene_transition(
-            element_id,
-            property,
-            spec,
-            spring,
-            self.animation_time(),
-            bounds,
-            animation_id,
-            from,
-            to,
-        );
+        engine.start_transition(element_id, property, spec, self.animation_time());
+        engine.set_transition_bounds(element_id, property, bounds);
+        engine.bind_scene_animation(element_id, property, animation_id, from, to);
         let driver = engine
             .transition_driver(element_id, property)
             .unwrap_or(crate::AnimationDriver::Paint);
         drop(engine);
         self.request_animation_engine_frame(driver);
         animation_id
+    }
+
+    pub(crate) fn set_scene_animation_spring(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spring: crate::Spring,
+    ) {
+        self.animation_engine
+            .borrow_mut()
+            .set_transition_spring(element_id, property, spring);
     }
 
     pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {

@@ -323,6 +323,14 @@ fn responsive_retarget_velocity(current_velocity: f32, delta: f32) -> f32 {
         return 0.0;
     }
 
+    // A retarget behind the current direction is a new user intent, not inertial scrolling.
+    // Carrying the obsolete velocity makes the indicator continue toward the old tab for a few
+    // frames and reads as "the animation cannot be interrupted". Preserve momentum only when it
+    // already points toward the new target.
+    if current_velocity != 0.0 && current_velocity.signum() != delta.signum() {
+        return 0.0;
+    }
+
     let max_velocity = delta.abs() * MAX_RETARGET_NORMALIZED_VELOCITY;
     current_velocity.clamp(-max_velocity, max_velocity)
 }
@@ -559,8 +567,10 @@ mod tests {
 
     #[test]
     fn retarget_velocity_preserves_physical_velocity_and_caps_short_distance_momentum() {
-        assert_eq!(responsive_retarget_velocity(4.0, -0.5), 4.0);
-        assert_eq!(responsive_retarget_velocity(-4.0, 0.5), -4.0);
+        assert_eq!(responsive_retarget_velocity(4.0, -0.5), 0.0);
+        assert_eq!(responsive_retarget_velocity(-4.0, 0.5), 0.0);
+        assert_eq!(responsive_retarget_velocity(4.0, 0.5), 4.0);
+        assert_eq!(responsive_retarget_velocity(-4.0, -0.5), -4.0);
 
         let capped = responsive_retarget_velocity(100.0, 0.25);
         assert!((capped - 3.0).abs() < f32::EPSILON);
