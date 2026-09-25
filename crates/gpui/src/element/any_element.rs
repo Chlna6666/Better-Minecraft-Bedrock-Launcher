@@ -37,6 +37,12 @@ impl<C: RenderOnce> Element for Component<C> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = ();
 
+    #[track_caller]
+    #[inline(never)]
+    fn into_any(self) -> AnyElement {
+        AnyElement::new(self).with_retained_auto_mount(core::panic::Location::caller())
+    }
+
     fn id(&self) -> Option<ElementId> {
         None
     }
