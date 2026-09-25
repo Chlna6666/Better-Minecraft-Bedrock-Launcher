@@ -56,14 +56,9 @@ impl Default for HtmlRenderOptions {
 
 impl HtmlRenderOptions {
     /// Returns the configured base URL as a plain string slice.
-    ///
-    /// `SharedString` dereferences to GPUI's internal `ArcCow<str>`, so
-    /// `Option<SharedString>::as_deref()` does not produce `Option<&str>`.
-    /// Keep the conversion in one place to avoid leaking that implementation
-    /// detail through the renderer.
     #[inline]
     pub fn base_url_str(&self) -> Option<&str> {
-        self.base_url.as_ref().map(SharedString::as_str)
+        self.base_url.as_deref()
     }
 }
 

@@ -1,32 +1,44 @@
-use derive_more::{Deref, DerefMut};
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use std::{
     borrow::{Borrow, Cow},
     sync::Arc,
 };
-use util::arc_cow::ArcCow;
 
-/// A shared string is an immutable string that can be cheaply cloned in GPUI
-/// tasks. Essentially an abstraction over an `Arc<str>` and `&'static str`,
-#[derive(Deref, DerefMut, Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
-pub struct SharedString(ArcCow<'static, str>);
+/// A shared string is an immutable string that can be cheaply cloned in GPUI tasks.
+///
+/// `SmolStr` keeps short UI labels inline while retaining cheap clones for longer strings, which
+/// avoids the heap allocation/atomic Arc traffic that the previous `ArcCow<str>` representation
+/// paid for every non-static short string.
+#[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Clone)]
+pub struct SharedString(SmolStr);
+
+impl std::ops::Deref for SharedString {
+    type Target = str;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.0.as_str()
+    }
+}
 
 impl SharedString {
     /// Creates a static [`SharedString`] from a `&'static str`.
     pub const fn new_static(str: &'static str) -> Self {
-        Self(ArcCow::Borrowed(str))
+        Self(SmolStr::new_static(str))
     }
 
-    /// Creates a [`SharedString`] from anything that can become an `Arc<str>`
-    pub fn new(str: impl Into<Arc<str>>) -> Self {
-        SharedString(ArcCow::Owned(str.into()))
+    /// Creates a [`SharedString`], inlining short strings when possible.
+    #[inline]
+    pub fn new(str: impl AsRef<str>) -> Self {
+        Self(SmolStr::new(str))
     }
 
-    /// Get a &str from the underlying string.
+    /// Get a `&str` from the underlying string.
+    #[inline]
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -46,17 +58,19 @@ impl JsonSchema for SharedString {
 
 impl Default for SharedString {
     fn default() -> Self {
-        Self(ArcCow::Borrowed(""))
+        Self::new_static("")
     }
 }
 
 impl AsRef<str> for SharedString {
+    #[inline]
     fn as_ref(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
 impl Borrow<str> for SharedString {
+    #[inline]
     fn borrow(&self) -> &str {
         self.as_ref()
     }
@@ -70,7 +84,7 @@ impl std::fmt::Debug for SharedString {
 
 impl std::fmt::Display for SharedString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.as_ref())
+        self.0.fmt(f)
     }
 }
 
@@ -99,29 +113,79 @@ impl<'a> PartialEq<&'a str> for SharedString {
 }
 
 impl From<&SharedString> for SharedString {
+    #[inline]
     fn from(value: &SharedString) -> Self {
         value.clone()
     }
 }
 
-impl From<SharedString> for Arc<str> {
-    fn from(value: SharedString) -> Self {
-        match value.0 {
-            ArcCow::Borrowed(borrowed) => Arc::from(borrowed),
-            ArcCow::Owned(owned) => owned,
-        }
+impl From<&str> for SharedString {
+    #[inline]
+    fn from(value: &str) -> Self {
+        Self(SmolStr::from(value))
     }
 }
 
-impl<T: Into<ArcCow<'static, str>>> From<T> for SharedString {
-    fn from(value: T) -> Self {
-        Self(value.into())
+impl From<&mut str> for SharedString {
+    #[inline]
+    fn from(value: &mut str) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<&String> for SharedString {
+    #[inline]
+    fn from(value: &String) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<String> for SharedString {
+    #[inline(always)]
+    fn from(value: String) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<Box<str>> for SharedString {
+    #[inline]
+    fn from(value: Box<str>) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<Arc<str>> for SharedString {
+    #[inline]
+    fn from(value: Arc<str>) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<&Arc<str>> for SharedString {
+    #[inline]
+    fn from(value: &Arc<str>) -> Self {
+        Self(SmolStr::from(value.clone()))
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for SharedString {
+    #[inline]
+    fn from(value: Cow<'a, str>) -> Self {
+        Self(SmolStr::from(value))
+    }
+}
+
+impl From<SharedString> for Arc<str> {
+    #[inline(always)]
+    fn from(value: SharedString) -> Self {
+        value.0.into()
     }
 }
 
 impl From<SharedString> for String {
+    #[inline(always)]
     fn from(value: SharedString) -> Self {
-        value.0.to_string()
+        value.0.into()
     }
 }
 
@@ -139,7 +203,23 @@ impl<'de> Deserialize<'de> for SharedString {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(SharedString::from(s))
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_string_preserves_static_and_owned_conversions() {
+        let static_text = SharedString::new_static("settings");
+        let owned = SharedString::from(String::from("download"));
+
+        assert_eq!(static_text.as_str(), "settings");
+        assert_eq!(owned.as_str(), "download");
+        assert_eq!(String::from(owned.clone()), "download");
+        assert_eq!(Arc::<str>::from(owned).as_ref(), "download");
     }
 }

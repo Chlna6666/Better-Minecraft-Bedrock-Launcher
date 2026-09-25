@@ -4144,6 +4144,7 @@ dependencies = [
  "smallvec",
  "smithay-client-toolkit 0.21.1",
  "smol",
+ "smol_str 0.3.6",
  "stacksafe",
  "strum 0.28.0",
  "swash",

@@ -494,6 +494,9 @@ features = ["union"]
 [dependencies.smol]
 version = "2.0"
 
+[dependencies.smol_str]
+version = "0.3.6"
+
 [dependencies.stacksafe]
 version = "1.0.1"
 optional = true
