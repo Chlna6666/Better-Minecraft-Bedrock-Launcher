@@ -40,6 +40,13 @@ pub(super) struct DirtyFrameDiagnostics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum InputModality {
+    Mouse,
+    Keyboard,
+    Touch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ViewDirtyScope {
     /// This view received an invalidation and must update its own output.
     Direct,
@@ -448,6 +455,7 @@ pub struct Window {
     pub(super) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
+    pub(super) last_input_modality: InputModality,
     /// Earliest dirty edge represented by the frame currently being drawn or awaiting presentation.
     pub(super) active_dirty_to_present_started_at: Option<Instant>,
     pub(super) touch_gestures: crate::gestures::TouchGestureRecognizer,

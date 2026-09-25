@@ -29,6 +29,7 @@ use std::{
 
 use super::drag_drop::GroupStyle;
 use super::drag_drop::{CanDropPredicate, DragListener, DropListener};
+use super::event::HoverListenerMode;
 use super::event_handlers::{
     ActionListener, ClickListener, KeyDownListener, KeyUpListener, ModifiersChangedListener,
     MouseDownListener, MouseMoveListener, MouseUpListener, ScrollWheelListener,
@@ -83,6 +84,7 @@ pub struct Interactivity {
     pub(crate) click_listeners: Vec<ClickListener>,
     pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
+    pub(crate) hover_listener_mode: HoverListenerMode,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) computed_style_cache: Option<ComputedStyleCache>,
     pub(crate) window_control: Option<WindowControlArea>,

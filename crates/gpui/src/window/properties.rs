@@ -123,6 +123,10 @@ impl Window {
     pub fn mouse_position(&self) -> Point<Pixels> {
         self.mouse_position
     }
+    /// Returns true when keyboard input is the current input modality.
+    pub fn last_input_was_keyboard(&self) -> bool {
+        self.last_input_modality == super::state::InputModality::Keyboard
+    }
 
     /// The current state of the keyboard's modifiers
     pub fn modifiers(&self) -> Modifiers {

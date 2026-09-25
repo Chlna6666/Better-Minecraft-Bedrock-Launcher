@@ -227,6 +227,7 @@ impl Interactivity {
                 let hover_listener: Rc<dyn Fn(&bool, &mut Window, &mut App)> =
                     Rc::from(hover_listener);
                 let hover_listener_state = was_hovered.clone();
+                let hover_listener_mode = self.hover_listener_mode;
                 let update_hover = move |is_hovered: bool, window: &mut Window, cx: &mut App| {
                     let mut was_hovered = hover_listener_state.borrow_mut();
                     if is_hovered != *was_hovered {
@@ -240,7 +241,8 @@ impl Interactivity {
                 // Reconcile against the newly painted hitbox instead of waiting for another
                 // MouseMoveEvent. Keep a pressed element stable until the mouse button resolves.
                 if has_mouse_down.borrow().is_none() {
-                    let is_hovered = !cx.has_active_drag() && hitbox.is_hovered(window);
+                    let is_hovered = !cx.has_active_drag()
+                        && hover_listener_mode.is_hovered(&hitbox, window);
                     if is_hovered != *was_hovered.borrow() {
                         let update_hover = update_hover.clone();
                         window.defer(cx, move |window, cx| {
@@ -259,7 +261,7 @@ impl Interactivity {
                         }
                         let is_hovered = has_mouse_down.borrow().is_none()
                             && !cx.has_active_drag()
-                            && hitbox.is_hovered(window);
+                            && hover_listener_mode.is_hovered(&hitbox, window);
                         update_hover(is_hovered, window, cx);
                     }
                 });

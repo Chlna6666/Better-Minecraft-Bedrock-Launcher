@@ -97,13 +97,24 @@ impl HitboxId {
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
-        let hit_test = &window.mouse_hit_test;
-        for id in hit_test.ids.iter().take(hit_test.hover_hitbox_count) {
-            if self == *id {
-                return true;
-            }
+        if window.last_input_was_keyboard() {
+            return false;
         }
-        false
+        self.hit_test(window)
+    }
+
+    /// Checks hover geometry while deliberately ignoring the current input modality.
+    pub(crate) fn is_hovered_ignoring_last_input(self, window: &Window) -> bool {
+        self.hit_test(window)
+    }
+
+    fn hit_test(self, window: &Window) -> bool {
+        let hit_test = &window.mouse_hit_test;
+        hit_test
+            .ids
+            .iter()
+            .take(hit_test.hover_hitbox_count)
+            .any(|id| self == *id)
     }
 
     /// Checks if the hitbox with this ID contains the mouse and should handle scroll events.

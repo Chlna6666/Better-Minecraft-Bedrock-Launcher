@@ -327,6 +327,24 @@ pub trait InteractiveElement: Sized {
     }
 }
 
+/// Controls how hover listeners respond after keyboard input.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HoverListenerMode {
+    /// Keyboard input suppresses hover until pointer or touch input resumes.
+    #[default]
+    InputModalityAware,
+    /// Continue geometric hover hit-testing while keyboard is the active input modality.
+    InputModalityIndependent,
+}
+
+impl HoverListenerMode {
+    pub(crate) fn is_hovered(self, hitbox: &crate::Hitbox, window: &Window) -> bool {
+        match self {
+            Self::InputModalityAware => hitbox.is_hovered(window),
+            Self::InputModalityIndependent => hitbox.id.is_hovered_ignoring_last_input(window),
+        }
+    }
+}
 /// A trait for elements that want to use the standard GPUI interactivity features
 /// that require state.
 #[allow(missing_docs)]
@@ -410,6 +428,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         Self: Sized,
     {
         self.interactivity().on_hover(listener);
+        self
+    }
+    /// Selects whether this hover listener follows keyboard/pointer input modality.
+    fn hover_listener_mode(mut self, mode: HoverListenerMode) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().hover_listener_mode(mode);
         self
     }
 

@@ -1,4 +1,4 @@
-use super::state::ElementVisualTransform;
+use super::state::{ElementVisualTransform, InputModality};
 use super::*;
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -440,6 +440,7 @@ impl Window {
             hovered,
             needs_present,
             last_input_timestamp,
+            last_input_modality: InputModality::Mouse,
             active_dirty_to_present_started_at: None,
             touch_gestures: crate::gestures::TouchGestureRecognizer::new(
                 cx.platform.gesture_tuning(),

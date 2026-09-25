@@ -7,7 +7,7 @@ use std::{
     rc::Rc,
 };
 
-use super::interactivity::Interactivity;
+use super::{event::HoverListenerMode, interactivity::Interactivity};
 pub(crate) type MouseDownListener = Box<
     dyn Fn(&MouseDownEvent, crate::DispatchPhase, &crate::Hitbox, &mut Window, &mut App) + 'static,
 >;
@@ -301,6 +301,11 @@ impl Interactivity {
             "calling on_hover more than once on the same element is not supported"
         );
         self.hover_listener = Some(Box::new(listener));
+    }
+
+    /// Selects whether this hover listener follows keyboard/pointer input modality.
+    pub fn hover_listener_mode(&mut self, mode: HoverListenerMode) {
+        self.hover_listener_mode = mode;
     }
 
     #[allow(missing_docs)]

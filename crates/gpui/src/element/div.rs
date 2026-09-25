@@ -14,7 +14,7 @@ mod tooltip;
 
 pub use drag_drop::{DragMoveEvent, GroupStyle};
 pub use element::{Div, DivLayout, Stateful, div};
-pub use event::{InteractiveElement, StatefulInteractiveElement};
+pub use event::{HoverListenerMode, InteractiveElement, StatefulInteractiveElement};
 pub use inspector::DivInspection;
 pub use interactivity::Interactivity;
 pub use scroll::{ScrollAnchor, ScrollHandle};

@@ -1,4 +1,4 @@
-use super::state::FrameRequestReason;
+use super::state::{FrameRequestReason, InputModality};
 use super::*;
 use crate::{ExternalPaths, TouchEvent, TouchPhase};
 use crate::gestures::RecognizedTouchGesture;
@@ -236,6 +236,23 @@ impl Window {
             self.last_input_timestamp.set(Instant::now());
             self.record_frame_request_reason(FrameRequestReason::Input);
         }
+
+        // Keyboard navigation suppresses pointer hover until pointer/touch input resumes.
+        // Only actual modality transitions invalidate the frame, so repeated events within one
+        // modality do not repeatedly force view-cache refreshes.
+        let previous_input_modality = self.last_input_modality;
+        self.last_input_modality = match &event {
+            PlatformInput::KeyDown(_) => InputModality::Keyboard,
+            PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
+            PlatformInput::Touch(_) | PlatformInput::LongPress(_) | PlatformInput::TouchDrag(_) => {
+                InputModality::Touch
+            }
+            _ => self.last_input_modality,
+        };
+        if self.last_input_modality != previous_input_modality {
+            self.refresh();
+        }
+
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.
