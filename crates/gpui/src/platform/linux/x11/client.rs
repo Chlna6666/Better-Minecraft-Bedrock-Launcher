@@ -21,6 +21,7 @@ use std::{
     ops::Deref,
     path::PathBuf,
     rc::{Rc, Weak},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use util::ResultExt;
@@ -56,8 +57,8 @@ use super::{
 use crate::platform::{
     LinuxCommon, PlatformWindow,
     linux::{
-        DEFAULT_CURSOR_ICON_NAME, LinuxClient, insert_foreground_task_idle,
-        is_within_click_distance, log_cursor_icon_warning, open_uri_internal,
+        DEFAULT_CURSOR_ICON_NAME, LinuxClient, is_within_click_distance,
+        log_cursor_icon_warning, open_uri_internal,
         platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
         reveal_path_internal,
         xdg_desktop_portal::{Event as XdpEvent, XdpEventSource},
@@ -65,8 +66,9 @@ use crate::platform::{
     },
 };
 use crate::{
-    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent, Keystroke,
-    LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, Pixels, Platform,
+    AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent,
+    ForegroundTaskQueue, Keystroke, LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent,
+    MouseButton, Pixels, Platform,
     PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RendererOptions,
     RequestFrameOptions, ScrollDelta, Size, TouchPhase, WindowParams, X11Window,
     modifiers_from_xinput_info, point, px,
@@ -92,6 +94,30 @@ fn frame_options_after_expose(
         require_presentation: expose_event_received,
         force_render: false,
     })
+}
+
+fn insert_x11_foreground_task_idle(
+    handle: &LoopHandle<'static, X11Client>,
+    foreground_task_queue: Arc<ForegroundTaskQueue>,
+) {
+    let idle_handle = handle.clone();
+    let reschedule_handle = handle.clone();
+    idle_handle.insert_idle(move |client| {
+        let needs_wakeup = foreground_task_queue.drain();
+
+        // Foreground work can synchronously cause the X server to queue events. Drain them before
+        // returning to the event loop so input/expose/configure changes are not delayed until a
+        // later fd readiness notification or refresh timer.
+        let xcb_connection = client.0.borrow().xcb_connection.clone();
+        client.drain_x11_events(&xcb_connection).log_err();
+
+        if needs_wakeup {
+            insert_x11_foreground_task_idle(
+                &reschedule_handle,
+                foreground_task_queue.clone(),
+            );
+        }
+    });
 }
 
 pub(crate) struct WindowRef {
@@ -333,7 +359,7 @@ impl X11Client {
                         // Insert the runnables as idle callbacks, so we make sure that user-input and X11
                         // events have higher priority and runnables are only worked off after the event
                         // callbacks.
-                        insert_foreground_task_idle(&handle, foreground_task_queue.clone());
+                        insert_x11_foreground_task_idle(&handle, foreground_task_queue.clone());
                     }
                 }
             })
