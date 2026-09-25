@@ -449,16 +449,15 @@ impl DispatchTree {
         focus_path
     }
 
+    /// Iterates the view path from the requested view toward the root without allocating.
+    pub fn view_path_reversed(&self, view_id: EntityId) -> impl Iterator<Item = EntityId> + '_ {
+        let current_node_id = self.view_node_ids.get(&view_id).copied();
+        std::iter::successors(current_node_id, |node_id| self.node(*node_id).parent)
+            .filter_map(|node_id| self.node(node_id).view_id)
+    }
+
     pub fn view_path(&self, view_id: EntityId) -> SmallVec<[EntityId; 8]> {
-        let mut view_path: SmallVec<[EntityId; 8]> = SmallVec::new();
-        let mut current_node_id = self.view_node_ids.get(&view_id).copied();
-        while let Some(node_id) = current_node_id {
-            let node = self.node(node_id);
-            if let Some(view_id) = node.view_id {
-                view_path.push(view_id);
-            }
-            current_node_id = node.parent;
-        }
+        let mut view_path: SmallVec<[EntityId; 8]> = self.view_path_reversed(view_id).collect();
         view_path.reverse(); // Reverse the path so it goes from the root to the view node.
         view_path
     }

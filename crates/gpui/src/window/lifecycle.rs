@@ -551,9 +551,7 @@ impl WindowInvalidator {
             }
 
             if let Some(boundary) = dispatch_tree
-                .view_path(view_id)
-                .into_iter()
-                .rev()
+                .view_path_reversed(view_id)
                 .find(|ancestor| cached_views.contains(ancestor))
             {
                 inner
@@ -593,7 +591,9 @@ impl WindowInvalidator {
         // are outside this retained route and are conservatively handled by their own root.
         if inner.active_generic_dirty_views.iter().any(|dirty_view| {
             *dirty_view == ancestor_owner
-                || dispatch_tree.view_path(*dirty_view).contains(&ancestor_owner)
+                || dispatch_tree
+                    .view_path_reversed(*dirty_view)
+                    .any(|view_id| view_id == ancestor_owner)
         }) {
             return None;
         }

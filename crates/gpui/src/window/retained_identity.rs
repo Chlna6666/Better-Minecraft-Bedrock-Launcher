@@ -32,8 +32,7 @@ impl Window {
         !self
             .rendered_frame
             .dispatch_tree
-            .view_path(view_id)
-            .into_iter()
+            .view_path_reversed(view_id)
             .any(|ancestor| self.invalidator.active_generic_view_is_dirty(ancestor))
     }
 

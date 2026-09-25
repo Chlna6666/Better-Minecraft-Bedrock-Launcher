@@ -229,8 +229,9 @@ impl Window {
                 !self
                     .rendered_frame
                     .dispatch_tree
-                    .view_path(*view_id)
-                    .is_empty()
+                    .view_path_reversed(*view_id)
+                    .next()
+                    .is_none()
             });
         self.animation_engine
             .borrow_mut()

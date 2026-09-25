@@ -110,9 +110,7 @@ impl Window {
         for view_id in self
             .rendered_frame
             .dispatch_tree
-            .view_path(view_id)
-            .into_iter()
-            .rev()
+            .view_path_reversed(view_id)
         {
             if !self.dirty_views.insert(view_id) {
                 break;
