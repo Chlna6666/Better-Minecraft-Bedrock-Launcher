@@ -335,6 +335,37 @@ fn try_reuse_retained_element(
 }
 
 #[inline(never)]
+fn run_element_prepaint(
+    element_id: Option<ElementId>,
+    global_id: Option<&GlobalElementId>,
+    retained_segment: &ElementId,
+    window: &mut Window,
+    callback: &mut dyn FnMut(&mut Window),
+) -> (DispatchNodeId, Range<PrepaintStateIndex>) {
+    if let Some(element_id) = element_id {
+        window.element_id_stack.push(element_id);
+        debug_assert_eq!(
+            &global_id
+                .expect("element id must have a corresponding global id")
+                .0,
+            &window.element_id_stack
+        );
+    }
+
+    let prepaint_start = window.prepaint_index();
+    let node_id = window.next_frame.dispatch_tree.push_node();
+    window.with_retained_element_segment(retained_segment, |window| callback(window));
+    window.next_frame.dispatch_tree.pop_node();
+    let prepaint_end = window.prepaint_index();
+
+    if global_id.is_some() {
+        window.element_id_stack.pop();
+    }
+
+    (node_id, prepaint_start..prepaint_end)
+}
+
+#[inline(never)]
 fn retained_div_self_scene(prepaint: &dyn Any) -> Option<super::RetainedDivSelfScene> {
     prepaint
         .downcast_ref::<DivPrepaint>()
@@ -547,29 +578,25 @@ impl<E: Element> Drawable<E> {
                     return;
                 }
 
-                if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
-                }
-
-                let prepaint_start = window.prepaint_index();
-                let node_id = window.next_frame.dispatch_tree.push_node();
-                let prepaint = window.with_retained_element_segment(&retained_segment, |window| {
-                    self.element.prepaint(
-                        global_id.as_ref(),
-                        inspector_id.as_ref(),
-                        bounds,
-                        &mut request_layout,
-                        window,
-                        cx,
-                    )
-                });
-                window.next_frame.dispatch_tree.pop_node();
-                let prepaint_end = window.prepaint_index();
-
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
+                let mut prepaint = None;
+                let (node_id, prepaint_range) = run_element_prepaint(
+                    self.element.id(),
+                    global_id.as_ref(),
+                    &retained_segment,
+                    window,
+                    &mut |window| {
+                        prepaint = Some(self.element.prepaint(
+                            global_id.as_ref(),
+                            inspector_id.as_ref(),
+                            bounds,
+                            &mut request_layout,
+                            window,
+                            cx,
+                        ));
+                    },
+                );
+                let prepaint =
+                    prepaint.expect("element prepaint callback must execute exactly once");
 
                 self.phase = ElementDrawPhase::Prepaint {
                     node_id,
@@ -583,7 +610,7 @@ impl<E: Element> Drawable<E> {
                     layout_fingerprint,
                     request_layout,
                     prepaint,
-                    prepaint_range: prepaint_start..prepaint_end,
+                    prepaint_range,
                     plain_text_key,
                 };
             }
