@@ -621,7 +621,7 @@ impl Window {
         // scene surgery. Nested cached AnyViews still retain/reconcile normally, but the shell root
         // rebuilds structurally so blur/composite/image capture boundaries are re-established from
         // a complete tree before those nested caches are consulted.
-        let mut root_element = self.root.as_ref().unwrap().clone().into_any();
+        let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
         });
@@ -653,12 +653,12 @@ impl Window {
         if has_overlay_work && self.draw_budget_exhausted() {
             self.degrade_current_draw();
         } else if let Some(prompt) = self.prompt.take() {
-            let mut element = prompt.view.any_view().into_any();
+            let mut element = prompt.view.any_view().into_any_element();
             element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
             prompt_element = Some(element);
             self.prompt = Some(prompt);
         } else if let Some(active_drag) = cx.active_drag.take() {
-            let mut element = active_drag.view.clone().into_any();
+            let mut element = active_drag.view.clone().into_any_element();
             let offset = self.mouse_position() - active_drag.cursor_offset;
             element.prepaint_as_root(offset, AvailableSpace::min_size(), self, cx);
             active_drag_element = Some(element);
@@ -733,7 +733,7 @@ impl Window {
                 log::error!("Unexpectedly absent TooltipRequest");
                 continue;
             };
-            let mut element = tooltip_request.tooltip.view.clone().into_any();
+            let mut element = tooltip_request.tooltip.view.clone().into_any_element();
             let mouse_position = tooltip_request.tooltip.mouse_position;
             let tooltip_size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
 

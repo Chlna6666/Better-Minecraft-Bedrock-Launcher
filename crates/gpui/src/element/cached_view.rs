@@ -1,4 +1,6 @@
-use super::any_view::{AnyView, AnyWeakView, ViewElement};
+use super::any_view::{AnyView, AnyWeakView};
+#[cfg(test)]
+use super::any_view::ViewElement;
 use super::fingerprint::render_fingerprint;
 use crate::Styled;
 use crate::{
@@ -574,7 +576,6 @@ impl Element for CachedView {
             );
         }
         window.with_rendered_view(self.entity_id(), |window| {
-            let critical = self.critical;
             if let Some(mut element) = element.take() {
                 element.prepaint(window, cx);
                 return CachedViewPrepaintState(CachedViewPrepaintStateKind::Fresh(element));
