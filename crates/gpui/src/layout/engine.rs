@@ -3,7 +3,6 @@ use crate::{
     Size, Style, Window, point, relative, size,
 };
 use collections::{FxHashMap, FxHashSet, FxHasher};
-use smallvec::SmallVec;
 use std::{
     hash::{Hash, Hasher},
     time::{Duration, Instant},
@@ -63,6 +62,7 @@ pub struct TaffyLayoutEngine {
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
     pub(super) subtree_scratch: Vec<LayoutId>,
+    layout_bounds_scratch_space: Vec<LayoutId>,
     root_diagnostic_ids: FxHashMap<LayoutId, GlobalElementId>,
     previous_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
     current_root_diagnostics: FxHashMap<GlobalElementId, Vec<LayoutRootDiagnosticNode>>,
@@ -114,6 +114,7 @@ impl TaffyLayoutEngine {
             previous_layout_roots: FxHashMap::default(),
             computed_root_keys: Vec::new(),
             subtree_scratch: Vec::new(),
+            layout_bounds_scratch_space: Vec::new(),
             root_diagnostic_ids: FxHashMap::default(),
             previous_root_diagnostics: FxHashMap::default(),
             current_root_diagnostics: FxHashMap::default(),
@@ -181,6 +182,7 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.measured_subtrees, measured_subtree_count);
         trim_to_working_set!(self.computed_root_keys, computed_root_count);
         trim_to_working_set!(self.subtree_scratch, node_working_set);
+        trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
         self.nodes_requested = 0;
         self.measured_nodes_requested = 0;
@@ -297,6 +299,8 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.computed_root_keys.len()));
         self.subtree_scratch
             .shrink_to(floor.max(self.subtree_scratch.len()));
+        self.layout_bounds_scratch_space
+            .shrink_to(floor.max(self.layout_bounds_scratch_space.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.previous_root_diagnostics.clear();
             self.current_root_diagnostics.clear();
@@ -523,7 +527,8 @@ impl TaffyLayoutEngine {
         //
 
         if !self.computed_layouts.insert(id) {
-            let mut stack = SmallVec::<[LayoutId; 64]>::new();
+            let stack = &mut self.layout_bounds_scratch_space;
+            stack.clear();
             stack.push(id);
             while let Some(id) = stack.pop() {
                 self.absolute_layout_bounds.remove(&id);
@@ -533,7 +538,7 @@ impl TaffyLayoutEngine {
                         .children(id.into())
                         .expect(EXPECT_MESSAGE)
                         .into_iter()
-                        .map(Into::into),
+                        .map(LayoutId::from),
                 );
             }
         }
