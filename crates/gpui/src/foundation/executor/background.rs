@@ -323,7 +323,7 @@ impl BackgroundExecutor {
     }
 
     /// adds detail to the "parked with nothing let to run" message.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     pub fn set_waiting_hint(&self, msg: Option<String>) {
         self.dispatcher.as_test().unwrap().set_waiting_hint(msg);
     }

@@ -91,10 +91,10 @@ pub fn bench(args: TokenStream, function: TokenStream) -> TokenStream {
                     let report = report.clone();
                     move |bencher, input| {
                         let mut cx = gpui::BenchAppContext::new_with_report(
-                        Some(stringify!(#outer_fn_name)),
-                        bencher,
-                        report.clone(),
-                    );
+                            Some(stringify!(#outer_fn_name)),
+                            bencher,
+                            report.clone(),
+                        );
                         #inner_fn_name(input, &mut cx);
                         cx.teardown();
                     }

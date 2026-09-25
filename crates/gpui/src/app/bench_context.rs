@@ -39,15 +39,15 @@ impl Default for BenchReport {
 }
 
 impl BenchReport {
-    /// Creates a report using one frame at \`fps\` as the comparison budget.
+    /// Creates a report using one frame at `fps` as the comparison budget.
     ///
     /// # Panics
     ///
-    /// Panics when \`fps\` is zero.
+    /// Panics when `fps` is zero.
     pub fn with_fps(fps: u64) -> Self {
         assert!(fps > 0, "frame rate must be greater than zero");
         Self {
-            frame_budget: Duration::from_nanos(NANOS_PER_SECOND / fps),
+            frame_budget: Duration::from_nanos((NANOS_PER_SECOND / fps).max(1)),
             state: Rc::new(RefCell::new(BenchReportState::default())),
         }
     }
@@ -72,12 +72,12 @@ impl BenchReport {
     }
 }
 
-/// GPUI application context used by Criterion benchmarks.
+/// GPUI application context used by Criterion benchmarks.\n///\n/// The benchmark platform exercises GPUI's CPU-side lifecycle, layout, retained replay and\n/// platform frame-callback scheduling. Nova GPU upload/submit cost remains covered by the\n/// dedicated renderer microbenchmarks and must not be inferred from this headless platform.
 ///
-/// Unlike \`TestAppContext\`, this context does not make effect flushing draw dirty windows.
+/// Unlike `TestAppContext`, this context does not make effect flushing draw dirty windows.
 /// Updates request a platform frame and the benchmark harness explicitly delivers scheduled frame
 /// callbacks between foreground task polls. This keeps renderer benchmarks shaped like production
-/// without pulling the complete \`test-support\` feature into \`bench-support\`.
+/// without pulling the complete `test-support` feature into `bench-support`.
 #[derive(Clone)]
 pub struct BenchAppContext<'a, 'measurement> {
     app: Rc<AppCell>,
@@ -221,7 +221,7 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
     /// This measures GPUI update/render work, not display latency or vsync pacing. One ready task
     /// is serviced before the update so already-queued foreground work can delay the frame as it
     /// does in production. The scheduled frame is then delivered through the platform callback
-    /// instead of calling \`Window::draw\` synchronously from the benchmark.
+    /// instead of calling `Window::draw` synchronously from the benchmark.
     pub fn bench_renderer<V>(
         &mut self,
         window: WindowHandle<V>,
