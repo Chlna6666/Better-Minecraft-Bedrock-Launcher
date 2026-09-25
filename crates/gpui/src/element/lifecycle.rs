@@ -513,7 +513,6 @@ impl<E: Element> Drawable<E> {
                 let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
-                let targeted_replay = window.retained_replay_is_targeted();
                 // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
                 // this helper after two cheap type checks; safe Divs use semantic generations.
                 let mut plain_text_key =
@@ -546,14 +545,6 @@ impl<E: Element> Drawable<E> {
                         prepaint_range,
                     };
                     return;
-                }
-
-                if plain_text_key.is_none() && (!targeted_replay || !identity_stable) {
-                    plain_text_key = retained_plain_text_key(
-                        &self.element as &dyn Any,
-                        &request_layout as &dyn Any,
-                        window,
-                    );
                 }
 
                 if let Some(element_id) = self.element.id() {
