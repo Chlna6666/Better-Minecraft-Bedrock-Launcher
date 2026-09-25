@@ -9,14 +9,12 @@ use super::{AnyElement, GlobalElementId};
 ///
 /// Most elements are safe to replay as part of an ancestor retained subtree. Elements that own
 /// frame-local cache metadata must execute their own lifecycle every frame so they can rebase that
-/// metadata before reusing their internal subtree. `NonReplayable` is reserved for elements whose
-/// lifecycle must always execute and which must also prevent an ancestor from skipping across them.
+/// metadata before reusing their internal subtree.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RetainedReplayCapability {
     Normal,
     OwnsFrameLocalCacheBoundary,
-    NonReplayable,
 }
 
 impl RetainedReplayCapability {
