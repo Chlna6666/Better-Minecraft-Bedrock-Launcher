@@ -3,7 +3,6 @@ use crate::{
     AtlasTextureId, AtlasTile, Bounds, ContentMask, DevicePixels, Edges, GlobalElementId, Hsla,
     ScaledPixels, WgslShaderSource, bounds, point, px, size,
 };
-use smallvec::smallvec;
 use std::{
     ops::Range,
     sync::{Arc, OnceLock},
@@ -1125,7 +1124,7 @@ fn append_retained_test_quads(scene: &mut Scene, count: usize) -> Range<usize> {
 
 #[test]
 fn retained_quad_chunk_keeps_exact_identity_and_generation_on_replay() {
-    let identity = GlobalElementId(smallvec!["retained-chunk".into()]);
+    let identity = GlobalElementId::from_path(&["retained-chunk".into()]);
     let mut previous = Scene::default();
     let range = append_retained_test_quads(&mut previous, 32);
     previous.record_retained_chunk(identity, 7, range.clone());
@@ -1150,7 +1149,7 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
     let mut left = Scene::default();
     let left_range = append_retained_test_quads(&mut left, 32);
     left.record_retained_chunk(
-        GlobalElementId(smallvec!["left-chunk".into()]),
+        GlobalElementId::from_path(&["left-chunk".into()]),
         3,
         left_range,
     );
@@ -1159,7 +1158,7 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
     let mut right = Scene::default();
     let right_range = append_retained_test_quads(&mut right, 32);
     right.record_retained_chunk(
-        GlobalElementId(smallvec!["right-chunk".into()]),
+        GlobalElementId::from_path(&["right-chunk".into()]),
         3,
         right_range,
     );
@@ -1173,7 +1172,7 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
 
 #[test]
 fn retained_quad_chunk_rejects_layer_and_effect_barriers() {
-    let identity = GlobalElementId(smallvec!["barrier-chunk".into()]);
+    let identity = GlobalElementId::from_path(&["barrier-chunk".into()]);
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
     let mut scene = Scene::default();
     let start = scene.len();

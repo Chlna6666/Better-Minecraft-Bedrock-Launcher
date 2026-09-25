@@ -904,7 +904,7 @@ mod retained_dirty_scope_tests {
     use super::*;
 
     fn path(parts: &[u32]) -> GlobalElementId {
-        GlobalElementId(parts.iter().copied().map(ElementId::InstanceSlot).collect())
+        GlobalElementId::from_path(&parts.iter().copied().map(ElementId::InstanceSlot).collect::<Vec<_>>())
     }
 
     #[test]

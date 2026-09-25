@@ -5,7 +5,6 @@ use crate::{
     RenderImageParams, TileId, WgslShaderSource, bounds, point, px, size,
 };
 use gfx_core::{DrawIndexedStepDescriptor, IndexBufferBinding, IndexFormat, RenderStepDescriptor};
-use smallvec::smallvec;
 use std::cell::Cell;
 
 fn force_atlas_full(atlas: &NovaAtlas) {
@@ -36,7 +35,7 @@ fn retained_quad_scene(generation: u64) -> crate::Scene {
     }
     let end = scene.len();
     scene.record_retained_chunk(
-        GlobalElementId(smallvec!["nova-retained-quad".into()]),
+        GlobalElementId::from_path(&["nova-retained-quad".into()]),
         generation,
         start..end,
     );

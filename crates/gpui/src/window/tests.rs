@@ -167,9 +167,7 @@ impl Render for ClickNotifyTestView {
 }
 
 fn test_global_element_id(name: &'static str) -> GlobalElementId {
-    let mut path = SmallVec::new();
-    path.push(ElementId::from(name));
-    GlobalElementId(path)
+    GlobalElementId::from_path(&[ElementId::from(name)])
 }
 
 #[cfg(test)]

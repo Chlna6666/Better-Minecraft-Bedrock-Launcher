@@ -98,7 +98,7 @@ impl Window {
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
         self.element_id_stack.push(element_id);
-        let global_id = GlobalElementId(self.element_id_stack.clone());
+        let global_id = GlobalElementId::from_path(&self.element_id_stack);
         let result = f(&global_id, self);
         self.element_id_stack.pop();
         result
@@ -215,7 +215,7 @@ impl Window {
         });
 
         self.retained_element_id_stack.push(segment.clone());
-        let retained_id = GlobalElementId(self.retained_element_id_stack.clone());
+        let retained_id = GlobalElementId::from_path(&self.retained_element_id_stack);
         self.retained_child_slot_stack.push(0);
         (segment, retained_id, ambiguity)
     }
@@ -244,7 +244,7 @@ impl Window {
     /// Returns the retained rendering identity of the element currently being prepainted/painted.
     pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
         (!self.retained_element_id_stack.is_empty())
-            .then(|| GlobalElementId(self.retained_element_id_stack.clone()))
+            .then(|| GlobalElementId::from_path(&self.retained_element_id_stack))
     }
 
     /// Executes the provided function with the specified rem size.

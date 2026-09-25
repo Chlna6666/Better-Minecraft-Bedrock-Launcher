@@ -72,11 +72,10 @@ mod tests {
     use crate::{
         ElementId, GlobalElementId, Radians, TransformationMatrix, bounds, hsla, point, px, size,
     };
-    use smallvec::smallvec;
     use std::{rc::Rc, time::Duration, time::Instant};
 
     fn test_global_element_id(name: &'static str) -> GlobalElementId {
-        GlobalElementId(smallvec![ElementId::from(name)])
+        GlobalElementId::from_path(&[ElementId::from(name)])
     }
 
     #[test]

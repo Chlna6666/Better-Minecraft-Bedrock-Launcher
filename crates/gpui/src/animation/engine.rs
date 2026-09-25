@@ -831,7 +831,7 @@ impl AnimationEngine {
     fn shared_element_id(&mut self, element_id: &GlobalElementId) -> Rc<GlobalElementId> {
         self.indexed_element_id(element_id)
             .cloned()
-            .unwrap_or_else(|| Rc::new(GlobalElementId(element_id.0.clone())))
+            .unwrap_or_else(|| Rc::new(element_id.clone()))
     }
 }
 

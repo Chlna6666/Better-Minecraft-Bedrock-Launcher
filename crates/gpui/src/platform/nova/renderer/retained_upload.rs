@@ -624,7 +624,7 @@ mod tests {
     ) -> RetainedResidentSpan {
         RetainedResidentSpan {
             id: RetainedChunkId::new(
-                crate::GlobalElementId(smallvec::smallvec![name.into()]),
+                crate::GlobalElementId::from_path(&[name.into()]),
                 generation,
             ),
             range,

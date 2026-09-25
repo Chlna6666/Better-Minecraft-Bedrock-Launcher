@@ -6,7 +6,7 @@ use crate::{
 use crate::window::{
     RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus,
 };
-use derive_more::{Deref, DerefMut};
+use derive_more::Deref;
 use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
@@ -21,8 +21,15 @@ use std::{
 use super::{DivPrepaint, Element};
 
 /// A globally unique identifier for an element, used to track state across frames.
-#[derive(Clone, Deref, DerefMut, Default, Debug, Eq, PartialEq, Hash)]
-pub struct GlobalElementId(pub(crate) SmallVec<[ElementId; 32]>);
+#[derive(Clone, Deref, Default, Debug, Eq, PartialEq, Hash)]
+pub struct GlobalElementId(pub(crate) Arc<[ElementId]>);
+
+impl GlobalElementId {
+    #[inline]
+    pub(crate) fn from_path(path: &[ElementId]) -> Self {
+        Self(Arc::from(path))
+    }
+}
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -150,7 +157,7 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
 #[inline(never)]
 fn prepare_element_id(element_id: ElementId, window: &mut Window) -> GlobalElementId {
     window.element_id_stack.push(element_id);
-    GlobalElementId(window.element_id_stack.clone())
+    GlobalElementId::from_path(&window.element_id_stack)
 }
 
 #[cfg(any(feature = "inspector", debug_assertions))]
@@ -160,7 +167,7 @@ fn prepare_inspector_id(
     window: &mut Window,
 ) -> InspectorElementId {
     let path = crate::InspectorElementPath {
-        global_id: GlobalElementId(window.element_id_stack.clone()),
+        global_id: GlobalElementId::from_path(&window.element_id_stack),
         source_location: source,
     };
     window.build_inspector_element_id(path)
