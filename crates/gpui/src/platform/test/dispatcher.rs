@@ -194,6 +194,53 @@ impl TestDispatcher {
             .insert(task_label);
     }
 
+    /// Runs only the foreground tasks that were queued when this call began.
+    ///
+    /// Tasks that wake and re-queue themselves while being polled are left for the next turn.
+    /// Background work is intentionally excluded: renderer benchmarks use this to model the
+    /// platform UI-thread pump instead of randomly executing worker-pool tasks on the frame path.
+    #[cfg(any(test, feature = "bench-support"))]
+    pub(crate) fn run_ready_foreground_tasks(
+        &self,
+        mut after_poll: impl FnMut(),
+    ) -> bool {
+        assert!(
+            self.is_main_thread(),
+            "foreground tasks must be serviced from the main thread"
+        );
+
+        let pending = self
+            .state
+            .lock()
+            .foreground
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>();
+        let mut ran_any = false;
+
+        for _ in 0..pending {
+            let runnable = {
+                let mut state = self.state.lock();
+                let state = &mut *state;
+                state
+                    .foreground
+                    .values_mut()
+                    .filter(|runnables| !runnables.is_empty())
+                    .choose(&mut state.random)
+                    .and_then(VecDeque::pop_front)
+            };
+            let Some(runnable) = runnable else {
+                break;
+            };
+
+            runnable.run();
+            ran_any = true;
+            after_poll();
+        }
+
+        ran_any
+    }
+
     pub fn run_until_parked(&self) {
         while self.tick(false) {}
     }
@@ -316,5 +363,76 @@ impl PlatformDispatcher for TestDispatcher {
 
     fn as_test(&self) -> Option<&TestDispatcher> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod bench_turn_tests {
+    use super::*;
+    use crate::{BackgroundExecutor, ForegroundExecutor};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn ready_foreground_turn_bounds_self_requeue_to_initial_count() {
+        let dispatcher = Arc::new(TestDispatcher::with_seed(StdRng::seed_from_u64(1), 1));
+        let foreground = ForegroundExecutor::new(dispatcher.clone());
+        let polls = Arc::new(AtomicUsize::new(0));
+
+        foreground
+            .spawn({
+                let polls = polls.clone();
+                async move {
+                    for _ in 0..128 {
+                        polls.fetch_add(1, Ordering::SeqCst);
+                        let mut yielded = false;
+                        std::future::poll_fn(move |cx| {
+                            if yielded {
+                                Poll::Ready(())
+                            } else {
+                                yielded = true;
+                                cx.waker().wake_by_ref();
+                                Poll::Pending
+                            }
+                        })
+                        .await;
+                    }
+                }
+            })
+            .detach();
+
+        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn ready_foreground_turn_does_not_run_background_work() {
+        let dispatcher = Arc::new(TestDispatcher::with_seed(StdRng::seed_from_u64(2), 2));
+        let foreground = ForegroundExecutor::new(dispatcher.clone());
+        let background = BackgroundExecutor::new(dispatcher.clone());
+        let foreground_ran = Arc::new(AtomicBool::new(false));
+        let background_ran = Arc::new(AtomicBool::new(false));
+
+        foreground
+            .spawn({
+                let foreground_ran = foreground_ran.clone();
+                async move {
+                    foreground_ran.store(true, Ordering::SeqCst);
+                }
+            })
+            .detach();
+        background
+            .spawn({
+                let background_ran = background_ran.clone();
+                async move {
+                    background_ran.store(true, Ordering::SeqCst);
+                }
+            })
+            .detach();
+
+        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert!(foreground_ran.load(Ordering::SeqCst));
+        assert!(!background_ran.load(Ordering::SeqCst));
     }
 }

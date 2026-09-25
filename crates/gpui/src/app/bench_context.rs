@@ -233,9 +233,12 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
         self.dispatch_pending_frames();
 
         let mut measured = || {
-            if self.dispatcher.tick(false) {
+            // Service only the foreground work that was already queued at frame start.
+            // Self-requeuing work advances at most one initial batch, and worker-pool tasks stay
+            // off the UI-thread measurement just as they do on production platforms.
+            self.dispatcher.run_ready_foreground_tasks(|| {
                 self.dispatch_pending_frames();
-            }
+            });
             window
                 .update(self, |view, window, cx| update(view, window, cx))
                 .expect("benchmark window was unexpectedly closed");
