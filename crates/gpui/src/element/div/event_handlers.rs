@@ -274,6 +274,7 @@ impl Interactivity {
     }
 
     #[allow(missing_docs)]
+    #[inline(always)]
     pub fn on_modifiers_changed(
         &mut self,
         listener: impl Fn(&ModifiersChangedEvent, &mut Window, &mut App) + 'static,
