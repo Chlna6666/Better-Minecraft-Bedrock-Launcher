@@ -63,6 +63,33 @@ fn sample_underline_tab_slot(state: UnderlineTabsState, now: Instant) -> (f32, b
     )
 }
 
+fn retarget_underline_tab(
+    state: &Entity<UnderlineTabsState>,
+    target_index: usize,
+    reduced_motion: bool,
+    window: &Window,
+    cx: &mut App,
+) {
+    let now = window.animation_time();
+    state.update(cx, |tab_state, cx| {
+        if tab_state.active_index == target_index {
+            return;
+        }
+
+        let snapshot = *tab_state;
+        let (current_slot, _) = sample_underline_tab_slot(snapshot, now);
+        tab_state.from_slot = if reduced_motion {
+            target_index as f32
+        } else {
+            current_slot
+        };
+        tab_state.active_index = target_index;
+        tab_state.started_at = (!reduced_motion).then_some(now);
+        tab_state.sequence = tab_state.sequence.wrapping_add(1);
+        cx.notify();
+    });
+}
+
 #[derive(IntoElement)]
 pub struct UnderlineTabs {
     id: SharedString,
@@ -197,8 +224,8 @@ impl RenderOnce for UnderlineTabs {
             root = root.child(shared_underline);
         }
 
-        root.children(self.items.into_iter().map(move |item| {
-            let active = item.active;
+        root.children(self.items.into_iter().enumerate().map(move |(index, item)| {
+            let active = index == snapshot.active_index;
             let label = item.label.clone();
             let icon_path = item.icon_path;
             let on_select = item.on_select.clone();
@@ -277,8 +304,19 @@ impl RenderOnce for UnderlineTabs {
                     ),
                 )
                 .when_some(local_underline, |tab, underline| tab.child(underline))
-                .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
-                    (on_select)(window, cx);
+                .on_mouse_down(MouseButton::Left, {
+                    let state = state.clone();
+                    move |_event, window, cx| {
+                        retarget_underline_tab(
+                            &state,
+                            index,
+                            reduced_motion,
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                        (on_select)(window, cx);
+                    }
                 })
         }))
         .into_any_element()
@@ -303,6 +341,33 @@ fn sample_animated_tab_slot(state: AnimatedTabsState, now: Instant) -> (f32, boo
         state.from_slot + (state.active_index as f32 - state.from_slot) * eased,
         progress < 1.0,
     )
+}
+
+fn retarget_animated_tab(
+    state: &Entity<AnimatedTabsState>,
+    target_index: usize,
+    reduced_motion: bool,
+    window: &Window,
+    cx: &mut App,
+) {
+    let now = window.animation_time();
+    state.update(cx, |tab_state, cx| {
+        if tab_state.active_index == target_index {
+            return;
+        }
+
+        let snapshot = *tab_state;
+        let (current_slot, _) = sample_animated_tab_slot(snapshot, now);
+        tab_state.from_slot = if reduced_motion {
+            target_index as f32
+        } else {
+            current_slot
+        };
+        tab_state.active_index = target_index;
+        tab_state.started_at = (!reduced_motion).then_some(now);
+        tab_state.sequence = tab_state.sequence.wrapping_add(1);
+        cx.notify();
+    });
 }
 
 #[derive(IntoElement)]
@@ -533,8 +598,8 @@ impl RenderOnce for AnimatedSegmentTabs {
         }
 
         root.child(indicator)
-            .children(self.items.into_iter().map(move |item| {
-                let active = item.active;
+            .children(self.items.into_iter().enumerate().map(move |(index, item)| {
+                let active = index == snapshot.active_index;
                 let label = item.label.clone();
                 let icon_path = item.icon_path;
                 let on_select = item.on_select.clone();
@@ -578,8 +643,19 @@ impl RenderOnce for AnimatedSegmentTabs {
                     tab = tab.flex_1().min_w(px(0.));
                 }
 
-                tab.on_mouse_down(MouseButton::Left, move |_event, window, cx| {
-                    (on_select)(window, cx);
+                tab.on_mouse_down(MouseButton::Left, {
+                    let state = state.clone();
+                    move |_event, window, cx| {
+                        retarget_animated_tab(
+                            &state,
+                            index,
+                            reduced_motion,
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                        (on_select)(window, cx);
+                    }
                 })
             }))
             .into_any_element()
