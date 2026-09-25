@@ -1,5 +1,5 @@
 use crate::ui::animation::{
-    ease_out_cubic, ease_out_cubic_motion, raw_progress, settled_animation, tab_underline_motion,
+    apple_spring, request_layout_animation_frame_if, tab_underline_motion, SpringValue,
 };
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
@@ -8,9 +8,6 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-
-const ANIMATED_TAB_DURATION: Duration = Duration::from_millis(180);
-const UNDERLINE_TAB_DURATION: Duration = Duration::from_millis(220);
 
 #[derive(Clone)]
 pub struct TabItem {
@@ -50,7 +47,6 @@ fn tab_items_visually_equal(left: &[TabItem], right: &[TabItem]) -> bool {
             left.id == right.id
                 && left.label == right.label
                 && left.icon_path == right.icon_path
-                && left.active == right.active
         })
 }
 
@@ -101,6 +97,14 @@ impl UnderlineTabs {
     }
 }
 
+const OPTIMISTIC_TAB_SYNC_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn tab_indicator_spring() -> Spring {
+    // Short, heavily damped response: immediate motion on press, but still preserves velocity
+    // when the user redirects before the previous transition settles.
+    apple_spring(0.22, 0.90)
+}
+
 struct UnderlineTabsView {
     id: SharedString,
     items: Vec<TabItem>,
@@ -108,10 +112,12 @@ struct UnderlineTabsView {
     gap: Pixels,
     item_width: Option<Pixels>,
     defer_select_until_next_frame: bool,
-    from_slot: f32,
+    slot: SpringValue,
     active_index: usize,
-    started_at: Option<Instant>,
+    from_index: usize,
     sequence: u64,
+    optimistic_target: Option<(usize, Instant)>,
+    selection_generation: u64,
 }
 
 impl UnderlineTabsView {
@@ -131,23 +137,13 @@ impl UnderlineTabsView {
             gap,
             item_width,
             defer_select_until_next_frame,
-            from_slot: active_index as f32,
+            slot: SpringValue::new(active_index as f32).with_spring(tab_indicator_spring()),
             active_index,
-            started_at: None,
+            from_index: active_index,
             sequence: 0,
+            optimistic_target: None,
+            selection_generation: 0,
         }
-    }
-
-    fn sample_slot(&self, now: Instant) -> (f32, bool) {
-        let Some(started_at) = self.started_at else {
-            return (self.active_index as f32, false);
-        };
-        let progress = raw_progress(now, started_at, UNDERLINE_TAB_DURATION);
-        let eased = ease_out_cubic(progress);
-        (
-            self.from_slot + (self.active_index as f32 - self.from_slot) * eased,
-            progress < 1.0,
-        )
     }
 
     fn retarget(&mut self, target_index: usize, now: Instant, reduced_motion: bool) -> bool {
@@ -155,16 +151,34 @@ impl UnderlineTabsView {
             return false;
         }
 
-        let current_slot = self.sample_slot(now).0;
-        self.from_slot = if reduced_motion {
-            target_index as f32
-        } else {
-            current_slot
-        };
+        self.from_index = self.active_index;
         self.active_index = target_index;
-        self.started_at = (!reduced_motion).then_some(now);
+        if reduced_motion {
+            self.slot.snap_to(target_index as f32);
+        } else {
+            self.slot
+                .retarget_with_spring(target_index as f32, tab_indicator_spring(), now);
+        }
         self.sequence = self.sequence.wrapping_add(1);
         true
+    }
+
+    fn begin_user_selection(
+        &mut self,
+        target_index: usize,
+        now: Instant,
+        reduced_motion: bool,
+    ) -> Option<u64> {
+        if self.active_index == target_index {
+            return None;
+        }
+
+        if self.defer_select_until_next_frame {
+            self.optimistic_target = Some((target_index, now));
+        }
+        self.selection_generation = self.selection_generation.wrapping_add(1);
+        self.retarget(target_index, now, reduced_motion);
+        Some(self.selection_generation)
     }
 
     fn sync(
@@ -178,13 +192,28 @@ impl UnderlineTabsView {
         reduced_motion: bool,
         cx: &mut Context<Self>,
     ) {
-        let target_index = selected_tab_index(&items);
+        let external_target = selected_tab_index(&items);
         let visual_changed = self.colors != colors
             || self.gap != gap
             || self.item_width != item_width
             || self.defer_select_until_next_frame != defer_select_until_next_frame
             || !tab_items_visually_equal(&self.items, &items);
-        let target_changed = self.retarget(target_index, now, reduced_motion);
+
+        // A parent rerender can still arrive before the deferred selection callback. Do not let
+        // that stale parent snapshot retarget the local indicator back to its previous tab.
+        let target_changed = if let Some((pending_target, pending_since)) = self.optimistic_target {
+            if external_target == pending_target {
+                self.optimistic_target = None;
+                false
+            } else if now.saturating_duration_since(pending_since) >= OPTIMISTIC_TAB_SYNC_TIMEOUT {
+                self.optimistic_target = None;
+                self.retarget(external_target, now, reduced_motion)
+            } else {
+                false
+            }
+        } else {
+            self.retarget(external_target, now, reduced_motion)
+        };
 
         self.items = items;
         self.colors = colors;
@@ -205,13 +234,15 @@ impl Render for UnderlineTabsView {
         }
 
         let now = window.animation_time();
+        let slot_sample = self.slot.sample(now);
+        request_layout_animation_frame_if(window, !slot_sample.done);
+
         let colors = self.colors;
         let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        let (_, animating) = self.sample_slot(now);
-        let animation_active = animating && !reduced_motion;
+        let local_underline_animating = !slot_sample.done && !reduced_motion;
         let tabs_id = self.id.clone();
         let active_index = self.active_index;
-        let from_slot = self.from_slot;
+        let from_index = self.from_index;
         let sequence = self.sequence;
         let item_width = self.item_width;
         let gap = self.gap;
@@ -221,38 +252,14 @@ impl Render for UnderlineTabsView {
             let item_width_px: f32 = item_width.into();
             let gap_px: f32 = gap.into();
             let step_px = item_width_px + gap_px;
-            let from_left_px = step_px * from_slot + 4.0;
-            let target_left_px = step_px * active_index as f32 + 4.0;
-            let indicator = div()
+            div()
                 .absolute()
+                .left(px(step_px * slot_sample.value + 4.0))
                 .bottom(px(0.))
                 .w(px((item_width_px - 8.0).max(8.0)))
                 .h(px(2.))
                 .rounded(px(1.))
-                .bg(colors.accent);
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-shared-underline-{}",
-                        tabs_id.as_ref(),
-                        sequence
-                    )),
-                    if animation_active {
-                        ease_out_cubic_motion(UNDERLINE_TAB_DURATION)
-                    } else {
-                        settled_animation()
-                    },
-                    move |indicator, progress| {
-                        let progress = if animation_active {
-                            progress.clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        };
-                        let left = from_left_px + (target_left_px - from_left_px) * progress;
-                        indicator.left(px(left))
-                    },
-                )
+                .bg(colors.accent)
                 .into_any_element()
         });
 
@@ -305,8 +312,7 @@ impl Render for UnderlineTabsView {
                             .rounded(px(1.))
                             .bg(colors.accent);
 
-                        if animation_active {
-                            let from_index = from_slot.round().max(0.0) as usize;
+                        if local_underline_animating {
                             indicator
                                 .composite_layer()
                                 .with_animation(
@@ -358,18 +364,30 @@ impl Render for UnderlineTabsView {
                             MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
                                 let reduced_motion = crate::core::ui_prefs::reduced_motion();
-                                if this.retarget(
-                                    index,
-                                    window.animation_time(),
-                                    reduced_motion,
-                                ) {
-                                    cx.notify();
-                                }
+                                let now = window.animation_time();
+                                let Some(generation) =
+                                    this.begin_user_selection(index, now, reduced_motion)
+                                else {
+                                    cx.stop_propagation();
+                                    return;
+                                };
+
+                                cx.notify();
+                                window.request_animation_frame();
                                 cx.stop_propagation();
+
                                 if defer_select_until_next_frame {
                                     let deferred_select = on_select.clone();
+                                    let view = cx.entity().downgrade();
                                     window.on_next_frame(move |window, cx| {
-                                        (deferred_select)(window, cx);
+                                        let still_current = view.upgrade().is_some_and(|view| {
+                                            let view = view.read(cx);
+                                            view.selection_generation == generation
+                                                && view.active_index == index
+                                        });
+                                        if still_current {
+                                            (deferred_select)(window, cx);
+                                        }
                                     });
                                 } else {
                                     (on_select)(window, cx);
@@ -492,10 +510,10 @@ struct AnimatedSegmentTabsView {
     item_width: Option<Pixels>,
     indicator_shadow: bool,
     defer_select_until_next_frame: bool,
-    from_slot: f32,
+    slot: SpringValue,
     active_index: usize,
-    started_at: Option<Instant>,
-    sequence: u64,
+    optimistic_target: Option<(usize, Instant)>,
+    selection_generation: u64,
 }
 
 impl AnimatedSegmentTabsView {
@@ -517,23 +535,11 @@ impl AnimatedSegmentTabsView {
             item_width,
             indicator_shadow,
             defer_select_until_next_frame,
-            from_slot: active_index as f32,
+            slot: SpringValue::new(active_index as f32).with_spring(tab_indicator_spring()),
             active_index,
-            started_at: None,
-            sequence: 0,
+            optimistic_target: None,
+            selection_generation: 0,
         }
-    }
-
-    fn sample_slot(&self, now: Instant) -> (f32, bool) {
-        let Some(started_at) = self.started_at else {
-            return (self.active_index as f32, false);
-        };
-        let progress = raw_progress(now, started_at, ANIMATED_TAB_DURATION);
-        let eased = ease_out_cubic(progress);
-        (
-            self.from_slot + (self.active_index as f32 - self.from_slot) * eased,
-            progress < 1.0,
-        )
     }
 
     fn retarget(&mut self, target_index: usize, now: Instant, reduced_motion: bool) -> bool {
@@ -541,16 +547,32 @@ impl AnimatedSegmentTabsView {
             return false;
         }
 
-        let current_slot = self.sample_slot(now).0;
-        self.from_slot = if reduced_motion {
-            target_index as f32
-        } else {
-            current_slot
-        };
         self.active_index = target_index;
-        self.started_at = (!reduced_motion).then_some(now);
-        self.sequence = self.sequence.wrapping_add(1);
+        if reduced_motion {
+            self.slot.snap_to(target_index as f32);
+        } else {
+            self.slot
+                .retarget_with_spring(target_index as f32, tab_indicator_spring(), now);
+        }
         true
+    }
+
+    fn begin_user_selection(
+        &mut self,
+        target_index: usize,
+        now: Instant,
+        reduced_motion: bool,
+    ) -> Option<u64> {
+        if self.active_index == target_index {
+            return None;
+        }
+
+        if self.defer_select_until_next_frame {
+            self.optimistic_target = Some((target_index, now));
+        }
+        self.selection_generation = self.selection_generation.wrapping_add(1);
+        self.retarget(target_index, now, reduced_motion);
+        Some(self.selection_generation)
     }
 
     fn sync(
@@ -565,14 +587,27 @@ impl AnimatedSegmentTabsView {
         reduced_motion: bool,
         cx: &mut Context<Self>,
     ) {
-        let target_index = selected_tab_index(&items);
+        let external_target = selected_tab_index(&items);
         let visual_changed = self.colors != colors
             || self.height != height
             || self.item_width != item_width
             || self.indicator_shadow != indicator_shadow
             || self.defer_select_until_next_frame != defer_select_until_next_frame
             || !tab_items_visually_equal(&self.items, &items);
-        let target_changed = self.retarget(target_index, now, reduced_motion);
+
+        let target_changed = if let Some((pending_target, pending_since)) = self.optimistic_target {
+            if external_target == pending_target {
+                self.optimistic_target = None;
+                false
+            } else if now.saturating_duration_since(pending_since) >= OPTIMISTIC_TAB_SYNC_TIMEOUT {
+                self.optimistic_target = None;
+                self.retarget(external_target, now, reduced_motion)
+            } else {
+                false
+            }
+        } else {
+            self.retarget(external_target, now, reduced_motion)
+        };
 
         self.items = items;
         self.colors = colors;
@@ -594,6 +629,9 @@ impl Render for AnimatedSegmentTabsView {
         }
 
         let now = window.animation_time();
+        let slot_sample = self.slot.sample(now);
+        request_layout_animation_frame_if(window, !slot_sample.done);
+
         let colors = self.colors;
         let dark_mode = colors.bg.l < 0.5;
         let item_count = self.items.len();
@@ -625,20 +663,14 @@ impl Render for AnimatedSegmentTabsView {
             a: if dark_mode { 0.78 } else { 0.84 },
             ..colors.text_secondary
         };
-        let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        let (_, animating) = self.sample_slot(now);
-        let animation_active = animating && !reduced_motion;
         let active_index = self.active_index;
-        let from_slot = self.from_slot;
-        let sequence = self.sequence;
         let defer_select_until_next_frame = self.defer_select_until_next_frame;
 
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
-            let from_left_px = item_width_px * from_slot + 2.0;
-            let target_left_px = item_width_px * active_index as f32 + 2.0;
-            let indicator = div()
+            div()
                 .absolute()
+                .left(px(item_width_px * slot_sample.value + 2.0))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(px(item_width_px - 4.0))
@@ -656,35 +688,12 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                });
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-indicator-{}",
-                        self.id, sequence
-                    )),
-                    if animation_active {
-                        ease_out_cubic_motion(ANIMATED_TAB_DURATION)
-                    } else {
-                        settled_animation()
-                    },
-                    move |indicator, progress| {
-                        let progress = if animation_active {
-                            progress.clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        };
-                        let left = from_left_px + (target_left_px - from_left_px) * progress;
-                        indicator.left(px(left))
-                    },
-                )
+                })
                 .into_any_element()
         } else {
-            let from_left = from_slot * segment_width;
-            let target_left = active_index as f32 * segment_width;
-            let indicator = div()
+            div()
                 .absolute()
+                .left(relative(slot_sample.value * segment_width))
                 .top(px(2.))
                 .bottom(px(2.))
                 .w(relative(segment_width))
@@ -702,29 +711,7 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                });
-
-            indicator
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-indicator-{}",
-                        self.id, sequence
-                    )),
-                    if animation_active {
-                        ease_out_cubic_motion(ANIMATED_TAB_DURATION)
-                    } else {
-                        settled_animation()
-                    },
-                    move |indicator, progress| {
-                        let progress = if animation_active {
-                            progress.clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        };
-                        let left = from_left + (target_left - from_left) * progress;
-                        indicator.left(relative(left))
-                    },
-                )
+                })
                 .into_any_element()
         };
 
@@ -812,18 +799,30 @@ impl Render for AnimatedSegmentTabsView {
                             cx.listener(move |this, _event, window, cx| {
                                 let reduced_motion =
                                     crate::core::ui_prefs::reduced_motion();
-                                if this.retarget(
-                                    index,
-                                    window.animation_time(),
-                                    reduced_motion,
-                                ) {
-                                    cx.notify();
-                                }
+                                let now = window.animation_time();
+                                let Some(generation) =
+                                    this.begin_user_selection(index, now, reduced_motion)
+                                else {
+                                    cx.stop_propagation();
+                                    return;
+                                };
+
+                                cx.notify();
+                                window.request_animation_frame();
                                 cx.stop_propagation();
+
                                 if defer_select_until_next_frame {
                                     let deferred_select = on_select.clone();
+                                    let view = cx.entity().downgrade();
                                     window.on_next_frame(move |window, cx| {
-                                        (deferred_select)(window, cx);
+                                        let still_current = view.upgrade().is_some_and(|view| {
+                                            let view = view.read(cx);
+                                            view.selection_generation == generation
+                                                && view.active_index == index
+                                        });
+                                        if still_current {
+                                            (deferred_select)(window, cx);
+                                        }
                                     });
                                 } else {
                                     (on_select)(window, cx);
