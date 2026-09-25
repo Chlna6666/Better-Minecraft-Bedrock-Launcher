@@ -257,15 +257,21 @@ impl Window {
         self.default_prevented = false;
 
         if input_modality_changed && self.has_completed_rendered_frame {
-            // Changing keyboard/pointer modality changes Hitbox::is_hovered semantics without
-            // changing geometric hit testing. Re-run only framework-owned hover-transition
-            // listeners from the committed frame. BMCBL's Window::refresh forces every cached
-            // view through MissRefresh, which is far broader than this interaction-state change.
-            self.dispatch_input_modality_hover_transition(cx);
-            // A hover callback may stop propagation or prevent a synthetic event. Those flags
-            // must not leak into the real keyboard/pointer event currently being dispatched.
-            cx.propagate_event = true;
-            self.default_prevented = false;
+            if matches!(&event, PlatformInput::KeyDown(_) | PlatformInput::MouseMove(_)) {
+                // KeyDown only suppresses pointer hover, while a real MouseMove legitimately
+                // restores it. Re-run framework-owned hover-transition listeners without forcing
+                // every cached view through MissRefresh.
+                self.dispatch_input_modality_hover_transition(cx);
+                // A hover callback may stop propagation or prevent the synthetic transition.
+                // Those flags must not leak into the real keyboard/pointer event.
+                cx.propagate_event = true;
+                self.default_prevented = false;
+            } else {
+                // MouseDown/touch changes modality without representing mouse motion. Keep the
+                // conservative redraw used upstream so tooltip timing and touch semantics are not
+                // accidentally converted into synthetic MouseMove behavior.
+                self.refresh();
+            }
         }
 
         let event = match event {
