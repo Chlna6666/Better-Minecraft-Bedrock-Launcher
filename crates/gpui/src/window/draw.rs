@@ -631,15 +631,16 @@ impl Window {
             self.prepaint_inspector(_inspector_width, cx)
         };
 
-        let mut sorted_deferred_draws =
-            (0..self.next_frame.deferred_draws.len()).collect::<SmallVec<[_; 8]>>();
-        sorted_deferred_draws.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
-        if !sorted_deferred_draws.is_empty() && self.draw_budget_exhausted() {
+        if !self.next_frame.deferred_draws.is_empty() && self.draw_budget_exhausted() {
             self.degrade_current_draw();
-            sorted_deferred_draws.clear();
         } else {
-            self.prepaint_deferred_draws(&sorted_deferred_draws, cx);
+            self.prepaint_deferred_draws(cx);
         }
+        let sorted_deferred_draws = if self.draw_was_degraded() {
+            SmallVec::new()
+        } else {
+            self.deferred_draw_traversal_order()
+        };
 
         let mut prompt_element = None;
         let mut active_drag_element = None;

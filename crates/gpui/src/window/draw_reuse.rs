@@ -17,75 +17,128 @@ pub(crate) struct PrepaintFragmentReplay {
 }
 
 impl Window {
-    pub(super) fn prepaint_deferred_draws(
-        &mut self,
-        deferred_draw_indices: &[usize],
-        cx: &mut App,
-    ) {
+    pub(super) fn prepaint_deferred_draws(&mut self, cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
         assert_eq!(self.retained_element_id_stack.len(), 0);
 
-        let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
-        let mut deferred_metadata = mem::take(&mut self.next_frame.deferred_retained_metadata);
-        deferred_metadata.resize_with(deferred_draws.len(), DeferredRetainedMetadata::default);
-        for deferred_draw_ix in deferred_draw_indices {
-            if self.draw_budget_exhausted() {
-                self.degrade_current_draw();
+        // Deferred prepaint must stay in the same vector coordinate space captured by
+        // PrepaintStateIndex. Processing in place also allows a deferred child to enqueue another
+        // deferred draw without shifting the retained ranges recorded by its cached ancestors.
+        let mut round_start = 0;
+        let mut depth = 0;
+        'rounds: loop {
+            let round_end = self.next_frame.deferred_draws.len();
+            if round_start == round_end {
                 break;
             }
+            assert!(depth < 10, "exceeded maximum (10) deferred draw depth");
+            depth += 1;
 
-            let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
-            let replay_prepaint_range = deferred_metadata[*deferred_draw_ix]
-                .replay_source
-                .as_ref()
-                .map(|source| source.prepaint_range.clone());
-            self.element_id_stack
-                .clone_from(&deferred_draw.element_id_stack);
-            self.retained_element_id_stack
-                .clone_from(&deferred_draw.retained_element_id_stack);
-            self.text_style_stack
-                .clone_from(&deferred_draw.text_style_stack);
-            self.element_visual_transform = deferred_draw.element_visual_transform;
-            self.content_mask_stack
-                .clone_from(&deferred_draw.content_mask_stack);
-            self.visual_content_mask_stack
-                .clone_from(&deferred_draw.visual_content_mask_stack);
             self.next_frame
-                .dispatch_tree
-                .set_active_node(deferred_draw.parent_node);
+                .deferred_retained_metadata
+                .resize_with(round_end, DeferredRetainedMetadata::default);
 
-            let prepaint_start = self.prepaint_index();
-            if let Some(element) = deferred_draw.element.as_mut() {
-                self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_absolute_element_offset(deferred_draw.absolute_offset, |window| {
-                        element.prepaint(window, cx)
-                    });
-                })
-            } else if let Some(source_prepaint_range) = replay_prepaint_range {
-                if !self.reuse_prepaint(source_prepaint_range) {
+            let mut traversal_order =
+                (round_start..round_end).collect::<SmallVec<[usize; 8]>>();
+            traversal_order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
+
+            for deferred_draw_ix in traversal_order {
+                if self.draw_budget_exhausted() {
                     self.degrade_current_draw();
-                    break;
+                    break 'rounds;
                 }
-            } else {
-                self.degrade_current_draw();
-                break;
+
+                // Do not hold a borrow into deferred_draws while prepainting: nested deferred
+                // elements append to the same vector.
+                let (
+                    mut element,
+                    parent_node,
+                    current_view,
+                    absolute_offset,
+                    element_id_stack,
+                    retained_element_id_stack,
+                    text_style_stack,
+                    element_visual_transform,
+                    content_mask_stack,
+                    visual_content_mask_stack,
+                    replay_prepaint_range,
+                ) = {
+                    let replay_prepaint_range = self.next_frame.deferred_retained_metadata
+                        [deferred_draw_ix]
+                        .replay_source
+                        .as_ref()
+                        .map(|source| source.prepaint_range.clone());
+                    let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
+                    (
+                        deferred_draw.element.take(),
+                        deferred_draw.parent_node,
+                        deferred_draw.current_view,
+                        deferred_draw.absolute_offset,
+                        deferred_draw.element_id_stack.clone(),
+                        deferred_draw.retained_element_id_stack.clone(),
+                        deferred_draw.text_style_stack.clone(),
+                        deferred_draw.element_visual_transform,
+                        deferred_draw.content_mask_stack.clone(),
+                        deferred_draw.visual_content_mask_stack.clone(),
+                        replay_prepaint_range,
+                    )
+                };
+
+                self.element_id_stack = element_id_stack;
+                self.retained_element_id_stack = retained_element_id_stack;
+                self.text_style_stack = text_style_stack;
+                self.element_visual_transform = element_visual_transform;
+                self.content_mask_stack = content_mask_stack;
+                self.visual_content_mask_stack = visual_content_mask_stack;
+                self.next_frame.dispatch_tree.set_active_node(parent_node);
+
+                let prepaint_start = self.prepaint_index();
+                if let Some(element) = element.as_mut() {
+                    self.with_rendered_view(current_view, |window| {
+                        window.with_absolute_element_offset(absolute_offset, |window| {
+                            element.prepaint(window, cx)
+                        });
+                    });
+                } else if let Some(source_prepaint_range) = replay_prepaint_range {
+                    if !self.reuse_prepaint(source_prepaint_range) {
+                        self.degrade_current_draw();
+                    }
+                } else {
+                    self.degrade_current_draw();
+                }
+                let prepaint_end = self.prepaint_index();
+
+                let deferred_draw = &mut self.next_frame.deferred_draws[deferred_draw_ix];
+                deferred_draw.element = element;
+                deferred_draw.prepaint_range = prepaint_start..prepaint_end;
+
+                if self.draw_was_degraded() {
+                    break 'rounds;
+                }
             }
-            let prepaint_end = self.prepaint_index();
-            deferred_draw.prepaint_range = prepaint_start..prepaint_end;
+
+            self.element_id_stack.clear();
+            self.retained_element_id_stack.clear();
+            self.text_style_stack.clear();
+            self.element_visual_transform = ElementVisualTransform::identity();
+            self.content_mask_stack.clear();
+            self.visual_content_mask_stack.clear();
+            round_start = round_end;
         }
-        assert_eq!(
-            self.next_frame.deferred_draws.len(),
-            0,
-            "cannot call defer_draw during deferred drawing"
-        );
-        self.next_frame.deferred_draws = deferred_draws;
-        self.next_frame.deferred_retained_metadata = deferred_metadata;
+
         self.element_id_stack.clear();
         self.retained_element_id_stack.clear();
         self.text_style_stack.clear();
         self.element_visual_transform = ElementVisualTransform::identity();
         self.content_mask_stack.clear();
         self.visual_content_mask_stack.clear();
+    }
+
+    pub(super) fn deferred_draw_traversal_order(&self) -> SmallVec<[usize; 8]> {
+        let mut sorted_indices =
+            (0..self.next_frame.deferred_draws.len()).collect::<SmallVec<[_; 8]>>();
+        sorted_indices.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
+        sorted_indices
     }
 
     pub(super) fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
