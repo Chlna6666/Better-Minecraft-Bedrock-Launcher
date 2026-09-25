@@ -1148,7 +1148,7 @@ impl<V: 'static + Render> IntoElement for Entity<V> {
     #[track_caller]
     #[inline(never)]
     fn into_any_element(self) -> AnyElement {
-        self.into_element().into_any()
+        <Self as Element>::into_any(self)
     }
 }
 

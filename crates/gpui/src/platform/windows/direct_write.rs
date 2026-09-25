@@ -9,6 +9,7 @@ use std::{
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
     path::PathBuf,
+    sync::Arc,
 };
 
 use crate::*;
