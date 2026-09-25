@@ -206,11 +206,19 @@ impl Window {
             }
         }));
         platform_window.on_appearance_changed(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
             move || {
-                let _ = ignore_window_not_found(
-                    handle.update(&mut cx, |_, window, cx| window.appearance_changed(cx)),
-                );
+                let mut cx = cx.clone();
+                // Native appearance changes may synchronously call back while App is already
+                // borrowed. Always defer the Window update to the foreground executor.
+                foreground_executor
+                    .spawn(async move {
+                        let _ = ignore_window_not_found(
+                            handle.update(&mut cx, |_, window, cx| window.appearance_changed(cx)),
+                        );
+                    })
+                    .detach();
             }
         }));
         platform_window.on_visibility_change(Box::new({

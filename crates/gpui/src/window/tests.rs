@@ -282,6 +282,34 @@ impl Window {
 }
 
 #[gpui::test]
+fn appearance_change_is_deferred_outside_current_app_update(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
+            .unwrap()
+    });
+    let observed = Rc::new(Cell::new(None));
+    let _subscription = window
+        .update(cx, {
+            let observed = observed.clone();
+            move |_, window, _| {
+                window.observe_window_appearance(move |window, _| {
+                    observed.set(Some(window.appearance()));
+                })
+            }
+        })
+        .unwrap();
+    let test_window = cx.test_window(window.into());
+
+    cx.update(|_| {
+        test_window.simulate_appearance_change(WindowAppearance::Dark);
+        assert_eq!(observed.get(), None);
+    });
+    cx.run_until_parked();
+
+    assert_eq!(observed.get(), Some(WindowAppearance::Dark));
+}
+
+#[gpui::test]
 fn repeated_refresh_requests_are_coalesced(cx: &mut TestAppContext) {
     let before = performance_metrics_snapshot().coalesced_refresh_count;
     let window = cx.update(|cx| {

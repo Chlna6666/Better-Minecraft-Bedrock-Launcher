@@ -66,6 +66,7 @@ impl Window {
         self.scale_factor = scale_factor;
         self.viewport_size = viewport_size;
         self.display_id = display_id;
+        self.mouse_position = self.platform_window.mouse_position();
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
         }
