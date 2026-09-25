@@ -229,7 +229,7 @@ impl AsyncApp {
     {
         let mut cx = self.clone();
         self.foreground_executor
-            .spawn(async move { f(&mut cx).await })
+            .spawn_boxed(Box::pin(async move { f(&mut cx).await }))
     }
 
     /// Reads the global state of the specified type, passing it to the given callback.
@@ -370,7 +370,7 @@ impl AsyncWindowContext {
     {
         let mut cx = self.clone();
         self.foreground_executor
-            .spawn(async move { f(&mut cx).await })
+            .spawn_boxed(Box::pin(async move { f(&mut cx).await }))
     }
 
     /// Present a platform dialog.

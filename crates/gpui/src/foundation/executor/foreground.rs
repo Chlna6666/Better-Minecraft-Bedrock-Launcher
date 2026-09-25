@@ -1,10 +1,7 @@
-use super::{
-    local_task::spawn_local_with_source_location,
-    task::{AnyLocalFuture, Task},
-};
+use super::{local_task::spawn_local_with_source_location, task::Task};
 use crate::PlatformDispatcher;
 use async_task::Runnable;
-use std::{future::Future, marker::PhantomData, rc::Rc, sync::Arc};
+use std::{future::Future, marker::PhantomData, pin::Pin, rc::Rc, sync::Arc};
 
 /// A pointer to the executor that is currently running,
 /// for spawning tasks on the main thread.
@@ -36,18 +33,21 @@ impl ForegroundExecutor {
     where
         R: 'static,
     {
-        let schedule = self.schedule();
+        self.spawn_boxed(Box::pin(future))
+    }
 
-        #[track_caller]
-        fn inner<R: 'static>(
-            schedule: impl async_task::Schedule<()> + Send + Sync + 'static,
-            future: AnyLocalFuture<R>,
-        ) -> Task<R> {
-            let (runnable, task) = spawn_local_with_source_location(future, schedule);
-            runnable.schedule();
-            Task::spawned(task)
-        }
-        inner::<R>(schedule, Box::pin(future))
+    #[track_caller]
+    pub(crate) fn spawn_boxed<R>(
+        &self,
+        future: Pin<Box<dyn Future<Output = R> + 'static>>,
+    ) -> Task<R>
+    where
+        R: 'static,
+    {
+        let schedule = self.schedule();
+        let (runnable, task) = spawn_local_with_source_location(future, schedule);
+        runnable.schedule();
+        Task::spawned(task)
     }
 
     fn schedule(&self) -> impl Fn(Runnable) + Send + Sync + 'static {

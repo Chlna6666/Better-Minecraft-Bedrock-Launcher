@@ -401,7 +401,7 @@ impl App {
         let mut cx = self.prepare_spawn();
 
         self.foreground_executor
-            .spawn(async move { f(&mut cx).await })
+            .spawn_boxed(Box::pin(async move { f(&mut cx).await }))
     }
 
     #[inline(never)]
