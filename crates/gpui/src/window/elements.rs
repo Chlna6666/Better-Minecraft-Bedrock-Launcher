@@ -88,7 +88,7 @@ impl Window {
     /// frames. If an element with this ID existed in the rendered frame, its state will be passed
     /// to the given closure. The state returned by the closure will be stored so it can be referenced
     /// when drawing the next frame. This method should only be called as part of element drawing.
-    #[inline(always)]
+    #[inline]
     pub fn with_element_state<S, R>(
         &mut self,
         global_id: &GlobalElementId,
@@ -97,6 +97,24 @@ impl Window {
     where
         S: 'static,
     {
+        let mut f = Some(f);
+        let mut result = None;
+        self.with_element_state_erased(global_id, &mut |state, window| {
+            let (value, state) = f
+                .take()
+                .expect("element state callback must execute exactly once")(state, window);
+            result = Some(value);
+            state
+        });
+        result.expect("element state callback must produce a result")
+    }
+
+    #[inline(never)]
+    fn with_element_state_erased<S: 'static>(
+        &mut self,
+        global_id: &GlobalElementId,
+        f: &mut dyn FnMut(Option<S>, &mut Self) -> S,
+    ) {
         self.invalidator.debug_assert_paint_or_prepaint();
 
         let (key, state) = self.take_element_state(global_id, TypeId::of::<S>());
@@ -133,8 +151,7 @@ impl Window {
             let state = state_box.take().expect(
                 "reentrant call to with_element_state for the same state type and element id",
             );
-            let (result, state) = f(Some(state), self);
-            state_box.replace(state);
+            state_box.replace(f(Some(state), self));
             self.insert_element_state(
                 key,
                 ElementStateBox {
@@ -143,9 +160,8 @@ impl Window {
                     type_name,
                 },
             );
-            result
         } else {
-            let (result, state) = f(None, self);
+            let state = f(None, self);
             self.insert_element_state(
                 key,
                 ElementStateBox {
@@ -154,7 +170,6 @@ impl Window {
                     type_name: std::any::type_name::<S>(),
                 },
             );
-            result
         }
     }
 
