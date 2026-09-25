@@ -884,7 +884,9 @@ impl Platform for WindowsPlatform {
             .encode_utf16()
             .chain(Some(0))
             .collect_vec();
-        self.foreground_executor().spawn(async move {
+        // Windows Credential Manager calls are synchronous and may hit disk/LSA work. Keep them
+        // off the GPUI foreground executor so login/token persistence cannot stall input or frames.
+        self.background_executor().spawn(async move {
             let credentials = CREDENTIALW {
                 LastWritten: unsafe { GetSystemTimeAsFileTime() },
                 Flags: CRED_FLAGS(0),
@@ -906,7 +908,9 @@ impl Platform for WindowsPlatform {
             .encode_utf16()
             .chain(Some(0))
             .collect_vec();
-        self.foreground_executor().spawn(async move {
+        // Windows Credential Manager calls are synchronous and may hit disk/LSA work. Keep them
+        // off the GPUI foreground executor so login/token persistence cannot stall input or frames.
+        self.background_executor().spawn(async move {
             let mut credentials: *mut CREDENTIALW = std::ptr::null_mut();
             unsafe {
                 CredReadW(
@@ -918,19 +922,13 @@ impl Platform for WindowsPlatform {
             };
 
             if credentials.is_null() {
-                Ok(None)
-            } else {
-                let username: String = unsafe { (*credentials).UserName.to_string()? };
-                let credential_blob = unsafe {
-                    std::slice::from_raw_parts(
-                        (*credentials).CredentialBlob,
-                        (*credentials).CredentialBlobSize as usize,
-                    )
-                };
-                let password = credential_blob.to_vec();
-                unsafe { CredFree(credentials as *const _ as _) };
-                Ok(Some((username, password)))
+                return Ok(None);
             }
+
+            // SAFETY: CredReadW succeeded, so this points to a valid CREDENTIALW until CredFree.
+            let result = unsafe { username_and_password(&*credentials) };
+            unsafe { CredFree(credentials as *const _ as _) };
+            result.map(Some)
         })
     }
 
@@ -939,7 +937,9 @@ impl Platform for WindowsPlatform {
             .encode_utf16()
             .chain(Some(0))
             .collect_vec();
-        self.foreground_executor().spawn(async move {
+        // Windows Credential Manager calls are synchronous and may hit disk/LSA work. Keep them
+        // off the GPUI foreground executor so login/token persistence cannot stall input or frames.
+        self.background_executor().spawn(async move {
             unsafe {
                 CredDeleteW(
                     PCWSTR::from_raw(target_name.as_ptr()),
@@ -1810,6 +1810,38 @@ fn file_save_dialog(
     Ok(Some(PathBuf::from(file_path_string)))
 }
 
+/// Copies the optional username and secret out of a credential returned by CredReadW.
+///
+/// Credential Manager legally returns null pointers for an absent username and for an empty
+/// credential blob. Treat both as empty values and finish copying before CredFree releases the
+/// native allocation.
+///
+/// # Safety
+///
+/// A non-null UserName must point to a NUL-terminated wide string and a non-null CredentialBlob
+/// must be readable for CredentialBlobSize bytes, as guaranteed for values returned by CredReadW.
+unsafe fn username_and_password(credential: &CREDENTIALW) -> Result<(String, Vec<u8>)> {
+    let username = if credential.UserName.is_null() {
+        String::new()
+    } else {
+        // SAFETY: guaranteed by the caller.
+        unsafe { credential.UserName.to_string()? }
+    };
+    let password = if credential.CredentialBlob.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            std::slice::from_raw_parts(
+                credential.CredentialBlob,
+                credential.CredentialBlobSize as usize,
+            )
+        }
+        .to_vec()
+    };
+    Ok((username, password))
+}
+
 #[inline]
 fn should_auto_hide_scrollbars() -> Result<bool> {
     let ui_settings = UISettings::new()?;
@@ -1820,8 +1852,21 @@ fn should_auto_hide_scrollbars() -> Result<bool> {
 mod tests {
     use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
 
-    use super::WINDOWS_AUTO_RENDERER_BACKEND_ORDER;
+    use super::{WINDOWS_AUTO_RENDERER_BACKEND_ORDER, username_and_password};
     use crate::{ClipboardItem, RendererBackend, read_from_clipboard, write_to_clipboard};
+    use windows::Win32::Security::Credentials::CREDENTIALW;
+
+    #[test]
+    fn credential_copy_accepts_absent_username_and_secret() {
+        let credential = CREDENTIALW::default();
+
+        // SAFETY: both optional pointers are null, which the helper explicitly supports.
+        let (username, password) = unsafe { username_and_password(&credential) }
+            .expect("empty credential fields should be accepted");
+
+        assert!(username.is_empty());
+        assert!(password.is_empty());
+    }
 
     #[test]
     fn test_clipboard() {
