@@ -46,6 +46,15 @@ impl MouseListener {
         }
     }
 
+    /// Returns whether this is a framework-owned hit-test transition listener for the event.
+    ///
+    /// Input-modality changes reuse these listeners even when pointer geometry is unchanged, so
+    /// hover state can be reconciled without dispatching application MouseMove handlers or forcing
+    /// every cached view to refresh.
+    pub(super) fn handles_input_modality_transition(&self, event_type: TypeId) -> bool {
+        self.event_type == event_type && !self.dispatch_on_unchanged_hit_test
+    }
+
     pub(super) fn listener_mut(&mut self) -> Option<RefMut<'_, AnyMouseListener>> {
         RefMut::filter_map(self.listener.borrow_mut(), |listener| listener.as_mut()).ok()
     }

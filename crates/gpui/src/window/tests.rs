@@ -911,6 +911,68 @@ fn mouse_hit_test_uses_event_position(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn input_modality_change_reconciles_framework_hover_without_full_cache_refresh(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.add_empty_window();
+    let transition_calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let application_mouse_moves = std::rc::Rc::new(std::cell::Cell::new(0usize));
+
+    window.update(|window, cx| {
+        window.has_completed_rendered_frame = true;
+        window.force_view_cache_refresh = false;
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+
+        let transition_calls_for_listener = transition_calls.clone();
+        window.rendered_frame.mouse_listeners.push(
+            MouseListener::new_hit_test_transition::<MouseMoveEvent>(Box::new(
+                move |_, _, _, _| {
+                    transition_calls_for_listener
+                        .set(transition_calls_for_listener.get().saturating_add(1));
+                },
+            )),
+        );
+
+        let application_mouse_moves_for_listener = application_mouse_moves.clone();
+        window
+            .rendered_frame
+            .mouse_listeners
+            .push(MouseListener::new::<MouseMoveEvent>(Box::new(
+                move |_, _, _, _| {
+                    application_mouse_moves_for_listener
+                        .set(application_mouse_moves_for_listener.get().saturating_add(1));
+                },
+            )));
+
+        window.dispatch_event(
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: Keystroke::parse("a").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+
+        assert!(window.last_input_was_keyboard());
+        assert_eq!(
+            transition_calls.get(),
+            2,
+            "framework transition listener should run once in capture and once in bubble"
+        );
+        assert_eq!(
+            application_mouse_moves.get(),
+            0,
+            "keyboard modality reconciliation must not synthesize application MouseMove events"
+        );
+        assert!(
+            !window.force_view_cache_refresh,
+            "input modality changes must not invalidate every cached view"
+        );
+    });
+}
+
+#[gpui::test]
 fn dirty_window_key_event_requests_frame_without_synchronous_draw(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

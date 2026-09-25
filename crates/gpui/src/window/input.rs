@@ -249,14 +249,24 @@ impl Window {
             }
             _ => self.last_input_modality,
         };
-        if self.last_input_modality != previous_input_modality {
-            self.refresh();
-        }
+        let input_modality_changed = self.last_input_modality != previous_input_modality;
 
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.
         self.default_prevented = false;
+
+        if input_modality_changed && self.has_completed_rendered_frame {
+            // Changing keyboard/pointer modality changes Hitbox::is_hovered semantics without
+            // changing geometric hit testing. Re-run only framework-owned hover-transition
+            // listeners from the committed frame. BMCBL's Window::refresh forces every cached
+            // view through MissRefresh, which is far broader than this interaction-state change.
+            self.dispatch_input_modality_hover_transition(cx);
+            // A hover callback may stop propagation or prevent a synthetic event. Those flags
+            // must not leak into the real keyboard/pointer event currently being dispatched.
+            cx.propagate_event = true;
+            self.default_prevented = false;
+        }
 
         let event = match event {
             // Track the mouse position with our own state, since accessing the platform
@@ -407,6 +417,41 @@ impl Window {
             propagate: cx.propagate_event,
             default_prevented: self.default_prevented,
         }
+    }
+
+    /// Reconciles modality-aware hover state without synthesizing an application mouse event.
+    ///
+    /// The committed frame owns all framework hover/group-hover/tooltip listeners. They are
+    /// invoked in normal capture/bubble order with a current-position MouseMoveEvent, but regular
+    /// application MouseMove listeners are deliberately excluded.
+    fn dispatch_input_modality_hover_transition(&mut self, cx: &mut App) {
+        let event = MouseMoveEvent {
+            position: self.mouse_position,
+            pressed_button: None,
+            modifiers: self.modifiers,
+        };
+        let event_type = TypeId::of::<MouseMoveEvent>();
+        let mut mouse_listeners = mem::take(&mut self.rendered_frame.mouse_listeners);
+
+        for listener in &mut mouse_listeners {
+            if !listener.handles_input_modality_transition(event_type) {
+                continue;
+            }
+            if let Some(mut listener) = listener.listener_mut() {
+                listener(&event, DispatchPhase::Capture, self, cx);
+            }
+        }
+
+        for listener in mouse_listeners.iter_mut().rev() {
+            if !listener.handles_input_modality_transition(event_type) {
+                continue;
+            }
+            if let Some(mut listener) = listener.listener_mut() {
+                listener(&event, DispatchPhase::Bubble, self, cx);
+            }
+        }
+
+        self.rendered_frame.mouse_listeners = mouse_listeners;
     }
 
     fn dispatch_touch_event(&mut self, event: &TouchEvent, cx: &mut App) {
