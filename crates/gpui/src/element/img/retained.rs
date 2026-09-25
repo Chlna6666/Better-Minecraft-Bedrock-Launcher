@@ -1,6 +1,8 @@
 use std::{sync::Arc, time::Instant};
 
-use crate::{AnimatedFrame, App, AsyncApp, RenderImage, Task};
+use crate::{
+    AnimatedFrame, App, AssetPin, AsyncApp, ImageCacheError, RenderImage, Task, Window,
+};
 
 use super::loader::ImageRenderRequest;
 
@@ -20,14 +22,16 @@ pub(crate) struct ImageElementState {
 /// update has returned the window to `App.windows`.
 pub(super) struct SizedImageRequestLease {
     request: ImageRenderRequest,
+    pin: AssetPin<Result<Arc<RenderImage>, ImageCacheError>>,
     app: AsyncApp,
 }
 
 impl SizedImageRequestLease {
     pub(super) fn acquire(request: &ImageRenderRequest, cx: &mut App) -> Self {
-        cx.retain_sized_image_element_request(request);
+        let pin = cx.pin_sized_image_request(request);
         Self {
             request: request.clone(),
+            pin,
             app: cx.to_async(),
         }
     }
@@ -36,15 +40,33 @@ impl SizedImageRequestLease {
         &self.request
     }
 
-    pub(crate) fn into_request(self) -> ImageRenderRequest {
-        self.request
+    pub(super) fn use_image(
+        &self,
+        window: &Window,
+    ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+        self.pin
+            .use_by(window.any_window_handle(), window.current_view())
+    }
+
+    pub(super) fn release(
+        self,
+        image: Option<Arc<RenderImage>>,
+        current_window: Option<&mut Window>,
+        cx: &mut App,
+    ) {
+        let Self {
+            request,
+            pin,
+            app: _,
+        } = self;
+        cx.release_sized_image_element_pin(&request, pin, image, current_window);
     }
 
     fn defer_release(self, image: Option<Arc<RenderImage>>) {
-        let Self { request, app } = self;
+        let Self { request, pin, app } = self;
         app.spawn(async move |cx| {
             let _ = cx.update(|cx| {
-                cx.release_sized_image_element_request_lifecycle(&request, image, None);
+                cx.release_sized_image_element_pin(&request, pin, image, None);
             });
         })
         .detach();

@@ -5,7 +5,6 @@ use std::{
 };
 
 use anyhow::Result;
-use collections::FxHashMap;
 use crate::{
     AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
     CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError, ImageMemoryTrimLevel,
@@ -71,6 +70,14 @@ where
         self.lease.clone()
     }
 
+    fn pin_count(&self) -> usize {
+        self.lease.pin_count()
+    }
+
+    fn shares_pin(&self, pin: &crate::AssetPin<T>) -> bool {
+        pin.shares_load(&self.lease)
+    }
+
     fn into_lease(self) -> AssetLease<T> {
         self.lease
     }
@@ -85,58 +92,6 @@ where
     T: Clone + Send + 'static,
 {
     entry.downcast_ref::<OwnedAssetEntry<T>>()?.get()
-}
-
-#[derive(Default)]
-struct SizedImageElementOwners {
-    current: FxHashMap<AssetId, usize>,
-}
-
-impl SizedImageElementOwners {
-    fn retain(&mut self, asset_id: AssetId) {
-        let references = self.current.entry(asset_id).or_default();
-        *references = references
-            .checked_add(1)
-            .expect("sized image element reference count overflow");
-    }
-
-    fn release(&mut self, asset_id: AssetId) -> bool {
-        let Some(references) = self.current.get_mut(&asset_id) else {
-            debug_assert!(
-                false,
-                "sized image element reference released without owner"
-            );
-            return false;
-        };
-
-        debug_assert!(*references > 0);
-        *references = references.saturating_sub(1);
-        if *references == 0 {
-            self.current.remove(&asset_id);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn count(&self, asset_id: AssetId) -> usize {
-        self.current.get(&asset_id).copied().unwrap_or(0)
-    }
-}
-
-fn sized_image_owner_state(cx: &mut App) -> &mut SizedImageElementOwners {
-    cx.globals_by_type
-        .entry(TypeId::of::<SizedImageElementOwners>())
-        .or_insert_with(|| Box::new(SizedImageElementOwners::default()))
-        .downcast_mut::<SizedImageElementOwners>()
-        .expect("sized image element owner state type mismatch")
-}
-
-fn sized_image_element_ref_count(cx: &App, asset_id: AssetId) -> usize {
-    cx.globals_by_type
-        .get(&TypeId::of::<SizedImageElementOwners>())
-        .and_then(|state| state.downcast_ref::<SizedImageElementOwners>())
-        .map_or(0, |state| state.count(asset_id))
 }
 
 #[cfg(test)]
@@ -207,7 +162,11 @@ impl App {
                     || id == inline_bytes_type
                     || id == target_type
             );
-            if !is_image || sized_image_element_ref_count(self, *asset_id) != 0 {
+            let is_pinned_target = asset_id.0 == target_type
+                && entry
+                    .downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
+                    .is_some_and(|entry| entry.pin_count() != 0);
+            if !is_image || is_pinned_target {
                 continue;
             }
             let Some(Ok(image)) =
@@ -230,23 +189,32 @@ impl App {
         crate::trim_compressed_cache();
     }
 
-    pub(crate) fn retain_sized_image_element_request(&mut self, request: &ImageRenderRequest) {
-        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        sized_image_owner_state(self).retain(asset_id);
-    }
-
-    pub(crate) fn release_sized_image_element_request(
+    pub(crate) fn pin_sized_image_request(
         &mut self,
         request: &ImageRenderRequest,
+    ) -> crate::AssetPin<Result<Arc<RenderImage>, ImageCacheError>> {
+        self.fetch_asset::<crate::SizedImageLoader>(request).pin()
+    }
+
+    pub(crate) fn release_sized_image_element_pin(
+        &mut self,
+        request: &ImageRenderRequest,
+        pin: crate::AssetPin<Result<Arc<RenderImage>, ImageCacheError>>,
         fallback_image: Option<Arc<RenderImage>>,
         current_window: Option<&mut Window>,
     ) {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        let became_unowned = {
-            let state = sized_image_owner_state(self);
-            state.release(asset_id)
-        };
-        if !became_unowned {
+        let should_retire = self
+            .loading_assets
+            .get(&asset_id)
+            .and_then(|entry| {
+                entry.downcast_ref::<
+                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
+                >()
+            })
+            .is_some_and(|entry| entry.shares_pin(&pin) && entry.pin_count() == 1);
+
+        if !should_retire {
             return;
         }
 
@@ -273,7 +241,14 @@ impl App {
         request: &ImageRenderRequest,
     ) -> usize {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        sized_image_element_ref_count(self, asset_id)
+        self.loading_assets
+            .get(&asset_id)
+            .and_then(|entry| {
+                entry.downcast_ref::<
+                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
+                >()
+            })
+            .map_or(0, OwnedAssetEntry::pin_count)
     }
 
     /// Remove an asset from GPUI's cache.
@@ -288,7 +263,11 @@ impl App {
     pub fn take_asset<A: Asset>(&mut self, source: &A::Source) -> Option<AssetLease<A::Output>> {
         let asset_id = (TypeId::of::<A>(), hash(source));
         if A::RETENTION == AssetRetentionPolicy::ElementOwned
-            && sized_image_element_ref_count(self, asset_id) != 0
+            && self
+                .loading_assets
+                .get(&asset_id)
+                .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
+                .is_some_and(|entry| entry.pin_count() != 0)
         {
             return self.cached_asset_lease::<A>(source);
         }
@@ -413,10 +392,18 @@ impl App {
         current_window: Option<&mut Window>,
     ) -> Option<SizedImagePreload> {
         let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(target_source));
-        let has_element_owners = sized_image_element_ref_count(self, asset_id) != 0;
+        let has_element_pins = self
+            .loading_assets
+            .get(&asset_id)
+            .and_then(|entry| {
+                entry.downcast_ref::<
+                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
+                >()
+            })
+            .is_some_and(|entry| entry.pin_count() != 0);
         let preload = self.remove_image_render_request(target_source)?;
 
-        if !has_element_owners {
+        if !has_element_pins {
             if let Some(Ok(image)) = preload.get() {
                 self.drop_image(image, current_window);
             }

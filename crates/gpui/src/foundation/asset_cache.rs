@@ -8,7 +8,10 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use collections::{FxHashMap, FxHashSet};
 
@@ -72,6 +75,7 @@ struct AssetLeaseWindowObservers {
 
 struct AssetLoadOwner {
     abort: AbortHandle,
+    pins: AtomicUsize,
 }
 
 impl Drop for AssetLoadOwner {
@@ -117,6 +121,44 @@ where
             completion: self.completion.clone(),
             owner: self.owner.clone(),
         }
+    }
+}
+
+/// A non-clone owning pin that keeps an element-owned cache entry registered.
+///
+/// A pin also owns the underlying load lease, so dropping the last pin can cancel pending work
+/// after the cache releases its own lease.
+pub struct AssetPin<T>
+where
+    T: Clone + Send + 'static,
+{
+    lease: AssetLease<T>,
+}
+
+impl<T> Drop for AssetPin<T>
+where
+    T: Clone + Send + 'static,
+{
+    fn drop(&mut self) {
+        let previous = self.lease.owner.pins.fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(previous > 0, "asset pin count underflow");
+    }
+}
+
+impl<T> AssetPin<T>
+where
+    T: Clone + Send + 'static,
+{
+    pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
+        self.lease.use_by(window, view)
+    }
+
+    pub(crate) fn pin_count(&self) -> usize {
+        self.lease.pin_count()
+    }
+
+    pub(crate) fn shares_load(&self, lease: &AssetLease<T>) -> bool {
+        self.lease.shares_load(lease)
     }
 }
 
@@ -170,7 +212,10 @@ where
             state,
             observers,
             completion,
-            owner: Arc::new(AssetLoadOwner { abort }),
+            owner: Arc::new(AssetLoadOwner {
+                abort,
+                pins: AtomicUsize::new(0),
+            }),
         }
     }
 
@@ -181,7 +226,10 @@ where
             state,
             observers: Arc::new(parking_lot::Mutex::new(AssetLeaseObservers::default())),
             completion: Task::ready(Ok(())).shared(),
-            owner: Arc::new(AssetLoadOwner { abort }),
+            owner: Arc::new(AssetLoadOwner {
+                abort,
+                pins: AtomicUsize::new(0),
+            }),
         }
     }
 
@@ -189,6 +237,21 @@ where
         AssetCompletion {
             completion: self.completion.clone(),
         }
+    }
+
+    pub(crate) fn pin(&self) -> AssetPin<T> {
+        self.owner.pins.fetch_add(1, Ordering::Relaxed);
+        AssetPin {
+            lease: self.clone(),
+        }
+    }
+
+    pub(crate) fn pin_count(&self) -> usize {
+        self.owner.pins.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn shares_load(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
     }
 
     pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {

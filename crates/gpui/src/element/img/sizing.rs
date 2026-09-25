@@ -88,7 +88,11 @@ pub(super) fn render_sized_image(
                     return (loaded, state);
                 }
 
-                let result = window.use_asset::<SizedImageLoader>(&requested, cx);
+                let result = state
+                    .pending_sized_image_drop
+                    .as_ref()
+                    .expect("sized image request must own a pending preload before use")
+                    .use_image(window);
                 let loaded = match result {
                     Some(Ok(render_image)) => {
                         let previous_frame = state.playback.current_frame.clone();
@@ -230,8 +234,7 @@ fn release_sized_image_lease(
     current_window: Option<&mut Window>,
     cx: &mut App,
 ) {
-    let request = lease.into_request();
-    cx.release_sized_image_element_request(&request, image, current_window);
+    lease.release(image, current_window, cx);
 }
 
 #[cfg(test)]

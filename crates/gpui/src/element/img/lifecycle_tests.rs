@@ -58,7 +58,7 @@ fn request(label: &'static str, size: u32) -> ImageRenderRequest {
 }
 
 #[test]
-fn dropping_sized_image_state_releases_current_and_pending_leases() {
+fn dropping_sized_image_state_releases_current_and_pending_asset_leases() {
     let mut test = TestAppContext::single();
     let current = request("current", 256);
     let pending = request("pending", 384);
