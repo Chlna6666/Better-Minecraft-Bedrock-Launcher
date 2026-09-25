@@ -121,7 +121,7 @@ impl EntityMap {
     #[track_caller]
     pub fn lease<T>(&mut self, pointer: &Entity<T>) -> Lease<T> {
         Lease {
-            inner: self.lease_erased(pointer, type_name::<T>()),
+            inner: self.lease_erased(pointer),
             id: pointer.entity_id,
             entity_type: PhantomData,
         }
@@ -141,16 +141,16 @@ impl EntityMap {
     }
 
     #[track_caller]
-    pub(super) fn lease_erased(
-        &mut self,
-        pointer: &AnyEntity,
-        entity_type: &str,
-    ) -> LeaseInner {
+    pub(super) fn lease_erased(&mut self, pointer: &AnyEntity) -> LeaseInner {
         self.assert_valid_context(pointer);
-        let entity = Some(
-            self.lease_inner(pointer.entity_id)
-                .unwrap_or_else(|| double_lease_panic("update", entity_type)),
-        );
+        let entity = Some(self.lease_inner(pointer.entity_id).unwrap_or_else(|| {
+            let entity_type = self
+                .entity_type_names
+                .get(pointer.entity_id)
+                .copied()
+                .unwrap_or("unknown entity");
+            double_lease_panic("update", entity_type)
+        }));
         LeaseInner { entity }
     }
 
@@ -580,7 +580,7 @@ mod test {
         entity_map.clear_accessed();
 
         let any_handle = handle.clone().into_any();
-        let mut lease = entity_map.lease_erased(&any_handle, "TestEntity");
+        let mut lease = entity_map.lease_erased(&any_handle);
         lease
             .entity
             .as_deref_mut()
@@ -602,7 +602,7 @@ mod test {
         let handle = entity_map.insert(slot, TestEntity { i: 1 });
         let any_handle = handle.into_any();
 
-        let _lease = entity_map.lease_erased(&any_handle, "TestEntity");
+        let _lease = entity_map.lease_erased(&any_handle);
     }
 
     #[test]

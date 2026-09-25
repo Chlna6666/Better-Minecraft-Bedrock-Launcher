@@ -5,7 +5,8 @@ use crate::{
 use anyhow::Result;
 use std::{any::TypeId, fmt};
 
-type RenderViewFn = fn(&AnyEntity, &mut Window, &mut App) -> AnyElement;
+type RenderViewFn =
+    fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
 
 /// A dynamically typed renderable entity handle.
 ///
@@ -56,9 +57,21 @@ impl AnyView {
         self.entity.entity_id()
     }
 
-    #[inline]
+    #[inline(never)]
     pub(super) fn render_element(&self, window: &mut Window, cx: &mut App) -> AnyElement {
-        (self.render)(&self.entity, window, cx)
+        let mut weak = Some(self.entity.downgrade());
+        let mut element = None;
+        let render = self.render;
+        cx.update_entity_erased(&self.entity, &mut |entity, cx| {
+            element = Some(render(
+                entity,
+                weak.take()
+                    .expect("rendered entity callback must execute exactly once"),
+                window,
+                cx,
+            ));
+        });
+        element.expect("rendered entity callback must produce an element")
     }
 }
 
@@ -156,33 +169,19 @@ impl Element for ViewElement {
 
 #[inline(never)]
 fn render_entity<V: Render>(
-    entity: &AnyEntity,
+    entity: &mut dyn std::any::Any,
+    weak: AnyWeakEntity,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let mut weak = Some(
-        entity
-            .downgrade()
-            .downcast::<V>()
-            .expect("rendered entity type must match its render function"),
-    );
-    let mut element = None;
-    cx.update_entity_erased(
-        entity,
-        std::any::type_name::<V>(),
-        &mut |entity, cx| {
-            let view = entity
-                .downcast_mut::<V>()
-                .expect("rendered entity type must match its render function");
-            let mut view_cx = Context::new_context(
-                cx,
-                weak.take()
-                    .expect("rendered entity callback must execute exactly once"),
-            );
-            element = Some(view.render(window, &mut view_cx).into_any_element());
-        },
-    );
-    element.expect("rendered entity callback must produce an element")
+    let view = entity
+        .downcast_mut::<V>()
+        .expect("rendered entity type must match its render function");
+    let weak = weak
+        .downcast::<V>()
+        .expect("rendered entity type must match its render function");
+    let mut view_cx = Context::new_context(cx, weak);
+    view.render(window, &mut view_cx).into_any_element()
 }
 
 #[inline(never)]

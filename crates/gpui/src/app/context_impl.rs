@@ -1,4 +1,4 @@
-use std::{any::{Any, TypeId, type_name}, future::Future};
+use std::{any::{Any, TypeId}, future::Future};
 
 use anyhow::{Context as _, Result, anyhow};
 
@@ -12,11 +12,10 @@ impl App {
     pub(crate) fn update_entity_erased(
         &mut self,
         handle: &AnyEntity,
-        entity_type: &str,
         update: &mut dyn FnMut(&mut dyn Any, &mut App),
     ) {
         self.update(|cx| {
-            let mut lease = cx.entities.lease_erased(handle, entity_type);
+            let mut lease = cx.entities.lease_erased(handle);
             update(
                 lease
                     .entity
@@ -79,7 +78,7 @@ impl AppContext for App {
     ) -> R {
         let mut update = Some(update);
         let mut result = None;
-        self.update_entity_erased(handle, type_name::<T>(), &mut |entity, cx| {
+        self.update_entity_erased(handle, &mut |entity, cx| {
             result = Some(
                 update.take().expect("entity update callback runs once")(
                     entity
