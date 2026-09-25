@@ -365,6 +365,55 @@ fn run_element_prepaint(
     (node_id, prepaint_start..prepaint_end)
 }
 
+struct RetainedPaintRun {
+    metadata_start: usize,
+    unstable_identity_start: usize,
+    paint_range: Range<PaintIndex>,
+}
+
+#[inline(never)]
+fn run_element_paint(
+    element_id: Option<ElementId>,
+    global_id: Option<&GlobalElementId>,
+    node_id: DispatchNodeId,
+    retained_segment: &ElementId,
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+    callback: &mut dyn FnMut(&mut Window),
+) -> RetainedPaintRun {
+    if let Some(element_id) = element_id {
+        window.element_id_stack.push(element_id);
+        debug_assert_eq!(
+            &global_id
+                .expect("element id must have a corresponding global id")
+                .0,
+            &window.element_id_stack
+        );
+    }
+
+    let metadata_start = window.retained_element_metadata_len();
+    let unstable_identity_start = window.next_frame.retained_unstable_identity_count;
+    let paint_start = window.paint_index();
+    window.record_debug_element_paint(bounds, cx);
+    window.next_frame.dispatch_tree.set_active_node(node_id);
+    window.with_retained_element_segment(retained_segment, |window| callback(window));
+    let paint_end = window.paint_index();
+
+    RetainedPaintRun {
+        metadata_start,
+        unstable_identity_start,
+        paint_range: paint_start..paint_end,
+    }
+}
+
+#[inline(never)]
+fn finish_element_paint(global_id: Option<&GlobalElementId>, window: &mut Window) {
+    if global_id.is_some() {
+        window.element_id_stack.pop();
+    }
+}
+
 #[inline(never)]
 fn retained_div_self_scene(prepaint: &dyn Any) -> Option<super::RetainedDivSelfScene> {
     prepaint
@@ -635,28 +684,26 @@ impl<E: Element> Drawable<E> {
                 prepaint_range,
                 plain_text_key,
             } => {
-                if let Some(element_id) = self.element.id() {
-                    window.element_id_stack.push(element_id);
-                    debug_assert_eq!(global_id.as_ref().unwrap().0, window.element_id_stack);
-                }
-
-                let metadata_start = window.retained_element_metadata_len();
-                let unstable_identity_start = window.next_frame.retained_unstable_identity_count;
-                let paint_start = window.paint_index();
-                window.record_debug_element_paint(bounds, cx);
-                window.next_frame.dispatch_tree.set_active_node(node_id);
-                window.with_retained_element_segment(&retained_segment, |window| {
-                    self.element.paint(
-                        global_id.as_ref(),
-                        inspector_id.as_ref(),
-                        bounds,
-                        &mut request_layout,
-                        &mut prepaint,
-                        window,
-                        cx,
-                    );
-                });
-                let paint_end = window.paint_index();
+                let paint_run = run_element_paint(
+                    self.element.id(),
+                    global_id.as_ref(),
+                    node_id,
+                    &retained_segment,
+                    bounds,
+                    window,
+                    cx,
+                    &mut |window| {
+                        self.element.paint(
+                            global_id.as_ref(),
+                            inspector_id.as_ref(),
+                            bounds,
+                            &mut request_layout,
+                            &mut prepaint,
+                            window,
+                            cx,
+                        );
+                    },
+                );
                 let div_self_scene = retained_div_self_scene(&prepaint as &dyn Any);
                 let identity_stable =
                     retained_identity_is_stable(&retained_identity_ambiguity);
@@ -666,19 +713,16 @@ impl<E: Element> Drawable<E> {
                     layout_id,
                     layout_fingerprint,
                     prepaint_range,
-                    paint_start..paint_end,
-                    metadata_start,
+                    paint_run.paint_range,
+                    paint_run.metadata_start,
                     div_self_scene,
                     plain_text_key,
                     identity_stable,
                     E::RETAINED_REPLAY_CAPABILITY.allows_outer_replay(),
-                    unstable_identity_start,
+                    paint_run.unstable_identity_start,
                     window,
                 );
-
-                if global_id.is_some() {
-                    window.element_id_stack.pop();
-                }
+                finish_element_paint(global_id.as_ref(), window);
 
                 self.phase = ElementDrawPhase::Painted;
                 #[cfg(any(test, feature = "test-support"))]
