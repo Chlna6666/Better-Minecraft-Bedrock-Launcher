@@ -3,7 +3,8 @@ use std::rc::Rc;
 use super::*;
 use crate::element::{CompositeLayerExt, ParentElement, StatefulInteractiveElement};
 use crate::{
-    AnyWindowHandle, AppContext, InteractiveElement, TestAppContext, WindowOptions, point, px,
+    AnyWindowHandle, AppContext, Context, EmptyView, InteractiveElement, TestAppContext,
+    WindowOptions, point, px,
 };
 
 struct AbsoluteCachedLeafView {
@@ -647,7 +648,6 @@ fn cached_view_infers_stable_fingerprint(cx: &mut TestAppContext) {
         cached_view.cache_fingerprint(),
         same_cached_view.cache_fingerprint()
     );
-    assert!(cached_view.cache_fingerprint().is_some());
 }
 
 #[gpui::test]
@@ -657,7 +657,7 @@ fn cached_view_preserves_explicit_fingerprint_through_weak_upgrade(cx: &mut Test
     let weak_view = cached_view.downgrade();
     let upgraded = weak_view.upgrade().expect("view should still be alive");
 
-    assert_eq!(upgraded.cache_fingerprint(), Some(42));
+    assert_eq!(upgraded.cache_fingerprint(), 42);
 }
 
 #[gpui::test]
@@ -667,7 +667,7 @@ fn cached_view_hashes_semantic_key_in_framework(cx: &mut TestAppContext) {
 
     assert_eq!(
         cached_view.cache_fingerprint(),
-        Some(render_fingerprint(&("route", 7_u64)))
+        render_fingerprint(&("route", 7_u64))
     );
 }
 
@@ -978,11 +978,12 @@ fn progressive_cached_view_preserves_flag_through_weak_upgrade(cx: &mut TestAppC
     let cached_view = AnyView::from(view)
         .cached(StyleRefinement::default())
         .progressive();
+    let expected_fingerprint = cached_view.cache_fingerprint();
     let weak_view = cached_view.downgrade();
     let upgraded = weak_view.upgrade().expect("view should still be alive");
 
     assert!(upgraded.progressive);
-    assert!(upgraded.cache_fingerprint().is_some());
+    assert_eq!(upgraded.cache_fingerprint(), expected_fingerprint);
 }
 
 #[gpui::test]
@@ -993,22 +994,23 @@ fn reuse_on_window_refresh_cached_view_preserves_flag_through_weak_upgrade(
     let cached_view = AnyView::from(view)
         .cached(StyleRefinement::default())
         .reuse_on_window_refresh();
+    let expected_fingerprint = cached_view.cache_fingerprint();
     let weak_view = cached_view.downgrade();
     let upgraded = weak_view.upgrade().expect("view should still be alive");
 
     assert!(upgraded.reuse_on_window_refresh);
-    assert!(upgraded.cache_fingerprint().is_some());
+    assert_eq!(upgraded.cache_fingerprint(), expected_fingerprint);
 }
 
 
 #[test]
-fn plain_entity_erasure_preserves_retained_boundary_semantics() {
+fn cache_boundary_is_separate_from_plain_view_element() {
     assert_eq!(
         <ViewElement as Element>::RETAINED_REPLAY_CAPABILITY,
         crate::RetainedReplayCapability::Normal,
     );
     assert_eq!(
-        <AnyView as Element>::RETAINED_REPLAY_CAPABILITY,
+        <CachedView as Element>::RETAINED_REPLAY_CAPABILITY,
         crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
     );
 }

@@ -434,7 +434,7 @@ impl Render for MapCanvasView {
 fn cached_absolute_layer<V: Render + 'static, R: std::hash::Hash>(
     layer: &Entity<V>,
     frame_revision: R,
-) -> AnyView {
+) -> CachedView {
     let cache_key = (layer.entity_id().as_u64(), frame_revision);
     AnyView::from(layer.clone())
         .cached_absolute_by(&cache_key)

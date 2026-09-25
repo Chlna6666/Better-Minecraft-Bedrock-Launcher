@@ -6,7 +6,8 @@ use std::rc::Rc;
 use super::*;
 use crate::element::{Element, ParentElement};
 use crate::{
-    AnyWindowHandle, AppContext, IntoElement, TestAppContext, WindowOptions, point, px, size,
+    AnyWindowHandle, AppContext, Context, IntoElement, TestAppContext, WindowOptions, point, px,
+    size,
 };
 
 struct RangeTrackedLeaf {
@@ -116,7 +117,7 @@ impl Render for FrameLocalBoundaryRoot {
         crate::div()
             // Keep each AnyView below a normal retained ancestor. The regression was not just direct
             // AnyView replay: an unrelated ancestor could previously replay across the cache boundary
-            // and skip AnyView::prepaint/paint, leaving its absolute frame-local ranges stale.
+            // and skip CachedView::prepaint/paint, leaving its absolute frame-local ranges stale.
             .child(crate::div().child(
                 AnyView::from(self.before.clone()).cached(StyleRefinement::default()),
             ))
@@ -136,12 +137,12 @@ fn any_view_scene_ranges(window: &Window) -> Vec<Range<usize>> {
         .element_states
         .iter()
         .filter_map(|((_, type_id), state)| {
-            if *type_id != TypeId::of::<AnyViewState>() {
+            if *type_id != TypeId::of::<CachedViewState>() {
                 return None;
             }
             state
                 .inner
-                .downcast_ref::<Option<AnyViewState>>()?
+                .downcast_ref::<Option<CachedViewState>>()?
                 .as_ref()
                 .map(|state| {
                     state.paint_range.start.scene_index()..state.paint_range.end.scene_index()
@@ -229,7 +230,7 @@ fn frame_local_cache_boundary_rebases_ranges_across_variable_sibling(cx: &mut Te
     assert_eq!(ranges_100[0].start, ranges_10[0].start);
     assert!(
         ranges_100[1].start > ranges_10[1].start,
-        "trailing cached AnyView must rebase after the variable sibling grows"
+        "trailing CachedView must rebase after the variable sibling grows"
     );
 
     targeted_resize(&root, &variable_path, 3, window, cx);
@@ -242,6 +243,6 @@ fn frame_local_cache_boundary_rebases_ranges_across_variable_sibling(cx: &mut Te
     assert_eq!(ranges_3[0].start, ranges_10[0].start);
     assert!(
         ranges_3[1].start < ranges_100[1].start,
-        "trailing cached AnyView must rebase after the variable sibling shrinks"
+        "trailing CachedView must rebase after the variable sibling shrinks"
     );
 }
