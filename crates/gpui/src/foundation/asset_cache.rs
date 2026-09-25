@@ -1,7 +1,7 @@
 use crate::{AnyWindowHandle, App, EntityId, SharedString, SharedUri, Task, WindowId};
 use futures::{
     Future, FutureExt, TryFutureExt,
-    future::{AbortHandle, Aborted, Shared},
+    future::{AbortHandle, Abortable, Aborted, Shared},
 };
 
 use std::fmt::Debug;
