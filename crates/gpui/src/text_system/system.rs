@@ -45,7 +45,7 @@ pub struct TextSystem {
     system_font_family: RwLock<Option<SharedString>>,
     pub(super) font_decision_logged: RwLock<bool>,
     font_id_cache: RwLock<FontIdCache>,
-    font_cache_generation: AtomicU64,
+    font_cache_generation: Arc<AtomicU64>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<RasterBoundsCache>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, VecDeque<LineWrapper>>>,
@@ -258,7 +258,7 @@ impl TextSystem {
             font_metrics: RwLock::default(),
             raster_bounds: RwLock::default(),
             font_id_cache: RwLock::default(),
-            font_cache_generation: AtomicU64::new(0),
+            font_cache_generation: Arc::new(AtomicU64::new(0)),
             wrapper_pool: Mutex::default(),
             font_runs_pool: Mutex::default(),
             font_catalog: FontCatalog::default(),
@@ -774,7 +774,10 @@ pub struct WindowTextSystem {
 impl WindowTextSystem {
     pub(crate) fn new(text_system: Arc<TextSystem>) -> Self {
         Self {
-            line_layout_cache: LineLayoutCache::new(text_system.platform_text_system.clone()),
+            line_layout_cache: LineLayoutCache::new(
+                text_system.platform_text_system.clone(),
+                text_system.font_cache_generation.clone(),
+            ),
             text_system,
         }
     }

@@ -12,7 +12,10 @@ use std::{
     mem::size_of,
     ops::Range,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-    sync::{Arc, LazyLock},
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use super::key::{AsCacheKeyRef, CacheKey, CacheKeyRef};
@@ -23,6 +26,8 @@ pub(crate) struct LineLayoutCache {
     current_frame: RwLock<FrameCache>,
     retained: Mutex<RetainedLayoutCache>,
     platform_text_system: Arc<dyn PlatformTextSystem>,
+    font_generation: Arc<AtomicU64>,
+    cached_font_generation: AtomicU64,
     frame_metrics: LineLayoutCacheMetrics,
 }
 
@@ -42,6 +47,7 @@ static LINE_LAYOUT_SINGLEFLIGHT: LazyLock<LineLayoutSingleflight> =
 #[derive(Clone, Hash, Eq, PartialEq)]
 struct LineLayoutFlightKey {
     platform_identity: usize,
+    font_generation: u64,
     cache_key: Arc<CacheKey>,
 }
 
@@ -78,6 +84,7 @@ impl LineLayoutSingleflight {
     fn shape<F>(
         &self,
         platform_identity: usize,
+        font_generation: u64,
         cache_key: Arc<CacheKey>,
         shape: F,
     ) -> Arc<LineLayout>
@@ -86,6 +93,7 @@ impl LineLayoutSingleflight {
     {
         let flight_key = LineLayoutFlightKey {
             platform_identity,
+            font_generation,
             cache_key,
         };
         let mut shape = Some(shape);
@@ -164,9 +172,15 @@ impl LineLayoutSingleflight {
     }
 
     #[cfg(test)]
-    fn follower_count(&self, platform_identity: usize, cache_key: &Arc<CacheKey>) -> usize {
+    fn follower_count(
+        &self,
+        platform_identity: usize,
+        font_generation: u64,
+        cache_key: &Arc<CacheKey>,
+    ) -> usize {
         let key = LineLayoutFlightKey {
             platform_identity,
+            font_generation,
             cache_key: cache_key.clone(),
         };
         self.flights
@@ -262,6 +276,7 @@ impl LineLayoutCacheMetrics {
 
 #[derive(Clone, Default)]
 pub(crate) struct LineLayoutIndex {
+    font_generation: u64,
     lines_index: usize,
     wrapped_lines_index: usize,
 }
@@ -272,7 +287,14 @@ impl LineLayoutIndex {
     /// The operation is checked because a malformed retained range must degrade the frame instead
     /// of wrapping an index and replaying unrelated text layouts.
     pub(crate) fn rebased_from(&self, source: &Self, target: &Self) -> Option<Self> {
+        if self.font_generation != source.font_generation
+            || source.font_generation != target.font_generation
+        {
+            return None;
+        }
+
         Some(Self {
+            font_generation: target.font_generation,
             lines_index: target
                 .lines_index
                 .checked_add(self.lines_index.checked_sub(source.lines_index)?)?,
@@ -285,40 +307,90 @@ impl LineLayoutIndex {
 }
 
 impl LineLayoutCache {
-    pub fn new(platform_text_system: Arc<dyn PlatformTextSystem>) -> Self {
+    pub fn new(
+        platform_text_system: Arc<dyn PlatformTextSystem>,
+        font_generation: Arc<AtomicU64>,
+    ) -> Self {
+        let cached_font_generation = font_generation.load(Ordering::Acquire);
         Self {
             previous_frame: Mutex::default(),
             current_frame: RwLock::default(),
             retained: Mutex::default(),
             platform_text_system,
+            font_generation,
+            cached_font_generation: AtomicU64::new(cached_font_generation),
             frame_metrics: LineLayoutCacheMetrics::default(),
         }
     }
 
+    fn clear_if_font_generation_changed(&self) -> u64 {
+        let generation = self.font_generation.load(Ordering::Acquire);
+        if self.cached_font_generation.load(Ordering::Acquire) == generation {
+            return generation;
+        }
+
+        // Keep one lock order throughout the cache: current -> previous -> retained.
+        // This also matches layout lookup paths and avoids generation invalidation introducing
+        // an AB/BA cycle with frame finalization or retained replay.
+        let mut current_frame = self.current_frame.write();
+        let mut previous_frame = self.previous_frame.lock();
+        let mut retained = self.retained.lock();
+        let generation = self.font_generation.load(Ordering::Acquire);
+        if self.cached_font_generation.load(Ordering::Acquire) != generation {
+            current_frame.clear();
+            previous_frame.clear();
+            retained.clear();
+            self.cached_font_generation
+                .store(generation, Ordering::Release);
+        }
+        generation
+    }
+
     pub fn layout_index(&self) -> LineLayoutIndex {
+        let font_generation = self.clear_if_font_generation_changed();
         let frame = self.current_frame.read();
         LineLayoutIndex {
+            font_generation,
             lines_index: frame.used_lines.len(),
             wrapped_lines_index: frame.used_wrapped_lines.len(),
         }
     }
 
     pub fn can_reuse_layouts(&self, range: Range<LineLayoutIndex>) -> bool {
+        let font_generation = self.clear_if_font_generation_changed();
+        if range.start.font_generation != font_generation
+            || range.end.font_generation != font_generation
+        {
+            return false;
+        }
+
         let previous_frame = self.previous_frame.lock();
-        line_layout_range_is_valid(
-            range.start.lines_index,
-            range.end.lines_index,
-            previous_frame.used_lines.len(),
-        ) && line_layout_range_is_valid(
-            range.start.wrapped_lines_index,
-            range.end.wrapped_lines_index,
-            previous_frame.used_wrapped_lines.len(),
-        )
+        self.font_generation.load(Ordering::Acquire) == font_generation
+            && line_layout_range_is_valid(
+                range.start.lines_index,
+                range.end.lines_index,
+                previous_frame.used_lines.len(),
+            )
+            && line_layout_range_is_valid(
+                range.start.wrapped_lines_index,
+                range.end.wrapped_lines_index,
+                previous_frame.used_wrapped_lines.len(),
+            )
     }
 
     pub fn reuse_layouts(&self, range: Range<LineLayoutIndex>) {
-        let previous_frame = &mut *self.previous_frame.lock();
+        let font_generation = self.clear_if_font_generation_changed();
+        if range.start.font_generation != font_generation
+            || range.end.font_generation != font_generation
+        {
+            return;
+        }
+
         let current_frame = &mut *self.current_frame.write();
+        let previous_frame = &mut *self.previous_frame.lock();
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            return;
+        }
 
         for index in range.start.lines_index..range.end.lines_index {
             let used_key = previous_frame.used_lines[index].clone();
@@ -340,7 +412,15 @@ impl LineLayoutCache {
     }
 
     pub fn truncate_layouts(&self, index: LineLayoutIndex) {
+        let font_generation = self.clear_if_font_generation_changed();
+        if index.font_generation != font_generation {
+            return;
+        }
+
         let current_frame = &mut *self.current_frame.write();
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            return;
+        }
         current_frame.used_lines.truncate(index.lines_index);
         current_frame
             .used_wrapped_lines
@@ -348,8 +428,8 @@ impl LineLayoutCache {
     }
 
     pub fn clear(&self) {
-        let mut previous_frame = self.previous_frame.lock();
         let mut current_frame = self.current_frame.write();
+        let mut previous_frame = self.previous_frame.lock();
         let mut retained = self.retained.lock();
         previous_frame.clear();
         current_frame.clear();
@@ -357,8 +437,9 @@ impl LineLayoutCache {
     }
 
     pub fn trim_retained_capacity_for_level(&self, level: GpuiMemoryTrimLevel) {
-        let mut previous_frame = self.previous_frame.lock();
+        let _font_generation = self.clear_if_font_generation_changed();
         let mut current_frame = self.current_frame.write();
+        let mut previous_frame = self.previous_frame.lock();
         let mut retained = self.retained.lock();
         previous_frame.trim_retained_capacity_for_level(level);
         current_frame.trim_retained_capacity_for_level(level);
@@ -366,8 +447,9 @@ impl LineLayoutCache {
     }
 
     pub fn finish_frame(&self) -> LineLayoutFrameMetrics {
-        let mut prev_frame = self.previous_frame.lock();
+        let _font_generation = self.clear_if_font_generation_changed();
         let mut curr_frame = self.current_frame.write();
+        let mut prev_frame = self.previous_frame.lock();
         std::mem::swap(&mut *prev_frame, &mut *curr_frame);
 
         // After the swap, `prev_frame` is the frame that just finished rendering and therefore the
@@ -404,6 +486,7 @@ impl LineLayoutCache {
         Text: AsRef<str>,
         SharedString: From<Text>,
     {
+        let font_generation = self.clear_if_font_generation_changed();
         let key = &CacheKeyRef {
             text: text.as_ref(),
             font_size,
@@ -415,7 +498,12 @@ impl LineLayoutCache {
         let current_frame = self.current_frame.upgradable_read();
         if let Some(entry) = current_frame.wrapped_lines.get(key) {
             self.frame_metrics.hit();
-            return entry.value.clone();
+            let layout = entry.value.clone();
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
         let previous_frame_entry = self.previous_frame.lock().take_wrapped_line(key);
@@ -425,7 +513,11 @@ impl LineLayoutCache {
             current_frame.insert_wrapped_line_entry(key.clone(), entry);
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
-            return layout;
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
         let retained_entry = self.retained.lock().take_wrapped_line(key);
@@ -435,7 +527,11 @@ impl LineLayoutCache {
             current_frame.insert_wrapped_line_entry(key.clone(), entry);
             current_frame.used_wrapped_lines.push(key);
             self.frame_metrics.reuse();
-            return layout;
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_wrapped_line(text, font_size, runs, wrap_width, max_lines);
         }
 
         self.frame_metrics.miss();
@@ -460,7 +556,27 @@ impl LineLayoutCache {
             force_width: None,
         });
 
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            return self.layout_wrapped_line::<&SharedString>(
+                &key.text,
+                font_size,
+                runs,
+                wrap_width,
+                max_lines,
+            );
+        }
+
         let mut current_frame = self.current_frame.write();
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            drop(current_frame);
+            return self.layout_wrapped_line::<&SharedString>(
+                &key.text,
+                font_size,
+                runs,
+                wrap_width,
+                max_lines,
+            );
+        }
         current_frame.insert_wrapped_line(key.clone(), layout.clone());
         current_frame.used_wrapped_lines.push(key);
 
@@ -478,6 +594,7 @@ impl LineLayoutCache {
         Text: AsRef<str>,
         SharedString: From<Text>,
     {
+        let font_generation = self.clear_if_font_generation_changed();
         let key = &CacheKeyRef {
             text: text.as_ref(),
             font_size,
@@ -489,7 +606,12 @@ impl LineLayoutCache {
         let current_frame = self.current_frame.upgradable_read();
         if let Some(entry) = current_frame.lines.get(key) {
             self.frame_metrics.hit();
-            return entry.value.clone();
+            let layout = entry.value.clone();
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_line(text, font_size, runs, force_width);
         }
 
         if let Some((key, entry)) = self.previous_frame.lock().take_line(key) {
@@ -498,7 +620,11 @@ impl LineLayoutCache {
             current_frame.insert_line_entry(key.clone(), entry);
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
-            return layout;
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_line(text, font_size, runs, force_width);
         }
 
         if let Some((key, entry)) = self.retained.lock().take_line(key) {
@@ -507,7 +633,11 @@ impl LineLayoutCache {
             current_frame.insert_line_entry(key.clone(), entry);
             current_frame.used_lines.push(key);
             self.frame_metrics.reuse();
-            return layout;
+            drop(current_frame);
+            if self.font_generation.load(Ordering::Acquire) == font_generation {
+                return layout;
+            }
+            return self.layout_line(text, font_size, runs, force_width);
         }
 
         self.frame_metrics.miss();
@@ -521,18 +651,31 @@ impl LineLayoutCache {
             force_width,
         });
         let platform_identity = platform_text_system_identity(&self.platform_text_system);
-        let layout = LINE_LAYOUT_SINGLEFLIGHT.shape(platform_identity, key.clone(), || {
-            let mut layout = self
-                .platform_text_system
-                .layout_line(&text, font_size, runs);
+        let layout = LINE_LAYOUT_SINGLEFLIGHT.shape(
+            platform_identity,
+            font_generation,
+            key.clone(),
+            || {
+                let mut layout =
+                    self.platform_text_system
+                        .layout_line(&text, font_size, runs);
 
-            if let Some(force_width) = force_width {
-                apply_force_width_to_layout(&mut layout, force_width);
-            }
-            layout
-        });
+                if let Some(force_width) = force_width {
+                    apply_force_width_to_layout(&mut layout, force_width);
+                }
+                layout
+            },
+        );
+
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
+        }
 
         let mut current_frame = self.current_frame.write();
+        if self.font_generation.load(Ordering::Acquire) != font_generation {
+            drop(current_frame);
+            return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
+        }
         current_frame.insert_line(key.clone(), layout.clone());
         current_frame.used_lines.push(key);
         layout
@@ -1114,7 +1257,7 @@ mod tests {
         let leader_singleflight = singleflight.clone();
         let leader_key = key.clone();
         let leader = std::thread::spawn(move || {
-            leader_singleflight.shape(7, leader_key, || {
+            leader_singleflight.shape(7, 0, leader_key, || {
                 started_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
                 let mut layout = LineLayout::default();
@@ -1127,12 +1270,12 @@ mod tests {
         let follower_singleflight = singleflight.clone();
         let follower_key = key.clone();
         let follower = std::thread::spawn(move || {
-            follower_singleflight.shape(7, follower_key, || {
+            follower_singleflight.shape(7, 0, follower_key, || {
                 panic!("follower must reuse the in-flight shaped layout")
             })
         });
 
-        while singleflight.follower_count(7, &key) == 0 {
+        while singleflight.follower_count(7, 0, &key) == 0 {
             std::thread::yield_now();
         }
         release_tx.send(()).unwrap();
@@ -1159,12 +1302,12 @@ mod tests {
         });
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            singleflight.shape(9, key.clone(), || panic!("shape failed"))
+            singleflight.shape(9, 0, key.clone(), || panic!("shape failed"))
         }));
         assert!(result.is_err());
         assert!(singleflight.flights.lock().is_empty());
 
-        let layout = singleflight.shape(9, key, LineLayout::default);
+        let layout = singleflight.shape(9, 0, key, LineLayout::default);
         assert_eq!(layout.width, px(0.));
         assert!(singleflight.flights.lock().is_empty());
     }
@@ -1172,20 +1315,33 @@ mod tests {
     #[test]
     fn line_layout_index_rebases_relative_offsets() {
         let source = LineLayoutIndex {
+            font_generation: 7,
             lines_index: 10,
             wrapped_lines_index: 4,
         };
         let target = LineLayoutIndex {
+            font_generation: 7,
             lines_index: 30,
             wrapped_lines_index: 20,
         };
         let index = LineLayoutIndex {
+            font_generation: 7,
             lines_index: 17,
             wrapped_lines_index: 9,
         };
         let rebased = index.rebased_from(&source, &target).unwrap();
         assert_eq!(rebased.lines_index, 37);
         assert_eq!(rebased.wrapped_lines_index, 25);
+
+        let different_generation = LineLayoutIndex {
+            font_generation: 8,
+            lines_index: 17,
+            wrapped_lines_index: 9,
+        };
+        assert!(
+            different_generation.rebased_from(&source, &target).is_none(),
+            "retained layout indices from another font generation must never be rebased"
+        );
     }
 
     #[test]
@@ -1338,7 +1494,10 @@ mod tests {
 
     #[test]
     fn finish_frame_observes_incremental_working_set_bytes() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1355,7 +1514,10 @@ mod tests {
 
     #[test]
     fn finish_frame_reuses_precomputed_entry_bytes_for_retention() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1379,7 +1541,10 @@ mod tests {
 
     #[test]
     fn layout_line_records_same_frame_hits() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1398,7 +1563,10 @@ mod tests {
 
     #[test]
     fn layout_line_records_previous_frame_reuse() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1418,7 +1586,10 @@ mod tests {
 
     #[test]
     fn layout_line_reuses_retained_entry_after_idle_frame() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1489,8 +1660,35 @@ mod tests {
     }
 
     #[test]
+    fn font_generation_invalidates_frame_and_retained_layouts() {
+        let generation = Arc::new(AtomicU64::new(0));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            generation.clone(),
+        );
+        let runs = [FontRun {
+            len: 5,
+            font_id: FontId(1),
+        }];
+
+        let first = cache.layout_line("hello", px(14.), &runs, None);
+        cache.finish_frame();
+        cache.finish_frame();
+        let stale_index = cache.layout_index();
+
+        generation.fetch_add(1, Ordering::Release);
+
+        assert!(!cache.can_reuse_layouts(stale_index.clone()..stale_index));
+        let second = cache.layout_line("hello", px(14.), &runs, None);
+        assert!(!Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
     fn aggressive_trim_clears_layout_cache_entries() {
-        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()));
+        let cache = LineLayoutCache::new(
+            Arc::new(NoopTextSystem::new()),
+            Arc::new(AtomicU64::new(0)),
+        );
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
