@@ -374,6 +374,10 @@ fn try_selective_cached_view_prepaint(
 
 
 
+/// A weak handle to an explicit cached view boundary.
+///
+/// The handle preserves cache policy needed to reconstruct the boundary if the backing view
+/// remains alive, without keeping that entity alive by itself.
 #[derive(Clone)]
 pub struct CachedWeakView {
     view: AnyWeakView,
@@ -385,6 +389,7 @@ pub struct CachedWeakView {
 }
 
 impl CachedWeakView {
+    /// Upgrade this weak cached-view handle while the backing view is still alive.
     pub fn upgrade(&self) -> Option<CachedView> {
         Some(CachedView {
             view: self.view.upgrade()?,
@@ -424,21 +429,30 @@ impl CachedView {
         }
     }
 
+    /// Permit deferred dirty reuse when the frame budget is exhausted.
+    ///
+    /// The previous retained subtree may be reused for the current frame while the view remains
+    /// dirty so a later frame can complete the rebuild.
     pub fn progressive(mut self) -> Self {
         self.progressive = true;
         self
     }
 
+    /// Permit reuse across an ordinary window refresh when this cache key remains stable and the
+    /// backing view itself is not dirty.
     pub fn reuse_on_window_refresh(mut self) -> Self {
         self.reuse_on_window_refresh = true;
         self
     }
 
+    /// Mark this boundary as critical so it is rebuilt rather than progressively deferred when
+    /// the draw budget is exhausted.
     pub fn critical(mut self) -> Self {
         self.critical = true;
         self
     }
 
+    /// Convert this cached boundary to a weak handle that does not keep its backing entity alive.
     pub fn downgrade(&self) -> CachedWeakView {
         CachedWeakView {
             view: self.view.downgrade(),
@@ -476,6 +490,7 @@ impl AnyView {
         CachedView::new(self, style, None)
     }
 
+    /// Create an explicit cached boundary using a caller-supplied stable subtree fingerprint.
     pub fn cached_with_fingerprint(
         self,
         style: StyleRefinement,
@@ -484,20 +499,24 @@ impl AnyView {
         CachedView::new(self, style, Some(fingerprint))
     }
 
+    /// Create an explicit cached boundary whose stable fingerprint is derived from `key`.
     pub fn cached_by<K: Hash + ?Sized>(self, style: StyleRefinement, key: &K) -> CachedView {
         self.cached_with_fingerprint(style, render_fingerprint(key))
     }
 
+    /// Create a full-inset absolute cached boundary whose fingerprint is derived from `key`.
     pub fn cached_absolute_by<K: Hash + ?Sized>(self, key: &K) -> CachedView {
         self.cached_by(StyleRefinement::default().absolute().inset_0(), key)
     }
 }
 
 impl<V: Render> Entity<V> {
+    /// Wrap this entity in an explicit cached boundary laid out using `style`.
     pub fn cached(self, style: StyleRefinement) -> CachedView {
         AnyView::from(self).cached(style)
     }
 
+    /// Wrap this entity in an explicit cached boundary using a caller-supplied stable fingerprint.
     pub fn cached_with_fingerprint(
         self,
         style: StyleRefinement,
@@ -506,10 +525,12 @@ impl<V: Render> Entity<V> {
         AnyView::from(self).cached_with_fingerprint(style, fingerprint)
     }
 
+    /// Wrap this entity in an explicit cached boundary whose fingerprint is derived from `key`.
     pub fn cached_by<K: Hash + ?Sized>(self, style: StyleRefinement, key: &K) -> CachedView {
         AnyView::from(self).cached_by(style, key)
     }
 
+    /// Wrap this entity in a full-inset absolute cached boundary keyed by `key`.
     pub fn cached_absolute_by<K: Hash + ?Sized>(self, key: &K) -> CachedView {
         AnyView::from(self).cached_absolute_by(key)
     }
