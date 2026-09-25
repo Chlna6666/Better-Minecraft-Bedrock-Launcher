@@ -22,10 +22,10 @@ impl App {
     ) -> (R, FxHashSet<EntityId>) {
         // Isolate this render scope instead of cloning the growing frame-wide set twice.
         // Restoring the previous set also makes nested scopes contribute to their parent.
-        let previous = std::mem::take(&mut *self.entities.accessed_entities.borrow_mut());
+        let previous = std::mem::take(self.entities.accessed_entities.get_mut());
         let result = callback(self);
-        let mut frame_accesses = self.entities.accessed_entities.borrow_mut();
-        let scope_accesses = std::mem::replace(&mut *frame_accesses, previous);
+        let frame_accesses = self.entities.accessed_entities.get_mut();
+        let scope_accesses = std::mem::replace(frame_accesses, previous);
         frame_accesses.extend(scope_accesses.iter().copied());
         (result, scope_accesses)
     }
