@@ -217,6 +217,7 @@ impl<T: 'static> WeakEntity<T> {
     /// Updates the entity referenced by this handle with the given function if
     /// the referenced entity still exists. Returns an error if the entity has
     /// been released.
+    #[inline(always)]
     pub fn update<C, R>(
         &self,
         cx: &mut C,
@@ -236,6 +237,7 @@ impl<T: 'static> WeakEntity<T> {
     /// Updates the entity referenced by this handle with the given function if
     /// the referenced entity still exists, within a visual context that has a window.
     /// Returns an error if the entity has been released.
+    #[inline(always)]
     pub fn update_in<C, R>(
         &self,
         cx: &mut C,
@@ -256,6 +258,7 @@ impl<T: 'static> WeakEntity<T> {
     /// Reads the entity referenced by this handle with the given function if
     /// the referenced entity still exists. Returns an error if the entity has
     /// been released.
+    #[inline(always)]
     pub fn read_with<C, R>(&self, cx: &C, read: impl FnOnce(&T, &App) -> R) -> Result<R>
     where
         C: AppContext,
