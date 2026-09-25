@@ -415,7 +415,7 @@ impl<'a, T: 'static> Context<'a, T> {
     /// It's also given an [`AsyncWindowContext`], which can be used to access the state of the entity across await points.
     /// The returned future will be polled on the main thread.
     #[track_caller]
-    #[inline(always)]
+    #[inline]
     pub fn spawn_in<AsyncFn, R>(&self, window: &Window, f: AsyncFn) -> Task<R>
     where
         R: 'static,
