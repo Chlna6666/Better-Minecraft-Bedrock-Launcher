@@ -16,6 +16,7 @@ use ::util::{ResultExt, maybe};
 use anyhow::{Context, Result};
 use collections::HashMap;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
+use unicode_segmentation::UnicodeSegmentation;
 use windows::{
     Win32::{
         Foundation::*,
@@ -135,6 +136,7 @@ struct DirectWriteState {
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,
+    missing_glyph_sink: Option<Arc<dyn MissingGlyphSink>>,
 }
 
 impl DirectWriteTextSystem {
@@ -188,6 +190,7 @@ impl DirectWriteTextSystem {
                 font_to_font_id: HashMap::default(),
                 font_info_cache: HashMap::default(),
                 layout_line_scratch: Vec::new(),
+                missing_glyph_sink: None,
             }),
             pending_glyph_analysis: Mutex::new(PendingGlyphAnalysisBridge::new()),
         })
@@ -208,6 +211,10 @@ impl PlatformTextSystem for DirectWriteTextSystem {
             .map(Cow::Owned)
             .collect();
         self.add_fonts(fonts)
+    }
+
+    fn set_missing_glyph_sink(&self, sink: Option<Arc<dyn MissingGlyphSink>>) {
+        self.state.write().missing_glyph_sink = sink;
     }
 
     fn platform_font_family(&self) -> SharedString {
@@ -292,6 +299,17 @@ impl PlatformTextSystem for DirectWriteTextSystem {
 }
 
 impl DirectWriteState {
+    fn fallback_font_class(&self, font_id: FontId) -> FallbackFontClass {
+        let Some(font) = self.fonts.get(font_id.0) else {
+            return FallbackFontClass::Proportional;
+        };
+        if unsafe { font.font_face.IsMonospacedFont().as_bool() } {
+            FallbackFontClass::Monospace
+        } else {
+            FallbackFontClass::Proportional
+        }
+    }
+
     fn select_and_cache_font(
         &mut self,
         components: &DirectWriteComponents,
@@ -707,11 +725,16 @@ impl DirectWriteState {
             }
 
             let mut runs = Vec::new();
+            let mut missing_text_indices = self
+                .missing_glyph_sink
+                .as_ref()
+                .map(|_| Vec::<usize>::new());
             let mut renderer_context = RendererContext {
                 text_system: self,
                 components,
                 index_converter: StringIndexConverter::new(text),
                 runs: &mut runs,
+                missing_text_indices: missing_text_indices.as_mut(),
                 width: 0.0,
             };
             text_layout.Draw(
@@ -721,6 +744,18 @@ impl DirectWriteState {
                 0.0,
             )?;
             let width = px(renderer_context.width);
+            drop(renderer_context);
+
+            if let Some((sink, missing_text_indices)) =
+                self.missing_glyph_sink.as_ref().zip(missing_text_indices)
+            {
+                sink.report(missing_glyphs_for_text(
+                    text,
+                    font_runs,
+                    missing_text_indices,
+                    |font_id| self.fallback_font_class(font_id),
+                ));
+            }
 
             Ok(LineLayout {
                 font_size,
@@ -1176,11 +1211,69 @@ impl TextRenderer {
     }
 }
 
+fn missing_glyphs_for_text(
+    text: &str,
+    font_runs: &[FontRun],
+    missing_text_indices: impl IntoIterator<Item = usize>,
+    mut font_class: impl FnMut(FontId) -> FallbackFontClass,
+) -> Vec<MissingGlyph> {
+    let mut missing_text_indices = missing_text_indices.into_iter().collect::<Vec<_>>();
+    if missing_text_indices.is_empty() {
+        return Vec::new();
+    }
+    missing_text_indices.sort_unstable();
+    missing_text_indices.dedup();
+
+    let mut font_run_index = 0;
+    let mut font_run_end = font_runs.first().map_or(0, |run| run.len);
+    let mut missing_index = 0;
+    let mut missing_glyphs = Vec::new();
+
+    for (grapheme_start, grapheme) in text.grapheme_indices(true) {
+        let grapheme_end = grapheme_start + grapheme.len();
+        while missing_text_indices
+            .get(missing_index)
+            .is_some_and(|text_index| *text_index < grapheme_start)
+        {
+            missing_index += 1;
+        }
+
+        let Some(&text_index) = missing_text_indices.get(missing_index) else {
+            break;
+        };
+        if text_index >= grapheme_end {
+            continue;
+        }
+
+        while font_run_end <= text_index && font_run_index + 1 < font_runs.len() {
+            font_run_index += 1;
+            font_run_end += font_runs[font_run_index].len;
+        }
+
+        let class = font_runs
+            .get(font_run_index)
+            .or_else(|| font_runs.last())
+            .map(|run| font_class(run.font_id))
+            .unwrap_or(FallbackFontClass::Proportional);
+        missing_glyphs.push(MissingGlyph::new(grapheme.into(), class));
+
+        while missing_text_indices
+            .get(missing_index)
+            .is_some_and(|text_index| *text_index < grapheme_end)
+        {
+            missing_index += 1;
+        }
+    }
+
+    missing_glyphs
+}
+
 struct RendererContext<'t, 'a, 'b> {
     text_system: &'t mut DirectWriteState,
     components: &'a DirectWriteComponents,
     index_converter: StringIndexConverter<'a>,
     runs: &'b mut Vec<ShapedRun>,
+    missing_text_indices: Option<&'b mut Vec<usize>>,
     width: f32,
 }
 
@@ -1361,17 +1454,21 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         let mut glyphs = Vec::with_capacity(glyph_count);
         for (cluster_utf16_len, cluster_glyph_count) in cluster_analyzer {
             context.index_converter.advance_to_utf16_ix(utf16_idx);
+            let cluster_utf8_index = context.index_converter.utf8_ix;
+            let cluster_glyph_ids =
+                &glyph_ids[glyph_idx..(glyph_idx + cluster_glyph_count)];
+            if cluster_glyph_ids.iter().any(|glyph_id| *glyph_id == 0)
+                && let Some(missing_text_indices) = context.missing_text_indices.as_mut()
+            {
+                missing_text_indices.push(cluster_utf8_index);
+            }
             let is_cjk = utf16_cluster_contains_cjk(
                 context.index_converter.text,
-                context.index_converter.utf8_ix,
+                cluster_utf8_index,
                 cluster_utf16_len,
             );
             utf16_idx += cluster_utf16_len;
-            for (cluster_glyph_idx, glyph_id) in glyph_ids
-                [glyph_idx..(glyph_idx + cluster_glyph_count)]
-                .iter()
-                .enumerate()
-            {
+            for (cluster_glyph_idx, glyph_id) in cluster_glyph_ids.iter().enumerate() {
                 let id = GlyphId(*glyph_id as u32);
                 let is_emoji =
                     color_font && is_color_glyph(font_face, id, &context.components.factory);
@@ -1859,6 +1956,52 @@ fn rect_for_bounds(bounds: Bounds<DevicePixels>) -> RECT {
 }
 
 const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
+
+#[cfg(test)]
+mod missing_glyph_tests {
+    use super::*;
+
+    #[test]
+    fn missing_indices_collapse_to_graphemes_and_preserve_font_class() {
+        let text = "a👩‍🚀b";
+        let emoji_start = text.find('👩').unwrap();
+        let runs = [
+            FontRun {
+                len: 1,
+                font_id: FontId(1),
+            },
+            FontRun {
+                len: "👩‍🚀".len(),
+                font_id: FontId(2),
+            },
+            FontRun {
+                len: 1,
+                font_id: FontId(3),
+            },
+        ];
+
+        let missing = missing_glyphs_for_text(
+            text,
+            &runs,
+            [emoji_start, emoji_start + "👩".len()],
+            |font_id| {
+                if font_id == FontId(2) {
+                    FallbackFontClass::Monospace
+                } else {
+                    FallbackFontClass::Proportional
+                }
+            },
+        );
+
+        assert_eq!(
+            missing,
+            vec![MissingGlyph::new(
+                "👩‍🚀".into(),
+                FallbackFontClass::Monospace
+            )]
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
