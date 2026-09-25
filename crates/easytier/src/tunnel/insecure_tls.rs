@@ -76,11 +76,12 @@ pub fn get_insecure_tls_client_config() -> rustls::ClientConfig {
 }
 
 pub fn get_insecure_tls_cert<'a>() -> (Vec<CertificateDer<'a>>, PrivateKeyDer<'a>) {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let priv_key = cert.serialize_private_key_der();
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = cert.der().clone();
+    let priv_key = key_pair.serialize_der();
     let priv_key = rustls::pki_types::PrivatePkcs8KeyDer::from(priv_key);
-    let cert_chain = vec![cert_der.into()];
+    let cert_chain = vec![cert_der];
 
     (cert_chain, priv_key.into())
 }
