@@ -44,6 +44,15 @@ impl App {
         });
         result.expect("entity update callback produces a result")
     }
+
+    #[inline(never)]
+    fn read_entity_typed<T: 'static, R>(
+        &self,
+        handle: &Entity<T>,
+        read: &mut dyn FnMut(&T, &App) -> R,
+    ) -> R {
+        read(self.entities.read(handle), self)
+    }
 }
 
 impl AppContext for App {
@@ -118,8 +127,10 @@ impl AppContext for App {
     where
         T: 'static,
     {
-        let entity = self.entities.read(handle);
-        read(entity, self)
+        let mut read = Some(read);
+        self.read_entity_typed(handle, &mut |entity, cx| {
+            read.take().expect("entity read callback runs once")(entity, cx)
+        })
     }
 
     #[inline]
