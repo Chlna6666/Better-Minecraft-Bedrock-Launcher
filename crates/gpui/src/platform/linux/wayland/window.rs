@@ -1517,18 +1517,30 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let mut state = self.borrow_mut();
-        state.renderer.draw(render_plan).log_err();
-        PlatformFrameResult::Submitted
+        let result = self.borrow_mut().renderer.draw(render_plan);
+        match result {
+            Ok(()) => PlatformFrameResult::Submitted,
+            Err(error) => {
+                log::error!("failed to draw Wayland frame: {error:#}");
+                self.0.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
+        }
     }
 
     fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let mut state = self.borrow_mut();
-        state
+        let result = self
+            .borrow_mut()
             .renderer
-            .present_framebuffer_only(render_plan)
-            .log_err();
-        PlatformFrameResult::Submitted
+            .present_framebuffer_only(render_plan);
+        match result {
+            Ok(()) => PlatformFrameResult::Submitted,
+            Err(error) => {
+                log::error!("failed to present Wayland framebuffer: {error:#}");
+                self.0.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
+        }
     }
 
     fn completed_frame(&self) {

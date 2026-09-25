@@ -1587,18 +1587,32 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let mut inner = self.0.state.borrow_mut();
-        inner.renderer.draw(render_plan).log_err();
-        PlatformFrameResult::Submitted
+        let result = self.0.state.borrow_mut().renderer.draw(render_plan);
+        match result {
+            Ok(()) => PlatformFrameResult::Submitted,
+            Err(error) => {
+                log::error!("failed to draw X11 frame: {error:#}");
+                self.0.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
+        }
     }
 
     fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let mut inner = self.0.state.borrow_mut();
-        inner
+        let result = self
+            .0
+            .state
+            .borrow_mut()
             .renderer
-            .present_framebuffer_only(render_plan)
-            .log_err();
-        PlatformFrameResult::Submitted
+            .present_framebuffer_only(render_plan);
+        match result {
+            Ok(()) => PlatformFrameResult::Submitted,
+            Err(error) => {
+                log::error!("failed to present X11 framebuffer: {error:#}");
+                self.0.request_frame(RequestFrameOptions::from_refresh());
+                PlatformFrameResult::Deferred
+            }
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
