@@ -90,6 +90,26 @@ GPUI-owned generic behavior:
 - image pipeline implementation;
 - rendering metrics and backend diagnostics.
 
+## Presentation lane vs UI commit lane
+
+GPUI treats renderer-owned animation presentation and UI scene generation as two different lanes.
+
+```text
+UI / entity state                         retained presentation
+      │                                           │
+      ├─ notify / dirty                            ├─ AnimationEngine tick
+      │                                           ├─ update compact scene animation values
+      ├─ View render / layout / paint              └─ present retained committed scene
+      │
+      └─ commit next immutable Scene snapshot
+```
+
+When a platform callback contains both a renderer-owned animation tick and dirty UI work, the presentation lane runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
+
+This is intentionally analogous to Chromium's main/compositor split and Qt Quick's GUI/render-thread contract even though GPUI may still execute both lanes on one platform thread on some backends. The ordering invariant is the important first step: **a presentation animation frame must not wait for UI render**. Backends may later move the presentation lane to a dedicated render thread without changing application animation semantics.
+
+A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
+
 ## End-To-End Frame Path
 
 ```mermaid

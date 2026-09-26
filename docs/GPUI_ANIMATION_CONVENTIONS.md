@@ -54,6 +54,21 @@ fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoEl
 
 If a state transition is discovered while rendering, initialize and sample that transition with the same `window.animation_time()` value. Event-driven transitions continue to record the real event `Instant::now()`.
 
+## 1.1 Presentation frames do not wait for UI commits
+
+Renderer-owned animation has a separate presentation lane. If a platform frame contains both an active presentation animation and unrelated dirty UI work, GPUI must submit the retained animation sample first and only then perform the UI commit.
+
+```text
+vsync
+  -> sample renderer-owned animation
+  -> present retained scene
+  -> run callbacks / View render / layout / paint
+  -> commit next Scene
+  -> request next presentation
+```
+
+Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
+
 ## 2. Animation ownership and invalidation
 
 Choose the narrowest owner that can produce the visual result.

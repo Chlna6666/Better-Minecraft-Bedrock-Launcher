@@ -560,7 +560,18 @@ impl Window {
         self.animation_time.set(frame_started_at);
         self.frame_throttle.record_frame_start(frame_started_at);
         let frame_budget = self.frame_throttle.frame_budget();
-        self.run_animation_engine_frame();
+        let presentation_tick = self.run_animation_engine_frame();
+
+        // Compositor/presentation work gets first access to the vsync callback. If the UI tree is
+        // dirty at the same time, present the last committed retained scene with the freshly
+        // sampled animation values before running callbacks or rebuilding Views.
+        let presentation_submitted_early = should_present_before_ui_commit(
+            presentation_tick,
+            frame_options,
+            self.has_completed_rendered_frame,
+            self.visibility.is_visible(),
+            self.platform_window.is_minimized(),
+        ) && self.present_framebuffer_only() == PlatformFrameResult::Submitted;
 
         let mut callbacks = self.next_frame_callbacks.take();
         let had_frame_callbacks = !callbacks.is_empty();
@@ -582,7 +593,13 @@ impl Window {
         );
 
         self.log_frame_work_decision(frame_options, decision, cx);
-        let presented_frame = self.execute_frame_work(frame_options, decision, frame_budget, cx);
+        let presented_frame = self.execute_frame_work(
+            frame_options,
+            decision,
+            frame_budget,
+            presentation_submitted_early,
+            cx,
+        );
         let frame_completed_at = Instant::now();
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
         let window_id = self.handle.window_id().as_u64();
@@ -592,7 +609,9 @@ impl Window {
                 window_id,
                 frame_completed_at,
             );
-            if let Some(started_at) = self.active_dirty_to_present_started_at.take() {
+            if (!presentation_submitted_early || !decision.drew_frame())
+                && let Some(started_at) = self.active_dirty_to_present_started_at.take()
+            {
                 record_window_dirty_to_present(
                     window_id,
                     frame_completed_at.saturating_duration_since(started_at),
@@ -622,17 +641,25 @@ impl Window {
                     .then(|| frame_completed_at.saturating_duration_since(frame_started_at)),
             ),
         );
+
+        if presentation_submitted_early && self.needs_present.get() {
+            self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
+            self.request_platform_frame(RequestFrameOptions {
+                require_presentation: true,
+                force_render: false,
+            });
+        }
     }
 
-    fn run_animation_engine_frame(&mut self) {
+    fn run_animation_engine_frame(&mut self) -> bool {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
-            return;
+            return false;
         };
         if !self.visibility.is_visible()
             || (!self.active.get() && !self.inactive_animation_engine_enabled)
         {
             self.animation_engine_frame_driver.set(Some(driver));
-            return;
+            return false;
         }
 
         let tick = self
@@ -686,6 +713,8 @@ impl Window {
         if tick.has_layout {
             self.request_animation_frame();
         }
+
+        tick.has_gpu_or_paint
     }
 
     fn evaluate_frame_work(
@@ -764,9 +793,15 @@ impl Window {
         frame_options: RequestFrameOptions,
         decision: FrameWorkDecision,
         frame_budget: Duration,
+        presentation_submitted_early: bool,
         cx: &mut App,
     ) -> bool {
-        let presented_frame = if decision.degrade_to_present {
+        let presented_frame = if presentation_submitted_early && decision.draw_frame {
+            self.commit_visible_frame_after_presentation(frame_budget, cx);
+            true
+        } else if presentation_submitted_early {
+            true
+        } else if decision.degrade_to_present {
             let result = self.present_framebuffer_only();
             self.refreshing = false;
             result == PlatformFrameResult::Submitted
@@ -800,6 +835,25 @@ impl Window {
             FrameCompletion::Normal
         });
         presented_frame
+    }
+
+    fn commit_visible_frame_after_presentation(
+        &mut self,
+        frame_budget: Duration,
+        cx: &mut App,
+    ) {
+        let draw_started_at = Instant::now();
+        let arena_clear_needed = measure("frame generation", || {
+            #[cfg(feature = "profiler")]
+            let _profile =
+                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
+                    self.handle.window_id().as_u64(),
+                );
+            self.draw(cx)
+        });
+        let draw_elapsed = draw_started_at.elapsed();
+        measure("frame arena clear", || arena_clear_needed.clear());
+        self.finish_draw_budget_accounting(draw_elapsed, frame_budget, cx);
     }
 
     fn draw_visible_frame(
@@ -1022,10 +1076,10 @@ impl Window {
         }
         let was_dirty = self.invalidator.is_dirty();
         let previous_idle_render_frames = self.idle_render_frames;
-        if self.invalidator.is_dirty() {
+        if self.invalidator.is_dirty() || self.needs_present.get() {
             self.idle_render_frames = 0;
             self.render_trim_policy = RetainedResourceTrimPolicy::None;
-            if completion == FrameCompletion::Normal {
+            if self.invalidator.is_dirty() && completion == FrameCompletion::Normal {
                 self.schedule_dirty_frame();
             }
         } else {
@@ -1129,9 +1183,67 @@ impl FrameWorkDecision {
     }
 }
 
+fn should_present_before_ui_commit(
+    presentation_tick: bool,
+    frame_options: RequestFrameOptions,
+    has_committed_scene: bool,
+    visible: bool,
+    minimized: bool,
+) -> bool {
+    presentation_tick
+        && frame_options.require_presentation
+        && has_committed_scene
+        && visible
+        && !minimized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_animation_precedes_coalesced_ui_commit() {
+        assert!(should_present_before_ui_commit(
+            true,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: true,
+            },
+            true,
+            true,
+            false,
+        ));
+        assert!(!should_present_before_ui_commit(
+            false,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: true,
+            },
+            true,
+            true,
+            false,
+        ));
+        assert!(!should_present_before_ui_commit(
+            true,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: true,
+            },
+            false,
+            true,
+            false,
+        ));
+        assert!(!should_present_before_ui_commit(
+            true,
+            RequestFrameOptions {
+                require_presentation: true,
+                force_render: true,
+            },
+            true,
+            true,
+            true,
+        ));
+    }
 
     #[test]
     fn coalesced_platform_requests_keep_one_watchdog_deadline() {
