@@ -46,7 +46,7 @@ build-shader-validation = []
 inspector = ["gpui_macros/inspector"]
 dhat-heap = []
 font-kit = []
-leak-detection = ["backtrace"]
+leak-detection = ["dep:backtrace"]
 mimalloc-collect = ["dep:libmimalloc-sys"]
 # Opt-in foreground performance journal and hang detector. Default builds pay no event-recording cost.
 profiler = []
@@ -70,7 +70,7 @@ nova-gfx-metal = ["nova-gfx", "dep:gfx-metal"]
 test-support = [
     "leak-detection",
     "collections/test-support",
-    "rand",
+    "dep:rand",
     "util/test-support",
     "http_client/test-support",
 ]
