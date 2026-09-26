@@ -21,6 +21,7 @@ impl MapViewerWindowView {
     ) -> Div {
         let _i18n = cx.global::<I18n>();
         let selection = self.preview_3d_selection_status();
+        let status = self.preview_3d_status_label();
         let stats = self.preview_3d_stats_label();
         let mesh = self.preview_3d.mesh.clone();
         let camera = self.preview_3d.camera;
@@ -130,9 +131,14 @@ impl MapViewerWindowView {
                     .text_size(px(12.0))
                     .text_color(colors.text_secondary)
                     .child(header)
-                    // Loading state is deliberately not rendered as a placeholder.
-                    // On first load this area is simply the canvas; the first one/few
-                    // chunks replace the empty scene as soon as their mesh is ready.
+                    // Keep progress/error text visible without restoring the old blocking
+                    // loading placeholder. The canvas remains live and streams partial meshes.
+                    .child(
+                        div()
+                            .px(px(10.0))
+                            .min_w(px(0.0))
+                            .child(status_badge(colors, status)),
+                    )
                     .when(mesh.is_some(), |this| {
                         this.child(
                             div()

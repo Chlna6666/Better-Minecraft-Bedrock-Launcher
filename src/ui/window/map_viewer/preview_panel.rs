@@ -420,7 +420,15 @@ impl MapViewerWindowView {
         match &self.preview_3d.status {
             Preview3dStatus::Idle => SharedString::from("待加载"),
             Preview3dStatus::Loading(progress) => {
-                SharedString::from(format!("{} {}", progress.phase, progress.detail))
+                if progress.phase.is_empty() && progress.detail.is_empty() {
+                    SharedString::from("加载中")
+                } else if progress.phase.is_empty() {
+                    progress.detail.clone()
+                } else if progress.detail.is_empty() {
+                    progress.phase.clone()
+                } else {
+                    SharedString::from(format!("{} {}", progress.phase, progress.detail))
+                }
             }
             Preview3dStatus::Ready => SharedString::from("已就绪"),
             Preview3dStatus::NoSurface(message) => SharedString::from(format!("无表面: {message}")),
