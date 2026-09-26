@@ -197,6 +197,25 @@ final/stable child layout
 Text / SVG / Image / Quad / Shadow 等属于同一个视觉对象时，优先让它们继承同一个
 retained/composite animation owner，而不是给每个 glyph/child 单独重算运动。
 
+### presentation/compositor lane 是视觉动画的默认执行位置
+
+只要效果能由 retained scene 的 opacity / translation / scale / transform / rotation / blur /
+clip/reveal 表达，动画建立后的连续帧就**不得**依赖 `View::render`、layout、文字重排、
+prepaint 或 scene rebuild。应用线程只负责在输入/状态变化时提交最终稳定布局与新的 target；
+后续采样由 `AnimationEngine` + Nova presentation/compositor lane 驱动。
+
+禁止用 `async` task、timer、channel 或每帧 `cx.notify()` 模拟“异步动画线程”。这类方案
+仍会唤醒 UI render，而且会引入跨帧状态竞争。正确的独立动画 lane 是 retained
+presentation，而不是后台 future。
+
+可视 target 在动画中再次变化时必须 latest-wins，并从**当前呈现值**继续；最终布局基准
+发生移动时，scene retarget 必须补偿 old/new base delta，禁止先跳到新布局再从旧 endpoint
+重启动画。
+
+`with_layout_animation_target`、caller-sampled `SpringValue`、逐帧生成文本只允许用于
+真正改变布局/内容且无法预构建为 presentation primitive 的效果。纯视觉 motion 使用这些
+API 属于架构违规。
+
 ### invalidation 与 frame scheduling
 
 - 使用最窄的 retained target；child hover/active/focus/animation 不应无理由扩大到整个 view。

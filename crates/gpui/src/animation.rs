@@ -1099,6 +1099,127 @@ mod tests {
     }
 
     #[test]
+    fn renderer_scene_retarget_preserves_presented_translation_across_base_move() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let element = test_global_element_id("renderer-retarget-position");
+        let property = TransitionProperty::Translation;
+        let spring = Spring::default();
+        let animation_id = crate::SceneAnimationId(77);
+
+        engine.start_transition(
+            &element,
+            property,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.set_transition_spring(&element, property, spring);
+        engine.bind_scene_animation(
+            &element,
+            property,
+            animation_id,
+            [-100.0, 0.0, 0.0, 0.0],
+            [0.0; 4],
+        );
+
+        let mid = now + Duration::from_millis(90);
+        let before = engine
+            .scene_values(mid)
+            .into_iter()
+            .find(|value| value.animation_id == animation_id)
+            .expect("active scene value before retarget");
+        let before_translation =
+            before.from[0] + (before.to[0] - before.from[0]) * before.progress;
+        let old_base_x = 100.0;
+        let presented_before = old_base_x + before_translation;
+
+        assert!(engine.retarget_scene_animation(
+            &element,
+            property,
+            animation_id,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            Some(spring),
+            mid,
+            bounds(px(0.0), px(0.0), px(1.0), px(1.0)),
+            [-100.0, 0.0],
+            [0.0; 4],
+        ));
+
+        let after = engine
+            .scene_values(mid)
+            .into_iter()
+            .find(|value| value.animation_id == animation_id)
+            .expect("active scene value after retarget");
+        let after_translation =
+            after.from[0] + (after.to[0] - after.from[0]) * after.progress;
+        let new_base_x = 200.0;
+        let presented_after = new_base_x + after_translation;
+
+        assert!(
+            (presented_before - presented_after).abs() < 0.001,
+            "retarget must not jump on the frame where final layout moves"
+        );
+    }
+
+    #[test]
+    fn renderer_scene_retarget_discards_velocity_that_points_away_from_new_target() {
+        let now = Instant::now();
+        let mut engine = AnimationEngine::new();
+        let element = test_global_element_id("renderer-retarget-reverse");
+        let property = TransitionProperty::Translation;
+        let spring = Spring::default();
+        let animation_id = crate::SceneAnimationId(78);
+
+        engine.start_transition(
+            &element,
+            property,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.set_transition_spring(&element, property, spring);
+        engine.bind_scene_animation(
+            &element,
+            property,
+            animation_id,
+            [-100.0, 0.0, 0.0, 0.0],
+            [0.0; 4],
+        );
+
+        let mid = now + Duration::from_millis(70);
+        assert!(engine.retarget_scene_animation(
+            &element,
+            property,
+            animation_id,
+            AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
+            Some(spring),
+            mid,
+            bounds(px(0.0), px(0.0), px(1.0), px(1.0)),
+            [200.0, 0.0],
+            [0.0; 4],
+        ));
+
+        let at_retarget = engine
+            .scene_values(mid)
+            .into_iter()
+            .find(|value| value.animation_id == animation_id)
+            .expect("active retargeted scene value");
+        let shortly_after = engine
+            .scene_values(mid + Duration::from_millis(8))
+            .into_iter()
+            .find(|value| value.animation_id == animation_id)
+            .expect("active retargeted scene value");
+
+        let x0 = at_retarget.from[0]
+            + (at_retarget.to[0] - at_retarget.from[0]) * at_retarget.progress;
+        let x1 = shortly_after.from[0]
+            + (shortly_after.to[0] - shortly_after.from[0]) * shortly_after.progress;
+        assert!(
+            x1.abs() < x0.abs(),
+            "reverse retarget should immediately move toward the new zero-offset target"
+        );
+    }
+
+    #[test]
     fn scene_spring_uses_physical_time_and_preserves_completed_value() {
         let now = Instant::now();
         let mut engine = AnimationEngine::new();

@@ -214,7 +214,39 @@ present                dirty region / retained presentation
 
 `ElementOnly`, `ReconcileSubtree`, and `InvalidateSubtree` are different contracts. Do not widen a precise target into `InvalidateSubtree` or clear targeted replay merely because an owning view is used as a routing ancestor.
 
-## 8. Review checklist
+## 8. Presentation/compositor ownership is the default
+
+Visible motion must not use the application render loop as its animation clock when the effect can
+be expressed as a retained scene property. This is a repository-wide performance contract, not a
+component-specific optimization.
+
+For opacity, translation, scale/transform, rotation, blur and clip/reveal:
+
+```text
+input / state change
+    -> build final stable layout once
+    -> bind or retarget one scene animation
+    -> AnimationEngine samples presentation state
+    -> Nova updates retained animated ranges
+    -> presentation-only platform frames
+```
+
+The animation's steady-state frames must not require `View::render`, layout, text shaping,
+prepaint, or scene reconstruction. Retargeting is latest-wins and starts from the currently
+presented value. Moving the final-layout base during a translation retarget must preserve screen
+position on the retarget frame.
+
+Do not implement a visual animation by spawning an async task that wakes the UI thread every frame.
+Async executors are appropriate for timers, I/O and background work, not for producing animation
+samples. The independent lane is the retained presentation/compositor lane.
+
+`with_layout_animation_target`, caller-sampled `SpringValue`, and per-frame formatted text are
+allowed only when the animation's semantics genuinely change layout/content every frame and no
+prebuilt/presentation representation can preserve the effect. Such exceptions must be explicit in
+the review summary. For numeric motion, prefer prebuilt digits/odometer layers or another retained
+visual representation over formatting new text every display frame.
+
+## 9. Review checklist
 
 Before merging an animation/rendering change:
 
@@ -232,7 +264,7 @@ Before merging an animation/rendering change:
 - Confirm no global frame-throttle bypass was introduced.
 - Prefer local build/profiling and focused tests; do not infer smoothness only from average FPS.
 
-## 9. Audit guidance
+## 10. Audit guidance
 
 High-signal searches when reviewing BMCBL UI code:
 
