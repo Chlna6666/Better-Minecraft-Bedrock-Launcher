@@ -99,7 +99,7 @@ fn selective_cached_view_target(
 ) -> Option<SelectiveCachedViewTarget> {
     let (owner_id, retained_id) = window.invalidator.single_reconcile_target_below(
         ancestor_retained_id,
-        parent_state.weak_view.entity_id(),
+        parent_state.weak_view.view.entity_id(),
         &window.rendered_frame.dispatch_tree,
     )?;
     if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
@@ -129,7 +129,7 @@ fn selective_cached_view_target(
         .inner
         .downcast_ref::<Option<CachedViewState>>()?
         .as_ref()?;
-    if state.weak_view.entity_id() != owner_id {
+    if state.weak_view.view.entity_id() != owner_id {
         return None;
     }
 
@@ -799,7 +799,7 @@ impl Element for CachedView {
                                     window.degrade_current_draw();
                                 } else {
                                     let target_paint = paint_start.clone()..window.paint_index();
-                                    if !source_metadata_range.is_empty()
+                                    if source_metadata_range.start != source_metadata_range.end
                                         && !window.replay_retained_element_metadata(
                                             &*source_prepaint_range,
                                             &*source_paint_range,

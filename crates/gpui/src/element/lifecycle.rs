@@ -237,8 +237,8 @@ fn begin_retained_element_mount(
         RetainedElementIdentity::Explicit(element_id)
     } else if retained_source_location.is_some() || element_source_location.is_some() {
         RetainedElementIdentity::Auto {
-            mount: retained_source_location,
-            source: element_source_location,
+            mount: retained_source_location.copied(),
+            source: element_source_location.copied(),
             element_type,
             ordinal: retained_source_ordinal,
         }
@@ -352,10 +352,11 @@ fn run_element_prepaint(
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
         debug_assert_eq!(
-            &global_id
+            global_id
                 .expect("element id must have a corresponding global id")
-                .0,
-            &window.element_id_stack
+                .0
+                .as_ref(),
+            window.element_id_stack.as_slice()
         );
     }
 
@@ -392,10 +393,11 @@ fn run_element_paint(
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
         debug_assert_eq!(
-            &global_id
+            global_id
                 .expect("element id must have a corresponding global id")
-                .0,
-            &window.element_id_stack
+                .0
+                .as_ref(),
+            window.element_id_stack.as_slice()
         );
     }
 
@@ -552,7 +554,7 @@ impl<E: Element> Drawable<E> {
                 let mount = begin_retained_element_mount(
                     self.element.id(),
                     element_source_location,
-                    self.retained_source_location.copied(),
+                    self.retained_source_location,
                     self.retained_source_ordinal,
                     TypeId::of::<E>(),
                     window,

@@ -2,7 +2,7 @@
 use crate::BorderStyle;
 use crate::{
     App, Background, BackgroundTag, Bounds, ContentMask, Corners, DevicePixels, Edges, Hsla,
-    Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, quad, size,
+    Pixels, Point, Rgba, Size, Style, TextStyleRefinement, Window, point, px, quad, size,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -144,6 +144,33 @@ pub struct BoxShadow {
     pub blur_radius: Pixels,
     /// How much should the shadow spread?
     pub spread_radius: Pixels,
+}
+
+impl BoxShadow {
+    /// Creates a box shadow with the given offset and color.
+    #[must_use]
+    pub fn new(offset_x: Pixels, offset_y: Pixels, color: Hsla) -> Self {
+        Self {
+            color,
+            offset: point(offset_x, offset_y),
+            blur_radius: px(0.0),
+            spread_radius: px(0.0),
+        }
+    }
+
+    /// Sets the blur radius.
+    #[must_use]
+    pub fn blur_radius(mut self, blur_radius: Pixels) -> Self {
+        self.blur_radius = blur_radius;
+        self
+    }
+
+    /// Sets the spread radius.
+    #[must_use]
+    pub fn spread_radius(mut self, spread_radius: Pixels) -> Self {
+        self.spread_radius = spread_radius;
+        self
+    }
 }
 
 impl Style {
