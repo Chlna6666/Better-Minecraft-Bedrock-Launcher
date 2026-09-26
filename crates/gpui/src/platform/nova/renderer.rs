@@ -232,7 +232,11 @@ impl NovaRenderer {
             && self.backend.supports_partial_presentation(self.swapchain);
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
-        let upload = self.pack_scene(render_plan.scene, backdrop_blur_quality);
+        let upload = self.pack_scene(
+            render_plan.scene,
+            render_plan.presentation_animation_values,
+            backdrop_blur_quality,
+        );
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
@@ -327,7 +331,11 @@ impl NovaRenderer {
             && self.backend.supports_partial_presentation(self.swapchain);
         let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
-        let upload = self.pack_scene(render_plan.scene, backdrop_blur_quality);
+        let upload = self.pack_scene(
+            render_plan.scene,
+            render_plan.presentation_animation_values,
+            backdrop_blur_quality,
+        );
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;

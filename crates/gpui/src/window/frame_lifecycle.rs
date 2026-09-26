@@ -702,9 +702,11 @@ impl Window {
         self.backdrop_blur_damage_plan = self
             .rendered_frame
             .scene
-            .backdrop_blur_animation_damage_plan(&tick.scene_values);
-        self.rendered_frame
-            .scene
+            .backdrop_blur_animation_damage_plan(
+                self.presentation_state.engine_animation_values(),
+                &tick.scene_values,
+            );
+        self.presentation_state
             .replace_engine_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
         if !tick.dirty_bounds.is_empty() {

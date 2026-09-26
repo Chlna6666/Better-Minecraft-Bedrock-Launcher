@@ -142,7 +142,7 @@ fn element_blur_capture_reserves_full_three_sigma_footprint() {
 #[test]
 fn backdrop_blur_animation_refreshes_when_source_enters_region() {
     let mut scene = Scene::default();
-    let animation_id = scene.allocate_animation_id();
+    let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
     source.bounds = bounds(
@@ -168,15 +168,14 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
         from: [0.0; 4],
         to: [120.0, 0.0, 0.0, 0.0],
     };
-    scene.push_animation_value(value);
     assert!(
         !scene
-            .backdrop_blur_animation_damage_plan(&[value])
+            .backdrop_blur_animation_damage_plan(&[value], &[value])
             .refresh_required()
     );
     assert!(
         scene
-            .backdrop_blur_animation_damage_plan(&[SceneAnimationValue {
+            .backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
                 progress: 1.0,
                 ..value
             }])
@@ -187,7 +186,7 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
 #[test]
 fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
     let mut scene = Scene::default();
-    let animation_id = scene.allocate_animation_id();
+    let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
     source.bounds = bounds(
@@ -213,9 +212,8 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
         from: [0.0; 4],
         to: [20.0, 0.0, 0.0, 0.0],
     };
-    scene.push_animation_value(value);
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[SceneAnimationValue {
+    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
         progress: 1.0,
         ..value
     }]);
@@ -227,7 +225,7 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
 fn transform_after_blur_never_invalidates_that_blur() {
     let mut scene = Scene::default();
     scene.insert_primitive(backdrop_blur(0));
-    let animation_id = scene.allocate_animation_id();
+    let animation_id = SceneAnimationId(1 << 31);
     let mut animated = monochrome_sprite(1, MonochromeSpriteSampling::Glyph as u32);
     animated.animation_id = Some(animation_id);
     animated.content_mask.bounds = bounds(
@@ -242,9 +240,8 @@ fn transform_after_blur_never_invalidates_that_blur() {
         from: [0.0; 4],
         to: [20.0, 0.0, 0.0, 0.0],
     };
-    scene.push_animation_value(value);
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[SceneAnimationValue {
+    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
         progress: 1.0,
         ..value
     }]);
@@ -255,7 +252,7 @@ fn transform_after_blur_never_invalidates_that_blur() {
 #[test]
 fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
     let mut scene = Scene::default();
-    let animation_id = scene.allocate_animation_id();
+    let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
     source.bounds = bounds(
@@ -281,9 +278,8 @@ fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
         from: [0.0; 4],
         to: [100.0, 0.0, 0.0, 0.0],
     };
-    scene.push_animation_value(value);
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[SceneAnimationValue {
+    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
         progress: 0.92,
         ..value
     }]);
@@ -517,7 +513,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
 
     assert!(
         !top_layer_changed
-            .backdrop_blur_damage_plan(&previous)
+            .backdrop_blur_damage_plan(&previous, &[], &[])
             .refresh_required()
     );
 
@@ -531,7 +527,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
 
     assert!(
         source_changed
-            .backdrop_blur_damage_plan(&previous)
+            .backdrop_blur_damage_plan(&previous, &[], &[])
             .refresh_required()
     );
 }
@@ -567,7 +563,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
     ));
     current.insert_primitive(titlebar_blur);
 
-    let plan = current.backdrop_blur_damage_plan(&previous);
+    let plan = current.backdrop_blur_damage_plan(&previous, &[], &[]);
     let background_order = current.backdrop_blurs[0].order;
     let titlebar_order = current.backdrop_blurs[1].order;
     let (background_full, mut background_damage) =

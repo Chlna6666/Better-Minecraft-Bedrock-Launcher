@@ -12,6 +12,7 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn refresh_retained_animation_values(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         summary: &mut FrameUploadSummary,
     ) {
         let expected_count = self.sampled_animation_values.len();
@@ -20,6 +21,7 @@ impl FrameUpload {
             == expected_count.saturating_mul(PACKED_ANIMATION_VALUE_BYTES);
         self.refresh_retained_animation_values_in_place(
             scene,
+            presentation_animation_values,
             &mut refreshed_count,
             &mut topology_matches,
         );
@@ -28,7 +30,11 @@ impl FrameUpload {
             self.animation_values.clear();
             self.sampled_animation_values.clear();
             summary.animation_value_count = 0;
-            self.append_retained_animation_values(scene, summary);
+            self.append_retained_animation_values(
+                scene,
+                presentation_animation_values,
+                summary,
+            );
         } else {
             summary.animation_value_count = refreshed_count as u32;
         }
@@ -44,10 +50,15 @@ impl FrameUpload {
     fn refresh_retained_animation_values_in_place(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         refreshed_count: &mut usize,
         topology_matches: &mut bool,
     ) {
-        for value in &scene.animation_values {
+        for value in scene
+            .animation_values
+            .iter()
+            .chain(presentation_animation_values)
+        {
             let Some(property) = AnimationProperty::from_transition_property(value.property) else {
                 *topology_matches = false;
                 continue;
@@ -92,6 +103,7 @@ impl FrameUpload {
             for blur in &scene.blurs[range.clone()] {
                 self.refresh_retained_animation_values_in_place(
                     &blur.content,
+                    &[],
                     refreshed_count,
                     topology_matches,
                 );
@@ -102,9 +114,14 @@ impl FrameUpload {
     fn append_retained_animation_values(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         summary: &mut FrameUploadSummary,
     ) {
-        for value in &scene.animation_values {
+        for value in scene
+            .animation_values
+            .iter()
+            .chain(presentation_animation_values)
+        {
             let Some(property) = AnimationProperty::from_transition_property(value.property) else {
                 continue;
             };
@@ -136,7 +153,7 @@ impl FrameUpload {
                 {
                     return;
                 }
-                self.append_retained_animation_values(&blur.content, summary);
+                self.append_retained_animation_values(&blur.content, &[], summary);
             }
         }
     }

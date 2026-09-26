@@ -69,6 +69,8 @@ vsync
 
 Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
 
+Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `FrameRenderPlan` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably.
+
 ## 2. Animation ownership and invalidation
 
 Choose the narrowest owner that can produce the visual result.

@@ -107,8 +107,10 @@ retained target.
 
 Renderer-owned visual animation should receive stable primitive geometry plus a
 stable primitive-to-animation binding and compact per-frame values derived from
-the frame clock. The target steady state must not clone, mutate, serialize, and
-rewrite every animated primitive merely to advance visual time.
+the frame clock. Engine-owned samples are stored in presentation dynamic state
+rather than written into the committed Scene. The target steady state must not
+clone, mutate, serialize, and rewrite every animated primitive merely to advance
+visual time.
 
 CPU-only filter/damage planning may sample lightweight geometry, but it must use
 the same current-frame animation sample as renderer-visible values.

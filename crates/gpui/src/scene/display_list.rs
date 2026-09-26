@@ -32,6 +32,10 @@ pub(crate) struct Scene {
     pub(crate) backdrop_blurs: Vec<PaintBackdropBlur>,
     pub(crate) blurs: Vec<PaintBlur>,
     pub(crate) gpu_meshes_3d: Vec<PaintGpuMesh3d>,
+    /// Scene-local animation samples emitted while building this display list.
+    ///
+    /// Engine-owned presentation samples intentionally live outside Scene so retained display-list
+    /// commits stay immutable while the compositor advances between UI commits.
     pub(crate) animation_values: Vec<SceneAnimationValue>,
     next_scene_animation_id: u32,
     prepared_batches: PreparedSceneBatches,
@@ -508,7 +512,12 @@ impl Scene {
     }
 
     /// Computes spatial source damage independently for every backdrop draw-order barrier.
-    pub(crate) fn backdrop_blur_damage_plan(&self, previous: &Self) -> BackdropBlurDamagePlan {
+    pub(crate) fn backdrop_blur_damage_plan(
+        &self,
+        previous: &Self,
+        presentation_values: &[SceneAnimationValue],
+        previous_presentation_values: &[SceneAnimationValue],
+    ) -> BackdropBlurDamagePlan {
         let mut plan = BackdropBlurDamagePlan::default();
         if !self.has_backdrop_blurs() && !previous.has_backdrop_blurs() {
             return plan;
@@ -542,23 +551,36 @@ impl Scene {
             );
         }
 
-        self.collect_backdrop_blur_animation_damage(&previous.animation_values, &mut plan);
+        self.collect_backdrop_blur_animation_damage(
+            previous,
+            presentation_values,
+            previous_presentation_values,
+            &mut plan,
+        );
         plan
     }
 
     /// Computes per-backdrop source damage for an animation-only retained-scene frame.
     pub(crate) fn backdrop_blur_animation_damage_plan(
         &self,
-        next_values: &[SceneAnimationValue],
+        previous_presentation_values: &[SceneAnimationValue],
+        presentation_values: &[SceneAnimationValue],
     ) -> BackdropBlurDamagePlan {
         let mut plan = BackdropBlurDamagePlan::default();
-        self.collect_backdrop_blur_animation_damage(next_values, &mut plan);
+        self.collect_backdrop_blur_animation_damage(
+            self,
+            presentation_values,
+            previous_presentation_values,
+            &mut plan,
+        );
         plan
     }
 
     fn collect_backdrop_blur_animation_damage(
         &self,
-        next_values: &[SceneAnimationValue],
+        previous_scene: &Self,
+        presentation_values: &[SceneAnimationValue],
+        previous_presentation_values: &[SceneAnimationValue],
         plan: &mut BackdropBlurDamagePlan,
     ) {
         if !self.has_backdrop_blurs() {
@@ -566,7 +588,13 @@ impl Scene {
         }
 
         for (blur_index, blur) in backdrop_blur_operations(&self.paint_operations) {
-            if animation_value_changed(self, blur.animation_id, next_values) {
+            if animation_value_changed(
+                self,
+                previous_scene,
+                blur.animation_id,
+                presentation_values,
+                previous_presentation_values,
+            ) {
                 plan.mark_full(blur.order);
                 continue;
             }
@@ -577,17 +605,37 @@ impl Scene {
             for operation in &self.paint_operations[..blur_index] {
                 let damage = match operation {
                     PaintOperation::Primitive(primitive)
-                        if animation_value_changed(self, primitive.animation_id(), next_values) =>
+                        if animation_value_changed(
+                            self,
+                            previous_scene,
+                            primitive.animation_id(),
+                            presentation_values,
+                            previous_presentation_values,
+                        ) =>
                     {
-                        Some(animation_swept_bounds(self, primitive, next_values))
+                        Some(animation_swept_bounds(
+                            self,
+                            previous_scene,
+                            primitive,
+                            presentation_values,
+                            previous_presentation_values,
+                        ))
                     }
                     PaintOperation::StartBlur(capture)
-                        if animation_value_changed(self, capture.animation_id, next_values) =>
+                        if animation_value_changed(
+                            self,
+                            previous_scene,
+                            capture.animation_id,
+                            presentation_values,
+                            previous_presentation_values,
+                        ) =>
                     {
                         Some(blur_capture_animation_swept_bounds(
                             self,
+                            previous_scene,
                             capture,
-                            next_values,
+                            presentation_values,
+                            previous_presentation_values,
                         ))
                     }
                     PaintOperation::Primitive(_)
@@ -819,15 +867,6 @@ impl Scene {
         values: impl IntoIterator<Item = SceneAnimationValue>,
     ) {
         self.animation_values.clear();
-        self.animation_values.extend(values);
-    }
-
-    pub(crate) fn replace_engine_animation_values(
-        &mut self,
-        values: impl IntoIterator<Item = SceneAnimationValue>,
-    ) {
-        self.animation_values
-            .retain(|value| value.animation_id.0 < ENGINE_ANIMATION_ID_START);
         self.animation_values.extend(values);
     }
 
@@ -1796,49 +1835,70 @@ fn visit_clipped_damage(
     }
 }
 
+fn animation_value_for<'a>(
+    scene: &'a Scene,
+    animation_id: SceneAnimationId,
+    presentation_values: &'a [SceneAnimationValue],
+) -> Option<&'a SceneAnimationValue> {
+    if animation_id.0 >= ENGINE_ANIMATION_ID_START {
+        presentation_values
+            .iter()
+            .find(|value| value.animation_id == animation_id)
+    } else {
+        scene.animation_value(animation_id)
+    }
+}
+
 fn animation_value_changed(
     scene: &Scene,
+    previous_scene: &Scene,
     animation_id: Option<SceneAnimationId>,
-    next_values: &[SceneAnimationValue],
+    presentation_values: &[SceneAnimationValue],
+    previous_presentation_values: &[SceneAnimationValue],
 ) -> bool {
     let Some(animation_id) = animation_id else {
         return false;
     };
-    scene.animation_value(animation_id)
-        != next_values
-            .iter()
-            .find(|value| value.animation_id == animation_id)
+    animation_value_for(scene, animation_id, presentation_values)
+        != animation_value_for(
+            previous_scene,
+            animation_id,
+            previous_presentation_values,
+        )
 }
 
 fn animation_swept_bounds(
     scene: &Scene,
+    previous_scene: &Scene,
     primitive: &Primitive,
-    next_values: &[SceneAnimationValue],
+    presentation_values: &[SceneAnimationValue],
+    previous_presentation_values: &[SceneAnimationValue],
 ) -> Bounds<ScaledPixels> {
     let Some(animation_id) = primitive.animation_id() else {
         return primitive.visual_bounds();
     };
-    let previous = scene.animation_value(animation_id);
-    let next = next_values
-        .iter()
-        .find(|value| value.animation_id == animation_id);
-    animation_sampled_bounds(primitive, previous).union(&animation_sampled_bounds(primitive, next))
+    let current = animation_value_for(scene, animation_id, presentation_values);
+    let previous =
+        animation_value_for(previous_scene, animation_id, previous_presentation_values);
+    animation_sampled_bounds(primitive, current)
+        .union(&animation_sampled_bounds(primitive, previous))
 }
 
 fn blur_capture_animation_swept_bounds(
     scene: &Scene,
+    previous_scene: &Scene,
     blur: &BlurCapture,
-    next_values: &[SceneAnimationValue],
+    presentation_values: &[SceneAnimationValue],
+    previous_presentation_values: &[SceneAnimationValue],
 ) -> Bounds<ScaledPixels> {
     let Some(animation_id) = blur.animation_id else {
         return blur_capture_visual_bounds(blur);
     };
-    let previous = scene.animation_value(animation_id);
-    let next = next_values
-        .iter()
-        .find(|value| value.animation_id == animation_id);
-    animation_sampled_blur_capture_bounds(blur, previous)
-        .union(&animation_sampled_blur_capture_bounds(blur, next))
+    let current = animation_value_for(scene, animation_id, presentation_values);
+    let previous =
+        animation_value_for(previous_scene, animation_id, previous_presentation_values);
+    animation_sampled_blur_capture_bounds(blur, current)
+        .union(&animation_sampled_blur_capture_bounds(blur, previous))
 }
 
 fn blur_capture_visual_bounds(blur: &BlurCapture) -> Bounds<ScaledPixels> {

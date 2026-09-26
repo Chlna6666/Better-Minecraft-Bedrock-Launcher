@@ -92,6 +92,7 @@ impl FrameUploadBenchmarkCore {
     pub(crate) fn next_frame(&mut self) -> (usize, usize, usize, usize, usize) {
         let summary = self.upload.encode(
             &self.scene,
+            &[],
             DrawableSize {
                 width: 1_920,
                 height: 1_080,
@@ -134,6 +135,7 @@ impl PathPackingBenchmarkCore {
         self.upload.path_geometry_hash_memo.clear();
         let summary = self.upload.encode(
             &self.scene,
+            &[],
             DrawableSize {
                 width: 1_920,
                 height: 1_080,

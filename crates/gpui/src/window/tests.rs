@@ -1807,13 +1807,17 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
         assert_eq!(window.render_dirty_region.rect_count(), 1);
-        assert_eq!(window.rendered_frame.scene.animation_values.len(), 1);
+        assert_eq!(window.presentation_state.engine_animation_values().len(), 1);
+        assert!(
+            window.rendered_frame.scene.animation_values.is_empty(),
+            "engine presentation ticks must not mutate the committed Scene"
+        );
         assert_eq!(
-            window.rendered_frame.scene.animation_values[0].animation_id,
+            window.presentation_state.engine_animation_values()[0].animation_id,
             animation_id
         );
         assert_eq!(
-            window.rendered_frame.scene.animation_values[0].property,
+            window.presentation_state.engine_animation_values()[0].property,
             TransitionProperty::Rotation
         );
     });
@@ -1860,13 +1864,17 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             "GPU Blur animation must not notify or rebuild the owning view"
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
-        assert_eq!(window.rendered_frame.scene.animation_values.len(), 1);
+        assert_eq!(window.presentation_state.engine_animation_values().len(), 1);
+        assert!(
+            window.rendered_frame.scene.animation_values.is_empty(),
+            "engine presentation ticks must not mutate the committed Scene"
+        );
         assert_eq!(
-            window.rendered_frame.scene.animation_values[0].animation_id,
+            window.presentation_state.engine_animation_values()[0].animation_id,
             animation_id
         );
         assert_eq!(
-            window.rendered_frame.scene.animation_values[0].property,
+            window.presentation_state.engine_animation_values()[0].property,
             TransitionProperty::Blur
         );
     });

@@ -480,6 +480,7 @@ impl NovaRenderer {
     pub(super) fn pack_scene(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
         crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
@@ -514,12 +515,16 @@ impl NovaRenderer {
             summary.retained_chunk_hits = 0;
             summary.retained_chunk_misses = 0;
             summary.retained_chunk_reused_bytes = 0;
-            self.frame_upload
-                .refresh_retained_animation_values(scene, &mut summary);
+            self.frame_upload.refresh_retained_animation_values(
+                scene,
+                presentation_animation_values,
+                &mut summary,
+            );
         } else {
             let encode_started_at = Instant::now();
             summary = self.frame_upload.encode(
                 scene,
+                presentation_animation_values,
                 self.current_size,
                 &self.rendering_parameters,
                 key.premultiplied_alpha,

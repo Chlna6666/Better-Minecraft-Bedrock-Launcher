@@ -185,13 +185,13 @@ impl Window {
             .animation_engine
             .borrow()
             .scene_values(self.animation_time());
-        self.next_frame
-            .scene
+        self.backdrop_blur_damage_plan = self.next_frame.scene.backdrop_blur_damage_plan(
+            &self.rendered_frame.scene,
+            &scene_animation_values,
+            self.presentation_state.engine_animation_values(),
+        );
+        self.presentation_state
             .replace_engine_animation_values(scene_animation_values);
-        self.backdrop_blur_damage_plan = self
-            .next_frame
-            .scene
-            .backdrop_blur_damage_plan(&self.rendered_frame.scene);
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
             directly_dirty_views,
@@ -534,6 +534,7 @@ impl Window {
     fn render_plan(&self) -> FrameRenderPlan<'_> {
         FrameRenderPlan {
             scene: &self.rendered_frame.scene,
+            presentation_animation_values: self.presentation_state.engine_animation_values(),
             dirty_region: &self.render_dirty_region,
             backdrop_blur_damage_plan: &self.backdrop_blur_damage_plan,
             partial_present_mode: self.render_present_mode,

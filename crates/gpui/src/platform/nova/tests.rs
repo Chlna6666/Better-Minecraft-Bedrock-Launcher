@@ -868,6 +868,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &scene,
+        &[],
         drawable_size,
         &rendering_parameters,
         false,
@@ -877,6 +878,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &scene,
+        &[],
         drawable_size,
         &rendering_parameters,
         true,
@@ -896,6 +898,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     };
     let first_summary = upload.encode(
         &previous,
+        &[],
         drawable_size,
         &rendering_parameters,
         false,
@@ -921,6 +924,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let same_generation = retained_quad_scene(1);
     let same_generation_summary = upload.encode(
         &same_generation,
+        &[],
         drawable_size,
         &rendering_parameters,
         false,
@@ -956,6 +960,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     partially_dirty.finish();
     let replay_summary = upload.encode(
         &partially_dirty,
+        &[],
         drawable_size,
         &rendering_parameters,
         false,
@@ -971,6 +976,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let changed_generation = retained_quad_scene(2);
     let changed_summary = upload.encode(
         &changed_generation,
+        &[],
         drawable_size,
         &rendering_parameters,
         false,
@@ -1011,6 +1017,7 @@ fn frame_upload_records_scene_animation_bindings() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 64,
             height: 64,
@@ -1049,6 +1056,7 @@ fn frame_upload_records_scene_animation_values() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 64,
             height: 64,
@@ -1063,6 +1071,43 @@ fn frame_upload_records_scene_animation_values() {
     assert_eq!(read_u32_at(&upload.animation_values, 0), animation_id.0);
     assert_eq!(read_f32_at(&upload.animation_values, 8), 0.25);
     assert_eq!(read_f32_at(&upload.animation_values, 32), 1.0);
+}
+
+
+#[test]
+fn frame_upload_accepts_presentation_animation_values_outside_scene() {
+    let mut scene = crate::Scene::default();
+    let animation_id = crate::SceneAnimationId(1 << 31);
+    scene.insert_animated_primitive(Quad::default(), animation_id);
+    scene.finish();
+
+    let presentation_value = crate::SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress: 0.5,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+
+    let mut upload = FrameUpload::default();
+    let summary = upload.encode(
+        &scene,
+        &[presentation_value],
+        DrawableSize {
+            width: 64,
+            height: 64,
+        },
+        &RenderingParameters::from_env(),
+        true,
+        BackdropBlurQuality::Full,
+    );
+
+    assert!(
+        scene.animation_values.is_empty(),
+        "presentation animation values must not be written into the committed Scene"
+    );
+    assert_eq!(summary.animation_value_count, 1);
+    assert_eq!(upload.sampled_animation_values, vec![presentation_value]);
 }
 
 #[test]
@@ -1115,6 +1160,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let first = upload.encode(
         &scene,
+        &[],
         drawable_size,
         &RenderingParameters::from_env(),
         true,
@@ -1132,6 +1178,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let second = upload.encode(
         &scene,
+        &[],
         drawable_size,
         &RenderingParameters::from_env(),
         true,
@@ -1263,6 +1310,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
 
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 640,
             height: 480,
@@ -1311,6 +1359,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 640,
             height: 480,
@@ -1384,6 +1433,7 @@ fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 640,
             height: 480,
@@ -1462,6 +1512,7 @@ fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &scene,
+        &[],
         DrawableSize {
             width: 640,
             height: 480,
@@ -2015,6 +2066,7 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
     let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
     let partial_plan = FrameRenderPlan {
         scene: &scene,
+        presentation_animation_values: &[],
         dirty_region: &dirty_region,
         backdrop_blur_damage_plan: &backdrop_blur_damage_plan,
         partial_present_mode: PartialPresentMode::Partial,

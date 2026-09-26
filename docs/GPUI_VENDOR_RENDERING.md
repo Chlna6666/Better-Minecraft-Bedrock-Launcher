@@ -110,6 +110,8 @@ This is intentionally analogous to Chromium's main/compositor split and Qt Quick
 
 A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
 
+Engine-owned animation samples live in `PresentationState`, not in the committed `Scene`. `FrameRenderPlan` therefore carries a retained scene and a separate dynamic animation-value slice. Presentation ticks update only the dynamic state; they do not mutate display-list ownership or scene revision.
+
 ## End-To-End Frame Path
 
 ```mermaid

@@ -409,6 +409,7 @@ impl Window {
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+            presentation_state: PresentationState::default(),
             render_dirty_region: DirtyRegion::empty(),
             animation_dirty_region: DirtyRegion::empty(),
             render_present_mode: PartialPresentMode::FullRedraw,

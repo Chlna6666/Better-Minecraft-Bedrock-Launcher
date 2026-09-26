@@ -1,4 +1,4 @@
-use crate::{BackdropBlurDamagePlan, Bounds, ScaledPixels, Scene};
+use crate::{BackdropBlurDamagePlan, Bounds, ScaledPixels, Scene, SceneAnimationValue};
 
 const MAX_DIRTY_RECTS: usize = 128;
 
@@ -254,6 +254,7 @@ pub(crate) enum RetainedResourceTrimPolicy {
 #[derive(Clone, Copy)]
 pub(crate) struct FrameRenderPlan<'a> {
     pub(crate) scene: &'a Scene,
+    pub(crate) presentation_animation_values: &'a [SceneAnimationValue],
     pub(crate) dirty_region: &'a DirtyRegion,
     pub(crate) backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
@@ -269,6 +270,7 @@ impl<'a> FrameRenderPlan<'a> {
     ) -> Self {
         Self {
             scene,
+            presentation_animation_values: &[],
             dirty_region,
             backdrop_blur_damage_plan,
             partial_present_mode: PartialPresentMode::FullRedraw,

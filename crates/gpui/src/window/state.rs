@@ -362,6 +362,31 @@ pub(crate) struct CachedViewTraversalContext {
     image_cache_stack: Vec<AnyImageCache>,
 }
 
+/// Dynamic values sampled by the presentation lane.
+///
+/// These values are deliberately kept outside `Scene`: the committed retained scene is static
+/// presentation input, while engine-owned animation samples advance independently between UI
+/// commits. Keeping this split explicit is required before committed scenes can be shared with a
+/// dedicated compositor owner.
+#[derive(Default)]
+pub(crate) struct PresentationState {
+    engine_animation_values: Vec<crate::SceneAnimationValue>,
+}
+
+impl PresentationState {
+    pub(crate) fn engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
+        &self.engine_animation_values
+    }
+
+    pub(crate) fn replace_engine_animation_values(
+        &mut self,
+        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+    ) {
+        self.engine_animation_values.clear();
+        self.engine_animation_values.extend(values);
+    }
+}
+
 /// Holds the state for a specific window.
 pub struct Window {
     pub(crate) handle: AnyWindowHandle,
@@ -423,6 +448,7 @@ pub struct Window {
     pub(super) image_paint_live_tiles_scratch: FxHashSet<(crate::AtlasTextureId, u32)>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    pub(super) presentation_state: PresentationState,
     pub(super) render_dirty_region: DirtyRegion,
     pub(super) animation_dirty_region: DirtyRegion,
     pub(super) render_present_mode: PartialPresentMode,

@@ -17,6 +17,7 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn encode(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
         rendering_parameters: &RenderingParameters,
         premultiplied_alpha: bool,
@@ -24,6 +25,7 @@ impl FrameUpload {
     ) -> FrameUploadSummary {
         self.encode_scene(
             scene,
+            presentation_animation_values,
             drawable_size,
             rendering_parameters,
             premultiplied_alpha,
@@ -35,6 +37,7 @@ impl FrameUpload {
     fn encode_scene(
         &mut self,
         scene: &crate::Scene,
+        presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
         rendering_parameters: &RenderingParameters,
         premultiplied_alpha: bool,
@@ -117,7 +120,11 @@ impl FrameUpload {
         }
 
         let mut summary = FrameUploadSummary::default();
-        for value in &scene.animation_values {
+        for value in scene
+            .animation_values
+            .iter()
+            .chain(presentation_animation_values)
+        {
             write_scene_animation_value(self, &mut summary, value);
         }
 
@@ -415,6 +422,7 @@ impl FrameUpload {
                             .push(UploadedBatch::BeginBlur { index: blur_index });
                         let child_summary = self.encode_scene(
                             &blur.content,
+                            &[],
                             drawable_size,
                             rendering_parameters,
                             premultiplied_alpha,
