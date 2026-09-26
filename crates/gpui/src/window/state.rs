@@ -362,28 +362,107 @@ pub(crate) struct CachedViewTraversalContext {
     image_cache_stack: Vec<AnyImageCache>,
 }
 
-/// Dynamic values sampled by the presentation lane.
-///
-/// These values are deliberately kept outside `Scene`: the committed retained scene is static
-/// presentation input, while engine-owned animation samples advance independently between UI
-/// commits. Keeping this split explicit is required before committed scenes can be shared with a
-/// dedicated compositor owner.
-#[derive(Default)]
-pub(crate) struct PresentationState {
-    engine_animation_values: Vec<crate::SceneAnimationValue>,
+/// One immutable scene snapshot owned by the presentation domain.
+struct PresentationSnapshot {
+    scene: Arc<Scene>,
+    engine_animation_values: SmallVec<[crate::SceneAnimationValue; 4]>,
 }
 
-impl PresentationState {
-    pub(crate) fn engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
-        &self.engine_animation_values
+impl PresentationSnapshot {
+    fn new(
+        scene: Arc<Scene>,
+        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+    ) -> Self {
+        Self {
+            scene,
+            engine_animation_values: values.into_iter().collect(),
+        }
     }
 
-    pub(crate) fn replace_engine_animation_values(
+    fn replace_engine_animation_values(
         &mut self,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
     ) {
         self.engine_animation_values.clear();
         self.engine_animation_values.extend(values);
+    }
+}
+
+/// Presentation-owned active/pending snapshots.
+///
+/// UI generation publishes immutable snapshots with latest-wins semantics. Presentation activates
+/// pending work independently of mutable UI scratch storage, while animation ticks only update the
+/// active snapshot's compact dynamic values.
+#[derive(Default)]
+pub(crate) struct PresentationState {
+    active: Option<PresentationSnapshot>,
+    pending: Option<PresentationSnapshot>,
+}
+
+impl PresentationState {
+    pub(crate) fn publish_pending(
+        &mut self,
+        scene: Arc<Scene>,
+        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+    ) {
+        match self.pending.as_mut() {
+            Some(pending) => {
+                pending.scene = scene;
+                pending.replace_engine_animation_values(values);
+            }
+            None => {
+                self.pending = Some(PresentationSnapshot::new(scene, values));
+            }
+        }
+    }
+
+    pub(crate) fn activate_pending(&mut self) -> bool {
+        let Some(pending) = self.pending.take() else {
+            return false;
+        };
+        self.active = Some(pending);
+        true
+    }
+
+    pub(crate) fn active_scene(&self) -> Option<&Scene> {
+        self.active.as_ref().map(|snapshot| snapshot.scene.as_ref())
+    }
+
+    pub(crate) fn active_engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
+        self.active
+            .as_ref()
+            .map_or(&[], |snapshot| snapshot.engine_animation_values.as_slice())
+    }
+
+    pub(crate) fn animation_values_for_scene(
+        &self,
+        scene: &Scene,
+    ) -> &[crate::SceneAnimationValue] {
+        self.pending
+            .iter()
+            .chain(self.active.iter())
+            .find(|snapshot| std::ptr::eq(snapshot.scene.as_ref(), scene))
+            .map_or(&[], |snapshot| snapshot.engine_animation_values.as_slice())
+    }
+
+    pub(crate) fn replace_active_engine_animation_values(
+        &mut self,
+        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+    ) {
+        if let Some(active) = self.active.as_mut() {
+            active.replace_engine_animation_values(values);
+        }
+    }
+
+    pub(crate) fn committed_scenes(&self) -> impl Iterator<Item = &Scene> {
+        self.active
+            .iter()
+            .chain(self.pending.iter())
+            .map(|snapshot| snapshot.scene.as_ref())
+    }
+
+    pub(crate) fn has_pending_scene(&self) -> bool {
+        self.pending.is_some()
     }
 }
 

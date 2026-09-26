@@ -169,6 +169,45 @@ pub(crate) struct RetainedReplayRanges {
     pub(crate) metadata_range: Range<usize>,
 }
 
+/// Reusable scene storage for one UI frame.
+///
+/// A committed scene may be shared with the presentation domain through an `Arc`. UI generation
+/// only mutates a unique scratch slot. Clearing a slot that is still shared never clones the
+/// committed display list; it detaches to a fresh empty Scene instead.
+#[derive(Default)]
+pub(crate) struct SceneSlot {
+    scene: Arc<Scene>,
+}
+
+impl SceneSlot {
+    pub(crate) fn snapshot(&self) -> Arc<Scene> {
+        Arc::clone(&self.scene)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        if let Some(scene) = Arc::get_mut(&mut self.scene) {
+            scene.clear();
+        } else {
+            self.scene = Arc::new(Scene::default());
+        }
+    }
+}
+
+impl std::ops::Deref for SceneSlot {
+    type Target = Scene;
+
+    fn deref(&self) -> &Self::Target {
+        self.scene.as_ref()
+    }
+}
+
+impl std::ops::DerefMut for SceneSlot {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::get_mut(&mut self.scene)
+            .expect("attempted to mutate a Scene after it was committed to presentation")
+    }
+}
+
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -180,7 +219,7 @@ pub(crate) struct Frame {
     /// so high-report-rate mice do not scan the full listener array for every hardware event.
     pub(crate) has_continuous_mouse_move_listener: bool,
     pub(crate) dispatch_tree: DispatchTree,
-    pub(crate) scene: Scene,
+    pub(crate) scene: SceneSlot,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -337,7 +376,7 @@ impl Frame {
             mouse_listeners: Vec::new(),
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
-            scene: Scene::default(),
+            scene: SceneSlot::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -732,5 +771,29 @@ impl Frame {
 fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     if vec.capacity() > floor.saturating_mul(multiplier) {
         vec.shrink_to(floor);
+    }
+}
+
+#[cfg(test)]
+mod scene_slot_tests {
+    use super::*;
+
+    #[test]
+    fn shared_committed_scene_detaches_scratch_without_mutating_snapshot() {
+        let mut slot = SceneSlot::default();
+        slot.insert_primitive(Quad::default());
+        slot.finish();
+
+        let snapshot = slot.snapshot();
+        let snapshot_revision = snapshot.revision;
+        let snapshot_len = snapshot.len();
+        assert_eq!(Arc::strong_count(&snapshot), 2);
+
+        slot.clear();
+
+        assert_eq!(snapshot.revision, snapshot_revision);
+        assert_eq!(snapshot.len(), snapshot_len);
+        assert_eq!(slot.len(), 0);
+        assert_eq!(Arc::strong_count(&snapshot), 1);
     }
 }

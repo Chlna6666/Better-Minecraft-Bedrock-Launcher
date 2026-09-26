@@ -180,6 +180,7 @@ impl Window {
         self.has_completed_rendered_frame = false;
         self.rendered_frame.clear();
         self.next_frame.clear();
+        self.presentation_state = PresentationState::default();
         self.next_frame_callbacks.borrow_mut().clear();
         self.invalidator.set_phase(DrawPhase::None);
         self.invalidator.set_dirty(false);
@@ -1807,17 +1808,31 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
         assert_eq!(window.render_dirty_region.rect_count(), 1);
-        assert_eq!(window.presentation_state.engine_animation_values().len(), 1);
+        assert_eq!(window.presentation_state.active_engine_animation_values().len(), 1);
+        assert!(
+            std::ptr::eq(
+                window
+                    .presentation_state
+                    .active_scene()
+                    .expect("completed window frame must publish an active presentation scene"),
+                &*window.rendered_frame.scene,
+            ),
+            "presentation must sample the exact immutable scene commit exposed by the UI frame"
+        );
+        assert!(
+            !window.presentation_state.has_pending_scene(),
+            "synchronous presentation currently activates the latest pending commit before reuse"
+        );
         assert!(
             window.rendered_frame.scene.animation_values.is_empty(),
             "engine presentation ticks must not mutate the committed Scene"
         );
         assert_eq!(
-            window.presentation_state.engine_animation_values()[0].animation_id,
+            window.presentation_state.active_engine_animation_values()[0].animation_id,
             animation_id
         );
         assert_eq!(
-            window.presentation_state.engine_animation_values()[0].property,
+            window.presentation_state.active_engine_animation_values()[0].property,
             TransitionProperty::Rotation
         );
     });
@@ -1864,17 +1879,31 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             "GPU Blur animation must not notify or rebuild the owning view"
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
-        assert_eq!(window.presentation_state.engine_animation_values().len(), 1);
+        assert_eq!(window.presentation_state.active_engine_animation_values().len(), 1);
+        assert!(
+            std::ptr::eq(
+                window
+                    .presentation_state
+                    .active_scene()
+                    .expect("completed window frame must publish an active presentation scene"),
+                &*window.rendered_frame.scene,
+            ),
+            "presentation must sample the exact immutable scene commit exposed by the UI frame"
+        );
+        assert!(
+            !window.presentation_state.has_pending_scene(),
+            "synchronous presentation currently activates the latest pending commit before reuse"
+        );
         assert!(
             window.rendered_frame.scene.animation_values.is_empty(),
             "engine presentation ticks must not mutate the committed Scene"
         );
         assert_eq!(
-            window.presentation_state.engine_animation_values()[0].animation_id,
+            window.presentation_state.active_engine_animation_values()[0].animation_id,
             animation_id
         );
         assert_eq!(
-            window.presentation_state.engine_animation_values()[0].property,
+            window.presentation_state.active_engine_animation_values()[0].property,
             TransitionProperty::Blur
         );
     });
@@ -2336,17 +2365,35 @@ fn present_framebuffer_only_clears_needs_present(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn deferred_platform_draw_preserves_needs_present(cx: &mut TestAppContext) {
+fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(
+    cx: &mut TestAppContext,
+) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
         test_window.set_frame_result(PlatformFrameResult::Deferred);
+
+        let mut scene = Scene::default();
+        scene.insert_primitive(Quad::default());
+        scene.finish();
+        let pending_scene = Arc::new(scene);
+        window
+            .presentation_state
+            .publish_pending(Arc::clone(&pending_scene), []);
         window.needs_present.set(true);
 
         let result = window.present();
 
         assert_eq!(result, PlatformFrameResult::Deferred);
         assert!(window.needs_present.get());
+        assert!(!window.presentation_state.has_pending_scene());
+        assert!(std::ptr::eq(
+            window
+                .presentation_state
+                .active_scene()
+                .expect("deferred submission must retain the activated snapshot"),
+            pending_scene.as_ref(),
+        ));
         assert_eq!(test_window.draw_count(), 1);
     });
 }

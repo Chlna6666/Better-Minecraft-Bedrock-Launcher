@@ -108,6 +108,7 @@ const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
 const SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER: usize = 2;
 const SCENE_MIN_RETAINED_CAPACITY: usize = 24;
 const MIN_RETAINED_QUAD_CHUNK_PRIMITIVES: usize = 32;
+const MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS: usize = 16;
 const ENGINE_ANIMATION_ID_START: u32 = 1 << 31;
 
 #[derive(Clone, Debug, Default)]
@@ -146,6 +147,32 @@ impl BackdropBlurDamagePlan {
             .filter(move |entry| entry.order >= first && entry.order <= last)
             .flat_map(|entry| entry.source_damage.iter().copied());
         (full_refresh, damage)
+    }
+
+    /// Conservatively accumulates damage that has not reached a submitted frame yet.
+    ///
+    /// Pending presentation is latest-wins: if UI commits B and then C while A is still on screen,
+    /// C must carry both A→B and B→C blur-source damage. Full refresh always dominates spatial
+    /// damage for the same blur order.
+    pub(crate) fn merge_from(&mut self, previous: &Self) {
+        for entry in &previous.entries {
+            if entry.full_refresh {
+                self.mark_full(entry.order);
+                continue;
+            }
+            for damage in &entry.source_damage {
+                self.push(entry.order, *damage);
+                if self
+                    .entry_mut(entry.order)
+                    .source_damage
+                    .len()
+                    > MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS
+                {
+                    self.mark_full(entry.order);
+                    break;
+                }
+            }
+        }
     }
 
     fn mark_full(&mut self, order: DrawOrder) {

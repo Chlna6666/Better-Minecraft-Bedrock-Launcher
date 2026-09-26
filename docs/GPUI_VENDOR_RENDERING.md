@@ -112,6 +112,10 @@ A UI commit produced after an early presentation sets needs_present and requests
 
 Engine-owned animation samples live in `PresentationState`, not in the committed `Scene`. `FrameRenderPlan` therefore carries a retained scene and a separate dynamic animation-value slice. Presentation ticks update only the dynamic state; they do not mutate display-list ownership or scene revision.
 
+UI scene storage is Arc-backed only at the commit boundary. A completed UI scene is published into a latest-wins pending presentation slot; the presentation phase promotes the newest pending snapshot before renderer-owned animation sampling or GPU submission. Scratch storage may reuse the previous Scene allocation only after presentation ownership releases it; while an older snapshot is shared, scratch reset detaches to a fresh empty Scene instead of cloning or mutating the committed display list.
+
+If multiple UI commits arrive before a successful submission, presentation damage is cumulative rather than relative only to the immediately previous UI frame. Dirty regions and backdrop-blur source damage preserve every unsubmitted transition, so skipping intermediate pending snapshots remains pixel-correct for partial presentation.
+
 ## End-To-End Frame Path
 
 ```mermaid

@@ -706,6 +706,9 @@ impl Window {
         self.next_frame
             .scene
             .collect_polychrome_tile_ids_into(&mut live_tiles);
+        for scene in self.presentation_state.committed_scenes() {
+            scene.collect_polychrome_tile_ids_into(&mut live_tiles);
+        }
 
         let has_live_static_residency = self.image_paint_tile_cache.iter().any(|(key, tile)| {
             key.image_id == image_id
@@ -755,13 +758,13 @@ impl Window {
         Ok(())
     }
 
-    /// Prunes static image atlas tiles that are absent from both the current and immediately
-    /// previous committed retained scenes.
+    /// Prunes static image atlas tiles that are absent from UI retained scenes and all
+    /// presentation-owned active/pending snapshots.
     ///
     /// This deliberately does not evict decoded RenderImages. Source/CPU image lifetime remains
-    /// owned by the image cache, while derived GPU residency follows scene liveness. Keeping two
-    /// committed generations mirrors frame-cache liveness schemes used by immediate-mode UI
-    /// renderers and avoids upload churn when an item briefly leaves the viewport.
+    /// owned by the image cache, while derived GPU residency follows every UI or presentation
+    /// Scene that can still be submitted. The UI two-generation grace remains intact, and any
+    /// independently owned active/pending presentation snapshot extends liveness as required.
     pub(crate) fn prune_static_image_atlas_residency(&mut self) {
         if self.image_paint_tile_cache.is_empty() {
             return;
@@ -775,6 +778,9 @@ impl Window {
         self.next_frame
             .scene
             .collect_polychrome_tile_ids_into(&mut live_tiles);
+        for scene in self.presentation_state.committed_scenes() {
+            scene.collect_polychrome_tile_ids_into(&mut live_tiles);
+        }
 
         let atlas = self.sprite_atlas.clone();
         self.image_paint_tile_cache.retain(|key, tile| {

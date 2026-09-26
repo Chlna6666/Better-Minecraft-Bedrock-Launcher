@@ -71,6 +71,10 @@ Do not move visual-only animation back into Render merely to make endpoint updat
 
 Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `FrameRenderPlan` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably.
 
+Committed scenes use active/pending ownership with latest-wins pending replacement. Pending promotion belongs to the presentation phase, before renderer-owned sampling/submission, not to UI scene generation. Sharing a committed Scene must never trigger copy-on-write of the whole display list: mutable UI scratch storage either stays uniquely owned and reuses capacity, or detaches to a fresh empty Scene while an older presentation snapshot is still alive.
+
+Latest-wins is allowed to skip intermediate snapshots only when all unsubmitted pixel damage is carried forward. A later UI commit must merge the outstanding dirty region and backdrop-blur source damage instead of replacing them with a diff against an intermediate scene that was never submitted.
+
 ## 2. Animation ownership and invalidation
 
 Choose the narrowest owner that can produce the visual result.

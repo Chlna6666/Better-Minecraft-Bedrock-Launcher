@@ -628,9 +628,19 @@ impl Window {
         &mut self,
         frame_request: PlatformFrameRequest,
     ) -> PresentationPhaseOutcome {
-        let presentation_tick = self.run_animation_engine_frame();
+        // Consume the newest immutable UI commit before sampling renderer-owned animation. This
+        // makes a presentation wake-up latest-wins and prevents a fresh committed scene from
+        // waiting behind callbacks or another View/layout/paint pass.
+        if self.presentation_state.has_pending_scene() {
+            debug_assert!(self.presentation_state.activate_pending());
+        }
+        let preserve_unpresented_damage = self.needs_present.get();
+        let presentation_tick =
+            self.run_animation_engine_frame(preserve_unpresented_damage);
+        let presentation_ready =
+            preserve_unpresented_damage || presentation_tick;
         let submitted_early = should_present_before_ui_commit(
-            presentation_tick,
+            presentation_ready,
             frame_request,
             self.has_completed_rendered_frame,
             self.visibility.is_visible(),
@@ -684,7 +694,7 @@ impl Window {
         }
     }
 
-    fn run_animation_engine_frame(&mut self) -> bool {
+    fn run_animation_engine_frame(&mut self, preserve_unpresented_damage: bool) -> bool {
         let Some(driver) = self.animation_engine_frame_driver.take() else {
             return false;
         };
@@ -699,27 +709,37 @@ impl Window {
             .animation_engine
             .borrow_mut()
             .tick_driver(driver, self.animation_time());
-        self.backdrop_blur_damage_plan = self
-            .rendered_frame
-            .scene
-            .backdrop_blur_animation_damage_plan(
-                self.presentation_state.engine_animation_values(),
-                &tick.scene_values,
-            );
+        {
+            let presentation_scene = self
+                .presentation_state
+                .active_scene()
+                .unwrap_or(&self.rendered_frame.scene);
+            let mut tick_blur_damage = presentation_scene
+                .backdrop_blur_animation_damage_plan(
+                    self.presentation_state.active_engine_animation_values(),
+                    &tick.scene_values,
+                );
+            if preserve_unpresented_damage {
+                tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
+            }
+            self.backdrop_blur_damage_plan = tick_blur_damage;
+        }
         self.presentation_state
-            .replace_engine_animation_values(tick.scene_values);
+            .replace_active_engine_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
-        if !tick.dirty_bounds.is_empty() {
+        if !preserve_unpresented_damage && !tick.dirty_bounds.is_empty() {
             self.render_dirty_region = DirtyRegion::empty();
         }
         for bounds in tick.dirty_bounds {
             self.record_animation_tick_dirty_bounds(bounds, viewport);
         }
-        for bounds in self
-            .rendered_frame
-            .scene
+        let backdrop_output_damage = self
+            .presentation_state
+            .active_scene()
+            .unwrap_or(&self.rendered_frame.scene)
             .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
-        {
+            .collect::<SmallVec<[_; 4]>>();
+        for bounds in backdrop_output_damage {
             self.render_dirty_region.push(bounds);
         }
         self.render_dirty_region.coalesce_if_large(
@@ -1219,13 +1239,13 @@ impl FrameWorkDecision {
 }
 
 fn should_present_before_ui_commit(
-    presentation_tick: bool,
+    presentation_ready: bool,
     frame_request: PlatformFrameRequest,
     has_committed_scene: bool,
     visible: bool,
     minimized: bool,
 ) -> bool {
-    presentation_tick
+    presentation_ready
         && frame_request.needs_presentation()
         && has_committed_scene
         && visible
@@ -1237,7 +1257,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_animation_precedes_coalesced_ui_commit() {
+    fn presentation_work_precedes_coalesced_ui_commit() {
         assert!(should_present_before_ui_commit(
             true,
             PlatformFrameRequest::ui_commit_and_presentation(),

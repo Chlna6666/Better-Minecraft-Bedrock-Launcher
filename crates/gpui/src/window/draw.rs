@@ -185,16 +185,25 @@ impl Window {
             .animation_engine
             .borrow()
             .scene_values(self.animation_time());
-        self.backdrop_blur_damage_plan = self.next_frame.scene.backdrop_blur_damage_plan(
+        let accumulate_unpresented_damage = self.needs_present.get();
+        let mut backdrop_blur_damage_plan = self.next_frame.scene.backdrop_blur_damage_plan(
             &self.rendered_frame.scene,
             &scene_animation_values,
-            self.presentation_state.engine_animation_values(),
+            self.presentation_state
+                .animation_values_for_scene(&self.rendered_frame.scene),
         );
-        self.presentation_state
-            .replace_engine_animation_values(scene_animation_values);
+        if accumulate_unpresented_damage {
+            backdrop_blur_damage_plan.merge_from(&self.backdrop_blur_damage_plan);
+        }
+        self.backdrop_blur_damage_plan = backdrop_blur_damage_plan;
         self.prepare_render_plan_for_next_frame(
             previous_scene_was_empty || force_full_redraw || self.draw_was_degraded,
             directly_dirty_views,
+            accumulate_unpresented_damage,
+        );
+        self.presentation_state.publish_pending(
+            self.next_frame.scene.snapshot(),
+            scene_animation_values,
         );
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
@@ -219,8 +228,8 @@ impl Window {
             });
         self.invalidator
             .rebuild_cached_view_fallback_boundaries(&self.rendered_frame.dispatch_tree);
-        // Keep static image atlas residency aligned with the two-generation retained-scene
-        // working set before the previous frame is cleared for scratch reuse.
+        // Keep UI generations plus active/pending presentation snapshots live before the previous
+        // frame becomes scratch. A still-active older scene may force SceneSlot to detach here.
         self.prune_static_image_atlas_residency();
         self.next_frame.clear_for_reuse(&self.rendered_frame);
         self.viewport_dependent_views
@@ -350,9 +359,14 @@ impl Window {
         &mut self,
         force_full_redraw: bool,
         directly_dirty_views: &[EntityId],
+        accumulate_unpresented_damage: bool,
     ) {
         let viewport = Bounds::new(Point::default(), self.viewport_size).scale(self.scale_factor);
-        let mut dirty_region = DirtyRegion::empty();
+        let mut dirty_region = if accumulate_unpresented_damage {
+            mem::take(&mut self.render_dirty_region)
+        } else {
+            DirtyRegion::empty()
+        };
 
         let scene_requires_full_redraw = self.next_frame.scene.requires_full_redraw_fallback();
         // Backdrop-filter output depends on pixels rendered before it. When a blur primitive is
@@ -533,8 +547,13 @@ impl Window {
 
     fn render_plan(&self) -> FrameRenderPlan<'_> {
         FrameRenderPlan {
-            scene: &self.rendered_frame.scene,
-            presentation_animation_values: self.presentation_state.engine_animation_values(),
+            scene: self
+                .presentation_state
+                .active_scene()
+                .unwrap_or(&self.rendered_frame.scene),
+            presentation_animation_values: self
+                .presentation_state
+                .active_engine_animation_values(),
             dirty_region: &self.render_dirty_region,
             backdrop_blur_damage_plan: &self.backdrop_blur_damage_plan,
             partial_present_mode: self.render_present_mode,
@@ -564,12 +583,13 @@ impl Window {
     }
 
     #[profiling::function]
-    pub(super) fn present(&self) -> PlatformFrameResult {
+    pub(super) fn present(&mut self) -> PlatformFrameResult {
         #[cfg(feature = "profiler")]
         let _profile =
             crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
                 self.handle.window_id().as_u64(),
             );
+        self.presentation_state.activate_pending();
         let result = self.platform_window.draw(self.render_plan());
         if result == PlatformFrameResult::Submitted {
             self.needs_present.set(false);
@@ -578,12 +598,13 @@ impl Window {
         result
     }
 
-    pub(super) fn present_framebuffer_only(&self) -> PlatformFrameResult {
+    pub(super) fn present_framebuffer_only(&mut self) -> PlatformFrameResult {
         #[cfg(feature = "profiler")]
         let _profile =
             crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
                 self.handle.window_id().as_u64(),
             );
+        self.presentation_state.activate_pending();
         let result = self
             .platform_window
             .present_framebuffer_only(self.render_plan());
