@@ -1666,7 +1666,7 @@ fn start_game_operation(
         file_name.as_ref(),
         install_folder.as_ref(),
         force_download,
-        selected_cdn_base.as_deref().map(|value| &**value),
+        selected_cdn_base.as_deref(),
         levilamina_version,
     ) {
         Ok(request) => request,
