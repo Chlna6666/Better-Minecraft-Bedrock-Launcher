@@ -5,6 +5,7 @@ use super::preview_3d::{
     preview_3d_chunk_mesh_is_visible, preview_3d_local_draw_parameters,
     preview_3d_world_draw_parameters,
 };
+use super::preview_detached::Preview3dDetachDrag;
 
 #[derive(Clone, Copy, Debug)]
 struct Preview3dWorldFrame {
@@ -18,7 +19,7 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let i18n = cx.global::<I18n>();
+        let _i18n = cx.global::<I18n>();
         let selection = self.preview_3d_selection_status();
         let status = self.preview_3d_status_label();
         let stats = self.preview_3d_stats_label();
@@ -26,6 +27,83 @@ impl MapViewerWindowView {
         let camera = self.preview_3d.camera;
         let model_rotation = self.preview_3d.model_rotation;
         let view = cx.entity();
+        let detach_view = view.downgrade();
+
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .pt(px(10.0))
+            .min_w(px(0.0))
+            .cursor_move()
+            .id("preview-3d-detach-header")
+            .on_drag(
+                Preview3dDetachDrag,
+                move |_drag: &Preview3dDetachDrag, position, window, cx| {
+                    let window_origin = window.bounds().origin;
+                    let detached_origin = point(
+                        window_origin.x + position.x - px(140.0),
+                        window_origin.y + position.y - px(28.0),
+                    );
+                    if let Some(view) = detach_view.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.open_detached_preview_3d(Some(detached_origin), cx)
+                        });
+                    }
+                    cx.new(|_| Preview3dDetachDrag)
+                },
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .gap(px(3.0))
+                    .child(panel_title(colors, t!("MapViewer.preview_3d")))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .line_clamp(2)
+                            .text_color(colors.text_muted)
+                            .child(selection),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.separate_window")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.open_detached_preview_3d(None, cx)
+                            }),
+                        ),
+                    )
+                    .child(toolbar_button(colors, t!("common.refresh")).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.refresh_preview_3d_exact(cx)),
+                    ))
+                    .child(
+                        toolbar_button(colors, t!("MapViewer.reset_camera")).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.reset_preview_3d_camera(cx)
+                            }),
+                        ),
+                    )
+                    .child(dock_close_button(colors).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| this.close_right_panel(cx)),
+                    )),
+            );
+
         div()
             .size_full()
             .min_w(px(0.0))
@@ -48,91 +126,29 @@ impl MapViewerWindowView {
                     })
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
+                    .gap(px(8.0))
                     .overflow_hidden()
                     .text_size(px(12.0))
                     .text_color(colors.text_secondary)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(8.0))
-                            .px(px(10.0))
-                            .pt(px(10.0))
-                            .min_w(px(0.0))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .gap(px(3.0))
-                                    .child(panel_title(colors, t!("MapViewer.preview_3d")))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.0))
-                                            .line_clamp(2)
-                                            .text_color(colors.text_muted)
-                                            .child(selection),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .items_center()
-                                    .flex_wrap()
-                                    .gap(px(6.0))
-                                    .child(
-                                        toolbar_button(colors, t!("common.refresh")).on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _event, _window, cx| {
-                                                this.refresh_preview_3d_exact(cx)
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        toolbar_button(colors, t!("MapViewer.reset_camera"))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _event, _window, cx| {
-                                                    this.reset_preview_3d_camera(cx)
-                                                }),
-                                            ),
-                                    )
-                                    .child(dock_close_button(colors).on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _event, _window, cx| {
-                                            this.close_right_panel(cx)
-                                        }),
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_start()
-                            .gap(px(8.0))
-                            .px(px(10.0))
-                            .min_w(px(0.0))
-                            .child(status_badge(colors, status))
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .line_clamp(3)
-                                    .text_color(colors.text_muted)
-                                    .child(stats),
-                            ),
-                    )
+                    .child(header)
+                    // Keep progress/error text visible without restoring the old blocking
+                    // loading placeholder. The canvas remains live and streams partial meshes.
                     .child(
                         div()
                             .px(px(10.0))
                             .min_w(px(0.0))
-                            .text_color(colors.text_muted)
-                            .child(t!("MapViewer.preview_controls")),
+                            .child(status_badge(colors, status)),
                     )
+                    .when(mesh.is_some(), |this| {
+                        this.child(
+                            div()
+                                .px(px(10.0))
+                                .min_w(px(0.0))
+                                .line_clamp(2)
+                                .text_color(colors.text_muted)
+                                .child(stats),
+                        )
+                    })
                     .child(self.render_preview_3d_canvas(
                         colors,
                         mesh,
@@ -283,57 +299,46 @@ impl MapViewerWindowView {
                     cx.stop_propagation();
                 },
             ));
+
         if let Some(mesh) = mesh {
             let view_for_paint = view.clone();
             let selection_bounds = self.preview_3d.signature.map(|signature| signature.bounds);
             let world_frame = preview_3d_world_frame(mesh.as_ref(), selection_bounds);
             panel = panel.child(
-                div()
-                    .relative()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(
-                        canvas(
-                            move |bounds, _window, _cx| bounds,
-                            move |bounds, _prepaint, window, _cx| {
-                                let _ = &view_for_paint;
-                                let width = f32::from(bounds.size.width);
-                                let height = f32::from(bounds.size.height);
-                                let aspect = if height <= 0.0 { 1.0 } else { width / height };
-                                let world_parameters = preview_3d_world_draw_parameters(
-                                    aspect,
-                                    world_frame.center,
-                                    world_frame.fit_scale,
-                                    camera,
-                                    model_rotation,
+                div().relative().size_full().overflow_hidden().child(
+                    canvas(
+                        move |bounds, _window, _cx| bounds,
+                        move |bounds, _prepaint, window, _cx| {
+                            let _ = &view_for_paint;
+                            let width = f32::from(bounds.size.width);
+                            let height = f32::from(bounds.size.height);
+                            let aspect = if height <= 0.0 { 1.0 } else { width / height };
+                            let world_parameters = preview_3d_world_draw_parameters(
+                                aspect,
+                                world_frame.center,
+                                world_frame.fit_scale,
+                                camera,
+                                model_rotation,
+                            );
+                            for chunk_mesh in &mesh.chunk_meshes {
+                                let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
+                                let parameters = preview_3d_local_draw_parameters(
+                                    &world_parameters,
+                                    chunk_mesh.world_origin,
                                 );
-                                for chunk_mesh in &mesh.chunk_meshes {
-                                    let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
-                                    let parameters = preview_3d_local_draw_parameters(
-                                        &world_parameters,
-                                        chunk_mesh.world_origin,
-                                    );
-                                    if !preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
-                                        continue;
-                                    }
-                                    window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
+                                if !preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
+                                    continue;
                                 }
-                            },
-                        )
-                        .absolute()
-                        .inset_0(),
+                                window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
+                            }
+                        },
                     )
-                    .child(preview_3d_axis_overlay(colors, camera, model_rotation)),
+                    .absolute()
+                    .inset_0(),
+                ),
             );
-        } else {
-            panel = panel
-                .relative()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(self.preview_3d_empty_label())
-                .child(preview_3d_axis_overlay(colors, camera, model_rotation));
         }
+
         panel
     }
 }
@@ -367,10 +372,10 @@ fn preview_3d_world_frame(
         },
     );
 
-    let (center_y, vertical_span) = selection_bounds.map_or_else(
-        || preview_3d_mesh_vertical_frame(mesh),
-        |bounds| preview_3d_dimension_vertical_frame(bounds.dimension, mesh),
-    );
+    let min_y = f64::from(mesh.min_y);
+    let max_y = f64::from(mesh.max_y) + 1.0;
+    let center_y = ((min_y + max_y) * 0.5) as f32;
+    let vertical_span = (max_y - min_y).max(1.0) as f32;
     let fitted_span = horizontal_span.max(vertical_span * 1.25).max(1.0);
 
     Preview3dWorldFrame {
@@ -379,157 +384,9 @@ fn preview_3d_world_frame(
     }
 }
 
-fn preview_3d_mesh_vertical_frame(mesh: &Preview3dMesh) -> (f32, f32) {
-    let min_y = f64::from(mesh.min_y);
-    let max_y = f64::from(mesh.max_y) + 1.0;
-    (
-        ((min_y + max_y) * 0.5) as f32,
-        (max_y - min_y).max(1.0) as f32,
-    )
-}
-
-fn preview_3d_dimension_vertical_frame(
-    dimension: bedrock_world::Dimension,
-    mesh: &Preview3dMesh,
-) -> (f32, f32) {
-    let probe = bedrock_world::ChunkPos {
-        x: 0,
-        z: 0,
-        dimension,
-    };
-    let (min_y, max_y) = probe.y_range(bedrock_world::ChunkVersion::New);
-    if min_y > max_y {
-        return preview_3d_mesh_vertical_frame(mesh);
-    }
-    let min_y = f64::from(min_y);
-    let max_y = f64::from(max_y) + 1.0;
-    (
-        ((min_y + max_y) * 0.5) as f32,
-        (max_y - min_y).max(1.0) as f32,
-    )
-}
-
 fn is_preview_3d_navigation_key(key: &str) -> bool {
     matches!(
         key,
         "w" | "a" | "s" | "d" | "up" | "left" | "down" | "right" | "space" | "shift"
     )
-}
-
-fn preview_3d_axis_overlay(
-    colors: &ThemeColors,
-    camera: Preview3dCamera,
-    model_rotation: Preview3dModelRotation,
-) -> Div {
-    div()
-        .absolute()
-        .top(px(8.0))
-        .right(px(8.0))
-        .w(px(72.0))
-        .h(px(72.0))
-        .rounded(px(crate::ui::theme::tokens::radius::SM))
-        .border_1()
-        .border_color(Hsla {
-            a: 0.16,
-            ..colors.border
-        })
-        .bg(Hsla {
-            a: 0.72,
-            ..colors.surface
-        })
-        .child(
-            canvas(
-                move |bounds, _window, _cx| bounds,
-                move |bounds, _prepaint, window, _cx| {
-                    draw_preview_3d_axis_gizmo(bounds, camera, model_rotation, window);
-                },
-            )
-            .absolute()
-            .inset_0(),
-        )
-}
-
-fn draw_preview_3d_axis_gizmo(
-    bounds: Bounds<Pixels>,
-    camera: Preview3dCamera,
-    model_rotation: Preview3dModelRotation,
-    window: &mut Window,
-) {
-    let center = point(
-        bounds.left() + bounds.size.width * 0.45,
-        bounds.top() + bounds.size.height * 0.58,
-    );
-    let axis_length = 30.0;
-    let axes = [
-        ([axis_length, 0.0, 0.0], rgb(0xff2020)),
-        ([0.0, axis_length, 0.0], rgb(0x20ff5a)),
-        ([0.0, 0.0, axis_length], rgb(0x1ea7ff)),
-    ];
-    for (axis, color) in axes {
-        let (end_x, end_y) = preview_3d_axis_gizmo_endpoint(axis, camera, model_rotation);
-        let mut builder = PathBuilder::stroke(px(1.6));
-        builder.move_to(center);
-        builder.line_to(point(center.x + px(end_x), center.y + px(end_y)));
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, color);
-        }
-    }
-}
-
-fn preview_3d_axis_gizmo_endpoint(
-    axis: [f32; 3],
-    camera: Preview3dCamera,
-    model_rotation: Preview3dModelRotation,
-) -> (f32, f32) {
-    let mut axis = preview_3d_rotate_axis(axis, model_rotation);
-    if model_rotation.mirror_x {
-        axis[0] = -axis[0];
-    }
-    if model_rotation.mirror_z {
-        axis[2] = -axis[2];
-    }
-    let right = camera.right();
-    let up = preview_3d_axis_gizmo_up(camera);
-    (
-        preview_3d_axis_vec3_dot(axis, right),
-        -preview_3d_axis_vec3_dot(axis, up),
-    )
-}
-
-fn preview_3d_rotate_axis(axis: [f32; 3], model_rotation: Preview3dModelRotation) -> [f32; 3] {
-    let (yaw_sin, yaw_cos) = model_rotation.yaw.sin_cos();
-    let (pitch_sin, pitch_cos) = model_rotation.pitch.sin_cos();
-    let pitched = [
-        axis[0],
-        axis[1] * pitch_cos - axis[2] * pitch_sin,
-        axis[1] * pitch_sin + axis[2] * pitch_cos,
-    ];
-    [
-        pitched[0] * yaw_cos + pitched[2] * yaw_sin,
-        pitched[1],
-        -pitched[0] * yaw_sin + pitched[2] * yaw_cos,
-    ]
-}
-
-fn preview_3d_axis_gizmo_up(camera: Preview3dCamera) -> [f32; 3] {
-    let forward = camera.forward();
-    let right = camera.right();
-    preview_3d_axis_vec3_normalize(preview_3d_axis_vec3_cross(right, forward))
-}
-
-fn preview_3d_axis_vec3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn preview_3d_axis_vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn preview_3d_axis_vec3_normalize(value: [f32; 3]) -> [f32; 3] {
-    let length = preview_3d_axis_vec3_dot(value, value).sqrt().max(0.0001);
-    [value[0] / length, value[1] / length, value[2] / length]
 }

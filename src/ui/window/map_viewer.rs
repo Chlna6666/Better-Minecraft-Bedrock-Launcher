@@ -4,7 +4,7 @@ mod canvas;
 mod editor;
 #[cfg(debug_assertions)]
 mod entity_debug_paint;
-mod exact_selection_ops_v2;
+mod exact_selection_ops;
 mod helpers;
 mod history_panel;
 mod import_preview;
@@ -120,7 +120,7 @@ mod preview_3d_source {
 }
 mod preview_detached;
 mod preview_panel;
-mod preview_panel_render_v2;
+mod preview_panel_render;
 mod professional_panel;
 mod query_cache;
 mod region_package;

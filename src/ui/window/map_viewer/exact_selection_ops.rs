@@ -2,7 +2,7 @@ use super::model::*;
 use super::prelude::*;
 use super::preview_3d::{
     Preview3dMesh, load_preview_3d_mesh_blocking_incremental,
-    load_preview_3d_mesh_blocking_incremental_with_block_models,
+    load_preview_3d_mesh_blocking_incremental_with_block_models, namespace_preview_3d_mesh,
 };
 use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 use crate::ui::state::launcher::LauncherState;
@@ -10,7 +10,6 @@ use crate::ui::state::local_versions::LocalVersionsState;
 use ::bedrock_world::{ExactChunkSelection, exact_selection_stats};
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ExactChunkRenderPlan;
-use std::collections::BTreeSet;
 
 impl MapViewerWindowView {
     /// Runs professional statistics against the exact selected chunk set instead
@@ -83,8 +82,10 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    /// Loads the 3D preview from the exact selected chunks. The selection is
-    /// decomposed by the public render plan; holes are never queried.
+    /// Streams an exact chunk selection directly into the visible 3D scene.
+    /// Rectangle decomposition remains an I/O optimization only: incremental meshes
+    /// produced inside the current rectangle are merged with already committed parts
+    /// and published immediately.
     pub(super) fn refresh_preview_3d_exact(&mut self, cx: &mut Context<Self>) {
         self.preview_3d.source = Preview3dSource::Selection;
         let Some(selection) = self.professional.selection else {
@@ -112,18 +113,19 @@ impl MapViewerWindowView {
         let preview_cancel = CancelFlag::new();
         let preview_cancel_for_load = preview_cancel.clone();
         let preview_cancel_for_owner = preview_cancel.clone();
-        self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new(
-            "准备精确选区",
-            format!("{chunk_count} chunks"),
-        ));
-        self.preview_3d.signature = Some(signature);
-        self.preview_3d.mesh = None;
-        #[cfg(target_os = "windows")]
-        self.preview_3d.clear_surface();
-        self.preview_3d.reset_view_and_model();
+        let had_committed_mesh = self.preview_3d.mesh.is_some();
+
+        // Never install a blocking placeholder scene. On first load the canvas stays
+        // empty only until the first one/few chunks are meshed; on refresh the last
+        // committed scene remains visible until the first new partial scene arrives.
+        self.preview_3d.status = Preview3dStatus::Loading(Preview3dBuildStatus::new("", ""));
+        if !had_committed_mesh {
+            self.preview_3d.signature = Some(signature);
+            self.preview_3d.reset_view_and_model();
+        }
         self.preview_3d.render_in_flight = true;
         self.preview_3d.cancel = Some(preview_cancel);
-        self.status = SharedString::from(format!("正在加载精确 3D 预览 · {chunk_count} chunks..."));
+        self.status = SharedString::from(format!("3D 预览流式加载 · {chunk_count} chunks"));
         cx.notify();
 
         let world_path = self.world_path.clone();
@@ -171,14 +173,14 @@ impl MapViewerWindowView {
                     }
                     match event {
                         Preview3dLoadEvent::Chunk { mesh, status } => {
+                            this.preview_3d.signature = Some(signature);
                             this.preview_3d.mesh = Some(mesh);
                             this.preview_3d.status = Preview3dStatus::Loading(status.clone());
-                            this.status = SharedString::from(format!(
-                                "正在拼接精确 3D 预览: {} {}",
-                                status.phase, status.detail
-                            ));
+                            this.status =
+                                SharedString::from(format!("3D 预览流式拼接 · {}", status.detail));
                         }
                         Preview3dLoadEvent::Complete(result) => {
+                            this.preview_3d.signature = Some(signature);
                             this.finish_preview_3d_load(result);
                             this.preview_3d.cancel = None;
                         }
@@ -326,55 +328,95 @@ fn load_preview_3d_mesh_exact_impl(
     selection: ExactChunkSelection,
     block_models: Option<Arc<BlockModelRepository>>,
     cancel: Option<CancelFlag>,
-    mut update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
+    update: impl FnMut(Arc<Preview3dMesh>, Preview3dBuildStatus) + Send + 'static,
 ) -> Result<Preview3dMesh, String> {
     let plan = ExactChunkRenderPlan::new(selection);
-    let chunks = plan.positions().to_vec();
+    let chunks = Arc::new(plan.positions().to_vec());
     let rectangles = plan.rectangle_cover().to_vec();
     let total_chunks = plan.chunk_count();
     let total_rectangles = rectangles.len();
     let mut parts = Vec::with_capacity(total_rectangles);
     let mut completed_chunks = 0usize;
+    let update = Arc::new(Mutex::new(update));
 
     for (index, bounds) in rectangles.into_iter().enumerate() {
         if cancel.as_ref().is_some_and(CancelFlag::is_cancelled) {
             return Err("3D 预览已取消".to_string());
         }
+
+        let completed_before = completed_chunks;
+        let completed_parts = parts.clone();
+        let chunks_for_update = chunks.clone();
+        let update_for_part = update.clone();
+        let emit_partial = move |partial: Arc<Preview3dMesh>,
+                                 _inner_status: Preview3dBuildStatus| {
+            let mut visible_parts = completed_parts.clone();
+            visible_parts.push(partial.as_ref().clone());
+            let merged = merge_exact_preview_meshes(&visible_parts, chunks_for_update.as_slice());
+            let visible_chunks = completed_before
+                .saturating_add(partial.processed_chunk_count)
+                .min(total_chunks);
+            let status = Preview3dBuildStatus::new(
+                "精确选区",
+                format!(
+                    "{visible_chunks}/{total_chunks} chunks · 子区域 {}/{}",
+                    index + 1,
+                    total_rectangles
+                ),
+            );
+            match update_for_part.lock() {
+                Ok(mut callback) => (*callback)(Arc::new(merged), status),
+                Err(poisoned) => {
+                    let mut callback = poisoned.into_inner();
+                    (*callback)(Arc::new(merged), status);
+                }
+            }
+        };
+
         let part = if let Some(block_models) = block_models.clone() {
             load_preview_3d_mesh_blocking_incremental_with_block_models(
                 world_path,
                 bounds,
                 Some(block_models),
                 cancel.clone(),
-                |_mesh, _status| {},
+                emit_partial,
             )?
         } else {
             load_preview_3d_mesh_blocking_incremental(
                 world_path,
                 bounds,
                 cancel.clone(),
-                |_mesh, _status| {},
+                emit_partial,
             )?
         };
+
         completed_chunks = completed_chunks.saturating_add(bounds.chunk_count());
         parts.push(part);
-        let merged = merge_exact_preview_meshes(&parts, &chunks);
-        update(
-            Arc::new(merged),
-            Preview3dBuildStatus::new(
-                "精确选区",
-                format!(
-                    "{}/{} chunks · 子区域 {}/{}",
-                    completed_chunks.min(total_chunks),
-                    total_chunks,
-                    index + 1,
-                    total_rectangles
-                ),
+
+        // The lower-level loader intentionally does not publish its final mesh twice,
+        // so commit the completed rectangle explicitly. A one-chunk rectangle therefore
+        // becomes visible here immediately even though it had no intermediate callback.
+        let merged = merge_exact_preview_meshes(&parts, chunks.as_slice());
+        let status = Preview3dBuildStatus::new(
+            "精确选区",
+            format!(
+                "{}/{} chunks · 子区域 {}/{}",
+                completed_chunks.min(total_chunks),
+                total_chunks,
+                index + 1,
+                total_rectangles
             ),
         );
+        match update.lock() {
+            Ok(mut callback) => (*callback)(Arc::new(merged), status),
+            Err(poisoned) => {
+                let mut callback = poisoned.into_inner();
+                (*callback)(Arc::new(merged), status);
+            }
+        }
     }
 
-    Ok(merge_exact_preview_meshes(&parts, &chunks))
+    Ok(merge_exact_preview_meshes(&parts, chunks.as_slice()))
 }
 
 fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> Preview3dMesh {
@@ -395,11 +437,16 @@ fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> P
         .max()
         .unwrap_or(0);
 
+    let chunk_meshes = parts
+        .iter()
+        .enumerate()
+        .flat_map(|(part_index, mesh)| {
+            namespace_preview_3d_mesh(mesh, part_index as u64 + 1).chunk_meshes
+        })
+        .collect();
+
     Preview3dMesh {
-        chunk_meshes: parts
-            .iter()
-            .flat_map(|mesh| mesh.chunk_meshes.iter().cloned())
-            .collect(),
+        chunk_meshes,
         min_y,
         max_y,
         min_x: min_chunk_x.saturating_mul(16),
