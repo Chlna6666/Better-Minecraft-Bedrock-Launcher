@@ -261,9 +261,18 @@ impl App {
         }));
 
         platform.on_quit(Box::new({
-            let cx = app.clone();
+            let cx = Rc::downgrade(&app);
             move || {
-                cx.borrow_mut().shutdown();
+                let Some(cx) = cx.upgrade() else {
+                    return true;
+                };
+                match cx.try_borrow_mut() {
+                    Ok(mut cx) => {
+                        cx.shutdown();
+                        true
+                    }
+                    Err(_) => false,
+                }
             }
         }));
 

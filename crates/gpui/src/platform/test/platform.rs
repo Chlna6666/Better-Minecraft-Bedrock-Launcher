@@ -303,7 +303,7 @@ impl Platform for TestPlatform {
         unimplemented!()
     }
 
-    fn on_quit(&self, _callback: Box<dyn FnMut()>) {}
+    fn on_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
 
     fn on_reopen(&self, _callback: Box<dyn FnMut()>) {
         unimplemented!()

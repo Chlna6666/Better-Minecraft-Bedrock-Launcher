@@ -38,8 +38,9 @@ use windows::{
                 HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsWindowVisible,
                 IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE,
                 SendMessageW, SetForegroundWindow, SetTimer, ShowWindow, USER_TIMER_MINIMUM,
-                WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY,
-                WM_POWERBROADCAST, WM_SETICON, WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
+                PostQuitMessage, WM_ENDSESSION, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
+                WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_SETICON,
+                WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
             },
         },
     },
@@ -182,6 +183,25 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
     _subclass_id: usize,
     _reference_data: usize,
 ) -> windows::Win32::Foundation::LRESULT {
+    if message == WM_QUERYENDSESSION {
+        return windows::Win32::Foundation::LRESULT(1);
+    }
+
+    if message == WM_ENDSESSION {
+        if wparam.0 != 0 {
+            let shutdown_completed = native_window(hwnd)
+                .is_some_and(|window| (window.0.end_session_event)());
+            log::logger().flush();
+            if shutdown_completed {
+                std::process::exit(0);
+            }
+            // The AppCell is currently borrowed. Ask winit's native loop to unwind, then the
+            // regular exiting callback gets another chance to perform graceful shutdown.
+            unsafe { PostQuitMessage(0) };
+        }
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+
     if message == WM_POWERBROADCAST
         && let Some(window) = native_window(hwnd)
     {
@@ -983,6 +1003,7 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) handle: AnyWindowHandle,
     pub(crate) executor: ForegroundExecutor,
     power_event: Rc<dyn Fn(WPARAM)>,
+    end_session_event: Rc<dyn Fn() -> bool>,
     renderer: RefCell<WindowsRendererState>,
     renderer_atlas: NovaRendererAtlas,
     presentation_state: Cell<WindowsWindowPresentationState>,
@@ -1067,6 +1088,7 @@ impl WindowsWindow {
             background_executor,
             executor,
             power_event,
+            end_session_event,
             disable_direct_composition,
             renderer_backend,
             renderer_options,
@@ -1205,6 +1227,7 @@ impl WindowsWindow {
             handle,
             executor,
             power_event,
+            end_session_event,
             renderer: RefCell::new(WindowsRendererState::Initializing),
             renderer_atlas,
             presentation_state: Cell::new(presentation_state),

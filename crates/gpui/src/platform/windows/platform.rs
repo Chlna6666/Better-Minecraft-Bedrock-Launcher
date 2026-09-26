@@ -215,7 +215,7 @@ pub(crate) struct WindowsPlatformState {
 #[derive(Default)]
 struct PlatformCallbacks {
     open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
-    quit: Option<Box<dyn FnMut()>>,
+    quit: Option<Box<dyn FnMut() -> bool>>,
     reopen: Option<Box<dyn FnMut()>>,
     app_menu_action: Option<Box<dyn FnMut(&dyn Action)>>,
     will_open_app_menu: Option<Box<dyn FnMut()>>,
@@ -404,6 +404,7 @@ impl WindowsPlatform {
 
     fn generate_creation_info(&self) -> WindowCreationInfo {
         let platform = Rc::downgrade(&self.inner);
+        let end_session_platform = platform.clone();
         WindowCreationInfo {
             background_executor: self.background_executor.clone(),
             executor: self.foreground_executor.clone(),
@@ -411,6 +412,11 @@ impl WindowsPlatform {
                 if let Some(platform) = platform.upgrade() {
                     platform.handle_power_broadcast(wparam);
                 }
+            }),
+            end_session_event: Rc::new(move || {
+                end_session_platform
+                    .upgrade()
+                    .map_or(true, |platform| platform.handle_end_session())
             }),
             disable_direct_composition: self.disable_direct_composition,
             renderer_backend: self.renderer_backend,
@@ -801,7 +807,7 @@ impl Platform for WindowsPlatform {
             .detach();
     }
 
-    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+    fn on_quit(&self, callback: Box<dyn FnMut() -> bool>) {
         self.inner.state.borrow_mut().callbacks.quit = Some(callback);
     }
 
@@ -971,6 +977,20 @@ impl Platform for WindowsPlatform {
 }
 
 impl WindowsPlatformInner {
+    pub(crate) fn handle_end_session(&self) -> bool {
+        let callback = self.state.borrow_mut().callbacks.quit.take();
+        let Some(mut callback) = callback else {
+            return true;
+        };
+
+        let completed = callback();
+        let mut state = self.state.borrow_mut();
+        if state.callbacks.quit.is_none() {
+            state.callbacks.quit = Some(callback);
+        }
+        completed
+    }
+
     pub(crate) fn handle_power_broadcast(&self, wparam: WPARAM) {
         let suspended = match wparam.0 as u32 {
             PBT_APMSUSPEND => true,
@@ -1613,8 +1633,8 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.vsync_scheduler.shutdown();
-        if let Some(ref mut callback) = self.inner.state.borrow_mut().callbacks.quit {
-            callback();
+        if !self.inner.handle_end_session() {
+            log::warn!("GPUI shutdown callback remained borrowed while the Windows event loop exited");
         }
         *self.event_loop_proxy.lock().unwrap() = None;
         ACTIVE_CONTEXT.with(|storage| {
@@ -1641,6 +1661,7 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) power_event: Rc<dyn Fn(WPARAM)>,
+    pub(crate) end_session_event: Rc<dyn Fn() -> bool>,
     pub(crate) disable_direct_composition: bool,
     pub(crate) renderer_backend: RendererBackend,
     pub(crate) renderer_options: RendererOptions,
