@@ -387,7 +387,7 @@ fn run_element_paint(
     bounds: Bounds<Pixels>,
     window: &mut Window,
     cx: &mut App,
-    callback: &mut dyn FnMut(&mut Window),
+    callback: &mut dyn FnMut(&mut Window, &mut App),
 ) -> RetainedPaintRun {
     if let Some(element_id) = element_id {
         window.element_id_stack.push(element_id);
@@ -404,7 +404,7 @@ fn run_element_paint(
     let paint_start = window.paint_index();
     window.record_debug_element_paint(bounds, cx);
     window.next_frame.dispatch_tree.set_active_node(node_id);
-    window.with_retained_element_segment(retained_segment, |window| callback(window));
+    window.with_retained_element_segment(retained_segment, |window| callback(window, cx));
     let paint_end = window.paint_index();
 
     RetainedPaintRun {
@@ -713,7 +713,7 @@ impl<E: Element> Drawable<E> {
                     bounds,
                     window,
                     cx,
-                    &mut |window| {
+                    &mut |window, cx| {
                         self.element.paint(
                             global_id.as_ref(),
                             inspector_id.as_ref(),
