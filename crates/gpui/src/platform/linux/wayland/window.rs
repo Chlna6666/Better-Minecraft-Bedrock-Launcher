@@ -41,7 +41,7 @@ use winit::raw_window_handle as rwh;
 
 use crate::WindowKind;
 use crate::{
-    AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, FrameRenderPlan, Globals,
+    AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, PresentationPacket, Globals,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
     PlatformFrameResult, PlatformInput, Point, PromptButton, PromptLevel, RendererOptions,
     PlatformFrameRequest, ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
@@ -1516,8 +1516,8 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let result = self.borrow_mut().renderer.draw(render_plan);
+    fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
+        let result = self.borrow_mut().renderer.draw(packet);
         match result {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
@@ -1528,11 +1528,11 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
         let result = self
             .borrow_mut()
             .renderer
-            .present_framebuffer_only(render_plan);
+            .present_framebuffer_only(packet);
         match result {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {

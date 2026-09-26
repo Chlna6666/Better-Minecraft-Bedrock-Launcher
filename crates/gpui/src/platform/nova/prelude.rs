@@ -8,7 +8,7 @@ pub(super) use anyhow::{Context as _, Result};
 pub(super) use collections::{FxHashMap, FxHashSet};
 
 pub(super) use crate::{
-    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, FrameRenderPlan,
+    AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, PresentationPacket,
     GlyphRasterization, GpuMesh3d, GpuMesh3dId, GpuMesh3dRange, GpuMesh3dShader, GpuMesh3dShaderId,
     GpuSpecs, GpuSubmissionMode, GpuiMemoryTrimLevel, MonochromeSprite, PartialPresentMode,
     PlatformAtlas, Point, PolychromeSprite, PreparedSceneBatch, PresentModePreference, Quad,

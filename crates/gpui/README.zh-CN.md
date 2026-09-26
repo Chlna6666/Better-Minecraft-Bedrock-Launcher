@@ -117,7 +117,7 @@ flowchart TD
     Entities --> ElementTree
     ElementTree --> Layout["Layout and prepaint"]
     Layout --> Scene["Scene primitives"]
-    Scene --> RenderPlan["FrameRenderPlan"]
+    Scene --> RenderPlan["PresentationPacket"]
     RenderPlan --> NovaRenderer
     NovaRenderer --> Present["Swapchain present"]
     Present --> PlatformEvents
@@ -144,12 +144,12 @@ sequenceDiagram
     App->>Window: request frame
     Window->>Render: render entities into elements
     Render->>Window: layout, prepaint, paint
-    Window->>Renderer: submit FrameRenderPlan
+    Window->>Renderer: submit PresentationPacket
     Renderer->>Window: draw, present, or presentation-only frame
 ```
 
 `PlatformFrameRequest::ui_commit()` 请求新的 UI scene commit，但不要求立即 presentation。
-`PlatformFrameRequest::presentation()` 只呈现最后一次已提交的 retained scene，不强制 UI generation。
+`PlatformFrameRequest::presentation()` 只呈现最后一次已提交的 retained scene，不强制 UI generation。`PresentationPacket` 不携带 Window 生命周期：dirty/blur/dynamic metadata 在提交时按值快照，只有不可变 `Scene` 通过 `Arc` 共享。
 
 ## 自定义 GPU 内容
 

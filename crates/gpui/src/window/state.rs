@@ -428,6 +428,12 @@ impl PresentationState {
         self.active.as_ref().map(|snapshot| snapshot.scene.as_ref())
     }
 
+    pub(crate) fn active_scene_snapshot(&self) -> Option<Arc<Scene>> {
+        self.active
+            .as_ref()
+            .map(|snapshot| Arc::clone(&snapshot.scene))
+    }
+
     pub(crate) fn active_engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
         self.active
             .as_ref()

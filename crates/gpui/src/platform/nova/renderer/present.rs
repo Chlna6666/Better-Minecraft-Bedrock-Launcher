@@ -583,7 +583,7 @@ impl NovaRenderer {
     pub(super) fn draw_present(
         &mut self,
         upload: FrameUploadSummary,
-        render_plan: FrameRenderPlan<'_>,
+        packet: &PresentationPacket,
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> Result<()> {
         self.prepare_for_frame_submission()?;
@@ -592,7 +592,7 @@ impl NovaRenderer {
             // a removal after that Scene was built but before this submission starts, so never
             // deallocate a tile that the Scene about to be encoded still samples.
             let mut live_scene_tiles = FxHashSet::default();
-            render_plan
+            packet
                 .scene
                 .collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self
@@ -633,12 +633,12 @@ impl NovaRenderer {
                 || backdrop_source_atlas_dirty
                 || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
-            && (render_plan.force_full_backdrop_blur_refresh
-                || render_plan.backdrop_blur_damage_plan.refresh_required()
+            && (packet.force_full_backdrop_blur_refresh
+                || packet.backdrop_blur_damage_plan.refresh_required()
                 || shared_blur_cache_invalid);
         let dirty_element_indices = dirty_element_blur_indices(
             &self.frame_upload,
-            render_plan.dirty_region,
+            &packet.dirty_region,
             shared_blur_cache_invalid,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
@@ -647,7 +647,7 @@ impl NovaRenderer {
         }
         let present_damage = (native_partial_presentation
             && upload.unsupported_batches.total() == 0)
-            .then(|| partial_scissor_for_plan(render_plan, self.current_size))
+            .then(|| partial_scissor_for_packet(packet, self.current_size))
             .flatten();
         let present_damage = present_damage.filter(|damage| {
             let drawable_pixels = self.drawable_pixels();
@@ -659,12 +659,12 @@ impl NovaRenderer {
         });
         if present_damage.is_some() {
             crate::diagnostics::performance_metrics::record_partial_redraw();
-        } else if render_plan.partial_present_mode == PartialPresentMode::Partial {
+        } else if packet.partial_present_mode == PartialPresentMode::Partial {
             crate::diagnostics::performance_metrics::record_full_redraw_fallback();
         }
 
-        self.prepare_draw_steps(render_plan.scene.revision);
-        self.prepare_path_mask_draw_steps(render_plan.scene.revision);
+        self.prepare_draw_steps(packet.scene.revision);
+        self.prepare_path_mask_draw_steps(packet.scene.revision);
         self.prepare_backdrop_blur_passes(has_backdrop_blurs);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
@@ -802,10 +802,10 @@ impl NovaRenderer {
                 async_capabilities.partial_presentation,
                 native_partial_presentation,
                 present_damage,
-                render_plan.partial_present_mode,
-                render_plan.dirty_region.is_full(),
-                render_plan.dirty_region.rect_count(),
-                render_plan.dirty_region.area(),
+                packet.partial_present_mode,
+                packet.dirty_region.is_full(),
+                packet.dirty_region.rect_count(),
+                packet.dirty_region.area(),
                 backdrop_blur_refresh_required,
                 element_blur_refresh_required,
                 dirty_element_indices.len(),
@@ -1257,10 +1257,10 @@ impl NovaRenderer {
                 blur_target_pixels,
                 blur_full_target_pixels,
                 present_damage,
-                render_plan.partial_present_mode,
-                render_plan.dirty_region.is_full(),
-                render_plan.dirty_region.rect_count(),
-                render_plan.dirty_region.area(),
+                packet.partial_present_mode,
+                packet.dirty_region.is_full(),
+                packet.dirty_region.rect_count(),
+                packet.dirty_region.area(),
             );
         }
         if self.diagnostics.should_warn_slow_frame(frame_elapsed_ms) {

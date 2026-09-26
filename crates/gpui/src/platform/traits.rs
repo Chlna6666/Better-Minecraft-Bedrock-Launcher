@@ -1,5 +1,5 @@
 use super::display::PlatformDisplay;
-use super::frame::{FrameRenderPlan, PlatformFrameResult, PlatformFrameRequest};
+use super::frame::{PlatformFrameResult, PlatformFrameRequest, PresentationPacket};
 use super::{
     ClipboardItem, CursorStyle, GlyphRasterization, Menu, MenuItem, OwnedMenu, PathPromptOptions,
     PlatformAtlas, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
@@ -236,8 +236,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>);
     fn on_close(&self, callback: Box<dyn FnOnce()>);
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult;
-    fn present_framebuffer_only(&self, _render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult;
+    fn present_framebuffer_only(&self, _packet: PresentationPacket) -> PlatformFrameResult {
         PlatformFrameResult::Submitted
     }
     fn completed_frame(&self) {}

@@ -382,14 +382,14 @@ fn draw_steps_can_merge(previous: &DrawStepDescriptor, next: &DrawStepDescriptor
         && previous.first_instance.checked_add(previous.instance_count) == Some(next.first_instance)
 }
 
-pub(super) fn partial_scissor_for_plan(
-    render_plan: FrameRenderPlan<'_>,
+pub(super) fn partial_scissor_for_packet(
+    packet: &PresentationPacket,
     target_size: DrawableSize,
 ) -> Option<ScissorRect> {
-    if render_plan.partial_present_mode != PartialPresentMode::Partial {
+    if packet.partial_present_mode != PartialPresentMode::Partial {
         return None;
     }
-    let bounds = render_plan.dirty_region.union_bounds()?;
+    let bounds = packet.dirty_region.union_bounds()?;
     let x = scaled_pixels_floor_u32(bounds.origin.x).min(target_size.width);
     let y = scaled_pixels_floor_u32(bounds.origin.y).min(target_size.height);
     let right = scaled_pixels_ceil_u32(bounds.right()).min(target_size.width);

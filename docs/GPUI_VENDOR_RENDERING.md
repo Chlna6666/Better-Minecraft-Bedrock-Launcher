@@ -110,7 +110,7 @@ This is intentionally analogous to Chromium's main/compositor split and Qt Quick
 
 A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
 
-Engine-owned animation samples live in `PresentationState`, not in the committed `Scene`. `FrameRenderPlan` therefore carries a retained scene and a separate dynamic animation-value slice. Presentation ticks update only the dynamic state; they do not mutate display-list ownership or scene revision.
+Engine-owned animation samples live in `PresentationState`, not in the committed `Scene`. `PresentationPacket` therefore carries a retained scene and a separate dynamic animation-value slice. Presentation ticks update only the dynamic state; they do not mutate display-list ownership or scene revision.
 
 UI scene storage is Arc-backed only at the commit boundary. A completed UI scene is published into a latest-wins pending presentation slot; the presentation phase promotes the newest pending snapshot before renderer-owned animation sampling or GPU submission. Scratch storage may reuse the previous Scene allocation only after presentation ownership releases it; while an older snapshot is shared, scratch reset detaches to a fresh empty Scene instead of cloning or mutating the committed display list.
 
@@ -129,8 +129,8 @@ flowchart TD
     "Frame work decision" -->|"present only"| "present_framebuffer_only"
     "Window::draw" --> "prepaint/layout"
     "prepaint/layout" --> "paint"
-    "paint" --> "Scene + FrameRenderPlan"
-    "Scene + FrameRenderPlan" --> "platform_window.draw"
+    "paint" --> "Scene + PresentationPacket"
+    "Scene + PresentationPacket" --> "platform_window.draw"
     "platform_window.draw" --> "NovaRenderer::draw"
     "NovaRenderer::draw" --> "FrameUpload::encode"
     "FrameUpload::encode" --> "GPU buffers and atlas upload"
@@ -294,15 +294,21 @@ Scene ownership lives under `crates/gpui/src/scene`:
 Scene data is generic. BMCBL-specific panels, pages, Minecraft concepts, or
 asset names must not appear in this layer.
 
-## FrameRenderPlan
+## PresentationPacket
 
-After a successful draw, GPUI builds a render plan from:
+After a successful draw, GPUI snapshots one lifetime-free presentation packet containing:
 
-- the retained scene;
-- dirty region;
-- partial or full present mode;
-- retained resource trim policy;
-- visual effect quality.
+- an `Arc<Scene>` to the immutable retained scene;
+- renderer-owned animation samples;
+- the accumulated dirty region;
+- backdrop-blur source damage;
+- partial or full present mode.
+
+The packet is moved across the Window/platform boundary. It does not borrow `Window`, `Frame`,
+or `PresentationState`. On Windows/Linux/FreeBSD the type is compile-time checked as
+`Send + Sync`, making a future renderer mailbox/thread an ownership change rather than another
+scene-format refactor. macOS is intentionally excluded from that cross-thread contract until
+CoreVideo surface attachments are separated from the generic Scene.
 
 Dirty region behavior:
 
@@ -315,8 +321,8 @@ Dirty region behavior:
 - animation dirty bounds can request partial redraw;
 - unsupported batches force a safe fallback to full redraw.
 
-`Window::present` calls `platform_window.draw(render_plan)`. Presentation-only
-frames call `platform_window.present_framebuffer_only(render_plan)`.
+`Window::present` calls `platform_window.draw(packet)`. Presentation-only frames call
+`platform_window.present_framebuffer_only(packet)`.
 
 ## Renderer Backend Options
 

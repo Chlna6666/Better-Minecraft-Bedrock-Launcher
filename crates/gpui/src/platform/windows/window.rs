@@ -766,15 +766,15 @@ impl WindowsRenderer {
         }
     }
 
-    pub fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+    pub fn draw(&mut self, packet: PresentationPacket) -> Result<()> {
         match self {
-            Self::Nova(renderer) => renderer.draw(render_plan),
+            Self::Nova(renderer) => renderer.draw(packet),
         }
     }
 
-    pub fn present_framebuffer_only(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+    pub fn present_framebuffer_only(&mut self, packet: PresentationPacket) -> Result<()> {
         match self {
-            Self::Nova(renderer) => renderer.present_framebuffer_only(render_plan),
+            Self::Nova(renderer) => renderer.present_framebuffer_only(packet),
         }
     }
 
@@ -1831,7 +1831,7 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow_mut().callbacks.appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
             return PlatformFrameResult::Deferred;
         }
@@ -1841,7 +1841,7 @@ impl PlatformWindow for WindowsWindow {
                 return PlatformFrameResult::Deferred;
             };
             match renderer.can_present_without_wait() {
-                Ok(true) => Some(renderer.draw(render_plan)),
+                Ok(true) => Some(renderer.draw(packet)),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
             }
@@ -1865,7 +1865,7 @@ impl PlatformWindow for WindowsWindow {
         }
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
             return PlatformFrameResult::Deferred;
         }
@@ -1875,7 +1875,7 @@ impl PlatformWindow for WindowsWindow {
                 return PlatformFrameResult::Deferred;
             };
             match renderer.can_present_without_wait() {
-                Ok(true) => Some(renderer.present_framebuffer_only(render_plan)),
+                Ok(true) => Some(renderer.present_framebuffer_only(packet)),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
             }

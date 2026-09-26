@@ -11,17 +11,12 @@ use super::*;
 /// page/list animation may require a full swapchain present while leaving all pixels *before* the
 /// background blur barrier unchanged. In that case the cached blur target remains valid and should
 /// be sampled directly instead of recapturing and filtering the whole window.
-pub(super) fn resolve_surface_render_plan(
-    render_plan: FrameRenderPlan<'_>,
+pub(super) fn resolve_surface_packet(
+    mut packet: PresentationPacket,
     surface_requires_full_redraw: bool,
-) -> FrameRenderPlan<'_> {
-    let has_backdrop_blurs = render_plan.scene.has_backdrop_blurs();
-    if surface_requires_full_redraw || has_backdrop_blurs {
-        FrameRenderPlan {
-            partial_present_mode: PartialPresentMode::FullRedraw,
-            ..render_plan
-        }
-    } else {
-        render_plan
+) -> PresentationPacket {
+    if surface_requires_full_redraw || packet.scene.has_backdrop_blurs() {
+        packet.partial_present_mode = PartialPresentMode::FullRedraw;
     }
+    packet
 }

@@ -213,28 +213,28 @@ impl NovaRenderer {
         self.backend.can_present_without_wait(self.swapchain)
     }
 
-    pub(crate) fn draw(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+    pub(crate) fn draw(&mut self, packet: PresentationPacket) -> Result<()> {
         let started_at = Instant::now();
-        let result = self.draw_frame(render_plan);
+        let result = self.draw_frame(packet);
         let elapsed = started_at.elapsed();
         crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
         crate::diagnostics::performance_metrics::record_first_frame_backend_draw_time(elapsed);
         result
     }
 
-    fn draw_frame(&mut self, render_plan: FrameRenderPlan<'_>) -> Result<()> {
+    fn draw_frame(&mut self, packet: PresentationPacket) -> Result<()> {
         if !self.apply_pending_drawable_size()? {
             return Ok(());
         }
-        self.observe_render_plan(render_plan);
+        self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && self.backend.supports_partial_presentation(self.swapchain);
-        let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
-        let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
+        let packet = resolve_surface_packet(packet, !supports_partial);
+        let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
         let upload = self.pack_scene(
-            render_plan.scene,
-            render_plan.presentation_animation_values,
+            packet.scene.as_ref(),
+            packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -242,7 +242,7 @@ impl NovaRenderer {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, render_plan, backdrop_blur_quality)?;
+        self.draw_present(upload, &packet, backdrop_blur_quality)?;
         Ok(())
     }
 
@@ -320,20 +320,20 @@ impl NovaRenderer {
 
     pub(crate) fn present_framebuffer_only(
         &mut self,
-        render_plan: FrameRenderPlan<'_>,
+        packet: PresentationPacket,
     ) -> Result<()> {
         if !self.apply_pending_drawable_size()? {
             return Ok(());
         }
-        self.observe_render_plan(render_plan);
+        self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && self.backend.supports_partial_presentation(self.swapchain);
-        let render_plan = resolve_surface_render_plan(render_plan, !supports_partial);
-        let backdrop_blur_quality = self.backdrop_blur_quality(render_plan);
+        let packet = resolve_surface_packet(packet, !supports_partial);
+        let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
         let upload = self.pack_scene(
-            render_plan.scene,
-            render_plan.presentation_animation_values,
+            packet.scene.as_ref(),
+            packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -341,28 +341,8 @@ impl NovaRenderer {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, render_plan, backdrop_blur_quality)?;
+        self.draw_present(upload, &packet, backdrop_blur_quality)?;
         Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn draw_scene_for_platform(&mut self, scene: &crate::Scene) -> Result<()> {
-        if !self.apply_pending_drawable_size()? {
-            return Ok(());
-        }
-        let backdrop_blur_quality = BackdropBlurQuality::Full;
-        let dirty_region = crate::DirtyRegion::default();
-        let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
-        let render_plan =
-            FrameRenderPlan::full_redraw(scene, &dirty_region, &backdrop_blur_damage_plan);
-        self.observe_render_plan(render_plan);
-        let upload = self.pack_scene(scene, backdrop_blur_quality);
-        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
-        if !self.frame_upload.backdrop_blurs.is_empty() {
-            self.ensure_backdrop_blur_targets()?;
-        }
-        self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, render_plan, backdrop_blur_quality)
     }
 
     pub(crate) fn gpu_specs(&self) -> GpuSpecs {
@@ -436,13 +416,13 @@ impl NovaRenderer {
         }
     }
 
-    fn observe_render_plan(&mut self, render_plan: FrameRenderPlan<'_>) {
-        self.draw_step_scratch.backdrop_blur_damage_region = render_plan.dirty_region.clone();
+    fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
+        self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
         self.draw_step_scratch.backdrop_blur_damage_plan =
-            render_plan.backdrop_blur_damage_plan.clone();
+            packet.backdrop_blur_damage_plan.clone();
         self.draw_step_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
             self.backdrop_blur_cache_valid,
-            render_plan.force_full_backdrop_blur_refresh,
+            packet.force_full_backdrop_blur_refresh,
         );
     }
 
@@ -460,7 +440,7 @@ impl NovaRenderer {
         }
     }
 
-    fn backdrop_blur_quality(&self, _render_plan: FrameRenderPlan<'_>) -> BackdropBlurQuality {
+    fn backdrop_blur_quality(&self, _packet: &PresentationPacket) -> BackdropBlurQuality {
         if self.swapchain_warmup_frames > 0 {
             BackdropBlurQuality::Interactive
         } else {

@@ -69,7 +69,7 @@ vsync
 
 Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
 
-Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `FrameRenderPlan` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably.
+Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `PresentationPacket` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably. The packet itself owns dynamic/dirty/blur metadata and shares only the immutable Scene through `Arc`, so presentation submission no longer borrows Window state.
 
 Committed scenes use active/pending ownership with latest-wins pending replacement. Pending promotion belongs to the presentation phase, before renderer-owned sampling/submission, not to UI scene generation. Sharing a committed Scene must never trigger copy-on-write of the whole display list: mutable UI scratch storage either stays uniquely owned and reuses capacity, or detaches to a fresh empty Scene while an older presentation snapshot is still alive.
 

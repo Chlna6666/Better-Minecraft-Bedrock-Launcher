@@ -1,4 +1,6 @@
 use crate::{BackdropBlurDamagePlan, Bounds, ScaledPixels, Scene, SceneAnimationValue};
+use smallvec::SmallVec;
+use std::sync::Arc;
 
 const MAX_DIRTY_RECTS: usize = 128;
 
@@ -99,7 +101,7 @@ impl DirtyRect {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DirtyRegion {
-    rects: Vec<DirtyRect>,
+    rects: SmallVec<[DirtyRect; 8]>,
     full: bool,
 }
 
@@ -111,7 +113,7 @@ impl DirtyRegion {
     #[allow(dead_code)]
     pub(crate) fn full(bounds: Bounds<ScaledPixels>) -> Self {
         let mut region = Self {
-            rects: Vec::new(),
+            rects: SmallVec::new(),
             full: true,
         };
         region.push(bounds);
@@ -251,30 +253,46 @@ pub(crate) enum RetainedResourceTrimPolicy {
     Strong,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct FrameRenderPlan<'a> {
-    pub(crate) scene: &'a Scene,
-    pub(crate) presentation_animation_values: &'a [SceneAnimationValue],
-    pub(crate) dirty_region: &'a DirtyRegion,
-    pub(crate) backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
+/// Lifetime-free payload submitted from the UI commit domain to presentation.
+///
+/// The retained Scene is shared through Arc; all frame-varying metadata is snapshotted by value.
+/// The platform/renderer boundary therefore owns everything it needs to enqueue this packet
+/// without borrowing Window state.
+pub(crate) struct PresentationPacket {
+    pub(crate) scene: Arc<Scene>,
+    pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
+    pub(crate) dirty_region: DirtyRegion,
+    pub(crate) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) force_full_backdrop_blur_refresh: bool,
 }
 
-impl<'a> FrameRenderPlan<'a> {
-    #[cfg(target_os = "macos")]
-    pub(crate) fn full_redraw(
-        scene: &'a Scene,
-        dirty_region: &'a DirtyRegion,
-        backdrop_blur_damage_plan: &'a BackdropBlurDamagePlan,
+impl PresentationPacket {
+    pub(crate) fn new(
+        scene: Arc<Scene>,
+        presentation_animation_values: impl IntoIterator<Item = SceneAnimationValue>,
+        dirty_region: DirtyRegion,
+        backdrop_blur_damage_plan: BackdropBlurDamagePlan,
+        partial_present_mode: PartialPresentMode,
     ) -> Self {
         Self {
             scene,
-            presentation_animation_values: &[],
+            presentation_animation_values: presentation_animation_values.into_iter().collect(),
             dirty_region,
             backdrop_blur_damage_plan,
-            partial_present_mode: PartialPresentMode::FullRedraw,
-            force_full_backdrop_blur_refresh: true,
+            partial_present_mode,
+            force_full_backdrop_blur_refresh: false,
         }
     }
+}
+
+// On Windows/Linux/FreeBSD the entire presentation payload must be movable to a renderer thread.
+// macOS Scene still contains CoreVideo surface attachments, so that backend is intentionally not
+// included in this contract until those platform-local attachments are split from Scene.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+fn assert_presentation_packet_is_send_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Scene>();
+    assert_send_sync::<PresentationPacket>();
 }

@@ -439,7 +439,7 @@ impl PlatformWindow for TestWindow {
         self.0.lock().appearance_change_callback = Some(callback);
     }
 
-    fn draw(&self, _render_plan: crate::FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn draw(&self, _packet: crate::PresentationPacket) -> PlatformFrameResult {
         let lock = self.0.lock();
         lock.draw_count.set(lock.draw_count.get().saturating_add(1));
         let draw_delay = lock.draw_delay;
@@ -453,7 +453,7 @@ impl PlatformWindow for TestWindow {
 
     fn present_framebuffer_only(
         &self,
-        _render_plan: crate::FrameRenderPlan<'_>,
+        _packet: crate::PresentationPacket,
     ) -> PlatformFrameResult {
         let lock = self.0.lock();
         lock.present_framebuffer_only_count

@@ -8,7 +8,7 @@ use x11rb::connection::RequestConnection;
 
 use crate::platform::NovaRenderer;
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, FrameRenderPlan,
+    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, PresentationPacket,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
     PromptLevel, RendererOptions, PlatformFrameRequest, ResizeEdge, ScaledPixels, Scene, Size,
@@ -1587,8 +1587,8 @@ impl PlatformWindow for X11Window {
         self.0.callbacks.borrow_mut().appearance_changed = Some(callback);
     }
 
-    fn draw(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
-        let result = self.0.state.borrow_mut().renderer.draw(render_plan);
+    fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
+        let result = self.0.state.borrow_mut().renderer.draw(packet);
         match result {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
@@ -1599,13 +1599,13 @@ impl PlatformWindow for X11Window {
         }
     }
 
-    fn present_framebuffer_only(&self, render_plan: FrameRenderPlan<'_>) -> PlatformFrameResult {
+    fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
         let result = self
             .0
             .state
             .borrow_mut()
             .renderer
-            .present_framebuffer_only(render_plan);
+            .present_framebuffer_only(packet);
         match result {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {

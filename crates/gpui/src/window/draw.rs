@@ -545,20 +545,21 @@ impl Window {
         }
     }
 
-    fn render_plan(&self) -> FrameRenderPlan<'_> {
-        FrameRenderPlan {
-            scene: self
-                .presentation_state
-                .active_scene()
-                .unwrap_or(&self.rendered_frame.scene),
-            presentation_animation_values: self
-                .presentation_state
-                .active_engine_animation_values(),
-            dirty_region: &self.render_dirty_region,
-            backdrop_blur_damage_plan: &self.backdrop_blur_damage_plan,
-            partial_present_mode: self.render_present_mode,
-            force_full_backdrop_blur_refresh: false,
-        }
+    fn presentation_packet(&self) -> PresentationPacket {
+        let scene = self
+            .presentation_state
+            .active_scene_snapshot()
+            .unwrap_or_else(|| self.rendered_frame.scene.snapshot());
+        PresentationPacket::new(
+            scene,
+            self.presentation_state
+                .active_engine_animation_values()
+                .iter()
+                .copied(),
+            self.render_dirty_region.clone(),
+            self.backdrop_blur_damage_plan.clone(),
+            self.render_present_mode,
+        )
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
@@ -590,7 +591,7 @@ impl Window {
                 self.handle.window_id().as_u64(),
             );
         self.presentation_state.activate_pending();
-        let result = self.platform_window.draw(self.render_plan());
+        let result = self.platform_window.draw(self.presentation_packet());
         if result == PlatformFrameResult::Submitted {
             self.needs_present.set(false);
         }
@@ -607,7 +608,7 @@ impl Window {
         self.presentation_state.activate_pending();
         let result = self
             .platform_window
-            .present_framebuffer_only(self.render_plan());
+            .present_framebuffer_only(self.presentation_packet());
         if result == PlatformFrameResult::Submitted {
             self.needs_present.set(false);
         }

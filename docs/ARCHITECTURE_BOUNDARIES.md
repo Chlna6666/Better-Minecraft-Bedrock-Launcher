@@ -185,8 +185,9 @@ GPUI owns the generic renderer pipeline:
 Entity invalidation
   -> Window frame scheduling
   -> element prepaint/layout/paint
-  -> Scene and FrameRenderPlan
-  -> platform_window.draw(...)
+  -> immutable Scene commit
+  -> owned PresentationPacket
+  -> platform_window.draw(packet)
   -> NovaRenderer frame upload
   -> backend GPU passes
   -> swapchain present
