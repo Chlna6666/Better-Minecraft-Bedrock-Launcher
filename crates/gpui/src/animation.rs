@@ -1140,7 +1140,7 @@ mod tests {
             AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
             Some(spring),
             mid,
-            bounds(px(0.0), px(0.0), px(1.0), px(1.0)),
+            bounds(point(px(0.0), px(0.0)), size(px(1.0), px(1.0))),
             [-100.0, 0.0],
             [0.0; 4],
         ));
@@ -1193,7 +1193,7 @@ mod tests {
             AnimationSpec::new(Duration::ZERO).driver(AnimationDriver::Paint),
             Some(spring),
             mid,
-            bounds(px(0.0), px(0.0), px(1.0), px(1.0)),
+            bounds(point(px(0.0), px(0.0)), size(px(1.0), px(1.0))),
             [200.0, 0.0],
             [0.0; 4],
         ));
