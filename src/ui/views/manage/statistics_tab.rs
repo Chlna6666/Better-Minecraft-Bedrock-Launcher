@@ -1,7 +1,6 @@
 use super::*;
 use crate::ui::animation::{
-    ease_out_cubic, raw_progress, request_layout_animation_frame_if, settled_animation,
-    stat_chart_bar_motion,
+    ease_out_cubic, raw_progress, settled_animation, stat_chart_bar_motion,
 };
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
@@ -102,7 +101,6 @@ impl AnimatedStatMetricView {
 impl Render for AnimatedStatMetricView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (sample, animating) = self.sample(window.animation_time());
-        request_layout_animation_frame_if(window, animating);
 
         let i18n = cx.global::<I18n>();
         let text = match self.kind {
@@ -119,6 +117,7 @@ impl Render for AnimatedStatMetricView {
             .font_weight(FontWeight::BOLD)
             .text_color(self.colors.text_primary)
             .child(text)
+            .with_layout_animation_target(animating)
     }
 }
 
@@ -194,11 +193,6 @@ pub(super) fn render_statistics_tab(
         version.folder.as_ref()
     ));
 
-    let direction = crate::ui::animation::tab_transition_direction(
-        state.tab_anim_from.index(),
-        state.tab.index(),
-    );
-
     div()
         .size_full()
         .overflow_y_scrollbar()
@@ -211,145 +205,74 @@ pub(super) fn render_statistics_tab(
                 .grid()
                 .grid_cols(3)
                 .gap(px(10.))
-                .child(animate_stat_section(
-                    stat_card(
+                .child(stat_card(
+                    colors,
+                    t!("ManagePage.stats_total_play_time"),
+                    AnimatedStatValue::new(
+                        play_time_id,
+                        state.tab_anim_seq,
+                        info.total_play_time,
+                        StatMetricKind::Duration,
                         colors,
-                        t!("ManagePage.stats_total_play_time"),
-                        AnimatedStatValue::new(
-                            play_time_id,
-                            state.tab_anim_seq,
-                            info.total_play_time,
-                            StatMetricKind::Duration,
-                            colors,
-                            animate,
-                        ),
+                        animate,
                     ),
-                    "total-play-time",
-                    state.tab_anim_seq,
-                    0,
-                    direction,
-                    animate,
                 ))
-                .child(animate_stat_section(
-                    stat_card(
+                .child(stat_card(
+                    colors,
+                    t!("ManagePage.stats_launch_count"),
+                    AnimatedStatValue::new(
+                        launch_count_id,
+                        state.tab_anim_seq,
+                        info.total_sessions,
+                        StatMetricKind::Count,
                         colors,
-                        t!("ManagePage.stats_launch_count"),
-                        AnimatedStatValue::new(
-                            launch_count_id,
-                            state.tab_anim_seq,
-                            info.total_sessions,
-                            StatMetricKind::Count,
-                            colors,
-                            animate,
-                        ),
+                        animate,
                     ),
-                    "launch-count",
-                    state.tab_anim_seq,
-                    1,
-                    direction,
-                    animate,
                 ))
-                .child(animate_stat_section(
-                    stat_card(
+                .child(stat_card(
+                    colors,
+                    t!("ManagePage.stats_last_launch"),
+                    stat_text(
                         colors,
-                        t!("ManagePage.stats_last_launch"),
-                        stat_text(
-                            colors,
-                            info.last_play_time.map_or_else(
-                                || t!("ManagePage.stats_never_launched"),
-                                |time| {
-                                    SharedString::from(
-                                        time.format("%Y-%m-%d %H:%M").to_string(),
-                                    )
-                                },
-                            ),
+                        info.last_play_time.map_or_else(
+                            || t!("ManagePage.stats_never_launched"),
+                            |time| {
+                                SharedString::from(
+                                    time.format("%Y-%m-%d %H:%M").to_string(),
+                                )
+                            },
                         ),
                     ),
-                    "last-launch",
-                    state.tab_anim_seq,
-                    2,
-                    direction,
-                    animate,
                 )),
         )
-        .child(animate_stat_section(
-            chart_card(
-                colors,
-                t!("ManagePage.stats_daily_launches"),
-                t!("ManagePage.stats_last_14_days"),
-                "launches",
-                state.tab_anim_seq,
-                animate,
-                &days,
-                max_sessions,
-                |day| day.sessions,
-                |value| t!("ManagePage.stats_count", count = value),
-                colors.accent,
-            ),
-            "launch-chart",
+        .child(chart_card(
+            colors,
+            t!("ManagePage.stats_daily_launches"),
+            t!("ManagePage.stats_last_14_days"),
+            "launches",
             state.tab_anim_seq,
-            3,
-            direction,
             animate,
+            &days,
+            max_sessions,
+            |day| day.sessions,
+            |value| t!("ManagePage.stats_count", count = value),
+            colors.accent,
         ))
-        .child(animate_stat_section(
-            chart_card(
-                colors,
-                t!("ManagePage.stats_daily_play_time"),
-                t!("ManagePage.stats_last_14_days"),
-                "play-time",
-                state.tab_anim_seq,
-                animate,
-                &days,
-                max_play_time,
-                |day| day.play_time,
-                |value| format_duration(i18n, value),
-                colors.stat_green_text,
-            ),
-            "play-time-chart",
+        .child(chart_card(
+            colors,
+            t!("ManagePage.stats_daily_play_time"),
+            t!("ManagePage.stats_last_14_days"),
+            "play-time",
             state.tab_anim_seq,
-            4,
-            direction,
             animate,
+            &days,
+            max_play_time,
+            |day| day.play_time,
+            |value| format_duration(i18n, value),
+            colors.stat_green_text,
         ))
         .into_any_element()
 }
-fn animate_stat_section(
-    section: Div,
-    scope: &'static str,
-    sequence: u64,
-    index: usize,
-    direction: f32,
-    animate: bool,
-) -> AnyElement {
-    let delay = Duration::from_millis(index.min(4) as u64 * 38);
-    section
-        .with_animation(
-            SharedString::from(format!("manage-stat-section-{scope}-{sequence}")),
-            if animate {
-                Animation::from_spec(
-                    AnimationSpec::new(Duration::from_millis(360))
-                        .delay(delay)
-                        .fill_mode(FillMode::Both)
-                        .ease(Easing::OutCubic),
-                )
-            } else {
-                settled_animation()
-            },
-            move |section, progress| {
-                let progress = if animate {
-                    progress.clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                section
-                    .relative()
-                    .left(px(6.0 * direction * (1.0 - progress)))
-            },
-        )
-        .into_any_element()
-}
-
 
 #[derive(Clone, Copy)]
 struct DailyPoint {
@@ -464,8 +387,9 @@ fn chart_card(
                     } else {
                         10.0 + 130.0 * current as f32 / maximum as f32
                     };
-                    let bar_inner = div()
+                    let bar = div()
                         .w_full()
+                        .max_w(px(30.))
                         .h(px(height))
                         .rounded_t(px(5.))
                         .bg(Hsla { a: 0.72, ..color })
@@ -476,25 +400,16 @@ fn chart_card(
                             if animate {
                                 stat_chart_bar_motion(index)
                             } else {
-                                settled_animation()
+                                settled_animation().with_property(
+                                    AnimationProperty::vertical_reveal(
+                                        VerticalRevealEdge::Bottom,
+                                        1.0,
+                                        1.0,
+                                    ),
+                                )
                             },
-                            move |bar, progress| {
-                                let progress = if animate {
-                                    progress.clamp(0.0, 1.0)
-                                } else {
-                                    1.0
-                                };
-                                bar.relative().top(px(height * (1.0 - progress)))
-                            },
-                        );
-                    let bar = div()
-                        .w_full()
-                        .max_w(px(30.))
-                        .h(px(height))
-                        .overflow_hidden()
-                        .flex()
-                        .items_end()
-                        .child(bar_inner)
+                            |bar, _progress| bar,
+                        )
                         .into_any_element();
 
                     div()
