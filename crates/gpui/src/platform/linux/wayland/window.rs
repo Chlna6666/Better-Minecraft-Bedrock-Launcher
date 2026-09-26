@@ -44,7 +44,7 @@ use crate::{
     AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, FrameRenderPlan, Globals,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
     PlatformFrameResult, PlatformInput, Point, PromptButton, PromptLevel, RendererOptions,
-    RequestFrameOptions, ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
+    PlatformFrameRequest, ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
     WindowParams, point, px, size,
 };
@@ -59,7 +59,7 @@ use util::ResultExt;
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
-    request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
     input: Option<Box<dyn FnMut(crate::PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
     visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -142,7 +142,7 @@ pub struct WaylandWindowState {
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
     client_inset: Option<Pixels>,
-    pending_frame_request: RequestFrameOptions,
+    pending_frame_request: PlatformFrameRequest,
     frame_callback_pending: bool,
     /// True while GPUI is synchronously servicing the compositor callback.
     ///
@@ -277,7 +277,7 @@ impl WaylandWindowState {
             in_progress_window_controls: None,
             window_controls: WindowControls::default(),
             client_inset: None,
-            pending_frame_request: RequestFrameOptions::default(),
+            pending_frame_request: PlatformFrameRequest::default(),
             frame_callback_pending: false,
             frame_in_progress: false,
             client_frame,
@@ -690,7 +690,7 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn request_frame(&self, options: RequestFrameOptions) {
+    pub fn request_frame(&self, options: PlatformFrameRequest) {
         let mut state = self.state.borrow_mut();
         state.pending_frame_request = state.pending_frame_request.merge(options);
         if !state.frame_in_progress
@@ -703,9 +703,9 @@ impl WaylandWindowStatePtr {
         }
     }
 
-    pub fn clear_timed_out_frame_request(&self, _options: RequestFrameOptions) {
+    pub fn clear_timed_out_frame_request(&self, _options: PlatformFrameRequest) {
         let mut state = self.state.borrow_mut();
-        state.pending_frame_request = RequestFrameOptions::default();
+        state.pending_frame_request = PlatformFrameRequest::default();
     }
 
     pub fn frame(&self) {
@@ -826,7 +826,7 @@ impl WaylandWindowStatePtr {
             if request_frame_callback {
                 state.acknowledged_first_configure = true;
                 drop(state);
-                self.request_frame(RequestFrameOptions::from_refresh());
+                self.request_frame(PlatformFrameRequest::ui_commit());
             }
         }
     }
@@ -1429,7 +1429,7 @@ impl PlatformWindow for WaylandWindow {
         state.background_appearance = background_appearance;
         update_window(state);
         self.0
-            .request_frame(RequestFrameOptions::from_refresh());
+            .request_frame(PlatformFrameRequest::ui_commit());
     }
 
     fn minimize(&self) {
@@ -1458,22 +1458,22 @@ impl PlatformWindow for WaylandWindow {
         self.borrow().fullscreen
     }
 
-    fn request_frame(&self, options: RequestFrameOptions) {
+    fn request_frame(&self, options: PlatformFrameRequest) {
         self.0.request_frame(options);
     }
 
-    fn frame_request_timed_out(&self, options: RequestFrameOptions) {
+    fn frame_request_timed_out(&self, options: PlatformFrameRequest) {
         self.0.clear_timed_out_frame_request(options);
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
         self.0.callbacks.borrow_mut().request_frame = Some(callback);
         let should_request_frame = {
             let state = self.0.state.borrow();
             state.pending_frame_request.requires_frame() && !state.frame_callback_pending
         };
         if should_request_frame {
-            self.0.request_frame(RequestFrameOptions::default());
+            self.0.request_frame(PlatformFrameRequest::default());
         }
     }
 
@@ -1522,7 +1522,7 @@ impl PlatformWindow for WaylandWindow {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
                 log::error!("failed to draw Wayland frame: {error:#}");
-                self.0.request_frame(RequestFrameOptions::from_refresh());
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
@@ -1537,7 +1537,7 @@ impl PlatformWindow for WaylandWindow {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
                 log::error!("failed to present Wayland framebuffer: {error:#}");
-                self.0.request_frame(RequestFrameOptions::from_refresh());
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
@@ -1631,7 +1631,7 @@ impl PlatformWindow for WaylandWindow {
             state.client_inset = Some(inset);
             update_window(state);
             self.0
-                .request_frame(RequestFrameOptions::from_refresh());
+                .request_frame(PlatformFrameRequest::ui_commit());
         }
     }
 

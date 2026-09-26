@@ -1,7 +1,7 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DispatchEventResult, GpuSpecs,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameResult, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Size,
+    PlatformInputHandler, PlatformWindow, Point, PromptButton, PlatformFrameRequest, Size,
     TestPlatform, TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowParams,
 };
@@ -34,9 +34,9 @@ pub(crate) struct TestWindowState {
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
     appearance_change_callback: Option<Box<dyn FnMut()>>,
-    request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    request_frame_callback: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
     request_frame_count: Rc<Cell<usize>>,
-    last_requested_frame: Rc<Cell<Option<RequestFrameOptions>>>,
+    last_requested_frame: Rc<Cell<Option<PlatformFrameRequest>>>,
     start_window_move_count: Rc<Cell<usize>>,
     draw_count: Rc<Cell<usize>>,
     present_framebuffer_only_count: Rc<Cell<usize>>,
@@ -177,7 +177,7 @@ impl TestWindow {
     }
 
     #[cfg(test)]
-    pub(crate) fn last_requested_frame(&self) -> Option<RequestFrameOptions> {
+    pub(crate) fn last_requested_frame(&self) -> Option<PlatformFrameRequest> {
         self.0.lock().last_requested_frame.get()
     }
 
@@ -187,7 +187,7 @@ impl TestWindow {
     }
 
     #[cfg(test)]
-    pub(crate) fn simulate_request_frame(&self, options: RequestFrameOptions) {
+    pub(crate) fn simulate_request_frame(&self, options: PlatformFrameRequest) {
         let mut lock = self.0.lock();
         let Some(mut callback) = lock.request_frame_callback.take() else {
             return;
@@ -392,16 +392,16 @@ impl PlatformWindow for TestWindow {
         self.0.lock().is_fullscreen
     }
 
-    fn request_frame(&self, options: RequestFrameOptions) {
+    fn request_frame(&self, options: PlatformFrameRequest) {
         let mut lock = self.0.lock();
         lock.request_frame_count
             .set(lock.request_frame_count.get() + 1);
         lock.last_requested_frame.set(Some(options));
     }
 
-    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {}
+    fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
         self.0.lock().request_frame_callback = Some(callback);
     }
 

@@ -32,10 +32,7 @@ impl Window {
         };
         if should_request_frame {
             self.record_frame_request_reason(reason);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_platform_frame(PlatformFrameRequest::presentation());
         }
     }
 
@@ -101,10 +98,7 @@ impl Window {
             }));
 
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            });
+            self.request_platform_frame(PlatformFrameRequest::ui_commit_and_presentation());
         } else if !self.inactive_animation_frame_pending.replace(true) {
             RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(move |window, cx| {
                 window.inactive_animation_frame_pending.set(false);
@@ -112,10 +106,7 @@ impl Window {
                 cx.notify(entity);
             }));
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_platform_frame(PlatformFrameRequest::presentation());
         } else {
             self.animation_frame_pending_entities
                 .borrow_mut()
@@ -261,10 +252,7 @@ impl Window {
             && (self.active.get() || self.inactive_animation_engine_enabled)
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_platform_frame(PlatformFrameRequest::presentation());
         }
         if self.invalidator.is_dirty() && !self.refreshing {
             self.schedule_dirty_frame();
@@ -291,10 +279,7 @@ impl Window {
             && self.animation_engine_frame_driver.get().is_some()
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_platform_frame(PlatformFrameRequest::presentation());
         }
     }
 
@@ -341,10 +326,7 @@ impl Window {
             return;
         }
         self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-        self.request_platform_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: false,
-        });
+        self.request_platform_frame(PlatformFrameRequest::presentation());
     }
 
     pub(crate) fn request_animation_engine_frame_at(

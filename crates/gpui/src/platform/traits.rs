@@ -1,5 +1,5 @@
 use super::display::PlatformDisplay;
-use super::frame::{FrameRenderPlan, PlatformFrameResult, RequestFrameOptions};
+use super::frame::{FrameRenderPlan, PlatformFrameResult, PlatformFrameRequest};
 use super::{
     ClipboardItem, CursorStyle, GlyphRasterization, Menu, MenuItem, OwnedMenu, PathPromptOptions,
     PlatformAtlas, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
@@ -222,9 +222,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn zoom(&self);
     fn toggle_fullscreen(&self);
     fn is_fullscreen(&self) -> bool;
-    fn request_frame(&self, _options: RequestFrameOptions) {}
-    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {}
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>);
+    fn request_frame(&self, _options: PlatformFrameRequest) {}
+    fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>);
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
     /// Registers a callback for presentation visibility transitions.

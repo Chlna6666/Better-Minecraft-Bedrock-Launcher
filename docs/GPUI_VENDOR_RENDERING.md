@@ -115,8 +115,8 @@ A UI commit produced after an early presentation sets needs_present and requests
 ```mermaid
 flowchart TD
     "Entity or window state changes" --> "cx.notify / window.refresh / animation request"
-    "cx.notify / window.refresh / animation request" --> "Window schedules RequestFrameOptions"
-    "Window schedules RequestFrameOptions" --> "Platform delivers frame callback"
+    "cx.notify / window.refresh / animation request" --> "Window schedules PlatformFrameRequest"
+    "Window schedules PlatformFrameRequest" --> "Platform delivers frame callback"
     "Platform delivers frame callback" --> "Window::run_platform_frame"
     "Window::run_platform_frame" --> "Frame work decision"
     "Frame work decision" -->|"draw frame"| "Window::draw"
@@ -160,23 +160,21 @@ Important rule: use the narrowest invalidation. Prefer notifying the affected
 entity over refreshing the whole window. Use presentation-only requests when
 the scene is already prepared and only GPU output needs to be shown.
 
-## RequestFrameOptions
+## PlatformFrameRequest
 
-Frame requests are expressed through `RequestFrameOptions`:
+Platform wakeups carry two independent typed work domains: `UiCommitRequest` and
+`PresentationRequest`. Callers do not manipulate boolean rendering-policy fields.
 
-| Field | Meaning |
+| Constructor | Meaning |
 | --- | --- |
-| `force_render` | A fresh scene is required. GPUI should rebuild layout, prepaint, paint, and submit a new frame. |
-| `require_presentation` | Prepared content or GPU output needs presentation, but the scene may not need to be rebuilt. |
+| `PlatformFrameRequest::ui_commit()` | Request fresh UI generation: layout, prepaint, paint, and a new retained scene commit. |
+| `PlatformFrameRequest::presentation()` | Request presentation of the last committed retained scene without forcing UI generation. |
+| `PlatformFrameRequest::ui_commit_and_presentation()` | Coalesce both domains into one platform wakeup while preserving their separate execution phases. |
+| `PlatformFrameRequest::default()` | No work; used only as an empty pending slot. |
 
-Typical request shapes:
-
-| Request | Use |
-| --- | --- |
-| `force_render = true`, `require_presentation = true` | Dirty UI, active animation, or visible state change that needs a new frame. |
-| `force_render = true`, `require_presentation = false` | Initial or deferred dirty work where presentation can wait until content exists. |
-| `force_render = false`, `require_presentation = true` | Presentation-only frame or next-frame callback. |
-| both false | No meaningful frame work. Avoid issuing this. |
+The combined constructor is a transport/coalescing representation, not a compatibility mode:
+presentation semantics are never inferred from UI commit semantics, and UI generation is never
+inferred from a presentation request.
 
 Frame requests are coalesced before platform wakeup. GPUI also arms a watchdog
 so a stalled platform frame callback can be recovered by running frame work
@@ -207,7 +205,7 @@ The frame decision uses these inputs:
 - pending presentation;
 - active or inactive window state;
 - minimized state;
-- `RequestFrameOptions`;
+- `PlatformFrameRequest`;
 - next-frame callbacks;
 - recent input;
 - throttle state;
@@ -609,7 +607,7 @@ Implementation entry points:
 Before merging GPUI or renderer changes:
 
 - The change does not reference BMCBL product modules from `crates/gpui`.
-- `RequestFrameOptions` semantics are preserved.
+- `PlatformFrameRequest` semantics are preserved.
 - Static idle windows remain event-driven.
 - Presentation-only frames do not rebuild layout unless required.
 - Partial present has a safe full-redraw fallback.

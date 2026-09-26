@@ -158,9 +158,8 @@ sequenceDiagram
     Renderer->>Window: draw, present, or presentation-only frame
 ```
 
-`RequestFrameOptions::force_render` marks layout and paint as dirty.
-`RequestFrameOptions::require_presentation` allows a presentation-only frame
-when prepared content or retained GPU output needs to become visible.
+`PlatformFrameRequest::ui_commit()` requests a fresh UI scene commit without requiring an immediate presentation.
+`PlatformFrameRequest::presentation()` requests presentation of the last committed retained scene without forcing UI generation.
 
 ## Custom GPU Content
 

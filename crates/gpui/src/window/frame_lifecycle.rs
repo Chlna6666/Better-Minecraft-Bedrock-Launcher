@@ -25,7 +25,19 @@ pub(super) struct FrameWatchdog {
     pub(super) pending: bool,
     pub(super) platform_generation: u64,
     pub(super) platform_pending: bool,
-    pub(super) platform_options: RequestFrameOptions,
+    pub(super) platform_request: PlatformFrameRequest,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PresentationPhaseOutcome {
+    submitted_early: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UiCommitPhaseOutcome {
+    activity: FrameActivity,
+    decision: FrameWorkDecision,
+    presented_frame: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,10 +106,7 @@ impl Window {
             self.active.get(),
             self.platform_window.is_minimized()
         );
-        self.request_platform_frame(RequestFrameOptions {
-            require_presentation: false,
-            force_render: true,
-        });
+        self.request_platform_frame(PlatformFrameRequest::ui_commit());
     }
 
     pub(super) fn mark_view_dirty(&mut self, view_id: EntityId) {
@@ -171,10 +180,7 @@ impl Window {
         self.refreshing = true;
         self.dirty_frame_scheduled = true;
         self.record_frame_request_reason(FrameRequestReason::ImageReady);
-        self.request_platform_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        });
+        self.request_platform_frame(PlatformFrameRequest::ui_commit_and_presentation());
     }
 
     fn schedule_dirty_frame_with_class(&mut self, class: DirtyFrameSchedulingClass) {
@@ -264,7 +270,7 @@ impl Window {
                 self.refreshing,
                 class
             );
-            self.request_platform_frame(RequestFrameOptions::from_refresh());
+            self.request_platform_frame(PlatformFrameRequest::ui_commit());
         }
     }
 
@@ -343,10 +349,7 @@ impl Window {
                     if window.invalidator.is_dirty() && !window.refreshing {
                         window.dirty_frame_scheduled = true;
                         window.record_frame_request_reason(FrameRequestReason::ProgressiveWork);
-                        window.request_platform_frame(RequestFrameOptions {
-                            require_presentation: true,
-                            force_render: true,
-                        });
+                        window.request_platform_frame(PlatformFrameRequest::ui_commit_and_presentation());
                     }
                 }));
             })
@@ -407,10 +410,7 @@ impl Window {
                 self.refreshing = true;
                 self.dirty_frame_scheduled = true;
                 self.record_frame_request_reason(FrameRequestReason::ProgressiveWork);
-                self.request_platform_frame(RequestFrameOptions {
-                    require_presentation: true,
-                    force_render: true,
-                });
+                self.request_platform_frame(PlatformFrameRequest::ui_commit_and_presentation());
                 return;
             }
             log::trace!(
@@ -442,7 +442,7 @@ impl Window {
         self.frame_watchdog.set(retry);
     }
 
-    pub(super) fn request_platform_frame(&self, options: RequestFrameOptions) {
+    pub(super) fn request_platform_frame(&self, options: PlatformFrameRequest) {
         #[cfg(feature = "profiler")]
         crate::diagnostics::foreground_profiler::record_frame_request(
             self.handle.window_id().as_u64(),
@@ -453,8 +453,8 @@ impl Window {
         self.arm_platform_frame_watchdog(options);
     }
 
-    fn arm_platform_frame_watchdog(&self, options: RequestFrameOptions) {
-        if !options.force_render && !options.require_presentation {
+    fn arm_platform_frame_watchdog(&self, options: PlatformFrameRequest) {
+        if !options.needs_ui_commit() && !options.needs_presentation() {
             return;
         }
 
@@ -488,7 +488,7 @@ impl Window {
             return;
         }
 
-        let frame_options = watchdog.platform_options;
+        let frame_request = watchdog.platform_request;
         if !self.active.get() && self.has_completed_rendered_frame {
             log::debug!(
                 "gpui inactive platform frame waiting for compositor: window={} generation={} dirty={} refreshing={} scheduled={}",
@@ -502,26 +502,26 @@ impl Window {
         }
 
         self.record_frame_request_reason(FrameRequestReason::Recovery);
-        self.platform_window.frame_request_timed_out(frame_options);
+        self.platform_window.frame_request_timed_out(frame_request);
         log::warn!(
-            "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} force_render={} require_presentation={}",
+            "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} ui_commit={} presentation={}",
             self.handle.window_id().as_u64(),
             generation,
             self.invalidator.is_dirty(),
             self.refreshing,
             self.dirty_frame_scheduled,
-            frame_options.force_render,
-            frame_options.require_presentation
+            frame_request.needs_ui_commit(),
+            frame_request.needs_presentation()
         );
 
         // The platform callback is the stalled component, so recovery must run
         // the frame work directly instead of requesting another platform frame.
         if self.invalidator.is_dirty()
             || self.needs_present.get()
-            || frame_options.force_render
-            || frame_options.require_presentation
+            || frame_request.needs_ui_commit()
+            || frame_request.needs_presentation()
         {
-            self.run_platform_frame(frame_options, cx);
+            self.run_platform_frame(frame_request, cx);
         } else {
             self.dirty_frame_scheduled = false;
             self.refreshing = false;
@@ -533,9 +533,9 @@ impl Window {
         if self.active.get()
             && self.has_pending_platform_frame_work()
             && !watchdog.platform_pending
-            && watchdog.platform_options.requires_frame()
+            && watchdog.platform_request.requires_frame()
         {
-            self.arm_platform_frame_watchdog(watchdog.platform_options);
+            self.arm_platform_frame_watchdog(watchdog.platform_request);
         }
     }
 
@@ -554,52 +554,26 @@ impl Window {
             || !self.next_frame_callbacks.borrow().is_empty()
     }
 
-    pub(super) fn run_platform_frame(&mut self, frame_options: RequestFrameOptions, cx: &mut App) {
+    pub(super) fn run_platform_frame(&mut self, frame_request: PlatformFrameRequest, cx: &mut App) {
         self.clear_platform_frame_watchdog();
         let frame_started_at = Instant::now();
         self.animation_time.set(frame_started_at);
         self.frame_throttle.record_frame_start(frame_started_at);
         let frame_budget = self.frame_throttle.frame_budget();
-        let presentation_tick = self.run_animation_engine_frame();
 
-        // Compositor/presentation work gets first access to the vsync callback. If the UI tree is
-        // dirty at the same time, present the last committed retained scene with the freshly
-        // sampled animation values before running callbacks or rebuilding Views.
-        let presentation_submitted_early = should_present_before_ui_commit(
-            presentation_tick,
-            frame_options,
-            self.has_completed_rendered_frame,
-            self.visibility.is_visible(),
-            self.platform_window.is_minimized(),
-        ) && self.present_framebuffer_only() == PlatformFrameResult::Submitted;
-
-        let mut callbacks = self.next_frame_callbacks.take();
-        let had_frame_callbacks = !callbacks.is_empty();
-        for callback in callbacks.drain(..) {
-            callback(self, cx);
-        }
-
-        let activity = FrameActivity {
-            dirty: self.invalidator.is_dirty(),
-            pending_present: self.needs_present.get(),
-            active: self.active.get(),
-            minimized: self.platform_window.is_minimized(),
-        };
-        let decision = self.evaluate_frame_work(
-            activity,
-            frame_options,
-            had_frame_callbacks,
+        // The presentation phase is deliberately App-free. Both domains still arrive through one
+        // platform wake-up, but compositor work no longer depends on entity/UI access.
+        let presentation = self.run_presentation_phase(frame_request);
+        let ui_commit = self.run_ui_commit_phase(
+            frame_request,
             frame_started_at,
-        );
-
-        self.log_frame_work_decision(frame_options, decision, cx);
-        let presented_frame = self.execute_frame_work(
-            frame_options,
-            decision,
             frame_budget,
-            presentation_submitted_early,
+            presentation.submitted_early,
             cx,
         );
+        let activity = ui_commit.activity;
+        let decision = ui_commit.decision;
+        let presented_frame = ui_commit.presented_frame;
         let frame_completed_at = Instant::now();
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
         let window_id = self.handle.window_id().as_u64();
@@ -609,7 +583,7 @@ impl Window {
                 window_id,
                 frame_completed_at,
             );
-            if (!presentation_submitted_early || !decision.drew_frame())
+            if (!presentation.submitted_early || !decision.drew_frame())
                 && let Some(started_at) = self.active_dirty_to_present_started_at.take()
             {
                 record_window_dirty_to_present(
@@ -642,12 +616,71 @@ impl Window {
             ),
         );
 
-        if presentation_submitted_early && self.needs_present.get() {
+        if presentation.submitted_early && self.needs_present.get() {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_platform_frame(PlatformFrameRequest::presentation());
+        }
+    }
+
+
+    /// Advance renderer-owned retained animation without entering App/entity state.
+    fn run_presentation_phase(
+        &mut self,
+        frame_request: PlatformFrameRequest,
+    ) -> PresentationPhaseOutcome {
+        let presentation_tick = self.run_animation_engine_frame();
+        let submitted_early = should_present_before_ui_commit(
+            presentation_tick,
+            frame_request,
+            self.has_completed_rendered_frame,
+            self.visibility.is_visible(),
+            self.platform_window.is_minimized(),
+        ) && self.present_framebuffer_only() == PlatformFrameResult::Submitted;
+
+        PresentationPhaseOutcome { submitted_early }
+    }
+
+    /// Run UI callbacks and scene generation after presentation had first access to this tick.
+    fn run_ui_commit_phase(
+        &mut self,
+        frame_request: PlatformFrameRequest,
+        frame_started_at: Instant,
+        frame_budget: Duration,
+        presentation_submitted_early: bool,
+        cx: &mut App,
+    ) -> UiCommitPhaseOutcome {
+        let mut callbacks = self.next_frame_callbacks.take();
+        let had_frame_callbacks = !callbacks.is_empty();
+        for callback in callbacks.drain(..) {
+            callback(self, cx);
+        }
+
+        let activity = FrameActivity {
+            dirty: self.invalidator.is_dirty(),
+            pending_present: self.needs_present.get(),
+            active: self.active.get(),
+            minimized: self.platform_window.is_minimized(),
+        };
+        let decision = self.evaluate_frame_work(
+            activity,
+            frame_request,
+            had_frame_callbacks,
+            frame_started_at,
+        );
+
+        self.log_frame_work_decision(frame_request, decision, cx);
+        let presented_frame = self.execute_frame_work(
+            frame_request,
+            decision,
+            frame_budget,
+            presentation_submitted_early,
+            cx,
+        );
+
+        UiCommitPhaseOutcome {
+            activity,
+            decision,
+            presented_frame,
         }
     }
 
@@ -720,25 +753,25 @@ impl Window {
     fn evaluate_frame_work(
         &self,
         activity: FrameActivity,
-        frame_options: RequestFrameOptions,
+        frame_request: PlatformFrameRequest,
         had_frame_callbacks: bool,
         frame_started_at: Instant,
     ) -> FrameWorkDecision {
         let defer_inactive_dirty_draw = self.should_defer_inactive_dirty_draw(
             activity,
-            frame_options,
+            frame_request,
             had_frame_callbacks,
             frame_started_at,
         );
         let draw_frame =
-            !defer_inactive_dirty_draw && (activity.dirty || frame_options.force_render);
+            !defer_inactive_dirty_draw && (activity.dirty || frame_request.needs_ui_commit());
         let degrade_to_present = draw_frame
-            && self.should_degrade_dirty_frame_to_retained_present(frame_options, frame_started_at);
+            && self.should_degrade_dirty_frame_to_retained_present(frame_request, frame_started_at);
         let submit_visible_frame = draw_frame
             || degrade_to_present
-            || (!draw_frame && (frame_options.require_presentation || activity.pending_present));
+            || (!draw_frame && (frame_request.needs_presentation() || activity.pending_present));
         let present_frame = degrade_to_present
-            || (!draw_frame && (frame_options.require_presentation || activity.pending_present));
+            || (!draw_frame && (frame_request.needs_presentation() || activity.pending_present));
         let skip_frame = !draw_frame && !submit_visible_frame;
         FrameWorkDecision {
             activity,
@@ -753,7 +786,7 @@ impl Window {
 
     fn log_frame_work_decision(
         &self,
-        frame_options: RequestFrameOptions,
+        frame_request: PlatformFrameRequest,
         decision: FrameWorkDecision,
         cx: &App,
     ) {
@@ -762,12 +795,12 @@ impl Window {
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::trace!(
-                "gpui frame request: window={} request_id={} dirty={} force_render={} require_presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame request: window={} request_id={} dirty={} ui_commit={} presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 0,
                 decision.activity.dirty,
-                frame_options.force_render,
-                frame_options.require_presentation,
+                frame_request.needs_ui_commit(),
+                frame_request.needs_presentation(),
                 decision.activity.pending_present,
                 decision.activity.active,
                 decision.activity.minimized,
@@ -790,7 +823,7 @@ impl Window {
 
     fn execute_frame_work(
         &mut self,
-        frame_options: RequestFrameOptions,
+        frame_request: PlatformFrameRequest,
         decision: FrameWorkDecision,
         frame_budget: Duration,
         presentation_submitted_early: bool,
@@ -808,17 +841,17 @@ impl Window {
         } else if decision.defer_inactive_dirty_draw {
             self.refreshing = false;
             log::trace!(
-                "gpui inactive dirty frame deferred: window={} request_id={} dirty={} force_render={} pending_present={} retained_scene_len={}",
+                "gpui inactive dirty frame deferred: window={} request_id={} dirty={} ui_commit={} pending_present={} retained_scene_len={}",
                 self.handle.window_id().as_u64(),
                 0,
                 decision.activity.dirty,
-                frame_options.force_render,
+                frame_request.needs_ui_commit(),
                 decision.activity.pending_present,
                 self.rendered_frame.scene.len()
             );
             false
         } else if decision.draw_frame {
-            self.draw_visible_frame(frame_options.require_presentation, frame_budget, cx)
+            self.draw_visible_frame(frame_request.needs_presentation(), frame_budget, cx)
         } else if decision.present_frame {
             self.present_framebuffer_only() == PlatformFrameResult::Submitted
         } else if decision.activity.active {
@@ -858,7 +891,7 @@ impl Window {
 
     fn draw_visible_frame(
         &mut self,
-        require_presentation: bool,
+        presentation: bool,
         frame_budget: Duration,
         cx: &mut App,
     ) -> bool {
@@ -872,7 +905,7 @@ impl Window {
             self.draw(cx)
         });
         let draw_elapsed = draw_started_at.elapsed();
-        let presented_frame = if require_presentation || self.needs_present.get() {
+        let presented_frame = if presentation || self.needs_present.get() {
             measure("frame presentation", || self.present()) == PlatformFrameResult::Submitted
         } else {
             false
@@ -962,13 +995,13 @@ impl Window {
     fn should_defer_inactive_dirty_draw(
         &self,
         load: FrameActivity,
-        options: RequestFrameOptions,
+        options: PlatformFrameRequest,
         had_frame_callbacks: bool,
         now: Instant,
     ) -> bool {
         load.dirty
-            && options.force_render
-            && !options.require_presentation
+            && options.needs_ui_commit()
+            && !options.needs_presentation()
             && !load.pending_present
             && !load.active
             && (!self.inactive_dirty_redraw_enabled || load.minimized)
@@ -979,11 +1012,11 @@ impl Window {
 
     fn should_degrade_dirty_frame_to_retained_present(
         &self,
-        options: RequestFrameOptions,
+        options: PlatformFrameRequest,
         now: Instant,
     ) -> bool {
-        !options.force_render
-            && !options.require_presentation
+        !options.needs_ui_commit()
+            && !options.needs_presentation()
             && self.transparent_caption_height.is_none()
             && self.dirty_views.is_empty()
             && self.animation_dirty_region.is_empty()
@@ -1148,19 +1181,19 @@ impl Window {
 
 fn prepare_platform_frame_watchdog(
     watchdog: &mut FrameWatchdog,
-    options: RequestFrameOptions,
+    options: PlatformFrameRequest,
 ) -> bool {
     if watchdog.platform_pending {
         // The platform owns one latest-wins frame slot. Keep the watchdog on the first request's
         // deadline as well: rearming it for every coalesced animation request both creates
         // avoidable executor work and can postpone recovery forever under load.
-        watchdog.platform_options = watchdog.platform_options.merge(options);
+        watchdog.platform_request = watchdog.platform_request.merge(options);
         return false;
     }
 
     watchdog.platform_generation = watchdog.platform_generation.wrapping_add(1);
     watchdog.platform_pending = true;
-    watchdog.platform_options = options;
+    watchdog.platform_request = options;
     true
 }
 
@@ -1185,13 +1218,13 @@ impl FrameWorkDecision {
 
 fn should_present_before_ui_commit(
     presentation_tick: bool,
-    frame_options: RequestFrameOptions,
+    frame_request: PlatformFrameRequest,
     has_committed_scene: bool,
     visible: bool,
     minimized: bool,
 ) -> bool {
     presentation_tick
-        && frame_options.require_presentation
+        && frame_request.needs_presentation()
         && has_committed_scene
         && visible
         && !minimized
@@ -1205,40 +1238,28 @@ mod tests {
     fn presentation_animation_precedes_coalesced_ui_commit() {
         assert!(should_present_before_ui_commit(
             true,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            },
+            PlatformFrameRequest::ui_commit_and_presentation(),
             true,
             true,
             false,
         ));
         assert!(!should_present_before_ui_commit(
             false,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            },
+            PlatformFrameRequest::ui_commit_and_presentation(),
             true,
             true,
             false,
         ));
         assert!(!should_present_before_ui_commit(
             true,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            },
+            PlatformFrameRequest::ui_commit_and_presentation(),
             false,
             true,
             false,
         ));
         assert!(!should_present_before_ui_commit(
             true,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            },
+            PlatformFrameRequest::ui_commit_and_presentation(),
             true,
             true,
             true,
@@ -1250,28 +1271,19 @@ mod tests {
         let mut watchdog = FrameWatchdog::default();
         assert!(prepare_platform_frame_watchdog(
             &mut watchdog,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            }
+            PlatformFrameRequest::presentation()
         ));
         let first_generation = watchdog.platform_generation;
 
         assert!(!prepare_platform_frame_watchdog(
             &mut watchdog,
-            RequestFrameOptions {
-                require_presentation: false,
-                force_render: true,
-            }
+            PlatformFrameRequest::ui_commit()
         ));
         assert_eq!(watchdog.platform_generation, first_generation);
         assert!(watchdog.platform_pending);
         assert_eq!(
-            watchdog.platform_options,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            }
+            watchdog.platform_request,
+            PlatformFrameRequest::ui_commit_and_presentation()
         );
     }
 }

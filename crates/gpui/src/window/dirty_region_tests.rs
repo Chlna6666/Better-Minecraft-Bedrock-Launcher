@@ -1,5 +1,5 @@
 use super::*;
-use crate::{RequestFrameOptions, TestAppContext, WindowOptions, point, px, size};
+use crate::{PlatformFrameRequest, TestAppContext, WindowOptions, point, px, size};
 
 struct LocalDamageView {
     revision: usize,
@@ -178,10 +178,7 @@ fn animation_frame_presents_even_when_scene_diff_is_empty(cx: &mut TestAppContex
             let baseline = test_window.draw_count();
 
             window.run_platform_frame(
-                RequestFrameOptions {
-                    require_presentation: true,
-                    force_render: true,
-                },
+                PlatformFrameRequest::ui_commit_and_presentation(),
                 cx,
             );
 

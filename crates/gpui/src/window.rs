@@ -15,7 +15,7 @@ use crate::{
     MouseMoveEvent, MouseUpEvent, PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PolychromeSprite, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
-    RenderSvgParams, Replay, RequestFrameOptions, RetainedResourceTrimPolicy,
+    RenderSvgParams, Replay, PlatformFrameRequest, RetainedResourceTrimPolicy,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
     Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,

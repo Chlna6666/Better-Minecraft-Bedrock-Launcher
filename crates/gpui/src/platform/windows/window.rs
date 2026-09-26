@@ -582,7 +582,7 @@ impl WindowsWindow {
         }
     }
 
-    pub(crate) fn invoke_request_frame(&self, options: RequestFrameOptions) {
+    pub(crate) fn invoke_request_frame(&self, options: PlatformFrameRequest) {
         let mut state = self.0.state.borrow_mut();
         if let Some(mut callback) = state.callbacks.request_frame.take() {
             drop(state);
@@ -591,16 +591,16 @@ impl WindowsWindow {
         }
     }
 
-    pub(crate) fn take_pending_frame_request(&self) -> RequestFrameOptions {
+    pub(crate) fn take_pending_frame_request(&self) -> PlatformFrameRequest {
         let state = self.0.state.borrow();
         let request = state.pending_frame_request.get();
         state
             .pending_frame_request
-            .set(RequestFrameOptions::default());
+            .set(PlatformFrameRequest::default());
         request
     }
 
-    pub(crate) fn request_frame(&self, options: RequestFrameOptions) {
+    pub(crate) fn request_frame(&self, options: PlatformFrameRequest) {
         if !self.0.queue_frame_request(options) {
             return;
         }
@@ -611,10 +611,7 @@ impl WindowsWindow {
     }
 
     fn request_first_presentable_frame(&self) {
-        let options = RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        };
+        let options = PlatformFrameRequest::ui_commit_and_presentation();
         let callback_registered = self.0.state.borrow().callbacks.request_frame.is_some();
         if !callback_registered {
             self.request_frame(options);
@@ -629,7 +626,7 @@ impl WindowsWindow {
         self.invoke_request_frame(pending.merge(options));
     }
 
-    pub(crate) fn clear_timed_out_frame_request(&self, _options: RequestFrameOptions) {
+    pub(crate) fn clear_timed_out_frame_request(&self, _options: PlatformFrameRequest) {
         let state = self.0.state.borrow();
         state
             .pending_frame_request
@@ -679,7 +676,7 @@ pub struct WindowsWindowState {
     pub logical_size: Cell<Size<Pixels>>,
     pub scale_factor: Cell<f32>,
     background_appearance: Cell<WindowBackgroundAppearance>,
-    pending_frame_request: Cell<RequestFrameOptions>,
+    pending_frame_request: Cell<PlatformFrameRequest>,
     pub click_state: RefCell<ClickState>,
 }
 
@@ -1024,7 +1021,7 @@ pub(crate) struct PendingWindowsResize {
 }
 
 impl WindowsWindowInner {
-    fn queue_frame_request(&self, options: RequestFrameOptions) -> bool {
+    fn queue_frame_request(&self, options: PlatformFrameRequest) -> bool {
         let state = self.state.borrow();
         let pending = state.pending_frame_request.get();
         let (pending, should_schedule_frame) = merge_frame_request(pending, options);
@@ -1042,9 +1039,9 @@ impl WindowsWindowInner {
 }
 
 fn merge_frame_request(
-    pending: RequestFrameOptions,
-    options: RequestFrameOptions,
-) -> (RequestFrameOptions, bool) {
+    pending: PlatformFrameRequest,
+    options: PlatformFrameRequest,
+) -> (PlatformFrameRequest, bool) {
     let already_pending = pending.requires_frame();
     (
         pending.merge(options),
@@ -1052,11 +1049,11 @@ fn merge_frame_request(
     )
 }
 
-fn clear_pending_frame_request_after_timeout(pending: RequestFrameOptions) -> RequestFrameOptions {
+fn clear_pending_frame_request_after_timeout(pending: PlatformFrameRequest) -> PlatformFrameRequest {
     // A pending request is tied to one foreground callback. If that callback timed out,
     // merged flags in the same slot are stranded too.
     if pending.requires_frame() {
-        RequestFrameOptions::default()
+        PlatformFrameRequest::default()
     } else {
         pending
     }
@@ -1064,7 +1061,7 @@ fn clear_pending_frame_request_after_timeout(pending: RequestFrameOptions) -> Re
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
-    pub(crate) request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    pub(crate) request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
     pub(crate) input: Option<Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>>,
     pub(crate) active_status_change: Option<Box<dyn FnMut(bool)>>,
     pub(crate) visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -1220,7 +1217,7 @@ impl WindowsWindow {
                 logical_size: Cell::new(actual_logical_size),
                 scale_factor: Cell::new(scale_factor),
                 background_appearance: Cell::new(params.window_background),
-                pending_frame_request: Cell::new(RequestFrameOptions::default()),
+                pending_frame_request: Cell::new(PlatformFrameRequest::default()),
                 click_state: RefCell::new(ClickState::new()),
             }),
             input_handler: RefCell::new(None),
@@ -1366,7 +1363,7 @@ impl WindowsWindow {
             }
         }
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
-        self.request_frame(RequestFrameOptions::from_refresh());
+        self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
     pub(crate) fn sync_size(
@@ -1431,7 +1428,7 @@ impl WindowsWindow {
         self.0.pending_renderer_size.set(Some(resize.drawable_size));
         self.0.renderer_resize_retry_pending.set(false);
         self.invoke_resize(resize.logical_size, resize.scale_factor);
-        self.request_frame(RequestFrameOptions::from_refresh());
+        self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
     fn try_apply_queued_renderer_resize(&self) -> bool {
@@ -1449,7 +1446,7 @@ impl WindowsWindow {
             Ok(false) => {
                 self.0.pending_renderer_size.set(Some(size));
                 if !self.0.renderer_resize_retry_pending.replace(true) {
-                    self.request_frame(RequestFrameOptions::from_refresh());
+                    self.request_frame(PlatformFrameRequest::ui_commit());
                 }
                 return false;
             }
@@ -1457,7 +1454,7 @@ impl WindowsWindow {
                 log::warn!("failed to resize Windows renderer: {error:#}");
                 self.0.pending_renderer_size.set(Some(size));
                 if !self.0.renderer_resize_retry_pending.replace(true) {
-                    self.request_frame(RequestFrameOptions::from_refresh());
+                    self.request_frame(PlatformFrameRequest::ui_commit());
                 }
                 return false;
             }
@@ -1679,10 +1676,7 @@ impl PlatformWindow for WindowsWindow {
 
     fn activate(&self) {
         self.update_presentation_state(WindowsWindowPresentationState::request_activation);
-        self.request_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        });
+        self.request_frame(PlatformFrameRequest::ui_commit_and_presentation());
     }
 
     fn is_active(&self) -> bool {
@@ -1723,10 +1717,7 @@ impl PlatformWindow for WindowsWindow {
 
     fn show(&self) {
         self.update_presentation_state(WindowsWindowPresentationState::request_show);
-        self.request_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        });
+        self.request_frame(PlatformFrameRequest::ui_commit_and_presentation());
     }
 
     fn hide_window(&self) {
@@ -1759,11 +1750,11 @@ impl PlatformWindow for WindowsWindow {
         self.window().fullscreen().is_some()
     }
 
-    fn request_frame(&self, options: RequestFrameOptions) {
+    fn request_frame(&self, options: PlatformFrameRequest) {
         WindowsWindow::request_frame(self, options);
     }
 
-    fn frame_request_timed_out(&self, options: RequestFrameOptions) {
+    fn frame_request_timed_out(&self, options: PlatformFrameRequest) {
         self.clear_timed_out_frame_request(options);
     }
 
@@ -1793,7 +1784,7 @@ impl PlatformWindow for WindowsWindow {
         (!self.0.use_native_decorations).then(Self::default_resize_inset)
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
         self.0.state.borrow_mut().callbacks.request_frame = Some(callback);
     }
 
@@ -1858,10 +1849,7 @@ impl PlatformWindow for WindowsWindow {
         let Some(draw_result) = draw_result else {
             // The CPU frame is already retained. Retry only presentation on the next platform
             // frame; never refresh or dirty the View tree just because DXGI has no free slot yet.
-            self.request_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_frame(PlatformFrameRequest::presentation());
             return PlatformFrameResult::Deferred;
         };
         match draw_result {
@@ -1871,7 +1859,7 @@ impl PlatformWindow for WindowsWindow {
             }
             Err(error) => {
                 log::error!("failed to draw Windows frame: {error:#}");
-                self.request_frame(RequestFrameOptions::from_refresh());
+                self.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
@@ -1893,10 +1881,7 @@ impl PlatformWindow for WindowsWindow {
             }
         };
         let Some(present_result) = present_result else {
-            self.request_frame(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            });
+            self.request_frame(PlatformFrameRequest::presentation());
             return PlatformFrameResult::Deferred;
         };
         match present_result {
@@ -1906,7 +1891,7 @@ impl PlatformWindow for WindowsWindow {
             }
             Err(error) => {
                 log::error!("failed to present Windows framebuffer: {error:#}");
-                self.request_frame(RequestFrameOptions::from_refresh());
+                self.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
@@ -1938,10 +1923,7 @@ impl PlatformWindow for WindowsWindow {
 
     fn map_window(&mut self) -> anyhow::Result<()> {
         self.update_presentation_state(WindowsWindowPresentationState::map);
-        self.request_frame(RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        });
+        self.request_frame(PlatformFrameRequest::ui_commit_and_presentation());
         Ok(())
     }
 }
@@ -2003,7 +1985,7 @@ mod tests {
         should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
-        DevicePixels, MouseButton, RendererBackend, RendererOptions, RequestFrameOptions,
+        DevicePixels, MouseButton, RendererBackend, RendererOptions, PlatformFrameRequest,
         TitlebarOptions, WindowBackgroundAppearance, WindowCornerPreference, WindowKind,
         WindowParams, point,
     };
@@ -2204,50 +2186,35 @@ mod tests {
     #[test]
     fn default_pending_request_is_empty() {
         assert_eq!(
-            RequestFrameOptions::default(),
-            RequestFrameOptions::default()
+            PlatformFrameRequest::default(),
+            PlatformFrameRequest::default()
         );
     }
 
     #[test]
-    fn pending_request_merges_force_render_and_presentation() {
-        let first = RequestFrameOptions {
-            require_presentation: true,
-            force_render: false,
-        };
-        let second = RequestFrameOptions {
-            require_presentation: false,
-            force_render: true,
-        };
+    fn pending_request_merges_ui_commit_and_presentation() {
+        let first = PlatformFrameRequest::presentation();
+        let second = PlatformFrameRequest::ui_commit();
 
         let (merged, should_schedule_frame) = merge_frame_request(first, second);
 
         assert_eq!(
             merged,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            }
+            PlatformFrameRequest::ui_commit_and_presentation()
         );
         assert!(!should_schedule_frame);
     }
 
     #[test]
-    fn resize_refresh_request_forces_render_when_presentation_is_pending() {
-        let pending = RequestFrameOptions {
-            require_presentation: true,
-            force_render: false,
-        };
-        let resize_refresh = RequestFrameOptions::from_refresh();
+    fn resize_refresh_request_adds_ui_commit_when_presentation_is_pending() {
+        let pending = PlatformFrameRequest::presentation();
+        let resize_refresh = PlatformFrameRequest::ui_commit();
 
         let (merged, should_schedule_frame) = merge_frame_request(pending, resize_refresh);
 
         assert_eq!(
             merged,
-            RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            }
+            PlatformFrameRequest::ui_commit_and_presentation()
         );
         assert!(!should_schedule_frame);
     }
@@ -2255,25 +2222,22 @@ mod tests {
     #[test]
     fn first_pending_request_requests_redraw() {
         let (merged, should_request_redraw) = merge_frame_request(
-            RequestFrameOptions::default(),
-            RequestFrameOptions::from_refresh(),
+            PlatformFrameRequest::default(),
+            PlatformFrameRequest::ui_commit(),
         );
 
-        assert_eq!(merged, RequestFrameOptions::from_refresh());
+        assert_eq!(merged, PlatformFrameRequest::ui_commit());
         assert!(should_request_redraw);
     }
 
     #[test]
     fn timed_out_request_clears_merged_pending_request() {
-        let timed_out = RequestFrameOptions::from_refresh();
-        let pending = timed_out.merge(RequestFrameOptions {
-            require_presentation: true,
-            force_render: false,
-        });
+        let timed_out = PlatformFrameRequest::ui_commit();
+        let pending = timed_out.merge(PlatformFrameRequest::presentation());
 
         assert_eq!(
             clear_pending_frame_request_after_timeout(pending),
-            RequestFrameOptions::default()
+            PlatformFrameRequest::default()
         );
     }
 

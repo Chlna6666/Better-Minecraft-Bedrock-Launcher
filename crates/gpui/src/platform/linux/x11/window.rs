@@ -11,7 +11,7 @@ use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, FrameRenderPlan,
     GpuSpecs, GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RendererOptions, RequestFrameOptions, ResizeEdge, ScaledPixels, Scene, Size,
+    PromptLevel, RendererOptions, PlatformFrameRequest, ResizeEdge, ScaledPixels, Scene, Size,
     Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
 };
@@ -107,9 +107,9 @@ fn query_render_extent(
 }
 
 fn merge_frame_request(
-    pending: RequestFrameOptions,
-    options: RequestFrameOptions,
-) -> RequestFrameOptions {
+    pending: PlatformFrameRequest,
+    options: PlatformFrameRequest,
+) -> PlatformFrameRequest {
     pending.merge(options)
 }
 
@@ -253,7 +253,7 @@ struct RawWindow {
 
 #[derive(Default)]
 pub struct Callbacks {
-    request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
     input: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
     visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -291,7 +291,7 @@ pub struct X11WindowState {
     client_side_decorations_supported: bool,
     decorations: WindowDecorations,
     edge_constraints: Option<EdgeConstraints>,
-    pending_frame_request: Cell<RequestFrameOptions>,
+    pending_frame_request: Cell<PlatformFrameRequest>,
     pub handle: AnyWindowHandle,
     last_insets: [u32; 4],
 }
@@ -311,19 +311,19 @@ pub(crate) struct X11WindowStatePtr {
 }
 
 impl X11WindowStatePtr {
-    pub fn request_frame(&self, frame_options: RequestFrameOptions) {
+    pub fn request_frame(&self, frame_request: PlatformFrameRequest) {
         let state = self.state.borrow();
         let pending = state.pending_frame_request.get();
         state
             .pending_frame_request
-            .set(merge_frame_request(pending, frame_options));
+            .set(merge_frame_request(pending, frame_request));
     }
 
-    pub fn take_pending_frame_request(&self) -> RequestFrameOptions {
+    pub fn take_pending_frame_request(&self) -> PlatformFrameRequest {
         let state = self.state.borrow();
         state
             .pending_frame_request
-            .replace(RequestFrameOptions::default())
+            .replace(PlatformFrameRequest::default())
     }
 }
 
@@ -749,7 +749,7 @@ impl X11WindowState {
                 decorations: WindowDecorations::Server,
                 last_insets: [0, 0, 0, 0],
                 edge_constraints: None,
-                pending_frame_request: Cell::new(RequestFrameOptions::default()),
+                pending_frame_request: Cell::new(PlatformFrameRequest::default()),
                 counter_id: sync_request_counter,
                 last_sync_counter: None,
             })
@@ -1051,10 +1051,10 @@ impl X11WindowStatePtr {
         }
     }
 
-    pub fn refresh(&self, frame_options: RequestFrameOptions) {
+    pub fn refresh(&self, frame_request: PlatformFrameRequest) {
         let mut cb = self.callbacks.borrow_mut();
         if let Some(ref mut fun) = cb.request_frame {
-            fun(frame_options);
+            fun(frame_request);
         }
     }
 
@@ -1532,20 +1532,20 @@ impl PlatformWindow for X11Window {
         self.0.state.borrow().fullscreen
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
         self.0.callbacks.borrow_mut().request_frame = Some(callback);
     }
 
-    fn request_frame(&self, options: RequestFrameOptions) {
+    fn request_frame(&self, options: PlatformFrameRequest) {
         self.0.request_frame(options);
     }
 
-    fn frame_request_timed_out(&self, _options: RequestFrameOptions) {
+    fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {
         self.0
             .state
             .borrow()
             .pending_frame_request
-            .set(RequestFrameOptions::default());
+            .set(PlatformFrameRequest::default());
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -1593,7 +1593,7 @@ impl PlatformWindow for X11Window {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
                 log::error!("failed to draw X11 frame: {error:#}");
-                self.0.request_frame(RequestFrameOptions::from_refresh());
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
@@ -1610,7 +1610,7 @@ impl PlatformWindow for X11Window {
             Ok(()) => PlatformFrameResult::Submitted,
             Err(error) => {
                 log::error!("failed to present X11 framebuffer: {error:#}");
-                self.0.request_frame(RequestFrameOptions::from_refresh());
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }

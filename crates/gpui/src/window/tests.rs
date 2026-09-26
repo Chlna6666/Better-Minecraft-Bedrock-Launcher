@@ -1026,7 +1026,7 @@ fn dirty_window_key_event_requests_frame_without_synchronous_draw(cx: &mut TestA
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions::from_refresh())
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }
@@ -1054,10 +1054,7 @@ fn input_before_first_frame_requests_initial_frame_without_dispatch(cx: &mut Tes
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: false,
-                force_render: true,
-            })
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }
@@ -1075,10 +1072,7 @@ fn minimized_initial_frame_is_deferred(cx: &mut TestAppContext) {
         window.dirty_frame_scheduled = true;
 
         window.run_platform_frame(
-            RequestFrameOptions {
-                require_presentation: false,
-                force_render: true,
-            },
+            PlatformFrameRequest::ui_commit(),
             cx,
         );
         assert!(window.invalidator.is_dirty());
@@ -1408,7 +1402,7 @@ fn refresh_requests_dirty_frame(cx: &mut TestAppContext) {
 
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions::from_refresh())
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }
@@ -1443,10 +1437,7 @@ fn inactive_visible_dirty_frames_refresh_after_background_delay(cx: &mut TestApp
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions {
-            require_presentation: true,
-            force_render: true,
-        })
+        Some(PlatformFrameRequest::ui_commit_and_presentation())
     );
 }
 
@@ -1473,7 +1464,7 @@ fn inactive_dirty_redraw_opt_in_bypasses_background_defer(cx: &mut TestAppContex
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions::from_refresh())
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }
@@ -1493,7 +1484,7 @@ fn notify_on_rendered_view_requests_dirty_frame(cx: &mut TestAppContext) {
     assert!(test_window.requested_frame_count() > baseline);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(PlatformFrameRequest::ui_commit())
     );
 }
 
@@ -1612,7 +1603,7 @@ fn click_notify_requests_dirty_frame_without_animation(cx: &mut TestAppContext) 
     assert!(test_window.requested_frame_count() > baseline);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(PlatformFrameRequest::ui_commit())
     );
 }
 
@@ -1640,10 +1631,7 @@ fn on_next_frame_requests_animation_frame(cx: &mut TestAppContext) {
 
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
     });
 }
@@ -1670,10 +1658,7 @@ fn animation_engine_frame_requests_are_coalesced(cx: &mut TestAppContext) {
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
     });
 }
@@ -1693,10 +1678,7 @@ fn window_animation_group_api_starts_samples_and_cancels(cx: &mut TestAppContext
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
         assert!(window.cancel_animation_group(group_id));
         assert!(window.sample_animation_group(group_id).is_none());
@@ -1729,10 +1711,7 @@ fn paint_animation_engine_frame_does_not_notify_view(cx: &mut TestAppContext) {
         });
 
     assert_eq!(test_window.requested_frame_count(), baseline_requests + 1);
-    test_window.simulate_request_frame(RequestFrameOptions {
-        require_presentation: true,
-        force_render: false,
-    });
+    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1778,10 +1757,7 @@ fn paint_animation_engine_frame_marks_precise_dirty_region(cx: &mut TestAppConte
             )
         });
 
-    test_window.simulate_request_frame(RequestFrameOptions {
-        require_presentation: true,
-        force_render: false,
-    });
+    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1821,10 +1797,7 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
             (test_window, animation_id, baseline_notify_invalidations)
         });
 
-    test_window.simulate_request_frame(RequestFrameOptions {
-        require_presentation: true,
-        force_render: false,
-    });
+    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1877,10 +1850,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             (test_window, animation_id, baseline_notify_invalidations)
         });
 
-    test_window.simulate_request_frame(RequestFrameOptions {
-        require_presentation: true,
-        force_render: false,
-    });
+    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1932,10 +1902,7 @@ fn opted_in_inactive_gpu_animation_requests_presentation_frame(cx: &mut TestAppC
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
         assert_eq!(
             window.animation_engine_frame_driver.get(),
@@ -1958,10 +1925,7 @@ fn enabling_inactive_animation_resumes_pending_engine_frame(cx: &mut TestAppCont
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
     });
 }
@@ -1978,10 +1942,7 @@ fn layout_animation_engine_frame_uses_view_animation_frame(cx: &mut TestAppConte
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            })
+            Some(PlatformFrameRequest::ui_commit_and_presentation())
         );
     });
 }
@@ -2001,10 +1962,7 @@ fn inactive_request_animation_frame_requests_animation_frame(cx: &mut TestAppCon
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
     });
 }
@@ -2027,10 +1985,7 @@ fn repeated_on_next_frame_requests_are_coalesced(cx: &mut TestAppContext) {
     });
 
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
-    test_window.simulate_request_frame(RequestFrameOptions {
-        require_presentation: true,
-        force_render: false,
-    });
+    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
     cx.run_until_parked();
     assert_eq!(callbacks_ran.get(), 3);
 }
@@ -2063,7 +2018,7 @@ fn deadline_invalidation_notifies_after_deadline(cx: &mut TestAppContext) {
     assert!(!cx.update(|window, _| window.test_deadline_invalidation_pending()));
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(PlatformFrameRequest::ui_commit())
     );
 }
 
@@ -2107,10 +2062,7 @@ fn dragging_mouse_move_extends_recent_input_present(cx: &mut TestAppContext) {
         assert!(window.last_input_timestamp.get() > stale_timestamp);
         assert_ne!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions {
-                require_presentation: true,
-                force_render: false,
-            })
+            Some(PlatformFrameRequest::presentation())
         );
     });
 }
@@ -2346,7 +2298,7 @@ fn mouse_dispatch_skips_unrelated_listener_types(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn refresh_requests_force_render(cx: &mut TestAppContext) {
+fn refresh_requests_ui_commit(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -2356,7 +2308,7 @@ fn refresh_requests_force_render(cx: &mut TestAppContext) {
 
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions::from_refresh())
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }
@@ -2460,7 +2412,7 @@ fn over_budget_completed_dirty_frame_schedules_next_frame(cx: &mut TestAppContex
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(PlatformFrameRequest::ui_commit())
     );
 }
 
@@ -2475,7 +2427,7 @@ fn slow_platform_draw_does_not_trigger_generation_backpressure(cx: &mut TestAppC
         test_window
     });
 
-    test_window.simulate_request_frame(RequestFrameOptions::from_refresh());
+    test_window.simulate_request_frame(PlatformFrameRequest::ui_commit());
 
     assert!(!visual.update(|window, _| window.test_dirty_frame_throttle_pending()));
 }
@@ -2517,7 +2469,7 @@ fn deferred_dirty_frame_retry_rechecks_until_frame_can_schedule(cx: &mut TestApp
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
     assert_eq!(
         test_window.last_requested_frame(),
-        Some(RequestFrameOptions::from_refresh())
+        Some(PlatformFrameRequest::ui_commit())
     );
 }
 
@@ -2597,7 +2549,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(RequestFrameOptions::from_refresh())
+            Some(PlatformFrameRequest::ui_commit())
         );
     });
 }

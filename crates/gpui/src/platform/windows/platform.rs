@@ -1302,7 +1302,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::Focused(active) => {
                 if active {
                     self.focused_window_id = Some(window_id);
-                    window.request_frame(RequestFrameOptions::from_refresh());
+                    window.request_frame(PlatformFrameRequest::ui_commit());
                 } else if self.focused_window_id == Some(window_id) {
                     self.focused_window_id = None;
                 }

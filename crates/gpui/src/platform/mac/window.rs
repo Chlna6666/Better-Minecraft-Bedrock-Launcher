@@ -7,7 +7,7 @@ use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
+    PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel, PlatformFrameRequest,
     SharedString, Size, Timer, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowKind, WindowParams, WindowTab, dispatch_get_main_queue,
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
@@ -400,7 +400,7 @@ struct MacWindowState {
     blurred_view: Option<id>,
     display_link: Option<DisplayLink>,
     renderer: renderer::Renderer,
-    request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
+    request_frame_callback: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -1418,7 +1418,7 @@ impl PlatformWindow for MacWindow {
         }
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
+    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
     }
 

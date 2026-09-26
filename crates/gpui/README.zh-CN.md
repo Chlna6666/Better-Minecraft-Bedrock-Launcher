@@ -148,9 +148,8 @@ sequenceDiagram
     Renderer->>Window: draw, present, or presentation-only frame
 ```
 
-`RequestFrameOptions::force_render` 表示 layout 和 paint 需要变脏。
-`RequestFrameOptions::require_presentation` 允许在已准备内容或 retained GPU output
-需要可见时走 presentation-only 帧。
+`PlatformFrameRequest::ui_commit()` 请求新的 UI scene commit，但不要求立即 presentation。
+`PlatformFrameRequest::presentation()` 只呈现最后一次已提交的 retained scene，不强制 UI generation。
 
 ## 自定义 GPU 内容
 

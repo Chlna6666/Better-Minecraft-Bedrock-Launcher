@@ -3,31 +3,79 @@ use crate::{BackdropBlurDamagePlan, Bounds, ScaledPixels, Scene};
 const MAX_DIRTY_RECTS: usize = 128;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub(crate) struct RequestFrameOptions {
-    pub(crate) require_presentation: bool,
-    pub(crate) force_render: bool,
+pub(crate) enum UiCommitRequest {
+    #[default]
+    None,
+    Required,
 }
 
-impl RequestFrameOptions {
-    pub(crate) fn from_refresh() -> Self {
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub(crate) enum PresentationRequest {
+    #[default]
+    None,
+    Required,
+}
+
+/// One coalesced platform wake-up containing two independent work domains.
+///
+/// UI commit and presentation are intentionally represented as separate request types rather than
+/// two rendering-policy booleans. The platform may transport them together today, but neither
+/// domain is defined in terms of the other.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub(crate) struct PlatformFrameRequest {
+    ui_commit: UiCommitRequest,
+    presentation: PresentationRequest,
+}
+
+impl PlatformFrameRequest {
+    pub(crate) const fn ui_commit() -> Self {
         Self {
-            require_presentation: false,
-            force_render: true,
+            ui_commit: UiCommitRequest::Required,
+            presentation: PresentationRequest::None,
         }
     }
 
-    pub(crate) fn requires_frame(self) -> bool {
-        self.require_presentation || self.force_render
+    pub(crate) const fn presentation() -> Self {
+        Self {
+            ui_commit: UiCommitRequest::None,
+            presentation: PresentationRequest::Required,
+        }
     }
 
-    pub(crate) fn merge(self, options: Self) -> Self {
+    pub(crate) const fn ui_commit_and_presentation() -> Self {
         Self {
-            require_presentation: self.require_presentation || options.require_presentation,
-            force_render: self.force_render || options.force_render,
+            ui_commit: UiCommitRequest::Required,
+            presentation: PresentationRequest::Required,
+        }
+    }
+
+    pub(crate) const fn needs_ui_commit(self) -> bool {
+        matches!(self.ui_commit, UiCommitRequest::Required)
+    }
+
+    pub(crate) const fn needs_presentation(self) -> bool {
+        matches!(self.presentation, PresentationRequest::Required)
+    }
+
+    pub(crate) const fn requires_frame(self) -> bool {
+        self.needs_ui_commit() || self.needs_presentation()
+    }
+
+    pub(crate) const fn merge(self, request: Self) -> Self {
+        Self {
+            ui_commit: if self.needs_ui_commit() || request.needs_ui_commit() {
+                UiCommitRequest::Required
+            } else {
+                UiCommitRequest::None
+            },
+            presentation: if self.needs_presentation() || request.needs_presentation() {
+                PresentationRequest::Required
+            } else {
+                PresentationRequest::None
+            },
         }
     }
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlatformFrameResult {
     Submitted,

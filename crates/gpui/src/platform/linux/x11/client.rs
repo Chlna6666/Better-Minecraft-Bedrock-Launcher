@@ -70,7 +70,7 @@ use crate::{
     ForegroundTaskQueue, Keystroke, LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent,
     MouseButton, Pixels, Platform,
     PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RendererOptions,
-    RequestFrameOptions, ScrollDelta, Size, TouchPhase, WindowParams, X11Window,
+    PlatformFrameRequest, ScrollDelta, Size, TouchPhase, WindowParams, X11Window,
     modifiers_from_xinput_info, point, px,
 };
 
@@ -86,14 +86,15 @@ pub(crate) const XINPUT_ALL_DEVICE_GROUPS: xinput::DeviceId = 1;
 
 const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 
-fn frame_options_after_expose(
-    pending: RequestFrameOptions,
+fn frame_request_after_expose(
+    pending: PlatformFrameRequest,
     expose_event_received: bool,
-) -> RequestFrameOptions {
-    pending.merge(RequestFrameOptions {
-        require_presentation: expose_event_received,
-        force_render: false,
-    })
+) -> PlatformFrameRequest {
+    if expose_event_received {
+        pending.merge(PlatformFrameRequest::presentation())
+    } else {
+        pending
+    }
 }
 
 fn insert_x11_foreground_task_idle(
@@ -1822,9 +1823,9 @@ impl X11ClientState {
                             drop(state);
                             let pending_frame_request = window.take_pending_frame_request();
                             if expose_event_received
-                                || pending_frame_request != RequestFrameOptions::default()
+                                || pending_frame_request != PlatformFrameRequest::default()
                             {
-                                window.refresh(frame_options_after_expose(
+                                window.refresh(frame_request_after_expose(
                                     pending_frame_request,
                                     expose_event_received,
                                 ));
@@ -2531,17 +2532,17 @@ mod tests {
 
     #[test]
     fn expose_requests_presentation() {
-        let options = frame_options_after_expose(RequestFrameOptions::default(), true);
+        let options = frame_request_after_expose(PlatformFrameRequest::default(), true);
 
-        assert!(options.require_presentation);
-        assert!(!options.force_render);
+        assert!(options.needs_presentation());
+        assert!(!options.needs_ui_commit());
     }
 
     #[test]
-    fn expose_preserves_pending_force_render() {
-        let options = frame_options_after_expose(RequestFrameOptions::from_refresh(), true);
+    fn expose_preserves_pending_ui_commit() {
+        let options = frame_request_after_expose(PlatformFrameRequest::ui_commit(), true);
 
-        assert!(options.require_presentation);
-        assert!(options.force_render);
+        assert!(options.needs_presentation());
+        assert!(options.needs_ui_commit());
     }
 }
