@@ -1,4 +1,4 @@
-use crate::ui::animation::{apple_spring, SpringValue};
+use crate::ui::animation::{apple_spring, settled_animation, spring_motion};
 use crate::ui::components::scroll::ScrollableElement as _;
 use crate::ui::theme::colors::ThemeColors;
 use gpui::prelude::FluentBuilder as _;
@@ -50,67 +50,6 @@ fn selected_tab_index(items: &[TabItem]) -> usize {
     items.iter().position(|item| item.active).unwrap_or(0)
 }
 
-const TAB_EDGE_SETTLE_DISTANCE: f32 = 0.004;
-
-#[derive(Clone, Copy)]
-struct TabIndicatorMotion {
-    target_index: usize,
-    fast: SpringValue,
-    slow: SpringValue,
-}
-
-impl TabIndicatorMotion {
-    fn new(index: usize) -> Self {
-        let value = index as f32;
-        Self {
-            target_index: index,
-            fast: SpringValue::new(value).with_spring(apple_spring(0.34, 0.60)),
-            slow: SpringValue::new(value).with_spring(apple_spring(0.42, 0.80)),
-        }
-    }
-
-    fn retarget(&mut self, index: usize, now: Instant, reduced_motion: bool) -> bool {
-        if self.target_index == index {
-            return false;
-        }
-
-        self.target_index = index;
-        let target = index as f32;
-        if reduced_motion {
-            self.fast.snap_to(target);
-            self.slow.snap_to(target);
-        } else {
-            self.fast.retarget(target, now);
-            self.slow.retarget(target, now);
-        }
-        true
-    }
-
-    fn snap_to(&mut self, index: usize) {
-        self.target_index = index;
-        let target = index as f32;
-        self.fast.snap_to(target);
-        self.slow.snap_to(target);
-    }
-
-    fn render_state(&self, now: Instant) -> ((f32, f32), bool) {
-        let fast = self.fast.sample(now);
-        let slow = self.slow.sample(now);
-        let target = self.target_index as f32;
-        let settled = (fast.value - target).abs() <= TAB_EDGE_SETTLE_DISTANCE
-            && (slow.value - target).abs() <= TAB_EDGE_SETTLE_DISTANCE;
-
-        if settled {
-            return ((target, target), false);
-        }
-
-        (
-            (fast.value.min(slow.value), fast.value.max(slow.value)),
-            !fast.done || !slow.done,
-        )
-    }
-}
-
 #[derive(IntoElement)]
 pub struct UnderlineTabs {
     id: SharedString,
@@ -152,7 +91,7 @@ struct UnderlineTabsView {
     colors: ThemeColors,
     gap: Pixels,
     item_width: Option<Pixels>,
-    indicator_motion: TabIndicatorMotion,
+    from_index: usize,
     active_index: usize,
 }
 
@@ -171,7 +110,7 @@ impl UnderlineTabsView {
             colors,
             gap,
             item_width,
-            indicator_motion: TabIndicatorMotion::new(active_index),
+            from_index: active_index,
             active_index,
         }
     }
@@ -181,9 +120,9 @@ impl UnderlineTabsView {
             return false;
         }
 
+        self.from_index = self.active_index;
         self.active_index = target_index;
-        self.indicator_motion
-            .retarget(target_index, now, reduced_motion);
+        let _ = (now, reduced_motion);
         true
     }
 
@@ -221,13 +160,7 @@ impl Render for UnderlineTabsView {
             return div().into_any_element();
         }
 
-        let now = window.animation_time();
         let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        if reduced_motion {
-            self.indicator_motion.snap_to(self.active_index);
-        }
-        let ((indicator_left, indicator_right), indicator_animating) =
-            self.indicator_motion.render_state(now);
 
         let colors = self.colors;
         let active_index = self.active_index;
@@ -238,18 +171,37 @@ impl Render for UnderlineTabsView {
             let item_width_px: f32 = item_width.into();
             let gap_px: f32 = gap.into();
             let step_px = item_width_px + gap_px;
-            let left_px = step_px * indicator_left + 4.0;
-            let right_px = step_px * indicator_right + item_width_px - 4.0;
-
-            div()
+            let offset_px = step_px * (self.from_index as f32 - active_index as f32);
+            let indicator = div()
                 .absolute()
-                .left(px(left_px.min(right_px)))
+                .left(px(step_px * active_index as f32 + 4.0))
                 .bottom(px(0.))
-                .w(px((right_px - left_px).abs().max(8.0)))
+                .w(px((item_width_px - 8.0).max(8.0)))
                 .h(px(2.))
                 .rounded(px(1.))
-                .bg(colors.accent)
-                .with_layout_animation_target(indicator_animating && !reduced_motion)
+                .bg(colors.accent);
+
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-shared-underline-presentation",
+                        self.id.as_ref()
+                    )),
+                    if reduced_motion || self.from_index == active_index {
+                        settled_animation().with_property(AnimationProperty::translation(
+                            Point::default(),
+                            Point::default(),
+                        ))
+                    } else {
+                        spring_motion(apple_spring(0.30, 0.82)).with_property(
+                            AnimationProperty::translation(
+                                point(px(offset_px), px(0.0)),
+                                Point::default(),
+                            ),
+                        )
+                    },
+                    |indicator, _progress| indicator,
+                )
                 .into_any_element()
         });
 
@@ -447,7 +399,7 @@ struct AnimatedSegmentTabsView {
     height: Pixels,
     item_width: Option<Pixels>,
     indicator_shadow: bool,
-    indicator_motion: TabIndicatorMotion,
+    from_index: usize,
     active_index: usize,
 }
 
@@ -468,7 +420,7 @@ impl AnimatedSegmentTabsView {
             height,
             item_width,
             indicator_shadow,
-            indicator_motion: TabIndicatorMotion::new(active_index),
+            from_index: active_index,
             active_index,
         }
     }
@@ -478,9 +430,9 @@ impl AnimatedSegmentTabsView {
             return false;
         }
 
+        self.from_index = self.active_index;
         self.active_index = target_index;
-        self.indicator_motion
-            .retarget(target_index, now, reduced_motion);
+        let _ = (now, reduced_motion);
         true
     }
 
@@ -521,13 +473,7 @@ impl Render for AnimatedSegmentTabsView {
             return div().into_any_element();
         }
 
-        let now = window.animation_time();
         let reduced_motion = crate::core::ui_prefs::reduced_motion();
-        if reduced_motion {
-            self.indicator_motion.snap_to(self.active_index);
-        }
-        let ((indicator_left, indicator_right), indicator_animating) =
-            self.indicator_motion.render_state(now);
 
         let colors = self.colors;
         let dark_mode = colors.bg.l < 0.5;
@@ -564,15 +510,13 @@ impl Render for AnimatedSegmentTabsView {
 
         let indicator = if let Some(item_width) = item_width {
             let item_width_px: f32 = item_width.into();
-            let left_px = item_width_px * indicator_left + 2.0;
-            let right_px = item_width_px * indicator_right + item_width_px - 2.0;
-
-            div()
+            let offset_px = item_width_px * (self.from_index as f32 - active_index as f32);
+            let indicator = div()
                 .absolute()
-                .left(px(left_px.min(right_px)))
+                .left(px(item_width_px * active_index as f32 + 2.0))
                 .top(px(2.))
                 .bottom(px(2.))
-                .w(px((right_px - left_px).abs().max(4.0)))
+                .w(px(item_width_px - 4.0))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(active_background)
                 .border_1()
@@ -587,18 +531,38 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                })
-                .with_layout_animation_target(indicator_animating && !reduced_motion)
+                });
+
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-indicator-presentation",
+                        self.id.as_ref()
+                    )),
+                    if reduced_motion || self.from_index == active_index {
+                        settled_animation().with_property(AnimationProperty::translation(
+                            Point::default(),
+                            Point::default(),
+                        ))
+                    } else {
+                        spring_motion(apple_spring(0.30, 0.82)).with_property(
+                            AnimationProperty::translation(
+                                point(px(offset_px), px(0.0)),
+                                Point::default(),
+                            ),
+                        )
+                    },
+                    |indicator, _progress| indicator,
+                )
                 .into_any_element()
         } else {
-            let left = indicator_left * segment_width;
-            let right = (indicator_right + 1.0) * segment_width;
-            div()
+            let offset = (self.from_index as f32 - active_index as f32) * segment_width;
+            let indicator = div()
                 .absolute()
-                .left(relative(left.min(right)))
+                .left(relative(active_index as f32 * segment_width))
                 .top(px(2.))
                 .bottom(px(2.))
-                .w(relative((right - left).abs().max(segment_width * 0.08)))
+                .w(relative(segment_width))
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .bg(active_background)
                 .border_1()
@@ -613,8 +577,31 @@ impl Render for AnimatedSegmentTabsView {
                         spread_radius: px(-4.0),
                         offset: point(px(0.), px(2.)),
                     }])
-                })
-                .with_layout_animation_target(indicator_animating && !reduced_motion)
+                });
+
+            indicator
+                .with_animation(
+                    SharedString::from(format!(
+                        "{}-indicator-presentation",
+                        self.id.as_ref()
+                    )),
+                    if reduced_motion || self.from_index == active_index {
+                        settled_animation().with_property(
+                            AnimationProperty::relative_translation(
+                                Point::default(),
+                                Point::default(),
+                            ),
+                        )
+                    } else {
+                        spring_motion(apple_spring(0.30, 0.82)).with_property(
+                            AnimationProperty::relative_translation(
+                                point(offset, 0.0),
+                                Point::default(),
+                            ),
+                        )
+                    },
+                    |indicator, _progress| indicator,
+                )
                 .into_any_element()
         };
 

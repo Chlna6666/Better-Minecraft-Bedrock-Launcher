@@ -13,6 +13,7 @@ use std::{fmt, rc::Rc, time::{Duration, Instant}};
 
 const MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE: f32 = 1.0 / 4096.0;
 const SCENE_TEXT_RASTER_SCALE_EPSILON: f32 = 0.0001;
+const MAX_SCENE_RETARGET_NORMALIZED_VELOCITY: f32 = 24.0;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct AnimationTimelineKey {
@@ -24,6 +25,7 @@ struct AnimationTimelineKey {
 struct AnimationTimeline {
     spec: AnimationSpec,
     spring: Option<super::Spring>,
+    spring_initial_velocity: f32,
     started_at: Instant,
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
@@ -34,28 +36,42 @@ struct AnimationTimeline {
 }
 
 impl AnimationTimeline {
-    fn sample(&self, now: Instant) -> TimelineSample {
+    fn sample_with_velocity(&self, now: Instant) -> (TimelineSample, f32) {
         let elapsed = now.saturating_duration_since(self.started_at);
         if let Some(spring) = self.spring {
             if elapsed < self.spec.delay {
-                return TimelineSample {
-                    raw_progress: 0.0,
-                    eased_progress: 0.0,
-                    done: false,
-                    applies: self.spec.fill_mode.fills_backwards(),
-                };
+                return (
+                    TimelineSample {
+                        raw_progress: 0.0,
+                        eased_progress: 0.0,
+                        done: false,
+                        applies: self.spec.fill_mode.fills_backwards(),
+                    },
+                    0.0,
+                );
             }
 
             let active_elapsed = elapsed.saturating_sub(self.spec.delay);
-            let sample = spring.sample_with_velocity(active_elapsed.as_secs_f32(), 0.0);
-            return TimelineSample {
-                raw_progress: sample.progress,
-                eased_progress: if sample.done { 1.0 } else { sample.progress },
-                done: sample.done,
-                applies: !sample.done || self.spec.fill_mode.fills_forwards(),
-            };
+            let sample = spring.sample_with_velocity(
+                active_elapsed.as_secs_f32(),
+                self.spring_initial_velocity,
+            );
+            return (
+                TimelineSample {
+                    raw_progress: sample.progress,
+                    eased_progress: if sample.done { 1.0 } else { sample.progress },
+                    done: sample.done,
+                    applies: !sample.done || self.spec.fill_mode.fills_forwards(),
+                },
+                if sample.done { 0.0 } else { sample.velocity },
+            );
         }
-        self.spec.sample_elapsed(elapsed)
+
+        (self.spec.sample_elapsed(elapsed), 0.0)
+    }
+
+    fn sample(&self, now: Instant) -> TimelineSample {
+        self.sample_with_velocity(now).0
     }
 }
 
@@ -228,6 +244,7 @@ impl AnimationEngine {
             AnimationTimeline {
                 spec,
                 spring: None,
+                spring_initial_velocity: 0.0,
                 started_at,
                 driver,
                 bounds,
@@ -242,6 +259,99 @@ impl AnimationEngine {
         if !indexed_properties.contains(&property) {
             indexed_properties.push(property);
         }
+    }
+
+    /// Retarget an active renderer-owned scene animation from its current presented value.
+    ///
+    /// Application state lays the element out at its new final geometry once. The engine samples
+    /// the old presentation, converts translation into the new base coordinate system and then
+    /// continues entirely in the presentation/compositor lane.
+    pub(crate) fn retarget_scene_animation(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+        spec: AnimationSpec,
+        spring: Option<super::Spring>,
+        now: Instant,
+        dirty_bounds: Bounds<Pixels>,
+        base_translation_delta: [f32; 2],
+        requested_to: [f32; 4],
+    ) -> bool {
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return false;
+        };
+        let key = AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        };
+        let Some(previous) = self.timelines.get(&key) else {
+            return false;
+        };
+        let Some(scene) = previous.scene_animation else {
+            return false;
+        };
+        if scene.id != animation_id {
+            return false;
+        }
+
+        let (sample, normalized_velocity) = previous.sample_with_velocity(now);
+        let mut current =
+            interpolate_scene_value(scene.from, scene.to, sample.eased_progress);
+        let current_velocity =
+            scene_property_velocity(scene.from, scene.to, normalized_velocity);
+
+        if property == TransitionProperty::Translation {
+            current[0] += base_translation_delta[0];
+            current[1] += base_translation_delta[1];
+            current[3] = requested_to[3];
+        } else if property == TransitionProperty::Rotation {
+            current[1] = requested_to[1];
+            current[2] = requested_to[2];
+        } else if property == TransitionProperty::Transform {
+            current[2] = requested_to[2];
+            current[3] = requested_to[3];
+        }
+
+        let delta = subtract_scene_values(requested_to, current);
+        let spring_initial_velocity = if spring.is_some() {
+            responsive_scene_retarget_velocity(current_velocity, delta)
+        } else {
+            0.0
+        };
+        let driver = resolve_driver_with_cpu_policy(
+            spec.driver,
+            [property],
+            spec.easing.requires_cpu_driver(),
+        );
+
+        self.completed_scene_values.remove(&key);
+        self.remove_driver_index(&key);
+        let Some(timeline) = self.timelines.get_mut(&key) else {
+            return false;
+        };
+        timeline.spec = spec;
+        timeline.spring = spring;
+        timeline.spring_initial_velocity = spring_initial_velocity;
+        timeline.started_at = now;
+        timeline.driver = driver;
+        timeline.bounds = Some(dirty_bounds);
+        timeline.scene_animation = Some(SceneAnimation {
+            id: animation_id,
+            from: current,
+            to: requested_to,
+        });
+        timeline.completion_invalidation = None;
+        self.insert_driver_index(key.clone(), driver);
+
+        self.bind_scene_animation(
+            element_id,
+            property,
+            animation_id,
+            current,
+            requested_to,
+        );
+        true
     }
 
     /// Start a sequence group and return its engine-owned id.
@@ -488,6 +598,7 @@ impl AnimationEngine {
             property,
         }) {
             timeline.spring = Some(spring);
+            timeline.spring_initial_velocity = 0.0;
         }
     }
 
@@ -833,6 +944,56 @@ impl AnimationEngine {
             .cloned()
             .unwrap_or_else(|| Rc::new(element_id.clone()))
     }
+}
+
+fn interpolate_scene_value(from: [f32; 4], to: [f32; 4], progress: f32) -> [f32; 4] {
+    [
+        from[0] + (to[0] - from[0]) * progress,
+        from[1] + (to[1] - from[1]) * progress,
+        from[2] + (to[2] - from[2]) * progress,
+        from[3] + (to[3] - from[3]) * progress,
+    ]
+}
+
+fn scene_property_velocity(
+    from: [f32; 4],
+    to: [f32; 4],
+    normalized_velocity: f32,
+) -> [f32; 4] {
+    [
+        (to[0] - from[0]) * normalized_velocity,
+        (to[1] - from[1]) * normalized_velocity,
+        (to[2] - from[2]) * normalized_velocity,
+        (to[3] - from[3]) * normalized_velocity,
+    ]
+}
+
+fn subtract_scene_values(to: [f32; 4], from: [f32; 4]) -> [f32; 4] {
+    [
+        to[0] - from[0],
+        to[1] - from[1],
+        to[2] - from[2],
+        to[3] - from[3],
+    ]
+}
+
+fn responsive_scene_retarget_velocity(velocity: [f32; 4], delta: [f32; 4]) -> f32 {
+    let dot = velocity
+        .iter()
+        .zip(delta.iter())
+        .map(|(velocity, delta)| velocity * delta)
+        .sum::<f32>();
+    let magnitude_squared = delta.iter().map(|delta| delta * delta).sum::<f32>();
+
+    if !dot.is_finite()
+        || !magnitude_squared.is_finite()
+        || magnitude_squared <= 1e-8
+        || dot <= 0.0
+    {
+        return 0.0;
+    }
+
+    (dot / magnitude_squared).clamp(0.0, MAX_SCENE_RETARGET_NORMALIZED_VELOCITY)
 }
 
 fn resolve_specs_driver<'a>(specs: impl IntoIterator<Item = &'a AnimationSpec>) -> AnimationDriver {

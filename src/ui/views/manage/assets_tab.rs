@@ -812,18 +812,17 @@ pub(super) fn render_asset_list(
                 )),
                 if animate_row {
                     tab_list_item_motion(animation_from, animation_to, visible_index)
+                        .with_property(AnimationProperty::translation(
+                            point(px(12.0 * direction), px(0.0)),
+                            Point::default(),
+                        ))
                 } else {
-                    settled_animation()
+                    settled_animation().with_property(AnimationProperty::translation(
+                        Point::default(),
+                        Point::default(),
+                    ))
                 },
-                move |row, progress| {
-                    let progress = if animate_row {
-                        progress.clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
-                    row.relative()
-                        .left(px(12.0 * direction * (1.0 - progress)))
-                },
+                |row, _progress| row,
             )
             .into_any_element();
         rows = rows.child(row);
@@ -877,12 +876,13 @@ pub(super) fn render_asset_list(
         let stale = if animating {
             list.with_animation(
                 SharedString::from(format!("{scope}-{sequence}")),
-                tab_stale_content_motion(from_index, to_index),
-                move |list, progress| {
-                    let progress = progress.clamp(0.0, 1.0);
-                    list.relative()
-                        .left(px(-4.0 * direction * progress))
-                },
+                tab_stale_content_motion(from_index, to_index).with_property(
+                    AnimationProperty::translation(
+                        Point::default(),
+                        point(px(-4.0 * direction), px(0.0)),
+                    ),
+                ),
+                |list, _progress| list,
             )
             .into_any_element()
         } else {

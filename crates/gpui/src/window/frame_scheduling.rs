@@ -495,6 +495,46 @@ impl Window {
         animation_id
     }
 
+    pub(crate) fn retarget_scene_animation(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+        spec: AnimationSpec,
+        spring: Option<crate::Spring>,
+        old_bounds: Bounds<Pixels>,
+        new_bounds: Bounds<Pixels>,
+        dirty_bounds: Bounds<Pixels>,
+        to: [f32; 4],
+    ) -> bool {
+        let scale_factor = self.scale_factor();
+        let base_translation_delta = [
+            (old_bounds.origin.x.0 - new_bounds.origin.x.0) * scale_factor,
+            (old_bounds.origin.y.0 - new_bounds.origin.y.0) * scale_factor,
+        ];
+        let mut engine = self.animation_engine.borrow_mut();
+        let retargeted = engine.retarget_scene_animation(
+            element_id,
+            property,
+            animation_id,
+            spec,
+            spring,
+            self.animation_time(),
+            dirty_bounds,
+            base_translation_delta,
+            to,
+        );
+        let driver = retargeted
+            .then(|| engine.transition_driver(element_id, property))
+            .flatten();
+        drop(engine);
+
+        if let Some(driver) = driver {
+            self.request_animation_engine_frame(driver);
+        }
+        retargeted
+    }
+
     pub(crate) fn set_scene_animation_spring(
         &self,
         element_id: &GlobalElementId,

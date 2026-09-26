@@ -980,6 +980,7 @@ pub struct SceneAnimationState {
     spring: Option<crate::Spring>,
     from: [f32; 4],
     to: [f32; 4],
+    bounds: Bounds<Pixels>,
     bound: bool,
 }
 
@@ -1097,8 +1098,32 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                     {
                         let active = window.scene_animation_is_active(state.animation_id);
                         let binding_changed = state.bound != active;
+                        state.bounds = bounds;
                         state.bound = active;
                         (state, binding_changed, active)
+                    }
+                    Some(mut state)
+                        if state.property == property
+                            && state.spec == spec
+                            && state.spring == spring
+                            && window.scene_animation_is_active(state.animation_id)
+                            && window.retarget_scene_animation(
+                                global_id,
+                                property.property,
+                                state.animation_id,
+                                spec.clone(),
+                                spring,
+                                state.bounds,
+                                bounds,
+                                dirty_bounds,
+                                to,
+                            ) =>
+                    {
+                        state.from = from;
+                        state.to = to;
+                        state.bounds = bounds;
+                        state.bound = true;
+                        (state, true, true)
                     }
                     _ => {
                         let animation_id = window.start_scene_animation(
@@ -1120,6 +1145,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                                 spring,
                                 from,
                                 to,
+                                bounds,
                                 bound: true,
                             },
                             true,

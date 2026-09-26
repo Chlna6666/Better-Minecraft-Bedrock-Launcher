@@ -1,124 +1,14 @@
 use super::*;
-use crate::ui::animation::{
-    ease_out_cubic, raw_progress, settled_animation, stat_chart_bar_motion,
-};
+use crate::ui::animation::{settled_animation, stat_chart_bar_motion};
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
 
-const STAT_NUMBER_DURATION: Duration = Duration::from_millis(720);
+const STAT_NUMBER_DURATION: Duration = Duration::from_millis(360);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatMetricKind {
     Duration,
     Count,
-}
-
-struct AnimatedStatMetricView {
-    sequence: u64,
-    from: f64,
-    to: f64,
-    started_at: Instant,
-    kind: StatMetricKind,
-    colors: ThemeColors,
-    animate: bool,
-}
-
-impl AnimatedStatMetricView {
-    fn new(
-        sequence: u64,
-        target: u64,
-        kind: StatMetricKind,
-        colors: ThemeColors,
-        animate: bool,
-        now: Instant,
-    ) -> Self {
-        let target = target as f64;
-        Self {
-            sequence,
-            from: if animate { 0.0 } else { target },
-            to: target,
-            started_at: now,
-            kind,
-            colors,
-            animate,
-        }
-    }
-
-    fn sample(&self, now: Instant) -> (f64, bool) {
-        if !self.animate {
-            return (self.to, false);
-        }
-
-        let progress = raw_progress(now, self.started_at, STAT_NUMBER_DURATION);
-        let eased = f64::from(ease_out_cubic(progress));
-        (
-            self.from + (self.to - self.from) * eased,
-            progress < 1.0,
-        )
-    }
-
-    fn sync(
-        &mut self,
-        sequence: u64,
-        target: u64,
-        kind: StatMetricKind,
-        colors: ThemeColors,
-        animate: bool,
-        now: Instant,
-        cx: &mut Context<Self>,
-    ) {
-        let target = target as f64;
-        let sequence_changed = self.sequence != sequence;
-        let target_changed = (self.to - target).abs() > f64::EPSILON;
-        let motion_changed =
-            sequence_changed || target_changed || self.kind != kind || self.animate != animate;
-        let colors_changed = self.colors != colors;
-
-        if motion_changed {
-            let (current, currently_animating) = self.sample(now);
-            self.from = if !animate {
-                target
-            } else if sequence_changed && !currently_animating {
-                0.0
-            } else {
-                current
-            };
-            self.to = target;
-            self.sequence = sequence;
-            self.kind = kind;
-            self.animate = animate;
-            self.started_at = now;
-        }
-        if colors_changed {
-            self.colors = colors;
-        }
-        if motion_changed || colors_changed {
-            cx.notify();
-        }
-    }
-}
-
-impl Render for AnimatedStatMetricView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (sample, animating) = self.sample(window.animation_time());
-
-        let i18n = cx.global::<I18n>();
-        let text = match self.kind {
-            StatMetricKind::Duration => format_animated_duration(i18n, sample, self.to),
-            StatMetricKind::Count => {
-                let value = sample.max(0.0).round() as u64;
-                t!("ManagePage.stats_count", count = value)
-            }
-        };
-
-        div()
-            .w_full()
-            .text_size(px(20.))
-            .font_weight(FontWeight::BOLD)
-            .text_color(self.colors.text_primary)
-            .child(text)
-            .with_layout_animation_target(animating)
-    }
 }
 
 #[derive(IntoElement)]
@@ -152,21 +42,45 @@ impl AnimatedStatValue {
 }
 
 impl RenderOnce for AnimatedStatValue {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let now = window.animation_time();
-        let sequence = self.sequence;
-        let target = self.target;
-        let kind = self.kind;
-        let colors = self.colors;
-        let animate = self.animate;
-        let metric = window.use_keyed_state(self.id, cx, move |_, _| {
-            AnimatedStatMetricView::new(sequence, target, kind, colors, animate, now)
-        });
-        metric.update(cx, |metric, cx| {
-            metric.sync(sequence, target, kind, colors, animate, now, cx);
-        });
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let i18n = cx.global::<I18n>();
+        let text = match self.kind {
+            StatMetricKind::Duration => format_duration(i18n, self.target),
+            StatMetricKind::Count => t!("ManagePage.stats_count", count = self.target),
+        };
+        let value = div()
+            .w_full()
+            .text_size(px(20.))
+            .font_weight(FontWeight::BOLD)
+            .text_color(self.colors.text_primary)
+            .child(text);
 
-        div().w_full().child(metric)
+        let motion = if self.animate {
+            Animation::from_spec(
+                AnimationSpec::new(STAT_NUMBER_DURATION)
+                    .fill_mode(FillMode::Both)
+                    .ease(Easing::OutCubic),
+            )
+            .with_property(AnimationProperty::translation_opacity(
+                point(px(0.0), px(8.0)),
+                Point::default(),
+                0.0,
+                1.0,
+            ))
+        } else {
+            settled_animation().with_property(AnimationProperty::translation_opacity(
+                Point::default(),
+                Point::default(),
+                1.0,
+                1.0,
+            ))
+        };
+
+        value.with_animation(
+            SharedString::from(format!("{}-presentation-{}", self.id.as_ref(), self.sequence)),
+            motion,
+            |value, _progress| value,
+        )
     }
 }
 
@@ -435,25 +349,6 @@ fn chart_card(
                         )
                 })),
         )
-}
-
-fn format_animated_duration(
-    _i18n: &I18n,
-    seconds: f64,
-    target_seconds: f64,
-) -> SharedString {
-    let seconds = seconds.max(0.0);
-    if target_seconds >= 3_600.0 {
-        t!(
-            "ManagePage.stats_hours",
-            hours = format!("{:.1}", seconds / 3_600.0)
-        )
-    } else {
-        t!(
-            "ManagePage.stats_minutes",
-            minutes = (seconds / 60.0).round() as u64
-        )
-    }
 }
 
 fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {

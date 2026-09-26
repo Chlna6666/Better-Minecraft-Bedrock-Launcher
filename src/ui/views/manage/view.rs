@@ -898,20 +898,21 @@ impl ManagePageView {
                                     state.tab_anim_seq,
                                 ),
                                 if animating {
-                                    tab_toolbar_motion()
+                                    tab_toolbar_motion().with_property(
+                                        AnimationProperty::translation(
+                                            point(px(8.0 * direction), px(0.0)),
+                                            Point::default(),
+                                        ),
+                                    )
                                 } else {
-                                    settled_animation()
+                                    settled_animation().with_property(
+                                        AnimationProperty::translation(
+                                            Point::default(),
+                                            Point::default(),
+                                        ),
+                                    )
                                 },
-                                move |toolbar, progress| {
-                                    let progress = if animating {
-                                        progress.clamp(0.0, 1.0)
-                                    } else {
-                                        1.0
-                                    };
-                                    toolbar
-                                        .relative()
-                                        .left(px(8.0 * direction * (1.0 - progress)))
-                                },
+                                |toolbar, _progress| toolbar,
                             )
                             .into_any_element()
                     })
