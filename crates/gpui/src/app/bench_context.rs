@@ -19,6 +19,9 @@ const NANOS_PER_SECOND: u64 = 1_000_000_000;
 #[derive(Default)]
 struct BenchReportState {
     frame_callbacks: u64,
+    foreground_polls: u64,
+    foreground_busy_iterations: u64,
+    foreground_max_polls_per_iteration: u64,
 }
 
 /// Aggregate metadata emitted alongside Criterion's benchmark statistics.
@@ -57,10 +60,38 @@ impl BenchReport {
         state.frame_callbacks = state.frame_callbacks.saturating_add(1);
     }
 
+    fn record_foreground_batch(&self, polls: usize) {
+        if polls == 0 {
+            return;
+        }
+
+        let polls = polls as u64;
+        let mut state = self.state.borrow_mut();
+        state.foreground_polls = state.foreground_polls.saturating_add(polls);
+        state.foreground_busy_iterations = state.foreground_busy_iterations.saturating_add(1);
+        state.foreground_max_polls_per_iteration =
+            state.foreground_max_polls_per_iteration.max(polls);
+    }
+
+    /// Returns how many foreground runnable polls were included in measured renderer iterations.
+    pub fn foreground_polls(&self) -> u64 {
+        self.state.borrow().foreground_polls
+    }
+
+    /// Returns how many measured renderer iterations began with foreground work already queued.
+    pub fn foreground_busy_iterations(&self) -> u64 {
+        self.state.borrow().foreground_busy_iterations
+    }
+
+    /// Returns the largest initially-ready foreground batch observed in one measured iteration.
+    pub fn foreground_max_polls_per_iteration(&self) -> u64 {
+        self.state.borrow().foreground_max_polls_per_iteration
+    }
+
     /// Prints GPUI-specific benchmark metadata to stderr.
     pub fn print(&self, benchmark_name: Option<&'static str>) {
         let state = self.state.borrow();
-        if state.frame_callbacks == 0 {
+        if state.frame_callbacks == 0 && state.foreground_polls == 0 {
             return;
         }
         eprintln!(
@@ -69,10 +100,22 @@ impl BenchReport {
         );
         eprintln!("  target frame budget: {:?}", self.frame_budget);
         eprintln!("  delivered platform frame callbacks: {}", state.frame_callbacks);
+        if state.foreground_polls != 0 {
+            eprintln!(
+                "  foreground polls: {} across {} busy iterations (max batch {})",
+                state.foreground_polls,
+                state.foreground_busy_iterations,
+                state.foreground_max_polls_per_iteration
+            );
+        }
     }
 }
 
-/// GPUI application context used by Criterion benchmarks.\n///\n/// The benchmark platform exercises GPUI's CPU-side lifecycle, layout, retained replay and\n/// platform frame-callback scheduling. Nova GPU upload/submit cost remains covered by the\n/// dedicated renderer microbenchmarks and must not be inferred from this headless platform.
+/// GPUI application context used by Criterion benchmarks.
+///
+/// The benchmark platform exercises GPUI's CPU-side lifecycle, layout, retained replay and
+/// platform frame-callback scheduling. Nova GPU upload/submit cost remains covered by the
+/// dedicated renderer microbenchmarks and must not be inferred from this headless platform.
 ///
 /// Unlike `TestAppContext`, this context does not make effect flushing draw dirty windows.
 /// Updates request a platform frame and the benchmark harness explicitly delivers scheduled frame
@@ -237,9 +280,10 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
             // Service only the foreground work that was already queued at frame start.
             // Self-requeuing work advances at most one initial batch, and worker-pool tasks stay
             // off the UI-thread measurement just as they do on production platforms.
-            self.dispatcher.run_ready_foreground_tasks(|| {
+            let foreground_polls = self.dispatcher.run_ready_foreground_tasks(|| {
                 self.dispatch_pending_frames();
             });
+            self.report.record_foreground_batch(foreground_polls);
             window
                 .update(self, |view, window, cx| update(view, window, cx))
                 .expect("benchmark window was unexpectedly closed");

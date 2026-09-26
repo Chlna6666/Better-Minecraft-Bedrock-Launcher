@@ -203,7 +203,7 @@ impl TestDispatcher {
     pub(crate) fn run_ready_foreground_tasks(
         &self,
         mut after_poll: impl FnMut(),
-    ) -> bool {
+    ) -> usize {
         assert!(
             self.is_main_thread(),
             "foreground tasks must be serviced from the main thread"
@@ -216,7 +216,7 @@ impl TestDispatcher {
             .values()
             .map(VecDeque::len)
             .sum::<usize>();
-        let mut ran_any = false;
+        let mut polls = 0usize;
 
         for _ in 0..pending {
             let runnable = {
@@ -234,11 +234,11 @@ impl TestDispatcher {
             };
 
             runnable.run();
-            ran_any = true;
+            polls = polls.saturating_add(1);
             after_poll();
         }
 
-        ran_any
+        polls
     }
 
     pub fn run_until_parked(&self) {
@@ -400,9 +400,9 @@ mod bench_turn_tests {
             })
             .detach();
 
-        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert_eq!(dispatcher.run_ready_foreground_tasks(|| {}), 1);
         assert_eq!(polls.load(Ordering::SeqCst), 1);
-        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert_eq!(dispatcher.run_ready_foreground_tasks(|| {}), 1);
         assert_eq!(polls.load(Ordering::SeqCst), 2);
     }
 
@@ -431,7 +431,7 @@ mod bench_turn_tests {
             })
             .detach();
 
-        assert!(dispatcher.run_ready_foreground_tasks(|| {}));
+        assert_eq!(dispatcher.run_ready_foreground_tasks(|| {}), 1);
         assert!(foreground_ran.load(Ordering::SeqCst));
         assert!(!background_ran.load(Ordering::SeqCst));
     }
