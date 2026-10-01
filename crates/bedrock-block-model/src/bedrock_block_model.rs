@@ -6,6 +6,7 @@
 
 mod error;
 mod geometry;
+mod geometry_shape;
 mod java;
 mod java_bake;
 mod java_db;
@@ -23,6 +24,7 @@ mod texture;
 
 pub use error::{BlockModelError, Result};
 pub use geometry::{BlockGeometry, GeometryBone, GeometryCube, GeometryLibrary, GeometryUv};
+pub use geometry_shape::shape_from_geometry;
 pub use java::{
     JavaBakedModel, JavaModelRepository, java_block_id_for_bedrock_state,
     java_properties_for_bedrock_state,

@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::material::BlockFace;
-use crate::model_family::shape::{
-    ModelCuboid, ModelShape, detail_cuboid_with_local_uv,
-};
+use crate::model_family::shape::{ModelCuboid, ModelShape, detail_cuboid_with_local_uv};
 use crate::{
     BlockModelError, BlockStateQuery, BlockStateValue, ModelFamily, Result,
     canonical_block_name_for_state, model_family_for_block_name,

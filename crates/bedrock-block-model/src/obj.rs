@@ -2375,8 +2375,8 @@ fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(vanilla_resource_pack_overlay_version);
-        right_version
-            .cmp(&left_version)
+        left_version
+            .cmp(&right_version)
             .then_with(|| left.cmp(right))
     });
 
@@ -4898,6 +4898,29 @@ mod tests {
     }
 
     #[test]
+    fn texture_resolver_prefers_newest_vanilla_definition_and_texture() {
+        let package = TestPack::new();
+        package.write_bytes("data/resource_packs/vanilla/textures/.keep", b"");
+        for (version, texture) in [("1.21.90", "old"), ("1.21.100", "new")] {
+            let root = format!("data/resource_packs/vanilla_{version}");
+            package.write(
+                &format!("{root}/blocks.json"),
+                r#"{"stone":{"textures":"stone"}}"#,
+            );
+            package.write(
+                &format!("{root}/textures/terrain_texture.json"),
+                &format!(r#"{{"texture_data":{{"stone":{{"textures":"textures/blocks/{texture}"}}}}}}"#),
+            );
+            package.write_bytes(&format!("{root}/textures/blocks/{texture}.png"), b"png");
+        }
+        let resolver = ObjTextureResolver::with_package_roots([package.path()], "textures");
+        assert_eq!(
+            resolved_relative_path(&resolver, "minecraft_stone_up", [0, 1, 0]).as_deref(),
+            Some("textures/blocks/new.png")
+        );
+    }
+
+    #[test]
     fn texture_prefix_should_require_path_separator() {
         assert!(!path_starts_with_directory(
             "texturesamethyst_cluster_up.png",
@@ -4913,8 +4936,8 @@ mod tests {
     fn vanilla_resource_pack_roots_should_include_base_and_sorted_overlays() {
         let pack = TestPack::new();
         pack.write_bytes("data/resource_packs/vanilla/textures/.keep", b"");
-        pack.write_bytes("data/resource_packs/vanilla_1.20.0/textures/.keep", b"");
         pack.write_bytes("data/resource_packs/vanilla_1.21.40/textures/.keep", b"");
+        pack.write_bytes("data/resource_packs/vanilla_1.20.0/textures/.keep", b"");
 
         let roots = vanilla_resource_pack_roots(&pack.path());
 
@@ -4932,21 +4955,21 @@ mod tests {
             pack.path()
                 .join("data")
                 .join("resource_packs")
-                .join("vanilla_1.21.40")
-                .join("client"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
-                .join("vanilla_1.21.40"),
-            pack.path()
-                .join("data")
-                .join("resource_packs")
                 .join("vanilla_1.20.0")
                 .join("client"),
             pack.path()
                 .join("data")
                 .join("resource_packs")
                 .join("vanilla_1.20.0"),
+            pack.path()
+                .join("data")
+                .join("resource_packs")
+                .join("vanilla_1.21.40")
+                .join("client"),
+            pack.path()
+                .join("data")
+                .join("resource_packs")
+                .join("vanilla_1.21.40"),
             pack.path()
                 .join("data")
                 .join("resourcepacks")
