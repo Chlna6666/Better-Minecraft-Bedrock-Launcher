@@ -10038,6 +10038,7 @@ dependencies = [
 [[package]]
 name = "sonde-sdk"
 version = "0.1.8"
+source = "git+https://github.com/Chlna6666/Sonde#458560e353bfcde325357a56cbe2812fe0049fca"
 dependencies = [
  "hex",
  "hmac 0.13.0",

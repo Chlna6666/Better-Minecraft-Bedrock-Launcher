@@ -191,9 +191,6 @@ gpui = { path = "crates/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }
 
-[patch."https://github.com/Chlna6666/Sonde"]
-sonde-sdk = { path = "D:/Rust/Sonde/sdk/rust" }
-
 [profile.release]
 opt-level = "s"     # 优化代码体积 ("s" = 小体积, "z" = 最小体积)
 lto = "fat"           # 启用 Link Time Optimization
