@@ -1,8 +1,10 @@
 use super::*;
+use crate::StorageCachePolicy;
 use crate::chunk::{
     LEGACY_SUBCHUNK_WITH_LIGHT_VALUE_LEN, LEGACY_TERRAIN_BLOCK_COUNT, LEGACY_TERRAIN_VALUE_LEN,
     LegacySubChunk,
 };
+use crate::player::PlayerInventorySlot;
 use crate::scan::HardcodedSpawnAreaKind;
 use crate::{
     Dimension, MemoryStorage, NbtTag, StorageBatch, StorageReadOptions, StorageScanOutcome,
@@ -163,9 +165,7 @@ fn map_and_global_records_roundtrip_through_world_transactions() {
         roots: vec![NbtTag::Compound(IndexMap::new())],
         raw: Bytes::new(),
     };
-    world
-        .save_global(&global)
-        .expect("write global");
+    world.save_global(&global).expect("write global");
     assert!(
         world
             .global(GlobalRecordKind::Scoreboard)
@@ -173,15 +173,397 @@ fn map_and_global_records_roundtrip_through_world_transactions() {
             .is_some()
     );
 
-    world
-        .delete_map_item(&map_id)
-        .expect("delete map");
+    world.delete_map_item(&map_id).expect("delete map");
+    assert!(world.map_item(&map_id).expect("read deleted").is_none());
+}
+
+#[test]
+fn save_player_persists_inventory_edit_and_rejects_stale_source() {
+    let storage = Arc::new(MemoryStorage::new());
+    let source = NbtTag::Compound(IndexMap::from([
+        ("Inventory".to_string(), NbtTag::List(Vec::new())),
+        ("future".to_string(), NbtTag::String("keep".to_string())),
+    ]));
+    let raw = crate::nbt::serialize_root_nbt(&source).expect("player NBT");
+    storage.put(b"~local_player", &raw).expect("seed player");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let mut player = world
+        .player(&PlayerId::Local)
+        .expect("player")
+        .expect("exists");
+    let stale = player.clone();
+    player
+        .set_inventory_item(
+            PlayerInventorySlot::from_raw(9),
+            crate::map_item::new_filled_map_item(92, 9).expect("map item"),
+        )
+        .expect("set item");
+    world.save_player(&player).expect("save edit");
+    assert!(matches!(
+        world.save_player(&stale),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    let read = world
+        .player(&PlayerId::Local)
+        .expect("player")
+        .expect("exists");
+    assert!(
+        read.inventory_item(PlayerInventorySlot::from_raw(9))
+            .expect("inventory")
+            .is_some()
+    );
+    let NbtTag::Compound(root) = &read.nbt else {
+        panic!("player root")
+    };
+    assert_eq!(root["future"], NbtTag::String("keep".to_string()));
+}
+
+#[test]
+fn map_bundle_install_uses_free_player_slot_and_commits_maps_with_shulker() {
+    let storage = Arc::new(MemoryStorage::new());
+    let empty = |slot| {
+        NbtTag::Compound(IndexMap::from([
+            ("Count".to_string(), NbtTag::Byte(0)),
+            ("Damage".to_string(), NbtTag::Short(0)),
+            ("Name".to_string(), NbtTag::String(String::new())),
+            ("Slot".to_string(), NbtTag::Byte(slot)),
+            ("WasPickedUp".to_string(), NbtTag::Byte(0)),
+        ]))
+    };
+    let mut inventory = (0..36).map(empty).collect::<Vec<_>>();
+    inventory[2] = NbtTag::Compound(IndexMap::from([
+        (
+            "Block".to_string(),
+            NbtTag::Compound(IndexMap::from([
+                (
+                    "name".to_string(),
+                    NbtTag::String("minecraft:undyed_shulker_box".to_string()),
+                ),
+                ("states".to_string(), NbtTag::Compound(IndexMap::new())),
+                ("version".to_string(), NbtTag::Int(18_168_865)),
+            ])),
+        ),
+        ("Count".to_string(), NbtTag::Byte(1)),
+        ("Damage".to_string(), NbtTag::Short(0)),
+        (
+            "Name".to_string(),
+            NbtTag::String("minecraft:undyed_shulker_box".to_string()),
+        ),
+        ("Slot".to_string(), NbtTag::Byte(2)),
+        ("WasPickedUp".to_string(), NbtTag::Byte(0)),
+        (
+            "tag".to_string(),
+            NbtTag::Compound(IndexMap::from([(
+                "Items".to_string(),
+                NbtTag::List(Vec::new()),
+            )])),
+        ),
+    ]));
+    let player_nbt = NbtTag::Compound(IndexMap::from([
+        ("Inventory".to_string(), NbtTag::List(inventory)),
+        ("future".to_string(), NbtTag::String("keep".to_string())),
+    ]));
+    storage
+        .put(
+            b"~local_player",
+            &crate::nbt::serialize_root_nbt(&player_nbt).expect("player NBT"),
+        )
+        .expect("seed player");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let records = (7..9)
+        .map(|id| {
+            SavedData::new_locked_pixels(
+                id,
+                crate::map_item::Pixels {
+                    width: 128,
+                    height: 128,
+                    rgba: vec![id as u8; 128 * 128 * 4],
+                },
+                0,
+                0,
+                0,
+                0,
+            )
+            .expect("map")
+        })
+        .collect();
+    let bundle = MapBundle::new(
+        records,
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(vec![
+                crate::map_item::new_filled_map_item(7, 0).expect("item"),
+                crate::map_item::new_filled_map_item(8, 0).expect("item"),
+            ]),
+        )])),
+    )
+    .expect("bundle");
+    let plan = world
+        .prepare_map_bundle_player(&bundle, &PlayerId::Local)
+        .expect("prepare");
+    assert_eq!(plan.slots()[0].raw(), 0);
+    assert_eq!(plan.map_ids(), &[0, 1]);
+    plan.commit(&world).expect("commit");
+    let player = world
+        .player(&PlayerId::Local)
+        .expect("read")
+        .expect("player");
+    let installed = player
+        .inventory_item(PlayerInventorySlot::from_raw(0))
+        .expect("slot")
+        .expect("box");
+    assert_eq!(
+        installed.nbt.get("Name"),
+        Some(&NbtTag::String("minecraft:undyed_shulker_box".to_string()))
+    );
+    let NbtTag::Compound(tag) = &installed.nbt["tag"] else {
+        panic!("shulker tag")
+    };
+    let NbtTag::List(items) = &tag["Items"] else {
+        panic!("shulker items")
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        crate::map_item::filled_map_id(&items[1])
+            .expect("filled map")
+            .as_str(),
+        "1"
+    );
     assert!(
         world
-            .map_item(&map_id)
-            .expect("read deleted")
+            .map_item(&MapItemId::new("0").expect("id"))
+            .expect("map")
+            .is_some()
+    );
+    assert_eq!(
+        player.root().expect("root")["future"],
+        NbtTag::String("keep".to_string())
+    );
+}
+
+#[test]
+fn map_id_collision_rejects_map_and_player_batch_without_inventory_change() {
+    let storage = Arc::new(MemoryStorage::new());
+    let source = NbtTag::Compound(IndexMap::from([(
+        "Inventory".to_string(),
+        NbtTag::List(Vec::new()),
+    )]));
+    let raw = crate::nbt::serialize_root_nbt(&source).expect("player NBT");
+    storage.put(b"~local_player", &raw).expect("seed player");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let pixels = crate::map_item::Pixels {
+        width: 128,
+        height: 128,
+        rgba: vec![255; 128 * 128 * 4],
+    };
+    let map =
+        crate::map_item::SavedData::new_locked_pixels(92, pixels, 0, 0, 0, 0).expect("new map");
+    world.save_map_item(&map).expect("occupy id");
+    let mut player = world
+        .player(&PlayerId::Local)
+        .expect("player")
+        .expect("exists");
+    player
+        .set_inventory_item(
+            PlayerInventorySlot::from_raw(9),
+            crate::map_item::new_filled_map_item(92, 9).expect("map item"),
+        )
+        .expect("set item");
+    let mut transaction = world.transaction();
+    transaction.update_player(&player).expect("stage player");
+    transaction.save_map_item(&map).expect("stage map");
+    assert!(matches!(
+        transaction.commit(),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    let read = world
+        .player(&PlayerId::Local)
+        .expect("player")
+        .expect("exists");
+    assert!(
+        read.inventory_item(PlayerInventorySlot::from_raw(9))
+            .expect("inventory")
             .is_none()
     );
+}
+
+#[test]
+fn available_map_ids_skip_existing_keys_without_decoding_values() {
+    let storage = Arc::new(MemoryStorage::new());
+    storage.put(b"map_0", b"unparsed").expect("id 0");
+    storage.put(b"map_2", b"unparsed").expect("id 2");
+    let world = World::from_storage("memory", storage, OpenOptions::default());
+    assert_eq!(world.available_map_ids(3).expect("ids"), vec![1, 3, 4]);
+    assert!(world.available_map_ids(1025).is_err());
+}
+
+#[test]
+fn map_write_preserves_unknown_fields_and_rejects_stale_source() {
+    let storage = Arc::new(MemoryStorage::new());
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let id = MapItemId::new("42").expect("map id");
+    let root = NbtTag::Compound(IndexMap::from([
+        ("scale".to_string(), NbtTag::Byte(1)),
+        (
+            "future_field".to_string(),
+            NbtTag::String("keep".to_string()),
+        ),
+    ]));
+    let created = SavedData {
+        id: id.clone(),
+        roots: vec![root],
+        known_fields: crate::map_item::KnownFields::default(),
+        pixels: None,
+        raw: Bytes::new(),
+    };
+    world.save_map_item(&created).expect("create map");
+    assert!(matches!(
+        world.save_map_item(&created),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+
+    let mut first = world.map_item(&id).expect("read map").expect("map exists");
+    let mut stale = first.clone();
+    if let NbtTag::Compound(fields) = &mut first.roots[0] {
+        fields.insert("scale".to_string(), NbtTag::Byte(2));
+    }
+    world.save_map_item(&first).expect("update map");
+    if let NbtTag::Compound(fields) = &mut stale.roots[0] {
+        fields.insert("scale".to_string(), NbtTag::Byte(3));
+    }
+    assert!(matches!(
+        world.save_map_item(&stale),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    let saved = world.map_item(&id).expect("read map").expect("map exists");
+    assert_eq!(saved.known_fields.scale, Some(2));
+    assert!(matches!(
+        &saved.roots[0],
+        NbtTag::Compound(fields)
+            if fields.get("future_field") == Some(&NbtTag::String("keep".to_string()))
+    ));
+}
+
+#[test]
+fn chunk_record_precondition_rejects_changes_before_batch_write() {
+    let storage = Arc::new(MemoryStorage::new());
+    let world = World::from_storage(
+        "memory",
+        storage.clone(),
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let pos = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    let version_key = Bytes::from(ChunkKey::new(pos, ChunkRecordTag::Version).encode());
+    let version = Bytes::from_static(&[9]);
+    storage.put(&version_key, &version).expect("seed chunk");
+
+    let mut transaction = world.transaction();
+    transaction.require_chunk_records(pos, BTreeMap::from([(version_key, version)]));
+    transaction.put_raw_key(Bytes::from_static(b"marker"), Bytes::from_static(b"new"));
+    let added_key = ChunkKey::new(pos, ChunkRecordTag::Data2D).encode();
+    storage.put(&added_key, b"changed").expect("change source");
+
+    assert!(matches!(
+        transaction.commit(),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    assert_eq!(storage.get(b"marker").expect("read marker"), None);
+}
+
+#[test]
+fn raw_history_precondition_keeps_multi_record_batch_unwritten_on_conflict() {
+    let storage = Arc::new(MemoryStorage::new());
+    let world = World::from_storage(
+        "memory",
+        storage.clone(),
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    storage.put(b"map_1", b"before").expect("seed first record");
+    storage
+        .put(b"map_2", b"before")
+        .expect("seed second record");
+    let mut transaction = world.transaction();
+    for key in [b"map_1".as_slice(), b"map_2".as_slice()] {
+        transaction.require_raw_key(
+            Bytes::copy_from_slice(key),
+            Some(Bytes::from_static(b"before")),
+        );
+        transaction.put_raw_key(Bytes::copy_from_slice(key), Bytes::from_static(b"after"));
+    }
+    storage
+        .put(b"map_2", b"external")
+        .expect("change second source");
+    assert!(matches!(
+        transaction.commit(),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    assert_eq!(
+        storage.get(b"map_1").expect("first record"),
+        Some(Bytes::from_static(b"before"))
+    );
+    assert_eq!(
+        storage.get(b"map_2").expect("second record"),
+        Some(Bytes::from_static(b"external"))
+    );
+}
+
+#[test]
+fn malformed_block_entities_are_not_silently_treated_as_empty() {
+    let storage = Arc::new(MemoryStorage::new());
+    let world = World::from_storage("memory", storage.clone(), OpenOptions::default());
+    let pos = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    storage
+        .put(
+            &ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode(),
+            &[0xff],
+        )
+        .expect("seed malformed block entity");
+    assert!(matches!(
+        world.block_entities(pos),
+        Err(BedrockWorldError::CorruptWorld(_))
+    ));
 }
 
 #[test]
@@ -233,13 +615,640 @@ fn hsa_and_block_entities_roundtrip_with_chunk_validation() {
         .put_block_entities(pos, std::slice::from_ref(&block_entity))
         .expect("write block entity");
     assert_eq!(
-        world
-            .block_entities(pos)
-            .expect("read block entities")[0]
+        world.block_entities(pos).expect("read block entities")[0]
             .entity
             .position,
         Some([1, 64, 1])
     );
+}
+
+#[test]
+fn stale_block_entities_reject_map_and_container_batch_together() {
+    let storage = Arc::new(MemoryStorage::new());
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let pos = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    let mut chest = BlockEntity {
+        id: Some("Chest".to_string()),
+        position: Some([1, 64, 1]),
+        is_movable: None,
+        custom_name: None,
+        items: Vec::new(),
+        nbt: NbtTag::Compound(IndexMap::from([
+            ("id".to_string(), NbtTag::String("Chest".to_string())),
+            ("x".to_string(), NbtTag::Int(1)),
+            ("y".to_string(), NbtTag::Int(64)),
+            ("z".to_string(), NbtTag::Int(1)),
+            ("Items".to_string(), NbtTag::List(Vec::new())),
+        ])),
+    };
+    world
+        .put_block_entities(pos, std::slice::from_ref(&chest))
+        .expect("seed chest");
+    let (source, expected) = world.block_entities_snapshot(pos).expect("read source");
+    let map = SavedData::new_locked_pixels(
+        77,
+        crate::map_item::Pixels {
+            width: 128,
+            height: 128,
+            rgba: vec![0; 128 * 128 * 4],
+        },
+        0,
+        0,
+        0,
+        0,
+    )
+    .expect("map");
+    let mut transaction = world.transaction();
+    transaction.save_map_item(&map).expect("stage map");
+    transaction
+        .update_block_entities(pos, expected, &[source[0].entity.clone()])
+        .expect("stage chest");
+
+    if let NbtTag::Compound(fields) = &mut chest.nbt {
+        fields.insert(
+            "CustomName".to_string(),
+            NbtTag::String("newer".to_string()),
+        );
+    }
+    world
+        .put_block_entities(pos, std::slice::from_ref(&chest))
+        .expect("concurrent chest update");
+    assert!(matches!(
+        transaction.commit(),
+        Err(BedrockWorldError::ConcurrentWrite(_))
+    ));
+    assert!(world.map_item(&map.id).expect("read map").is_none());
+    let updated = world.block_entities(pos).expect("read chest");
+    let NbtTag::Compound(fields) = &updated[0].entity.nbt else {
+        panic!("chest NBT")
+    };
+    assert_eq!(fields["CustomName"], NbtTag::String("newer".to_string()));
+}
+
+#[test]
+fn map_bundle_install_preserves_existing_chest_items() {
+    let storage = Arc::new(MemoryStorage::new());
+    let pos = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    storage
+        .put(
+            &ChunkKey::subchunk(pos, 4).encode(),
+            &test_uniform_named_subchunk_bytes("minecraft:chest"),
+        )
+        .expect("seed chest block");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let existing = NbtTag::Compound(IndexMap::from([
+        (
+            "Name".to_string(),
+            NbtTag::String("minecraft:stone".to_string()),
+        ),
+        ("Count".to_string(), NbtTag::Byte(1)),
+        ("Slot".to_string(), NbtTag::Byte(0)),
+    ]));
+    let chest = BlockEntity {
+        id: Some("Chest".to_string()),
+        position: Some([1, 64, 1]),
+        is_movable: None,
+        custom_name: None,
+        items: Vec::new(),
+        nbt: NbtTag::Compound(IndexMap::from([
+            ("BlockEntityVersion".to_string(), NbtTag::Int(1)),
+            ("id".to_string(), NbtTag::String("Chest".to_string())),
+            ("x".to_string(), NbtTag::Int(1)),
+            ("y".to_string(), NbtTag::Int(64)),
+            ("z".to_string(), NbtTag::Int(1)),
+            ("Items".to_string(), NbtTag::List(vec![existing.clone()])),
+            ("future".to_string(), NbtTag::String("keep".to_string())),
+        ])),
+    };
+    world
+        .put_block_entities(pos, &[chest])
+        .expect("seed chest entity");
+    let bundle = MapBundle::new(
+        vec![
+            SavedData::new_locked_pixels(
+                7,
+                crate::map_item::Pixels {
+                    width: 128,
+                    height: 128,
+                    rgba: vec![1; 128 * 128 * 4],
+                },
+                0,
+                0,
+                0,
+                0,
+            )
+            .expect("map"),
+        ],
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(vec![
+                crate::map_item::new_filled_map_item(7, 0).expect("map item"),
+            ]),
+        )])),
+    )
+    .expect("bundle");
+    let plan = world
+        .prepare_map_bundle_container(&bundle, pos, BlockPos { x: 1, y: 64, z: 1 })
+        .expect("prepare");
+    assert_eq!(plan.slots(), &[1]);
+    plan.commit(&world).expect("commit");
+    let records = world.block_entities(pos).expect("read chest");
+    let NbtTag::Compound(fields) = &records[0].entity.nbt else {
+        panic!("chest NBT")
+    };
+    let NbtTag::List(items) = &fields["Items"] else {
+        panic!("items")
+    };
+    assert_eq!(items[0], existing);
+    assert_eq!(
+        crate::map_item::filled_map_id(&items[1])
+            .expect("map reference")
+            .as_str(),
+        "0"
+    );
+    assert_eq!(fields["future"], NbtTag::String("keep".to_string()));
+    assert!(
+        world
+            .map_item(&MapItemId::new("0").expect("id"))
+            .expect("map")
+            .is_some()
+    );
+
+    let template = NbtTag::Compound(IndexMap::from([
+        (
+            "Block".to_string(),
+            NbtTag::Compound(IndexMap::from([
+                (
+                    "name".to_string(),
+                    NbtTag::String("minecraft:undyed_shulker_box".to_string()),
+                ),
+                ("states".to_string(), NbtTag::Compound(IndexMap::new())),
+                ("version".to_string(), NbtTag::Int(18_168_865)),
+            ])),
+        ),
+        (
+            "Name".to_string(),
+            NbtTag::String("minecraft:undyed_shulker_box".to_string()),
+        ),
+        ("Count".to_string(), NbtTag::Byte(1)),
+        ("Slot".to_string(), NbtTag::Byte(0)),
+    ]));
+    world
+        .storage()
+        .put(
+            b"~local_player",
+            &crate::nbt::serialize_root_nbt(&NbtTag::Compound(IndexMap::from([(
+                "Inventory".to_string(),
+                NbtTag::List(vec![template]),
+            )])))
+            .expect("player NBT"),
+        )
+        .expect("seed shulker template");
+    let multi = MapBundle::new(
+        (8..36)
+            .map(|id| {
+                SavedData::new_locked_pixels(
+                    id,
+                    crate::map_item::Pixels {
+                        width: 128,
+                        height: 128,
+                        rgba: vec![2; 128 * 128 * 4],
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                .expect("map")
+            })
+            .collect(),
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(
+                (8..36)
+                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .collect(),
+            ),
+        )])),
+    )
+    .expect("multi bundle");
+    let plan = world
+        .prepare_map_bundle_container(&multi, pos, BlockPos { x: 1, y: 64, z: 1 })
+        .expect("prepare nested shulker");
+    assert_eq!(plan.slots(), &[2, 3]);
+    plan.commit(&world).expect("commit nested shulker");
+    let records = world.block_entities(pos).expect("read nested shulker");
+    let NbtTag::Compound(fields) = &records[0].entity.nbt else {
+        panic!("chest NBT")
+    };
+    let NbtTag::List(items) = &fields["Items"] else {
+        panic!("chest items")
+    };
+    let NbtTag::Compound(box_item) = &items[2] else {
+        panic!("shulker item")
+    };
+    assert_eq!(box_item["Slot"], NbtTag::Byte(2));
+    let NbtTag::Compound(tag) = &box_item["tag"] else {
+        panic!("shulker tag")
+    };
+    let NbtTag::List(inner) = &tag["Items"] else {
+        panic!("shulker contents")
+    };
+    assert_eq!(inner.len(), 27);
+    assert_eq!(
+        crate::map_item::filled_map_id(&inner[0])
+            .expect("first map")
+            .as_str(),
+        "1"
+    );
+    assert_eq!(
+        crate::map_item::filled_map_id(&inner[1])
+            .expect("second map")
+            .as_str(),
+        "2"
+    );
+    let NbtTag::Compound(second_box) = &items[3] else {
+        panic!("second shulker item")
+    };
+    let NbtTag::Compound(second_tag) = &second_box["tag"] else {
+        panic!("second shulker tag")
+    };
+    let NbtTag::List(second_inner) = &second_tag["Items"] else {
+        panic!("second shulker contents")
+    };
+    assert_eq!(second_inner.len(), 1);
+    assert_eq!(
+        crate::map_item::filled_map_id(&second_inner[0])
+            .expect("last map")
+            .as_str(),
+        "28"
+    );
+}
+
+#[test]
+fn map_bundle_install_updates_frame_map_bit_and_item_together() {
+    let storage = Arc::new(MemoryStorage::new());
+    let pos = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    storage
+        .put(
+            &ChunkKey::subchunk(pos, 4).encode(),
+            &test_uniform_frame_subchunk_bytes(),
+        )
+        .expect("seed frame block");
+    storage
+        .put(
+            &ChunkKey::new(pos, ChunkRecordTag::Data3D).encode(),
+            &test_data3d_height_bytes(64),
+        )
+        .expect("seed frame heightmap");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    world
+        .put_block_entities(
+            pos,
+            &[BlockEntity {
+                id: Some("ItemFrame".to_string()),
+                position: Some([1, 64, 1]),
+                is_movable: None,
+                custom_name: None,
+                items: Vec::new(),
+                nbt: NbtTag::Compound(IndexMap::from([
+                    ("id".to_string(), NbtTag::String("ItemFrame".to_string())),
+                    ("x".to_string(), NbtTag::Int(1)),
+                    ("y".to_string(), NbtTag::Int(64)),
+                    ("z".to_string(), NbtTag::Int(1)),
+                    ("ItemRotation".to_string(), NbtTag::Byte(0)),
+                ])),
+            }],
+        )
+        .expect("seed frame entity");
+    let bundle = MapBundle::new(
+        vec![
+            SavedData::new_locked_pixels(
+                7,
+                crate::map_item::Pixels {
+                    width: 128,
+                    height: 128,
+                    rgba: vec![1; 128 * 128 * 4],
+                },
+                0,
+                0,
+                0,
+                0,
+            )
+            .expect("map"),
+        ],
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(vec![
+                crate::map_item::new_filled_map_item(7, 0).expect("item"),
+            ]),
+        )])),
+    )
+    .expect("bundle");
+    let plan = world
+        .prepare_map_bundle_frame(&bundle, pos, BlockPos { x: 1, y: 64, z: 1 })
+        .expect("prepare frame");
+    assert_eq!(plan.map_ids(), &[0]);
+    plan.commit(&world).expect("commit frame");
+    let state = world
+        .block_state(Dimension::Overworld, BlockPos { x: 1, y: 64, z: 1 })
+        .expect("read block")
+        .expect("frame block");
+    assert_eq!(state.states["facing_direction"], NbtTag::Int(3));
+    assert_eq!(state.states["item_frame_map_bit"], NbtTag::Byte(1));
+    let records = world.block_entities(pos).expect("read frame");
+    let NbtTag::Compound(fields) = &records[0].entity.nbt else {
+        panic!("frame NBT")
+    };
+    assert_eq!(
+        crate::map_item::filled_map_id(&fields["Item"])
+            .expect("map item")
+            .as_str(),
+        "0"
+    );
+    assert!(
+        world
+            .map_item(&MapItemId::new("0").expect("id"))
+            .expect("map")
+            .is_some()
+    );
+}
+
+#[test]
+fn map_bundle_install_creates_upward_frame_grid_and_stone_support_atomically() {
+    let storage = Arc::new(MemoryStorage::new());
+    let chunk = ChunkPos {
+        x: 0,
+        z: 0,
+        dimension: Dimension::Overworld,
+    };
+    for subchunk in [3] {
+        storage
+            .put(
+                &ChunkKey::subchunk(chunk, subchunk).encode(),
+                &test_uniform_versioned_air_subchunk_bytes(18_168_864),
+            )
+            .expect("seed air");
+    }
+    storage
+        .put(
+            &ChunkKey::new(chunk, ChunkRecordTag::Data3D).encode(),
+            &test_data3d_height_bytes(63),
+        )
+        .expect("seed heightmap");
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let bundle = MapBundle::new(
+        (7..9)
+            .map(|id| {
+                SavedData::new_locked_pixels(
+                    id,
+                    crate::map_item::Pixels {
+                        width: 128,
+                        height: 128,
+                        rgba: vec![id as u8; 128 * 128 * 4],
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                .expect("map")
+            })
+            .collect(),
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(
+                (7..9)
+                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .collect(),
+            ),
+        )])),
+    )
+    .expect("bundle")
+    .with_grid(2, 1)
+    .expect("grid");
+    let position = BlockPos { x: 1, y: 64, z: 1 };
+    let support = BlockState {
+        name: "minecraft:stone".to_string(),
+        states: BTreeMap::new(),
+        version: Some(18_168_865),
+    };
+    let plan = world
+        .prepare_map_bundle_new_up_frame(&bundle, chunk, position, support.clone())
+        .expect("prepare upward frame");
+    assert_eq!(plan.map_ids(), &[0, 1]);
+    assert_eq!(plan.affected_chunks().len(), 1);
+    plan.commit(&world).expect("commit upward frame");
+    let frame = world
+        .block_state(Dimension::Overworld, position)
+        .expect("frame state")
+        .expect("frame block");
+    assert_eq!(frame.name, "minecraft:frame");
+    assert_eq!(frame.states["facing_direction"], NbtTag::Int(1));
+    assert_eq!(frame.states["item_frame_map_bit"], NbtTag::Byte(1));
+    for x in 0..2 {
+        let frame = world
+            .block_state(Dimension::Overworld, BlockPos { x, y: 64, z: 1 })
+            .expect("frame state")
+            .expect("frame block");
+        assert_eq!(frame.name, "minecraft:frame");
+        let below = world
+            .block_state(Dimension::Overworld, BlockPos { x, y: 63, z: 1 })
+            .expect("support state")
+            .expect("support block");
+        assert_eq!(below.name, "minecraft:stone");
+    }
+    let records = world.block_entities(chunk).expect("frame entity");
+    assert_eq!(records.len(), 2);
+    for (index, record) in records.iter().enumerate() {
+        let NbtTag::Compound(fields) = &record.entity.nbt else {
+            panic!("frame NBT")
+        };
+        assert_eq!(fields["ItemRotation"], NbtTag::Float(0.0));
+        assert_eq!(
+            crate::map_item::filled_map_id(&fields["Item"])
+                .expect("map reference")
+                .as_str(),
+            index.to_string()
+        );
+    }
+    for id in 0..2 {
+        assert!(
+            world
+                .map_item(&MapItemId::new(id.to_string()).expect("id"))
+                .expect("map")
+                .is_some()
+        );
+    }
+
+    for x in 2..4 {
+        crate::editor::set_block_state(
+            &world,
+            Dimension::Overworld,
+            BlockPos { x, y: 63, z: 1 },
+            support.clone(),
+            &crate::WriteGuard::confirmed("memory", "seed existing frame support"),
+        )
+        .expect("seed support");
+    }
+    world
+        .prepare_map_bundle_new_up_frame(&bundle, chunk, BlockPos { x: 3, y: 64, z: 1 }, support)
+        .expect("reuse matching support")
+        .commit(&world)
+        .expect("commit over existing support");
+    for x in 2..4 {
+        assert_eq!(
+            world
+                .block_state(Dimension::Overworld, BlockPos { x, y: 63, z: 1 })
+                .expect("existing support")
+                .expect("support block")
+                .name,
+            "minecraft:stone"
+        );
+    }
+}
+
+#[test]
+fn map_bundle_frame_grid_crosses_chunk_boundary_in_one_plan() {
+    let storage = Arc::new(MemoryStorage::new());
+    let chunks = [0, 1].map(|x| ChunkPos {
+        x,
+        z: 0,
+        dimension: Dimension::Overworld,
+    });
+    for chunk in chunks {
+        for subchunk in [3, 4] {
+            storage
+                .put(
+                    &ChunkKey::subchunk(chunk, subchunk).encode(),
+                    &test_uniform_versioned_air_subchunk_bytes(18_168_865),
+                )
+                .expect("seed air");
+        }
+        storage
+            .put(
+                &ChunkKey::new(chunk, ChunkRecordTag::Data3D).encode(),
+                &test_data3d_height_bytes(63),
+            )
+            .expect("seed heightmap");
+    }
+    let world = World::from_storage(
+        "memory",
+        storage,
+        OpenOptions {
+            read_only: false,
+            ..OpenOptions::default()
+        },
+    );
+    let bundle = MapBundle::new(
+        (21..23)
+            .map(|id| {
+                SavedData::new_locked_pixels(
+                    id,
+                    crate::map_item::Pixels {
+                        width: 128,
+                        height: 128,
+                        rgba: vec![id as u8; 128 * 128 * 4],
+                    },
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                .expect("map")
+            })
+            .collect(),
+        NbtTag::Compound(IndexMap::from([(
+            "Items".to_string(),
+            NbtTag::List(
+                (21..23)
+                    .map(|id| crate::map_item::new_filled_map_item(id, 0).expect("item"))
+                    .collect(),
+            ),
+        )])),
+    )
+    .expect("bundle")
+    .with_grid(2, 1)
+    .expect("grid");
+    let support = BlockState {
+        name: "minecraft:stone".to_string(),
+        states: BTreeMap::new(),
+        version: Some(18_168_865),
+    };
+    let plan = world
+        .prepare_map_bundle_new_up_frame(
+            &bundle,
+            chunks[1],
+            BlockPos { x: 16, y: 64, z: 1 },
+            support,
+        )
+        .expect("prepare cross-chunk grid");
+    assert_eq!(plan.affected_chunks(), BTreeSet::from(chunks));
+    plan.commit(&world).expect("atomic commit");
+    for (x, map_id) in [(15, "0"), (16, "1")] {
+        let position = BlockPos { x, y: 64, z: 1 };
+        let frame = world
+            .block_state(Dimension::Overworld, position)
+            .expect("frame state")
+            .expect("frame");
+        assert_eq!(frame.name, "minecraft:frame");
+        let chunk = position.to_chunk_pos(Dimension::Overworld);
+        let record = world
+            .block_entities(chunk)
+            .expect("frame entities")
+            .into_iter()
+            .find(|record| record.entity.position == Some([x, 64, 1]))
+            .expect("frame entity");
+        let NbtTag::Compound(fields) = record.entity.nbt else {
+            panic!("frame NBT")
+        };
+        assert_eq!(
+            crate::map_item::filled_map_id(&fields["Item"])
+                .expect("map reference")
+                .as_str(),
+            map_id
+        );
+    }
 }
 
 #[test]
@@ -301,9 +1310,7 @@ fn actor_write_updates_digest_and_prefix_together() {
             .is_some()
     );
 
-    world
-        .delete_actor(pos, actor_uid)
-        .expect("delete actor");
+    world.delete_actor(pos, actor_uid).expect("delete actor");
     assert!(
         storage
             .get(&ActorDigestKey::new(pos).storage_key())
@@ -717,9 +1724,7 @@ fn transaction_replaces_chunk_records_and_typed_payloads_in_one_commit() {
         Some(Bytes::from_static(b"\x02\0\0\0"))
     );
     assert_eq!(
-        world
-            .block_entities(pos)
-            .expect("read block entities")[0]
+        world.block_entities(pos).expect("read block entities")[0]
             .entity
             .position,
         block_entity.position
@@ -749,26 +1754,10 @@ fn biome_and_height_queries_read_legacy_data2d_in_zx_column_order() {
         .expect("put Data2D");
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
-    assert_eq!(
-        world
-            .biome_id(pos, 3, 2, 64)
-            .expect("biome id"),
-        Some(32)
-    );
-    assert_eq!(
-        world
-            .biome_id(pos, 2, 3, 64)
-            .expect("biome id"),
-        Some(23)
-    );
-    assert_eq!(
-        world.height(pos, 3, 2).expect("height"),
-        Some(132)
-    );
-    assert_eq!(
-        world.height(pos, 2, 3).expect("height"),
-        Some(123)
-    );
+    assert_eq!(world.biome_id(pos, 3, 2, 64).expect("biome id"), Some(32));
+    assert_eq!(world.biome_id(pos, 2, 3, 64).expect("biome id"), Some(23));
+    assert_eq!(world.height(pos, 3, 2).expect("height"), Some(132));
+    assert_eq!(world.height(pos, 2, 3).expect("height"), Some(123));
 }
 
 #[test]
@@ -787,10 +1776,7 @@ fn data3d_height_map_is_normalized_to_dimension_min_y() {
         .expect("put Data3D");
     let world = World::from_storage("memory", storage, OpenOptions::default());
 
-    assert_eq!(
-        world.height(pos, 4, 2).expect("height"),
-        Some(66)
-    );
+    assert_eq!(world.height(pos, 4, 2).expect("height"), Some(66));
     let chunk = world
         .query_chunk_data(
             pos,
@@ -1268,12 +2254,7 @@ fn chunk_bounds_and_nearest_loaded_chunk_use_key_only_scan() {
     assert_eq!(bounds.chunk_count, 2);
 
     let nearest = world
-        .nearest_loaded_chunk_to_spawn(
-            Dimension::Overworld,
-            0,
-            0,
-            WorldScanOptions::default(),
-        )
+        .nearest_loaded_chunk_to_spawn(Dimension::Overworld, 0, 0, WorldScanOptions::default())
         .expect("nearest")
         .expect("nearest chunk");
     assert_eq!(nearest.x, 2);
@@ -2238,6 +3219,53 @@ fn test_uniform_named_subchunk_bytes(block_name: &str) -> Vec<u8> {
             ("name".to_string(), NbtTag::String(name.to_string())),
             ("states".to_string(), NbtTag::Compound(IndexMap::new())),
             ("version".to_string(), NbtTag::Int(1)),
+        ]));
+        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+    }
+    bytes
+}
+
+fn test_uniform_frame_subchunk_bytes() -> Vec<u8> {
+    let mut bytes = vec![8, 1, 1 << 1];
+    for _ in 0..128 {
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+    }
+    bytes.extend_from_slice(&2_i32.to_le_bytes());
+    for (name, states) in [
+        ("minecraft:air", IndexMap::new()),
+        (
+            "minecraft:frame",
+            IndexMap::from([
+                ("facing_direction".to_string(), NbtTag::Int(3)),
+                ("item_frame_map_bit".to_string(), NbtTag::Byte(0)),
+                ("item_frame_photo_bit".to_string(), NbtTag::Byte(0)),
+            ]),
+        ),
+    ] {
+        let tag = NbtTag::Compound(IndexMap::from([
+            ("name".to_string(), NbtTag::String(name.to_string())),
+            ("states".to_string(), NbtTag::Compound(states)),
+            ("version".to_string(), NbtTag::Int(18_168_865)),
+        ]));
+        bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
+    }
+    bytes
+}
+
+fn test_uniform_versioned_air_subchunk_bytes(version: i32) -> Vec<u8> {
+    let mut bytes = vec![8, 1, 1 << 1];
+    for _ in 0..128 {
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+    }
+    bytes.extend_from_slice(&2_i32.to_le_bytes());
+    for _ in 0..2 {
+        let tag = NbtTag::Compound(IndexMap::from([
+            (
+                "name".to_string(),
+                NbtTag::String("minecraft:air".to_string()),
+            ),
+            ("states".to_string(), NbtTag::Compound(IndexMap::new())),
+            ("version".to_string(), NbtTag::Int(version)),
         ]));
         bytes.extend_from_slice(&crate::nbt::serialize_root_nbt(&tag).expect("nbt"));
     }

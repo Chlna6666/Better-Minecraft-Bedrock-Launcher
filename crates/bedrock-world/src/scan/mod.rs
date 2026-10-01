@@ -821,11 +821,7 @@ fn record_world_key(
 impl Chunk {
     #[must_use]
     /// Creates a structured snapshot from one chunk's Bedrock LevelDB values.
-    pub fn new(
-        pos: ChunkPos,
-        records: &[ChunkRecord],
-        options: ScanOptions,
-    ) -> Self {
+    pub fn new(pos: ChunkPos, records: &[ChunkRecord], options: ScanOptions) -> Self {
         let mut report = ScanReport::default();
         let parsed_records = records
             .iter()
@@ -1022,7 +1018,7 @@ fn parse_chunk_record_value(
             ChunkValue::FinalizedState,
         ),
         ChunkRecordTag::Data3D | ChunkRecordTag::Data2D | ChunkRecordTag::Data2DLegacy => {
-            parse_biome_data(value, chunk_key.tag, report)
+            parse_biome_data(value, chunk_key.pos, chunk_key.tag, report)
         }
         ChunkRecordTag::HardcodedSpawners => parse_hardcoded_spawn_areas(value, report),
         ChunkRecordTag::LegacyTerrain => parse_legacy_terrain(value, report),
@@ -1151,11 +1147,7 @@ fn parse_map_value(id: &str, value: &Bytes, report: &mut ScanReport) -> ScanValu
     })
 }
 
-fn parse_village_value(
-    key: &VillageKey,
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> ScanValue {
+fn parse_village_value(key: &VillageKey, value: &Bytes, report: &mut ScanReport) -> ScanValue {
     let roots = match parse_consecutive_root_nbt(value) {
         Ok(roots) => roots,
         Err(error) => {
@@ -1215,11 +1207,7 @@ pub fn encode_map_item(item: &SavedData) -> WorldResult<Bytes> {
 }
 
 /// Decodes a known Bedrock global value.
-pub fn decode_global(
-    kind: GlobalRecordKind,
-    name: String,
-    value: Bytes,
-) -> WorldResult<Global> {
+pub fn decode_global(kind: GlobalRecordKind, name: String, value: Bytes) -> WorldResult<Global> {
     let roots = parse_consecutive_root_nbt(&value)?;
     Ok(Global {
         name,
@@ -1261,16 +1249,12 @@ pub fn encode_actor_ids(actor_ids: &[ActorUid]) -> Bytes {
 }
 
 /// Decodes a HardcodedSpawnAreas chunk value.
-pub fn decode_hardcoded_spawn_areas(
-    value: &[u8],
-) -> WorldResult<Vec<HardcodedSpawnArea>> {
+pub fn decode_hardcoded_spawn_areas(value: &[u8]) -> WorldResult<Vec<HardcodedSpawnArea>> {
     read_hardcoded_spawn_areas(value).map_err(BedrockWorldError::Validation)
 }
 
 /// Encodes a HardcodedSpawnAreas chunk value.
-pub fn encode_hardcoded_spawn_areas(
-    areas: &[HardcodedSpawnArea],
-) -> WorldResult<Bytes> {
+pub fn encode_hardcoded_spawn_areas(areas: &[HardcodedSpawnArea]) -> WorldResult<Bytes> {
     let count = i32::try_from(areas.len())
         .map_err(|_| BedrockWorldError::Validation("too many hardcoded spawn areas".to_string()))?;
     let mut bytes = Vec::with_capacity(4 + areas.len() * 25);
@@ -1302,11 +1286,7 @@ pub fn encode_consecutive_roots(roots: &[NbtTag]) -> WorldResult<Bytes> {
     Ok(Bytes::from(bytes))
 }
 
-fn parse_player_value(
-    key: BedrockDbKey,
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> ScanValue {
+fn parse_player_value(key: BedrockDbKey, value: &Bytes, report: &mut ScanReport) -> ScanValue {
     match parse_root_nbt(value) {
         Ok(nbt) => {
             let items = collect_item_stacks(&nbt);
@@ -1346,7 +1326,7 @@ fn map_known_fields(roots: &[NbtTag]) -> KnownFields {
         scale: int_field_any(root, &["scale", "Scale"]),
         width: int_field_any(root, &["width", "Width"]),
         height: int_field_any(root, &["height", "Height"]),
-        locked: bool_field_any(root, &["locked", "Locked"]),
+        locked: bool_field_any(root, &["mapLocked", "locked", "Locked"]),
     }
 }
 
@@ -1359,18 +1339,22 @@ fn map_pixels(roots: &[NbtTag]) -> Option<Pixels> {
     let height = int_field_any(root, &["height", "Height"])
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or_else(|| {
-            u32::try_from(colors.len())
+            u32::try_from(colors.len() / 4)
                 .ok()
                 .and_then(|len| len.checked_div(width))
                 .unwrap_or(128)
         });
+    if width == 0 || height == 0 {
+        return None;
+    }
     let expected_len = usize::try_from(width)
         .ok()?
-        .checked_mul(usize::try_from(height).ok()?)?;
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)?;
     (colors.len() == expected_len).then_some(Pixels {
         width,
         height,
-        colors: colors.iter().map(|value| *value as u8).collect(),
+        rgba: colors.iter().map(|value| *value as u8).collect(),
     })
 }
 
@@ -1416,11 +1400,12 @@ pub(crate) fn parse_actor_value(value: &Bytes, report: &mut ScanReport) -> ScanV
 
 fn parse_biome_data(
     value: &Bytes,
+    pos: ChunkPos,
     tag: ChunkRecordTag,
     report: &mut ScanReport,
 ) -> ChunkValue {
     let result = match tag {
-        ChunkRecordTag::Data3D => parse_data3d(value),
+        ChunkRecordTag::Data3D => parse_data3d_with_min_y(value, pos.y_range(ChunkVersion::New).0),
         ChunkRecordTag::Data2D => parse_legacy_data2d(value),
         ChunkRecordTag::Data2DLegacy => parse_data2d_legacy(value),
         _ => unreachable!("biome parser called with a non-biome tag"),
@@ -1496,6 +1481,18 @@ pub(crate) fn parse_data2d_legacy(value: &[u8]) -> Result<BiomeData, String> {
 }
 
 pub(crate) fn parse_data3d(value: &[u8]) -> Result<BiomeData, String> {
+    let mut data = parse_data3d_with_min_y(value, 0)?;
+    if data.storages.len() == 24 {
+        for (index, storage) in data.storages.iter_mut().enumerate() {
+            let index = i32::try_from(index)
+                .map_err(|_| "Data3D biome storage count exceeds i32".to_string())?;
+            storage.y = Some(-64 + index * 16);
+        }
+    }
+    Ok(data)
+}
+
+pub(crate) fn parse_data3d_with_min_y(value: &[u8], min_y: i32) -> Result<BiomeData, String> {
     if value.len() < 512 {
         return Err(format!("Data3D is too short: {}", value.len()));
     }
@@ -1510,11 +1507,10 @@ pub(crate) fn parse_data3d(value: &[u8]) -> Result<BiomeData, String> {
         offset += consumed;
         storages.push(storage);
     }
-    let first_block_y = if storages.len() == 24 { -64 } else { 0 };
     for (index, storage) in storages.iter_mut().enumerate() {
         let index = i32::try_from(index)
             .map_err(|_| "Data3D biome storage count exceeds i32".to_string())?;
-        storage.y = Some(first_block_y + index * 16);
+        storage.y = Some(min_y + index * 16);
     }
     Ok(BiomeData {
         version: ChunkVersion::New,
@@ -1523,10 +1519,7 @@ pub(crate) fn parse_data3d(value: &[u8]) -> Result<BiomeData, String> {
     })
 }
 
-fn parse_subchunk_biomes(
-    value: &[u8],
-    start_y: i32,
-) -> Result<(BiomeStorage, usize), String> {
+fn parse_subchunk_biomes(value: &[u8], start_y: i32) -> Result<(BiomeStorage, usize), String> {
     let Some(header) = value.first().copied() else {
         return Err("missing biome storage header".to_string());
     };
@@ -1727,10 +1720,7 @@ fn read_i32_le(value: &[u8], offset: usize) -> Result<i32, String> {
     Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn parse_hardcoded_spawn_areas(
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> ChunkValue {
+fn parse_hardcoded_spawn_areas(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
     match read_hardcoded_spawn_areas(value) {
         Ok(areas) => {
             report.hardcoded_spawn_area_count += areas.len();
@@ -1782,10 +1772,7 @@ fn read_hardcoded_spawn_areas(value: &[u8]) -> Result<Vec<HardcodedSpawnArea>, S
     Ok(areas)
 }
 
-pub(crate) fn parse_block_entities(
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> ChunkValue {
+pub(crate) fn parse_block_entities(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
     match parse_consecutive_root_nbt(value) {
         Ok(tags) => {
             let block_entities = tags
@@ -1805,10 +1792,7 @@ pub(crate) fn parse_block_entities(
     }
 }
 
-fn parse_entities_chunk_record(
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> ChunkValue {
+fn parse_entities_chunk_record(value: &Bytes, report: &mut ScanReport) -> ChunkValue {
     match parse_consecutive_root_nbt(value) {
         Ok(tags) => {
             let entities = tags
@@ -1828,10 +1812,7 @@ fn parse_entities_chunk_record(
     }
 }
 
-pub(crate) fn parse_entities_from_value(
-    value: &Bytes,
-    report: &mut ScanReport,
-) -> Vec<Actor> {
+pub(crate) fn parse_entities_from_value(value: &Bytes, report: &mut ScanReport) -> Vec<Actor> {
     match parse_actor_value(value, report) {
         ScanValue::ActorEntities(entities) => entities,
         _ => Vec::new(),
@@ -2291,23 +2272,58 @@ mod tests {
     }
 
     #[test]
+    fn scanned_data3d_storages_use_dimension_min_y_independent_of_layer_count() {
+        let mut payload = vec![0_u8; 512];
+        payload.extend(std::iter::repeat_n(0xff, 25));
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: crate::Dimension::Overworld,
+        };
+        let records = [ChunkRecord {
+            key: crate::ChunkKey::new(pos, ChunkRecordTag::Data3D),
+            value: Bytes::from(payload),
+        }];
+
+        let parsed = Chunk::new(pos, &records, ScanOptions::structured());
+        let ChunkValue::BiomeData(data) = &parsed.records[0].value else {
+            panic!("expected parsed biome data");
+        };
+        assert_eq!(
+            data.storages.first().and_then(|storage| storage.y),
+            Some(-64)
+        );
+        assert_eq!(
+            data.storages.last().and_then(|storage| storage.y),
+            Some(320)
+        );
+    }
+
+    #[test]
     fn map_and_global_records_extract_typed_fields() {
         let map_root = NbtTag::Compound(IndexMap::from([
             ("dimension".to_string(), NbtTag::Int(0)),
             ("xCenter".to_string(), NbtTag::Int(10)),
             ("zCenter".to_string(), NbtTag::Int(-20)),
             ("scale".to_string(), NbtTag::Byte(2)),
-            ("width".to_string(), NbtTag::Int(2)),
-            ("height".to_string(), NbtTag::Int(2)),
-            ("colors".to_string(), NbtTag::ByteArray(vec![1, 2, 3, 4])),
+            ("width".to_string(), NbtTag::Short(2)),
+            ("height".to_string(), NbtTag::Short(2)),
+            ("mapLocked".to_string(), NbtTag::Byte(1)),
+            (
+                "colors".to_string(),
+                NbtTag::ByteArray(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+            ),
         ]));
         let map_bytes = Bytes::from(serialize_root_nbt(&map_root).expect("serialize"));
         let map = decode_map_item(MapItemId::unchecked("5"), map_bytes).expect("map");
 
         assert_eq!(map.known_fields.center_x, Some(10));
+        assert_eq!(map.known_fields.width, Some(2));
+        assert_eq!(map.known_fields.height, Some(2));
+        assert_eq!(map.known_fields.locked, Some(true));
         assert_eq!(
-            map.pixels.as_ref().map(|pixels| pixels.colors.as_slice()),
-            Some(&[1, 2, 3, 4][..])
+            map.pixels.as_ref().map(|pixels| pixels.rgba.as_slice()),
+            Some(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16][..])
         );
 
         let global = decode_global(
@@ -2447,8 +2463,7 @@ mod tests {
             value: Bytes::from_static(&[42]),
         }];
 
-        let parsed =
-            Chunk::new(pos, &records, ScanOptions::summary());
+        let parsed = Chunk::new(pos, &records, ScanOptions::summary());
 
         assert_eq!((records[0].value[0], parsed.report.entry_count), (42, 1));
     }

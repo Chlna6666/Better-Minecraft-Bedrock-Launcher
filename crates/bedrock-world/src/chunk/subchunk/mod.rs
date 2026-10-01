@@ -10,12 +10,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-mod storage;
 mod heightmap;
 mod numeric_downgrade;
 mod numeric_storage;
 mod numeric_upgrade;
 mod palette_upgrade;
+mod storage;
 mod upgrade;
 mod v0;
 mod v1;
@@ -24,14 +24,14 @@ mod v8;
 mod v9;
 pub mod version;
 
-pub use numeric_downgrade::NumericSubChunkDowngradeReport;
 pub use heightmap::{SubChunkHeightMapContribution, subchunk_height_map_contribution};
+pub use numeric_downgrade::NumericSubChunkDowngradeReport;
 pub(crate) use numeric_downgrade::stage_subchunk_downgrade;
 pub use numeric_upgrade::NumericSubChunkUpgradeReport;
 pub(crate) use numeric_upgrade::stage_numeric_subchunk_upgrade;
-pub use storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteReport};
 pub use palette_upgrade::SubChunkUpgradeWriteReport;
 pub(crate) use palette_upgrade::stage_paletted_subchunks_for_upgrade;
+pub use storage::{SubChunkDowngradeWriteReport, SubChunkStorageWriteReport};
 pub use upgrade::SubChunkUpgradeReport;
 pub use version::SubChunkVersion;
 

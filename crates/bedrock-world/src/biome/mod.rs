@@ -8,7 +8,7 @@ mod upgrade;
 mod world;
 
 pub use crate::chunk::legacy::LegacyBiomeSample;
-pub use crate::scan::{Biome2d, Biome3d, HeightMap2d, BiomeData, BiomeStorage};
+pub use crate::scan::{Biome2d, Biome3d, BiomeData, BiomeStorage, HeightMap2d};
 pub use data2d::{data2d_to_data3d, data3d_to_data2d};
 pub use downgrade::BiomeData2dDowngradeReport;
 pub use legacy::Biome2dLegacy;

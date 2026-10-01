@@ -3,17 +3,16 @@
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, serialize_root_nbt};
 use crate::scan::{
-    BlockEntity, ChunkValue, Actor, HardcodedSpawnArea,
-    ScanOptions, decode_actor_ids,
+    Actor, BlockEntity, ChunkValue, HardcodedSpawnArea, ScanOptions, decode_actor_ids,
 };
-use crate::village::Entry;
 use crate::surface::{
     CancelFlag, ChunkBounds, Region, SurfaceColumn, SurfaceColumnOptions, WorldScanOptions,
 };
-use crate::world::{World, StorageBackend};
+use crate::village::Entry;
+use crate::world::{StorageBackend, World};
 use crate::{
-    ActorDigestKey, BlockPos, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag,
-    Dimension, LevelChunk, StorageReadOptions,
+    ActorDigestKey, BlockPos, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, Dimension,
+    LevelChunk, StorageReadOptions,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -678,8 +677,7 @@ pub fn query_slime_farm_candidates_with_cancel(
             slime_rectangle_candidates(bounds, &slime_chunks, 2, 2, cancel)?
         }
         SlimeFarmQueryMode::Rectangle2x3 => {
-            let mut candidates =
-                slime_rectangle_candidates(bounds, &slime_chunks, 2, 3, cancel)?;
+            let mut candidates = slime_rectangle_candidates(bounds, &slime_chunks, 2, 3, cancel)?;
             candidates.extend(slime_rectangle_candidates(
                 bounds,
                 &slime_chunks,
@@ -709,15 +707,13 @@ pub fn query_slime_farm_candidates_with_cancel(
     let query_center_z2 =
         i64::from(bounds.min_chunk_z).saturating_add(i64::from(bounds.max_chunk_z));
     candidates.sort_by_key(|candidate| {
-        let center_x2 = i64::from(candidate.min_chunk_x)
-            .saturating_add(i64::from(candidate.max_chunk_x));
-        let center_z2 = i64::from(candidate.min_chunk_z)
-            .saturating_add(i64::from(candidate.max_chunk_z));
+        let center_x2 =
+            i64::from(candidate.min_chunk_x).saturating_add(i64::from(candidate.max_chunk_x));
+        let center_z2 =
+            i64::from(candidate.min_chunk_z).saturating_add(i64::from(candidate.max_chunk_z));
         let dx = i128::from(center_x2.saturating_sub(query_center_x2));
         let dz = i128::from(center_z2.saturating_sub(query_center_z2));
-        let distance2 = dx
-            .saturating_mul(dx)
-            .saturating_add(dz.saturating_mul(dz));
+        let distance2 = dx.saturating_mul(dx).saturating_add(dz.saturating_mul(dz));
         (
             Reverse(candidate.connected_chunk_count),
             Reverse(candidate.quad_2x2_count),
@@ -747,10 +743,8 @@ fn slime_chunk_coordinate_set(
     cancel: Option<&CancelFlag>,
 ) -> Result<SlimeCoordinateSet> {
     let estimated_capacity = (bounds.chunk_count() / 8).clamp(16, 65_536);
-    let mut slime_chunks = HashSet::with_capacity_and_hasher(
-        estimated_capacity,
-        Xxh3DefaultBuilder::new(),
-    );
+    let mut slime_chunks =
+        HashSet::with_capacity_and_hasher(estimated_capacity, Xxh3DefaultBuilder::new());
     for chunk_z in bounds.min_chunk_z..=bounds.max_chunk_z {
         check_slime_farm_cancelled(cancel)?;
         for chunk_x in bounds.min_chunk_x..=bounds.max_chunk_x {
@@ -878,10 +872,8 @@ fn slime_connected_components(
     slime_chunks: &SlimeCoordinateSet,
     cancel: Option<&CancelFlag>,
 ) -> Result<Vec<SlimeConnectedComponent>> {
-    let mut visited = HashSet::with_capacity_and_hasher(
-        slime_chunks.len(),
-        Xxh3DefaultBuilder::new(),
-    );
+    let mut visited =
+        HashSet::with_capacity_and_hasher(slime_chunks.len(), Xxh3DefaultBuilder::new());
     let mut components = Vec::new();
 
     for &start in slime_chunks {
@@ -969,22 +961,13 @@ fn slime_component_candidate(component: &SlimeConnectedComponent) -> SlimeFarmCa
 }
 
 /// Query block tip.
-pub fn block_tip<S>(
-    world: &World<S>,
-    block: BlockPos,
-    dimension: Dimension,
-) -> Result<BlockTip>
+pub fn block_tip<S>(world: &World<S>, block: BlockPos, dimension: Dimension) -> Result<BlockTip>
 where
     S: StorageBackend,
 {
     let chunk = block.to_chunk_pos(dimension);
     let (local_x, _, local_z) = block.in_chunk_offset();
-    let surface = world.surface_column(
-        chunk,
-        local_x,
-        local_z,
-        SurfaceColumnOptions::default(),
-    )?;
+    let surface = world.surface_column(chunk, local_x, local_z, SurfaceColumnOptions::default())?;
     let height = world.height(chunk, local_x, local_z)?;
     let biome_y = surface.as_ref().map_or(block.y, |surface| surface.y);
     let biome_id = world.biome_id(chunk, local_x, local_z, biome_y)?;
@@ -1272,11 +1255,8 @@ where
     Ok(chunks
         .into_iter()
         .map(|chunk| {
-            let parsed = crate::scan::Chunk::new(
-                chunk.pos,
-                &chunk.records,
-                ScanOptions::structured(),
-            );
+            let parsed =
+                crate::scan::Chunk::new(chunk.pos, &chunk.records, ScanOptions::structured());
             ChunkRecordQueryResult {
                 pos: parsed.pos,
                 records: parsed.records,
@@ -1463,9 +1443,7 @@ fn append_overlay_records(
 ) {
     for record in records {
         match record.value {
-            ChunkValue::HardcodedSpawnAreas(areas)
-                if options.include_hardcoded_spawn_areas =>
-            {
+            ChunkValue::HardcodedSpawnAreas(areas) if options.include_hardcoded_spawn_areas => {
                 for area in areas {
                     if result.hardcoded_spawn_areas.len() >= options.max_items_per_kind {
                         break;
@@ -1483,9 +1461,7 @@ fn append_overlay_records(
                     options.max_items_per_kind,
                 );
             }
-            ChunkValue::BlockEntities(block_entities)
-                if options.include_block_entities =>
-            {
+            ChunkValue::BlockEntities(block_entities) if options.include_block_entities => {
                 push_block_entities(
                     &mut result.block_entities,
                     block_entities,
@@ -1951,9 +1927,7 @@ mod tests {
                 ),
             ])),
         };
-        world
-            .put_actor(first, &actor)
-            .expect("write actor");
+        world.put_actor(first, &actor).expect("write actor");
         let pending_tick = NbtTag::Compound(IndexMap::from([("x".to_string(), NbtTag::Int(65))]));
         world
             .put_raw(
@@ -2083,22 +2057,18 @@ mod tests {
             dimension: Dimension::Overworld,
         };
         let key = ChunkKey::new(pos, ChunkRecordTag::BlockEntity);
-        world
-            .put_raw(&key, b"first")
-            .expect("write first value");
+        world.put_raw(&key, b"first").expect("write first value");
         let query = ChunkRecordQuery {
             entities: false,
             block_entities: true,
             pending_ticks: false,
             hardcoded_spawn_areas: false,
         };
-        let first = chunk_fingerprints(&world, [pos], query, None)
-            .expect("fingerprint first value");
-        world
-            .put_raw(&key, b"second")
-            .expect("write second value");
-        let second = chunk_fingerprints(&world, [pos], query, None)
-            .expect("fingerprint second value");
+        let first =
+            chunk_fingerprints(&world, [pos], query, None).expect("fingerprint first value");
+        world.put_raw(&key, b"second").expect("write second value");
+        let second =
+            chunk_fingerprints(&world, [pos], query, None).expect("fingerprint second value");
 
         assert_ne!(first[0].value, second[0].value);
     }
@@ -2112,12 +2082,9 @@ mod tests {
             min_chunk_z: -100,
             max_chunk_z: 100,
         };
-        let candidates = query_slime_farm_candidates(
-            bounds,
-            SlimeFarmQueryMode::LargestConnected,
-            5,
-        )
-        .expect("query connected slime clusters");
+        let candidates =
+            query_slime_farm_candidates(bounds, SlimeFarmQueryMode::LargestConnected, 5)
+                .expect("query connected slime clusters");
 
         assert!(!candidates.is_empty());
         assert_eq!(candidates[0].connected_chunk_count, 9);
@@ -2129,13 +2096,11 @@ mod tests {
                 .map(|chunk| (chunk.x, chunk.z))
                 .collect::<BTreeSet<_>>();
             let mut visited = BTreeSet::new();
-            let mut queue = VecDeque::from([
-                candidate
-                    .chunks
-                    .first()
-                    .map(|chunk| (chunk.x, chunk.z))
-                    .expect("candidate has chunks"),
-            ]);
+            let mut queue = VecDeque::from([candidate
+                .chunks
+                .first()
+                .map(|chunk| (chunk.x, chunk.z))
+                .expect("candidate has chunks")]);
             while let Some((x, z)) = queue.pop_front() {
                 if !visited.insert((x, z)) {
                     continue;
@@ -2164,9 +2129,8 @@ mod tests {
             min_chunk_z: -1_500,
             max_chunk_z: -1_480,
         };
-        let candidates =
-            query_slime_farm_candidates(bounds, SlimeFarmQueryMode::Quad2x2, 16)
-                .expect("query isolated quad slime chunks");
+        let candidates = query_slime_farm_candidates(bounds, SlimeFarmQueryMode::Quad2x2, 16)
+            .expect("query isolated quad slime chunks");
 
         assert!(!candidates.is_empty());
         for candidate in candidates {
@@ -2203,27 +2167,31 @@ mod tests {
             max_chunk_z: -841,
         };
 
-        let vertical = query_slime_farm_candidates(
-            vertical_bounds,
-            SlimeFarmQueryMode::Rectangle2x3,
-            8,
-        )
-        .expect("query vertical six-chunk template");
-        let horizontal = query_slime_farm_candidates(
-            horizontal_bounds,
-            SlimeFarmQueryMode::Rectangle2x3,
-            8,
-        )
-        .expect("query horizontal six-chunk template");
+        let vertical =
+            query_slime_farm_candidates(vertical_bounds, SlimeFarmQueryMode::Rectangle2x3, 8)
+                .expect("query vertical six-chunk template");
+        let horizontal =
+            query_slime_farm_candidates(horizontal_bounds, SlimeFarmQueryMode::Rectangle2x3, 8)
+                .expect("query horizontal six-chunk template");
 
-        assert!(vertical.iter().any(|candidate| candidate.width() == 2 && candidate.depth() == 3));
-        assert!(horizontal.iter().any(|candidate| candidate.width() == 3 && candidate.depth() == 2));
-        assert!(vertical
-            .iter()
-            .chain(horizontal.iter())
-            .all(|candidate| candidate.chunks.len() == 6
-                && candidate.connected_chunk_count == 6
-                && candidate.quad_2x2_count == 2));
+        assert!(
+            vertical
+                .iter()
+                .any(|candidate| candidate.width() == 2 && candidate.depth() == 3)
+        );
+        assert!(
+            horizontal
+                .iter()
+                .any(|candidate| candidate.width() == 3 && candidate.depth() == 2)
+        );
+        assert!(
+            vertical
+                .iter()
+                .chain(horizontal.iter())
+                .all(|candidate| candidate.chunks.len() == 6
+                    && candidate.connected_chunk_count == 6
+                    && candidate.quad_2x2_count == 2)
+        );
     }
 
     #[test]
@@ -2235,12 +2203,8 @@ mod tests {
             min_chunk_z: -98,
             max_chunk_z: -78,
         };
-        let six_chunk = query_slime_farm_candidates(
-            bounds,
-            SlimeFarmQueryMode::Rectangle2x3,
-            8,
-        )
-        .expect("query isolated six-chunk template");
+        let six_chunk = query_slime_farm_candidates(bounds, SlimeFarmQueryMode::Rectangle2x3, 8)
+            .expect("query isolated six-chunk template");
         assert!(six_chunk.iter().any(|candidate| {
             candidate.min_chunk_x == -957
                 && candidate.min_chunk_z == -89
@@ -2251,8 +2215,7 @@ mod tests {
         let quads = query_slime_farm_candidates(bounds, SlimeFarmQueryMode::Quad2x2, 32)
             .expect("query isolated quad templates");
         assert!(!quads.iter().any(|candidate| {
-            candidate.min_chunk_x == -957
-                && matches!(candidate.min_chunk_z, -89 | -88)
+            candidate.min_chunk_x == -957 && matches!(candidate.min_chunk_z, -89 | -88)
         }));
     }
 
@@ -2272,10 +2235,8 @@ mod tests {
             SlimeFarmQueryMode::Square3x3,
             SlimeFarmQueryMode::LargestConnected,
         ] {
-            let first =
-                query_slime_farm_candidates(bounds, mode, 32).expect("first slime query");
-            let second =
-                query_slime_farm_candidates(bounds, mode, 32).expect("second slime query");
+            let first = query_slime_farm_candidates(bounds, mode, 32).expect("first slime query");
+            let second = query_slime_farm_candidates(bounds, mode, 32).expect("second slime query");
             assert_eq!(first, second);
         }
     }

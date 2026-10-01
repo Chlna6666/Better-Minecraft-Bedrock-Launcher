@@ -1,6 +1,6 @@
 use bedrock_world::{
-    BedrockLevelDbStorage, ChunkPos, Dimension, NbtReader, NbtTag, NbtWriter, OpenOptions, World,
-    ScanOptions,
+    BedrockLevelDbStorage, ChunkPos, Dimension, NbtReader, NbtTag, NbtWriter, OpenOptions,
+    ScanOptions, World,
     chunk::{SubChunk, SubChunkDecodeMode},
     parse_level_dat_document, read_level_dat_document,
 };
@@ -104,9 +104,7 @@ fn bench_large_fixture(c: &mut Criterion) {
     c.bench_function("bedrock_world/world/players", |b| {
         b.iter(|| black_box(world.players().expect("list players")));
     });
-    let chunk = world
-        .chunk(pos)
-        .expect("load fixture sample chunk");
+    let chunk = world.chunk(pos).expect("load fixture sample chunk");
     let (subchunk_y, value) = chunk
         .records
         .iter()

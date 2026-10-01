@@ -296,9 +296,7 @@ mod tests {
     fn paletted_subchunk_versions_roundtrip_through_their_native_writers() {
         for version in [1_u8, 8, 9] {
             let source = paletted_subchunk(version, -2);
-            let encoded = source
-                .encode(SubChunkVersion::from_byte(version))
-                .unwrap();
+            let encoded = source.encode(SubChunkVersion::from_byte(version)).unwrap();
             let parsed =
                 SubChunk::read(-2, encoded.clone(), SubChunkDecodeMode::FullIndices).unwrap();
             assert_eq!(parsed.version(), Some(SubChunkVersion::from_byte(version)));
@@ -309,21 +307,15 @@ mod tests {
     #[test]
     fn explicit_v8_v9_writes_preserve_paletted_block_data() {
         let subchunk = paletted_subchunk(8, -2);
-        let v8 = subchunk
-            .encode(SubChunkVersion::V8)
-            .expect("write V8");
+        let v8 = subchunk.encode(SubChunkVersion::V8).expect("write V8");
         assert_eq!(v8.first().copied(), Some(8));
 
         let parsed = SubChunk::read(-2, v8, SubChunkDecodeMode::FullIndices).expect("read V8");
-        let v9 = parsed
-            .encode(SubChunkVersion::V9)
-            .expect("write V9");
+        let v9 = parsed.encode(SubChunkVersion::V9).expect("write V9");
         assert_eq!(v9.first().copied(), Some(9));
 
         let parsed = SubChunk::read(-2, v9, SubChunkDecodeMode::FullIndices).expect("read V9");
-        let v8_again = parsed
-            .encode(SubChunkVersion::V8)
-            .expect("write V8 again");
+        let v8_again = parsed.encode(SubChunkVersion::V8).expect("write V8 again");
         assert_eq!(v8_again.first().copied(), Some(8));
         let parsed =
             SubChunk::read(-2, v8_again, SubChunkDecodeMode::FullIndices).expect("read V8 again");
@@ -352,17 +344,8 @@ mod tests {
         let subchunk = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
         assert_eq!(subchunk.version(), Some(SubChunkVersion::Unknown(10)));
         assert_eq!(subchunk.write().unwrap(), raw);
-        assert_eq!(
-            subchunk
-                .encode(SubChunkVersion::Unknown(10))
-                .unwrap(),
-            raw
-        );
-        assert!(
-            subchunk
-                .encode(SubChunkVersion::Unknown(11))
-                .is_err()
-        );
+        assert_eq!(subchunk.encode(SubChunkVersion::Unknown(10)).unwrap(), raw);
+        assert!(subchunk.encode(SubChunkVersion::Unknown(11)).is_err());
 
         let generic = SubChunk::read(0, raw.clone(), SubChunkDecodeMode::FullIndices).unwrap();
         assert_eq!(generic.version(), Some(SubChunkVersion::Unknown(10)));

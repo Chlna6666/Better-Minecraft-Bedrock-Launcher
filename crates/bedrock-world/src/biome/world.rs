@@ -4,11 +4,11 @@
 //! Ordinary height-map edits preserve the exact biome payload that follows those bytes instead of
 //! decoding and rebuilding unrelated persisted data.
 
-use crate::world::{World, StorageBackend};
 use crate::biome::Biome2dLegacy;
 use crate::chunk::{ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion};
 use crate::error::{BedrockWorldError, Result};
-use crate::scan::{Biome2d, Biome3d, HeightMap2d, BiomeData};
+use crate::scan::{Biome2d, Biome3d, BiomeData, HeightMap2d};
+use crate::world::{StorageBackend, World};
 use bytes::Bytes;
 
 const HEIGHT_MAP_BYTE_LEN: usize = 256 * 2;
@@ -96,7 +96,9 @@ where
                 )));
             }
             let biome_data = match tag {
-                ChunkRecordTag::Data3D => crate::scan::parse_data3d(&value),
+                ChunkRecordTag::Data3D => {
+                    crate::scan::parse_data3d_with_min_y(&value, pos.y_range(ChunkVersion::New).0)
+                }
                 ChunkRecordTag::Data2D => crate::scan::parse_legacy_data2d(&value),
                 ChunkRecordTag::Data2DLegacy => crate::scan::parse_data2d_legacy(&value),
                 _ => unreachable!("biome record loop contains only biome tags"),

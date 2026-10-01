@@ -242,6 +242,7 @@ fn actor_number(value: Option<&NbtTag>, field: &str) -> Result<Option<f64>> {
 mod tests {
     use super::*;
     use crate::player::PlayerId;
+    use indexmap::IndexMap;
 
     #[test]
     fn historical_actor_fields_keep_persisted_nbt_widths() {

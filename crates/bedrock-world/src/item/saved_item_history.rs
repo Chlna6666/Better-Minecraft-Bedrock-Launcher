@@ -468,9 +468,7 @@ fn source_schema_id(name: &str) -> Result<u32> {
 }
 
 /// Loads the pinned, Git-blob-verified item corpus and builds its historical reverse table.
-pub fn load_pinned_saved_item_history_from_dir(
-    root: impl AsRef<Path>,
-) -> Result<SavedItemHistory> {
+pub fn load_pinned_saved_item_history_from_dir(root: impl AsRef<Path>) -> Result<SavedItemHistory> {
     let root = root.as_ref();
     let catalog = load_pinned_item_migration_catalog_from_dir(root)?;
     let classic_json = fs::read_to_string(root.join(LEGACY_ITEM_ID_MAP_FILE)).map_err(|error| {

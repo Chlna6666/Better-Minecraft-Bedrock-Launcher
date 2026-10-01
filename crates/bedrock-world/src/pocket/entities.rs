@@ -593,11 +593,8 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
-        let result = import_pocket_entities_dat(
-            &root,
-            &storage,
-            PocketEntitiesDatImportOptions::default(),
-        );
+        let result =
+            import_pocket_entities_dat(&root, &storage, PocketEntitiesDatImportOptions::default());
         assert!(result.is_err());
         assert_eq!(
             storage.get(key.as_ref()).unwrap().unwrap().as_ref(),
@@ -618,12 +615,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("entities.dat"), document.to_raw().unwrap()).unwrap();
 
-        let report = import_pocket_entities_dat(
-            &root,
-            &storage,
-            PocketEntitiesDatImportOptions::default(),
-        )
-        .unwrap();
+        let report =
+            import_pocket_entities_dat(&root, &storage, PocketEntitiesDatImportOptions::default())
+                .unwrap();
         assert_eq!(report.entities, 2);
         assert_eq!(report.tile_entities, 1);
         assert_eq!(report.entity_chunk_records, 2);

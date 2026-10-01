@@ -8,7 +8,7 @@ use crate::chunk::{
 use crate::error::Result;
 use crate::nbt::NbtTag;
 use crate::storage::{StorageBatch, StorageOp};
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 use std::collections::BTreeMap;
 
 impl<S> World<S>

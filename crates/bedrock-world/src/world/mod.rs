@@ -8,38 +8,36 @@
 mod create;
 /// Filesystem discovery for Minecraft Bedrock world folders.
 pub mod discover;
+mod map_bundle;
 mod migration;
+pub use map_bundle::{MapBlockContainerImportPlan, MapFrameImportPlan, MapPlayerImportPlan};
 
 use crate::pocket::PocketWorldStorage;
 
 use crate::chunk::{
-    ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    GlobalRecordKind, LegacyBiomeSample, LegacyTerrain, MapItemId, SubChunk, SubChunkDecodeMode,
-    LevelChunk,
+    ActorDigestKey, ActorUid, BedrockDbKey, BedrockDbKeyKind, BlockPos, BlockState, ChunkKey,
+    ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, GlobalRecordKind, LegacyBiomeSample,
+    LegacyTerrain, LevelChunk, SubChunk, SubChunkDecodeMode,
 };
 use crate::entity::{ActorOwnershipIndex, ActorUidRepairReport, stage_actor_uid_repair};
 use crate::error::{BedrockWorldError, Result};
 use crate::level_dat::{LevelDatDocument, read_level_dat_document, write_level_dat_document};
+use crate::map_item::{MapBundle, MapItemId, SavedData};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt, serialize_root_nbt};
+use crate::player::{PlayerData, PlayerId, PlayerInventorySlot};
 use crate::scan::{
-    ActorRecord, ActorSource, Biome3d, BlockEntityRecord, HeightMap2d, ItemStack,
-    BiomeStorage, BlockEntity,
-    Actor, Global, HardcodedSpawnArea,
-    WorldScan, collect_item_stacks, encode_actor_ids, encode_consecutive_roots,
-    encode_global, encode_hardcoded_spawn_areas, encode_map_item,
-    decode_actor_ids, parse_block_entities_from_value, parse_entities_from_value,
-    decode_global, decode_hardcoded_spawn_areas, decode_map_item, scan_storage,
+    Actor, ActorRecord, ActorSource, Biome3d, BiomeStorage, BlockEntity, BlockEntityRecord, Global,
+    HardcodedSpawnArea, HeightMap2d, ItemStack, WorldScan, collect_item_stacks, decode_actor_ids,
+    decode_global, decode_hardcoded_spawn_areas, decode_map_item, encode_actor_ids,
+    encode_consecutive_roots, encode_global, encode_hardcoded_spawn_areas, encode_map_item,
+    parse_block_entities_from_value, parse_entities_from_value, scan_storage,
 };
-use crate::map_item::SavedData;
-use crate::player::{PlayerData, PlayerId};
-use crate::village::Entry;
 use crate::storage::backend::BedrockLevelDbStorage;
 use crate::storage::{
-    StorageBatch, StorageOp,
-    StorageReadOptions, StorageVisitorControl,
-    WorldStorage,
+    StorageBatch, StorageOp, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
 use crate::surface::*;
+use crate::village::Entry;
 use bytes::Bytes;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -47,11 +45,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{
-        Mutex, OnceLock,
-        atomic::Ordering,
-        mpsc,
-    },
+    sync::{Mutex, OnceLock, atomic::Ordering, mpsc},
 };
 
 /// Options used when opening or constructing a [`World`].
@@ -357,6 +351,7 @@ where
             read_only: self.options.read_only,
             actor_ownership: None,
             preconditions: Vec::new(),
+            chunk_preconditions: Vec::new(),
             mutation_lock: world_mutation_lock(&self.path),
         }
     }
@@ -373,7 +368,6 @@ where
 mod transaction;
 
 pub use transaction::WorldTransaction;
-
 
 fn world_mutation_lock(path: &Path) -> Arc<Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
@@ -444,7 +438,6 @@ fn detect_leveldb_world_format(path: &Path) -> WorldFormat {
         WorldFormat::LevelDb
     }
 }
-
 
 #[cfg(test)]
 mod tests;

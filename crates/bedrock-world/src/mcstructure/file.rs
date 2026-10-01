@@ -5,11 +5,12 @@
 //! then Y, then Z.
 
 use crate::biome::Biome2dLegacy;
+use crate::editor::BlockPlacementPlan;
 use crate::scan::encode_consecutive_roots;
 use crate::{
     BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockState, ChunkKey, ChunkPos, ChunkRecord,
-    ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter, Result, SubChunkFormat, World,
-    StorageBackend, WriteGuard, block_storage_index,
+    ChunkRecordTag, ChunkVersion, NbtReader, NbtTag, NbtWriter, Result, StorageBackend,
+    SubChunkFormat, World, WriteGuard, block_storage_index,
 };
 use bytes::Bytes;
 use indexmap::IndexMap;
@@ -286,6 +287,60 @@ impl McStructureFile {
         })
     }
 
+    /// Builds an unplaced `.mcstructure` from local image or model blocks.
+    ///
+    /// The minimum local offset is translated to structure zero; gaps remain air.
+    /// No world is read or modified. The resulting structure has a zero world
+    /// origin and can be serialized or placed through existing structure APIs.
+    /// Block states are preserved without version conversion. This method does
+    /// not add block entities or secondary-layer blocks.
+    ///
+    /// # Errors
+    /// Returns a validation error if the bounding dimensions overflow or
+    /// exceed the structure format's in-memory block limit.
+    pub fn from_placement_plan(plan: &BlockPlacementPlan) -> Result<Self> {
+        let mut minimum = [i32::MAX; 3];
+        let mut maximum = [i32::MIN; 3];
+        for block in plan.blocks() {
+            let offset = [block.offset.x, block.offset.y, block.offset.z];
+            for axis in 0..3 {
+                minimum[axis] = minimum[axis].min(offset[axis]);
+                maximum[axis] = maximum[axis].max(offset[axis]);
+            }
+        }
+        let dimensions = [0, 1, 2]
+            .map(|axis| {
+                i32::try_from(i64::from(maximum[axis]) - i64::from(minimum[axis]) + 1).map_err(
+                    |_| BedrockWorldError::Validation("structure extent overflows i32".to_owned()),
+                )
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        let size = McStructureSize::new(dimensions[0], dimensions[1], dimensions[2])?;
+        let mut structure = Self::new_air(size, [0; 3])?;
+        let mut palette = HashMap::from([(structure.palette[0].key(), 0_i32)]);
+        for block in plan.blocks() {
+            let entry = McStructurePaletteEntry::from_block_state(&block.state);
+            let key = entry.key();
+            let palette_index = match palette.entry(key) {
+                Entry::Occupied(existing) => *existing.get(),
+                Entry::Vacant(vacant) => {
+                    let index = i32::try_from(structure.palette.len()).map_err(|_| {
+                        BedrockWorldError::Validation("structure palette is too large".to_owned())
+                    })?;
+                    structure.palette.push(entry);
+                    vacant.insert(index);
+                    index
+                }
+            };
+            let offset = [block.offset.x, block.offset.y, block.offset.z];
+            let local = [0, 1, 2].map(|axis| offset[axis] - minimum[axis]);
+            let index = size.index(local[0], local[1], local[2])?;
+            structure.primary_indices[index] = palette_index;
+        }
+        Ok(structure)
+    }
+
     /// Reads a structure from uncompressed little-endian NBT bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let root = NbtReader::new(bytes).parse_root()?;
@@ -543,7 +598,13 @@ impl McStructureFile {
     /// Merges this structure's block layers into a world.
     ///
     /// Block palette data, secondary block layers, and block-position NBT data
-    /// are written. Entity placement is intentionally not performed because
+    /// are written. Every target's height/biome record and affected SubChunks are checked before
+    /// the first write batch, so initially missing or unsupported terrain is rejected before any
+    /// mutation. Writes still commit in chunk batches, not one whole-structure transaction.
+    /// Each batch checks its source chunk records; later I/O or concurrent-write failures can leave
+    /// earlier batches committed, which callers must expose through progress and undo history.
+    /// Existing target chunks are required; rendering an empty tile does not generate terrain.
+    /// Entity placement is intentionally not performed because
     /// Bedrock actor storage requires stable `UniqueID` and digest updates.
     pub fn write_to_world<S>(
         &self,
@@ -589,6 +650,18 @@ impl McStructureFile {
         }
 
         let total_chunks = placements.len();
+        for (chunk, subchunks) in &placements {
+            let existing = world.chunk(*chunk)?;
+            chunk_height_map(&existing.records).map_err(|error| {
+                BedrockWorldError::Validation(format!(
+                    "target chunk {}, {} is not writable: {error}; generate this area in Minecraft before placing the structure",
+                    chunk.x, chunk.z
+                ))
+            })?;
+            for subchunk_y in subchunks.keys() {
+                EntrySubchunkBuilder::from_chunk(&existing, *subchunk_y)?;
+            }
+        }
         progress(McStructureWriteProgress {
             phase: McStructureWritePhase::WriteChunks,
             completed: 0,
@@ -623,6 +696,14 @@ impl McStructureFile {
                 )
             })?;
             let existing_chunk = world.chunk(chunk)?;
+            active_transaction.require_chunk_records(
+                chunk,
+                existing_chunk
+                    .records
+                    .iter()
+                    .map(|record| (Bytes::from(record.key.encode()), record.value.clone()))
+                    .collect(),
+            );
             let mut updated_subchunks = BTreeMap::new();
             let mut touched_columns = [false; 256];
             for (subchunk_y, subchunk_placements) in subchunks {
@@ -653,8 +734,7 @@ impl McStructureFile {
             )?;
             let (height_map_tag, height_map_bytes) =
                 encode_chunk_height_map(&existing_chunk.records, height_map)?;
-            active_transaction
-                .put_raw(&ChunkKey::new(chunk, height_map_tag), height_map_bytes);
+            active_transaction.put_raw(&ChunkKey::new(chunk, height_map_tag), height_map_bytes);
 
             for (subchunk_y, subchunk) in updated_subchunks {
                 let bytes = encode_entry_subchunk(subchunk)?;
@@ -1819,8 +1899,48 @@ fn nbt_i32_list(tag: &NbtTag) -> Result<Vec<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dimension, MemoryStorage, OpenOptions};
+    use crate::{
+        Dimension, MemoryStorage, OpenOptions,
+        editor::{BlockOffset, PlacementBlock},
+    };
     use std::sync::Arc;
+
+    #[test]
+    fn placement_plan_exports_sparse_structure_with_negative_offsets() {
+        let state = BlockState {
+            name: "minecraft:red_wool".to_owned(),
+            states: BTreeMap::new(),
+            version: Some(1),
+        };
+        let plan = BlockPlacementPlan::new(vec![
+            PlacementBlock {
+                offset: BlockOffset { x: -2, y: 5, z: 0 },
+                state: state.clone(),
+            },
+            PlacementBlock {
+                offset: BlockOffset { x: 0, y: 5, z: 1 },
+                state,
+            },
+        ])
+        .expect("valid local plan");
+        let structure = McStructureFile::from_placement_plan(&plan).expect("structure from plan");
+        assert_eq!(structure.size, McStructureSize::new(3, 1, 2).unwrap());
+        assert_eq!(structure.palette.len(), 2);
+        assert_eq!(
+            structure.primary_indices[structure.size.index(0, 0, 0).unwrap()],
+            1
+        );
+        assert_eq!(
+            structure.primary_indices[structure.size.index(2, 0, 1).unwrap()],
+            1
+        );
+        assert_eq!(
+            structure.primary_indices[structure.size.index(1, 0, 0).unwrap()],
+            0
+        );
+        let restored = McStructureFile::from_bytes(&structure.to_bytes().unwrap()).unwrap();
+        assert_eq!(restored, structure);
+    }
 
     #[test]
     fn mcstructure_roundtrip_preserves_core_fields() {
@@ -1923,6 +2043,75 @@ mod tests {
             .expect("write structure");
 
         assert_eq!(committed, [0, 16, 17]);
+    }
+
+    #[test]
+    fn missing_last_target_is_rejected_before_first_structure_batch() {
+        let structure = McStructureFile::new_air(
+            McStructureSize::new(17 * 16, 1, 1).expect("size"),
+            [0, 0, 0],
+        )
+        .expect("structure");
+        let world = World::from_storage(
+            "memory",
+            Arc::new(MemoryStorage::new()),
+            OpenOptions {
+                read_only: false,
+                ..OpenOptions::default()
+            },
+        );
+        let anchor = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mut seed = world.transaction();
+        for x in 0..16 {
+            seed.put_raw(
+                &ChunkKey::new(ChunkPos { x, ..anchor }, ChunkRecordTag::Data3D),
+                Bytes::from(
+                    Biome3d::new(vec![0; 256], Vec::new())
+                        .expect("biome")
+                        .encode()
+                        .expect("encode"),
+                ),
+            );
+        }
+        seed.commit().expect("seed");
+        let mut completed = Vec::new();
+        let error = structure
+            .write_to_world(
+                &world,
+                McStructurePlacement {
+                    source_anchor: anchor,
+                    target_anchor: anchor,
+                    origin_y: 0,
+                    rotation: McStructureRotation::None,
+                    mirror_x: false,
+                    mirror_z: false,
+                },
+                &WriteGuard::confirmed("memory", "preflight test"),
+                |progress| {
+                    if progress.phase == McStructureWritePhase::WriteChunks
+                        && progress.completed > 0
+                    {
+                        completed.push(progress.completed);
+                    }
+                },
+            )
+            .expect_err("missing last chunk");
+        assert!(error.to_string().contains("target chunk 16, 0"));
+        assert!(completed.is_empty());
+        for x in 0..16 {
+            assert!(
+                world
+                    .chunk(ChunkPos { x, ..anchor })
+                    .expect("chunk")
+                    .records
+                    .iter()
+                    .all(|record| record.key.tag == ChunkRecordTag::Data3D)
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
+use bedrock_world::surface::WorldExecutor;
 use bedrock_world::{
-    MemoryStorage, PartitionedWorldStorage, StorageReadOptions, StorageVisitorControl,
-    WorldExecutor, WorldStorage,
+    MemoryStorage, PartitionedWorldStorage, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
 
 #[test]

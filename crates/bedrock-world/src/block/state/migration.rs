@@ -4,9 +4,7 @@
 //! state names, identifiers and value domains across releases, so robust conversion is represented as
 //! explicit directed migration edges rather than stamping an old state with the newest version.
 
-use super::upgrade::{
-    BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader,
-};
+use super::upgrade::{BlockStateUpgradeRule, BlockStateUpgradeStatus, BlockStateUpgrader};
 use crate::block::BlockState;
 use crate::error::{BedrockWorldError, Result};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

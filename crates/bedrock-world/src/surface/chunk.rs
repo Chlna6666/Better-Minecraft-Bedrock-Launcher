@@ -241,15 +241,11 @@ pub(crate) fn insert_render_biome_storages(
             }
         }
         BiomeDataRequirement::Layer(y) => {
-            let mut fallback = None;
-            for storage in biome_data.storages {
-                if biome_storage_contains_y(&storage, y) {
-                    render_biomes.insert(biome_storage_bucket_y(y), storage);
-                    return;
-                }
-                fallback.get_or_insert(storage);
-            }
-            if let Some(storage) = fallback {
+            if let Some(storage) = biome_data
+                .storages
+                .into_iter()
+                .find(|storage| biome_storage_contains_y(storage, y))
+            {
                 render_biomes.insert(biome_storage_bucket_y(y), storage);
             }
         }
@@ -258,13 +254,16 @@ pub(crate) fn insert_render_biome_storages(
 }
 
 pub(crate) fn parse_render_biome_record(
+    pos: ChunkPos,
     record: Option<&(ChunkRecordTag, Bytes)>,
 ) -> Result<Option<BiomeData>> {
     let Some((tag, value)) = record else {
         return Ok(None);
     };
     let data = match tag {
-        ChunkRecordTag::Data3D => parse_data3d(value),
+        ChunkRecordTag::Data3D => {
+            crate::scan::parse_data3d_with_min_y(value, pos.y_range(ChunkVersion::New).0)
+        }
         ChunkRecordTag::Data2D => parse_legacy_data2d(value),
         ChunkRecordTag::Data2DLegacy => parse_data2d_legacy(value),
         _ => unreachable!("render biome record contains only biome tags"),
@@ -851,7 +850,7 @@ pub(crate) fn render_chunk_from_raw(
             _ => unreachable!("render biome record contains only biome tags"),
         },
     );
-    let biome_data = parse_render_biome_record(raw.biome_record.as_ref())?;
+    let biome_data = parse_render_biome_record(raw.pos, raw.biome_record.as_ref())?;
     let height_map = biome_data
         .as_ref()
         .map(|biome_data| render_height_map_from_biome_data(raw.pos, biome_data))

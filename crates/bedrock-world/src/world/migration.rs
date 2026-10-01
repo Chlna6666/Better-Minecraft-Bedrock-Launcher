@@ -4,11 +4,11 @@
 //! their domain modules (`chunk`, `biome`, `entity`, `item`, `level.dat`) so old-version support can be
 //! completed without creating another compatibility namespace.
 
-use crate::chunk::SubChunkUpgradeReport;
 use crate::block::{BlockUpgradeData, VanillaBlockStatePalette};
+use crate::chunk::SubChunkUpgradeReport;
 use crate::error::{BedrockWorldError, Result};
 use crate::version::GameVersion;
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 
 /// One Minecraft Bedrock migration phase that is known but not yet wired into the whole-world entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +89,7 @@ where
     /// This is the server-facing orchestration entry. It currently wires the implemented SubChunk
     /// upgrade path and returns explicit gaps for the remaining historical record families instead of
     /// silently pretending the whole world has been fully upgraded.
-    pub fn upgrade_bedrock_world(
-        &self,
-        options: UpgradeOptions<'_>,
-    ) -> Result<UpgradeReport> {
+    pub fn upgrade_bedrock_world(&self, options: UpgradeOptions<'_>) -> Result<UpgradeReport> {
         let subchunks = options
             .subchunks
             .map(|subchunks| {
@@ -122,10 +119,7 @@ where
     /// The downgrade entry exists so server code can depend on a stable API shape, but the concrete
     /// reverse transformations are intentionally not marked as completed yet. Callers receive a typed
     /// unsupported error instead of a partial destructive rewrite.
-    pub fn downgrade_bedrock_world(
-        &self,
-        options: DowngradeOptions,
-    ) -> Result<DowngradeReport> {
+    pub fn downgrade_bedrock_world(&self, options: DowngradeOptions) -> Result<DowngradeReport> {
         let _ = self;
         Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "Minecraft Bedrock world downgrade to {} is not complete; missing phases: {:?}",

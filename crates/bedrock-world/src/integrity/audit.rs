@@ -12,7 +12,7 @@ use crate::error::{BedrockWorldError, Result};
 use crate::level::read_level_dat_document;
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, parse_root_nbt};
 use crate::storage::{StorageReadOptions, StorageVisitorControl, WorldStorage};
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

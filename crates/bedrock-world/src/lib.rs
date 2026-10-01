@@ -28,11 +28,11 @@ pub mod error;
 /// Bedrock saved-item identities, stacks and historical item data.
 pub mod item;
 mod mcstructure;
-/// Structured Bedrock record parsing and consecutive-record encoding APIs.
-pub mod scan;
 pub mod player;
 /// Historical Pocket Edition world files.
 pub mod pocket;
+/// Structured Bedrock record parsing and consecutive-record encoding APIs.
+pub mod scan;
 /// Minecraft Bedrock game and persisted data version information.
 pub mod version;
 
@@ -79,31 +79,29 @@ pub mod discover {
 }
 
 pub use biome::{
-    Biome2d, Biome3d, HeightMap2d, LegacyBiomeSample, BiomeData, BiomeStorage,
-    encode_data3d_quart,
+    Biome2d, Biome3d, BiomeData, BiomeStorage, HeightMap2d, LegacyBiomeSample, encode_data3d_quart,
 };
 pub use block::{
     BlockPalette, BlockPos, BlockState, BlockStateBatchStats, BlockStateQueryControl,
     BlockStateQueryResult, BlockStateView, block_storage_index,
 };
 pub use chunk::{
-    ActorDigestKey, ActorUid, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    ChunkBlockEntities, ChunkHeightMap, ChunkHeightMapStatus, LevelChunk,
-    Dimension, VillageKey, SubChunk, SubChunkDecodeMode, SubChunkFormat,
+    ActorDigestKey, ActorUid, ChunkBlockEntities, ChunkHeightMap, ChunkHeightMapStatus, ChunkKey,
+    ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, Dimension, LevelChunk, SubChunk,
+    SubChunkDecodeMode, SubChunkFormat, VillageKey,
 };
 pub use error::{BedrockWorldError, BedrockWorldErrorKind, Result};
 pub use integrity::{ChunkCapabilities, CompatibilityLevel};
 pub use item::ItemStack;
 pub use level::*;
 pub use nbt::{NbtReader, NbtTag, NbtWriter};
-pub use scan::ChunkEntry;
 pub use player::{PlayerData, PlayerId};
 pub use query::{
     ExactChunkSelection, SlimeChunkBounds, SlimeChunkWindow, SlimeFarmCandidate,
     SlimeFarmQueryMode, SlimeWindowSize, WriteGuard, exact_selection_stats,
-    query_slime_farm_candidates, query_slime_farm_candidates_with_cancel,
-    rasterize_chunk_line,
+    query_slime_farm_candidates, query_slime_farm_candidates_with_cancel, rasterize_chunk_line,
 };
+pub use scan::ChunkEntry;
 pub use storage::*;
 pub use world::*;
 

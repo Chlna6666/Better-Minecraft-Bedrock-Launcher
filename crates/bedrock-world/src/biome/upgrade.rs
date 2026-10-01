@@ -9,7 +9,7 @@ use crate::error::{BedrockWorldError, Result};
 use crate::storage::{
     StorageBatch, StorageOp, StorageReadOptions, StorageVisitorControl, WorldStorage,
 };
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Summary of promoting all two-dimensional Bedrock biome records to `Data3D`.

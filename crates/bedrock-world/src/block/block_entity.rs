@@ -427,12 +427,9 @@ mod tests {
         payload.extend_from_slice(&serialize_root_nbt(&sign).unwrap());
         storage.put(&key, &payload).unwrap();
 
-        let report = rewrite_block_entity_sign_text(
-            &storage,
-            pos,
-            BlockEntityRewriteContext::default(),
-        )
-        .unwrap();
+        let report =
+            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+                .unwrap();
         assert_eq!(report.roots_preserved, 1);
         assert_eq!(report.roots_rewritten, 1);
         let rewritten = storage.get(&key).unwrap().unwrap();
@@ -453,21 +450,15 @@ mod tests {
             .put(&key, &serialize_root_nbt(&root).unwrap())
             .unwrap();
 
-        let first = rewrite_block_entity_sign_text(
-            &storage,
-            pos,
-            BlockEntityRewriteContext::default(),
-        )
-        .unwrap();
+        let first =
+            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+                .unwrap();
         assert_eq!(first.roots_rewritten, 1);
         assert!(first.payload_rewritten);
 
-        let second = rewrite_block_entity_sign_text(
-            &storage,
-            pos,
-            BlockEntityRewriteContext::default(),
-        )
-        .unwrap();
+        let second =
+            rewrite_block_entity_sign_text(&storage, pos, BlockEntityRewriteContext::default())
+                .unwrap();
         assert_eq!(second.roots_unchanged, 1);
         assert!(!second.payload_rewritten);
     }

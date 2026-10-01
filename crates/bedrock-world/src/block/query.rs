@@ -5,7 +5,6 @@
 //! deep `BlockState` clone for every queried position. Historical `LegacyTerrain` is fetched only for
 //! chunks whose exact modern SubChunk record is absent. Surface hints are never used by this path.
 
-use crate::world::{World, StorageBackend};
 use crate::chunk::{
     BlockPos, BlockState, ChunkKey, ChunkPos, ChunkRecordTag, Dimension, LegacyTerrain, SubChunk,
     SubChunkDecodeMode,
@@ -13,6 +12,7 @@ use crate::chunk::{
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use crate::storage::StorageKeyBatchBuilder;
+use crate::world::{StorageBackend, World};
 use std::collections::BTreeMap;
 
 const MAX_ENCODED_CHUNK_KEY_BYTES: usize = 14;

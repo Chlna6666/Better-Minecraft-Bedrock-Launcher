@@ -56,11 +56,9 @@ where
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || {
-            world.region_chunk_positions(region, options)
-        })
-        .await
-        .map_err(|error| BedrockWorldError::Join(error.to_string()))?
+        tokio::task::spawn_blocking(move || world.region_chunk_positions(region, options))
+            .await
+            .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 
     #[cfg(feature = "async")]
@@ -71,11 +69,9 @@ where
         options: WorldScanOptions,
     ) -> Result<Option<ChunkBounds>> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || {
-            world.discover_chunk_bounds(dimension, options)
-        })
-        .await
-        .map_err(|error| BedrockWorldError::Join(error.to_string()))?
+        tokio::task::spawn_blocking(move || world.discover_chunk_bounds(dimension, options))
+            .await
+            .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 
     #[cfg(feature = "async")]
@@ -89,12 +85,7 @@ where
     ) -> Result<Option<ChunkPos>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || {
-            world.nearest_loaded_chunk_to_spawn(
-                dimension,
-                spawn_block_x,
-                spawn_block_z,
-                options,
-            )
+            world.nearest_loaded_chunk_to_spawn(dimension, spawn_block_x, spawn_block_z, options)
         })
         .await
         .map_err(|error| BedrockWorldError::Join(error.to_string()))?
@@ -134,11 +125,9 @@ where
         options: ChunkLoadOptions,
     ) -> Result<Vec<ChunkData>> {
         let world = self.task_clone();
-        tokio::task::spawn_blocking(move || {
-            world.query_chunk_data_many(positions, options)
-        })
-        .await
-        .map_err(|error| BedrockWorldError::Join(error.to_string()))?
+        tokio::task::spawn_blocking(move || world.query_chunk_data_many(positions, options))
+            .await
+            .map_err(|error| BedrockWorldError::Join(error.to_string()))?
     }
 
     #[cfg(feature = "async")]
@@ -192,10 +181,7 @@ where
 
     /// Async adapter for [`Self::villages`].
     #[cfg(feature = "async")]
-    pub async fn villages_async(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<Entry>> {
+    pub async fn villages_async(&self, options: WorldScanOptions) -> Result<Vec<Entry>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.villages(options))
             .await
@@ -260,10 +246,7 @@ where
     ///
     /// Returns join, storage, or global parse errors.
     #[cfg(feature = "async")]
-    pub async fn global_async(
-        &self,
-        kind: GlobalRecordKind,
-    ) -> Result<Option<Global>> {
+    pub async fn global_async(&self, kind: GlobalRecordKind) -> Result<Option<Global>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.global(kind))
             .await
@@ -276,10 +259,7 @@ where
     ///
     /// Returns join, storage, cancellation, or global parse errors.
     #[cfg(feature = "async")]
-    pub async fn globals_async(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<Global>> {
+    pub async fn globals_async(&self, options: WorldScanOptions) -> Result<Vec<Global>> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.globals(options))
             .await
@@ -511,12 +491,7 @@ where
     ///
     /// Returns join, read-only, validation, or storage errors.
     #[cfg(feature = "async")]
-    pub async fn move_actor_async(
-        &self,
-        from: ChunkPos,
-        to: ChunkPos,
-        actor: Actor,
-    ) -> Result<()> {
+    pub async fn move_actor_async(&self, from: ChunkPos, to: ChunkPos, actor: Actor) -> Result<()> {
         let world = self.task_clone();
         tokio::task::spawn_blocking(move || world.move_actor(from, to, &actor))
             .await

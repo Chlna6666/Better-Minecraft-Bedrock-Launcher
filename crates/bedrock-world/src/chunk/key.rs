@@ -1,7 +1,10 @@
 //! Bedrock LevelDB keys used by chunks and other world records.
 
 use super::position::{ChunkPos, Dimension};
-use crate::error::{BedrockWorldError, Result};
+use crate::{
+    error::{BedrockWorldError, Result},
+    map_item::MapItemId,
+};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -213,59 +216,6 @@ pub struct VillageKey {
     pub uuid: String,
     /// Classified kind for this record.
     pub kind: VillageRecordKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-/// Validated Bedrock map item identifier without the `map_` storage prefix.
-pub struct MapItemId(String);
-
-impl MapItemId {
-    /// Creates a map item id from a printable ASCII suffix.
-    pub fn new(id: impl Into<String>) -> Result<Self> {
-        let id = id.into();
-        if id.is_empty() || !id.as_bytes().iter().all(u8::is_ascii_graphic) {
-            return Err(BedrockWorldError::Validation(
-                "map id must be non-empty printable ASCII".to_string(),
-            ));
-        }
-        Ok(Self(id))
-    }
-
-    #[must_use]
-    /// Creates a map item id without validation.
-    pub fn unchecked(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    #[must_use]
-    /// Returns the id suffix without the `map_` storage prefix.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    #[must_use]
-    /// Encodes this id as the LevelDB key `map_<id>`.
-    pub fn storage_key(&self) -> Bytes {
-        Bytes::from(format!("map_{}", self.0))
-    }
-
-    #[must_use]
-    /// Decodes a LevelDB map key into an id suffix.
-    pub fn from_storage_key(key: &[u8]) -> Option<Self> {
-        ascii_suffix(key, b"map_").map(Self)
-    }
-}
-
-impl std::fmt::Display for MapItemId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for MapItemId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

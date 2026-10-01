@@ -2,7 +2,7 @@
 
 use bedrock_world::{
     BedrockDbKey, BedrockLevelDbStorage, ChunkPos, ChunkRecordTag, NbtTag, OpenOptions,
-    StorageReadOptions, StorageVisitorControl, World, ScanOptions, WorldStorage,
+    ScanOptions, StorageReadOptions, StorageVisitorControl, World, WorldStorage,
     read_level_dat_document,
 };
 use std::collections::BTreeMap;

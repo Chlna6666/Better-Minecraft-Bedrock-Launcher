@@ -3,11 +3,11 @@
 use crate::chunk::{ChunkPos, Dimension};
 use crate::error::{BedrockWorldError, Result};
 use crate::query::{
-    ChunkRecordQuery, ChunkValue, RegionOverlayQueryOptions, SelectionStats,
-    SlimeChunkBounds, VillageOverlayIndex, is_slime_chunk, load_chunks,
+    ChunkRecordQuery, ChunkValue, RegionOverlayQueryOptions, SelectionStats, SlimeChunkBounds,
+    VillageOverlayIndex, is_slime_chunk, load_chunks,
 };
 use crate::storage::CancelFlag;
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 use std::collections::BTreeSet;
 
 /// A validated, non-empty, exact set of chunks from one Bedrock dimension.
@@ -320,18 +320,14 @@ where
                             options.max_items_per_kind,
                         );
                     }
-                    ChunkValue::BlockEntities(block_entities)
-                        if options.include_block_entities =>
-                    {
+                    ChunkValue::BlockEntities(block_entities) if options.include_block_entities => {
                         stats.block_entity_count = capped_add(
                             stats.block_entity_count,
                             block_entities.len(),
                             options.max_items_per_kind,
                         );
                     }
-                    ChunkValue::PendingTicks(ticks)
-                        if options.include_pending_ticks =>
-                    {
+                    ChunkValue::PendingTicks(ticks) if options.include_pending_ticks => {
                         stats.pending_tick_count = capped_add(
                             stats.pending_tick_count,
                             ticks.len(),
@@ -403,6 +399,7 @@ fn capped_add(current: usize, additional: usize, limit: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BedrockWorldErrorKind, MemoryStorage, OpenOptions, WorldStorage};
     use std::sync::Arc;
 
     fn chunk(x: i32, z: i32) -> ChunkPos {

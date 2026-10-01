@@ -1,6 +1,7 @@
 //! Minecraft Bedrock saved-item NBT, including historical persisted representations.
 
 mod classic_saved_item;
+mod display;
 mod format;
 mod format_evidence;
 mod medieval_saved_item;
@@ -18,6 +19,7 @@ pub use classic_saved_item::{
     ClassicSavedItemConversionReport, ClassicSavedItemIssue, ClassicSavedItemIssueKind,
     check_saved_items_for_classic, convert_saved_items_to_classic,
 };
+pub use display::set_item_display;
 pub use format::SavedItemFormat;
 pub use format_evidence::{
     SavedItemFormatEvidence, SavedItemStorageForm, inspect_saved_item_formats,
@@ -34,20 +36,19 @@ pub use modern_saved_item::{
     convert_saved_items_to_modern_target,
 };
 pub use modern_target::{ModernSavedItemTarget, ModernSavedItemTargetMatch};
-pub use saved_item_history::{
-    ClassicSavedItemId, ClassicSavedItemMatch, MedievalSavedItemId, MedievalSavedItemMatch,
-    NamedSavedItemId, SavedItemBlockStates, SavedItemHistory, SavedItemUpgradeSource,
-    load_pinned_saved_item_history_from_dir,
-};
 pub use saved_item::{
     AuthoritativeItemMigrationCatalog, BlockItemMigrationContext, ItemIdentity,
     ItemMigrationPolicy, ItemMigrationStatus, ItemNbtMigrationOutcome, ItemNbtMigrationReport,
     ItemSchemaSource, ItemStackMigrationOutcome, LegacyBlockItemResolver,
     PINNED_ITEM_MIGRATION_CORPUS_FILES, PINNED_ITEM_SCHEMA_FILES,
-    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE,
-    PinnedItemCorpusFileSpec, load_pinned_item_migration_catalog,
-    load_pinned_item_migration_catalog_from_dir, migrate_item_stack_nbt,
-    migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
+    PINNED_ITEM_UPGRADE_SCHEMA_COMMIT, PINNED_ITEM_UPGRADE_SCHEMA_TREE, PinnedItemCorpusFileSpec,
+    load_pinned_item_migration_catalog, load_pinned_item_migration_catalog_from_dir,
+    migrate_item_stack_nbt, migrate_item_stacks_in_nbt, verify_pinned_item_migration_corpus,
+};
+pub use saved_item_history::{
+    ClassicSavedItemId, ClassicSavedItemMatch, MedievalSavedItemId, MedievalSavedItemMatch,
+    NamedSavedItemId, SavedItemBlockStates, SavedItemHistory, SavedItemUpgradeSource,
+    load_pinned_saved_item_history_from_dir,
 };
 pub use vanilla_saved_item_block_map::{VanillaSavedItemBlockMap, VanillaSavedItemBlockMatch};
 pub use vanilla_saved_item_palette::{VanillaSavedItemEntry, VanillaSavedItemPalette};

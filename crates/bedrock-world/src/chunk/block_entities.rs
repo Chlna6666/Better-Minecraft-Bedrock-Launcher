@@ -1,9 +1,9 @@
 //! Batched typed access to Bedrock chunk BlockEntity records.
 
-use crate::surface::{ChunkBlockEntity, ChunkDataRequest, ChunkLoadOptions, WorldThreadingOptions};
-use crate::world::{World, StorageBackend};
 use crate::chunk::ChunkPos;
 use crate::error::{BedrockWorldError, Result};
+use crate::surface::{ChunkBlockEntity, ChunkDataRequest, ChunkLoadOptions, WorldThreadingOptions};
+use crate::world::{StorageBackend, World};
 
 /// BlockEntity records loaded for one Bedrock chunk position.
 #[derive(Debug, Clone, PartialEq)]

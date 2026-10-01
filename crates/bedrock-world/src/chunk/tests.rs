@@ -5,6 +5,7 @@ use super::legacy::{
 };
 use super::subchunk::packed_word_count;
 use super::*;
+use crate::map_item::MapItemId;
 
 fn read_subchunk(y: i8, bytes: Bytes) -> crate::error::Result<SubChunk> {
     SubChunk::read(y, bytes, SubChunkDecodeMode::FullIndices)
@@ -92,10 +93,7 @@ fn bedrock_db_key_decodes_actor_and_digp_keys() {
 fn bedrock_db_key_encodes_documented_global_shapes() {
     let map_id = MapItemId::new("42").expect("map id");
     assert_eq!(map_id.storage_key().as_ref(), b"map_42");
-    assert_eq!(
-        MapItemId::from_storage_key(b"map_42"),
-        Some(map_id.clone())
-    );
+    assert_eq!(MapItemId::from_storage_key(b"map_42"), Some(map_id.clone()));
     assert_eq!(
         BedrockDbKey::Map("42".to_string()).encode().as_deref(),
         Some(&b"map_42"[..])

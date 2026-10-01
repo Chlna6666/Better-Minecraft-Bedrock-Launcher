@@ -8,10 +8,9 @@
 use crate::nbt::NbtTag;
 use crate::scan::encode_consecutive_roots;
 use crate::{
-    BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, LevelChunk,
-    ChunkCapabilities, ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion,
-    CompatibilityLevel, Dimension, Result, SubChunkFormat, World, StorageBackend, WriteGuard,
-    block_storage_index,
+    BedrockWorldError, Biome2d, Biome3d, BlockPalette, BlockPos, BlockState, ChunkCapabilities,
+    ChunkKey, ChunkPos, ChunkRecord, ChunkRecordTag, ChunkVersion, CompatibilityLevel, Dimension,
+    LevelChunk, Result, StorageBackend, SubChunkFormat, World, WriteGuard, block_storage_index,
 };
 use bytes::Bytes;
 use indexmap::IndexMap;

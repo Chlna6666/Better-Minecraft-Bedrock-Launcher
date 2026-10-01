@@ -1,16 +1,14 @@
 //! Minecraft global, map, village, block-entity, and actor scans and mutations.
 
 use super::*;
+use std::collections::BTreeSet;
 
 impl<S> World<S>
 where
     S: StorageBackend,
 {
     /// Scan entities.
-    pub fn scan_entities(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<(Vec<Actor>, ScanReport)> {
+    pub fn scan_entities(&self, options: WorldScanOptions) -> Result<(Vec<Actor>, ScanReport)> {
         let mut report = ScanReport::default();
         let mut entities = Vec::new();
         let mut entries_seen = 0usize;
@@ -61,10 +59,7 @@ where
     }
 
     /// Scan items.
-    pub fn scan_items(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<(Vec<ItemStack>, ScanReport)> {
+    pub fn scan_items(&self, options: WorldScanOptions) -> Result<(Vec<ItemStack>, ScanReport)> {
         let mut report = ScanReport::default();
         let mut items = Vec::new();
         let mut entries_seen = 0usize;
@@ -130,10 +125,7 @@ where
     /// # Errors
     ///
     /// Returns storage errors, cancellation, or map NBT parse errors.
-    pub fn map_items(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<SavedData>> {
+    pub fn map_items(&self, options: WorldScanOptions) -> Result<Vec<SavedData>> {
         let mut items = Vec::new();
         self.storage().for_each_prefix_ref(
             b"map_",
@@ -150,18 +142,63 @@ where
         Ok(items)
     }
 
-    /// Saves a Bedrock map item after an encode/decode round-trip validation.
+    /// Finds unused nonnegative numeric `map_<id>` suffixes without decoding map values.
+    ///
+    /// The result is a proposal, not a reservation. A caller creating map records must stage
+    /// them through [`WorldTransaction::save_map_item`]; its absent-key precondition rejects any
+    /// id taken before commit. This scans LevelDB keys read-only and does not change map format,
+    /// player inventory or `level.dat`.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors, a validation error for more than 1024 requested ids, or a
+    /// validation error if the signed 64-bit id space is exhausted.
+    pub fn available_map_ids(&self, count: usize) -> Result<Vec<i64>> {
+        if count > 1024 {
+            return Err(BedrockWorldError::Validation(
+                "cannot allocate more than 1024 map ids at once".to_string(),
+            ));
+        }
+        let mut used = BTreeSet::new();
+        self.storage()
+            .for_each_prefix_key(b"map_", StorageReadOptions::default(), &mut |key| {
+                if let Some(id) = MapItemId::from_storage_key(key)
+                    && let Ok(number) = id.as_str().parse::<i64>()
+                {
+                    used.insert(number);
+                }
+                Ok(StorageVisitorControl::Continue)
+            })?;
+        let mut ids = Vec::with_capacity(count);
+        let mut candidate = 0_i64;
+        while ids.len() < count {
+            if !used.contains(&candidate) {
+                ids.push(candidate);
+            }
+            if ids.len() < count {
+                candidate = candidate.checked_add(1).ok_or_else(|| {
+                    BedrockWorldError::Validation("numeric map id space is exhausted".to_string())
+                })?;
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Saves a Bedrock `map_<id>` record in one LevelDB batch.
+    ///
+    /// A new item has empty `raw`; an item read from storage retains its source bytes. The source
+    /// condition is checked under the world mutation lock before commit. Unknown NBT fields in
+    /// `roots` are retained, and no player's `filled_map` reference is changed.
     ///
     /// # Errors
     ///
     /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
-    /// errors for malformed map items, or storage errors from the commit.
+    /// errors for malformed map items, [`BedrockWorldError::ConcurrentWrite`] if the source
+    /// changed, or storage errors from the commit.
     pub fn save_map_item(&self, item: &SavedData) -> Result<()> {
         self.ensure_writable()?;
-        let value = encode_map_item(item)?;
-        decode_map_item(item.id.clone(), value.clone())?;
         let mut transaction = self.transaction();
-        transaction.put_raw_key(item.id.storage_key(), value);
+        transaction.save_map_item(item)?;
         transaction.commit()
     }
 
@@ -183,13 +220,12 @@ where
     /// # Errors
     ///
     /// Returns storage, cancellation, or NBT decoding errors.
-    pub fn villages(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<Entry>> {
+    pub fn villages(&self, options: WorldScanOptions) -> Result<Vec<Entry>> {
         let mut villages = Vec::new();
-        self.storage()
-            .for_each_prefix_ref(b"VILLAGE_", to_storage_read_options(&options), &mut |entry| {
+        self.storage().for_each_prefix_ref(
+            b"VILLAGE_",
+            to_storage_read_options(&options),
+            &mut |entry| {
                 check_cancelled(&options)?;
                 let BedrockDbKey::Village(key) = BedrockDbKey::decode(entry.key) else {
                     return Ok(StorageVisitorControl::Continue);
@@ -201,7 +237,8 @@ where
                     raw: Bytes::new(),
                 });
                 Ok(StorageVisitorControl::Continue)
-            })?;
+            },
+        )?;
         Ok(villages)
     }
 
@@ -210,10 +247,7 @@ where
     /// # Errors
     ///
     /// Returns storage errors or global NBT parse errors.
-    pub fn global(
-        &self,
-        kind: GlobalRecordKind,
-    ) -> Result<Option<Global>> {
+    pub fn global(&self, kind: GlobalRecordKind) -> Result<Option<Global>> {
         let key = kind.storage_key();
         self.storage()
             .get(&key)?
@@ -226,10 +260,7 @@ where
     /// # Errors
     ///
     /// Returns storage errors, cancellation, or global NBT parse errors.
-    pub fn globals(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<Global>> {
+    pub fn globals(&self, options: WorldScanOptions) -> Result<Vec<Global>> {
         let mut records = Vec::new();
         self.storage()
             .for_each_entry(to_storage_read_options(&options), &mut |key, value| {
@@ -237,11 +268,7 @@ where
                 let BedrockDbKey::Global(kind) = BedrockDbKey::decode(key) else {
                     return Ok(StorageVisitorControl::Continue);
                 };
-                records.push(decode_global(
-                    kind.clone(),
-                    kind.name(),
-                    value.clone(),
-                )?);
+                records.push(decode_global(kind.clone(), kind.name(), value.clone())?);
                 Ok(StorageVisitorControl::Continue)
             })?;
         Ok(records)
@@ -331,16 +358,38 @@ where
     /// # Errors
     ///
     /// Returns storage errors or block-entity NBT parse errors.
-    pub fn block_entities(
+    pub fn block_entities(&self, pos: ChunkPos) -> Result<Vec<BlockEntityRecord>> {
+        self.block_entities_snapshot(pos)
+            .map(|(entities, _)| entities)
+    }
+
+    /// Reads one chunk's block entities together with their exact LevelDB source bytes.
+    ///
+    /// Pass the returned bytes to [`WorldTransaction::update_block_entities`] when editing a
+    /// container or item frame. The transaction checks those bytes at commit so a stale read
+    /// cannot overwrite a newer block-entity record. `None` means the record was absent.
+    /// This is read-only and preserves each entity's unknown NBT fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage or block-entity NBT parse errors.
+    pub fn block_entities_snapshot(
         &self,
         pos: ChunkPos,
-    ) -> Result<Vec<BlockEntityRecord>> {
+    ) -> Result<(Vec<BlockEntityRecord>, Option<Bytes>)> {
         let key = ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode();
         let Some(value) = self.storage().get(&key)? else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
         let mut report = ScanReport::default();
-        Ok(parse_block_entities_from_value(&value, &mut report)
+        let entities = parse_block_entities_from_value(&value, &mut report);
+        if !report.parse_errors.is_empty() {
+            return Err(BedrockWorldError::CorruptWorld(format!(
+                "block entities in {pos:?} could not be parsed: {}",
+                report.parse_errors.join("; ")
+            )));
+        }
+        let records = entities
             .into_iter()
             .enumerate()
             .map(|(index, entity)| BlockEntityRecord {
@@ -348,7 +397,8 @@ where
                 index,
                 entity,
             })
-            .collect())
+            .collect();
+        Ok((records, Some(value)))
     }
 
     /// Replaces a chunk's block entity payload after coordinate validation.
@@ -357,11 +407,7 @@ where
     ///
     /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
     /// errors when entity coordinates do not belong to `pos`, or storage errors.
-    pub fn put_block_entities(
-        &self,
-        pos: ChunkPos,
-        entities: &[BlockEntity],
-    ) -> Result<()> {
+    pub fn put_block_entities(&self, pos: ChunkPos, entities: &[BlockEntity]) -> Result<()> {
         self.ensure_writable()?;
         let mut transaction = self.transaction();
         transaction.put_block_entities(pos, entities)?;
@@ -375,12 +421,7 @@ where
     /// Returns validation errors when no block entity exists at `block`, when
     /// the edited NBT no longer parses as a block entity, or storage/read-only
     /// errors from the write.
-    pub fn edit_block_entity_at<F>(
-        &self,
-        pos: ChunkPos,
-        block: BlockPos,
-        edit: F,
-    ) -> Result<()>
+    pub fn edit_block_entity_at<F>(&self, pos: ChunkPos, block: BlockPos, edit: F) -> Result<()>
     where
         F: FnOnce(&mut NbtTag) -> Result<()>,
     {
@@ -426,8 +467,7 @@ where
             .filter(|entity| entity.position != Some([block.x, block.y, block.z]))
             .collect::<Vec<_>>();
         if entities.is_empty() {
-            return self
-                .delete_raw(&ChunkKey::new(pos, ChunkRecordTag::BlockEntity));
+            return self.delete_raw(&ChunkKey::new(pos, ChunkRecordTag::BlockEntity));
         }
         self.put_block_entities(pos, &entities)
     }
@@ -654,12 +694,7 @@ where
     ///
     /// Returns [`BedrockWorldError::ReadOnly`] for read-only worlds, validation
     /// errors when `actor` has no `UniqueID`, or storage errors from the commit.
-    pub fn move_actor(
-        &self,
-        from: ChunkPos,
-        to: ChunkPos,
-        actor: &Actor,
-    ) -> Result<()> {
+    pub fn move_actor(&self, from: ChunkPos, to: ChunkPos, actor: &Actor) -> Result<()> {
         self.ensure_writable()?;
         let uid = actor
             .unique_id

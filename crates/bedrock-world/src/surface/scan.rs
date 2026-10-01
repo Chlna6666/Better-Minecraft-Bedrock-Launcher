@@ -12,8 +12,8 @@
 
 use super::{
     BiomeDataRequirement, ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats,
-    ExactSurfaceSubchunkPolicy, TerrainColumnBiome, TerrainSampleSource, World,
-    WorldPipelineOptions, StorageBackend, WorldThreadingOptions,
+    ExactSurfaceSubchunkPolicy, StorageBackend, TerrainColumnBiome, TerrainSampleSource, World,
+    WorldPipelineOptions, WorldThreadingOptions,
 };
 use crate::chunk::{
     BlockState, ChunkKey, ChunkPos, ChunkRecordTag, ChunkVersion, SubChunk, SubChunkDecodeMode,
@@ -22,7 +22,7 @@ use crate::chunk::{
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::NbtTag;
 use crate::scan::{
-    BiomeData, BiomeStorage, parse_data2d_legacy, parse_data3d, parse_legacy_data2d,
+    BiomeData, BiomeStorage, parse_data2d_legacy, parse_data3d_with_min_y, parse_legacy_data2d,
 };
 use crate::storage::{
     StorageCachePolicy, StorageKeyBatchBuilder, StoragePipelineOptions, StorageReadOptions,
@@ -611,7 +611,7 @@ fn decode_direct_surface_chunk(raw: RawSurfaceChunk) -> Result<SurfaceDecodeOutp
     }
 
     let biome_started = Instant::now();
-    let biome_data = parse_surface_biome_record(raw.biome_record.as_ref())?;
+    let biome_data = parse_surface_biome_record(raw.pos, raw.biome_record.as_ref())?;
     let version = raw
         .biome_record
         .as_ref()
@@ -687,13 +687,14 @@ fn decode_direct_surface_chunk(raw: RawSurfaceChunk) -> Result<SurfaceDecodeOutp
 }
 
 fn parse_surface_biome_record(
+    pos: ChunkPos,
     record: Option<&(ChunkRecordTag, Bytes)>,
 ) -> Result<Option<BiomeData>> {
     let Some((tag, value)) = record else {
         return Ok(None);
     };
     let parsed = match tag {
-        ChunkRecordTag::Data3D => parse_data3d(value),
+        ChunkRecordTag::Data3D => parse_data3d_with_min_y(value, pos.y_range(ChunkVersion::New).0),
         ChunkRecordTag::Data2D => parse_legacy_data2d(value),
         ChunkRecordTag::Data2DLegacy => parse_data2d_legacy(value),
         _ => unreachable!("surface biome record contains only biome tags"),
@@ -969,12 +970,7 @@ fn direct_biome_id_at(
     None
 }
 
-fn biome_id_from_storage(
-    storage: &BiomeStorage,
-    local_x: u8,
-    local_z: u8,
-    y: i32,
-) -> Option<u32> {
+fn biome_id_from_storage(storage: &BiomeStorage, local_x: u8, local_z: u8, y: i32) -> Option<u32> {
     let local_y = if let Some(start_y) = storage.y {
         u8::try_from(y - start_y).ok()?
     } else {

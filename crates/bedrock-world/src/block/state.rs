@@ -1,10 +1,10 @@
 //! Minecraft Bedrock BlockState identity and explicit storage-version rewriting.
 
-mod migration;
-mod upgrade;
 mod identity;
+mod migration;
 mod nbt;
 mod properties;
+mod upgrade;
 
 use crate::block::BlockState;
 use crate::block::version::AuthoritativeBlockStateCatalog;

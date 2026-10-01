@@ -7,7 +7,7 @@
 
 use crate::error::Result;
 use crate::player::{PlayerStorageOverview, inspect_player_storage};
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 
 impl<S> World<S>
 where

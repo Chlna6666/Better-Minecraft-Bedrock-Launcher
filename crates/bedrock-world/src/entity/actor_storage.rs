@@ -9,7 +9,7 @@ use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
 use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
-use crate::scan::{encode_actor_ids, decode_actor_ids};
+use crate::scan::{decode_actor_ids, encode_actor_ids};
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};

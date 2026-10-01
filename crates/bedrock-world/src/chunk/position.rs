@@ -126,8 +126,8 @@ impl BlockPos {
     #[must_use]
     /// Converts this block position to a chunk position in the given dimension.
     pub const fn to_chunk_pos(self, dimension: Dimension) -> ChunkPos {
-        let x = if self.x < 0 { self.x - 15 } else { self.x } / 16;
-        let z = if self.z < 0 { self.z - 15 } else { self.z } / 16;
+        let x = self.x.div_euclid(16);
+        let z = self.z.div_euclid(16);
         ChunkPos { x, z, dimension }
     }
 

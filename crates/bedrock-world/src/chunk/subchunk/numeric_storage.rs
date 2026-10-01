@@ -1,12 +1,10 @@
 //! Explicit Minecraft Bedrock SubChunk writes to historical numeric fixed-array storage.
 
 use crate::block::LegacyNumericBlockUpgradeTable;
-use crate::chunk::{
-    NumericSubChunkDowngradeReport, SubChunkVersion, stage_subchunk_downgrade,
-};
+use crate::chunk::{NumericSubChunkDowngradeReport, SubChunkVersion, stage_subchunk_downgrade};
 use crate::error::Result;
 use crate::storage::StorageOp;
-use crate::world::{World, StorageBackend};
+use crate::world::{StorageBackend, World};
 
 impl<S> World<S>
 where
@@ -36,8 +34,7 @@ where
         target: SubChunkVersion,
         numeric: &LegacyNumericBlockUpgradeTable,
     ) -> Result<NumericSubChunkDowngradeReport> {
-        let (batch, report) =
-            stage_subchunk_downgrade(self.storage(), target, numeric)?;
+        let (batch, report) = stage_subchunk_downgrade(self.storage(), target, numeric)?;
         if batch.is_empty() {
             return Ok(report);
         }

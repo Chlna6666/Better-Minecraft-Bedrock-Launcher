@@ -1,12 +1,12 @@
 //! Minecraft Bedrock chunk records and SubChunk payloads.
 
-mod encoding;
 mod block_entities;
+mod encoding;
 mod heightmap;
 mod legacy_encoding;
 mod legacy_extra;
-mod legacy_terrain_combine;
 pub(crate) mod legacy_terrain;
+mod legacy_terrain_combine;
 mod legacy_terrain_storage;
 mod level_chunk;
 mod subchunk;
@@ -20,12 +20,9 @@ pub mod palette;
 /// Bedrock world, chunk and block coordinates and dimension identities.
 pub mod position;
 
-pub use crate::scan::{
-    HardcodedSpawnAreaKind, ChunkEntry, ChunkValue,
-    HardcodedSpawnArea,
-};
-pub use heightmap::{ChunkHeightMap, ChunkHeightMapStatus};
+pub use crate::scan::{ChunkEntry, ChunkValue, HardcodedSpawnArea, HardcodedSpawnAreaKind};
 pub use block_entities::ChunkBlockEntities;
+pub use heightmap::{ChunkHeightMap, ChunkHeightMapStatus};
 pub use key::*;
 pub use legacy::*;
 pub use legacy_encoding::{LegacySubChunkBuilder, LegacyTerrainBuilder};
@@ -43,13 +40,11 @@ pub use position::*;
 pub(crate) use subchunk::stage_paletted_subchunks_for_upgrade;
 pub use subchunk::{
     NumericSubChunkDowngradeReport, NumericSubChunkUpgradeReport, SubChunk, SubChunkDecodeMode,
-    SubChunkHeightMapContribution, subchunk_height_map_contribution,
-    SubChunkDowngradeWriteReport, SubChunkFormat, SubChunkStorageWriteReport, SubChunkUpgradeReport,
-    SubChunkUpgradeWriteReport, SubChunkVersion, VisibleBlockStatesAt,
+    SubChunkDowngradeWriteReport, SubChunkFormat, SubChunkHeightMapContribution,
+    SubChunkStorageWriteReport, SubChunkUpgradeReport, SubChunkUpgradeWriteReport, SubChunkVersion,
+    VisibleBlockStatesAt, subchunk_height_map_contribution,
 };
-pub(crate) use subchunk::{
-    stage_numeric_subchunk_upgrade, stage_subchunk_downgrade,
-};
+pub(crate) use subchunk::{stage_numeric_subchunk_upgrade, stage_subchunk_downgrade};
 
 #[cfg(test)]
 mod tests;

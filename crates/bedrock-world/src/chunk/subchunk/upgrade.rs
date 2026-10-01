@@ -8,7 +8,7 @@ use crate::chunk::{
 use crate::error::{BedrockWorldError, Result};
 use crate::storage::{StorageBatch, StorageOp};
 use crate::version::GameVersion;
-use crate::world::{World, WorldFormat, StorageBackend};
+use crate::world::{StorageBackend, World, WorldFormat};
 use std::cmp::Ordering;
 
 /// Result of one atomic Minecraft Bedrock SubChunk upgrade over legacy numeric and paletted records.

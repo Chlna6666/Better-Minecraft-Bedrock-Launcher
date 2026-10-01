@@ -1,9 +1,9 @@
 //! Typed batch access to persisted Bedrock chunk height maps.
 
-use crate::surface::{ChunkDataRequest, ChunkLoadOptions, WorldThreadingOptions};
-use crate::world::{World, StorageBackend};
 use crate::chunk::ChunkPos;
 use crate::error::{BedrockWorldError, Result};
+use crate::surface::{ChunkDataRequest, ChunkLoadOptions, WorldThreadingOptions};
+use crate::world::{StorageBackend, World};
 
 /// Availability of one persisted chunk height map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

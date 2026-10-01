@@ -510,12 +510,8 @@ mod tests {
         let source = paletted_subchunk(false).write_v9().unwrap();
         storage.put(&key, &source).unwrap();
 
-        let (batch, report) = stage_subchunk_downgrade(
-            &storage,
-            SubChunkVersion::V7,
-            &numeric_reverse(),
-        )
-        .unwrap();
+        let (batch, report) =
+            stage_subchunk_downgrade(&storage, SubChunkVersion::V7, &numeric_reverse()).unwrap();
         assert_eq!(report.rewritten, 1);
         assert_eq!(report.palette_entries_resolved, 1);
         assert_eq!(report.target_without_light_arrays, 1);
@@ -557,12 +553,9 @@ mod tests {
         };
         storage.put(&key, &source.write_v9().unwrap()).unwrap();
 
-        let (batch, _) = stage_subchunk_downgrade(
-            &storage,
-            SubChunkVersion::V7,
-            &renamed_numeric_reverse(),
-        )
-        .unwrap();
+        let (batch, _) =
+            stage_subchunk_downgrade(&storage, SubChunkVersion::V7, &renamed_numeric_reverse())
+                .unwrap();
         storage.write_batch(&batch).unwrap();
         let parsed = SubChunk::read(
             0,
@@ -590,12 +583,8 @@ mod tests {
             .put(&key, &paletted_subchunk(true).write_v9().unwrap())
             .unwrap();
 
-        let (batch, report) = stage_subchunk_downgrade(
-            &storage,
-            SubChunkVersion::V7,
-            &numeric_reverse(),
-        )
-        .unwrap();
+        let (batch, report) =
+            stage_subchunk_downgrade(&storage, SubChunkVersion::V7, &numeric_reverse()).unwrap();
         assert_eq!(report.second_storage_records, 1);
         assert_eq!(report.block_extra_entries_written, 1);
         assert_eq!(report.block_extra_data_written, 1);
@@ -628,12 +617,7 @@ mod tests {
         storage.put(&key, &source.write_v9().unwrap()).unwrap();
 
         assert!(
-            stage_subchunk_downgrade(
-                &storage,
-                SubChunkVersion::V7,
-                &numeric_reverse(),
-            )
-            .is_err()
+            stage_subchunk_downgrade(&storage, SubChunkVersion::V7, &numeric_reverse(),).is_err()
         );
         assert_eq!(
             storage.get(&key).unwrap().unwrap().first().copied(),

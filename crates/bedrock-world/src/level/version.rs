@@ -8,7 +8,7 @@ use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunkVersion};
 use crate::error::Result;
 use crate::storage::{StorageReadOptions, StorageVisitorControl};
 use crate::version::{GameVersion, LevelVersion};
-use crate::world::{World, WorldFormat, StorageBackend};
+use crate::world::{StorageBackend, World, WorldFormat};
 
 /// Count for one actual SubChunk version observed in a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

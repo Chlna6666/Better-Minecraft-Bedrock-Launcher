@@ -104,10 +104,7 @@ where
     }
 
     /// Classify keys.
-    pub fn classify_keys(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<BTreeMap<String, usize>> {
+    pub fn classify_keys(&self, options: WorldScanOptions) -> Result<BTreeMap<String, usize>> {
         let mut counts = BTreeMap::new();
         let mut allocation_free_counts = HashMap::<BedrockDbKeyKind, usize>::new();
         let mut entries_seen = 0usize;
@@ -138,10 +135,7 @@ where
     }
 
     /// List chunk positions.
-    pub fn chunk_positions(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<ChunkPos>> {
+    pub fn chunk_positions(&self, options: WorldScanOptions) -> Result<Vec<ChunkPos>> {
         let mut positions = BTreeSet::new();
         let mut entries_seen = 0usize;
         self.storage()
@@ -160,10 +154,7 @@ where
     }
 
     /// List render chunk positions.
-    pub fn render_chunk_positions(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<ChunkPos>> {
+    pub fn render_chunk_positions(&self, options: WorldScanOptions) -> Result<Vec<ChunkPos>> {
         let started = Instant::now();
         log::debug!(
             "listing render chunk positions (threading={:?}, queue_depth={}, progress_interval={})",
@@ -243,13 +234,11 @@ where
         if worker_count == 1 {
             let render_positions = positions
                 .into_iter()
-                .filter_map(
-                    |pos| match self.has_render_chunk_records(pos, &options) {
-                        Ok(true) => Some(Ok(pos)),
-                        Ok(false) => None,
-                        Err(error) => Some(Err(error)),
-                    },
-                )
+                .filter_map(|pos| match self.has_render_chunk_records(pos, &options) {
+                    Ok(true) => Some(Ok(pos)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error)),
+                })
                 .collect::<Result<Vec<_>>>()?;
             log::debug!(
                 "render chunk region index complete (dimension={:?}, candidates={}, positions={}, workers={}, queue_depth=0, elapsed_ms={})",
@@ -411,15 +400,23 @@ where
             .transpose()
     }
 
-    /// Put player.
+    /// Saves edits to an existing LevelDB-backed player using its original source snapshot.
+    ///
+    /// The current structured NBT is serialized and the original `~local_player` or `player_*`
+    /// value must still match when the single LevelDB batch commits. This does not write
+    /// `level.dat.Player`, preserve a stale raw value as the edited value, or change formats.
+    /// Unknown NBT fields in the player's structured root remain serialized. External game
+    /// processes and direct raw storage writes remain outside the in-process commit lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation errors for non-LevelDB players, serialization errors for invalid NBT,
+    /// storage failures, or a concurrent-write error if the source record changed.
     pub fn save_player(&self, player: &PlayerData) -> Result<()> {
         self.ensure_writable()?;
-        let Some(key) = player.id.storage_key() else {
-            return Err(BedrockWorldError::Validation(
-                "player id has no LevelDB key".to_string(),
-            ));
-        };
-        self.storage().put(key.as_ref(), &player.raw)
+        let mut transaction = self.transaction();
+        transaction.update_player(player)?;
+        transaction.commit()
     }
 
     /// Deletes an exact LevelDB-backed player record.
@@ -478,17 +475,9 @@ where
     }
 
     /// Scans the known records for one chunk using the selected retention options.
-    pub fn scan_chunk(
-        &self,
-        pos: ChunkPos,
-        options: ScanOptions,
-    ) -> Result<crate::scan::Chunk> {
+    pub fn scan_chunk(&self, pos: ChunkPos, options: ScanOptions) -> Result<crate::scan::Chunk> {
         let chunk = self.chunk(pos)?;
-        Ok(crate::scan::Chunk::new(
-            pos,
-            &chunk.records,
-            options,
-        ))
+        Ok(crate::scan::Chunk::new(pos, &chunk.records, options))
     }
 
     /// Reads one persisted SubChunk using the requested decode mode.
@@ -506,11 +495,7 @@ where
     }
 
     /// Get biome storage.
-    pub fn biome_storage(
-        &self,
-        pos: ChunkPos,
-        y: i32,
-    ) -> Result<Option<BiomeStorage>> {
+    pub fn biome_storage(&self, pos: ChunkPos, y: i32) -> Result<Option<BiomeStorage>> {
         let Some(biome_data) = self.biome_data(pos)? else {
             return Ok(None);
         };
@@ -523,20 +508,11 @@ where
     }
 
     /// Get biome storages.
-    pub fn biome_storages(
-        &self,
-        pos: ChunkPos,
-    ) -> Result<Option<Vec<BiomeStorage>>> {
-        Ok(self
-            .biome_data(pos)?
-            .map(|biome_data| biome_data.storages))
+    pub fn biome_storages(&self, pos: ChunkPos) -> Result<Option<Vec<BiomeStorage>>> {
+        Ok(self.biome_data(pos)?.map(|biome_data| biome_data.storages))
     }
 
-    fn has_render_chunk_records(
-        &self,
-        pos: ChunkPos,
-        options: &WorldScanOptions,
-    ) -> Result<bool> {
+    fn has_render_chunk_records(&self, pos: ChunkPos, options: &WorldScanOptions) -> Result<bool> {
         let prefix = chunk_record_prefix(pos);
         let mut found = false;
         self.storage().for_each_prefix_key(
@@ -557,12 +533,7 @@ where
     }
 
     /// Get height at.
-    pub fn height(
-        &self,
-        pos: ChunkPos,
-        local_x: u8,
-        local_z: u8,
-    ) -> Result<Option<i16>> {
+    pub fn height(&self, pos: ChunkPos, local_x: u8, local_z: u8) -> Result<Option<i16>> {
         validate_local_column(local_x, local_z)?;
         Ok(self
             .height_map(pos)?
@@ -570,10 +541,7 @@ where
     }
 
     /// Get height map.
-    pub fn height_map(
-        &self,
-        pos: ChunkPos,
-    ) -> Result<Option<[[Option<i16>; 16]; 16]>> {
+    pub fn height_map(&self, pos: ChunkPos) -> Result<Option<[[Option<i16>; 16]; 16]>> {
         if let Some(biome_data) = self
             .biome_data(pos)
             .map_err(|error| BedrockWorldError::CorruptWorld(format!("height data: {error}")))?
@@ -589,10 +557,7 @@ where
     }
 
     /// Get legacy biome colors.
-    pub fn legacy_biome_colors(
-        &self,
-        pos: ChunkPos,
-    ) -> Result<Option<[[Option<u32>; 16]; 16]>> {
+    pub fn legacy_biome_colors(&self, pos: ChunkPos) -> Result<Option<[[Option<u32>; 16]; 16]>> {
         let key = ChunkKey::new(pos, ChunkRecordTag::LegacyTerrain).encode();
         let Some(value) = self.storage().get(&key)? else {
             return Ok(None);
@@ -641,13 +606,7 @@ where
     }
 
     /// Get biome id.
-    pub fn biome_id(
-        &self,
-        pos: ChunkPos,
-        local_x: u8,
-        local_z: u8,
-        y: i32,
-    ) -> Result<Option<u32>> {
+    pub fn biome_id(&self, pos: ChunkPos, local_x: u8, local_z: u8, y: i32) -> Result<Option<u32>> {
         validate_local_column(local_x, local_z)?;
         let Some(storage) = self.biome_storage(pos, y)? else {
             return Ok(None);
@@ -703,11 +662,7 @@ where
     }
 
     /// Load render chunk.
-    pub fn query_chunk_data(
-        &self,
-        pos: ChunkPos,
-        options: ChunkLoadOptions,
-    ) -> Result<ChunkData> {
+    pub fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
         let (mut chunks, _) = self.query_chunk_data_with_stats([pos], options)?;
         chunks.pop().ok_or_else(|| {
             BedrockWorldError::CorruptWorld("exact render load returned no chunk".to_string())
@@ -752,9 +707,7 @@ where
         positions: impl IntoIterator<Item = ChunkPos>,
         options: ChunkLoadOptions,
     ) -> Result<Vec<ChunkData>> {
-        Ok(self
-            .query_chunk_data_with_stats(positions, options)?
-            .0)
+        Ok(self.query_chunk_data_with_stats(positions, options)?.0)
     }
 
     /// Load render chunks with stats.
@@ -782,12 +735,7 @@ where
                 .resolve_queue_depth(worker_count, positions.len()),
             options.priority
         );
-        self.load_render_chunks_exact_batch_sorted(
-            positions,
-            options,
-            worker_count,
-            started,
-        )
+        self.load_render_chunks_exact_batch_sorted(positions, options, worker_count, started)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -914,7 +862,7 @@ where
             let mut needed_keys = Vec::new();
             let mut needed_requests = Vec::new();
             for (chunk_index, raw) in raw_chunks.iter().enumerate() {
-                let biome_data = parse_render_biome_record(raw.biome_record.as_ref())?;
+                let biome_data = parse_render_biome_record(raw.pos, raw.biome_record.as_ref())?;
                 let height_map = if let Some(biome_data) = biome_data.as_ref() {
                     Some(render_height_map_from_biome_data(raw.pos, biome_data))
                 } else {
@@ -1040,8 +988,7 @@ where
         } else {
             WorldThreadingOptions::Fixed(worker_count)
         };
-        let (reloaded, stats) =
-            self.query_chunk_data_with_stats(reload_positions, full_options)?;
+        let (reloaded, stats) = self.query_chunk_data_with_stats(reload_positions, full_options)?;
         for (chunk_index, reloaded_chunk) in reload_indexes.into_iter().zip(reloaded) {
             if let Some(chunk) = chunks.get_mut(chunk_index) {
                 *chunk = reloaded_chunk;
@@ -1085,8 +1032,7 @@ where
                 });
             }
         }
-        let (chunks, stats) =
-            self.query_chunk_data_with_stats(positions, options.into())?;
+        let (chunks, stats) = self.query_chunk_data_with_stats(positions, options.into())?;
         Ok(RegionLoad {
             region,
             chunks,

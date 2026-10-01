@@ -8,11 +8,15 @@
 use super::block_edit::{BlockEdit, BlockEditOptions, apply_block_edits};
 use crate::storage::{MemoryStorage, StorageOp, WorldStorage};
 use crate::{
-    BedrockWorldError, BlockPos, BlockState, ChunkPos, Dimension, OpenOptions, Result, World,
-    StorageBackend, WorldTransaction, WriteGuard,
+    BedrockWorldError, BlockPos, BlockState, ChunkPos, Dimension, OpenOptions, Result,
+    StorageBackend, World, WorldTransaction, WriteGuard,
 };
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
+
+// One atomic LevelDB batch is encoded into a contiguous buffer before the WAL write. Keep the
+// prepared payload below this bound rather than falling back to partially committed chunk batches.
+const MAX_ATOMIC_BATCH_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceChunk {
@@ -32,6 +36,8 @@ pub struct BlockStateCondition {
     /// Absolute block position to match.
     pub position: BlockPos,
     /// Exact persisted primary-layer block state required at `position`.
+    /// An unversioned `minecraft:air` with no properties also matches an omitted all-air
+    /// SubChunk. Source chunk records are still checked and the typed editor requires terrain.
     pub expected: BlockState,
 }
 
@@ -63,9 +69,9 @@ pub enum PlanStatus {
 ///
 /// The value owns the exact raw source snapshots consulted during preparation and the raw mutations
 /// produced by running the ordinary typed editor against an isolated in-memory copy. Callers must
-/// validate the sources and stage the edits while holding the same external serialization boundary
-/// that excludes competing writers for every affected chunk; validation alone is intentionally not a
-/// storage-level compare-and-swap primitive.
+/// stage the edits into one transaction. Commit rechecks every source chunk's complete raw record
+/// set under the world mutation lock before writing the batch. Direct raw storage writes and
+/// external Minecraft processes do not participate in that lock.
 #[derive(Debug, Clone)]
 pub struct BlockEditPlan {
     edited_blocks: usize,
@@ -75,6 +81,27 @@ pub struct BlockEditPlan {
 }
 
 impl BlockEditPlan {
+    pub(crate) fn source_world<S>(&self, world: &World<S>) -> Result<World<MemoryStorage>>
+    where
+        S: StorageBackend,
+    {
+        let memory = MemoryStorage::new();
+        for source in &self.source_chunks {
+            for (key, value) in &source.records {
+                memory.put(key, value)?;
+            }
+        }
+        Ok(World::from_typed_storage_with_format(
+            world.path().to_path_buf(),
+            memory,
+            OpenOptions {
+                read_only: true,
+                ..OpenOptions::default()
+            },
+            world.format(),
+        ))
+    }
+
     /// Returns the number of typed block edits represented by this preparation.
     #[must_use]
     pub const fn edited_blocks(&self) -> usize {
@@ -95,9 +122,9 @@ impl BlockEditPlan {
 
     /// Re-reads every source chunk and reports whether the prepared encoding still matches storage.
     ///
-    /// The caller must keep competing writers excluded from a returned [`PlanStatus::Current`]
-    /// decision through the subsequent [`Self::stage`] and transaction commit. Palette decode,
-    /// heightmap recomputation and NBT re-encoding are not repeated on this validation path.
+    /// This is an early advisory check; [`Self::stage`] also registers the source records for
+    /// authoritative revalidation under the transaction's commit lock. Palette decode, heightmap
+    /// recomputation and NBT re-encoding are not repeated on this validation path.
     pub fn validate<S>(&self, world: &World<S>) -> Result<PlanStatus>
     where
         S: StorageBackend,
@@ -117,13 +144,15 @@ impl BlockEditPlan {
 
     /// Stages the already encoded raw mutations into an existing world transaction.
     ///
-    /// This does not validate sources or commit the transaction. Callers are expected to call
-    /// [`Self::validate`] after acquiring their authoritative chunk-write boundary, then stage and
-    /// commit without releasing that boundary in between.
+    /// This registers the exact source record sets for commit-time validation and stages the raw
+    /// mutations. It does not write storage; all changes remain discardable until commit.
     pub fn stage<S>(&self, transaction: &mut WorldTransaction<'_, S>)
     where
         S: StorageBackend,
     {
+        for source in &self.source_chunks {
+            transaction.require_chunk_records(source.pos, source.records.clone());
+        }
         for operation in &self.operations {
             match operation {
                 StorageOp::Put { key, value } => {
@@ -191,9 +220,7 @@ where
     let source_chunks = source_chunk_positions
         .iter()
         .copied()
-        .map(|pos| {
-            raw_chunk_records(world, pos).map(|records| SourceChunk { pos, records })
-        })
+        .map(|pos| raw_chunk_records(world, pos).map(|records| SourceChunk { pos, records }))
         .collect::<Result<Vec<_>>>()?;
 
     let memory = MemoryStorage::new();
@@ -241,6 +268,13 @@ where
         append_record_diff(&source.records, &current, &mut operations);
     }
     operations.sort_unstable_by(|left, right| operation_key(left).cmp(operation_key(right)));
+    let batch_bytes = encoded_batch_bytes(&operations);
+    if operations.len() > u32::MAX as usize || batch_bytes > MAX_ATOMIC_BATCH_BYTES {
+        return Err(BedrockWorldError::Validation(format!(
+            "prepared atomic block batch has {} operations and {batch_bytes} encoded bytes; limit is {MAX_ATOMIC_BATCH_BYTES} bytes",
+            operations.len()
+        )));
+    }
 
     Ok(Some(BlockEditPlan {
         edited_blocks: result.edited_blocks,
@@ -273,8 +307,12 @@ where
             )));
         }
         for (condition, actual) in group.into_iter().zip(states) {
+            let omitted_air = actual.state.is_none()
+                && condition.expected.name == "minecraft:air"
+                && condition.expected.states.is_empty()
+                && condition.expected.version.is_none();
             if actual.pos != condition.position
-                || actual.state.as_ref() != Some(&condition.expected)
+                || (!omitted_air && actual.state.as_ref() != Some(&condition.expected))
             {
                 return Ok(false);
             }
@@ -331,6 +369,24 @@ fn operation_key(operation: &StorageOp) -> &[u8] {
     }
 }
 
+fn encoded_batch_bytes(operations: &[StorageOp]) -> usize {
+    operations.iter().fold(12usize, |total, operation| {
+        let (key_len, value_len) = match operation {
+            StorageOp::Put { key, value } => (key.len(), Some(value.len())),
+            StorageOp::Delete { key } => (key.len(), None),
+        };
+        let total = total
+            .saturating_add(1)
+            .saturating_add(5)
+            .saturating_add(key_len);
+        if let Some(value_len) = value_len {
+            total.saturating_add(5).saturating_add(value_len)
+        } else {
+            total
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +421,23 @@ mod tests {
                     value: Bytes::from_static(b"added"),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn atomic_batch_size_includes_leveldb_encoding_overhead() {
+        let operations = [
+            StorageOp::Put {
+                key: Bytes::from_static(b"a"),
+                value: Bytes::from_static(b"bc"),
+            },
+            StorageOp::Delete {
+                key: Bytes::from_static(b"def"),
+            },
+        ];
+        assert_eq!(
+            encoded_batch_bytes(&operations),
+            12 + (1 + 5 + 1 + 5 + 2) + (1 + 5 + 3)
         );
     }
 }

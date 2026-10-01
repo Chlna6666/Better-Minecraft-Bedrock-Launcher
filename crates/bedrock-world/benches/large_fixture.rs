@@ -5,11 +5,9 @@ use bedrock_world::surface::{
     ExactSurfaceSubchunkPolicy, WorldScanOptions, WorldThreadingOptions,
 };
 use bedrock_world::{
-    BedrockLevelDbStorage, ChunkPos,
-    Dimension, OpenOptions, StorageCachePolicy, StorageReadOptions,
-    StorageScanMode, StorageThreadingOptions, StorageVisitorControl, World, WorldFormat,
-    ScanOptions, WorldStorage,
-    read_level_dat_document,
+    BedrockLevelDbStorage, ChunkPos, Dimension, OpenOptions, ScanOptions, StorageCachePolicy,
+    StorageReadOptions, StorageScanMode, StorageThreadingOptions, StorageVisitorControl, World,
+    WorldFormat, WorldStorage, read_level_dat_document,
 };
 use std::fs::File;
 use std::io::Read;
@@ -292,9 +290,7 @@ fn main() {
     );
 
     let start = Instant::now();
-    let generic_players = generic_world
-        .players()
-        .expect("list players generic");
+    let generic_players = generic_world.players().expect("list players generic");
     println!(
         "large_fixture.players.generic elapsed_ms={} count={}",
         start.elapsed().as_millis(),

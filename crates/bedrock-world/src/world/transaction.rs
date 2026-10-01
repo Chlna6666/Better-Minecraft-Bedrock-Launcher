@@ -8,13 +8,21 @@ pub(super) struct StoragePrecondition {
     expected: Option<Bytes>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ChunkRecordsPrecondition {
+    pos: ChunkPos,
+    expected: BTreeMap<Bytes, Bytes>,
+}
+
 /// Buffered LevelDB mutations for one Minecraft Bedrock world.
 ///
 /// A transaction can stage player, map, chunk, actor and raw-record mutations into one
 /// [`StorageBatch`]. Commits opened for the same world path are serialized by the shared mutation
-/// lock. Player update/create helpers also validate their source condition while that lock is held,
-/// preventing an older in-process read snapshot from silently replacing a newer LevelDB value.
+/// lock. Player and map writes validate their source values there; staged block-edit plans validate
+/// the complete source chunk record sets. An older in-process snapshot cannot silently replace a
+/// newer LevelDB value through these typed paths.
 ///
+/// Direct raw storage writes and external Minecraft processes do not participate in this lock.
 /// `level.dat` is a separate file and is intentionally outside this atomic LevelDB boundary.
 pub struct WorldTransaction<'a, S = Arc<dyn WorldStorage>>
 where
@@ -25,6 +33,7 @@ where
     pub(super) read_only: bool,
     pub(super) actor_ownership: Option<ActorOwnershipIndex>,
     pub(super) preconditions: Vec<StoragePrecondition>,
+    pub(super) chunk_preconditions: Vec<ChunkRecordsPrecondition>,
     pub(super) mutation_lock: Arc<Mutex<()>>,
 }
 
@@ -53,6 +62,33 @@ where
     /// Stages deletion of one exact raw storage key.
     pub fn delete_raw_key(&mut self, key: impl Into<Bytes>) {
         self.batch.delete(key.into());
+    }
+
+    /// Requires the current bytes of a raw LevelDB key to match a source snapshot.
+    ///
+    /// Use this with raw mutations whose structured domain API is unavailable,
+    /// including history replay. The condition is checked under the world
+    /// transaction's commit lock immediately before its single `StorageBatch`.
+    /// `None` requires the key to remain absent. This does not coordinate
+    /// external Minecraft processes or the separate `level.dat` file.
+    ///
+    /// # Errors
+    /// [`Self::commit`] returns [`BedrockWorldError::ConcurrentWrite`] if the
+    /// current record differs from `expected`, or a storage read error.
+    pub fn require_raw_key(&mut self, key: impl Into<Bytes>, expected: Option<Bytes>) {
+        self.preconditions.push(StoragePrecondition {
+            key: key.into(),
+            expected,
+        });
+    }
+
+    pub(crate) fn require_chunk_records(
+        &mut self,
+        pos: ChunkPos,
+        expected: BTreeMap<Bytes, Bytes>,
+    ) {
+        self.chunk_preconditions
+            .push(ChunkRecordsPrecondition { pos, expected });
     }
 
     /// Stages deletion of every raw record and modern actor owned by one chunk.
@@ -104,11 +140,7 @@ where
     /// # Errors
     ///
     /// Returns validation or serialization errors.
-    pub fn put_block_entities(
-        &mut self,
-        pos: ChunkPos,
-        entities: &[BlockEntity],
-    ) -> Result<()> {
+    pub fn put_block_entities(&mut self, pos: ChunkPos, entities: &[BlockEntity]) -> Result<()> {
         validate_block_entities_in_chunk(pos, entities)?;
         let roots = entities
             .iter()
@@ -119,6 +151,32 @@ where
         let parsed = parse_block_entities_from_value(&value, &mut report);
         validate_block_entities_in_chunk(pos, &parsed)?;
         self.put_raw(&ChunkKey::new(pos, ChunkRecordTag::BlockEntity), value);
+        Ok(())
+    }
+
+    /// Stages a chunk's complete BlockEntity payload with a source-record condition.
+    ///
+    /// `expected` must be the raw bytes returned by [`World::block_entities_snapshot`] before
+    /// editing. The condition is checked under the commit lock immediately before the single
+    /// LevelDB batch; `None` requires the record to remain absent. Unknown NBT fields in the
+    /// supplied entities are serialized unchanged. This cannot guard writes by an external game
+    /// process that does not share the lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation or serialization errors while staging, or
+    /// [`BedrockWorldError::ConcurrentWrite`] at commit when the source changed.
+    pub fn update_block_entities(
+        &mut self,
+        pos: ChunkPos,
+        expected: Option<Bytes>,
+        entities: &[BlockEntity],
+    ) -> Result<()> {
+        self.put_block_entities(pos, entities)?;
+        self.require_raw_key(
+            ChunkKey::new(pos, ChunkRecordTag::BlockEntity).encode(),
+            expected,
+        );
         Ok(())
     }
 
@@ -197,18 +255,28 @@ where
         Ok(())
     }
 
-    /// Stages a Bedrock map item write after round-trip validation.
+    /// Stages a Bedrock `map_<id>` write after round-trip validation.
     ///
-    /// Player changes staged in the same transaction are committed in the same LevelDB batch, making
-    /// map/editor events and player inventory changes visible together to this storage backend.
+    /// An empty `raw` value means a new map and requires an absent key. Otherwise `raw` is the
+    /// source snapshot and must still match the stored value when the single LevelDB batch commits.
+    /// Unknown NBT fields in `roots` are serialized along with the edited fields. This does not
+    /// change the map format version or update any player's `filled_map` reference.
+    /// The mutation lock coordinates transactions opened through this world; direct raw storage
+    /// writes and external Minecraft processes can still write concurrently.
     ///
     /// # Errors
     ///
-    /// Returns validation or serialization errors for malformed map data.
+    /// Returns validation or serialization errors for malformed map data, or
+    /// [`BedrockWorldError::ConcurrentWrite`] if the source record changed.
     pub fn save_map_item(&mut self, item: &SavedData) -> Result<()> {
         let value = encode_map_item(item)?;
         decode_map_item(item.id.clone(), value.clone())?;
-        self.batch.put(item.id.storage_key(), value);
+        let key = item.id.storage_key();
+        self.preconditions.push(StoragePrecondition {
+            key: key.clone(),
+            expected: (!item.raw.is_empty()).then(|| item.raw.clone()),
+        });
+        self.batch.put(key, value);
         Ok(())
     }
 
@@ -280,7 +348,7 @@ where
     ///
     /// Transactions opened for the same world path are serialized. Source conditions are checked
     /// while that mutation lock is held and immediately before the backend batch write, which closes
-    /// the in-process read/validate/write race for `update_player` and `create_player`.
+    /// the in-process read/validate/write race for typed player, map and staged chunk writes.
     ///
     /// This does not coordinate an external Minecraft process. Callers must still avoid editing a
     /// world that the game is actively writing.
@@ -299,6 +367,7 @@ where
             BedrockWorldError::ConcurrentWrite("world mutation lock poisoned".to_string())
         })?;
         validate_preconditions(self.storage.storage(), &self.preconditions)?;
+        validate_chunk_preconditions(self.storage.storage(), &self.chunk_preconditions)?;
         self.storage.storage().write_batch(&self.batch)
     }
 
@@ -350,6 +419,38 @@ fn validate_preconditions(
             return Err(BedrockWorldError::ConcurrentWrite(format!(
                 "storage source changed before transaction commit for key {:?}",
                 condition.key
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_chunk_preconditions(
+    storage: &dyn WorldStorage,
+    preconditions: &[ChunkRecordsPrecondition],
+) -> Result<()> {
+    for condition in preconditions {
+        let mut current = BTreeMap::new();
+        storage.for_each_prefix(
+            &chunk_record_prefix(condition.pos),
+            StorageReadOptions::default(),
+            &mut |raw_key, value| {
+                let key = ChunkKey::decode(raw_key).map_err(|error| {
+                    BedrockWorldError::CorruptWorld(format!(
+                        "invalid chunk record key under prefix for {:?}: {error}",
+                        condition.pos
+                    ))
+                })?;
+                if key.pos == condition.pos {
+                    current.insert(Bytes::copy_from_slice(raw_key), value.clone());
+                }
+                Ok(StorageVisitorControl::Continue)
+            },
+        )?;
+        if current != condition.expected {
+            return Err(BedrockWorldError::ConcurrentWrite(format!(
+                "chunk {:?} changed before transaction commit",
+                condition.pos
             )));
         }
     }
