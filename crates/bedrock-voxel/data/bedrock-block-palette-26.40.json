@@ -1,0 +1,2608 @@
+{
+  "schema_version": 1,
+  "minecraft_bedrock_version": "26.40",
+  "source": "Bedrock 26.40 vanilla resource-pack texture averages, resolved from the complete base and numeric version overlay stack with latest-version priority. Stable opaque full cubes and separate translucent glass candidates; block identifiers checked against Mojang/bedrock-samples commit 7844835b6baad4c0010f46901a4accf87413a022. Entries without resolved textures are omitted.",
+  "blocks": [
+    {
+      "id": "minecraft:acacia_planks",
+      "top": [
+        168,
+        90,
+        50,
+        255
+      ],
+      "side": [
+        168,
+        90,
+        50,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:amethyst_block",
+      "top": [
+        133,
+        97,
+        191,
+        255
+      ],
+      "side": [
+        133,
+        97,
+        191,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:andesite",
+      "top": [
+        136,
+        136,
+        136,
+        255
+      ],
+      "side": [
+        136,
+        136,
+        136,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:bamboo_mosaic",
+      "top": [
+        190,
+        170,
+        78,
+        255
+      ],
+      "side": [
+        190,
+        170,
+        78,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:bamboo_planks",
+      "top": [
+        193,
+        173,
+        80,
+        255
+      ],
+      "side": [
+        193,
+        173,
+        80,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:basalt",
+      "top": [
+        80,
+        81,
+        86,
+        255
+      ],
+      "side": [
+        73,
+        72,
+        77,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:birch_planks",
+      "top": [
+        192,
+        175,
+        121,
+        255
+      ],
+      "side": [
+        192,
+        175,
+        121,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:black_concrete",
+      "top": [
+        8,
+        10,
+        15,
+        255
+      ],
+      "side": [
+        8,
+        10,
+        15,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:black_stained_glass",
+      "top": [
+        25,
+        25,
+        25,
+        117
+      ],
+      "side": [
+        25,
+        25,
+        25,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:black_terracotta",
+      "top": [
+        37,
+        22,
+        16,
+        255
+      ],
+      "side": [
+        37,
+        22,
+        16,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:black_wool",
+      "top": [
+        20,
+        21,
+        25,
+        255
+      ],
+      "side": [
+        20,
+        21,
+        25,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:blackstone",
+      "top": [
+        42,
+        36,
+        41,
+        255
+      ],
+      "side": [
+        42,
+        35,
+        40,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:blue_concrete",
+      "top": [
+        44,
+        46,
+        143,
+        255
+      ],
+      "side": [
+        44,
+        46,
+        143,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:blue_ice",
+      "top": [
+        116,
+        167,
+        253,
+        255
+      ],
+      "side": [
+        116,
+        167,
+        253,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:blue_stained_glass",
+      "top": [
+        51,
+        76,
+        178,
+        117
+      ],
+      "side": [
+        51,
+        76,
+        178,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:blue_terracotta",
+      "top": [
+        74,
+        59,
+        91,
+        255
+      ],
+      "side": [
+        74,
+        59,
+        91,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:blue_wool",
+      "top": [
+        53,
+        57,
+        157,
+        255
+      ],
+      "side": [
+        53,
+        57,
+        157,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:bone_block",
+      "top": [
+        209,
+        206,
+        179,
+        255
+      ],
+      "side": [
+        229,
+        225,
+        207,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:brown_concrete",
+      "top": [
+        96,
+        59,
+        31,
+        255
+      ],
+      "side": [
+        96,
+        59,
+        31,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:brown_stained_glass",
+      "top": [
+        102,
+        76,
+        51,
+        117
+      ],
+      "side": [
+        102,
+        76,
+        51,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:brown_terracotta",
+      "top": [
+        77,
+        51,
+        35,
+        255
+      ],
+      "side": [
+        77,
+        51,
+        35,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:brown_wool",
+      "top": [
+        114,
+        71,
+        40,
+        255
+      ],
+      "side": [
+        114,
+        71,
+        40,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:calcite",
+      "top": [
+        223,
+        224,
+        220,
+        255
+      ],
+      "side": [
+        223,
+        224,
+        220,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cherry_planks",
+      "top": [
+        226,
+        178,
+        172,
+        255
+      ],
+      "side": [
+        226,
+        178,
+        172,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:clay",
+      "top": [
+        160,
+        166,
+        179,
+        255
+      ],
+      "side": [
+        160,
+        166,
+        179,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:coal_block",
+      "top": [
+        16,
+        15,
+        15,
+        255
+      ],
+      "side": [
+        16,
+        15,
+        15,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:coarse_dirt",
+      "top": [
+        119,
+        85,
+        59,
+        255
+      ],
+      "side": [
+        119,
+        85,
+        59,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cobbled_deepslate",
+      "top": [
+        77,
+        77,
+        80,
+        255
+      ],
+      "side": [
+        77,
+        77,
+        80,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cobblestone",
+      "top": [
+        127,
+        127,
+        127,
+        255
+      ],
+      "side": [
+        127,
+        127,
+        127,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:crimson_nylium",
+      "top": [
+        130,
+        31,
+        31,
+        255
+      ],
+      "side": [
+        107,
+        26,
+        26,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:crimson_planks",
+      "top": [
+        101,
+        48,
+        70,
+        255
+      ],
+      "side": [
+        101,
+        48,
+        70,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:crying_obsidian",
+      "top": [
+        32,
+        10,
+        60,
+        255
+      ],
+      "side": [
+        32,
+        10,
+        60,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cyan_concrete",
+      "top": [
+        21,
+        119,
+        136,
+        255
+      ],
+      "side": [
+        21,
+        119,
+        136,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cyan_stained_glass",
+      "top": [
+        76,
+        127,
+        153,
+        117
+      ],
+      "side": [
+        76,
+        127,
+        153,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cyan_terracotta",
+      "top": [
+        86,
+        91,
+        91,
+        255
+      ],
+      "side": [
+        86,
+        91,
+        91,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:cyan_wool",
+      "top": [
+        21,
+        137,
+        145,
+        255
+      ],
+      "side": [
+        21,
+        137,
+        145,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:dark_oak_planks",
+      "top": [
+        66,
+        43,
+        20,
+        255
+      ],
+      "side": [
+        66,
+        43,
+        20,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:dark_prismarine",
+      "top": [
+        51,
+        91,
+        75,
+        255
+      ],
+      "side": [
+        51,
+        91,
+        75,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:deepslate",
+      "top": [
+        87,
+        87,
+        89,
+        255
+      ],
+      "side": [
+        80,
+        80,
+        82,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:diamond_block",
+      "top": [
+        98,
+        237,
+        228,
+        255
+      ],
+      "side": [
+        98,
+        237,
+        228,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:diorite",
+      "top": [
+        188,
+        188,
+        188,
+        255
+      ],
+      "side": [
+        188,
+        188,
+        188,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:dirt",
+      "top": [
+        134,
+        96,
+        67,
+        255
+      ],
+      "side": [
+        134,
+        96,
+        67,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:dripstone_block",
+      "top": [
+        134,
+        107,
+        92,
+        255
+      ],
+      "side": [
+        134,
+        107,
+        92,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:emerald_block",
+      "top": [
+        42,
+        203,
+        87,
+        255
+      ],
+      "side": [
+        42,
+        203,
+        87,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:end_stone",
+      "top": [
+        219,
+        222,
+        158,
+        255
+      ],
+      "side": [
+        219,
+        222,
+        158,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:glass",
+      "top": [
+        175,
+        213,
+        219,
+        64
+      ],
+      "side": [
+        175,
+        213,
+        219,
+        64
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:glowstone",
+      "top": [
+        171,
+        131,
+        84,
+        255
+      ],
+      "side": [
+        171,
+        131,
+        84,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:gold_block",
+      "top": [
+        246,
+        208,
+        61,
+        255
+      ],
+      "side": [
+        246,
+        208,
+        61,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:granite",
+      "top": [
+        149,
+        103,
+        85,
+        255
+      ],
+      "side": [
+        149,
+        103,
+        85,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:gray_concrete",
+      "top": [
+        54,
+        57,
+        61,
+        255
+      ],
+      "side": [
+        54,
+        57,
+        61,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:gray_stained_glass",
+      "top": [
+        76,
+        76,
+        76,
+        117
+      ],
+      "side": [
+        76,
+        76,
+        76,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:gray_terracotta",
+      "top": [
+        57,
+        42,
+        35,
+        255
+      ],
+      "side": [
+        57,
+        42,
+        35,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:gray_wool",
+      "top": [
+        62,
+        68,
+        71,
+        255
+      ],
+      "side": [
+        62,
+        68,
+        71,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:green_concrete",
+      "top": [
+        73,
+        91,
+        36,
+        255
+      ],
+      "side": [
+        73,
+        91,
+        36,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:green_stained_glass",
+      "top": [
+        102,
+        127,
+        51,
+        117
+      ],
+      "side": [
+        102,
+        127,
+        51,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:green_terracotta",
+      "top": [
+        76,
+        83,
+        42,
+        255
+      ],
+      "side": [
+        76,
+        83,
+        42,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:green_wool",
+      "top": [
+        84,
+        109,
+        27,
+        255
+      ],
+      "side": [
+        84,
+        109,
+        27,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:honeycomb_block",
+      "top": [
+        229,
+        148,
+        29,
+        255
+      ],
+      "side": [
+        229,
+        148,
+        29,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:iron_block",
+      "top": [
+        220,
+        220,
+        220,
+        255
+      ],
+      "side": [
+        220,
+        220,
+        220,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:jungle_planks",
+      "top": [
+        160,
+        115,
+        80,
+        255
+      ],
+      "side": [
+        160,
+        115,
+        80,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:lapis_block",
+      "top": [
+        30,
+        67,
+        140,
+        255
+      ],
+      "side": [
+        30,
+        67,
+        140,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_blue_concrete",
+      "top": [
+        35,
+        137,
+        198,
+        255
+      ],
+      "side": [
+        35,
+        137,
+        198,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_blue_stained_glass",
+      "top": [
+        102,
+        153,
+        216,
+        117
+      ],
+      "side": [
+        102,
+        153,
+        216,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_blue_terracotta",
+      "top": [
+        113,
+        108,
+        137,
+        255
+      ],
+      "side": [
+        113,
+        108,
+        137,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_blue_wool",
+      "top": [
+        58,
+        175,
+        217,
+        255
+      ],
+      "side": [
+        58,
+        175,
+        217,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_gray_concrete",
+      "top": [
+        125,
+        125,
+        115,
+        255
+      ],
+      "side": [
+        125,
+        125,
+        115,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_gray_stained_glass",
+      "top": [
+        153,
+        153,
+        153,
+        117
+      ],
+      "side": [
+        153,
+        153,
+        153,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_gray_terracotta",
+      "top": [
+        135,
+        106,
+        97,
+        255
+      ],
+      "side": [
+        135,
+        106,
+        97,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:light_gray_wool",
+      "top": [
+        142,
+        142,
+        134,
+        255
+      ],
+      "side": [
+        142,
+        142,
+        134,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:lime_concrete",
+      "top": [
+        94,
+        168,
+        24,
+        255
+      ],
+      "side": [
+        94,
+        168,
+        24,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:lime_stained_glass",
+      "top": [
+        127,
+        204,
+        25,
+        117
+      ],
+      "side": [
+        127,
+        204,
+        25,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:lime_terracotta",
+      "top": [
+        103,
+        117,
+        52,
+        255
+      ],
+      "side": [
+        103,
+        117,
+        52,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:lime_wool",
+      "top": [
+        112,
+        185,
+        25,
+        255
+      ],
+      "side": [
+        112,
+        185,
+        25,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:magenta_concrete",
+      "top": [
+        169,
+        48,
+        159,
+        255
+      ],
+      "side": [
+        169,
+        48,
+        159,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:magenta_stained_glass",
+      "top": [
+        178,
+        76,
+        216,
+        117
+      ],
+      "side": [
+        178,
+        76,
+        216,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:magenta_terracotta",
+      "top": [
+        149,
+        88,
+        108,
+        255
+      ],
+      "side": [
+        149,
+        88,
+        108,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:magenta_wool",
+      "top": [
+        189,
+        68,
+        179,
+        255
+      ],
+      "side": [
+        189,
+        68,
+        179,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:mangrove_planks",
+      "top": [
+        117,
+        54,
+        48,
+        255
+      ],
+      "side": [
+        117,
+        54,
+        48,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:moss_block",
+      "top": [
+        89,
+        109,
+        45,
+        255
+      ],
+      "side": [
+        89,
+        109,
+        45,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:mud",
+      "top": [
+        60,
+        57,
+        60,
+        255
+      ],
+      "side": [
+        60,
+        57,
+        60,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:netherite_block",
+      "top": [
+        66,
+        61,
+        63,
+        255
+      ],
+      "side": [
+        66,
+        61,
+        63,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:netherrack",
+      "top": [
+        97,
+        38,
+        38,
+        255
+      ],
+      "side": [
+        97,
+        38,
+        38,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:oak_planks",
+      "top": [
+        162,
+        130,
+        78,
+        255
+      ],
+      "side": [
+        162,
+        130,
+        78,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:obsidian",
+      "top": [
+        15,
+        10,
+        24,
+        255
+      ],
+      "side": [
+        15,
+        10,
+        24,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:ochre_froglight",
+      "top": [
+        250,
+        245,
+        206,
+        255
+      ],
+      "side": [
+        245,
+        233,
+        181,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:orange_concrete",
+      "top": [
+        224,
+        97,
+        0,
+        255
+      ],
+      "side": [
+        224,
+        97,
+        0,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:orange_stained_glass",
+      "top": [
+        216,
+        127,
+        51,
+        117
+      ],
+      "side": [
+        216,
+        127,
+        51,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:orange_terracotta",
+      "top": [
+        161,
+        83,
+        37,
+        255
+      ],
+      "side": [
+        161,
+        83,
+        37,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:orange_wool",
+      "top": [
+        240,
+        118,
+        19,
+        255
+      ],
+      "side": [
+        240,
+        118,
+        19,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:packed_ice",
+      "top": [
+        141,
+        180,
+        250,
+        255
+      ],
+      "side": [
+        141,
+        180,
+        250,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:packed_mud",
+      "top": [
+        142,
+        106,
+        79,
+        255
+      ],
+      "side": [
+        142,
+        106,
+        79,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pale_moss_block",
+      "top": [
+        106,
+        112,
+        104,
+        255
+      ],
+      "side": [
+        106,
+        112,
+        104,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pale_oak_planks",
+      "top": [
+        227,
+        217,
+        216,
+        255
+      ],
+      "side": [
+        227,
+        217,
+        216,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pearlescent_froglight",
+      "top": [
+        245,
+        240,
+        239,
+        255
+      ],
+      "side": [
+        235,
+        224,
+        228,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:pink_concrete",
+      "top": [
+        213,
+        101,
+        142,
+        255
+      ],
+      "side": [
+        213,
+        101,
+        142,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pink_stained_glass",
+      "top": [
+        242,
+        127,
+        165,
+        117
+      ],
+      "side": [
+        242,
+        127,
+        165,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pink_terracotta",
+      "top": [
+        161,
+        78,
+        78,
+        255
+      ],
+      "side": [
+        161,
+        78,
+        78,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:pink_wool",
+      "top": [
+        237,
+        141,
+        172,
+        255
+      ],
+      "side": [
+        237,
+        141,
+        172,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_andesite",
+      "top": [
+        132,
+        134,
+        133,
+        255
+      ],
+      "side": [
+        132,
+        134,
+        133,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_blackstone",
+      "top": [
+        53,
+        48,
+        56,
+        255
+      ],
+      "side": [
+        53,
+        48,
+        56,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_blackstone_bricks",
+      "top": [
+        48,
+        42,
+        49,
+        255
+      ],
+      "side": [
+        48,
+        42,
+        49,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_deepslate",
+      "top": [
+        72,
+        72,
+        73,
+        255
+      ],
+      "side": [
+        72,
+        72,
+        73,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_diorite",
+      "top": [
+        192,
+        193,
+        194,
+        255
+      ],
+      "side": [
+        192,
+        193,
+        194,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_granite",
+      "top": [
+        154,
+        106,
+        89,
+        255
+      ],
+      "side": [
+        154,
+        106,
+        89,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:polished_tuff",
+      "top": [
+        97,
+        104,
+        99,
+        255
+      ],
+      "side": [
+        97,
+        104,
+        99,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:prismarine",
+      "top": [
+        99,
+        156,
+        151,
+        255
+      ],
+      "side": [
+        99,
+        156,
+        151,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:prismarine_bricks",
+      "top": [
+        99,
+        171,
+        158,
+        255
+      ],
+      "side": [
+        99,
+        171,
+        158,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:purple_concrete",
+      "top": [
+        100,
+        31,
+        156,
+        255
+      ],
+      "side": [
+        100,
+        31,
+        156,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:purple_stained_glass",
+      "top": [
+        127,
+        63,
+        178,
+        117
+      ],
+      "side": [
+        127,
+        63,
+        178,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:purple_terracotta",
+      "top": [
+        118,
+        70,
+        86,
+        255
+      ],
+      "side": [
+        118,
+        70,
+        86,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:purple_wool",
+      "top": [
+        121,
+        42,
+        172,
+        255
+      ],
+      "side": [
+        121,
+        42,
+        172,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:purpur_block",
+      "top": [
+        169,
+        125,
+        169,
+        255
+      ],
+      "side": [
+        169,
+        125,
+        169,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:quartz_block",
+      "top": [
+        235,
+        229,
+        222,
+        255
+      ],
+      "side": [
+        235,
+        229,
+        222,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:quartz_bricks",
+      "top": [
+        234,
+        229,
+        221,
+        255
+      ],
+      "side": [
+        234,
+        229,
+        221,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:raw_copper_block",
+      "top": [
+        154,
+        105,
+        79,
+        255
+      ],
+      "side": [
+        154,
+        105,
+        79,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:raw_gold_block",
+      "top": [
+        221,
+        169,
+        46,
+        255
+      ],
+      "side": [
+        221,
+        169,
+        46,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:raw_iron_block",
+      "top": [
+        166,
+        135,
+        107,
+        255
+      ],
+      "side": [
+        166,
+        135,
+        107,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:red_concrete",
+      "top": [
+        142,
+        32,
+        32,
+        255
+      ],
+      "side": [
+        142,
+        32,
+        32,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:red_sandstone",
+      "top": [
+        181,
+        97,
+        31,
+        255
+      ],
+      "side": [
+        186,
+        99,
+        29,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:red_stained_glass",
+      "top": [
+        153,
+        51,
+        51,
+        117
+      ],
+      "side": [
+        153,
+        51,
+        51,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:red_terracotta",
+      "top": [
+        143,
+        61,
+        46,
+        255
+      ],
+      "side": [
+        143,
+        61,
+        46,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:red_wool",
+      "top": [
+        160,
+        39,
+        34,
+        255
+      ],
+      "side": [
+        160,
+        39,
+        34,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:redstone_block",
+      "top": [
+        175,
+        24,
+        5,
+        255
+      ],
+      "side": [
+        175,
+        24,
+        5,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:sandstone",
+      "top": [
+        223,
+        214,
+        170,
+        255
+      ],
+      "side": [
+        216,
+        203,
+        155,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:sea_lantern",
+      "top": [
+        172,
+        199,
+        190,
+        255
+      ],
+      "side": [
+        172,
+        199,
+        190,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:shroomlight",
+      "top": [
+        240,
+        146,
+        70,
+        255
+      ],
+      "side": [
+        240,
+        146,
+        70,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:smooth_basalt",
+      "top": [
+        72,
+        72,
+        78,
+        255
+      ],
+      "side": [
+        72,
+        72,
+        78,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:smooth_quartz",
+      "top": [
+        236,
+        230,
+        223,
+        255
+      ],
+      "side": [
+        236,
+        230,
+        223,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:snow",
+      "top": [
+        249,
+        254,
+        254,
+        255
+      ],
+      "side": [
+        249,
+        254,
+        254,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:soul_sand",
+      "top": [
+        81,
+        62,
+        50,
+        255
+      ],
+      "side": [
+        81,
+        62,
+        50,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:soul_soil",
+      "top": [
+        75,
+        57,
+        46,
+        255
+      ],
+      "side": [
+        75,
+        57,
+        46,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:spruce_planks",
+      "top": [
+        114,
+        84,
+        48,
+        255
+      ],
+      "side": [
+        114,
+        84,
+        48,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:stone",
+      "top": [
+        125,
+        125,
+        125,
+        255
+      ],
+      "side": [
+        125,
+        125,
+        125,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:stone_bricks",
+      "top": [
+        122,
+        121,
+        122,
+        255
+      ],
+      "side": [
+        122,
+        121,
+        122,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:tuff",
+      "top": [
+        108,
+        109,
+        102,
+        255
+      ],
+      "side": [
+        108,
+        109,
+        102,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:verdant_froglight",
+      "top": [
+        229,
+        244,
+        228,
+        255
+      ],
+      "side": [
+        211,
+        234,
+        208,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-side"
+    },
+    {
+      "id": "minecraft:warped_planks",
+      "top": [
+        43,
+        104,
+        99,
+        255
+      ],
+      "side": [
+        43,
+        104,
+        99,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_copper",
+      "top": [
+        192,
+        107,
+        79,
+        255
+      ],
+      "side": [
+        192,
+        107,
+        79,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_cut_copper",
+      "top": [
+        191,
+        106,
+        80,
+        255
+      ],
+      "side": [
+        191,
+        106,
+        80,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_exposed_copper",
+      "top": [
+        161,
+        125,
+        103,
+        255
+      ],
+      "side": [
+        161,
+        125,
+        103,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_exposed_cut_copper",
+      "top": [
+        154,
+        121,
+        101,
+        255
+      ],
+      "side": [
+        154,
+        121,
+        101,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_oxidized_copper",
+      "top": [
+        82,
+        162,
+        132,
+        255
+      ],
+      "side": [
+        82,
+        162,
+        132,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_oxidized_cut_copper",
+      "top": [
+        79,
+        153,
+        126,
+        255
+      ],
+      "side": [
+        79,
+        153,
+        126,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_weathered_copper",
+      "top": [
+        108,
+        153,
+        110,
+        255
+      ],
+      "side": [
+        108,
+        153,
+        110,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:waxed_weathered_cut_copper",
+      "top": [
+        109,
+        145,
+        107,
+        255
+      ],
+      "side": [
+        109,
+        145,
+        107,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:white_concrete",
+      "top": [
+        207,
+        213,
+        214,
+        255
+      ],
+      "side": [
+        207,
+        213,
+        214,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:white_stained_glass",
+      "top": [
+        255,
+        255,
+        255,
+        117
+      ],
+      "side": [
+        255,
+        255,
+        255,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:white_terracotta",
+      "top": [
+        209,
+        178,
+        161,
+        255
+      ],
+      "side": [
+        209,
+        178,
+        161,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:white_wool",
+      "top": [
+        233,
+        236,
+        236,
+        255
+      ],
+      "side": [
+        233,
+        236,
+        236,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:yellow_concrete",
+      "top": [
+        240,
+        175,
+        21,
+        255
+      ],
+      "side": [
+        240,
+        175,
+        21,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:yellow_stained_glass",
+      "top": [
+        229,
+        229,
+        51,
+        117
+      ],
+      "side": [
+        229,
+        229,
+        51,
+        117
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:yellow_terracotta",
+      "top": [
+        186,
+        133,
+        35,
+        255
+      ],
+      "side": [
+        186,
+        133,
+        35,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    },
+    {
+      "id": "minecraft:yellow_wool",
+      "top": [
+        248,
+        197,
+        39,
+        255
+      ],
+      "side": [
+        248,
+        197,
+        39,
+        255
+      ],
+      "top_source": "texture-top",
+      "side_source": "texture-top"
+    }
+  ]
+}
