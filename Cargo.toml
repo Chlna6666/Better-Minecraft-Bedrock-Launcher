@@ -41,6 +41,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "tga"
 mc-motd = { git = "https://github.com/BE-Community-Dev/mc-motd.git", branch = "main" }
 bedrock-world = { path = "crates/bedrock-world" }
 bedrock-block-model = { path = "crates/bedrock-block-model" }
+bedrock-voxel = { path = "crates/bedrock-voxel" }
 
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 cidr = "0.3.1"
@@ -58,6 +59,7 @@ tokio = { version = "1.48.0", features = ["rt", "rt-multi-thread", "macros", "pr
 tokio-stream = { version = "0.1.17", features = ["fs", "sync"] }
 reqwest = { version = "0.13.2", features = ["stream", "gzip", "brotli", "deflate", "zstd", "json", "form", "blocking"] }
 sentry = { version = "0.49.0", default-features = false, features = ["backtrace", "contexts", "logs", "transport"] }
+sonde-sdk = { git = "https://github.com/Chlna6666/Sonde" }
 futures = "0.3.31"
 futures-util = "0.3.31"
 xmltree = "0.12.0"
@@ -129,6 +131,7 @@ members = [
     "crates/bedrock-leveldb",
     "crates/bedrock-world",
     "crates/bedrock-render",
+    "crates/bedrock-voxel",
     "crates/egpui",
     "crates/egpui-build",
     "crates/egpui-manifest",
@@ -178,6 +181,7 @@ keyring = { version = "3.6.3", default-features = false, features = ["async-io",
 
 [dev-dependencies]
 bedrock-leveldb = { path = "crates/bedrock-leveldb" }
+gpui = { path = "crates/gpui", default-features = false, features = ["test-support"] }
 
 [patch.crates-io]
 dtls = { path = "vendor/dtls" }
@@ -186,6 +190,9 @@ webrtc-ice = { path = "vendor/webrtc-ice" }
 gpui = { path = "crates/gpui" }
 gpu-allocator = { path = "vendor/gpu-allocator" }
 gpui-router = { path = "vendor/gpui-router" }
+
+[patch."https://github.com/Chlna6666/Sonde"]
+sonde-sdk = { path = "D:/Rust/Sonde/sdk/rust" }
 
 [profile.release]
 opt-level = "s"     # 优化代码体积 ("s" = 小体积, "z" = 最小体积)
