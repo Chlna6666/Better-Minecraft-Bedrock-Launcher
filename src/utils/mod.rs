@@ -20,7 +20,7 @@ pub mod open_path;
 pub mod registry;
 pub mod shortcut;
 pub mod single_instance;
-pub mod stats;
+pub mod telemetry;
 pub mod system_info;
 pub mod updater;
 pub mod updater_child;

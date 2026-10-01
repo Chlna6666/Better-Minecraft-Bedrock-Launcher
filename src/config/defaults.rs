@@ -1,6 +1,7 @@
 use super::config::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
-    DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DownloadConfig, FONT_SOURCE_DEFAULT,
+    DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
+    DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT,
     GameConfig, GithubConfig, Launcher, LoginConfig, OnlineConfig, ProxyConfig, ProxyType,
     UpdateChannel,
 };
@@ -15,6 +16,14 @@ pub(super) fn default_error_report_sentry_enabled() -> bool {
 
 pub fn default_error_report_sentry_dsn() -> String {
     DEFAULT_ERROR_REPORT_SENTRY_DSN.to_string()
+}
+
+pub fn default_telemetry_endpoint() -> String {
+    DEFAULT_TELEMETRY_ENDPOINT.to_string()
+}
+
+pub fn default_telemetry_key() -> String {
+    DEFAULT_TELEMETRY_KEY.to_string()
 }
 
 pub fn default_glass_effect_enabled() -> bool {
@@ -106,6 +115,8 @@ pub fn get_default_config() -> Config {
             renderer_backend: default_renderer_backend(),
             gpu_adapter_name: default_gpu_adapter_name(),
             stats_upload: true,
+            telemetry_endpoint: default_telemetry_endpoint(),
+            telemetry_key: default_telemetry_key(),
             error_report_sentry_enabled: true,
             error_report_sentry_dsn: default_error_report_sentry_dsn(),
             error_report_sentry_auto: false,

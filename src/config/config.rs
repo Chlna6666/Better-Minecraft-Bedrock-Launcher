@@ -6,13 +6,13 @@ use std::str::FromStr;
 use super::defaults::{
     default_appx_api, default_config_version, default_error_report_sentry_enabled,
     default_log_active_size_mb, default_log_archive_files, default_log_compression_level,
-    default_log_retention_days, default_log_total_size_mb,
-    default_renderer_backend, default_true, default_update_check_interval_minutes,
+    default_log_retention_days, default_log_total_size_mb, default_renderer_backend, default_true,
+    default_update_check_interval_minutes,
 };
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,
     default_glass_effect_enabled, default_gpu_adapter_name, default_online_player_name,
-    default_theme_mode, get_default_config,
+    default_telemetry_endpoint, default_telemetry_key, default_theme_mode, get_default_config,
 };
 
 pub(super) const CURRENT_CONFIG_VERSION: u32 = 6;
@@ -22,6 +22,8 @@ pub(super) const INCORRECT_MIRROR_APPX_API: &str =
     "https://api.chlna6666.com/api/v1/bedrock/versions";
 pub const DEFAULT_APPX_API: &str = "https://api.chlna6666.com/api/v1/bedrock/mcappx";
 pub const DEFAULT_ERROR_REPORT_SENTRY_DSN: &str = "https://a6851001eec5b056a734b518f20d4175@o4511448309891072.ingest.de.sentry.io/4511448317493328";
+pub const DEFAULT_TELEMETRY_ENDPOINT: &str = "https://sonde.chlna6666.com";
+pub const DEFAULT_TELEMETRY_KEY: &str = "sonde_3uVui9z5m8Y-0zFfc05XGigL4jGO0gnImoTOx4mj06g";
 pub const MAX_BACKGROUND_BLUR: f32 = 10.0;
 pub const FONT_SOURCE_DEFAULT: &str = "default";
 pub const FONT_SOURCE_LOCAL: &str = "local";
@@ -79,6 +81,24 @@ pub fn resolved_error_report_sentry_dsn(launcher: &Launcher) -> Option<String> {
     } else {
         dsn.to_string()
     })
+}
+
+pub fn resolved_telemetry_endpoint(launcher: &Launcher) -> &str {
+    let endpoint = launcher.telemetry_endpoint.trim();
+    if endpoint.is_empty() {
+        DEFAULT_TELEMETRY_ENDPOINT
+    } else {
+        endpoint
+    }
+}
+
+pub fn resolved_telemetry_key(launcher: &Launcher) -> &str {
+    let key = launcher.telemetry_key.trim();
+    if key.is_empty() {
+        DEFAULT_TELEMETRY_KEY
+    } else {
+        key
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +377,10 @@ pub struct Launcher {
     pub gpu_adapter_name: String,
     #[serde(default = "default_true")]
     pub stats_upload: bool, // 上传基础统计信息 (默认开启)
+    #[serde(default = "default_telemetry_endpoint")]
+    pub telemetry_endpoint: String,
+    #[serde(default = "default_telemetry_key")]
+    pub telemetry_key: String,
     #[serde(default = "default_error_report_sentry_enabled")]
     pub error_report_sentry_enabled: bool,
     #[serde(default = "default_error_report_sentry_dsn")]
@@ -407,7 +431,7 @@ pub struct Config {
 pub(super) fn normalize_language_code(lang: &str) -> String {
     let trimmed = lang.trim();
     if trimmed.eq_ignore_ascii_case("auto") || trimmed.is_empty() {
-        return trimmed.to_string();
+        return "auto".to_string();
     }
     trimmed.replace('_', "-")
 }

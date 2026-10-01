@@ -199,7 +199,10 @@ fn submit_language(request: LanguageRequest, cx: &mut App) {
             })
             .await;
             let error_text = match save_result {
-                Ok(Ok(())) => None,
+                Ok(Ok(())) => {
+                    crate::utils::telemetry::notify_language_changed(request.preference.code());
+                    None
+                }
                 Ok(Err(error)) => {
                     warn!("persist language failed: {error}");
                     Some(error.to_string())

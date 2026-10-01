@@ -190,8 +190,8 @@ pub fn run() -> Result<()> {
     }
 
     if launch_mode.is_main() && config.launcher.stats_upload {
-        if let Err(error) = crate::utils::stats::spawn_startup_ingest() {
-            warn!(%error, "failed to schedule startup stats ingest");
+        if let Err(error) = crate::utils::telemetry::spawn_startup_telemetry(&config) {
+            warn!(%error, "failed to schedule startup telemetry");
         }
     }
 
@@ -210,6 +210,9 @@ pub fn run() -> Result<()> {
     // Tokio work crosses into GPUI through the runtime bridge; the event loop owns
     // the main thread and must never inherit a Tokio task's cooperative budget.
     crate::app::run(bootstrap)?;
+
+    // 优雅退出遥测客户端，排空在途遥测数据
+    crate::utils::telemetry::shutdown();
 
     // 配置写盘为 ~500ms 合并延迟，退出前把未落盘的改动立即写入磁盘。
     crate::config::config::flush_config_now();

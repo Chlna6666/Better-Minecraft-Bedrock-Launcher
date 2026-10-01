@@ -392,3 +392,37 @@ fn update_config_requires_startup_initialized_cache() {
 
     assert!(error.to_string().contains("not initialized"));
 }
+
+#[test]
+fn telemetry_defaults_and_resolvers() {
+    let launcher = super::config::get_default_config().launcher;
+    assert!(launcher.stats_upload);
+    assert_eq!(
+        launcher.telemetry_endpoint,
+        super::config::DEFAULT_TELEMETRY_ENDPOINT
+    );
+    assert_eq!(
+        launcher.telemetry_key,
+        super::config::DEFAULT_TELEMETRY_KEY
+    );
+    assert_eq!(
+        super::config::resolved_telemetry_endpoint(&launcher),
+        super::config::DEFAULT_TELEMETRY_ENDPOINT
+    );
+    assert_eq!(
+        super::config::resolved_telemetry_key(&launcher),
+        super::config::DEFAULT_TELEMETRY_KEY
+    );
+
+    let mut custom_launcher = launcher;
+    custom_launcher.telemetry_endpoint = "https://custom.telemetry.com".to_string();
+    custom_launcher.telemetry_key = "custom_key_123".to_string();
+    assert_eq!(
+        super::config::resolved_telemetry_endpoint(&custom_launcher),
+        "https://custom.telemetry.com"
+    );
+    assert_eq!(
+        super::config::resolved_telemetry_key(&custom_launcher),
+        "custom_key_123"
+    );
+}
