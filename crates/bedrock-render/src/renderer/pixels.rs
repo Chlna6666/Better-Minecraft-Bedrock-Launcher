@@ -1,5 +1,5 @@
 use fearless_simd::u32x4;
-use fearless_simd::{dispatch, prelude::*, Level, Simd};
+use fearless_simd::{Level, Simd, dispatch, prelude::*};
 use std::sync::LazyLock;
 
 use super::pipeline::{RenderSimdPolicy, TilePixelFormat};
@@ -90,12 +90,7 @@ mod tests {
             let mut expected = vec![0; colors.len() * 4];
             scalar_pack_colors(&colors, &mut expected, pixel_format);
             let mut actual = vec![0; colors.len() * 4];
-            pack_colors(
-                &colors,
-                &mut actual,
-                pixel_format,
-                RenderSimdPolicy::Auto,
-            );
+            pack_colors(&colors, &mut actual, pixel_format, RenderSimdPolicy::Auto);
             assert_eq!(actual, expected);
         }
     }

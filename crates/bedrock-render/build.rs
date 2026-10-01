@@ -24,10 +24,10 @@ fn main() {
     output.push_str("pub(super) struct StaticColor { pub red: u8, pub green: u8, pub blue: u8, pub alpha: u8 }\n");
     output.push_str("#[derive(Clone, Copy)]\n");
     output.push_str(
-        "pub(super) struct StaticBlockColor { pub name: &'static str, pub color: StaticColor }\n",
+        "pub(super) struct StaticBlockColor { pub name: &'static str, pub color: StaticColor, pub side_color: StaticColor }\n",
     );
     output.push_str("#[derive(Clone, Copy)]\n");
-    output.push_str("pub(super) struct StaticBiomeColor { pub id: u32, pub color: StaticColor, pub grass: StaticColor, pub foliage: StaticColor, pub water: StaticColor }\n");
+    output.push_str("pub(super) struct StaticBiomeColor { pub id: u32, pub color: StaticColor, pub grass: StaticColor, pub foliage: StaticColor, pub dry_foliage: StaticColor, pub water: StaticColor }\n");
     output.push_str("#[derive(Clone, Copy)]\n");
     output.push_str("pub(super) struct StaticStateRule { pub block: &'static str, pub state: &'static str, pub selector: StaticStateSelector, pub color: StaticColor }\n");
     output.push_str("#[derive(Clone, Copy)]\n");
@@ -50,10 +50,12 @@ fn write_block_colors(output: &mut String, root: &Value) {
         let color = color_at(entry, "default").unwrap_or_else(|| {
             panic!("block {name} is missing default color");
         });
+        let side_color = color_at(entry, "resource_pack_side").unwrap_or(color);
         writeln!(
             output,
-            "    StaticBlockColor {{ name: {name:?}, color: {} }},",
-            static_color(color)
+            "    StaticBlockColor {{ name: {name:?}, color: {}, side_color: {} }},",
+            static_color(color),
+            static_color(side_color)
         )
         .expect("write generated block color");
     }
@@ -64,6 +66,8 @@ fn write_biome_colors(output: &mut String, root: &Value) {
     let defaults = object_at(root, "defaults");
     let grass_default = color_at_object(&defaults, "grass").expect("default grass");
     let foliage_default = color_at_object(&defaults, "leaves").expect("default foliage");
+    let dry_foliage_default =
+        color_at_object(&defaults, "dry_foliage").unwrap_or([128, 96, 64, 255]);
     let water_default = color_at_object(&defaults, "water").expect("default water");
     writeln!(
         output,
@@ -83,6 +87,12 @@ fn write_biome_colors(output: &mut String, root: &Value) {
         static_color(water_default)
     )
     .expect("write generated water default");
+    writeln!(
+        output,
+        "pub(super) static BUILTIN_BIOME_DEFAULT_DRY_FOLIAGE: StaticColor = {};\n",
+        static_color(dry_foliage_default)
+    )
+    .expect("write generated dry foliage default");
     output.push_str("pub(super) static BUILTIN_BIOME_COLORS: &[StaticBiomeColor] = &[\n");
     let biomes = object_at(root, "biomes");
     for (name, entry) in biomes {
@@ -97,13 +107,15 @@ fn write_biome_colors(output: &mut String, root: &Value) {
             });
         let grass = color_at(entry, "grass").unwrap_or(grass_default);
         let foliage = color_at(entry, "leaves").unwrap_or(foliage_default);
+        let dry_foliage = color_at(entry, "dry_foliage").unwrap_or(dry_foliage_default);
         let water = color_at(entry, "water").unwrap_or(water_default);
         writeln!(
             output,
-            "    StaticBiomeColor {{ id: {id}, color: {}, grass: {}, foliage: {}, water: {} }},\n",
+            "    StaticBiomeColor {{ id: {id}, color: {}, grass: {}, foliage: {}, dry_foliage: {}, water: {} }},\n",
             static_color(color),
             static_color(grass),
             static_color(foliage),
+            static_color(dry_foliage),
             static_color(water)
         )
         .expect("write generated biome color");

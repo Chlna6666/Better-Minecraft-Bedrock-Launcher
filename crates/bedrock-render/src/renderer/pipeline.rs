@@ -38,21 +38,24 @@ use super::cache::{
     TileAuthorityCommit, TileAuthorityDependency, TileAuthorityEntry, TileAuthorityIndexSnapshot,
 };
 use super::gpu::{GpuProcessResult, GpuRenderContext};
+use super::shading::{
+    TerrainGradientAlgorithm, TerrainShadingMode, directional_drop_shadow_multiplier, illumination,
+    terrain_gradient,
+};
 use crate::error::{BedrockRenderError, Result};
 use crate::palette::{RenderPalette, RgbaColor};
-use bedrock_world::{
-    BedrockLevelDbStorage, World, OpenOptions, BlockPos,
-    BlockState, ChunkPos, Dimension, LegacyBiomeSample, NbtTag, PartitionedWorldStorage,
-    StorageCachePolicy, StoragePipelineOptions, StorageReadOptions, StorageScanMode,
-    StorageThreadingOptions, StorageVisitorControl, SubChunk, SubChunkDecodeMode,
-    WorldStorage, StorageBackend,
-};
 use bedrock_world::surface::{
     BiomeDataRequirement, CancelFlag as WorldCancelFlag, ChunkBlockEntity, ChunkData,
     ChunkDataRequest, ChunkLoadOptions, ChunkLoadPriority, ChunkLoadStats,
     ExactSurfaceSubchunkPolicy, Region, RegionLoad, RegionLoadOptions, TerrainColumnBiome,
     TerrainColumnOverlay, TerrainColumnSample, TerrainColumnSamples, WorldPipelineOptions,
     WorldScanOptions, WorldThreadingOptions, terrain_surface_overlay_alpha,
+};
+use bedrock_world::{
+    BedrockLevelDbStorage, BlockPos, BlockState, ChunkPos, Dimension, LegacyBiomeSample, NbtTag,
+    OpenOptions, PartitionedWorldStorage, StorageBackend, StorageCachePolicy,
+    StoragePipelineOptions, StorageReadOptions, StorageScanMode, StorageThreadingOptions,
+    StorageVisitorControl, SubChunk, SubChunkDecodeMode, World, WorldStorage,
 };
 #[cfg(feature = "png")]
 use image::codecs::png::PngEncoder;
@@ -75,9 +78,9 @@ use std::time::{Duration, Instant};
 use xxhash_rust::xxh3::xxh3_128;
 
 /// Renderer cache schema version used in tile cache keys.
-pub const RENDERER_CACHE_VERSION: u32 = 51;
+pub const RENDERER_CACHE_VERSION: u32 = 55;
 /// Default embedded palette version used in tile cache keys.
-pub const DEFAULT_PALETTE_VERSION: u32 = 16;
+pub const DEFAULT_PALETTE_VERSION: u32 = 18;
 /// Maximum fixed worker thread count accepted by render options.
 pub const MAX_RENDER_THREADS: usize = 512;
 /// Maximum width or height of a rendered tile in pixels.
@@ -110,10 +113,7 @@ static TILE_CACHE_WRITE_ID: AtomicUsize = AtomicUsize::new(0);
 /// Source of render-ready chunk data used by [`MapRenderer`].
 pub trait RenderChunkSource: Send + Sync {
     /// Lists all chunks with records relevant to map rendering.
-    fn render_chunk_positions(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<ChunkPos>>;
+    fn render_chunk_positions(&self, options: WorldScanOptions) -> Result<Vec<ChunkPos>>;
 
     /// Lists renderable chunks inside an inclusive chunk region.
     fn region_chunk_positions(
@@ -123,11 +123,7 @@ pub trait RenderChunkSource: Send + Sync {
     ) -> Result<Vec<ChunkPos>>;
 
     /// Loads render data for a region.
-    fn query_chunk_region(
-        &self,
-        region: Region,
-        options: RegionLoadOptions,
-    ) -> Result<RegionLoad>;
+    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad>;
 
     /// Loads render data for explicit chunks with stats.
     fn query_chunk_data_with_stats(
@@ -137,24 +133,15 @@ pub trait RenderChunkSource: Send + Sync {
     ) -> Result<(Vec<ChunkData>, ChunkLoadStats)>;
 
     /// Loads render data for one chunk.
-    fn query_chunk_data(
-        &self,
-        pos: ChunkPos,
-        options: ChunkLoadOptions,
-    ) -> Result<ChunkData>;
+    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData>;
 }
 
 impl<S> RenderChunkSource for World<S>
 where
     S: StorageBackend,
 {
-    fn render_chunk_positions(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<ChunkPos>> {
-        Ok(World::render_chunk_positions(
-            self, options,
-        )?)
+    fn render_chunk_positions(&self, options: WorldScanOptions) -> Result<Vec<ChunkPos>> {
+        Ok(World::render_chunk_positions(self, options)?)
     }
 
     fn region_chunk_positions(
@@ -162,19 +149,11 @@ where
         region: Region,
         options: WorldScanOptions,
     ) -> Result<Vec<ChunkPos>> {
-        Ok(World::region_chunk_positions(
-            self, region, options,
-        )?)
+        Ok(World::region_chunk_positions(self, region, options)?)
     }
 
-    fn query_chunk_region(
-        &self,
-        region: Region,
-        options: RegionLoadOptions,
-    ) -> Result<RegionLoad> {
-        Ok(World::query_chunk_region(
-            self, region, options,
-        )?)
+    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
+        Ok(World::query_chunk_region(self, region, options)?)
     }
 
     fn query_chunk_data_with_stats(
@@ -189,11 +168,7 @@ where
         )?)
     }
 
-    fn query_chunk_data(
-        &self,
-        pos: ChunkPos,
-        options: ChunkLoadOptions,
-    ) -> Result<ChunkData> {
+    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
         Ok(World::query_chunk_data(self, pos, options)?)
     }
 }
@@ -212,7 +187,7 @@ pub struct TileCoord {
 /// Render mode used to sample and color world data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RenderMode {
-    /// Resolved biome color layer sampled at world Y.
+    /// Resolved biome color at world Y, falling back to the highest stored biome in an empty layer.
     Biome {
         /// World Y coordinate to sample.
         y: i32,
@@ -1236,6 +1211,10 @@ pub enum TerrainLightingPreset {
 pub struct TerrainLightingOptions {
     /// Whether lighting is enabled.
     pub enabled: bool,
+    /// Height-gradient estimator used to build the terrain normal.
+    pub gradient_algorithm: TerrainGradientAlgorithm,
+    /// Terrain relief formula used to shade surface pixels.
+    pub shading_mode: TerrainShadingMode,
     /// Direction of the light source in degrees.
     pub light_azimuth_degrees: f32,
     /// Elevation of the light source in degrees.
@@ -1276,6 +1255,8 @@ impl TerrainLightingOptions {
     pub const fn off() -> Self {
         Self {
             enabled: false,
+            gradient_algorithm: TerrainGradientAlgorithm::Horn,
+            shading_mode: TerrainShadingMode::Directional,
             light_azimuth_degrees: 315.0,
             light_elevation_degrees: 45.0,
             normal_strength: 0.0,
@@ -1300,6 +1281,8 @@ impl TerrainLightingOptions {
     pub const fn soft() -> Self {
         Self {
             enabled: true,
+            gradient_algorithm: TerrainGradientAlgorithm::Horn,
+            shading_mode: TerrainShadingMode::Directional,
             light_azimuth_degrees: 315.0,
             light_elevation_degrees: 45.0,
             normal_strength: 1.55,
@@ -1324,6 +1307,8 @@ impl TerrainLightingOptions {
     pub const fn strong() -> Self {
         Self {
             enabled: true,
+            gradient_algorithm: TerrainGradientAlgorithm::Horn,
+            shading_mode: TerrainShadingMode::Directional,
             light_azimuth_degrees: 315.0,
             light_elevation_degrees: 42.0,
             normal_strength: 2.2,
@@ -1617,6 +1602,20 @@ struct TerrainHeightNeighborhood {
 }
 
 impl TerrainHeightNeighborhood {
+    fn samples(self) -> [i16; 9] {
+        [
+            self.center,
+            self.north_west,
+            self.north,
+            self.north_east,
+            self.west,
+            self.east,
+            self.south_west,
+            self.south,
+            self.south_east,
+        ]
+    }
+
     fn sobel_gradient(self) -> (f32, f32) {
         let dx =
             (f32::from(self.north_east) + 2.0 * f32::from(self.east) + f32::from(self.south_east)
@@ -2070,10 +2069,7 @@ impl LevelDbRenderSource {
 }
 
 impl RenderChunkSource for LevelDbRenderSource {
-    fn render_chunk_positions(
-        &self,
-        options: WorldScanOptions,
-    ) -> Result<Vec<ChunkPos>> {
+    fn render_chunk_positions(&self, options: WorldScanOptions) -> Result<Vec<ChunkPos>> {
         Ok(self.full_render_chunk_index(&options)?.as_ref().to_vec())
     }
 
@@ -2087,9 +2083,7 @@ impl RenderChunkSource for LevelDbRenderSource {
         let area = usize::try_from(width.saturating_mul(height))
             .map_err(|_| BedrockRenderError::Validation("query region is too large".to_string()))?;
         if !should_use_full_render_chunk_index(area) {
-            return Ok(self
-                .world
-                .region_chunk_positions(region, options)?);
+            return Ok(self.world.region_chunk_positions(region, options)?);
         }
         Ok(self
             .full_render_chunk_index(&options)?
@@ -2103,11 +2097,7 @@ impl RenderChunkSource for LevelDbRenderSource {
             .collect())
     }
 
-    fn query_chunk_region(
-        &self,
-        region: Region,
-        options: RegionLoadOptions,
-    ) -> Result<RegionLoad> {
+    fn query_chunk_region(&self, region: Region, options: RegionLoadOptions) -> Result<RegionLoad> {
         Ok(self.world.query_chunk_region(region, options)?)
     }
 
@@ -2121,11 +2111,7 @@ impl RenderChunkSource for LevelDbRenderSource {
             .query_chunk_data_with_stats(positions.iter().copied(), options)?)
     }
 
-    fn query_chunk_data(
-        &self,
-        pos: ChunkPos,
-        options: ChunkLoadOptions,
-    ) -> Result<ChunkData> {
+    fn query_chunk_data(&self, pos: ChunkPos, options: ChunkLoadOptions) -> Result<ChunkData> {
         Ok(self.world.query_chunk_data(pos, options)?)
     }
 }
@@ -2718,7 +2704,7 @@ struct PreparedTileCompose {
     block_height_grid_padding: u32,
     block_volume_enabled: bool,
     diagnostics: RenderDiagnostics,
-    lighting_enabled: bool,
+    shading_enabled: bool,
 }
 
 impl TileComposeStats {
@@ -4876,11 +4862,9 @@ where
             let authority_snapshots_for_batch = load_tile_authority_snapshots_for_batch(
                 &cache,
                 &authority_snapshots,
-                ordered_tiles
-                    .iter()
-                    .map(|planned| {
-                        self.cache_key_for_planned(planned, cache_format, options.pixel_format)
-                    }),
+                ordered_tiles.iter().map(|planned| {
+                    self.cache_key_for_planned(planned, cache_format, options.pixel_format)
+                }),
             )?;
             let blob_readers_for_batch =
                 open_tile_authority_blob_readers_for_batch(&cache, &authority_snapshots_for_batch)?;
@@ -4888,16 +4872,10 @@ where
             if probe_workers <= 1 || ordered_tiles.len() <= 1 {
                 let mut decode_scratch = TileCacheDecodeScratch::new();
                 for (ordinal, planned) in ordered_tiles.iter().enumerate() {
-                    let render_key = self.cache_key_for_planned(
-                        planned,
-                        render_format,
-                        options.pixel_format,
-                    );
-                    let cache_key = self.cache_key_for_planned(
-                        planned,
-                        cache_format,
-                        options.pixel_format,
-                    );
+                    let render_key =
+                        self.cache_key_for_planned(planned, render_format, options.pixel_format);
+                    let cache_key =
+                        self.cache_key_for_planned(planned, cache_format, options.pixel_format);
                     let probe = resolve_tile_cache_entry(
                         &cache,
                         &session_tile_memory,
@@ -5056,11 +5034,8 @@ where
                 .is_some_and(|positions| positions.is_empty())
             {
                 if let Some(cache_format) = cache_write_format {
-                    let cache_key = self.cache_key_for_planned(
-                        &planned,
-                        cache_format,
-                        options.pixel_format,
-                    );
+                    let cache_key =
+                        self.cache_key_for_planned(&planned, cache_format, options.pixel_format);
                     if let Some(write) = empty_negative_tile_cache_write(
                         &cache_key,
                         &planned,
@@ -5428,8 +5403,7 @@ where
                     BedrockRenderError::Validation("tile stream receiver was dropped".to_string())
                 })
             };
-            if let Err(error) =
-                self.render_web_tiles_streaming(&planned_tiles, options, send_event)
+            if let Err(error) = self.render_web_tiles_streaming(&planned_tiles, options, send_event)
             {
                 log::warn!("tile stream task failed: {error}");
                 let message = error.to_string();
@@ -5475,12 +5449,9 @@ where
                     )
                 })
             };
-            if let Err(error) = self.render_decoded_tiles(
-                &planned_tiles,
-                options,
-                output,
-                send_event,
-            ) {
+            if let Err(error) =
+                self.render_decoded_tiles(&planned_tiles, options, output, send_event)
+            {
                 log::warn!("decoded tile stream task failed: {error}");
                 let message = error.to_string();
                 for planned in planned_tiles_for_error {
@@ -5606,10 +5577,7 @@ where
 
         let mut renderable_chunks = BTreeSet::new();
         if use_full_index {
-            let all_positions = self
-                .renderer
-                .source
-                .render_chunk_positions(scan_options)?;
+            let all_positions = self.renderer.source.render_chunk_positions(scan_options)?;
             for pos in all_positions {
                 if regions
                     .get(&pos.dimension)
@@ -5817,7 +5785,10 @@ fn resolve_tile_cache_entry(
         });
     }
 
-    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd) {
+    if !matches!(
+        format,
+        ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd
+    ) {
         return Ok(tile_cache_probe_miss(
             planned, read_ms, decode_ms, false, false,
         ));
@@ -6019,8 +5990,10 @@ fn empty_negative_tile_cache_write(
     format: ImageFormat,
     validation_seed: u64,
 ) -> Option<TileCacheWrite> {
-    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd)
-        || validation_seed == 0
+    if !matches!(
+        format,
+        ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd
+    ) || validation_seed == 0
     {
         return None;
     }
@@ -6046,7 +6019,10 @@ fn tile_cache_entry_decision(
     format: ImageFormat,
     validation_seed: u64,
 ) -> Result<TileCacheEntryDecision> {
-    if !matches!(format, ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd) {
+    if !matches!(
+        format,
+        ImageFormat::FastRgbaZstd | ImageFormat::FastBgraZstd
+    ) {
         return Ok(TileCacheEntryDecision::Image);
     }
     let header = match decode_fast_rgba_zstd_header(encoded) {
@@ -6167,11 +6143,7 @@ where
     ///
     /// Returns an error if the job/options are invalid, world reads fail, rendering is
     /// cancelled, or the requested output cannot be encoded.
-    pub fn render_tile(
-        &self,
-        job: RenderJob,
-        options: &RenderOptions,
-    ) -> Result<TileImage> {
+    pub fn render_tile(&self, job: RenderJob, options: &RenderOptions) -> Result<TileImage> {
         validate_job(&job)?;
         self.render_tile_from_bake(job, options)
     }
@@ -6289,9 +6261,7 @@ where
                             return;
                         }
                         let result = renderer
-                            .load_render_chunk_data_with_options(
-                                key.pos, key.mode, &options,
-                            )
+                            .load_render_chunk_data_with_options(key.pos, key.mode, &options)
                             .map(|data| (key, data));
                         if loaded_sender.send(result).is_err() {
                             return;
@@ -7184,8 +7154,7 @@ where
         if let Some(gpu) = gpu.filter(|_| {
             options.pixel_format == TilePixelFormat::Rgba8
                 && should_process_tile_on_gpu(options, job.tile_size, work_items)
-        })
-        {
+        }) {
             let processed = process_tile_rgba_on_gpu(gpu, &rgba, options)?;
             if processed.diagnostics.tiles == 0 {
                 stats.gpu.add(processed.diagnostics);
@@ -7225,11 +7194,7 @@ where
         self.bake_chunk_data(data, options)
     }
 
-    fn load_render_chunk_data(
-        &self,
-        pos: ChunkPos,
-        mode: RenderMode,
-    ) -> Result<ChunkData> {
+    fn load_render_chunk_data(&self, pos: ChunkPos, mode: RenderMode) -> Result<ChunkData> {
         self.source
             .query_chunk_data(pos, render_chunk_load_options(mode))
     }
@@ -7817,9 +7782,27 @@ impl ChunkBakeContext<'_> {
         self.data.height_map.as_ref()?[usize::from(local_z)][usize::from(local_x)]
     }
 
-    fn biome_color_at(&self, local_x: u8, local_z: u8, y: i32, raw: bool) -> RgbaColor {
-        let Some(sample) = self.biome_sample_at_or_top(local_x, local_z, y) else {
-            return self.palette.unknown_biome_color();
+    fn biome_color_at(&mut self, local_x: u8, local_z: u8, y: i32, raw: bool) -> RgbaColor {
+        let legacy = self.legacy_biome_sample_at(local_x, local_z);
+        let is_3d = self
+            .data
+            .biome_data
+            .values()
+            .any(|storage| storage.y.is_some());
+        let biome_id = if raw {
+            self.biome_id_at(local_x, local_z, y)
+        } else {
+            self.biome_id_at_or_top(local_x, local_z, y)
+        };
+        let modern = biome_id.map(BiomeSample::Id);
+        let sample = if is_3d {
+            modern.or(legacy)
+        } else {
+            legacy.or(modern)
+        };
+        let Some(sample) = sample else {
+            self.diagnostics.record_transparent_pixel();
+            return self.palette.missing_chunk_color();
         };
         match sample {
             BiomeSample::Id(id) => {
@@ -7898,11 +7881,7 @@ impl ChunkBakeContext<'_> {
     }
 
     fn biome_id_at(&self, local_x: u8, local_z: u8, y: i32) -> Option<u32> {
-        let storage = self
-            .data
-            .biome_data
-            .get(&biome_storage_bucket_y(y))
-            .or_else(|| self.data.biome_data.values().next())?;
+        let storage = self.data.biome_data.get(&biome_storage_bucket_y(y))?;
         non_empty_biome_id(storage.biome_id_at(local_x, local_biome_y(storage, y).ok()?, local_z))
     }
 
@@ -7970,7 +7949,7 @@ where
     S: StorageBackend,
 {
     if options.simd == RenderSimdPolicy::Auto
-        && !lighting_enabled_for(job.mode, options.surface)
+        && !surface_shading_enabled_for(job.mode, options.surface)
         && !atlas_enabled_for(job.mode, options.surface, job)
         && !block_volume_enabled_for(job.mode, options.surface, job)
     {
@@ -8024,8 +8003,8 @@ where
     let mut diagnostics = RenderDiagnostics::default();
     let mut colors =
         (options.simd == RenderSimdPolicy::Auto).then(|| Vec::with_capacity(pixel_count));
-    let mut pixels = (options.simd == RenderSimdPolicy::Scalar)
-        .then(|| vec![0; pixel_count.saturating_mul(4)]);
+    let mut pixels =
+        (options.simd == RenderSimdPolicy::Scalar).then(|| vec![0; pixel_count.saturating_mul(4)]);
     let mut pixel_index = 0usize;
     for pixel_z in 0..job.tile_size {
         for pixel_x in 0..job.tile_size {
@@ -8073,7 +8052,7 @@ where
     S: StorageBackend,
 {
     if options.simd == RenderSimdPolicy::Auto
-        && !lighting_enabled_for(job.mode, options.surface)
+        && !surface_shading_enabled_for(job.mode, options.surface)
         && !atlas_enabled_for(job.mode, options.surface, job)
         && !block_volume_enabled_for(job.mode, options.surface, job)
     {
@@ -8124,8 +8103,8 @@ where
     }
     let mut colors =
         (options.simd == RenderSimdPolicy::Auto).then(|| Vec::with_capacity(pixel_count));
-    let mut pixels = (options.simd == RenderSimdPolicy::Scalar)
-        .then(|| vec![0; pixel_count.saturating_mul(4)]);
+    let mut pixels =
+        (options.simd == RenderSimdPolicy::Scalar).then(|| vec![0; pixel_count.saturating_mul(4)]);
     let mut pixel_index = 0usize;
     for pixel_z in 0..job.tile_size {
         for pixel_x in 0..job.tile_size {
@@ -8233,7 +8212,7 @@ fn prepare_region_tile_compose(
         .ok()
         .and_then(|size| size.checked_mul(size))
         .ok_or_else(|| BedrockRenderError::Validation("tile pixel count overflow".to_string()))?;
-    let lighting_enabled = lighting_enabled_for(job.mode, options.surface);
+    let shading_enabled = surface_shading_enabled_for(job.mode, options.surface);
     let atlas_enabled = atlas_enabled_for(job.mode, options.surface, job);
     let gbuffer_enabled = atlas_enabled;
     let block_volume_enabled = block_volume_enabled_for(job.mode, options.surface, job);
@@ -8287,7 +8266,7 @@ fn prepare_region_tile_compose(
                     job.mode,
                     block_x,
                     block_z,
-                    lighting_enabled,
+                    shading_enabled,
                 );
             } else {
                 diagnostics.missing_chunks = diagnostics.missing_chunks.saturating_add(1);
@@ -8311,7 +8290,7 @@ fn prepare_region_tile_compose(
         block_height_grid_padding,
         block_volume_enabled,
         diagnostics,
-        lighting_enabled,
+        shading_enabled,
     })
 }
 
@@ -8368,7 +8347,7 @@ fn try_prepare_region_tile_compose_fast(
         .ok()
         .and_then(|size| size.checked_mul(size))
         .ok_or_else(|| BedrockRenderError::Validation("tile pixel count overflow".to_string()))?;
-    let lighting_enabled = lighting_enabled_for(job.mode, options.surface);
+    let shading_enabled = surface_shading_enabled_for(job.mode, options.surface);
     let atlas_enabled = atlas_enabled_for(job.mode, options.surface, job);
     let gbuffer_enabled = atlas_enabled;
     let block_volume_enabled = block_volume_enabled_for(job.mode, options.surface, job);
@@ -8411,7 +8390,7 @@ fn try_prepare_region_tile_compose_fast(
                     u32::from(region.water_depth_at_region_pixel(region_x, region_z))
                 };
                 let mut height_neighborhood = [i32::from(MISSING_HEIGHT); 9];
-                if lighting_enabled {
+                if shading_enabled {
                     push_fast_region_height_neighborhood(
                         &mut height_neighborhood,
                         region,
@@ -8440,7 +8419,7 @@ fn try_prepare_region_tile_compose_fast(
         block_height_grid_padding,
         block_volume_enabled,
         diagnostics,
-        lighting_enabled,
+        shading_enabled,
     }))
 }
 
@@ -8517,7 +8496,7 @@ fn prepare_chunk_tile_compose(
         .ok()
         .and_then(|size| size.checked_mul(size))
         .ok_or_else(|| BedrockRenderError::Validation("tile pixel count overflow".to_string()))?;
-    let lighting_enabled = lighting_enabled_for(job.mode, options.surface);
+    let shading_enabled = surface_shading_enabled_for(job.mode, options.surface);
     let atlas_enabled = atlas_enabled_for(job.mode, options.surface, job);
     let gbuffer_enabled = atlas_enabled;
     let block_volume_enabled = block_volume_enabled_for(job.mode, options.surface, job);
@@ -8567,7 +8546,7 @@ fn prepare_chunk_tile_compose(
                     job.mode,
                     block_x,
                     block_z,
-                    lighting_enabled,
+                    shading_enabled,
                 );
             } else {
                 diagnostics.missing_chunks = diagnostics.missing_chunks.saturating_add(1);
@@ -8591,7 +8570,7 @@ fn prepare_chunk_tile_compose(
         block_height_grid_padding,
         block_volume_enabled,
         diagnostics,
-        lighting_enabled,
+        shading_enabled,
     })
 }
 
@@ -8742,9 +8721,9 @@ fn push_region_height_neighborhood(
     mode: RenderMode,
     block_x: i32,
     block_z: i32,
-    lighting_enabled: bool,
+    shading_enabled: bool,
 ) {
-    if !lighting_enabled {
+    if !shading_enabled {
         push_missing_height_neighborhood(heights);
         return;
     }
@@ -8783,9 +8762,9 @@ fn push_chunk_height_neighborhood(
     mode: RenderMode,
     block_x: i32,
     block_z: i32,
-    lighting_enabled: bool,
+    shading_enabled: bool,
 ) {
-    if !lighting_enabled {
+    if !shading_enabled {
         push_missing_height_neighborhood(heights);
         return;
     }
@@ -8824,7 +8803,7 @@ fn compose_region_tile_from_prepared(
     let mut colors = Vec::with_capacity(pixel_count);
     for (pixel_index, packed_color) in prepared.colors.iter().copied().enumerate() {
         let mut color = unpack_rgba_color(packed_color);
-        if prepared.lighting_enabled {
+        if prepared.shading_enabled {
             let offset = pixel_index.saturating_mul(9);
             if let Some(heights) = prepared.heights.get(offset..offset.saturating_add(9))
                 && heights.first().copied() != Some(i32::from(MISSING_HEIGHT))
@@ -9165,9 +9144,11 @@ impl RgbaAccumulator {
     }
 }
 
-fn lighting_enabled_for(mode: RenderMode, surface: SurfaceRenderOptions) -> bool {
+fn surface_shading_enabled_for(mode: RenderMode, surface: SurfaceRenderOptions) -> bool {
     surface.height_shading
-        && surface.lighting.enabled
+        && (surface.lighting.enabled
+            || (surface.block_boundaries.enabled && surface.block_boundaries.strength > 0.0)
+            || surface.block_volume.enabled)
         && matches!(mode, RenderMode::SurfaceBlocks | RenderMode::HeightMap)
 }
 
@@ -9212,7 +9193,8 @@ fn render_chunk_request(mode: RenderMode) -> ChunkDataRequest {
         RenderMode::RawHeightMap => ChunkDataRequest::new().height_map(),
         RenderMode::LayerBlocks { y } => ChunkDataRequest::new().layer(y),
         RenderMode::CaveSlice { y } => ChunkDataRequest::new().cave_slice(y),
-        RenderMode::Biome { y } | RenderMode::RawBiomeLayer { y } => {
+        RenderMode::Biome { .. } => ChunkDataRequest::new().biome(BiomeDataRequirement::All),
+        RenderMode::RawBiomeLayer { y } => {
             ChunkDataRequest::new().biome(BiomeDataRequirement::Layer(y))
         }
     }
@@ -9513,7 +9495,7 @@ fn shade_region_color(
     surface: SurfaceRenderOptions,
     boundary: Option<BlockBoundaryContext>,
 ) -> RgbaColor {
-    if !lighting_enabled_for(mode, surface) {
+    if !surface_shading_enabled_for(mode, surface) {
         return color;
     }
     let Some(height) =
@@ -9557,7 +9539,7 @@ fn shade_chunk_bake_color(
     let Some(bake) = bakes.get(&chunk_pos) else {
         return color;
     };
-    if !lighting_enabled_for(bake.mode, surface) {
+    if !surface_shading_enabled_for(bake.mode, surface) {
         return color;
     }
     let Some(height) = chunk_bake_relief_height(bake, u32::from(local_x), u32::from(local_z))
@@ -9833,10 +9815,18 @@ fn apply_atlas_shading(
     }
     let options = surface.atlas;
     let material = atlas_aux_material(aux);
+    // Resource-pack appearance already encodes the material's color. Building blocks must not
+    // inherit the atlas's generic terrain texture or a replacement material hue.
+    if matches!(
+        material,
+        SurfaceMaterialId::Wood | SurfaceMaterialId::Built | SurfaceMaterialId::Metal
+    ) {
+        return terrain_lit_color(color, heights, water_depth, surface.lighting);
+    }
     let shape_flags = atlas_aux_shape_flags(aux);
     let (local_x, local_z) = atlas_local_pixel_position(volume.as_ref());
     let neighborhood = map_atlas_material_neighborhood(material, volume.as_ref());
-    let mut base = map_atlas_material_color(color, material, neighborhood, options);
+    let mut base = color;
     let lighting = surface.lighting;
     let azimuth = lighting.light_azimuth_degrees.to_radians();
     let elevation = lighting
@@ -9867,7 +9857,7 @@ fn apply_atlas_shading(
             .clamp(-detail_limit, detail_limit) as i32,
     );
 
-    let (mut dx, mut dz) = heights.sobel_gradient();
+    let (mut dx, mut dz) = terrain_gradient(heights.samples(), lighting.gradient_algorithm);
     dx = compress_land_slope(dx, 5.5) + detail.normal_dx;
     dz = compress_land_slope(dz, 5.5) + detail.normal_dz;
     let normal_length = (dx.mul_add(dx, dz.mul_add(dz, 4.0)))
@@ -10041,34 +10031,6 @@ fn map_atlas_material_neighborhood(
     }
 }
 
-fn map_atlas_material_color(
-    color: RgbaColor,
-    material: SurfaceMaterialId,
-    neighborhood: MapAtlasMaterialNeighborhood,
-    options: AtlasRenderOptions,
-) -> RgbaColor {
-    let target = match material {
-        SurfaceMaterialId::Grass | SurfaceMaterialId::Plant => RgbaColor::new(88, 128, 76, 255),
-        SurfaceMaterialId::Foliage => {
-            if neighborhood.foliage_count >= 6 {
-                RgbaColor::new(20, 104, 24, 255)
-            } else {
-                RgbaColor::new(42, 130, 44, 255)
-            }
-        }
-        SurfaceMaterialId::Snow => RgbaColor::new(238, 242, 242, 255),
-        SurfaceMaterialId::Stone | SurfaceMaterialId::Metal => RgbaColor::new(126, 132, 126, 255),
-        SurfaceMaterialId::Dirt => RgbaColor::new(112, 96, 62, 255),
-        SurfaceMaterialId::Sand => RgbaColor::new(190, 178, 118, 255),
-        SurfaceMaterialId::Water => RgbaColor::new(44, 70, 172, 255),
-        SurfaceMaterialId::Lava => RgbaColor::new(255, 82, 14, 255),
-        SurfaceMaterialId::Wood | SurfaceMaterialId::Built => RgbaColor::new(126, 104, 74, 255),
-        SurfaceMaterialId::Unknown => color,
-    };
-    let alpha = (options.texture_detail_strength.clamp(0.0, 1.0) * 92.0).round() as u8;
-    alpha_blend_surface(target, color, alpha)
-}
-
 fn map_atlas_pixel_detail(
     material: SurfaceMaterialId,
     shape_flags: u8,
@@ -10124,10 +10086,12 @@ fn map_atlas_pixel_detail(
             * (1.0 - centered_x.mul_add(centered_x, centered_z * centered_z) / 0.46)
                 .clamp(0.0, 1.0)
             * 0.18;
-        detail.color_factor += (canopy.lit_edge * 18.0 - canopy.shadow_edge * 14.0 - density * 5.0
+        // Edge contrast is a radiance change; keep canopy silhouettes visible
+        // after linear-light shading rather than bleaching them toward white.
+        detail.color_factor += (canopy.lit_edge * 54.0 - canopy.shadow_edge * 42.0 - density * 5.0
             + sparse_dome * 10.0)
             * options.forest_canopy_strength;
-        detail.light_factor += (canopy.lit_edge * 20.0 - canopy.shadow_edge * 22.0 - density * 5.0
+        detail.light_factor += (canopy.lit_edge * 60.0 - canopy.shadow_edge * 66.0 - density * 5.0
             + canopy.high_edge * 8.0
             + sparse_dome * 8.0)
             * options.forest_canopy_strength;
@@ -10586,7 +10550,7 @@ fn apply_block_volume_shading(
     volume: Option<BlockVolumeContext<'_>>,
 ) -> RgbaColor {
     let options = surface.block_volume;
-    if color.alpha == 0 || !surface.height_shading || !options.enabled {
+    if color.alpha == 0 || water_depth > 0 || !surface.height_shading || !options.enabled {
         return color;
     }
     let Some(context) = volume else {
@@ -10667,9 +10631,6 @@ fn apply_block_volume_shading(
         light_x,
         light_z,
     );
-    if water_depth > 0 {
-        factor *= 0.45;
-    }
     let factor = factor
         .round()
         .clamp(-options.max_shadow.max(0.0), options.max_highlight.max(0.0))
@@ -10856,6 +10817,12 @@ fn terrain_lit_color(
     if color.alpha == 0 || !lighting.enabled {
         return color;
     }
+    if lighting.shading_mode == TerrainShadingMode::DirectionalDropShadow {
+        return shade_color_multiplier(
+            color,
+            directional_drop_shadow_multiplier(heights.samples()),
+        );
+    }
     let mut normal_strength = lighting.normal_strength.max(0.0);
     let mut shadow_strength = lighting.shadow_strength;
     let mut highlight_strength = lighting.highlight_strength;
@@ -10882,7 +10849,7 @@ fn terrain_lit_color(
     if normal_strength == 0.0 {
         return color;
     }
-    let (mut dx, mut dz) = heights.sobel_gradient();
+    let (mut dx, mut dz) = terrain_gradient(heights.samples(), lighting.gradient_algorithm);
     if water_depth == 0 {
         dx = compress_land_slope(dx, lighting.land_slope_softness);
         dz = compress_land_slope(dz, lighting.land_slope_softness);
@@ -10895,24 +10862,12 @@ fn terrain_lit_color(
     let normal_x = -dx / normal_length;
     let normal_y = 2.0 / normal_length;
     let normal_z = -dz / normal_length;
-    let azimuth = lighting.light_azimuth_degrees.to_radians();
-    let elevation = lighting
-        .light_elevation_degrees
-        .to_radians()
-        .clamp(0.01, 1.55);
-    let light_horizontal = elevation.cos();
-    let light_x = azimuth.sin() * light_horizontal;
-    let light_y = elevation.sin();
-    let light_z = -azimuth.cos() * light_horizontal;
-    let dot = normal_x.mul_add(light_x, normal_y.mul_add(light_y, normal_z * light_z));
-    let flat_dot = light_y;
+    let mut illumination_options = lighting;
+    illumination_options.shadow_strength = shadow_strength;
+    illumination_options.highlight_strength = highlight_strength;
+    let (relative_light, mut factor) =
+        illumination([normal_x, normal_y, normal_z], illumination_options);
     let relief = (dx.abs() + dz.abs()).min(24.0) / 24.0;
-    let relative_light = dot - flat_dot;
-    let mut factor = if relative_light >= 0.0 {
-        relative_light * highlight_strength * 100.0
-    } else {
-        relative_light * shadow_strength * 100.0
-    };
     factor -= relief * ambient_occlusion * 100.0;
     if edge_relief_strength > 0.0 {
         let edge = heights.edge_relief(lighting.edge_relief_threshold);
@@ -10946,22 +10901,11 @@ fn underwater_depth_factor(water_depth: u8, lighting: TerrainLightingOptions) ->
 }
 
 fn shade_color_percent(color: RgbaColor, factor: i32) -> RgbaColor {
-    RgbaColor::new(
-        shade_channel_percent(color.red, factor),
-        shade_channel_percent(color.green, factor),
-        shade_channel_percent(color.blue, factor),
-        color.alpha,
-    )
+    color.shade((1.0 + factor as f32 / 100.0).max(0.0))
 }
 
-fn shade_channel_percent(channel: u8, factor: i32) -> u8 {
-    if factor >= 0 {
-        let value = i32::from(channel) + ((255 - i32::from(channel)) * factor / 100);
-        u8_from_i32(value.clamp(0, 255))
-    } else {
-        let value = i32::from(channel) * (100 + factor) / 100;
-        u8_from_i32(value.clamp(0, 255))
-    }
+fn shade_color_multiplier(color: RgbaColor, multiplier: f32) -> RgbaColor {
+    color.shade(multiplier)
 }
 
 fn u8_from_u32(value: u32) -> u8 {
@@ -10970,10 +10914,6 @@ fn u8_from_u32(value: u32) -> u8 {
 
 fn u8_from_u64(value: u64) -> u8 {
     u8::try_from(value.min(u64::from(u8::MAX))).unwrap_or(u8::MAX)
-}
-
-fn u8_from_i32(value: i32) -> u8 {
-    u8::try_from(value).unwrap_or(u8::MAX)
 }
 
 fn i16_from_i32(value: i32) -> i16 {
@@ -11795,7 +11735,10 @@ fn atlas_aux_shape_flags(aux: u32) -> u8 {
 
 fn classify_surface_material(name: &str) -> SurfaceMaterialId {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
-    if name.contains("leaves") || name.contains("azalea") || name.contains("mangrove_roots") {
+    if name == "bamboo_mosaic" || name.ends_with("_planks") {
+        SurfaceMaterialId::Wood
+    } else if name.contains("leaves") || name.contains("azalea") || name.contains("mangrove_roots")
+    {
         SurfaceMaterialId::Foliage
     } else if name.contains("grass") || name.contains("moss") || name.contains("vine") {
         SurfaceMaterialId::Grass
@@ -13145,7 +13088,7 @@ mod tests {
     use super::*;
     use bedrock_leveldb::{Db, LevelDbOpenOptions};
     use bedrock_world::{
-        OpenOptions, ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, WorldStorage,
+        ChunkKey, ChunkRecordTag, MemoryStorage, NbtTag, OpenOptions, WorldStorage,
         block_storage_index,
     };
     use indexmap::IndexMap;
@@ -13210,7 +13153,10 @@ mod tests {
         };
         let decoded = tile.into_decoded();
 
-        assert!(std::ptr::addr_eq(Arc::as_ptr(&decoded.pixels), original_ptr));
+        assert!(std::ptr::addr_eq(
+            Arc::as_ptr(&decoded.pixels),
+            original_ptr
+        ));
         assert_eq!(&decoded.pixels[..4], &[3, 2, 1, 255]);
     }
 
@@ -13232,7 +13178,10 @@ mod tests {
         };
         let decoded = tile.into_decoded();
 
-        assert!(std::ptr::addr_eq(Arc::as_ptr(&decoded.pixels), original_ptr));
+        assert!(std::ptr::addr_eq(
+            Arc::as_ptr(&decoded.pixels),
+            original_ptr
+        ));
         assert_eq!(decoded.pixels.as_ref(), &[3, 2, 1, 255]);
     }
 
@@ -13243,12 +13192,7 @@ mod tests {
             (TilePixelFormat::Bgra8, [3, 2, 1, 255]),
         ] {
             let mut pixels = [0; 4];
-            write_pixel(
-                &mut pixels,
-                0,
-                RgbaColor::new(1, 2, 3, 255),
-                pixel_format,
-            );
+            write_pixel(&mut pixels, 0, RgbaColor::new(1, 2, 3, 255), pixel_format);
             assert_eq!(pixels, expected);
         }
     }
@@ -16205,7 +16149,10 @@ mod tests {
                 2,
             )),
         );
-        assert!(rgba_color_distance(edge, interior) >= 4);
+        assert!(
+            rgba_color_distance(edge, interior) >= 4,
+            "canopy edge {edge:?}, interior {interior:?}"
+        );
     }
 
     #[test]
@@ -16334,16 +16281,243 @@ mod tests {
     }
 
     #[test]
+    fn terrain_lighting_uses_selected_gradient_estimator() {
+        let base = RgbaColor::new(120, 120, 120, 255);
+        let heights = TerrainHeightNeighborhood {
+            center: 64,
+            north_west: 10,
+            north: 30,
+            north_east: 100,
+            west: 70,
+            east: 110,
+            south_west: 20,
+            south: 60,
+            south_east: 90,
+        };
+        let mut lighting = TerrainLightingOptions::strong();
+        lighting.edge_relief_strength = 0.0;
+        lighting.ambient_occlusion = 0.0;
+        lighting.land_slope_softness = 1_000.0;
+        lighting.light_azimuth_degrees = 315.0;
+        lighting.normal_strength = 5.0;
+
+        let horn = terrain_lit_color(
+            base,
+            heights,
+            0,
+            TerrainLightingOptions {
+                gradient_algorithm: TerrainGradientAlgorithm::Horn,
+                ..lighting
+            },
+        );
+        let zevenbergen_thorne = terrain_lit_color(
+            base,
+            heights,
+            0,
+            TerrainLightingOptions {
+                gradient_algorithm: TerrainGradientAlgorithm::ZevenbergenThorne,
+                ..lighting
+            },
+        );
+        let scharr = terrain_lit_color(
+            base,
+            heights,
+            0,
+            TerrainLightingOptions {
+                gradient_algorithm: TerrainGradientAlgorithm::Scharr,
+                ..lighting
+            },
+        );
+
+        assert_ne!(horn, zevenbergen_thorne);
+        assert_ne!(horn, scharr);
+        assert_ne!(zevenbergen_thorne, scharr);
+    }
+
+    #[test]
+    fn directional_drop_shadow_lights_from_neighboring_height_steps() {
+        let base = RgbaColor::new(100, 100, 100, 255);
+        let flat = TerrainHeightNeighborhood {
+            center: 64,
+            north_west: 64,
+            north: 64,
+            north_east: 64,
+            west: 64,
+            east: 64,
+            south_west: 64,
+            south: 64,
+            south_east: 64,
+        };
+        let mut northwest_ridge = flat;
+        northwest_ridge.north_west = 76;
+        let mut southeast_drop = flat;
+        southeast_drop.south_east = 52;
+        let lighting = TerrainLightingOptions {
+            shading_mode: TerrainShadingMode::DirectionalDropShadow,
+            ..TerrainLightingOptions::soft()
+        };
+
+        let flat_color = terrain_lit_color(base, flat, 0, lighting);
+        let shadowed_color = terrain_lit_color(base, northwest_ridge, 0, lighting);
+        let highlighted_color = terrain_lit_color(base, southeast_drop, 0, lighting);
+
+        assert!(shadowed_color.red < flat_color.red);
+        assert!(highlighted_color.red > flat_color.red);
+        assert_eq!(flat_color.alpha, base.alpha);
+    }
+
+    #[test]
+    fn block_boundaries_render_without_terrain_lighting() {
+        let base = RgbaColor::new(160, 160, 160, 255);
+        let surface = SurfaceRenderOptions {
+            lighting: TerrainLightingOptions::off(),
+            block_boundaries: BlockBoundaryRenderOptions {
+                enabled: true,
+                flat_strength: 0.4,
+                max_shadow: 40.0,
+                ..BlockBoundaryRenderOptions::default()
+            },
+            block_volume: BlockVolumeRenderOptions::off(),
+            ..SurfaceRenderOptions::default()
+        };
+        let context = BlockBoundaryContext {
+            pixel_x: 0,
+            pixel_z: 0,
+            pixels_per_block: 2,
+            blocks_per_pixel: 1,
+        };
+
+        assert!(surface_shading_enabled_for(
+            RenderMode::SurfaceBlocks,
+            surface
+        ));
+        let shaded = apply_block_boundary_shading(
+            base,
+            uniform_neighbor_heights(64, 64),
+            0,
+            surface,
+            Some(context),
+        );
+
+        assert!(shaded.red < base.red);
+    }
+
+    #[test]
+    fn block_volume_uses_neighbor_height_differences() {
+        let base = RgbaColor::new(160, 160, 160, 255);
+        let grid = [58, 58, 64, 58, 64, 64, 64, 64, 64];
+        let heights = TerrainHeightNeighborhood {
+            center: 64,
+            north_west: 58,
+            north: 58,
+            north_east: 64,
+            west: 58,
+            east: 64,
+            south_west: 64,
+            south: 64,
+            south_east: 64,
+        };
+        let surface = SurfaceRenderOptions {
+            lighting: TerrainLightingOptions {
+                light_azimuth_degrees: 135.0,
+                ..TerrainLightingOptions::off()
+            },
+            block_boundaries: BlockBoundaryRenderOptions::off(),
+            block_volume: BlockVolumeRenderOptions {
+                enabled: true,
+                face_width_pixels: 1.0,
+                face_shadow_strength: 1.0,
+                contact_shadow_strength: 1.0,
+                cast_shadow_strength: 0.0,
+                cast_shadow_max_blocks: 0,
+                cast_shadow_height_scale: 1.0,
+                highlight_strength: 0.0,
+                max_shadow: 42.0,
+                max_highlight: 0.0,
+                height_threshold: 0.0,
+                softness: 0.35,
+            },
+            ..SurfaceRenderOptions::default()
+        };
+        let volume = BlockVolumeContext {
+            pixel_x: 0,
+            pixel_z: 0,
+            pixels_per_block: 2,
+            blocks_per_pixel: 1,
+            block_heights: &grid,
+            block_aux: &[],
+            grid_width: 3,
+            grid_height: 3,
+            grid_padding: 1,
+        };
+
+        assert!(surface_shading_enabled_for(
+            RenderMode::SurfaceBlocks,
+            surface
+        ));
+        let shaded = apply_block_volume_shading(base, heights, 0, surface, Some(volume));
+
+        assert!(shaded.red < base.red);
+    }
+
+    #[test]
+    fn block_volume_skips_water_surface_relief() {
+        let base = RgbaColor::new(160, 160, 160, 255);
+        let heights = TerrainHeightNeighborhood {
+            center: 64,
+            north_west: 58,
+            north: 58,
+            north_east: 64,
+            west: 58,
+            east: 64,
+            south_west: 64,
+            south: 64,
+            south_east: 64,
+        };
+        let surface = SurfaceRenderOptions {
+            lighting: TerrainLightingOptions {
+                light_azimuth_degrees: 135.0,
+                ..TerrainLightingOptions::off()
+            },
+            block_boundaries: BlockBoundaryRenderOptions::off(),
+            block_volume: test_block_volume_options(),
+            ..SurfaceRenderOptions::default()
+        };
+        let grid = [58, 58, 64, 58, 64, 64, 64, 64, 64];
+        let volume = BlockVolumeContext {
+            pixel_x: 0,
+            pixel_z: 0,
+            pixels_per_block: 2,
+            blocks_per_pixel: 1,
+            block_heights: &grid,
+            block_aux: &[],
+            grid_width: 3,
+            grid_height: 3,
+            grid_padding: 1,
+        };
+
+        let shaded = apply_block_volume_shading(base, heights, 3, surface, Some(volume));
+
+        assert_eq!(shaded, base);
+    }
+
+    #[test]
     fn terrain_lighting_scope_matches_surface_and_heightmap() {
         let surface = SurfaceRenderOptions::default();
-        assert!(lighting_enabled_for(RenderMode::SurfaceBlocks, surface));
-        assert!(lighting_enabled_for(RenderMode::HeightMap, surface));
-        assert!(!lighting_enabled_for(RenderMode::Biome { y: 64 }, surface));
-        assert!(!lighting_enabled_for(
+        assert!(surface_shading_enabled_for(
+            RenderMode::SurfaceBlocks,
+            surface
+        ));
+        assert!(surface_shading_enabled_for(RenderMode::HeightMap, surface));
+        assert!(!surface_shading_enabled_for(
+            RenderMode::Biome { y: 64 },
+            surface
+        ));
+        assert!(!surface_shading_enabled_for(
             RenderMode::LayerBlocks { y: 64 },
             surface
         ));
-        assert!(!lighting_enabled_for(
+        assert!(!surface_shading_enabled_for(
             RenderMode::CaveSlice { y: 32 },
             surface
         ));
@@ -17611,7 +17785,7 @@ mod tests {
     }
 
     #[test]
-    fn biome_layer_falls_back_to_top_non_empty_biome() {
+    fn biome_layer_uses_bedrock_top_fallback_for_empty_layers() {
         let pos = ChunkPos {
             x: 0,
             z: 0,
@@ -17621,7 +17795,7 @@ mod tests {
         storage
             .put(
                 &ChunkKey::new(pos, ChunkRecordTag::Data3D).encode(),
-                &test_data3d_single_biome_bytes(4),
+                &test_data3d_biome_layers_bytes(&[Some(4), None, Some(2)]),
             )
             .expect("put Data3D");
         let world = Arc::new(World::from_storage(
@@ -17629,30 +17803,103 @@ mod tests {
             storage,
             OpenOptions::default(),
         ));
-        let expected = RenderPalette::default().biome_color(4).to_array();
-        let renderer = MapRenderer::new(world, RenderPalette::default());
-        let tile = renderer
-            .render_tile(
-                RenderJob {
-                    tile_size: 1,
-                    ..RenderJob::new(
-                        TileCoord {
-                            x: 0,
-                            z: 0,
-                            dimension: Dimension::Overworld,
-                        },
-                        RenderMode::Biome { y: 64 },
-                    )
-                },
-                &RenderOptions {
-                    format: ImageFormat::Rgba,
-                    threading: RenderThreadingOptions::Single,
-                    ..RenderOptions::default()
-                },
-            )
-            .expect("render biome fallback");
+        let palette = RenderPalette::default();
+        let forest_color = palette.biome_color(4).to_array();
+        let missing_color = palette.missing_chunk_color().to_array();
+        let desert_color = palette.biome_color(2).to_array();
+        let renderer = MapRenderer::new(world, palette);
+        let render_biome = |mode| {
+            renderer
+                .render_tile(
+                    RenderJob {
+                        tile_size: 1,
+                        ..RenderJob::new(
+                            TileCoord {
+                                x: 0,
+                                z: 0,
+                                dimension: Dimension::Overworld,
+                            },
+                            mode,
+                        )
+                    },
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        threading: RenderThreadingOptions::Single,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render biome layer")
+        };
 
-        assert_eq!(&tile.rgba[0..4], &expected);
+        assert_eq!(
+            &render_biome(RenderMode::Biome { y: -64 }).rgba[0..4],
+            &forest_color
+        );
+        assert_eq!(
+            &render_biome(RenderMode::Biome { y: -48 }).rgba[0..4],
+            &desert_color
+        );
+        assert_eq!(
+            &render_biome(RenderMode::Biome { y: 0 }).rgba[0..4],
+            &desert_color
+        );
+        assert_eq!(
+            &render_biome(RenderMode::RawBiomeLayer { y: -48 }).rgba[0..4],
+            &missing_color
+        );
+    }
+
+    #[test]
+    fn biome_layer_uses_overworld_min_y_for_twenty_five_data3d_storages() {
+        let pos = ChunkPos {
+            x: 0,
+            z: 0,
+            dimension: Dimension::Overworld,
+        };
+        let mut layers = vec![None; 25];
+        layers[0] = Some(4);
+        layers[4] = Some(2);
+        let storage = Arc::new(MemoryStorage::new());
+        storage
+            .put(
+                &ChunkKey::new(pos, ChunkRecordTag::Data3D).encode(),
+                &test_data3d_biome_layers_bytes(&layers),
+            )
+            .expect("put Data3D");
+        let world = Arc::new(World::from_storage(
+            "memory",
+            storage,
+            OpenOptions::default(),
+        ));
+        let palette = RenderPalette::default();
+        let forest_color = palette.biome_color(4).to_array();
+        let desert_color = palette.biome_color(2).to_array();
+        let renderer = MapRenderer::new(world, palette);
+        let render_biome = |y| {
+            renderer
+                .render_tile(
+                    RenderJob {
+                        tile_size: 1,
+                        ..RenderJob::new(
+                            TileCoord {
+                                x: 0,
+                                z: 0,
+                                dimension: Dimension::Overworld,
+                            },
+                            RenderMode::Biome { y },
+                        )
+                    },
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        threading: RenderThreadingOptions::Single,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("render biome layer")
+        };
+
+        assert_eq!(&render_biome(-64).rgba[0..4], &forest_color);
+        assert_eq!(&render_biome(0).rgba[0..4], &desert_color);
     }
 
     #[test]
@@ -18462,6 +18709,99 @@ mod tests {
     }
 
     #[test]
+    fn lighting_scales_radiance_across_the_entire_block_palette() {
+        let document: serde_json::Value =
+            serde_json::from_str(include_str!("../../data/colors/bedrock-block-color.json"))
+                .expect("committed palette");
+        let decode = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        for (name, entry) in document["blocks"].as_object().expect("block palette") {
+            let channels = entry["default"].as_array().expect("default RGBA");
+            let channels = channels
+                .iter()
+                .map(|channel| channel.as_u64().expect("channel") as u8)
+                .collect::<Vec<_>>();
+            let color = RgbaColor::new(channels[0], channels[1], channels[2], channels[3]);
+            for factor in [-60, -20, 0, 20, 50] {
+                let shaded = shade_color_percent(color, factor);
+                assert_eq!(shaded.alpha, color.alpha, "{name}");
+                for (source, result) in color.to_array()[..3].iter().zip(&shaded.to_array()[..3]) {
+                    let expected =
+                        (decode(*source) * (1.0 + f64::from(factor) / 100.0)).clamp(0.0, 1.0);
+                    assert!(
+                        (decode(*result) - expected).abs() < 0.009,
+                        "{name}: factor={factor} source={source} result={result} expected radiance={expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn flat_opaque_tiles_keep_vanilla_appearance_channels() {
+        for (name, expected) in [
+            ("minecraft:pale_oak_planks", [228, 218, 216, 255]),
+            ("minecraft:cherry_planks", [227, 179, 173, 255]),
+            ("minecraft:quartz_bricks", [234, 229, 221, 255]),
+            ("minecraft:red_concrete", [142, 32, 32, 255]),
+        ] {
+            let pos = ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: Dimension::Overworld,
+            };
+            let storage = Arc::new(MemoryStorage::new());
+            storage
+                .put(
+                    &ChunkKey::new(pos, ChunkRecordTag::Data2D).encode(),
+                    &test_data2d_bytes(64, 1),
+                )
+                .expect("heightmap");
+            storage
+                .put(
+                    &ChunkKey::subchunk(pos, 4).encode(),
+                    &test_uniform_layer_subchunk_bytes(name),
+                )
+                .expect("terrain");
+            let renderer = MapRenderer::new(
+                Arc::new(World::from_storage(
+                    "memory",
+                    storage,
+                    OpenOptions::default(),
+                )),
+                RenderPalette::default(),
+            );
+            let tile = renderer
+                .render_tile(
+                    RenderJob {
+                        tile_size: 1,
+                        ..RenderJob::new(
+                            TileCoord {
+                                x: 0,
+                                z: 0,
+                                dimension: Dimension::Overworld,
+                            },
+                            RenderMode::SurfaceBlocks,
+                        )
+                    },
+                    &RenderOptions {
+                        format: ImageFormat::Rgba,
+                        threading: RenderThreadingOptions::Single,
+                        ..RenderOptions::default()
+                    },
+                )
+                .expect("tile");
+            assert_eq!(&tile.rgba[..], &expected, "flat tile {name}");
+        }
+    }
+
+    #[test]
     fn surface_blocks_use_banner_block_entity_base_color() {
         let pos = ChunkPos {
             x: 0,
@@ -19016,14 +19356,16 @@ mod tests {
 
     #[test]
     fn encoded_rgba_formats_reject_bgra_without_converting() {
-        assert!(encode_image(
-            &[3, 2, 1, 255],
-            1,
-            1,
-            ImageFormat::FastRgbaZstd,
-            TilePixelFormat::Bgra8,
-        )
-        .is_err());
+        assert!(
+            encode_image(
+                &[3, 2, 1, 255],
+                1,
+                1,
+                ImageFormat::FastRgbaZstd,
+                TilePixelFormat::Bgra8,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -20422,13 +20764,19 @@ mod tests {
         bedrock_world::nbt::serialize_root_nbt(&tag).expect("block entity nbt")
     }
 
-    fn test_data3d_single_biome_bytes(biome: i32) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(517);
+    fn test_data3d_biome_layers_bytes(biomes: &[Option<i32>]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(512 + biomes.len() * 5);
         for _ in 0..256 {
             bytes.extend_from_slice(&64_i16.to_le_bytes());
         }
-        bytes.push(0);
-        bytes.extend_from_slice(&biome.to_le_bytes());
+        for biome in biomes {
+            if let Some(biome) = biome {
+                bytes.push(0);
+                bytes.extend_from_slice(&biome.to_le_bytes());
+            } else {
+                bytes.push(0xff);
+            }
+        }
         bytes
     }
 

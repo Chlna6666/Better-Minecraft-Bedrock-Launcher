@@ -46,7 +46,8 @@ formats they need.
 
 ## Render Modes
 
-- `RenderMode::Biome { y }`: biome color map sampled at the requested Y layer.
+- `RenderMode::Biome { y }`: biome color map sampled at the requested Y layer,
+  falling back to the highest stored biome when that layer has no biome data.
 - `RenderMode::RawBiomeLayer { y }`: diagnostic biome-id color map.
 - `RenderMode::LayerBlocks { y }`: fixed block layer map at world Y.
 - `RenderMode::SurfaceBlocks`: main top-down terrain map. Each X/Z column is
@@ -79,15 +80,17 @@ structured `legacy_biomes`. For pure `LegacyTerrain` chunks, `SurfaceBlocks` and
 are mapped to modern `minecraft:*` names; unknown IDs render through the normal
 unknown-block diagnostic path. If a transition chunk contains both
 `LegacyTerrain` and `SubChunkPrefix`, subchunk block data is preferred and
-legacy terrain is used only as a fallback. Legacy biome RGB values take
-priority over old Data2D/Data3D biome IDs and drive
-`Biome` output and grass/foliage tint; `RawBiomeLayer` uses the saved biome ID
-when the palette knows it and falls back to saved RGB for unknown old IDs.
+legacy terrain is used only as a fallback. Modern Data3D biomes take priority
+over coexisting legacy samples. Legacy biome RGB values take priority over old
+2D biome IDs and drive `Biome` output and grass/foliage tint; `RawBiomeLayer`
+uses the saved biome ID when the palette knows it and falls back to saved RGB
+for unknown old IDs.
 Real legacy payloads are decoded as `[biome_id, red, green, blue]`, while
 `legacy_biome_colors` remains only a compatibility `0x00RRGGBB` view. Water
 keeps the normal water-tint path and does not use legacy grass RGB.
 
-Renderer cache version `51` invalidates tiles created before the single
+Renderer cache version `52` invalidates tiles created before dimension-aware
+Data3D height anchoring and empty-layer top-biome fallback, as well as the
 canonical visual surface sampler and the authority cache index/blob layout.
 `RenderOptions::default()` now bypasses the tile cache; set
 `cache_policy: RenderCachePolicy::Use` explicitly for session or export paths
@@ -131,34 +134,8 @@ For examples and tools, prefer `bedrock_world::World::open` or
 That enables automatic detection of old LevelDB `LegacyTerrain` worlds and
 read-only `chunks.dat` worlds.
 
-## Editing Facade
-
-`bedrock_render::editor` is a downstream adapter for map viewers and tooling,
-not the core `bedrock-world` storage API. Rendering sources remain read-only by
-default. Applications that already require explicit write mode can use
-`MapWorldEditor` to call common `bedrock-world` typed write APIs and receive a
-render/UI invalidation summary.
-
-```rust
-use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
-
-let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
-
-let invalidation = editor.delete_hardcoded_spawn_areas(chunk_pos)?;
-if invalidation.refresh_overlays() {
-    // reload overlays for the current viewport
-}
-if invalidation.clear_tile_cache() {
-    // discard cached tiles covering invalidation.affected_chunks()
-}
-```
-
-Write paths should still be guarded by an application-level confirmation step.
-`MapEditInvalidation` is a render-layer cache refresh contract; it is not stored
-in Bedrock data and is not part of `bedrock-world`'s storage layer. After a
-successful edit, increment UI generations before scheduling overlay or tile
-reload work so stale background results cannot repaint the old state.
+World mutation remains in `bedrock-world` and application-owned domain
+workflows. This crate exposes the map/world image rendering pipeline.
 
 ## Streaming Session API
 
@@ -417,6 +394,17 @@ cargo run --example palette_tool -- generate-clean-room --check
 cargo run --example palette_tool -- normalize --check
 ```
 
+To derive colors from an installed game, pass its `data/resource_packs` directory
+to `palette_tool derive-from-resource-pack --pack <path> --out <json>`. The tool
+merges `vanilla` and numeric `vanilla_*` version layers from oldest to newest;
+newer definitions and texture files override older ones. It reads source packs
+without modifying them. Passing a standalone pack keeps single-pack behavior.
+
+`RgbaColor` stores unpremultiplied sRGB RGB and linear alpha. Terrain, atlas,
+and height shading scale decoded linear-light RGB and encode the result once;
+highlights do not mix the block's hue toward white. GPU tile processing receives
+the resulting sRGB RGBA8 pixels.
+
 Source policy and public references are documented in
 [docs/PALETTE_SOURCES.md](docs/PALETTE_SOURCES.md).
 
@@ -473,7 +461,9 @@ while remaining part of this standalone public renderer.
 
 ### `Biome { y }`
 
-Biome colors sampled on an X/Z plane at the configured Y layer.
+Biome colors sampled on an X/Z plane at the configured Y layer. If a column has
+no biome at that Y, the highest stored biome in the chunk fills the gap, matching
+BedrockMap's top-biome handling.
 
 ![Biome map](docs/images/biome-viewport.png)
 

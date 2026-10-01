@@ -4,7 +4,7 @@ use bedrock_render::{
     RenderOptions, RenderPalette, RenderThreadingOptions, RenderTilePriority, TileReadySource,
     TileStreamEvent,
 };
-use bedrock_world::{World, OpenOptions, Dimension};
+use bedrock_world::{Dimension, OpenOptions, World};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -37,10 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let world = Arc::new(World::open(
-        &world_path,
-        OpenOptions::default(),
-    )?);
+    let world = Arc::new(World::open(&world_path, OpenOptions::default())?);
     let renderer = MapRenderer::new(world, RenderPalette::default());
     let session = MapRenderSession::new(
         renderer,

@@ -6,8 +6,8 @@ use bedrock_render::{
     SurfaceRenderOptions, TerrainLightingOptions, TerrainLightingPreset, TileCoord,
 };
 use bedrock_world::{
-    World, OpenOptions, ChunkBounds, ChunkPos, Dimension, WorldScanOptions,
-    WorldThreadingOptions,
+    ChunkPos, Dimension, OpenOptions, World,
+    surface::{ChunkBounds, WorldScanOptions, WorldThreadingOptions},
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -85,11 +85,8 @@ fn main() -> bedrock_render::Result<()> {
     );
 
     let world = Arc::new(
-        World::open(
-            config.world_path.clone(),
-            OpenOptions::default(),
-        )
-        .map_err(bedrock_render::BedrockRenderError::World)?,
+        World::open(config.world_path.clone(), OpenOptions::default())
+            .map_err(bedrock_render::BedrockRenderError::World)?,
     );
     let renderer = MapRenderer::new(Arc::clone(&world), palette);
     let discovered_dimensions = discover_dimension_tiles(world.as_ref(), &config)?;

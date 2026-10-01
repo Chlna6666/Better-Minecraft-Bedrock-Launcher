@@ -38,7 +38,7 @@
 
 ## 渲染模式
 
-- `RenderMode::Biome { y }`：指定 Y 层的 biome 色彩图。
+- `RenderMode::Biome { y }`：指定 Y 层的 biome 色彩图；该层没有群系数据时，回退到当前列最高的有效群系。
 - `RenderMode::RawBiomeLayer { y }`：调试用 biome id 色彩图。
 - `RenderMode::LayerBlocks { y }`：指定世界 Y 层的方块平面图。
 - `RenderMode::SurfaceBlocks`：主俯视地形图。每个 X/Z 列从真实加载的方块自顶向下采样，
@@ -64,13 +64,14 @@
 常见 0.16 方块 ID 会映射到现代 `minecraft:*` 名称；未知 ID 走正常
 unknown-block 诊断路径。过渡 chunk 如果同时有 `LegacyTerrain` 和
 `SubChunkPrefix`，优先使用 subchunk 方块数据，legacy terrain 只作为 fallback。
-旧版 biome RGB 会优先于旧 Data2D/Data3D biome id，用于 `Biome` 输出和草/树叶 tint；`RawBiomeLayer`
+现代 Data3D biome 优先于同时存在的 legacy 样本。旧版 biome RGB 会优先于旧 2D biome id，用于 `Biome` 输出和草/树叶 tint；`RawBiomeLayer`
 在 palette 已知该 biome id 时使用 id 诊断色，未知旧 id 时回退到保存的 RGB。
 真实 legacy payload 按 `[biome_id, red, green, blue]` 解码，`legacy_biome_colors`
 只是兼容用 `0x00RRGGBB` 视图。水体继续使用正常 water tint，不使用草地 RGB。
 
-Renderer cache version `51` 会让旧的错位、高度错误、legacy biome 优先级错误、
-raw-height 驱动的瓦片缓存，以及 authority cache index/blob 之前的缓存布局失效。
+Renderer cache version `52` 会让旧的错位、高度错误、legacy biome 优先级错误、
+Data3D 高度基准错误、空层群系回退、raw-height 驱动的瓦片缓存，以及 authority cache index/blob
+之前的缓存布局失效。
 `RenderOptions::default()` 现在默认绕过 tile cache；需要读写缓存的 session/export 路径必须显式设置 `cache_policy: RenderCachePolicy::Use`。
 长期 session 会使用 tile authority cache 记录最终 tile blob、空 tile、chunk dependency stamp
 和 chunk 到 tile 的反向引用，再决定是否信任缓存中的解码像素。
@@ -114,31 +115,7 @@ let tiles = renderer.render_region_tiles(
 `World::open`，不要直接构造 LevelDB storage。这样可以自动识别旧版
 LevelDB `LegacyTerrain` 世界和只读 `chunks.dat` 世界。
 
-## 编辑门面
-
-`bedrock_render::editor` 是面向地图查看器和工具的下游适配门面，不是
-`bedrock-world` 的核心存储 API。普通渲染 source 默认保持只读；已经进入显式写入模式的
-应用可以使用 `MapWorldEditor` 调用常用 `bedrock-world` typed write API，并获得
-render/UI 层的失效摘要。
-
-```rust
-use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
-
-let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
-
-let invalidation = editor.delete_hardcoded_spawn_areas(chunk_pos)?;
-if invalidation.refresh_overlays() {
-    // 重新读取当前视口 overlay
-}
-if invalidation.clear_tile_cache() {
-    // 清理覆盖 invalidation.affected_chunks() 的渲染瓦片缓存
-}
-```
-
-应用层仍应在每次写入前做二次确认。写入成功后先递增 UI generation，再调度 overlay
-和 tile 重新加载，避免旧后台任务覆盖新状态。`MapEditInvalidation` 只是渲染层缓存刷新
-contract，不会写入 Bedrock 数据，也不属于 `bedrock-world` 的 storage layer。
+世界修改由 `bedrock-world` 和应用自己的领域工作流负责。本 crate 提供地图与世界图像渲染管线。
 
 ## Streaming Session API
 
@@ -425,7 +402,8 @@ LayerBlocks 的透明像素表示固定 Y 层未加载区域，这是预期行�
 
 ### `Biome { y }`
 
-在指定 Y 层采样的 X/Z 平面 biome 色彩图。
+在指定 Y 层采样的 X/Z 平面 biome 色彩图。该层没有群系数据时，回退到当前列最高的有效群系，
+以匹配 BedrockMap 的顶部群系处理。
 
 ![Biome map](docs/images/biome-viewport.png)
 

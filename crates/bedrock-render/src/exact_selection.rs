@@ -9,10 +9,9 @@ use bedrock_world::{
     chunk::ChunkPos,
     query::{ExactChunkSelection, SlimeChunkBounds},
     surface::{
-        ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk,
-        SurfaceMapQueryOptions,
+        ChunkData, ChunkLoadOptions, SurfaceMapBatchStats, SurfaceMapChunk, SurfaceMapQueryOptions,
     },
-    world::{World, StorageBackend},
+    world::{StorageBackend, World},
 };
 
 /// A render-oriented plan derived from an exact non-rectangular chunk selection.

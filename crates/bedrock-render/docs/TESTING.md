@@ -85,18 +85,6 @@ enabled and disabled. Tests should include flat terrain, a sharp height step,
 small height noise below the threshold, shallow water, and multi-block pixels
 where per-block outlines are intentionally skipped.
 
-For `bedrock_render::editor` changes, cover both facade behavior and render-side
-invalidation:
-
-- map/global record scan and single-record read helpers
-- HSA scan/write/delete roundtrips
-- block entity list, edit-at-coordinate, delete-at-coordinate helpers
-- modern actor read/write/delete/move helpers with `digp -> actorprefix`
-  preservation handled by `bedrock-world`
-- heightmap and biome storage write helpers
-- `MapEditInvalidation::merge`, metadata refresh, overlay refresh, affected
-  chunk propagation, and tile-cache cleanup flags
-
 Write tests should use temporary or in-memory worlds where possible. Manual
 tests against real worlds must require explicit write mode and a per-operation
 confirmation in the UI.

@@ -1,13 +1,11 @@
 # API Guide
 
-`bedrock-render` exposes five layers:
+`bedrock-render` exposes four layers:
 
 - `RenderPalette` for color lookup, overrides, and JSON imports.
 - `MapRenderer` for tile, batch, region, bake, and web-map rendering.
 - `MapRenderSession` for long-lived interactive renderers with cache reuse and
   streaming tile events.
-- `bedrock_render::editor` for downstream map-viewer tooling that maps common
-  `bedrock-world` typed writes to render/UI invalidation.
 - Value types for layout, threading, memory budgets, diagnostics, and cached
   tile paths.
 
@@ -121,44 +119,8 @@ snapshot, keeping the directory identity and content signature consistent for
 the same request. `world_cache_id` and `world_cache_signature` remain as
 compatibility accessors for callers that only need one component.
 
-## Editor Facade
-
-Rendering remains read-only by default. `bedrock_render::editor` is a downstream
-adapter for explicit write-mode workflows; it does not change the
-`bedrock-world` storage-layer API. The module re-exports common
-`bedrock-world` v0.2 map/global/HSA/actor/block-entity/heightmap/biome/query
-types and adds two render-facing helpers:
-
-- `MapWorldEditor` opens or wraps a writable `World` and exposes common
-  structured editor calls.
-- `MapEditInvalidation` describes which render/UI metadata, overlays, chunks,
-  and tile caches should be refreshed after a write.
-
-```rust
-use bedrock_render::editor::{MapWorldEditor, WorldScanOptions};
-
-let editor = MapWorldEditor::open_writable("path/to/minecraftWorld")?;
-let maps = editor.map_items(WorldScanOptions::default())?;
-let overlays = editor.hardcoded_spawn_areas(WorldScanOptions::default())?;
-
-let invalidation = editor.put_heightmap(chunk_pos, chunk_version, &heightmap)?;
-if invalidation.refresh_metadata() {
-    // reload metadata panels or manifest-derived summaries
-}
-for chunk in invalidation.affected_chunks() {
-    // remove cached tiles covering this chunk and schedule rerender
-}
-```
-
-`MapWorldEditor` intentionally does not replace the full `bedrock-world` API.
-Use the facade for common map viewer actions such as map/global records, HSA,
-modern actors, block entities, heightmaps, and biome storage. Use
-`editor.world()` or `bedrock-world` directly for uncommon Bedrock records or
-tool-specific validation. Applications should still require a per-operation
-confirmation before mutating methods and should increment UI generations before
-refreshing overlays or tiles so stale background results are ignored.
-`MapEditInvalidation` is not serialized to Bedrock data and is not part of
-`bedrock-world`'s storage semantics.
+World mutation belongs to `bedrock-world` and application-owned domain
+workflows. `bedrock-render` remains focused on rendering map and world images.
 
 ### Replacing older entry points
 
@@ -227,7 +189,8 @@ state. Those measurements decide whether to reuse a session-level pool, share
   by terrain rendering.
 - `RawHeightMap` renders raw Bedrock Data2D/Data3D/Legacy heightmap records for
   diagnostics and migration checks.
-- `Biome { y }` renders resolved biome colors at a sampled Y layer.
+- `Biome { y }` renders resolved biome colors at the sampled Y layer and falls
+  back to the highest stored biome in a column when that Y has no biome data.
 - `RawBiomeLayer { y }` renders diagnostic biome-id colors.
 - `LayerBlocks { y }` renders a fixed X/Z block layer.
 - `CaveSlice { y }` renders air, solid, water, and lava diagnostics for a fixed
@@ -258,8 +221,8 @@ Old Bedrock/Pocket Edition chunks may expose only `LegacyTerrain` tag `0x30`.
   palette lookup; unknown IDs become `legacy:<id>` and are counted by
   diagnostics.
 - Legacy biome samples are decoded as `[biome_id, red, green, blue]`.
-  `Biome` renders saved RGB directly and prefers it over conflicting old
-  Data2D/Data3D biome ids. `RawBiomeLayer` uses the saved biome ID when the
+  `Biome` renders saved RGB for legacy-only data; modern Data3D data takes
+  priority when both representations exist. `RawBiomeLayer` uses the saved biome ID when the
   palette knows it and falls back to saved RGB for unknown old IDs.
 - `SurfaceBlocks` uses legacy RGB samples for grass and foliage tint. Water
   keeps the normal water-tint fallback so legacy grass colors are not applied
@@ -267,10 +230,12 @@ Old Bedrock/Pocket Edition chunks may expose only `LegacyTerrain` tag `0x30`.
 - If a transition chunk has both `LegacyTerrain` and `SubChunkPrefix`, subchunk
   block data wins and legacy terrain is only a fallback for missing block data.
 
-The renderer cache version is `RENDERER_CACHE_VERSION = 51`, so old
+The renderer cache version is `RENDERER_CACHE_VERSION = 54`, so old
 transparent, incorrectly sampled, raw-height-driven, misplaced region-compose,
-renderer-rescanned, incorrectly prioritized legacy-biome, or pre-authority-cache
-tiles are not reused. `RenderOptions::default()` bypasses tile cache
+renderer-rescanned, incorrectly prioritized legacy-biome, incorrectly anchored
+Data3D, empty-layer, pre-water-flat-block-volume, or pre-authority-cache tiles
+are not reused.
+`RenderOptions::default()` bypasses tile cache
 reads/writes; opt in with `RenderCachePolicy::Use` when a session or export
 should use the cache.
 `MapRenderSession::new` also lifts stale lower renderer versions to the current
@@ -369,6 +334,22 @@ Environment overrides remain supported:
 `SurfaceRenderOptions::block_boundaries` controls the default top-down 2D block
 outline and height-contact shadow. It is part of the render cache signature and
 is disabled when `height_shading` is disabled.
+
+`TerrainLightingOptions::gradient_algorithm` selects Horn, Zevenbergen–Thorne,
+or Scharr height derivatives. `shading_mode` selects a single directional light,
+the fixed northwest-to-southeast neighbor drop shadow from BedrockMapRender's
+[`CalculateDropShadow`](https://github.com/BE-Community-Dev/BedrockMapRender/blob/main/BedrockRender/MapRenderer.cs),
+four-direction averaged hillshade (225°, 270°, 315°, and 360°), or
+directional light weighted with slope contrast. The drop-shadow mode darkens
+pixels below higher northwest neighbors and brightens pixels above lower
+southeast neighbors; it also applies the reference's absolute-height multiplier
+(0.8–1.05), so higher terrain may be brighter even when locally flat. That mode
+does not use the normal, light azimuth, or the other illumination strengths.
+Horn directional lighting remains the default. `block_volume` independently
+adds exposed block faces, contact shade, and short cast shadows. Samples with
+`water_depth > 0` skip block-volume shading so water stays flat; compare this
+with terrain hillshade at two or more pixels per block to see individual block
+relief.
 
 Streaming complete events include `RenderPipelineStats`, so UI status bars can
 show `resolved_backend`, `gpu_fallback_reason`, cache hits/misses, worker count,

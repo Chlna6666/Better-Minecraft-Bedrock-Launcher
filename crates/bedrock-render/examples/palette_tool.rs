@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod palette_tool_modules;
+use palette_tool_modules::ResourcePack;
+
 const BLOCK_JSON: &str = "data/colors/bedrock-block-color.json";
 const BIOME_JSON: &str = "data/colors/bedrock-biome-color.json";
 const ALIAS_JSON: &str = "data/colors/bedrock-resource-pack-aliases.json";
@@ -171,7 +174,7 @@ fn audit(config: &Config) -> Result<()> {
     ensure_tint_mask_metadata(&block)?;
     ensure_semantic_colors(&block, &biome)?;
     if let Some(pack_path) = config.resource_pack.as_deref() {
-        audit_resource_pack_coverage(pack_path, &block)?;
+        audit_resource_pack_coverage(&ResourcePack::open(pack_path)?, &block)?;
     }
     if config.check {
         ensure_canonical(&config.block_json, &block, &normalized_block)?;
@@ -224,6 +227,8 @@ fn derive_from_resource_pack(config: &Config) -> Result<()> {
         .resource_pack
         .as_deref()
         .ok_or_else(|| validation("derive-from-resource-pack requires --pack <path>"))?;
+    let pack = ResourcePack::open(pack_path)?;
+    let pack_path = &pack;
     let block_source = read_json(&config.block_json)?;
     let biome_source = read_json(&config.biome_json)?;
     let derived_block = normalize_block_document(&derive_block_document_from_resource_pack(
@@ -266,13 +271,15 @@ fn derive_from_resource_pack(config: &Config) -> Result<()> {
 #[cfg(feature = "png")]
 #[allow(clippy::too_many_lines)]
 fn derive_block_document_from_resource_pack(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     block_source: &Value,
 ) -> Result<Value> {
-    let terrain_texture = locate_terrain_texture(pack_path)?;
-    let blocks_json_path = locate_blocks_json(pack_path)?;
-    let terrain_json = read_jsonc(&terrain_texture)?;
-    let blocks_json = read_jsonc(&blocks_json_path)?;
+    let terrain_json = pack_path.json(&[
+        "textures/terrain_texture.json",
+        "terrain_texture.json",
+        "resource_pack/textures/terrain_texture.json",
+    ])?;
+    let blocks_json = pack_path.json(&["blocks.json", "resource_pack/blocks.json"])?;
     let texture_paths = texture_paths_from_terrain_json(&terrain_json)?;
     let block_textures = block_texture_specs_from_blocks_json(&blocks_json)?;
     let aliases = read_alias_table()?;
@@ -397,7 +404,7 @@ fn derive_block_document_from_resource_pack(
     );
     Ok(json!({
         "schema_version": PALETTE_SCHEMA_VERSION,
-        "minecraft_bedrock_version": PALETTE_VERSION,
+        "minecraft_bedrock_version": pack_path.version_label().unwrap_or_else(|| PALETTE_VERSION.to_owned()),
         "sources": block_sources(),
         "blocks": blocks,
     }))
@@ -407,6 +414,7 @@ fn derive_block_document_from_resource_pack(
 enum TintMaskKind {
     Grass,
     Foliage,
+    DryFoliage,
     Water,
 }
 
@@ -419,7 +427,7 @@ struct TintMask {
 
 #[cfg(feature = "png")]
 fn resource_pack_tint_mask(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_textures: &BTreeMap<String, BlockTextureSpec>,
     aliases: &AliasTable,
@@ -472,6 +480,9 @@ fn tint_texture_names(
 
 fn tint_mask_kind(block_name: &str) -> Option<TintMaskKind> {
     let name = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
+    if name == "leaf_litter" {
+        return Some(TintMaskKind::DryFoliage);
+    }
     if matches!(name, "water" | "flowing_water") {
         return Some(TintMaskKind::Water);
     }
@@ -485,19 +496,24 @@ fn tint_mask_kind(block_name: &str) -> Option<TintMaskKind> {
 }
 
 fn is_foliage_tint_mask(name: &str) -> bool {
-    if name.contains("leaf_litter") {
-        return false;
-    }
-    name.contains("leaves")
-        || name.contains("leaf")
-        || name.contains("leave")
-        || name.contains("foliage")
+    matches!(
+        name,
+        "leaves"
+            | "leaves2"
+            | "oak_leaves"
+            | "dark_oak_leaves"
+            | "birch_leaves"
+            | "spruce_leaves"
+            | "jungle_leaves"
+            | "acacia_leaves"
+            | "mangrove_leaves"
+    )
 }
 
 #[cfg(feature = "png")]
 fn fallback_tint_mask(kind: TintMaskKind) -> Rgba {
     match kind {
-        TintMaskKind::Grass => Rgba::new(180, 180, 180, 255),
+        TintMaskKind::Grass | TintMaskKind::DryFoliage => Rgba::new(180, 180, 180, 255),
         TintMaskKind::Foliage => Rgba::new(180, 180, 180, 238),
         TintMaskKind::Water => Rgba::new(112, 136, 190, 210),
     }
@@ -505,16 +521,17 @@ fn fallback_tint_mask(kind: TintMaskKind) -> Rgba {
 
 #[cfg(feature = "png")]
 fn derive_biome_document_from_resource_pack(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     biome_source: &Value,
 ) -> Result<Value> {
-    let biomes_client = locate_biomes_client(pack_path)
-        .map(|path| read_jsonc(&path))
-        .transpose()?;
+    let biomes_client =
+        pack_path.optional_json(&["biomes_client.json", "resource_pack/biomes_client.json"])?;
     let grass_default =
         colormap_average(pack_path, "grass.png")?.unwrap_or_else(|| Rgba::new(121, 192, 90, 255));
     let foliage_default =
         colormap_average(pack_path, "foliage.png")?.unwrap_or_else(|| Rgba::new(72, 160, 48, 255));
+    let dry_foliage_default = colormap_average(pack_path, "dry_foliage.png")?
+        .unwrap_or_else(|| Rgba::new(128, 96, 64, 255));
     let water_default = biomes_client
         .as_ref()
         .and_then(|value| client_biome_color(value, "default", "water_surface_color"))
@@ -523,32 +540,49 @@ fn derive_biome_document_from_resource_pack(
     let inventory = clean_room_biome_inventory(biome_source)?;
     for (name, id) in inventory {
         let clean = clean_room_biome_colors(&name, id);
-        let water = biomes_client
-            .as_ref()
-            .and_then(|value| client_biome_color(value, &name, "water_surface_color"))
+        let water = client_biome_appearance(pack_path, &name, "water_appearance", "surface_color")?
+            .or_else(|| {
+                biomes_client
+                    .as_ref()
+                    .and_then(|value| client_biome_color(value, &name, "water_surface_color"))
+            })
             .unwrap_or(clean.water);
         let mut biome = Map::new();
         biome.insert("id".to_string(), Value::from(id));
         biome.insert("rgb".to_string(), color_value(clean.rgb));
         biome.insert(
             "grass".to_string(),
-            color_value(vanilla_grass_tint(&name, clean.grass)),
+            color_value(
+                client_biome_appearance(pack_path, &name, "grass_appearance", "color")?
+                    .unwrap_or_else(|| vanilla_grass_tint(&name, clean.grass)),
+            ),
         );
         biome.insert(
             "leaves".to_string(),
-            color_value(vanilla_foliage_tint(&name, clean.leaves)),
+            color_value(
+                client_biome_appearance(pack_path, &name, "foliage_appearance", "color")?
+                    .unwrap_or_else(|| vanilla_foliage_tint(&name, clean.leaves)),
+            ),
+        );
+        biome.insert(
+            "dry_foliage".to_string(),
+            color_value(
+                client_biome_appearance(pack_path, &name, "dry_foliage_color", "color")?
+                    .unwrap_or(dry_foliage_default),
+            ),
         );
         biome.insert("water".to_string(), color_value(water));
         biomes.insert(name, Value::Object(biome));
     }
     Ok(json!({
         "schema_version": PALETTE_SCHEMA_VERSION,
-        "minecraft_bedrock_version": PALETTE_VERSION,
+        "minecraft_bedrock_version": pack_path.version_label().unwrap_or_else(|| PALETTE_VERSION.to_owned()),
         "sources": biome_sources(),
         "defaults": {
             "rgb": color_value(Rgba::new(106, 145, 72, 255)),
             "grass": color_value(grass_default),
             "leaves": color_value(foliage_default),
+            "dry_foliage": color_value(dry_foliage_default),
             "water": color_value(water_default),
         },
         "biomes": biomes,
@@ -579,8 +613,8 @@ fn read_jsonc(path: &Path) -> Result<Value> {
 }
 
 #[cfg(feature = "png")]
-fn colormap_average(pack_path: &Path, file_name: &str) -> Result<Option<Rgba>> {
-    let path = pack_path.join("textures").join("colormap").join(file_name);
+fn colormap_average(pack_path: &ResourcePack, file_name: &str) -> Result<Option<Rgba>> {
+    let path = pack_path.join(Path::new("textures/colormap").join(file_name));
     if path.exists() {
         average_texture(&path).map(Some)
     } else {
@@ -599,6 +633,32 @@ fn client_biome_color(value: &Value, name: &str, key: &str) -> Option<Rgba> {
         .get(key)
         .and_then(Value::as_str)
         .and_then(parse_hex_rgba)
+}
+
+#[cfg(feature = "png")]
+fn client_biome_appearance(
+    pack: &ResourcePack,
+    name: &str,
+    component: &str,
+    field: &str,
+) -> Result<Option<Rgba>> {
+    let name = name.strip_prefix("minecraft:").unwrap_or(name);
+    let path = pack.join(format!("biomes/{name}.client_biome.json"));
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let value = read_jsonc(&path)?;
+    let Some(color) = value.pointer(&format!(
+        "/minecraft:client_biome/components/minecraft:{component}/{field}"
+    )) else {
+        return Ok(None);
+    };
+    if let Some(hex) = color.as_str() {
+        return Ok(parse_hex_rgba(hex));
+    }
+    // A color map requires climate/position sampling. Its whole-image average
+    // is not the biome's tint; retain the documented fallback in that case.
+    Ok(None)
 }
 
 #[cfg(feature = "png")]
@@ -737,11 +797,13 @@ fn ensure_fallback_reasons(value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn audit_resource_pack_coverage(pack_path: &Path, block_source: &Value) -> Result<()> {
-    let terrain_texture = locate_terrain_texture(pack_path)?;
-    let blocks_json_path = locate_blocks_json(pack_path)?;
-    let terrain_json = read_jsonc(&terrain_texture)?;
-    let blocks_json = read_jsonc(&blocks_json_path)?;
+fn audit_resource_pack_coverage(pack_path: &ResourcePack, block_source: &Value) -> Result<()> {
+    let terrain_json = pack_path.json(&[
+        "textures/terrain_texture.json",
+        "terrain_texture.json",
+        "resource_pack/textures/terrain_texture.json",
+    ])?;
+    let blocks_json = pack_path.json(&["blocks.json", "resource_pack/blocks.json"])?;
     let texture_paths = texture_paths_from_terrain_json(&terrain_json)?;
     let block_textures = block_texture_specs_from_blocks_json(&blocks_json)?;
     let aliases = read_alias_table()?;
@@ -881,7 +943,14 @@ fn ensure_semantic_colors(block: &Value, biome: &Value) -> Result<()> {
     let path = required_block_color(block, "minecraft:grass_path")?;
     ensure_yellow_brown(path, "minecraft:grass_path")?;
     let leaf_litter = required_block_color(block, "minecraft:leaf_litter")?;
-    ensure_yellow_brown(leaf_litter, "minecraft:leaf_litter")?;
+    if block["blocks"]["minecraft:leaf_litter"]
+        .get("resource_pack_tint_mask")
+        .is_some()
+    {
+        ensure_neutral_mask(leaf_litter, "minecraft:leaf_litter")?;
+    } else {
+        ensure_yellow_brown(leaf_litter, "minecraft:leaf_litter")?;
+    }
     let grass_mask = required_block_color(block, "minecraft:grass_block")?;
     ensure_neutral_mask(grass_mask, "minecraft:grass_block")?;
     let leaves_mask = required_block_color(block, "minecraft:oak_leaves")?;
@@ -2035,47 +2104,6 @@ fn stable_hash(bytes: &[u8]) -> u32 {
     hash
 }
 
-fn locate_terrain_texture(pack_path: &Path) -> Result<PathBuf> {
-    for relative in [
-        "textures/terrain_texture.json",
-        "terrain_texture.json",
-        "resource_pack/textures/terrain_texture.json",
-    ] {
-        let path = pack_path.join(relative);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-    Err(validation(format!(
-        "could not find textures/terrain_texture.json under {}",
-        pack_path.display()
-    )))
-}
-
-fn locate_blocks_json(pack_path: &Path) -> Result<PathBuf> {
-    for relative in ["blocks.json", "resource_pack/blocks.json"] {
-        let path = pack_path.join(relative);
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-    Err(validation(format!(
-        "could not find blocks.json under {}",
-        pack_path.display()
-    )))
-}
-
-#[cfg(feature = "png")]
-fn locate_biomes_client(pack_path: &Path) -> Option<PathBuf> {
-    for relative in ["biomes_client.json", "resource_pack/biomes_client.json"] {
-        let path = pack_path.join(relative);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
-}
-
 fn texture_paths_from_terrain_json(value: &Value) -> Result<BTreeMap<String, Vec<String>>> {
     let texture_data = value
         .get("texture_data")
@@ -2463,7 +2491,7 @@ fn collect_texture_paths(value: &Value, paths: &mut Vec<String>) {
 
 #[cfg(feature = "png")]
 fn average_first_existing_texture(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     texture_names: &[String],
     choice: TextureChoice,
@@ -2487,7 +2515,7 @@ fn average_first_existing_texture(
 
 #[cfg(feature = "png")]
 fn average_alias_texture(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_textures: &BTreeMap<String, BlockTextureSpec>,
     aliases: &AliasTable,
@@ -2521,7 +2549,7 @@ fn average_alias_texture(
 
 #[cfg(feature = "png")]
 fn average_alias_side_texture(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_name: &str,
     target: &str,
@@ -2552,14 +2580,14 @@ fn average_alias_side_texture(
 
 #[cfg(feature = "png")]
 fn insert_special_resource_pack_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_textures: &BTreeMap<String, BlockTextureSpec>,
     block_name: &str,
     entry: &mut Map<String, Value>,
 ) -> Result<()> {
     let short_name = block_name.strip_prefix("minecraft:").unwrap_or(block_name);
-    insert_common_dyed_state_colors(pack_path, texture_paths, short_name, entry)?;
+    insert_common_dyed_state_colors(pack_path, texture_paths, block_textures, short_name, entry)?;
     insert_sand_state_colors(pack_path, texture_paths, short_name, entry)?;
     insert_candle_color(pack_path, texture_paths, short_name, entry)?;
     match short_name {
@@ -2632,7 +2660,7 @@ fn insert_special_resource_pack_colors(
 
 #[cfg(feature = "png")]
 fn insert_sand_state_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     short_name: &str,
     entry: &mut Map<String, Value>,
@@ -2668,8 +2696,9 @@ fn insert_sand_state_colors(
 
 #[cfg(feature = "png")]
 fn insert_common_dyed_state_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
+    block_textures: &BTreeMap<String, BlockTextureSpec>,
     short_name: &str,
     entry: &mut Map<String, Value>,
 ) -> Result<()> {
@@ -2678,7 +2707,18 @@ fn insert_common_dyed_state_colors(
     };
     let mut colors = Vec::with_capacity(DYE_MATERIALS.len());
     for material in DYE_MATERIALS {
-        let texture_names = dyed_state_texture_names(family, material);
+        let suffix = match family {
+            DyedStateFamily::Concrete => "concrete",
+            DyedStateFamily::ConcretePowder => "concrete_powder",
+            DyedStateFamily::Wool => "wool",
+            DyedStateFamily::StainedGlass => "stained_glass",
+            DyedStateFamily::StainedGlassPane => "stained_glass_pane",
+            DyedStateFamily::ShulkerBox => "shulker_box",
+            DyedStateFamily::Terracotta => "terracotta",
+        };
+        let modern = format!("minecraft:{}_{suffix}", material.name);
+        let mut texture_names = resource_pack_texture_spec(block_textures, &modern).top;
+        texture_names.extend(dyed_state_texture_names(family, material));
         let color = average_first_existing_texture(
             pack_path,
             texture_paths,
@@ -2786,7 +2826,7 @@ fn insert_state_color_rules(entry: &mut Map<String, Value>, key: &str, rules: Va
 
 #[cfg(feature = "png")]
 fn average_special_texture(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     texture_names: &[&str],
 ) -> Result<Option<Rgba>> {
@@ -2804,7 +2844,7 @@ fn average_special_texture(
 
 #[cfg(feature = "png")]
 fn insert_banner_variant_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     _block_textures: &BTreeMap<String, BlockTextureSpec>,
     entry: &mut Map<String, Value>,
@@ -2826,7 +2866,7 @@ fn insert_banner_variant_colors(
 
 #[cfg(feature = "png")]
 fn insert_bed_variant_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     entry: &mut Map<String, Value>,
 ) -> Result<()> {
@@ -2864,7 +2904,7 @@ fn insert_bed_variant_colors(
 
 #[cfg(feature = "png")]
 fn insert_decorated_pot_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     entry: &mut Map<String, Value>,
 ) -> Result<()> {
@@ -2897,25 +2937,29 @@ fn insert_decorated_pot_colors(
 
 #[cfg(feature = "png")]
 fn insert_candle_color(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     short_name: &str,
     entry: &mut Map<String, Value>,
 ) -> Result<()> {
-    if !is_candle_block(short_name) {
+    if !is_candle_block(short_name) || short_name.ends_with("_cake") {
         return Ok(());
     }
+    let candle_name = short_name;
     let texture_names = vec![
-        short_name.to_string(),
-        format!("textures/blocks/{short_name}"),
-        format!("textures/items/{short_name}"),
+        format!("textures/blocks/candles/{candle_name}"),
+        candle_name.to_string(),
+        format!("textures/blocks/{candle_name}"),
     ];
-    if let Some(color) = average_first_existing_texture(
+    if let Some(mut color) = average_first_existing_texture(
         pack_path,
         texture_paths,
         &texture_names,
         TextureChoice::First,
     )? {
+        // Unused texels in the candle UV sheet are geometry coverage, not
+        // transparency of its solid wax material. Do not use item icons here.
+        color.alpha = 255;
         set_resource_pack_special_color(entry, color);
         return Ok(());
     }
@@ -2945,7 +2989,7 @@ fn candle_fallback_color(short_name: &str) -> Rgba {
 
 #[cfg(feature = "png")]
 fn special_chain_or_lantern_color(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     short_name: &str,
 ) -> Result<Option<Rgba>> {
@@ -3047,7 +3091,7 @@ fn alias_texture_names(
 }
 
 fn first_existing_texture_path(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     texture_names: &[String],
     choice: TextureChoice,
@@ -3090,7 +3134,7 @@ fn unresolved_alias_reason(aliases: &AliasTable, block_name: &str) -> Option<Str
 }
 
 #[cfg(feature = "png")]
-fn average_direct_texture(pack_path: &Path, texture_name: &str) -> Result<Option<Rgba>> {
+fn average_direct_texture(pack_path: &ResourcePack, texture_name: &str) -> Result<Option<Rgba>> {
     for candidate in direct_texture_candidates(texture_name) {
         let path = pack_path.join(format!("{candidate}.png"));
         if path.exists() {
@@ -3133,7 +3177,7 @@ fn special_texture_choice(block_name: &str) -> TextureChoice {
 
 #[cfg(feature = "png")]
 fn insert_side_color(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     texture_spec: &BlockTextureSpec,
     entry: &mut Map<String, Value>,
@@ -3156,7 +3200,7 @@ fn insert_side_color(
 
 #[cfg(feature = "png")]
 fn insert_state_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_name: &str,
     texture_spec: &BlockTextureSpec,
@@ -3179,7 +3223,7 @@ fn insert_state_colors(
 
 #[cfg(feature = "png")]
 fn insert_growth_state_colors(
-    pack_path: &Path,
+    pack_path: &ResourcePack,
     texture_paths: &BTreeMap<String, Vec<String>>,
     block_name: &str,
     entry: &mut Map<String, Value>,
@@ -3581,7 +3625,7 @@ fn normalize_biome_document(value: &Value) -> Result<Value> {
                 &format!("{name}.rgb"),
             )?,
         );
-        for key in ["grass", "leaves", "water"] {
+        for key in ["grass", "leaves", "dry_foliage", "water"] {
             if let Some(color) = map.get(key) {
                 biome.insert(
                     key.to_string(),
@@ -3613,6 +3657,12 @@ fn normalize_biome_defaults(value: &Value) -> Result<Value> {
         defaults.insert(
             key.to_string(),
             color_array(color, &format!("defaults.{key}"))?,
+        );
+    }
+    if let Some(color) = map.get("dry_foliage") {
+        defaults.insert(
+            "dry_foliage".to_string(),
+            color_array(color, "defaults.dry_foliage")?,
         );
     }
     Ok(Value::Object(defaults))
@@ -3665,7 +3715,7 @@ fn block_sources() -> Value {
             "id": "bedrock-render-vanilla-resource-pack-derived-v1",
             "kind": "resource-pack-derived",
             "name": "Minecraft Bedrock vanilla resource pack",
-            "description": "Default block colors are generated from local vanilla blocks.json, terrain_texture.json, and block PNG averages with top-face priority.",
+            "description": "Default block colors are generated from the local vanilla resource-pack version stack, merging incremental blocks.json and terrain_texture.json and resolving newer block PNG overrides with top-face priority.",
             "license": "Minecraft Bedrock vanilla resource pack terms apply to the source assets; this repository stores only derived aggregate color values.",
             "retrieved_at": "2026-05-01",
             "usage": "default-color-values"

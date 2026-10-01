@@ -143,9 +143,46 @@ If a color change affects rendered output, update preview images and bump both
 `DEFAULT_PALETTE_VERSION` and `RENDERER_CACHE_VERSION` so tile caches are
 invalidated.
 
+The opaque appearance entries for bamboo mosaic/planks, cherry/crimson/mangrove/pale-oak/
+warped planks, quartz bricks and smooth quartz use verified Bedrock 26.40 vanilla texture
+averages. Their previous unresolved aliases or missing textures selected synthetic fallback
+colors, including dark brown for pale oak. Top and side values now agree with the conversion
+palette. These are appearance colors; the separate pinned in-game item-map colors are unchanged.
+The terrain atlas preserves those base colors instead of blending them with generic material
+hues. Wood, built and metal surfaces use ordinary relief lighting, without the atlas's artificial
+terrain texture. Cache versions 55/18 invalidate the previous renderer/palette results.
+
+For an API-only check, the voxel `color_comparison` example also exports its flat `.mcstructure`
+fixtures. `render_structure_colors <fixture.mcstructure> <output.png>` places one into a synthetic
+in-memory world and runs the actual CPU tile renderer. It never opens a user's world.
+
 The audit command also enforces semantic guardrails for high-risk entries:
 bamboo must be green, bamboo material must stay yellow, farmland and paths must
-stay distinguishable from ordinary dirt, leaf litter must not receive foliage
-tint, tintable grass/leaves must remain neutral masks, water must use a blue
+stay distinguishable from ordinary dirt, leaf litter must use dry foliage rather than green
+foliage tint, tintable grass/leaves must remain neutral masks, water must use a blue
 mask, and key biome grass and water tints must produce visibly distinct final
 surface colors.
+
+Installed resource packs are read as the complete numeric `vanilla_*` version stack,
+with newer JSON definitions and texture files overriding older ones. Modern
+`biomes/*.client_biome.json` supplies explicit water, grass, foliage and dry-foliage
+colors. Color-map objects require climate/position sampling; the static aggregate
+palette retains its documented fallback rather than averaging a whole climate map
+as if it were a single biome color. Dry foliage has a separate channel and never
+inherits green foliage tint.
+
+Foliage tint is selected by a known mask family, not a `leaf` substring.
+Precolored azalea/cherry/pale-oak textures retain their appearance; birch and
+spruce use their fixed foliage tints, including legacy `old_leaf_type` states.
+This avoids multiplying already-colored leaves by a second biome green.
+The distinction follows the material tint semantics in
+[Mojang's material schema](https://github.com/Mojang/bedrock-schemas/blob/main/types/bp/blocks/components/MinecraftMaterialInstances.d.ts),
+cross-checked against the fixed-versus-colormap design and values in the
+[block-model-renderer source](https://github.com/ewanhowell5195/block-model-renderer/blob/master/src/core/data/colors.json).
+The latter is a Java renderer reference; resource appearance remains sourced
+from the installed Bedrock 26.40 packs, not from its texture/color table.
+
+Illumination decodes sRGB to linear radiance, scales radiance, then encodes sRGB.
+Highlights do not mix toward white. The same operation supplies tile, height and
+3D face lighting; alpha is unchanged. Conversion matching still uses OKLab and
+opaque input still excludes transparent glass candidates.

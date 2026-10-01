@@ -4,7 +4,6 @@
 //! modes, image encoding, cancellation, diagnostics, and Criterion-backed
 //! benchmark support for map tooling.
 
-pub mod editor;
 mod error;
 /// Exact non-rectangular selection planning with separate compact 2D-surface and full 3D-chunk loads.
 pub mod exact_selection;
@@ -19,35 +18,35 @@ pub use bedrock_world::{
         SurfaceMapMaterial, SurfaceMapQueryOptions,
     },
 };
-pub use editor::{MapEditInvalidation, MapWorldEditor};
 pub use error::{BedrockRenderError, BedrockRenderErrorKind, Result};
 pub use exact_selection::{
     ExactChunkRenderData, ExactChunkRenderPlan, ExactSurfaceRenderData,
     load_exact_chunk_render_data, load_exact_surface_render_data,
 };
-pub use palette::{PaletteImportReport, RenderPalette, RgbaColor};
+pub use palette::{
+    MapColor, MapColorEntry, MapTintMethod, PaletteImportReport, RenderPalette, RgbaColor,
+};
 #[cfg(feature = "async")]
 pub use renderer::validate_chunk_fingerprints_async;
 pub use renderer::{
     AtlasRenderOptions, BakeDiagnostics, BakeOptions, BlockBoundaryRenderOptions,
     BlockVolumeRenderOptions, ChunkBounds, ChunkPos, ChunkRegion, ChunkTileLayout,
-    DEFAULT_PALETTE_VERSION, DecodedTileImage, DepthPlane, Dimension, FastBgraZstdTile,
-    FastRgbaZstdHeader, FastRgbaZstdTile, HeightPlane, ImageFormat, MAX_RENDER_THREADS,
-    MAX_TILE_SIZE_PIXELS,
-    MapRenderSession, MapRenderSessionConfig, MapRenderer, NbtTag, PlannedTile,
-    RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload, RegionCoord, RegionLayout,
-    RenderBackend, RenderCachePolicy, RenderCancelFlag, RenderChunkSource,
-    RenderCpuPipelineOptions, RenderDiagnostics, RenderDiagnosticsSink, RenderExecutionProfile,
-    RenderGpuBackend, RenderGpuDiagnostics, RenderGpuFallbackPolicy, RenderGpuOptions,
-    RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget, RenderMode, RenderOptions,
-    RenderPerformanceOptions, RenderPerformanceProfile, RenderPipelineStats, RenderProgress,
-    RenderProgressSink, RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions,
-    RenderSimdPolicy, RenderTileOutputOptions, RenderTilePriority, RenderWebTilesResult,
-    ResolvedRenderBackend,
-    RgbaPlane, SurfacePlane, SurfacePlaneAtlas, SurfaceRenderOptions, TerrainLightingOptions,
-    TerrainLightingPreset, TileCache, TileCacheKey, TileCoord, TileImage, TilePathScheme,
-    DecodedTileEvent, TilePixelFormat, TileReadySource, TileSet, TileStreamEvent,
-    WorldRenderSource, decode_fast_bgra_zstd, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
+    DEFAULT_PALETTE_VERSION, DecodedTileEvent, DecodedTileImage, DepthPlane, Dimension,
+    FastBgraZstdTile, FastRgbaZstdHeader, FastRgbaZstdTile, HeightPlane, ImageFormat,
+    MAX_RENDER_THREADS, MAX_TILE_SIZE_PIXELS, MapRenderSession, MapRenderSessionConfig,
+    MapRenderer, NbtTag, PlannedTile, RENDERER_CACHE_VERSION, RegionBake, RegionBakePayload,
+    RegionCoord, RegionLayout, RenderBackend, RenderCachePolicy, RenderCancelFlag,
+    RenderChunkSource, RenderCpuPipelineOptions, RenderDiagnostics, RenderDiagnosticsSink,
+    RenderExecutionProfile, RenderGpuBackend, RenderGpuDiagnostics, RenderGpuFallbackPolicy,
+    RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget,
+    RenderMode, RenderOptions, RenderPerformanceOptions, RenderPerformanceProfile,
+    RenderPipelineStats, RenderProgress, RenderProgressSink, RenderSimdPolicy,
+    RenderSurfaceLoadPolicy, RenderTaskControl, RenderThreadingOptions, RenderTileOutputOptions,
+    RenderTilePriority, RenderWebTilesResult, ResolvedRenderBackend, RgbaPlane, SurfacePlane,
+    SurfacePlaneAtlas, SurfaceRenderOptions, TerrainGradientAlgorithm, TerrainLightingOptions,
+    TerrainLightingPreset, TerrainShadingMode, TileCache, TileCacheKey, TileCoord, TileImage,
+    TilePathScheme, TilePixelFormat, TileReadySource, TileSet, TileStreamEvent, WorldRenderSource,
+    decode_fast_bgra_zstd, decode_fast_rgba_zstd, decode_fast_rgba_zstd_header,
     encode_fast_bgra_zstd, encode_fast_rgba_zstd, encode_fast_rgba_zstd_with_validation,
     tile_cache_validation_value,
 };

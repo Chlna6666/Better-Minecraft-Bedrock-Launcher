@@ -1,3 +1,4 @@
+use super::map_color::{MapColor, MapColorEntry, MapColorTable};
 use crate::{BedrockRenderError, Result};
 use bedrock_world::{BlockState, NbtTag};
 use serde_json::Value;
@@ -10,7 +11,7 @@ const BUILTIN_BLOCK_COLOR_JSON: &str = include_str!("../../data/colors/bedrock-b
 const BUILTIN_BIOME_COLOR_JSON: &str = include_str!("../../data/colors/bedrock-biome-color.json");
 include!(concat!(env!("OUT_DIR"), "/builtin_palette_tables.rs"));
 
-/// An 8-bit RGBA color used by palettes and decoded render planes.
+/// Unpremultiplied, sRGB-encoded RGB and linear 8-bit alpha for palettes and render planes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RgbaColor {
     /// Red channel.
@@ -59,10 +60,13 @@ pub struct RenderPalette {
     biome_colors: HashMap<u32, RgbaColor>,
     biome_grass_colors: HashMap<u32, RgbaColor>,
     biome_foliage_colors: HashMap<u32, RgbaColor>,
+    biome_dry_foliage_colors: HashMap<u32, RgbaColor>,
     biome_water_colors: HashMap<u32, RgbaColor>,
     block_colors: HashMap<String, RgbaColor>,
+    block_side_colors: HashMap<String, RgbaColor>,
     block_state_colors: HashMap<String, BlockStateColorRules>,
     block_variant_colors: HashMap<String, HashMap<String, RgbaColor>>,
+    map_colors: Arc<MapColorTable>,
     unknown_biome_color: RgbaColor,
     unknown_block_color: RgbaColor,
     missing_chunk_color: RgbaColor,
@@ -70,6 +74,7 @@ pub struct RenderPalette {
     air_color: RgbaColor,
     default_grass_color: RgbaColor,
     default_foliage_color: RgbaColor,
+    default_dry_foliage_color: RgbaColor,
     default_water_color: RgbaColor,
     cave_air_color: RgbaColor,
     cave_solid_color: RgbaColor,
@@ -137,6 +142,7 @@ impl RenderPalette {
         palette.insert_default_blocks();
         palette.default_grass_color = rgba_from_static(BUILTIN_BIOME_DEFAULT_GRASS);
         palette.default_foliage_color = rgba_from_static(BUILTIN_BIOME_DEFAULT_FOLIAGE);
+        palette.default_dry_foliage_color = rgba_from_static(BUILTIN_BIOME_DEFAULT_DRY_FOLIAGE);
         palette.default_water_color = rgba_from_static(BUILTIN_BIOME_DEFAULT_WATER);
         palette
             .block_colors
@@ -145,6 +151,9 @@ impl RenderPalette {
             palette
                 .block_colors
                 .insert(entry.name.to_string(), rgba_from_static(entry.color));
+            palette
+                .block_side_colors
+                .insert(entry.name.to_string(), rgba_from_static(entry.side_color));
         }
         palette.biome_colors.reserve(BUILTIN_BIOME_COLORS.len());
         palette
@@ -166,6 +175,9 @@ impl RenderPalette {
             palette
                 .biome_foliage_colors
                 .insert(entry.id, rgba_from_static(entry.foliage));
+            palette
+                .biome_dry_foliage_colors
+                .insert(entry.id, rgba_from_static(entry.dry_foliage));
             palette
                 .biome_water_colors
                 .insert(entry.id, rgba_from_static(entry.water));
@@ -196,10 +208,13 @@ impl RenderPalette {
             biome_colors: HashMap::new(),
             biome_grass_colors: HashMap::new(),
             biome_foliage_colors: HashMap::new(),
+            biome_dry_foliage_colors: HashMap::new(),
             biome_water_colors: HashMap::new(),
             block_colors: HashMap::new(),
+            block_side_colors: HashMap::new(),
             block_state_colors: HashMap::new(),
             block_variant_colors: HashMap::new(),
+            map_colors: MapColorTable::builtin(),
             unknown_biome_color: RgbaColor::new(255, 0, 255, 180),
             unknown_block_color: RgbaColor::new(255, 0, 255, 255),
             missing_chunk_color: RgbaColor::new(0, 0, 0, 0),
@@ -207,6 +222,7 @@ impl RenderPalette {
             air_color: RgbaColor::new(0, 0, 0, 0),
             default_grass_color: RgbaColor::new(98, 151, 64, 255),
             default_foliage_color: RgbaColor::new(62, 124, 50, 255),
+            default_dry_foliage_color: RgbaColor::new(128, 96, 64, 255),
             default_water_color: RgbaColor::new(28, 76, 158, 255),
             cave_air_color: RgbaColor::new(12, 12, 14, 255),
             cave_solid_color: RgbaColor::new(116, 116, 116, 255),
@@ -241,6 +257,7 @@ impl RenderPalette {
     pub fn with_block_color(mut self, name: impl Into<String>, color: RgbaColor) -> Self {
         let name = normalize_block_name(&name.into());
         self.block_colors.insert(name.clone(), color);
+        self.block_side_colors.insert(name.clone(), color);
         self.block_state_colors.remove(&name);
         self.block_variant_colors.remove(&name);
         self
@@ -348,6 +365,52 @@ impl RenderPalette {
             .unwrap_or(self.unknown_block_color)
     }
 
+    /// Enumerates configured resource-pack appearance colors by block name.
+    ///
+    /// These are renderer appearance colors, not Bedrock in-game map colors. Iteration order is
+    /// unspecified; callers that use color-distance tie breaks should sort candidates explicitly.
+    pub fn block_colors(&self) -> impl Iterator<Item = (&str, RgbaColor)> {
+        self.block_colors
+            .iter()
+            .map(|(name, color)| (name.as_str(), *color))
+    }
+
+    /// Returns the resource-pack appearance color for the block's side faces.
+    ///
+    /// Builtin colors use the Bedrock 26.40 vanilla resource-pack side average when available,
+    /// falling back to the block's default appearance color. These are renderer appearance
+    /// colors, not map-item colors or a prediction of lighting in a world. Custom palette entries
+    /// without `resource_pack_side` use their default appearance color. The method reads no world
+    /// data and performs no persistence.
+    #[must_use]
+    pub fn block_side_color(&self, name: &str) -> RgbaColor {
+        if is_air_block(name) {
+            return self.air_color;
+        }
+        let normalized = normalize_block_name(name);
+        self.block_side_colors
+            .get(&normalized)
+            .copied()
+            .unwrap_or_else(|| self.block_color(name))
+    }
+
+    /// Returns the pinned Bedrock 1.26.32.2 base map color for an exact block state.
+    ///
+    /// Unknown blocks and color-changing states with missing selectors return `None`; appearance
+    /// colors are never used as a fallback. The returned tint method and base color still require
+    /// biome and map-height shading before they represent an in-game pixel.
+    #[must_use]
+    pub fn map_color(&self, state: &BlockState) -> Option<MapColor> {
+        self.map_colors.color(state)
+    }
+
+    /// Enumerates the fixed-version map-color candidates, including state-specific log colors.
+    ///
+    /// Entries are independent of resource-pack appearance colors and retain their tint method.
+    pub fn map_colors(&self) -> impl Iterator<Item = MapColorEntry<'_>> {
+        self.map_colors.entries()
+    }
+
     /// Returns a surface block color with optional biome tinting applied.
     #[must_use]
     pub fn surface_block_color(
@@ -368,12 +431,17 @@ impl RenderPalette {
             };
             return multiply_with_biome_tint(color, tint, self.default_grass_color);
         }
+        if name == "minecraft:leaf_litter" || name == "leaf_litter" {
+            return self.dry_foliage_color(color, biome_id, biome_tint);
+        }
         if is_foliage_tinted_block(name) {
-            let tint = if biome_tint {
-                self.biome_foliage_tint(biome_id)
-            } else {
-                None
-            };
+            let tint = fixed_foliage_tint(name).or_else(|| {
+                if biome_tint {
+                    self.biome_foliage_tint(biome_id)
+                } else {
+                    None
+                }
+            });
             return multiply_with_biome_tint(color, tint, self.default_foliage_color);
         }
         if is_water_block(name) {
@@ -439,12 +507,24 @@ impl RenderPalette {
             };
             return multiply_with_biome_tint(color, tint, self.default_grass_color);
         }
+        if state.name == "minecraft:leaf_litter" {
+            return self.dry_foliage_color(color, biome_id, biome_tint);
+        }
         if is_foliage_tinted_block(&state.name) {
-            let tint = if biome_tint {
-                legacy_tint.or_else(|| self.biome_foliage_tint(biome_id))
-            } else {
-                None
-            };
+            let fixed_tint = fixed_foliage_tint(&state.name).or_else(|| {
+                if let Some(NbtTag::String(leaf_type)) = state.states.get("old_leaf_type") {
+                    fixed_foliage_tint(leaf_type)
+                } else {
+                    None
+                }
+            });
+            let tint = fixed_tint.or_else(|| {
+                if biome_tint {
+                    legacy_tint.or_else(|| self.biome_foliage_tint(biome_id))
+                } else {
+                    None
+                }
+            });
             return multiply_with_biome_tint(color, tint, self.default_foliage_color);
         }
         if is_water_block(&state.name) {
@@ -560,6 +640,18 @@ impl RenderPalette {
     }
 
     #[must_use]
+    fn dry_foliage_color(
+        &self,
+        mask: RgbaColor,
+        biome_id: Option<u32>,
+        biome_tint: bool,
+    ) -> RgbaColor {
+        let tint = biome_tint
+            .then(|| biome_id.and_then(|id| self.biome_dry_foliage_colors.get(&id).copied()))
+            .flatten();
+        multiply_with_biome_tint(mask, tint, self.default_dry_foliage_color)
+    }
+
     fn biome_foliage_tint(&self, biome_id: Option<u32>) -> Option<RgbaColor> {
         biome_id.and_then(|id| self.biome_foliage_colors.get(&id).copied())
     }
@@ -706,6 +798,10 @@ impl RenderPalette {
                     };
                     let normalized_name = normalize_block_name(name);
                     self.block_colors.insert(normalized_name.clone(), color);
+                    self.block_side_colors.insert(
+                        normalized_name.clone(),
+                        parse_block_side_color(entry).unwrap_or(color),
+                    );
                     if let Some(rules) = parse_block_state_color_rules(entry) {
                         self.block_state_colors
                             .insert(normalized_name.clone(), rules);
@@ -730,6 +826,10 @@ impl RenderPalette {
                     };
                     let normalized_name = normalize_block_name(&name);
                     self.block_colors.insert(normalized_name.clone(), color);
+                    self.block_side_colors.insert(
+                        normalized_name.clone(),
+                        parse_block_side_color(entry).unwrap_or(color),
+                    );
                     if let Some(rules) = parse_block_state_color_rules(entry) {
                         self.block_state_colors
                             .insert(normalized_name.clone(), rules);
@@ -807,6 +907,10 @@ impl RenderPalette {
         if let Some(color) = map.get("leaves").and_then(parse_color) {
             self.biome_foliage_colors.insert(id, with_alpha(color, 255));
         }
+        if let Some(color) = map.get("dry_foliage").and_then(parse_color) {
+            self.biome_dry_foliage_colors
+                .insert(id, with_alpha(color, 255));
+        }
         if let Some(color) = map.get("water").and_then(parse_color) {
             self.biome_water_colors.insert(id, with_alpha(color, 255));
         }
@@ -836,6 +940,9 @@ impl RenderPalette {
             .and_then(parse_color)
         {
             self.default_foliage_color = with_alpha(color, 255);
+        }
+        if let Some(color) = map.get("dry_foliage").and_then(parse_color) {
+            self.default_dry_foliage_color = with_alpha(color, 255);
         }
         if let Some(color) = map.get("water").and_then(parse_color) {
             self.default_water_color = with_alpha(color, 255);
@@ -1021,6 +1128,13 @@ fn parse_nested_color(value: &Value) -> Option<RgbaColor> {
 
 fn parse_block_color_entry(block_name: &str, value: &Value) -> Option<RgbaColor> {
     parse_color(value).or_else(|| parse_nested_block_color(block_name, value))
+}
+
+fn parse_block_side_color(value: &Value) -> Option<RgbaColor> {
+    value
+        .as_object()
+        .and_then(|map| map.get("resource_pack_side"))
+        .and_then(parse_color)
 }
 
 fn parse_nested_block_color(block_name: &str, value: &Value) -> Option<RgbaColor> {
@@ -1288,13 +1402,27 @@ fn is_surface_grass_block(name: &str) -> bool {
 
 fn is_foliage_tinted_block(name: &str) -> bool {
     let name = name.strip_prefix("minecraft:").unwrap_or(name);
-    if name.contains("leaf_litter") {
-        return false;
+    // Precolored azalea, cherry and pale oak textures are not foliage masks.
+    matches!(
+        name,
+        "leaves"
+            | "leaves2"
+            | "oak_leaves"
+            | "dark_oak_leaves"
+            | "birch_leaves"
+            | "spruce_leaves"
+            | "jungle_leaves"
+            | "acacia_leaves"
+            | "mangrove_leaves"
+    )
+}
+
+fn fixed_foliage_tint(name: &str) -> Option<RgbaColor> {
+    match name.strip_prefix("minecraft:").unwrap_or(name) {
+        "birch_leaves" | "birch" => Some(RgbaColor::new(128, 167, 85, 255)),
+        "spruce_leaves" | "spruce" => Some(RgbaColor::new(97, 153, 97, 255)),
+        _ => None,
     }
-    name.contains("leaves")
-        || name.contains("leaf")
-        || name.contains("leave")
-        || name.contains("foliage")
 }
 
 fn is_untinted_path_block(name: &str) -> bool {
@@ -1555,22 +1683,7 @@ fn shallow_water_alpha(depth: u8) -> u8 {
 }
 
 fn shade_color(color: RgbaColor, factor: i32) -> RgbaColor {
-    RgbaColor::new(
-        shade_channel(color.red, factor),
-        shade_channel(color.green, factor),
-        shade_channel(color.blue, factor),
-        color.alpha,
-    )
-}
-
-fn shade_channel(channel: u8, factor: i32) -> u8 {
-    if factor >= 0 {
-        let value = i32::from(channel) + ((255 - i32::from(channel)) * factor / 100);
-        u8_from_i32(value.clamp(0, 255))
-    } else {
-        let value = i32::from(channel) * (100 + factor) / 100;
-        u8_from_i32(value.clamp(0, 255))
-    }
+    color.shade((1.0 + factor as f32 / 100.0).max(0.0))
 }
 
 fn lerp_color(start: RgbaColor, end: RgbaColor, numerator: i32, denominator: i32) -> RgbaColor {
@@ -1642,6 +1755,83 @@ mod tests {
             RgbaColor::new(10, 20, 30, 40)
         );
         assert_eq!(palette.biome_color(900), RgbaColor::new(68, 85, 102, 255));
+    }
+
+    #[test]
+    fn block_side_appearance_imports_separately_from_default_color() {
+        let mut palette = RenderPalette::default();
+        palette
+            .merge_json_str(
+                r#"{
+                    "blocks": {
+                        "minecraft:side_color_test": {
+                            "default": [220, 210, 200, 255],
+                            "resource_pack_side": [80, 70, 60, 255]
+                        },
+                        "minecraft:side_color_fallback": {
+                            "default": [10, 20, 30, 255]
+                        }
+                    }
+                }"#,
+            )
+            .expect("side appearance colors should import");
+
+        assert_eq!(
+            palette.block_color("minecraft:side_color_test"),
+            RgbaColor::new(220, 210, 200, 255)
+        );
+        assert_eq!(
+            palette.block_side_color("minecraft:side_color_test"),
+            RgbaColor::new(80, 70, 60, 255)
+        );
+        assert_eq!(
+            palette.block_side_color("minecraft:side_color_fallback"),
+            RgbaColor::new(10, 20, 30, 255)
+        );
+    }
+
+    #[test]
+    fn modern_opaque_appearance_matches_verified_vanilla_texture_averages() {
+        for palette in [
+            RenderPalette::default(),
+            RenderPalette::from_builtin_json_sources().expect("JSON palette"),
+        ] {
+            for (name, expected) in [
+                ("minecraft:bamboo_mosaic", [190, 170, 78, 255]),
+                ("minecraft:bamboo_planks", [193, 173, 80, 255]),
+                ("minecraft:cherry_planks", [226, 178, 172, 255]),
+                ("minecraft:crimson_planks", [101, 48, 70, 255]),
+                ("minecraft:mangrove_planks", [117, 54, 48, 255]),
+                ("minecraft:pale_oak_planks", [227, 217, 216, 255]),
+                ("minecraft:quartz_bricks", [234, 229, 221, 255]),
+                ("minecraft:smooth_quartz", [236, 230, 223, 255]),
+                ("minecraft:warped_planks", [43, 104, 99, 255]),
+            ] {
+                assert_eq!(
+                    palette.block_color(name).to_array(),
+                    expected,
+                    "top appearance of {name}"
+                );
+                assert_eq!(
+                    palette.block_side_color(name).to_array(),
+                    expected,
+                    "side appearance of {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_block_side_appearance_uses_resource_pack_side_when_available() {
+        let palette = RenderPalette::builtin_shared();
+        assert_ne!(
+            palette.block_color("minecraft:acacia_log"),
+            palette.block_side_color("minecraft:acacia_log")
+        );
+        assert_eq!(
+            palette.block_color("minecraft:stone"),
+            palette.block_side_color("minecraft:stone")
+        );
     }
 
     #[test]
@@ -2072,7 +2262,8 @@ mod tests {
         let red_candle_cake = palette.block_color("minecraft:red_candle_cake");
         assert!(candle.alpha == 255);
         assert!(red_candle.red > red_candle.green);
-        assert_eq!(red_candle, red_candle_cake);
+        assert_ne!(red_candle, red_candle_cake);
+        assert_eq!(red_candle_cake, palette.block_color("minecraft:cake"));
     }
 
     #[test]
@@ -2150,7 +2341,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_room_bamboo_and_path_colors_are_semantic() {
+    fn resource_pack_bamboo_and_path_colors_are_semantic() {
         let palette = RenderPalette::default();
         let bamboo = palette.surface_block_color("minecraft:bamboo", Some(21), true);
         assert!(bamboo.green > bamboo.red + 20);
@@ -2158,7 +2349,8 @@ mod tests {
         let plains_grass = palette.surface_block_color("minecraft:grass_block", Some(1), true);
         let bamboo_material = palette.surface_block_color("minecraft:bamboo_block", Some(21), true);
         assert!(color_distance(bamboo, plains_grass) >= 45);
-        assert!(color_distance(bamboo, bamboo_material) >= 120);
+        assert_eq!(bamboo_material.to_array(), [139, 141, 62, 255]);
+        assert!(color_distance(bamboo, bamboo_material) >= 45);
 
         let path_without_tint = palette.surface_block_color("minecraft:grass_path", None, false);
         let path_with_jungle_tint =
@@ -2318,11 +2510,69 @@ mod tests {
     }
 
     #[test]
-    fn leaf_litter_is_not_foliage_tinted() {
+    fn leaf_litter_uses_dry_foliage_tint_instead_of_green_foliage() {
         let palette = RenderPalette::default();
         let base = palette.block_color("minecraft:leaf_litter");
         let tinted = palette.surface_block_color("minecraft:leaf_litter", Some(21), true);
-        assert_eq!(with_alpha(base, 255), tinted);
+        assert_ne!(with_alpha(base, 255), tinted);
+        assert!(tinted.red > tinted.green && tinted.green > tinted.blue);
+        let pale = palette.surface_block_color("minecraft:leaf_litter", Some(193), true);
+        assert_ne!(tinted, pale);
+    }
+
+    #[test]
+    fn precolored_leaves_do_not_receive_a_second_biome_tint() {
+        let palette = RenderPalette::default();
+        for name in [
+            "azalea_leaves",
+            "azalea_leaves_flowered",
+            "cherry_leaves",
+            "pale_oak_leaves",
+        ] {
+            let name = format!("minecraft:{name}");
+            let expected = with_alpha(palette.block_color(&name), 255);
+            let state = BlockState {
+                name: name.clone(),
+                states: std::collections::BTreeMap::new(),
+                version: None,
+            };
+            for biome in [None, Some(1), Some(21), Some(193)] {
+                assert_eq!(palette.surface_block_color(&name, biome, true), expected);
+                assert_eq!(
+                    palette.surface_block_state_color_with_legacy_biome(
+                        &state,
+                        biome,
+                        Some(RgbaColor::new(30, 220, 20, 255)),
+                        true
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn birch_and_spruce_use_fixed_tint_including_legacy_leaf_states() {
+        let palette = RenderPalette::default();
+        for kind in ["birch", "spruce"] {
+            let name = format!("minecraft:{kind}_leaves");
+            let expected = palette.surface_block_color(&name, Some(1), true);
+            assert_eq!(expected, palette.surface_block_color(&name, Some(21), true));
+            let state = test_block_state_with_string("minecraft:leaves", "old_leaf_type", kind);
+            assert_eq!(
+                palette.surface_block_state_color_with_legacy_biome(&state, Some(1), None, true),
+                palette.surface_block_state_color_with_legacy_biome(
+                    &state,
+                    Some(21),
+                    Some(RgbaColor::new(255, 20, 255, 255)),
+                    true
+                )
+            );
+        }
+        assert_ne!(
+            palette.surface_block_color("minecraft:oak_leaves", Some(1), true),
+            palette.surface_block_color("minecraft:oak_leaves", Some(21), true)
+        );
     }
 
     #[test]

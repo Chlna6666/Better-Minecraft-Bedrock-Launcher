@@ -4,7 +4,7 @@ use bedrock_render::{
     RenderPalette, RenderThreadingOptions, RgbaColor, SurfaceRenderOptions, TerrainLightingOptions,
     TilePathScheme,
 };
-use bedrock_world::{World, OpenOptions, Dimension, NbtTag};
+use bedrock_world::{Dimension, NbtTag, OpenOptions, World};
 use image::{ImageFormat as OutputImageFormat, save_buffer_with_format};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -33,11 +33,8 @@ fn main() -> bedrock_render::Result<()> {
     })?;
 
     let world = Arc::new(
-        World::open(
-            config.world_path.clone(),
-            OpenOptions::default(),
-        )
-        .map_err(bedrock_render::BedrockRenderError::World)?,
+        World::open(config.world_path.clone(), OpenOptions::default())
+            .map_err(bedrock_render::BedrockRenderError::World)?,
     );
     let palette =
         RenderPalette::default().with_unknown_biome_color(RgbaColor::new(96, 96, 96, 255));

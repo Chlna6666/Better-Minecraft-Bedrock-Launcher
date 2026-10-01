@@ -2,15 +2,15 @@
 
 #[cfg(feature = "webp")]
 use bedrock_render::{
-    ChunkRegion, MapRenderSession, MapRenderSessionConfig, RenderCachePolicy,
+    ChunkRegion, DecodedTileEvent, MapRenderSession, MapRenderSessionConfig, RenderCachePolicy,
     RenderExecutionProfile, RenderLayout, RenderThreadingOptions, RenderTileOutputOptions,
-    DecodedTileEvent, TileReadySource, TileStreamEvent,
+    TileReadySource, TileStreamEvent,
 };
 use bedrock_render::{
     ImageFormat, MapRenderer, RenderJob, RenderMode, RenderOptions, RenderPalette,
     RenderSimdPolicy, TileCoord, TilePixelFormat,
 };
-use bedrock_world::{BedrockLevelDbStorage, World, OpenOptions, Dimension};
+use bedrock_world::{BedrockLevelDbStorage, Dimension, OpenOptions, World};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "webp")]

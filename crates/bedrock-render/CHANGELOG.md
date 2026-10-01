@@ -10,6 +10,17 @@ All notable changes to `bedrock-render` are tracked here.
   comparisons, native RGBA/BGRA full-pipeline benchmarks, and the read-only
   `compare_backends` CPU/GPU comparison example.
 
+### Fixed
+
+- Anchor Data3D biome storages to the dimension minimum Y instead of inferring
+  the origin from a fixed storage count; fill empty biome layers from the
+  highest stored biome, matching BedrockMap's column fallback.
+
+### Changed
+
+- Bumped `RENDERER_CACHE_VERSION` to `52` so tiles sampled with the previous
+  biome-height and empty-layer behavior are rebuilt.
+
 ## 0.3.4 - 2026-07-18
 
 ### Added

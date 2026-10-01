@@ -1,16 +1,15 @@
 use bedrock_render::{
     BakeOptions, ChunkRegion, ImageFormat, MapRenderer, RenderBackend, RenderExecutionProfile,
     RenderGpuBackend, RenderGpuFallbackPolicy, RenderGpuOptions, RenderGpuPipelineLevel, RenderJob,
-    RenderLayout, RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette,
-    RenderSimdPolicy, RenderThreadingOptions, SurfaceRenderOptions, TerrainLightingOptions,
-    TileCoord,
-    editor::{MapEditInvalidation, MapWorldEditor},
+    RenderLayout, RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette, RenderSimdPolicy,
+    RenderThreadingOptions, SurfaceRenderOptions, TerrainLightingOptions, TileCoord,
 };
-use bedrock_world::{
-    BedrockLevelDbStorage, World, OpenOptions, ChunkPos, Dimension,
-    GlobalRecordKind, SlimeChunkBounds,
-};
+use bedrock_world::query::{RegionOverlayQueryOptions, region_overlays};
 use bedrock_world::surface::WorldScanOptions;
+use bedrock_world::{
+    BedrockLevelDbStorage, ChunkPos, Dimension, GlobalRecordKind, OpenOptions, SlimeChunkBounds,
+    World,
+};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::path::PathBuf;
 use std::sync::{
@@ -196,19 +195,16 @@ fn emit_v02_editor_reports() {
     if !world_path.join("db").join("CURRENT").exists() {
         return;
     }
-    let Ok(editor) =
-        MapWorldEditor::open_with_options(&world_path, OpenOptions::default())
-    else {
+    let Ok(editor) = World::open(&world_path, OpenOptions::default()) else {
         return;
     };
     emit_v02_overlay_report(&editor);
     emit_v02_map_report(&editor);
     emit_v02_global_report(&editor);
     emit_v02_hsa_report(&editor);
-    emit_v02_invalidation_report();
 }
 
-fn emit_v02_overlay_report(editor: &MapWorldEditor) {
+fn emit_v02_overlay_report(editor: &World) {
     let region = SlimeChunkBounds {
         dimension: Dimension::Overworld,
         min_chunk_x: 0,
@@ -216,7 +212,7 @@ fn emit_v02_overlay_report(editor: &MapWorldEditor) {
         min_chunk_z: 0,
         max_chunk_z: 15,
     };
-    let overlay_options = bedrock_render::editor::RegionOverlayQueryOptions {
+    let overlay_options = RegionOverlayQueryOptions {
         include_slime: true,
         include_entities: true,
         include_block_entities: true,
@@ -227,12 +223,7 @@ fn emit_v02_overlay_report(editor: &MapWorldEditor) {
         max_items_per_kind: 10_000,
     };
     let start = Instant::now();
-    let overlay = bedrock_render::editor::region_overlays(
-        editor.world(),
-        region,
-        overlay_options,
-        None,
-    );
+    let overlay = region_overlays(editor, region, overlay_options, None);
     let overlay_ms = start.elapsed().as_millis();
     if let Ok(overlay) = overlay {
         println!(
@@ -246,7 +237,7 @@ fn emit_v02_overlay_report(editor: &MapWorldEditor) {
     }
 }
 
-fn emit_v02_map_report(editor: &MapWorldEditor) {
+fn emit_v02_map_report(editor: &World) {
     let start = Instant::now();
     let maps = editor.map_items(WorldScanOptions::default());
     let map_ms = start.elapsed().as_millis();
@@ -258,7 +249,7 @@ fn emit_v02_map_report(editor: &MapWorldEditor) {
     }
 }
 
-fn emit_v02_global_report(editor: &MapWorldEditor) {
+fn emit_v02_global_report(editor: &World) {
     let start = Instant::now();
     let globals = editor.globals(WorldScanOptions::default());
     let global_ms = start.elapsed().as_millis();
@@ -283,7 +274,7 @@ fn emit_v02_global_report(editor: &MapWorldEditor) {
     }
 }
 
-fn emit_v02_hsa_report(editor: &MapWorldEditor) {
+fn emit_v02_hsa_report(editor: &World) {
     let start = Instant::now();
     let hsa = editor.hardcoded_spawn_areas(WorldScanOptions::default());
     let hsa_ms = start.elapsed().as_millis();
@@ -294,31 +285,6 @@ fn emit_v02_hsa_report(editor: &MapWorldEditor) {
             hsa.len(),
         );
     }
-}
-
-fn emit_v02_invalidation_report() {
-    let start = Instant::now();
-    let invalidation = MapEditInvalidation::chunks([
-        ChunkPos {
-            x: 0,
-            z: 0,
-            dimension: Dimension::Overworld,
-        },
-        ChunkPos {
-            x: 1,
-            z: 0,
-            dimension: Dimension::Overworld,
-        },
-    ])
-    .with_metadata();
-    let invalidation_ms = start.elapsed().as_nanos();
-    println!(
-        "bedrock_render_report case=v02_edit_invalidation storage=memory elapsed_ns={invalidation_ms} affected_chunks={} refresh_metadata={} refresh_overlays={} clear_tile_cache={}",
-        invalidation.affected_chunks().len(),
-        invalidation.refresh_metadata(),
-        invalidation.refresh_overlays(),
-        invalidation.clear_tile_cache(),
-    );
 }
 
 // Keep the related Criterion cases in one harness so shared fixture setup is measured consistently.
@@ -474,43 +440,49 @@ fn render_benches(c: &mut Criterion) {
                 .expect("render flat surface tile");
         });
     });
-    c.bench_function("bedrock_render/surface_tile_256_rgba_flat_scalar", |bench| {
-        bench.iter(|| {
-            renderer
-                .render_tile(
-                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
-                    &RenderOptions {
-                        format: ImageFormat::Rgba,
-                        surface: SurfaceRenderOptions {
-                            lighting: TerrainLightingOptions::off(),
-                            ..SurfaceRenderOptions::default()
+    c.bench_function(
+        "bedrock_render/surface_tile_256_rgba_flat_scalar",
+        |bench| {
+            bench.iter(|| {
+                renderer
+                    .render_tile(
+                        RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                        &RenderOptions {
+                            format: ImageFormat::Rgba,
+                            surface: SurfaceRenderOptions {
+                                lighting: TerrainLightingOptions::off(),
+                                ..SurfaceRenderOptions::default()
+                            },
+                            simd: RenderSimdPolicy::Scalar,
+                            ..RenderOptions::default()
                         },
-                        simd: RenderSimdPolicy::Scalar,
-                        ..RenderOptions::default()
-                    },
-                )
-                .expect("render scalar flat surface tile");
-        });
-    });
+                    )
+                    .expect("render scalar flat surface tile");
+            });
+        },
+    );
     let lighting_only_surface = SurfaceRenderOptions {
         atlas: bedrock_render::AtlasRenderOptions::off(),
         block_volume: bedrock_render::BlockVolumeRenderOptions::off(),
         ..SurfaceRenderOptions::default()
     };
-    c.bench_function("bedrock_render/surface_tile_256_rgba_lighting_only", |bench| {
-        bench.iter(|| {
-            renderer
-                .render_tile(
-                    RenderJob::new(coord, RenderMode::SurfaceBlocks),
-                    &RenderOptions {
-                        format: ImageFormat::Rgba,
-                        surface: lighting_only_surface,
-                        ..RenderOptions::default()
-                    },
-                )
-                .expect("render lighting-only surface tile");
-        });
-    });
+    c.bench_function(
+        "bedrock_render/surface_tile_256_rgba_lighting_only",
+        |bench| {
+            bench.iter(|| {
+                renderer
+                    .render_tile(
+                        RenderJob::new(coord, RenderMode::SurfaceBlocks),
+                        &RenderOptions {
+                            format: ImageFormat::Rgba,
+                            surface: lighting_only_surface,
+                            ..RenderOptions::default()
+                        },
+                    )
+                    .expect("render lighting-only surface tile");
+            });
+        },
+    );
     c.bench_function(
         "bedrock_render/surface_tile_256_rgba_lighting_only_scalar",
         |bench| {
