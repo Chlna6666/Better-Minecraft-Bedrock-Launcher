@@ -255,24 +255,6 @@ def render_head_neck_profile(
     return profile
 
 
-def render_front_body_profile(texture: Image.Image, geometry: dict) -> Image.Image | None:
-    """Render a body-only front sprite for models without a head bone."""
-    body = next(
-        (
-            bone
-            for bone in geometry.get("bones", [])
-            if bone.get("name", "").lower() in {"body", "main", "torso"}
-            and bone.get("cubes")
-        ),
-        None,
-    )
-    if body is None:
-        return None
-    filtered_geometry = dict(geometry)
-    filtered_geometry["bones"] = [body]
-    return render_head(texture, filtered_geometry, "north")
-
-
 def render_front_profile(texture: Image.Image, geometry: dict) -> Image.Image | None:
     profile = render_side_profile(texture, geometry)
     front = render_head(texture, geometry, "north")

@@ -45,10 +45,6 @@ SIDE_PROFILE_ENTITIES = {
     "zombie_nautilus",
 }
 
-FRONT_BODY_ENTITIES = {
-    "tadpole",
-}
-
 # Category 2: Side Profile Face entities
 SIDE_HEAD_ENTITIES = {
     "sniffer",

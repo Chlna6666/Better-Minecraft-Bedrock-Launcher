@@ -74,6 +74,10 @@ def render_front_face_2d(
         keywords = ("head", "tusk", "tusks", "ear", "ears")
     elif identifier == "vex":
         keywords = ("head",)
+    elif identifier == "tadpole":
+        keywords = ("body",)
+    elif identifier == "pufferfish":
+        keywords = ("body", "fin", "spine")
     else:
         keywords = (
             "head",

@@ -6,7 +6,6 @@ from PIL import Image, ImageOps
 
 from entity_icon_generator.renderers.armadillo import render_armadillo
 from entity_icon_generator.geometry import (
-    FRONT_BODY_ENTITIES,
     HEAD_NECK_PROFILE_ENTITIES,
     SIDE_HEAD_ENTITIES,
     SIDE_PROFILE_ENTITIES,
@@ -26,7 +25,6 @@ from entity_icon_generator.renderers.side_body import render_side_body_2d
 from entity_icon_generator.renderers.side_face import render_side_face_2d
 from entity_icon_generator.renderers.slime import render_slime
 from entity_icon_generator.renderers.standard import (
-    render_front_body_profile,
     render_head,
 )
 from entity_icon_generator.renderers.sulfur_cube import render_sulfur_cube
@@ -421,9 +419,6 @@ def dispatch_render_portrait(
 
     if identifier in SIDE_PROFILE_ENTITIES or identifier in HEAD_NECK_PROFILE_ENTITIES:
         return render_side_body_2d(identifier, texture, geometry)
-
-    if identifier in FRONT_BODY_ENTITIES:
-        return render_front_body_profile(texture, geometry)
 
     # Category 2: Side Face
     if identifier in SIDE_HEAD_ENTITIES:
