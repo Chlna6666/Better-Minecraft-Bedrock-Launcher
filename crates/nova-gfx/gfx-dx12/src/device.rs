@@ -26,6 +26,7 @@ use gfx_core::{GfxError, Result};
 #[cfg(windows)]
 mod platform {
     use std::{
+        cell::Cell,
         ptr::{self, NonNull},
         str,
         sync::Arc,
@@ -39,19 +40,19 @@ mod platform {
         AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BlendMode, BufferBinding,
         BufferDesc, BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
         CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
-        GfxCommandDevice, GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice,
-        GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice,
-        GfxThreadingMode, GfxMemoryTrimLevel, IndexBufferBinding, IndexFormat, LoadOp,
-        MemoryLocation,
-        PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode, PrimitiveTopology,
-        RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
-        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
-        ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
+        GfxCommandDevice, GfxDiagnosticsDevice, GfxMemoryTrimLevel, GfxPipelineDevice,
+        GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice,
+        GfxTextureTransferDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp,
+        MemoryLocation, PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode,
+        PrimitiveTopology, RenderPassDepthAttachment, RenderPassDesc, RenderPassId,
+        RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef,
+        RenderTarget, ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
         ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc, SamplerId,
         ScissorRect, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages,
         SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId,
-        TextureDesc, TextureDimension, TextureId, TextureReadback, TextureUsage, TextureViewDesc,
-        TextureViewId, TextureWrite, TextureWriteDesc, resource_set_list,
+        TextureDesc, TextureDimension, TextureId, TextureReadback, TextureRenderStepList,
+        TextureUsage, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
+        resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -349,7 +350,7 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<SwapchainId> {
             let surface_record = self.surfaces.get(surface)?;
-            let swapchain = self.build_swapchain(surface, surface_record.hwnd, config)?;
+            let swapchain = self.build_swapchain(surface, surface_record.hwnd, config, None)?;
             Ok(self.swapchains.insert(swapchain))
         }
 
@@ -358,11 +359,17 @@ mod platform {
             surface: SurfaceId,
             hwnd: HWND,
             config: SurfaceConfig,
+            composition: Option<Dx12Composition>,
         ) -> Result<Dx12Swapchain> {
-            let uses_composition = matches!(
-                config.alpha_mode,
-                CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Postmultiplied
-            );
+            // Keep a composition-backed window on the same native attachment when alpha changes.
+            // Switching to an HWND swapchain leaves its last opaque image behind later transparent
+            // content; creating another DComp target while the old target lives can also fail.
+            let retained_composition = composition.is_some();
+            let uses_composition = retained_composition
+                || matches!(
+                    config.alpha_mode,
+                    CompositeAlphaMode::Premultiplied | CompositeAlphaMode::Postmultiplied
+                );
             // The frame-latency waitable object is polled before recording. GPUI must never block
             // its UI thread on this handle; an unavailable slot is deferred to a later platform
             // frame instead.
@@ -402,8 +409,9 @@ mod platform {
                     0
                 };
             let (swapchain1, composition, creation_flags) = if uses_composition {
-                match self.build_composition_swapchain(hwnd, &swapchain_desc) {
+                match self.build_composition_swapchain(hwnd, &swapchain_desc, composition) {
                     Ok((swapchain, composition)) => (swapchain, composition, creation_flags),
+                    Err(error) if retained_composition => return Err(error),
                     Err(error) => {
                         log!(
                             log::Level::Warn,
@@ -459,6 +467,7 @@ mod platform {
                 frame_index: 0,
                 creation_flags,
                 frame_latency_waitable,
+                frame_latency_ready: Cell::new(false),
                 partial_presentation,
                 pending_damage: vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize],
             };
@@ -470,6 +479,7 @@ mod platform {
             &self,
             hwnd: HWND,
             swapchain_desc: &DXGI_SWAP_CHAIN_DESC1,
+            retained_composition: Option<Dx12Composition>,
         ) -> Result<(IDXGISwapChain1, Option<Dx12Composition>)> {
             // SAFETY: Factory, queue, and descriptor are valid for the duration of the call.
             let swapchain = unsafe {
@@ -480,6 +490,14 @@ mod platform {
                 )
             }
             .map_err(|error| GfxError::Backend(error.to_string()))?;
+            if let Some(composition) = retained_composition {
+                // SAFETY: The retained visual/device still own the live HWND attachment. The old
+                // swapchain remains alive until this replacement is committed and registered.
+                unsafe { composition.visual.SetContent(&swapchain) }
+                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                Self::commit_composition(&composition)?;
+                return Ok((swapchain, Some(composition)));
+            }
             // SAFETY: This visual only hosts an external swapchain. Passing no rendering device
             // avoids treating ID3D12Device as the IDXGIDevice required for DComp-owned surfaces.
             let composition_device: IDCompositionDesktopDevice =
@@ -653,14 +671,14 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<()> {
             self.wait_for_pending_work()?;
-            let (surface, hwnd) = {
+            let (surface, hwnd, composition) = {
                 let swapchain_record = self.swapchains.get(swapchain)?;
                 let surface = swapchain_record.surface;
                 let hwnd = self.surfaces.get(surface)?.hwnd;
-                (surface, hwnd)
+                (surface, hwnd, swapchain_record.composition.clone())
             };
 
-            let next_swapchain = self.build_swapchain(surface, hwnd, config)?;
+            let next_swapchain = self.build_swapchain(surface, hwnd, config, composition)?;
             let old_swapchain = self.swapchains.replace_live(swapchain, next_swapchain)?;
             // The GPU idled in wait_for_pending_work above; this releases the
             // old backbuffers and closes its frame-latency waitable handle.
@@ -1499,6 +1517,7 @@ mod platform {
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 allocator: Some(allocator),
                 command_list: Some(command_list),
+                submitted: false,
             }))
         }
 
@@ -1544,6 +1563,7 @@ mod platform {
                 .cast()
                 .map_err(|error| GfxError::Backend(error.to_string()))?;
             // SAFETY: Command list is closed and ready to execute on this queue.
+            self.command_encoders.get_mut(encoder)?.submitted = true;
             unsafe {
                 self.graphics_queue
                     .ExecuteCommandLists(&[Some(command_list)]);
@@ -1763,18 +1783,114 @@ mod platform {
             color_load_op: LoadOp<ClearColor>,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
+            self.render_step_lists_to_textures(&[TextureRenderStepList {
+                texture_view,
+                render_pass,
+                steps,
+                color_load_op,
+                depth_attachment,
+            }])
+        }
+
+        fn render_step_lists_to_textures(
+            &mut self,
+            passes: &[TextureRenderStepList<'_>],
+        ) -> Result<()> {
+            if passes.is_empty() {
+                return Ok(());
+            }
+
+            let mut target_states =
+                Vec::<(TextureId, D3D12_RESOURCE_STATES)>::with_capacity(passes.len());
+            for pass in passes {
+                let texture_id = self.texture_views.get(pass.texture_view)?.texture;
+                if target_states
+                    .iter()
+                    .all(|(known_texture, _)| *known_texture != texture_id)
+                {
+                    target_states.push((texture_id, self.textures.get(texture_id)?.state));
+                }
+            }
+
             let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-            let result = self
-                .record_render_step_list_texture(
-                    encoder,
-                    texture_view,
-                    render_pass,
-                    steps,
-                    color_load_op,
-                    depth_attachment,
-                )
+            let result = passes[0]
+                .steps
+                .first()
+                .ok_or_else(|| {
+                    GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
+                })
+                .and_then(|first_step| self.begin_texture_command_encoder(encoder, first_step))
+                .and_then(|()| {
+                    for pass in passes {
+                        self.record_render_step_list_texture(
+                            encoder,
+                            pass.texture_view,
+                            pass.render_pass,
+                            pass.steps,
+                            pass.color_load_op,
+                            pass.depth_attachment,
+                        )?;
+                    }
+                    Ok(())
+                })
+                .and_then(|()| self.finish_texture_command_encoder(encoder))
                 .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
-            self.finish_temporary_command_encoder_after_result(encoder, result)
+            if let Err(error) = result {
+                let submitted = self.command_encoders.get(encoder)?.submitted;
+                self.release_temporary_command_encoder_after_failure(encoder)?;
+                if !submitted {
+                    for (texture_id, state) in &target_states {
+                        self.textures.get_mut(*texture_id)?.state = *state;
+                    }
+                }
+                return Err(error);
+            }
+            Ok(())
+        }
+
+        fn begin_texture_command_encoder(
+            &mut self,
+            encoder_id: CommandEncoderId,
+            first_step: RenderStepRef<'_>,
+        ) -> Result<()> {
+            let (allocator, command_list) = {
+                let encoder = self.command_encoders.get(encoder_id)?;
+                let allocator = encoder.allocator.clone().ok_or_else(|| {
+                    GfxError::Backend("DX12 command encoder has no allocator".to_string())
+                })?;
+                let command_list = encoder.command_list.clone().ok_or_else(|| {
+                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                })?;
+                (allocator, command_list)
+            };
+            let pipeline_state = self
+                .render_pipelines
+                .get(first_step.pipeline())?
+                .pipeline_state
+                .clone()
+                .ok_or_else(|| {
+                    GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                })?;
+
+            // SAFETY: This new allocator is not referenced by an in-flight command list.
+            unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+            // SAFETY: The command list is closed and reset with this encoder's live allocator/PSO.
+            unsafe { command_list.Reset(&allocator, &pipeline_state) }
+                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            Ok(())
+        }
+
+        fn finish_texture_command_encoder(&self, encoder_id: CommandEncoderId) -> Result<()> {
+            let command_list = self
+                .command_encoders
+                .get(encoder_id)?
+                .command_list
+                .as_ref()
+                .ok_or_else(|| {
+                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                })?;
+            // SAFETY: The batch command list is open and has finished recording all passes.
+            unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))
         }
 
         fn render_steps_and_present_deferred(
@@ -1836,7 +1952,8 @@ mod platform {
             let submission = match result {
                 Ok(submission) => submission,
                 Err(error) => {
-                    let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+                    let _release_result =
+                        self.release_temporary_command_encoder_after_failure(encoder);
                     return Err(error);
                 }
             };
@@ -1868,7 +1985,8 @@ mod platform {
             match result {
                 Ok(()) => Ok(()),
                 Err(error) => {
-                    let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+                    let _release_result =
+                        self.release_temporary_command_encoder_after_failure(encoder);
                     Err(error)
                 }
             }
@@ -1879,18 +1997,26 @@ mod platform {
             encoder: CommandEncoderId,
             result: Result<()>,
         ) -> Result<()> {
-            let destroy_result = self.destroy_temporary_command_encoder_now(encoder);
-            match (result, destroy_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+            match result {
+                Ok(()) => {
+                    let _encoder = self.command_encoders.take(encoder)?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let _release_result =
+                        self.release_temporary_command_encoder_after_failure(encoder);
+                    Err(error)
+                }
             }
         }
 
-        fn destroy_temporary_command_encoder_now(
+        fn release_temporary_command_encoder_after_failure(
             &mut self,
             encoder: CommandEncoderId,
         ) -> Result<()> {
-            let _encoder = self.command_encoders.take(encoder)?;
+            if !self.command_encoders.get(encoder)?.submitted {
+                let _encoder = self.command_encoders.take(encoder)?;
+            }
             Ok(())
         }
 
@@ -1908,11 +2034,15 @@ mod platform {
             let Some(handle) = record.frame_latency_waitable else {
                 return Ok(true);
             };
+            if record.frame_latency_ready.get() {
+                return Ok(true);
+            }
 
-            // SAFETY: The handle is a live waitable object owned by this swapchain record. Timeout
-            // zero is a pure readiness query and never parks the calling/UI thread.
+            // SAFETY: The handle is a live waitable object owned by this swapchain record. The
+            // zero-timeout wait consumes its signal, so retain readiness until Present succeeds.
             let result = unsafe { WaitForSingleObject(handle, 0) };
             if result == WAIT_OBJECT_0 {
+                record.frame_latency_ready.set(true);
                 Ok(true)
             } else if result == WAIT_TIMEOUT {
                 Ok(false)
@@ -1966,6 +2096,7 @@ mod platform {
                 .map_err(|error| self.backend_error_with_device_reason("DXGI Present", &error))?;
             {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
+                swapchain.frame_latency_ready.set(false);
                 let presented_frame_index =
                     usize::try_from(swapchain.frame_index).map_err(|error| {
                         GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
@@ -2176,8 +2307,7 @@ mod platform {
             } else {
                 0
             };
-            let mut retained_page_count =
-                self.upload_ring.trim_idle_pages_to(target_idle_pages);
+            let mut retained_page_count = self.upload_ring.trim_idle_pages_to(target_idle_pages);
             if retained_page_count == 1
                 && self
                     .upload_ring
@@ -2189,12 +2319,11 @@ mod platform {
             }
             self.trim_upload_pages(retained_page_count);
 
-            let retained_upload_commands =
-                if matches!(level, GfxMemoryTrimLevel::Moderate) {
-                    1
-                } else {
-                    0
-                };
+            let retained_upload_commands = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+                1
+            } else {
+                0
+            };
             self.upload_command_pool.truncate(retained_upload_commands);
             if matches!(level, GfxMemoryTrimLevel::Aggressive) {
                 self.upload_pages.shrink_to_fit();
@@ -2840,19 +2969,19 @@ mod platform {
             color_load_op: LoadOp<ClearColor>,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
-            let first_step = steps.first().ok_or_else(|| {
-                GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
-            })?;
-            let (allocator, command_list) = {
-                let encoder = self.command_encoders.get(encoder_id)?;
-                let allocator = encoder.allocator.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no allocator".to_string())
-                })?;
-                let command_list = encoder.command_list.clone().ok_or_else(|| {
+            if steps.is_empty() {
+                return Err(GfxError::InvalidInput(
+                    "DX12 draw step list must not be empty".to_string(),
+                ));
+            }
+            let command_list = self
+                .command_encoders
+                .get(encoder_id)?
+                .command_list
+                .clone()
+                .ok_or_else(|| {
                     GfxError::Backend("DX12 command encoder has no command list".to_string())
                 })?;
-                (allocator, command_list)
-            };
             let texture_view = *self.texture_views.get(texture_view_id)?;
             let render_pass = self.render_passes.get(render_pass_id)?;
             let depth_handle =
@@ -2874,26 +3003,6 @@ mod platform {
                     "texture view and render pass color formats differ".to_string(),
                 ));
             }
-            let (first_pipeline_state, first_root_signature, pipeline_color_format, first_topology) = {
-                let pipeline = self.render_pipelines.get(first_step.pipeline())?;
-                let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
-                })?;
-                let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native root signature".to_string())
-                })?;
-                (
-                    pipeline_state,
-                    root_signature,
-                    pipeline.color_format,
-                    pipeline.primitive_topology,
-                )
-            };
-            if render_pass.color_format != pipeline_color_format {
-                return Err(GfxError::InvalidInput(
-                    "render pass and pipeline color formats differ".to_string(),
-                ));
-            }
             let rtv_handle = texture_view
                 .rtv_slot
                 .map(|slot| slot.cpu_handle)
@@ -2901,11 +3010,6 @@ mod platform {
                     GfxError::Backend("DX12 color texture view has no RTV handle".to_string())
                 })?;
 
-            // SAFETY: Command allocator belongs to this device and is not in use after wait_for_gpu.
-            unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
-            // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
-            unsafe { command_list.Reset(&allocator, &first_pipeline_state) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
             if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
                 record_transition_barrier(
                     &command_list,
@@ -2946,7 +3050,6 @@ mod platform {
             ];
             // SAFETY: All command arguments reference resources owned by this device.
             unsafe {
-                command_list.SetGraphicsRootSignature(&first_root_signature);
                 command_list.SetDescriptorHeaps(&heaps);
                 command_list.RSSetViewports(&[viewport]);
                 command_list.RSSetScissorRects(&[scissor]);
@@ -2976,7 +3079,6 @@ mod platform {
                         );
                     }
                 }
-                command_list.IASetPrimitiveTopology(primitive_topology_to_dx12(first_topology));
             }
             for step in steps.iter() {
                 let (
@@ -3027,9 +3129,6 @@ mod platform {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
             );
-            // SAFETY: Command list is open and can be closed after recording.
-            unsafe { command_list.Close() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
             self.textures.get_mut(texture_view.texture)?.state =
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             Ok(())
@@ -4310,6 +4409,13 @@ mod platform {
                 color_load_op,
                 depth_attachment,
             )
+        }
+
+        fn render_step_lists_to_textures_compat(
+            &mut self,
+            passes: &[TextureRenderStepList<'_>],
+        ) -> Result<()> {
+            Self::render_step_lists_to_textures(self, passes)
         }
 
         fn render_steps_and_present_deferred_compat(
@@ -5807,6 +5913,7 @@ mod platform {
     struct Dx12CommandEncoder {
         allocator: Option<ID3D12CommandAllocator>,
         command_list: Option<ID3D12GraphicsCommandList>,
+        submitted: bool,
     }
 
     struct DeferredDx12CommandEncoder {
@@ -5874,6 +5981,8 @@ mod platform {
         creation_flags: u32,
         /// Frame-latency waitable object; closed when the swapchain retires.
         frame_latency_waitable: Option<HANDLE>,
+        /// Readiness consumed by the wait, retained until a successful Present.
+        frame_latency_ready: Cell<bool>,
         /// Flip-sequential swapchains can preserve pixels outside native dirty rectangles.
         partial_presentation: bool,
         /// Damage accumulated since each rotating back buffer was last current.

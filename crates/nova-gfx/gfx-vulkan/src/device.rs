@@ -27,17 +27,17 @@ use gfx_core::{
     BufferDesc, BufferId, BufferUsage, ClearColor, ColorAttachmentDesc, CommandEncoderDesc,
     CommandEncoderId, CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, DrawTriangleDesc,
     FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
-    GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-    GfxSurfaceDevice, GfxTextureTransferDevice, GfxThreadingMode, GfxMemoryTrimLevel,
-    IndexBufferBinding, IndexFormat,
-    LoadOp, MemoryLocation, PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode,
-    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc,
-    RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
-    ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
-    ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId,
-    ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage,
-    ShaderStages, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId,
-    TextureDataLayout, TextureDesc, TextureDimension, TextureId, TextureReadback, TextureUsage,
+    GfxMemoryTrimLevel, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
+    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, GfxThreadingMode,
+    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineLayoutDesc, PipelineLayoutId,
+    PowerPreference, PresentMode, PresentationFrame, PresentationTimings, PrimitiveTopology,
+    RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId,
+    RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource,
+    ResourceBindingType, ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc,
+    ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ScissorRect, ShaderBinary,
+    ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId,
+    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc,
+    TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureUsage,
     TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc, VertexFormat,
 };
 use gfx_memory::{
@@ -1096,14 +1096,34 @@ impl VulkanDevice {
     ///
     /// Returns [`GfxError`] when command pool or command buffer allocation fails.
     fn create_command_encoder(&mut self, _desc: &CommandEncoderDesc) -> Result<CommandEncoderId> {
+        self.create_command_encoder_with_buffer_count(1)
+    }
+
+    fn create_command_encoder_with_buffer_count(
+        &mut self,
+        buffer_count: usize,
+    ) -> Result<CommandEncoderId> {
+        let buffer_count = u32::try_from(buffer_count).map_err(|error| {
+            GfxError::InvalidInput(format!("command buffer count overflow: {error}"))
+        })?;
+        if buffer_count == 0 {
+            return Err(GfxError::InvalidInput(
+                "command encoder must allocate at least one command buffer".to_string(),
+            ));
+        }
         let command_pool = create_command_pool(&self.device, self.graphics_queue_family_index)?;
-        let command_buffer = allocate_command_buffers(&self.device, command_pool, 1)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| GfxError::Backend("failed to allocate command buffer".to_string()))?;
+        let command_buffers =
+            match allocate_command_buffers(&self.device, command_pool, buffer_count) {
+                Ok(command_buffers) => command_buffers,
+                Err(error) => {
+                    // SAFETY: The pool was created above and no command buffers were allocated.
+                    unsafe { self.device.destroy_command_pool(command_pool, None) };
+                    return Err(error);
+                }
+            };
         Ok(self.command_encoders.insert(VulkanCommandEncoder {
             command_pool,
-            command_buffer,
+            command_buffers,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
             owns_fence: false,
@@ -1157,7 +1177,32 @@ impl VulkanDevice {
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        let command_buffer = self.command_encoders.get(encoder_id)?.command_buffer;
+        let command_buffer = self
+            .command_encoders
+            .get(encoder_id)?
+            .command_buffers
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                GfxError::Backend("command encoder has no command buffer".to_string())
+            })?;
+        self.record_render_step_list_desc_into(
+            encoder_id,
+            command_buffer,
+            pass,
+            steps,
+            depth_attachment,
+        )
+    }
+
+    fn record_render_step_list_desc_into(
+        &mut self,
+        encoder_id: CommandEncoderId,
+        command_buffer: vk::CommandBuffer,
+        pass: BeginRenderPassDesc,
+        steps: RenderStepList<'_>,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+    ) -> Result<()> {
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
         let mut render_target_transition = None;
@@ -1349,7 +1394,7 @@ impl VulkanDevice {
     ///
     /// Returns [`GfxError`] when submission fails.
     fn submit(&mut self, encoder_id: CommandEncoderId) -> Result<()> {
-        let command_buffer = self.command_encoders.get(encoder_id)?.command_buffer;
+        let command_buffer = self.command_encoders.get(encoder_id)?.command_buffers[0];
         self.submit_command_buffer(command_buffer, &[], &[], vk::Fence::null())?;
         self.submitted_frames = self.submitted_frames.saturating_add(1);
         self.poll_cleanup();
@@ -1404,7 +1449,7 @@ impl VulkanDevice {
         depth_attachment: Option<RenderPassDepthAttachment>,
         damage: Option<ScissorRect>,
     ) -> Result<()> {
-        let Some(submission) = self.render_step_list_and_present_tracked(
+        let Some(frame) = self.render_step_list_and_present_tracked(
             swapchain_id,
             render_pass_id,
             steps,
@@ -1415,7 +1460,9 @@ impl VulkanDevice {
         else {
             return Ok(());
         };
-        self.wait_submission(submission)?;
+        if let Some(submission) = frame.submission {
+            self.wait_submission(submission)?;
+        }
         Ok(())
     }
 
@@ -1455,6 +1502,7 @@ impl VulkanDevice {
                 depth_attachment,
                 damage,
             )?
+            .and_then(|frame| frame.submission)
             .unwrap_or_else(|| SubmissionId::from_parts(0, 0)))
     }
 
@@ -1466,11 +1514,19 @@ impl VulkanDevice {
         clear_color: ClearColor,
         depth_attachment: Option<RenderPassDepthAttachment>,
         damage: Option<ScissorRect>,
-    ) -> Result<Option<SubmissionId>> {
+    ) -> Result<Option<PresentationFrame>> {
         let Some(present_frame) = self.acquire_present_frame(swapchain_id)? else {
             return Ok(None);
         };
+        let mut timings = PresentationTimings {
+            acquire_fence_wait: present_frame.acquire_fence_wait,
+            image_acquire: present_frame.image_acquire,
+            ..PresentationTimings::default()
+        };
+        let encoder_create_started = Instant::now();
         let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+        timings.command_encoder_create = encoder_create_started.elapsed();
+        let command_record_started = Instant::now();
         let record_result = self.record_render_step_list_desc(
             encoder,
             BeginRenderPassDesc {
@@ -1484,25 +1540,32 @@ impl VulkanDevice {
             steps,
             depth_attachment,
         );
+        timings.command_record = command_record_started.elapsed();
         if let Err(error) = record_result {
             let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
             return Err(error);
         }
 
-        let command_buffer = self.command_encoders.get(encoder)?.command_buffer;
+        let command_buffer = self.command_encoders.get(encoder)?.command_buffers[0];
         // SAFETY: The frame fence was waited before acquire and is about to be used by queue_submit.
+        let fence_reset_started = Instant::now();
         unsafe { self.device.reset_fences(&[present_frame.fence]) }.map_err(VulkanError::from)?;
-        let submit_result = self.submit_command_buffer(
+        timings.fence_reset = fence_reset_started.elapsed();
+        let submit_result = self.submit_command_buffer_timed(
             command_buffer,
             &[present_frame.image_available],
             &[present_frame.render_finished],
             present_frame.fence,
         );
-        if let Err(error) = submit_result {
-            let _signal_result = self.signal_frame_fence_after_submit_failure(present_frame.fence);
-            let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
-            return Err(error);
-        }
+        timings.queue_submit = match submit_result {
+            Ok(elapsed) => elapsed,
+            Err(error) => {
+                let _signal_result =
+                    self.signal_frame_fence_after_submit_failure(present_frame.fence);
+                let _destroy_result = self.destroy_temporary_command_encoder_now(encoder);
+                return Err(error);
+            }
+        };
 
         let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = present_frame.fence;
@@ -1510,12 +1573,15 @@ impl VulkanDevice {
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
 
+        let present_started = Instant::now();
         self.present(
             swapchain_id,
             present_frame.image_index,
             present_frame.render_finished,
             damage,
         )?;
+        timings.queue_present = present_started.elapsed();
+        let post_present_cleanup_started = Instant::now();
         let swapchain = self.swapchains.get_mut(swapchain_id)?;
         swapchain.frame_index = (present_frame.frame_index + 1) % FRAMES_IN_FLIGHT;
         self.submitted_frames = self.submitted_frames.saturating_add(1);
@@ -1523,7 +1589,11 @@ impl VulkanDevice {
             fence: present_frame.fence,
         });
         self.poll_cleanup();
-        Ok(Some(submission))
+        timings.post_present_cleanup = post_present_cleanup_started.elapsed();
+        Ok(Some(PresentationFrame {
+            submission: Some(submission),
+            timings: Some(timings),
+        }))
     }
 
     /// Records and submits draw steps into a regular texture view.
@@ -1555,24 +1625,70 @@ impl VulkanDevice {
         color_load_op: LoadOp<ClearColor>,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-        self.record_render_step_list_desc(
-            encoder,
-            BeginRenderPassDesc {
-                render_pass: render_pass_id,
-                target: RenderTarget::TextureView(texture_view),
-                color_load_op,
-            },
+        self.render_step_lists_to_textures(&[TextureRenderStepList {
+            texture_view,
+            render_pass: render_pass_id,
             steps,
+            color_load_op,
             depth_attachment,
-        )?;
-        self.submit_command_encoder_deferred(encoder)?;
+        }])
+    }
+
+    fn render_step_lists_to_textures(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<()> {
+        if passes.is_empty() {
+            return Ok(());
+        }
+
+        let mut target_layouts = Vec::<(TextureId, vk::ImageLayout)>::with_capacity(passes.len());
+        for pass in passes {
+            let texture_id = self.texture_views.get(pass.texture_view)?.texture;
+            if target_layouts
+                .iter()
+                .all(|(known_texture, _)| *known_texture != texture_id)
+            {
+                target_layouts.push((texture_id, self.textures.get(texture_id)?.layout));
+            }
+        }
+
+        let encoder = self.create_command_encoder_with_buffer_count(passes.len())?;
+        for (index, pass) in passes.iter().enumerate() {
+            let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
+            let result = self.record_render_step_list_desc_into(
+                encoder,
+                command_buffer,
+                BeginRenderPassDesc {
+                    render_pass: pass.render_pass,
+                    target: RenderTarget::TextureView(pass.texture_view),
+                    color_load_op: pass.color_load_op,
+                },
+                pass.steps,
+                pass.depth_attachment,
+            );
+            if let Err(error) = result {
+                self.destroy_temporary_command_encoder_now(encoder)?;
+                for (texture_id, layout) in &target_layouts {
+                    self.textures.get_mut(*texture_id)?.layout = *layout;
+                }
+                return Err(error);
+            }
+        }
+
+        if let Err(error) = self.submit_command_encoder_deferred(encoder) {
+            self.destroy_temporary_command_encoder_now(encoder)?;
+            for (texture_id, layout) in &target_layouts {
+                self.textures.get_mut(*texture_id)?.layout = *layout;
+            }
+            return Err(error);
+        }
         self.poll_cleanup();
         Ok(())
     }
 
     fn submit_command_encoder_deferred(&mut self, encoder: CommandEncoderId) -> Result<()> {
-        self.submit_command_encoder_deferred_tracked(encoder)
+        self.submit_command_encoder_deferred_to_fence(encoder)
             .map(|_| ())
     }
 
@@ -1580,16 +1696,32 @@ impl VulkanDevice {
         &mut self,
         encoder: CommandEncoderId,
     ) -> Result<SubmissionId> {
-        let mut encoder_resource = self.command_encoders.take(encoder)?;
-        let command_buffer = encoder_resource.command_buffer;
+        let fence = self.submit_command_encoder_deferred_to_fence(encoder)?;
+        Ok(self.submissions.insert(VulkanSubmission { fence }))
+    }
+
+    fn submit_command_encoder_deferred_to_fence(
+        &mut self,
+        encoder: CommandEncoderId,
+    ) -> Result<vk::Fence> {
         let fence = create_fence(&self.device, false)?;
-        self.submit_command_buffer(command_buffer, &[], &[], fence)?;
+        if let Err(error) = self.submit_command_buffers(
+            &self.command_encoders.get(encoder)?.command_buffers,
+            &[],
+            &[],
+            fence,
+        ) {
+            // SAFETY: Submission failed, so the fence is not pending on the queue.
+            unsafe { self.device.destroy_fence(fence, None) };
+            return Err(error);
+        }
+        let mut encoder_resource = self.command_encoders.take(encoder)?;
         encoder_resource.fence = fence;
         encoder_resource.owns_fence = true;
         self.deferred_destroys
             .retire(0, DeferredResource::CommandEncoder(encoder_resource));
         self.submitted_frames = self.submitted_frames.saturating_add(1);
-        Ok(self.submissions.insert(VulkanSubmission { fence }))
+        Ok(fence)
     }
 
     fn submit_deferred(&mut self, encoder: CommandEncoderId) -> Result<SubmissionId> {
@@ -1633,11 +1765,14 @@ impl VulkanDevice {
             )
         };
         // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
+        let fence_wait_started = Instant::now();
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
             .map_err(VulkanError::from)?;
+        let acquire_fence_wait = fence_wait_started.elapsed();
         self.submissions
             .remove_where(|submission| submission.fence == fence);
         // SAFETY: Swapchain and semaphore belong to this device and are valid here.
+        let image_acquire_started = Instant::now();
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
@@ -1646,6 +1781,7 @@ impl VulkanDevice {
                 vk::Fence::null(),
             )
         };
+        let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
             Ok((image_index, false)) => image_index,
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
@@ -1660,6 +1796,8 @@ impl VulkanDevice {
             image_available,
             render_finished,
             fence,
+            acquire_fence_wait,
+            image_acquire,
         }))
     }
 
@@ -2070,6 +2208,40 @@ impl VulkanDevice {
         signal_semaphores: &[vk::Semaphore],
         fence: vk::Fence,
     ) -> Result<()> {
+        self.submit_command_buffer_timed(command_buffer, wait_semaphores, signal_semaphores, fence)
+            .map(|_| ())
+    }
+
+    fn submit_command_buffers(
+        &self,
+        command_buffers: &[vk::CommandBuffer],
+        wait_semaphores: &[vk::Semaphore],
+        signal_semaphores: &[vk::Semaphore],
+        fence: vk::Fence,
+    ) -> Result<()> {
+        let wait_stages =
+            vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; wait_semaphores.len()];
+        let submit_info = vk::SubmitInfo::default()
+            .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(&wait_stages)
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores);
+        // SAFETY: Queue, command buffers, semaphores, and fence are owned by this device.
+        unsafe {
+            self.device
+                .queue_submit(self.graphics_queue, &[submit_info], fence)
+        }
+        .map_err(VulkanError::from)?;
+        Ok(())
+    }
+
+    fn submit_command_buffer_timed(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        wait_semaphores: &[vk::Semaphore],
+        signal_semaphores: &[vk::Semaphore],
+        fence: vk::Fence,
+    ) -> Result<Duration> {
         let wait_stages =
             vec![vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT; wait_semaphores.len()];
         let command_buffers = [command_buffer];
@@ -2079,12 +2251,13 @@ impl VulkanDevice {
             .command_buffers(&command_buffers)
             .signal_semaphores(signal_semaphores);
         // SAFETY: Queue, command buffer, semaphores, and fence are owned by this device.
+        let submit_started = Instant::now();
         unsafe {
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], fence)
         }
         .map_err(VulkanError::from)?;
-        Ok(())
+        Ok(submit_started.elapsed())
     }
 
     fn complete_synchronous_upload(&mut self) -> Result<()> {
@@ -2130,8 +2303,7 @@ impl VulkanDevice {
         } else {
             0
         };
-        let mut retained_page_count =
-            self.upload_ring.trim_idle_pages_to(target_idle_pages);
+        let mut retained_page_count = self.upload_ring.trim_idle_pages_to(target_idle_pages);
         if retained_page_count == 1
             && self
                 .upload_ring
@@ -2142,12 +2314,11 @@ impl VulkanDevice {
         }
         self.trim_upload_pages(retained_page_count)?;
 
-        let retained_upload_commands =
-            if matches!(level, GfxMemoryTrimLevel::Moderate) {
-                1
-            } else {
-                0
-            };
+        let retained_upload_commands = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+            1
+        } else {
+            0
+        };
         self.trim_upload_command_pool(retained_upload_commands);
         if matches!(level, GfxMemoryTrimLevel::Aggressive) {
             self.upload_pages.shrink_to_fit();
@@ -2981,6 +3152,13 @@ impl GfxPresentationDevice for VulkanDevice {
         )
     }
 
+    fn render_step_lists_to_textures_compat(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<()> {
+        Self::render_step_lists_to_textures(self, passes)
+    }
+
     fn render_steps_and_present_deferred_compat(
         &mut self,
         swapchain: gfx_core::SwapchainId,
@@ -3036,6 +3214,29 @@ impl GfxPresentationDevice for VulkanDevice {
         Self: GfxSubmissionDevice,
     {
         Self::render_step_list_and_present_deferred_with_damage(
+            self,
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+            damage,
+        )
+    }
+
+    fn render_step_list_and_present_deferred_with_damage_measured(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<Option<PresentationFrame>>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        Self::render_step_list_and_present_tracked(
             self,
             swapchain,
             render_pass,
@@ -3532,7 +3733,7 @@ struct VulkanRenderPipeline {
 #[derive(Clone)]
 struct VulkanCommandEncoder {
     command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
+    command_buffers: Vec<vk::CommandBuffer>,
     transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
     owns_fence: bool,
@@ -3575,6 +3776,8 @@ struct VulkanPresentFrame {
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
     fence: vk::Fence,
+    acquire_fence_wait: Duration,
+    image_acquire: Duration,
 }
 
 #[derive(Clone, Copy)]

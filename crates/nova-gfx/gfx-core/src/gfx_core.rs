@@ -45,7 +45,8 @@ pub use backend::{
     GfxAsyncDiagnosticsDevice, GfxAsyncPipelineDevice, GfxAsyncPresentationDevice,
     GfxAsyncResourceDevice, GfxAsyncSurfaceDevice, GfxBackend, GfxCommandDevice, GfxDevice,
     GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, SharedGfxDevice,
+    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, PresentationFrame,
+    PresentationTimings, SharedGfxDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
@@ -1817,6 +1818,21 @@ pub struct RenderPassDepthAttachment {
     pub target: TextureViewId,
     /// Depth load operation.
     pub depth_load_op: LoadOp<f32>,
+}
+
+/// One ordered render-step list targeting an offscreen texture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextureRenderStepList<'a> {
+    /// Color texture view receiving this pass.
+    pub texture_view: TextureViewId,
+    /// Render pass used by this operation.
+    pub render_pass: RenderPassId,
+    /// Borrowed draw steps recorded into the pass.
+    pub steps: RenderStepList<'a>,
+    /// Color target load behavior.
+    pub color_load_op: LoadOp<ClearColor>,
+    /// Optional depth target and load behavior.
+    pub depth_attachment: Option<RenderPassDepthAttachment>,
 }
 
 /// Backend resource statistics.

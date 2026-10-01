@@ -17,8 +17,8 @@ use crate::{
     ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
     Result, SamplerDesc, SamplerId, ScissorRect, ShaderModuleDesc, ShaderModuleId, SubmissionId,
     SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId,
-    TextureReadback, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
-    resource_set_list,
+    TextureReadback, TextureRenderStepList, TextureViewDesc, TextureViewId, TextureWrite,
+    TextureWriteDesc, resource_set_list,
 };
 
 /// Identifies the graphics API implemented by a backend type.
@@ -584,6 +584,38 @@ pub trait BackendQueue: GfxCommandDevice + GfxSubmissionDevice {
 
 impl<T> BackendQueue for T where T: GfxCommandDevice + GfxSubmissionDevice {}
 
+/// Host-side time spent in synchronous Vulkan presentation stages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PresentationTimings {
+    /// Time waiting for the image's previous in-flight fence.
+    pub acquire_fence_wait: Duration,
+    /// Time waiting for a swapchain image from `acquire_next_image`.
+    pub image_acquire: Duration,
+    /// Host time spent allocating the per-frame command pool and buffer.
+    pub command_encoder_create: Duration,
+    /// Host time spent translating draw steps into Vulkan command buffers.
+    pub command_record: Duration,
+    /// Host time spent resetting the swapchain image fence before submission.
+    pub fence_reset: Duration,
+    /// Host time spent submitting the graphics queue work.
+    pub queue_submit: Duration,
+    /// Time waiting for the submitted frame when deferred presentation is disabled.
+    pub submission_wait: Duration,
+    /// Host time spent in the native presentation queue call.
+    pub queue_present: Duration,
+    /// Host time spent retiring the encoder and polling deferred resource cleanup.
+    pub post_present_cleanup: Duration,
+}
+
+/// A result from a presentation attempt that may have been deferred by the surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PresentationFrame {
+    /// GPU submission to track, if this backend uses deferred submission.
+    pub submission: Option<SubmissionId>,
+    /// Backend-specific host timings when available.
+    pub timings: Option<PresentationTimings>,
+}
+
 /// Provides frame presentation and offscreen draw helpers.
 ///
 /// These helpers are the normalized high-level presentation API. Backend-specific
@@ -766,6 +798,30 @@ pub trait GfxPresentationDevice {
         }
     }
 
+    /// Renders offscreen texture passes in the supplied order.
+    ///
+    /// The default submits each pass separately. A backend may record and submit
+    /// the passes together, but must preserve their order and load behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when any pass cannot be recorded or submitted.
+    fn render_step_lists_to_textures_compat(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<()> {
+        for pass in passes {
+            self.render_step_list_to_texture_compat(
+                pass.texture_view,
+                pass.render_pass,
+                pass.steps,
+                pass.color_load_op,
+                pass.depth_attachment,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Draws one non-indexed pipeline with no resource sets and presents it.
     ///
     /// This is a convenience method for simple examples. Production renderers
@@ -913,6 +969,40 @@ pub trait GfxPresentationDevice {
             clear_color,
             depth_attachment,
         )
+    }
+
+    /// Renders and presents a compatibility render-step list while returning any backend timing.
+    ///
+    /// `None` means the backend did not present a frame, for example because the swapchain has no
+    /// drawable image. Backends without stage instrumentation use the default implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GfxError`] when drawing, presentation, or submission fails.
+    fn render_step_list_and_present_deferred_with_damage_measured(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<Option<PresentationFrame>>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        let submission = self.render_step_list_and_present_deferred_with_damage_compat(
+            swapchain,
+            render_pass,
+            steps,
+            clear_color,
+            depth_attachment,
+            damage,
+        )?;
+        Ok(Some(PresentationFrame {
+            submission: (submission.raw() != 0).then_some(submission),
+            timings: None,
+        }))
     }
 }
 
@@ -1896,6 +1986,30 @@ where
     {
         self.with_device(|device| {
             device.render_step_list_and_present_deferred_with_damage_compat(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
+            )
+        })
+    }
+
+    fn render_step_list_and_present_deferred_with_damage_measured(
+        &mut self,
+        swapchain: SwapchainId,
+        render_pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        clear_color: ClearColor,
+        depth_attachment: Option<RenderPassDepthAttachment>,
+        damage: Option<ScissorRect>,
+    ) -> Result<Option<PresentationFrame>>
+    where
+        Self: GfxSubmissionDevice,
+    {
+        self.with_device(|device| {
+            device.render_step_list_and_present_deferred_with_damage_measured(
                 swapchain,
                 render_pass,
                 steps,
