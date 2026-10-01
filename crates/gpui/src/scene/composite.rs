@@ -37,13 +37,13 @@ impl Scene {
             return;
         }
 
-        let Some(content_mask_bounds) = self
-            .paint_operations
-            .get(operation_start)
-            .and_then(|operation| match operation {
-                PaintOperation::StartBlur(capture) => Some(capture.content_mask.bounds),
-                _ => None,
-            })
+        let Some(content_mask_bounds) =
+            self.paint_operations
+                .get(operation_start)
+                .and_then(|operation| match operation {
+                    PaintOperation::StartBlur(capture) => Some(capture.content_mask.bounds),
+                    _ => None,
+                })
         else {
             return;
         };
@@ -127,10 +127,13 @@ mod tests {
         assert_eq!(capture.bounds, pixel_bounds);
         assert_eq!(capture.radius, ScaledPixels(0.0));
 
-        let layer_bounds = scene.paint_operations.iter().find_map(|operation| match operation {
-            PaintOperation::StartLayer(bounds) => Some(*bounds),
-            _ => None,
-        });
+        let layer_bounds = scene
+            .paint_operations
+            .iter()
+            .find_map(|operation| match operation {
+                PaintOperation::StartLayer(bounds) => Some(*bounds),
+                _ => None,
+            });
         assert_eq!(layer_bounds, Some(pixel_bounds));
     }
 }

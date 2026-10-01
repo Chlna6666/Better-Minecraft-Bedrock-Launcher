@@ -8,12 +8,13 @@ use x11rb::connection::RequestConnection;
 
 use crate::platform::NovaRenderer;
 use crate::{
-    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, PresentationPacket,
-    GpuSpecs, GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RendererOptions, PlatformFrameRequest, ResizeEdge, ScaledPixels, Scene, Size,
-    Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
-    WindowDecorations, WindowKind, WindowParams, X11ClientStatePtr, px, size,
+    AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs,
+    GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest,
+    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+    PresentationPacket, PromptButton, PromptLevel, RendererOptions, ResizeEdge, ScaledPixels,
+    Scene, SceneAnimationCompletion, Size, Tiling, WindowAppearance, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowDecorations, WindowKind, WindowParams,
+    X11ClientStatePtr, px, size,
 };
 
 use util::{ResultExt, maybe};
@@ -41,6 +42,7 @@ use std::{
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
+    time::Instant,
 };
 
 use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
@@ -253,7 +255,9 @@ struct RawWindow {
 
 #[derive(Default)]
 pub struct Callbacks {
-    request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
+    request_frame: Option<crate::platform::frame::PlatformFrameRequestSender>,
+    presentation_animation_completed:
+        Option<crate::platform::frame::SceneAnimationCompletionSender>,
     input: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
     visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -282,6 +286,8 @@ pub struct X11WindowState {
     input_handler: Option<PlatformInputHandler>,
     appearance: WindowAppearance,
     background_appearance: WindowBackgroundAppearance,
+    background_capabilities: crate::WindowBackgroundCapabilities,
+    effective_background_appearance: WindowBackgroundAppearance,
     maximized_vertical: bool,
     maximized_horizontal: bool,
     hidden: bool,
@@ -311,6 +317,23 @@ pub(crate) struct X11WindowStatePtr {
 }
 
 impl X11WindowStatePtr {
+    pub(super) fn refresh_background_effects(&self) {
+        let mut state = self.state.borrow_mut();
+        match super::background::apply_background(&self.xcb, state.screen_id, self.x_window, state.background_appearance) {
+            Ok((capabilities, effective)) => {
+                state.background_capabilities = capabilities;
+                state.effective_background_appearance = effective;
+            }
+            Err(error) => {
+                log::warn!("X11 native background request failed: {error:#}");
+                state.background_capabilities = crate::WindowBackgroundCapabilities::default();
+                state.effective_background_appearance = if state.background_appearance == WindowBackgroundAppearance::Opaque {
+                    WindowBackgroundAppearance::Opaque
+                } else { WindowBackgroundAppearance::Transparent };
+            }
+        }
+    }
+
     pub fn request_frame(&self, frame_request: PlatformFrameRequest) {
         let state = self.state.borrow();
         let pending = state.pending_frame_request.get();
@@ -324,6 +347,27 @@ impl X11WindowStatePtr {
         state
             .pending_frame_request
             .replace(PlatformFrameRequest::default())
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        let mut state = self.state.borrow_mut();
+        if state.hidden {
+            return Ok(None);
+        }
+        state.renderer.present_active_frame(now, None)
+    }
+
+    fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
+        let callbacks = self.callbacks.borrow();
+        if let Some(sender) = callbacks.presentation_animation_completed.as_ref()
+            && sender.unbounded_send(completion).is_err()
+        {
+            log::trace!("discarding presentation completion after its UI receiver closed");
+        }
     }
 }
 
@@ -744,6 +788,8 @@ impl X11WindowState {
                 appearance,
                 handle,
                 background_appearance: params.window_background,
+                background_capabilities: crate::WindowBackgroundCapabilities::default(),
+                effective_background_appearance: WindowBackgroundAppearance::Transparent,
                 destroyed: false,
                 client_side_decorations_supported,
                 decorations: WindowDecorations::Server,
@@ -854,6 +900,7 @@ impl X11Window {
 
         let state = ptr.state.borrow_mut();
         ptr.set_wm_properties(state)?;
+        ptr.refresh_background_effects();
 
         Ok(Self(ptr))
     }
@@ -1052,9 +1099,27 @@ impl X11WindowStatePtr {
     }
 
     pub fn refresh(&self, frame_request: PlatformFrameRequest) {
-        let mut cb = self.callbacks.borrow_mut();
-        if let Some(ref mut fun) = cb.request_frame {
-            fun(frame_request);
+        if frame_request.is_presentation_only() {
+            match self.present_active_frame(Instant::now(), None) {
+                Ok(Some(frame)) => {
+                    if frame.continues {
+                        self.request_frame(PlatformFrameRequest::presentation());
+                    }
+                    for completion in frame.completed_animations {
+                        self.invoke_presentation_animation_completed(completion);
+                    }
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => log::error!("failed to present active X11 scene: {error:#}"),
+            }
+        }
+
+        let sender = self.callbacks.borrow().request_frame.clone();
+        if let Some(sender) = sender
+            && !sender.request(frame_request)
+        {
+            log::trace!("discarding X11 frame request after its UI receiver closed");
         }
     }
 
@@ -1483,6 +1548,20 @@ impl PlatformWindow for X11Window {
         state.background_appearance = background_appearance;
         let transparent = state.is_transparent();
         state.renderer.update_transparency(transparent);
+        drop(state);
+        self.0.refresh_background_effects();
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.state.borrow().background_appearance
+    }
+
+    fn background_capabilities(&self) -> crate::WindowBackgroundCapabilities {
+        self.0.state.borrow().background_capabilities
+    }
+
+    fn effective_background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.state.borrow().effective_background_appearance
     }
 
     fn minimize(&self) {
@@ -1532,8 +1611,18 @@ impl PlatformWindow for X11Window {
         self.0.state.borrow().fullscreen
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
-        self.0.callbacks.borrow_mut().request_frame = Some(callback);
+    fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
+        self.0.callbacks.borrow_mut().request_frame = Some(sender);
+    }
+
+    fn set_presentation_animation_completion_sender(
+        &self,
+        sender: crate::platform::frame::SceneAnimationCompletionSender,
+    ) {
+        self.0
+            .callbacks
+            .borrow_mut()
+            .presentation_animation_completed = Some(sender);
     }
 
     fn request_frame(&self, options: PlatformFrameRequest) {
@@ -1588,9 +1677,36 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let result = self.0.state.borrow_mut().renderer.draw(packet);
+        let (result, has_active_presentation_animations, completed_animations) = {
+            let mut state = self.0.state.borrow_mut();
+            let result = state.renderer.draw(packet);
+            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
+                state.renderer.take_animation_completions()
+            } else {
+                smallvec::SmallVec::new()
+            };
+            let has_active_presentation_animations =
+                state.renderer.has_active_presentation_animations();
+            (
+                result,
+                has_active_presentation_animations,
+                completed_animations,
+            )
+        };
         match result {
-            Ok(()) => PlatformFrameResult::Submitted,
+            Ok(true) => {
+                for completion in completed_animations {
+                    self.0.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.0.request_frame(PlatformFrameRequest::presentation());
+                }
+                PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
+            }
             Err(error) => {
                 log::error!("failed to draw X11 frame: {error:#}");
                 self.0.request_frame(PlatformFrameRequest::ui_commit());
@@ -1600,20 +1716,58 @@ impl PlatformWindow for X11Window {
     }
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let result = self
-            .0
-            .state
-            .borrow_mut()
-            .renderer
-            .present_framebuffer_only(packet);
+        let (result, has_active_presentation_animations, completed_animations) = {
+            let mut state = self.0.state.borrow_mut();
+            let result = state.renderer.present_framebuffer_only(packet);
+            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
+                state.renderer.take_animation_completions()
+            } else {
+                smallvec::SmallVec::new()
+            };
+            let has_active_presentation_animations =
+                state.renderer.has_active_presentation_animations();
+            (
+                result,
+                has_active_presentation_animations,
+                completed_animations,
+            )
+        };
         match result {
-            Ok(()) => PlatformFrameResult::Submitted,
+            Ok(true) => {
+                for completion in completed_animations {
+                    self.0.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.0.request_frame(PlatformFrameRequest::presentation());
+                }
+                PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
+            }
             Err(error) => {
                 log::error!("failed to present X11 framebuffer: {error:#}");
                 self.0.request_frame(PlatformFrameRequest::ui_commit());
                 PlatformFrameResult::Deferred
             }
         }
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        self.0.present_active_frame(now, None)
+    }
+
+    fn has_active_presentation_animations(&self) -> bool {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .has_active_presentation_animations()
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

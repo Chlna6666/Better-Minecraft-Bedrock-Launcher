@@ -57,8 +57,8 @@ use super::{
 use crate::platform::{
     LinuxCommon, PlatformWindow,
     linux::{
-        DEFAULT_CURSOR_ICON_NAME, LinuxClient, is_within_click_distance,
-        log_cursor_icon_warning, open_uri_internal,
+        DEFAULT_CURSOR_ICON_NAME, LinuxClient, is_within_click_distance, log_cursor_icon_warning,
+        open_uri_internal,
         platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
         reveal_path_internal,
         xdg_desktop_portal::{Event as XdpEvent, XdpEventSource},
@@ -68,10 +68,9 @@ use crate::platform::{
 use crate::{
     AnyWindowHandle, Bounds, ClipboardItem, CursorStyle, DisplayId, FileDropEvent,
     ForegroundTaskQueue, Keystroke, LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent,
-    MouseButton, Pixels, Platform,
-    PlatformDisplay, PlatformInput, PlatformKeyboardLayout, Point, RendererOptions,
-    PlatformFrameRequest, ScrollDelta, Size, TouchPhase, WindowParams, X11Window,
-    modifiers_from_xinput_info, point, px,
+    MouseButton, Pixels, Platform, PlatformDisplay, PlatformFrameRequest, PlatformInput,
+    PlatformKeyboardLayout, Point, RendererOptions, ScrollDelta, Size, TouchPhase, WindowParams,
+    X11Window, modifiers_from_xinput_info, point, px,
 };
 
 /// Value for DeviceId parameters which selects all devices.
@@ -113,10 +112,7 @@ fn insert_x11_foreground_task_idle(
         client.drain_x11_events(&xcb_connection).log_err();
 
         if needs_wakeup {
-            insert_x11_foreground_task_idle(
-                &reschedule_handle,
-                foreground_task_queue.clone(),
-            );
+            insert_x11_foreground_task_idle(&reschedule_handle, foreground_task_queue.clone());
         }
     });
 }
@@ -369,6 +365,7 @@ impl X11Client {
             })?;
 
         let (xcb_connection, x_root_index) = XCBConnection::connect(None)?;
+        super::background::watch_background_capabilities(&xcb_connection).log_err();
         xcb_connection.prefetch_extension_information(xkb::X11_EXTENSION_NAME)?;
         xcb_connection.prefetch_extension_information(randr::X11_EXTENSION_NAME)?;
         xcb_connection.prefetch_extension_information(render::X11_EXTENSION_NAME)?;
@@ -939,7 +936,16 @@ impl X11Client {
                     .context("X11: Failed to set window bounds")
                     .log_err();
             }
+            Event::XfixesSelectionNotify(_) => {
+                let windows = self.0.borrow().windows.values().map(|window| window.window.clone()).collect::<Vec<_>>();
+                for window in windows { window.refresh_background_effects(); }
+            }
             Event::PropertyNotify(event) => {
+                if super::background::is_background_announcement(&self.0.borrow().xcb_connection, event.window, event.atom) {
+                    let windows = self.0.borrow().windows.values().map(|window| window.window.clone()).collect::<Vec<_>>();
+                    for window in windows { window.refresh_background_effects(); }
+                    return Some(());
+                }
                 let window = self.window(event.window)?;
                 window
                     .property_notify(event)

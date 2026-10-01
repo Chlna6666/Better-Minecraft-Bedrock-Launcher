@@ -41,10 +41,9 @@ pub trait ParentElement {
     {
         let retained_source = core::panic::Location::caller();
         self.extend(children.into_iter().enumerate().map(|(index, child)| {
-            child.into_any_element().with_retained_mount(
-                retained_source,
-                index.min(u32::MAX as usize) as u32,
-            )
+            child
+                .into_any_element()
+                .with_retained_mount(retained_source, index.min(u32::MAX as usize) as u32)
         }));
         self
     }

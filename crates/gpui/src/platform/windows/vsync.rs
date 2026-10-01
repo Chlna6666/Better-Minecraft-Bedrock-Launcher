@@ -14,9 +14,12 @@ use std::{
 };
 
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HWND, LPARAM, WPARAM},
     Graphics::Dwm::{DWM_TIMING_INFO, DwmFlush, DwmGetCompositionTimingInfo},
-    UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
+    System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
+    UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId, PostMessageW, WM_APP,
+    },
 };
 
 use super::WindowsUserEvent;
@@ -25,12 +28,31 @@ const DEFAULT_VSYNC_INTERVAL: Duration = Duration::from_micros(16_667);
 const BACKGROUND_FRAME_INTERVAL: Duration = Duration::from_micros(66_667);
 const EARLY_VSYNC_RETURN_THRESHOLD: Duration = Duration::from_millis(1);
 const MAX_REASONABLE_VSYNC_INTERVAL: Duration = Duration::from_secs(1);
+pub(super) const WM_MODAL_VSYNC: u32 = WM_APP + 0x475;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VSyncEventTiming {
+    pub(super) pacing_wait: Duration,
+    pub(super) enqueued_at: Instant,
+}
 
 pub(super) struct VSyncScheduler {
     active: AtomicBool,
     frame_pending: AtomicBool,
     shutdown: AtomicBool,
     thread: Mutex<Option<Thread>>,
+    modal_frame: Mutex<Option<ModalFrameTarget>>,
+}
+
+struct ModalFrameTarget {
+    hwnd: isize,
+    pending: Option<VSyncEventTiming>,
+}
+
+impl ModalFrameTarget {
+    fn publish(&mut self, timing: VSyncEventTiming) -> bool {
+        self.pending.replace(timing).is_none()
+    }
 }
 
 impl VSyncScheduler {
@@ -40,6 +62,7 @@ impl VSyncScheduler {
             frame_pending: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             thread: Mutex::new(None),
+            modal_frame: Mutex::new(None),
         }
     }
 
@@ -55,6 +78,60 @@ impl VSyncScheduler {
     pub(super) fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.unpark();
+    }
+
+    pub(super) fn start_modal_loop(&self, hwnd: isize) -> bool {
+        if !self.active.load(Ordering::Acquire) {
+            return false;
+        }
+        *self.modal_frame.lock().expect("modal vsync lock poisoned") = Some(ModalFrameTarget {
+            hwnd,
+            pending: None,
+        });
+        self.request_frame()
+    }
+
+    pub(super) fn finish_modal_loop(&self, hwnd: isize) {
+        let mut target = self.modal_frame.lock().expect("modal vsync lock poisoned");
+        if target.as_ref().is_some_and(|target| target.hwnd == hwnd) {
+            *target = None;
+        }
+        drop(target);
+        self.request_frame();
+    }
+
+    pub(super) fn take_modal_frame(&self, hwnd: isize) -> Option<VSyncEventTiming> {
+        self.modal_frame
+            .lock()
+            .expect("modal vsync lock poisoned")
+            .as_mut()
+            .filter(|target| target.hwnd == hwnd)
+            .and_then(|target| target.pending.take())
+    }
+
+    fn post_modal_frame(&self, timing: VSyncEventTiming) -> bool {
+        let mut modal = self.modal_frame.lock().expect("modal vsync lock poisoned");
+        let Some(target) = modal.as_mut() else {
+            return false;
+        };
+        if !target.publish(timing) {
+            return true;
+        }
+        // SAFETY: The native owner registers this HWND on enter and clears it on exit/destroy.
+        // PostMessage does not borrow UI objects; the latest timing remains in the scheduler.
+        if let Err(error) = unsafe {
+            PostMessageW(
+                Some(HWND(target.hwnd as *mut _)),
+                WM_MODAL_VSYNC,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            log::warn!("failed to post native modal vsync frame: {error}");
+            *modal = None;
+            return false;
+        }
+        true
     }
 
     fn unpark(&self) {
@@ -90,32 +167,32 @@ pub(super) fn spawn_vsync_thread(
                     continue;
                 }
 
-                if crate::platform::winit::windows_native_size_move_active() {
-                    // The native modal size/move loop has its own WM_TIMER frame pump. Preserve
-                    // the coalesced VSync request for one catch-up render after the loop exits
-                    // instead of dispatching the same work twice. This covers both GPUI client
-                    // decorations and native Windows title bars/borders.
-                    std::thread::sleep(DEFAULT_VSYNC_INTERVAL);
-                    continue;
-                }
-
                 if !thread_scheduler.frame_pending.swap(false, Ordering::AcqRel) {
                     continue;
                 }
 
-                if process_owns_foreground_window() {
+                let pacing_wait = if process_owns_foreground_window() {
                     last_background_tick = None;
-                    wait_for_vsync(interval, &mut last_foreground_tick);
+                    wait_for_vsync(interval, &mut last_foreground_tick)
                 } else {
                     last_foreground_tick = None;
-                    wait_for_background_tick(&thread_scheduler, &mut last_background_tick);
-                }
+                    wait_for_background_tick(&thread_scheduler, &mut last_background_tick)
+                };
 
                 if thread_scheduler.shutdown.load(Ordering::Acquire) {
                     break;
                 }
+                let timing = VSyncEventTiming {
+                    pacing_wait,
+                    enqueued_at: Instant::now(),
+                };
+                // HWND messages reach Win32's nested move loop while winit's outer handler is
+                // busy. Keep the same DWM cadence and a single latest-wins pending frame.
+                if thread_scheduler.post_modal_frame(timing) {
+                    continue;
+                }
                 if event_loop_proxy
-                    .send_event(WindowsUserEvent::VSync)
+                    .send_event(WindowsUserEvent::VSync(timing))
                     .is_err()
                 {
                     break;
@@ -131,7 +208,11 @@ pub(super) fn spawn_vsync_thread(
     Ok(())
 }
 
-fn wait_for_background_tick(scheduler: &VSyncScheduler, last_tick: &mut Option<Instant>) {
+fn wait_for_background_tick(
+    scheduler: &VSyncScheduler,
+    last_tick: &mut Option<Instant>,
+) -> Duration {
+    let started_at = Instant::now();
     if let Some(last_tick) = *last_tick {
         let deadline = last_tick + BACKGROUND_FRAME_INTERVAL;
         loop {
@@ -148,6 +229,7 @@ fn wait_for_background_tick(scheduler: &VSyncScheduler, last_tick: &mut Option<I
         }
     }
     *last_tick = Some(Instant::now());
+    started_at.elapsed()
 }
 
 fn process_owns_foreground_window() -> bool {
@@ -164,8 +246,16 @@ fn process_owns_foreground_window() -> bool {
     }
 }
 
-fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) {
+fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> Duration {
     let started_at = Instant::now();
+    if let Some(wait) = dwm_next_refresh_wait() {
+        // DwmFlush drains this process's pending DirectX updates. Used after DXGI presentation,
+        // that completion barrier can consume another refresh instead of pacing the next sample.
+        // Follow the current DWM vblank phase; swapchain readiness remains the backpressure gate.
+        std::thread::sleep(wait);
+        *last_tick = Some(Instant::now());
+        return started_at.elapsed();
+    }
     // SAFETY: DwmFlush has no pointer parameters and only waits for the compositor.
     let dwm_wait_succeeded = unsafe { DwmFlush() }.is_ok();
     let dwm_wait = started_at.elapsed();
@@ -186,6 +276,41 @@ fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) {
     }
 
     *last_tick = Some(Instant::now());
+    started_at.elapsed()
+}
+
+fn dwm_next_refresh_wait() -> Option<Duration> {
+    let mut timing = DWM_TIMING_INFO {
+        cbSize: u32::try_from(mem::size_of::<DWM_TIMING_INFO>()).ok()?,
+        ..Default::default()
+    };
+    let mut counter = 0_i64;
+    let mut frequency = 0_i64;
+    // SAFETY: All outputs point to initialized stack storage; null HWND requests desktop timing.
+    unsafe {
+        DwmGetCompositionTimingInfo(HWND::default(), &raw mut timing).ok()?;
+        QueryPerformanceCounter(&raw mut counter).ok()?;
+        QueryPerformanceFrequency(&raw mut frequency).ok()?;
+    }
+    let frequency = u64::try_from(frequency).ok().filter(|value| *value != 0)?;
+    let counter = u64::try_from(counter).ok()?;
+    let period = timing.qpcRefreshPeriod;
+    if period > frequency {
+        return None;
+    }
+    let ticks = ticks_until_next_refresh(counter, timing.qpcVBlank, period)?;
+    (ticks <= period).then(|| Duration::from_secs_f64(ticks as f64 / frequency as f64))
+}
+
+fn ticks_until_next_refresh(counter: u64, vblank: u64, period: u64) -> Option<u64> {
+    if period == 0 {
+        return None;
+    }
+    Some(if counter < vblank {
+        vblank - counter
+    } else {
+        period - (counter - vblank) % period
+    })
 }
 
 fn dwm_refresh_interval() -> Option<Duration> {
@@ -213,6 +338,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refresh_phase_skips_missed_ticks_without_drifting() {
+        assert_eq!(ticks_until_next_refresh(95, 100, 10), Some(5));
+        assert_eq!(ticks_until_next_refresh(100, 100, 10), Some(10));
+        assert_eq!(ticks_until_next_refresh(107, 100, 10), Some(3));
+        assert_eq!(ticks_until_next_refresh(138, 100, 10), Some(2));
+        assert_eq!(ticks_until_next_refresh(100, 100, 0), None);
+    }
+
+    #[test]
     fn refresh_interval_uses_reported_display_rate() {
         let interval = refresh_interval(180, 1).expect("180 Hz should be a valid refresh rate");
         assert!((interval.as_secs_f64() - 1.0 / 180.0).abs() < 0.000_001);
@@ -228,5 +362,73 @@ mod tests {
     #[test]
     fn background_frame_pacing_is_lower_than_normal_vsync() {
         assert!(BACKGROUND_FRAME_INTERVAL > DEFAULT_VSYNC_INTERVAL);
+    }
+
+    #[test]
+    fn modal_frame_coalesces_to_latest_timing() {
+        let first = VSyncEventTiming {
+            pacing_wait: Duration::from_millis(4),
+            enqueued_at: Instant::now(),
+        };
+        let latest = VSyncEventTiming {
+            pacing_wait: Duration::from_millis(8),
+            enqueued_at: first.enqueued_at + Duration::from_millis(4),
+        };
+        let mut target = ModalFrameTarget {
+            hwnd: 1,
+            pending: None,
+        };
+        assert!(target.publish(first));
+        assert!(!target.publish(latest));
+        let received = target
+            .pending
+            .take()
+            .expect("latest frame should be pending");
+        assert_eq!(received.enqueued_at, latest.enqueued_at);
+        assert_eq!(received.pacing_wait, latest.pacing_wait);
+        assert!(target.publish(first));
+    }
+
+    #[test]
+    fn modal_frame_is_consumed_only_by_registered_window() {
+        let scheduler = VSyncScheduler::new();
+        scheduler.active.store(true, Ordering::Release);
+        assert!(scheduler.start_modal_loop(1));
+        let timing = VSyncEventTiming {
+            pacing_wait: Duration::ZERO,
+            enqueued_at: Instant::now(),
+        };
+        scheduler
+            .modal_frame
+            .lock()
+            .expect("modal vsync lock poisoned")
+            .as_mut()
+            .expect("modal target registered")
+            .publish(timing);
+        assert!(scheduler.take_modal_frame(2).is_none());
+        scheduler.finish_modal_loop(2);
+        assert!(scheduler.take_modal_frame(1).is_some());
+        assert!(scheduler.take_modal_frame(1).is_none());
+        scheduler.finish_modal_loop(1);
+        assert!(
+            scheduler
+                .modal_frame
+                .lock()
+                .expect("modal vsync lock poisoned")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unavailable_vsync_keeps_timer_fallback() {
+        let scheduler = VSyncScheduler::new();
+        assert!(!scheduler.start_modal_loop(1));
+        assert!(
+            scheduler
+                .modal_frame
+                .lock()
+                .expect("modal vsync lock poisoned")
+                .is_none()
+        );
     }
 }

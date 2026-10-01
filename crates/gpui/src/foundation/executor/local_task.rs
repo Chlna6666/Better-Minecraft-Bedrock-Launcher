@@ -63,10 +63,9 @@ where
                 self.location
             );
             #[cfg(feature = "profiler")]
-            let _profile =
-                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::task_poll(
-                    self.as_ref().get_ref().location,
-                );
+            let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::task_poll(
+                self.as_ref().get_ref().location,
+            );
             unsafe { self.map_unchecked_mut(|c| &mut *c.inner).poll(cx) }
         }
     }

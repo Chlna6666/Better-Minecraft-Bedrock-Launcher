@@ -591,8 +591,12 @@ impl TaffyLayoutEngine {
 
                             node_context.last_measure_input =
                                 Some((known_dimensions, available_space));
-                            let measured: Size<Pixels> =
-                                (node_context.measure)(known_dimensions, available_space, window, cx);
+                            let measured: Size<Pixels> = (node_context.measure)(
+                                known_dimensions,
+                                available_space,
+                                window,
+                                cx,
+                            );
                             size(
                                 measured.width.0 * scale_factor,
                                 measured.height.0 * scale_factor,

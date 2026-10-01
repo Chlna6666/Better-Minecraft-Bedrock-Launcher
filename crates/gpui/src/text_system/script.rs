@@ -94,10 +94,7 @@ impl TextScript {
 
     /// Returns whether this is a concrete Unicode script rather than Common/Inherited/Unknown.
     pub fn is_real(self) -> bool {
-        !matches!(
-            self.0,
-            Script::Common | Script::Inherited | Script::Unknown
-        )
+        !matches!(self.0, Script::Common | Script::Inherited | Script::Unknown)
     }
 
     /// Returns whether the script requires complex shaping.
@@ -441,7 +438,9 @@ mod tests {
 
     #[test]
     fn missing_coverage_detection_is_unicode_wide() {
-        assert!(!text_contains_missing_font_coverage("ASCII only", |_| false));
+        assert!(!text_contains_missing_font_coverage("ASCII only", |_| {
+            false
+        }));
         assert!(!text_contains_missing_font_coverage("中文", |_| true));
         assert!(text_contains_missing_font_coverage("中文", |_| false));
         assert!(text_contains_missing_font_coverage("العربية", |_| false));
@@ -455,7 +454,10 @@ mod tests {
         assert_eq!(text_font_coverage_probe_character("\u{0301}"), None);
         assert_eq!(text_font_coverage_probe_character("e\u{0301}"), None);
         assert_eq!(text_font_coverage_probe_character("中\u{0301}"), Some('中'));
-        assert_eq!(text_font_coverage_probe_character("👩\u{200d}💻"), Some('👩'));
+        assert_eq!(
+            text_font_coverage_probe_character("👩\u{200d}💻"),
+            Some('👩')
+        );
     }
 
     #[test]

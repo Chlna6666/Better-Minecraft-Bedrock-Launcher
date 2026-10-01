@@ -1,9 +1,10 @@
 use super::frame_lifecycle::DIRTY_FRAME_BACKPRESSURE_BUDGET;
+use super::state::PresentationState;
 use super::*;
 use crate::{
-    AnimationDriver, AnimationSequence, AnimationSpec, PaintOperation, Primitive, RepeatMode,
-    TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
-    size,
+    Animation, AnimationDriver, AnimationExt, AnimationProperty, AnimationSequence, AnimationSpec,
+    Easing, PaintOperation, Primitive, RepeatMode, TestAppContext, TransitionProperty,
+    WindowOptions, performance_metrics_snapshot, point, px, size,
 };
 
 #[cfg(test)]
@@ -17,8 +18,135 @@ impl Render for EmptyTestView {
     }
 }
 
+struct SceneAnimationSpecRetargetView {
+    easing: Easing,
+}
+
+impl Render for SceneAnimationSpecRetargetView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .w(px(40.0))
+            .h(px(24.0))
+            .bg(crate::white())
+            .with_animation(
+                "spec-retarget-opacity",
+                Animation::from_spec(
+                    AnimationSpec::new(Duration::from_millis(100)).ease(self.easing.clone()),
+                )
+                .with_property(AnimationProperty::opacity(0.0, 1.0)),
+                |element, _| element,
+            )
+    }
+}
+
 struct DirtyScopeRootView {
     child: Entity<EmptyTestView>,
+}
+
+struct HorizontalSpringDecorationView {
+    left: Pixels,
+}
+
+impl Render for HorizontalSpringDecorationView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().child(
+            crate::div()
+                .absolute()
+                .left(self.left)
+                .w(px(40.0))
+                .h(px(34.0))
+                .bg(crate::white())
+                .with_animation_group(
+                    "horizontal-spring-decoration",
+                    crate::AnimationGroup::horizontal_edges(
+                        px(-200.0),
+                        px(0.0),
+                        crate::Spring::default(),
+                        crate::Spring::default(),
+                    ),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn horizontal_spring_decoration_binds_painted_quad(cx: &mut TestAppContext) {
+    let (_view, cx) = cx.add_window_view(|_, _| HorizontalSpringDecorationView { left: px(200.0) });
+    cx.update(|window, _| {
+        let quads = &window.rendered_frame.scene.quads;
+        assert_eq!(quads.len(), 1);
+        assert!(quads[0].animation_id.is_some());
+    });
+}
+
+#[gpui::test]
+fn horizontal_spring_same_distance_retarget_preserves_position(cx: &mut TestAppContext) {
+    let (view, visual) =
+        cx.add_window_view(|_, _| HorizontalSpringDecorationView { left: px(200.0) });
+    let retarget_at =
+        visual.update(|window, _| window.animation_time()) + Duration::from_millis(40);
+    let (before, old_base) = visual.update(|window, _| {
+        window.animation_time.set(retarget_at);
+        (
+            window.animation_engine.borrow().scene_values(retarget_at),
+            window.rendered_frame.scene.quads[0].bounds.origin.x.0,
+        )
+    });
+    view.update(visual, |view, cx| {
+        view.left = px(400.0);
+        cx.notify();
+    });
+    visual.update(|window, cx| {
+        window.animation_time.set(retarget_at);
+        window.draw(cx).clear();
+    });
+    let (after, new_base) = visual.update(|window, _| {
+        (
+            window.animation_engine.borrow().scene_values(retarget_at),
+            window.rendered_frame.scene.quads[0].bounds.origin.x.0,
+        )
+    });
+    assert_ne!(old_base, new_base);
+    assert_eq!(before.len(), 2);
+    assert_eq!(after.len(), 2);
+    for previous in before {
+        let next = after
+            .iter()
+            .find(|value| value.property == previous.property)
+            .unwrap();
+        let old_position =
+            old_base + previous.from[0] + (previous.to[0] - previous.from[0]) * previous.progress;
+        let new_position = new_base + next.from[0] + (next.to[0] - next.from[0]) * next.progress;
+        assert!((old_position - new_position).abs() < 0.001);
+    }
+}
+
+#[gpui::test]
+fn horizontal_spring_same_distance_restarts_after_settling(cx: &mut TestAppContext) {
+    let (view, visual) =
+        cx.add_window_view(|_, _| HorizontalSpringDecorationView { left: px(200.0) });
+    let next_at = visual.update(|window, _| window.animation_time()) + Duration::from_secs(60);
+    visual.update(|window, _| {
+        window.animation_time.set(next_at);
+        window.animation_engine.borrow_mut().tick(next_at);
+        assert_eq!(window.animation_engine.borrow().active_count(), 0);
+    });
+    view.update(visual, |view, cx| {
+        view.left = px(400.0);
+        cx.notify();
+    });
+    visual.update(|window, cx| {
+        window.animation_time.set(next_at);
+        window.draw(cx).clear();
+        assert_eq!(window.animation_engine.borrow().active_count(), 2);
+        let values = window.animation_engine.borrow().scene_values(next_at);
+        assert_eq!(values.len(), 2);
+        for value in values {
+            assert_eq!(value.from[0], -200.0 * window.scale_factor());
+            assert_eq!(value.to[0], 0.0);
+        }
+        assert!(window.rendered_frame.scene.quads[0].animation_id.is_some());
+    });
 }
 
 impl Render for DirtyScopeRootView {
@@ -102,13 +230,13 @@ impl Render for ElementBlurTestView {
                         .id("element-blur-target")
                         .size(px(40.))
                         .opacity(0.4)
-                        .blur(px(3.))
+                        .filter_blur(px(3.))
                         .bg(crate::red())
                         .child(
                             crate::div()
                                 .size(px(10.))
                                 .opacity(0.5)
-                                .blur(px(1.))
+                                .filter_blur(px(1.))
                                 .bg(crate::rgb(0x0000ff)),
                         ),
                 )
@@ -131,7 +259,7 @@ impl Render for BackdropBlurTestView {
             .scale(1.5)
             .bg(crate::red());
         let target = if self.show_blur {
-            target.backdrop_blur(px(3.))
+            target.background_blur(px(3.))
         } else {
             target
         };
@@ -392,9 +520,7 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn static_image_atlas_residency_follows_two_committed_scene_generations(
-    cx: &mut TestAppContext,
-) {
+fn static_image_atlas_residency_follows_two_committed_scene_generations(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| EmptyTestView))
             .unwrap()
@@ -489,10 +615,13 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 
             window
                 .paint_images([
-                    ImagePaintRequest::new(first_bounds, image.as_ref()),
+                    ImagePaintRequest::new(first_bounds, image.as_ref())
+                        .with_sampling(ImageSampling::Nearest),
                     ImagePaintRequest::new(second_bounds, image.as_ref()),
                 ])
                 .unwrap();
+            assert_eq!(window.next_frame.scene.polychrome_sprites[0].sampling, 1);
+            assert_eq!(window.next_frame.scene.polychrome_sprites[1].sampling, 0);
             assert_eq!(window.image_paint_tile_cache.len(), 1);
 
             window.drop_image(image).unwrap();
@@ -568,6 +697,7 @@ fn windows_are_mapped_before_becoming_visible_in_test_platform(cx: &mut TestAppC
 
     let is_shown = window
         .update(cx, |_, window, _| {
+            assert_eq!(window.visibility, WindowVisibility::Visible);
             window
                 .platform_window
                 .as_test()
@@ -956,14 +1086,15 @@ fn input_modality_change_reconciles_framework_hover_without_full_cache_refresh(
         window.dirty_frame_scheduled = false;
 
         let transition_calls_for_listener = transition_calls.clone();
-        window.rendered_frame.mouse_listeners.push(
-            MouseListener::new_hit_test_transition::<MouseMoveEvent>(Box::new(
-                move |_, _, _, _| {
+        window
+            .rendered_frame
+            .mouse_listeners
+            .push(MouseListener::new_hit_test_transition::<MouseMoveEvent>(
+                Box::new(move |_, _, _, _| {
                     transition_calls_for_listener
                         .set(transition_calls_for_listener.get().saturating_add(1));
-                },
-            )),
-        );
+                }),
+            ));
 
         let application_mouse_moves_for_listener = application_mouse_moves.clone();
         window
@@ -1072,10 +1203,7 @@ fn minimized_initial_frame_is_deferred(cx: &mut TestAppContext) {
         window.refreshing = true;
         window.dirty_frame_scheduled = true;
 
-        window.run_platform_frame(
-            PlatformFrameRequest::ui_commit(),
-            cx,
-        );
+        window.run_platform_frame(PlatformFrameRequest::ui_commit(), cx);
         assert!(window.invalidator.is_dirty());
         assert!(!window.refreshing);
         assert!(!window.test_has_completed_rendered_frame());
@@ -1470,7 +1598,6 @@ fn inactive_dirty_redraw_opt_in_bypasses_background_defer(cx: &mut TestAppContex
     });
 }
 
-
 #[gpui::test]
 fn notify_on_rendered_view_requests_dirty_frame(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|_, _| EmptyTestView);
@@ -1632,13 +1759,55 @@ fn on_next_frame_requests_animation_frame(cx: &mut TestAppContext) {
 
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
         );
     });
 }
 
 #[gpui::test]
-fn animation_engine_frame_requests_are_coalesced(cx: &mut TestAppContext) {
+fn scene_animation_metadata_changes_require_commit(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _| {
+        let element_id = test_global_element_id("scene-metadata-commit");
+        let property = TransitionProperty::Opacity;
+        let animation_id = window.start_scene_animation(
+            &element_id,
+            property,
+            AnimationSpec::new(Duration::from_secs(1)),
+            Bounds::default(),
+            [0.0; 4],
+            [1.0; 4],
+        );
+        assert!(window.scene_animation_needs_commit.replace(false));
+
+        window.set_grouped_visual_scene_animation(&element_id, property, animation_id, false);
+        assert!(!window.scene_animation_needs_commit.get());
+        window.set_grouped_visual_scene_animation(&element_id, property, animation_id, true);
+        assert!(window.scene_animation_needs_commit.replace(false));
+        window.set_grouped_visual_scene_animation(&element_id, property, animation_id, true);
+        assert!(!window.scene_animation_needs_commit.get());
+
+        window.cancel_scene_animation_track(&element_id, property, animation_id);
+        assert!(window.scene_animation_needs_commit.replace(false));
+        window.cancel_scene_animation_track(&element_id, property, animation_id);
+        assert!(!window.scene_animation_needs_commit.get());
+
+        window.start_scene_animation(
+            &element_id,
+            property,
+            AnimationSpec::new(Duration::from_secs(1)),
+            Bounds::default(),
+            [0.0; 4],
+            [1.0; 4],
+        );
+        let mut engine = window.animation_engine.borrow_mut();
+        assert!(engine.retain_scene_animations_for_scene(&Scene::default()));
+        assert!(!engine.retain_scene_animations_for_scene(&Scene::default()));
+    });
+}
+
+#[gpui::test]
+fn animation_engine_frame_requests_are_coalesced_and_merge_drivers(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -1653,21 +1822,89 @@ fn animation_engine_frame_requests_are_coalesced(cx: &mut TestAppContext) {
                 .driver(AnimationDriver::Paint),
             window.animation_time(),
         );
-        window.request_animation_engine_frame(AnimationDriver::Paint);
+        window.request_animation_engine_frame(AnimationDriver::Gpu);
         window.request_animation_engine_frame(AnimationDriver::Paint);
 
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
+        );
+        assert_eq!(
+            window.animation_engine_frame_driver.get(),
+            Some(AnimationDriver::Paint)
         );
     });
+}
+
+#[gpui::test]
+fn scene_animation_spec_retarget_preserves_the_presented_value(cx: &mut TestAppContext) {
+    let (view, visual) = cx.add_window_view(|_, _| SceneAnimationSpecRetargetView {
+        easing: Easing::Linear,
+    });
+    let start = visual.update(|window, _| window.animation_time());
+    let retarget_at = start + Duration::from_millis(40);
+
+    let before = visual.update(|window, _| {
+        window.animation_time.set(retarget_at);
+        window.scene_animation_needs_commit.set(false);
+        window
+            .animation_engine
+            .borrow()
+            .scene_values(retarget_at)
+            .into_iter()
+            .next()
+            .expect("the first scene animation remains active before retarget")
+    });
+    let presented_before = before.from[0] + (before.to[0] - before.from[0]) * before.progress;
+
+    view.update(visual, |view, cx| {
+        view.easing = Easing::InCubic;
+        cx.notify();
+    });
+    visual.update(|window, cx| {
+        window.animation_time.set(retarget_at);
+        window.draw(cx).clear();
+        assert!(window.scene_animation_needs_commit.get());
+        assert!(window.needs_present.get());
+    });
+
+    let (after, progressed) = visual.update(|window, _| {
+        let after = window
+            .animation_engine
+            .borrow()
+            .scene_values(retarget_at)
+            .into_iter()
+            .next()
+            .expect("the retargeted scene animation remains active");
+        let progressed_at = retarget_at + Duration::from_millis(20);
+        window.animation_time.set(progressed_at);
+        let progressed = window
+            .animation_engine
+            .borrow()
+            .scene_values(progressed_at)
+            .into_iter()
+            .next()
+            .expect("the retargeted scene animation continues");
+        (after, progressed)
+    });
+    let presented_after = after.from[0] + (after.to[0] - after.from[0]) * after.progress;
+    let presented_progressed =
+        progressed.from[0] + (progressed.to[0] - progressed.from[0]) * progressed.progress;
+
+    assert_eq!(after.animation_id, before.animation_id);
+    assert!((presented_after - presented_before).abs() < 0.001);
+    assert!(presented_progressed > presented_after);
+
+    drop(view);
+    visual.update(|window, _| window.remove_window());
 }
 
 #[gpui::test]
 fn window_animation_group_api_starts_samples_and_cancels(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {
+        window.visibility = WindowVisibility::Visible;
         let test_window = window.platform_window.as_test().unwrap().clone();
         let baseline = test_window.requested_frame_count();
 
@@ -1679,11 +1916,12 @@ fn window_animation_group_api_starts_samples_and_cancels(cx: &mut TestAppContext
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
         );
         assert!(window.cancel_animation_group(group_id));
         assert!(window.sample_animation_group(group_id).is_none());
     });
+    window.update(|window, _cx| window.remove_window());
 }
 
 #[gpui::test]
@@ -1712,7 +1950,7 @@ fn paint_animation_engine_frame_does_not_notify_view(cx: &mut TestAppContext) {
         });
 
     assert_eq!(test_window.requested_frame_count(), baseline_requests + 1);
-    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1728,6 +1966,12 @@ fn paint_animation_engine_frame_does_not_notify_view(cx: &mut TestAppContext) {
 #[gpui::test]
 fn paint_animation_engine_frame_marks_precise_dirty_region(cx: &mut TestAppContext) {
     let (_view, window) = cx.add_window_view(|_, _| PaintedTestView);
+    let startup_window =
+        window.update(|window, _cx| window.platform_window.as_test().unwrap().clone());
+    startup_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    window.run_until_parked();
+    window.update(|window, _cx| assert!(!window.needs_present.get()));
+
     let dirty_bounds = Bounds::new(point(px(4.0), px(5.0)), size(px(10.0), px(12.0)));
     let (test_window, baseline_requests, baseline_notify_invalidations) =
         window.update(|window, _cx| {
@@ -1758,7 +2002,7 @@ fn paint_animation_engine_frame_marks_precise_dirty_region(cx: &mut TestAppConte
             )
         });
 
-    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1779,6 +2023,12 @@ fn paint_animation_engine_frame_marks_precise_dirty_region(cx: &mut TestAppConte
 #[gpui::test]
 fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppContext) {
     let (_view, window) = cx.add_window_view(|_, _| PaintedTestView);
+    let startup_window =
+        window.update(|window, _cx| window.platform_window.as_test().unwrap().clone());
+    startup_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    window.run_until_parked();
+    window.update(|window, _cx| assert!(!window.needs_present.get()));
+
     let dirty_bounds = Bounds::new(point(px(7.0), px(9.0)), size(px(16.0), px(18.0)));
     let (test_window, animation_id, baseline_notify_invalidations) =
         window.update(|window, _cx| {
@@ -1798,7 +2048,7 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
             (test_window, animation_id, baseline_notify_invalidations)
         });
 
-    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1808,7 +2058,13 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
         assert_eq!(window.render_dirty_region.rect_count(), 1);
-        assert_eq!(window.presentation_state.active_engine_animation_values().len(), 1);
+        assert_eq!(
+            window
+                .presentation_state
+                .active_engine_animation_values()
+                .len(),
+            1
+        );
         assert!(
             std::ptr::eq(
                 window
@@ -1841,6 +2097,13 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
 #[gpui::test]
 fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAppContext) {
     let (_view, window) = cx.add_window_view(|_, _| PaintedTestView);
+    // A newly committed scene still owes its first full presentation. A partial animation tick
+    // can only be asserted after that startup damage has actually been acknowledged.
+    let startup_window =
+        window.update(|window, _cx| window.platform_window.as_test().unwrap().clone());
+    startup_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    window.run_until_parked();
+    window.update(|window, _cx| assert!(!window.needs_present.get()));
     let dirty_bounds = Bounds::new(point(px(7.0), px(9.0)), size(px(160.0), px(120.0)));
     let (test_window, animation_id, baseline_notify_invalidations) =
         window.update(|window, _cx| {
@@ -1849,7 +2112,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             let element_id = test_global_element_id("scene-animation-blur-auto");
             let animation_id = window.start_scene_animation(
                 &element_id,
-                TransitionProperty::Blur,
+                TransitionProperty::FilterBlur,
                 AnimationSpec::new(Duration::from_millis(100)).repeat(RepeatMode::Forever),
                 dirty_bounds,
                 [4.0, 0.0, 0.0, 0.0],
@@ -1859,7 +2122,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
                 window
                     .animation_engine
                     .borrow()
-                    .transition_driver(&element_id, TransitionProperty::Blur),
+                    .transition_driver(&element_id, TransitionProperty::FilterBlur),
                 Some(AnimationDriver::Gpu)
             );
             assert_eq!(
@@ -1869,7 +2132,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             (test_window, animation_id, baseline_notify_invalidations)
         });
 
-    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());
     window.run_until_parked();
 
     window.update(|window, _cx| {
@@ -1879,7 +2142,13 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             "GPU Blur animation must not notify or rebuild the owning view"
         );
         assert_eq!(window.render_present_mode, PartialPresentMode::Partial);
-        assert_eq!(window.presentation_state.active_engine_animation_values().len(), 1);
+        assert_eq!(
+            window
+                .presentation_state
+                .active_engine_animation_values()
+                .len(),
+            1
+        );
         assert!(
             std::ptr::eq(
                 window
@@ -1904,7 +2173,37 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
         );
         assert_eq!(
             window.presentation_state.active_engine_animation_values()[0].property,
-            TransitionProperty::Blur
+            TransitionProperty::FilterBlur
+        );
+    });
+}
+
+#[gpui::test]
+fn background_blur_material_queries_preserve_requests_after_fallback(cx: &mut TestAppContext) {
+    let (_view, window) = cx.add_window_view(|_, _| PaintedTestView);
+    window.update(|window, _cx| {
+        assert_eq!(
+            window.background_appearance(),
+            WindowBackgroundAppearance::Opaque
+        );
+        for requested in [
+            WindowBackgroundAppearance::Blurred,
+            WindowBackgroundAppearance::Mica,
+            WindowBackgroundAppearance::MicaAlt,
+            WindowBackgroundAppearance::Transparent,
+        ] {
+            window.set_background_appearance(requested);
+            assert_eq!(window.background_appearance(), requested);
+            assert_eq!(
+                window.effective_background_appearance(),
+                WindowBackgroundAppearance::Transparent
+            );
+            assert!(!window.background_capabilities().blurred);
+        }
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        assert_eq!(
+            window.effective_background_appearance(),
+            WindowBackgroundAppearance::Opaque
         );
     });
 }
@@ -1939,7 +2238,7 @@ fn opted_in_inactive_gpu_animation_requests_presentation_frame(cx: &mut TestAppC
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
         );
         assert_eq!(
             window.animation_engine_frame_driver.get(),
@@ -1962,7 +2261,7 @@ fn enabling_inactive_animation_resumes_pending_engine_frame(cx: &mut TestAppCont
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
         );
     });
 }
@@ -1999,7 +2298,7 @@ fn inactive_request_animation_frame_requests_animation_frame(cx: &mut TestAppCon
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
         assert_eq!(
             test_window.last_requested_frame(),
-            Some(PlatformFrameRequest::presentation())
+            Some(PlatformFrameRequest::animation_tick())
         );
     });
 }
@@ -2022,7 +2321,7 @@ fn repeated_on_next_frame_requests_are_coalesced(cx: &mut TestAppContext) {
     });
 
     assert_eq!(test_window.requested_frame_count(), baseline + 1);
-    test_window.simulate_request_frame(PlatformFrameRequest::presentation());
+    test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());
     cx.run_until_parked();
     assert_eq!(callbacks_ran.get(), 3);
 }
@@ -2365,9 +2664,7 @@ fn present_framebuffer_only_clears_needs_present(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(
-    cx: &mut TestAppContext,
-) {
+fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -2381,11 +2678,13 @@ fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(
             .presentation_state
             .publish_pending(Arc::clone(&pending_scene), []);
         window.needs_present.set(true);
+        window.scene_animation_needs_commit.set(true);
 
         let result = window.present();
 
         assert_eq!(result, PlatformFrameResult::Deferred);
         assert!(window.needs_present.get());
+        assert!(window.scene_animation_needs_commit.get());
         assert!(!window.presentation_state.has_pending_scene());
         assert!(std::ptr::eq(
             window
@@ -2395,6 +2694,23 @@ fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(
             pending_scene.as_ref(),
         ));
         assert_eq!(test_window.draw_count(), 1);
+    });
+}
+
+#[gpui::test]
+fn queued_platform_draw_transfers_present_ownership(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        test_window.set_frame_result(PlatformFrameResult::Queued);
+        window.needs_present.set(true);
+        window.scene_animation_needs_commit.set(true);
+
+        assert_eq!(window.present(), PlatformFrameResult::Queued);
+        assert!(!window.needs_present.get());
+        assert!(!window.scene_animation_needs_commit.get());
+        assert!(PlatformFrameResult::Queued.is_accepted());
+        assert!(!PlatformFrameResult::Deferred.is_accepted());
     });
 }
 

@@ -27,7 +27,9 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) traversal_ancestor_views: usize,
     pub(super) selective_splice_attempts: usize,
     pub(super) selective_splice_hits: usize,
+    pub(super) selective_splice_misses: [usize; SelectiveSpliceMissReason::COUNT],
     pub(super) rendered_views: usize,
+    pub(super) rendered_traversal_ancestors: usize,
     pub(super) rendered_view_types: [(&'static str, usize); 8],
     pub(super) rendered_view_type_count: usize,
     pub(super) rendered_view_type_overflow: usize,
@@ -37,6 +39,44 @@ pub(super) struct DirtyFrameDiagnostics {
     pub(super) first_view_dirty_entity: Option<EntityId>,
     pub(super) first_rendered_entity: Option<EntityId>,
     pub(super) first_notify_entity: Option<EntityId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(usize)]
+pub(crate) enum SelectiveSpliceMissReason {
+    UnstableCacheKey,
+    ForcedRefresh,
+    DegradedRecovery,
+    NoUniqueTarget,
+    TargetNotDirect,
+    InvalidRetainedRange,
+    TargetStateUnavailable,
+    UnsafeFragment,
+    ContextMismatch,
+    ReplayUnavailable,
+    ReplayFailed,
+    DispatchBoundaryChanged,
+}
+
+impl SelectiveSpliceMissReason {
+    const COUNT: usize = 12;
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::UnstableCacheKey => "unstable_cache_key",
+            Self::ForcedRefresh => "forced_refresh",
+            Self::DegradedRecovery => "degraded_recovery",
+            Self::NoUniqueTarget => "no_unique_target",
+            Self::TargetNotDirect => "target_not_direct",
+            Self::InvalidRetainedRange => "invalid_retained_range",
+            Self::TargetStateUnavailable => "target_state_unavailable",
+            Self::UnsafeFragment => "unsafe_fragment",
+            Self::ContextMismatch => "context_mismatch",
+            Self::ReplayUnavailable => "replay_unavailable",
+            Self::ReplayFailed => "replay_failed",
+            Self::DispatchBoundaryChanged => "dispatch_boundary_changed",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +143,11 @@ impl DirtyFrameDiagnostics {
         self.selective_splice_hits = self.selective_splice_hits.saturating_add(1);
     }
 
+    pub(super) fn record_selective_splice_miss(&mut self, reason: SelectiveSpliceMissReason) {
+        let count = &mut self.selective_splice_misses[reason as usize];
+        *count = count.saturating_add(1);
+    }
+
     pub(super) fn record_rendered_view(&mut self, entity_id: EntityId, type_name: &'static str) {
         self.rendered_views = self.rendered_views.saturating_add(1);
         self.first_rendered_entity.get_or_insert(entity_id);
@@ -117,6 +162,35 @@ impl DirtyFrameDiagnostics {
         } else {
             self.rendered_view_type_overflow = self.rendered_view_type_overflow.saturating_add(1);
         }
+    }
+
+    pub(super) fn record_rendered_traversal_ancestor(&mut self) {
+        self.rendered_traversal_ancestors = self.rendered_traversal_ancestors.saturating_add(1);
+    }
+
+    pub(super) fn selective_splice_miss_reasons(
+        &self,
+    ) -> [(&'static str, usize); SelectiveSpliceMissReason::COUNT] {
+        [
+            SelectiveSpliceMissReason::UnstableCacheKey,
+            SelectiveSpliceMissReason::ForcedRefresh,
+            SelectiveSpliceMissReason::DegradedRecovery,
+            SelectiveSpliceMissReason::NoUniqueTarget,
+            SelectiveSpliceMissReason::TargetNotDirect,
+            SelectiveSpliceMissReason::InvalidRetainedRange,
+            SelectiveSpliceMissReason::TargetStateUnavailable,
+            SelectiveSpliceMissReason::UnsafeFragment,
+            SelectiveSpliceMissReason::ContextMismatch,
+            SelectiveSpliceMissReason::ReplayUnavailable,
+            SelectiveSpliceMissReason::ReplayFailed,
+            SelectiveSpliceMissReason::DispatchBoundaryChanged,
+        ]
+        .map(|reason| {
+            (
+                reason.label(),
+                self.selective_splice_misses[reason as usize],
+            )
+        })
     }
 
     pub(super) fn record_notify_invalidation(&mut self, entity_id: EntityId) {
@@ -565,6 +639,8 @@ pub struct Window {
         SubscriberSet<(), Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
     pub(super) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    /// Animation metadata must reach the compositor even when scene pixels are unchanged.
+    pub(super) scene_animation_needs_commit: Cell<bool>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
     pub(super) last_input_modality: InputModality,
     /// Earliest dirty edge represented by the frame currently being drawn or awaiting presentation.
@@ -606,8 +682,7 @@ pub struct Window {
     pub(super) animation_frame_pending_entities: Rc<RefCell<FxHashSet<EntityId>>>,
     pub(super) animation_engine: Rc<RefCell<AnimationEngine>>,
     pub(super) animation_engine_frame_driver: Cell<Option<AnimationDriver>>,
-    pub(super) animation_engine_frame_deadline:
-        Rc<Cell<Option<(Instant, u64, AnimationDriver)>>>,
+    pub(super) animation_engine_frame_deadline: Rc<Cell<Option<(Instant, u64, AnimationDriver)>>>,
     pub(super) animation_engine_frame_deadline_generation: Rc<Cell<u64>>,
     /// Explicit opt-in for visible NOACTIVATE/panel windows whose retained scene animations must
     /// keep presenting while the OS does not consider the window active. Minimized windows still
@@ -676,10 +751,12 @@ impl Window {
         self.scene_animation = context.scene_animation;
         self.scene_text_raster_scale = context.scene_text_raster_scale;
         self.element_visual_transform = context.element_visual_transform;
-        self.content_mask_stack.clone_from(&context.content_mask_stack);
+        self.content_mask_stack
+            .clone_from(&context.content_mask_stack);
         self.visual_content_mask_stack
             .clone_from(&context.visual_content_mask_stack);
-        self.image_cache_stack.clone_from(&context.image_cache_stack);
+        self.image_cache_stack
+            .clone_from(&context.image_cache_stack);
 
         let result = f(self);
 

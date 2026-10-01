@@ -77,7 +77,7 @@ pub struct App {
     pub(crate) focus_handles: Arc<FocusMap>,
     pub(crate) keymap: Rc<RefCell<Keymap>>,
     pub(crate) keyboard_layout: Box<dyn PlatformKeyboardLayout>,
-    pub(crate) keyboard_mapper: Rc<dyn PlatformKeyboardMapper>,
+    pub(crate) keyboard_mapper: Arc<dyn PlatformKeyboardMapper>,
     pub(crate) global_action_listeners:
         FxHashMap<TypeId, Vec<Rc<dyn Fn(&dyn Any, DispatchPhase, &mut Self)>>>,
     pub(in crate::app) pending_effects: VecDeque<Effect>,
@@ -117,6 +117,13 @@ pub struct App {
 }
 
 impl App {
+    /// Holds entity reference counts through test teardown and checks that every handle was released.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn ref_counts_drop_handle(&self) -> impl Drop + 'static {
+        self.entities.ref_counts_drop_handle()
+    }
+
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new_app(
         platform: Rc<dyn Platform>,
@@ -311,7 +318,7 @@ impl App {
     }
 
     /// Get the current keyboard mapper.
-    pub fn keyboard_mapper(&self) -> &Rc<dyn PlatformKeyboardMapper> {
+    pub fn keyboard_mapper(&self) -> &Arc<dyn PlatformKeyboardMapper> {
         &self.keyboard_mapper
     }
 
@@ -514,10 +521,7 @@ impl App {
     /// Registers a callback invoked when the operating system is about to suspend the process.
     ///
     /// Keep this callback short: record state or cancel cadence rather than starting new work.
-    pub fn on_system_sleep(
-        &self,
-        mut callback: impl FnMut(&mut App) + 'static,
-    ) -> Subscription {
+    pub fn on_system_sleep(&self, mut callback: impl FnMut(&mut App) + 'static) -> Subscription {
         let (subscription, activate) = self.system_sleep_observers.insert(
             (),
             Box::new(move |cx| {
@@ -530,10 +534,7 @@ impl App {
     }
 
     /// Registers a callback invoked after the operating system resumes the process.
-    pub fn on_system_wake(
-        &self,
-        mut callback: impl FnMut(&mut App) + 'static,
-    ) -> Subscription {
+    pub fn on_system_wake(&self, mut callback: impl FnMut(&mut App) + 'static) -> Subscription {
         let (subscription, activate) = self.system_wake_observers.insert(
             (),
             Box::new(move |cx| {

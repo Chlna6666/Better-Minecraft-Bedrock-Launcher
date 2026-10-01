@@ -250,8 +250,14 @@ impl ShapedLineCursor<'_> {
     ///
     /// Panics if the boundary moves backwards, exceeds the line, or falls inside a UTF-8 scalar.
     pub fn take_until(&mut self, byte_index: usize) -> ShapedLine {
-        assert!(byte_index >= self.byte_index, "split boundary moved backwards");
-        assert!(byte_index <= self.line.len(), "split boundary exceeds line length");
+        assert!(
+            byte_index >= self.byte_index,
+            "split boundary moved backwards"
+        );
+        assert!(
+            byte_index <= self.line.len(),
+            "split boundary exceeds line length"
+        );
         assert!(
             self.line.text.is_char_boundary(byte_index),
             "split boundary is not a UTF-8 character boundary"
@@ -272,7 +278,9 @@ impl ShapedLineCursor<'_> {
         while let Some(run) = self.line.layout.runs.get(self.run_index) {
             let start = self.glyph_index;
             while let Some(glyph) = run.glyphs.get(self.glyph_index) {
-                if glyph.index >= byte_index { break; }
+                if glyph.index >= byte_index {
+                    break;
+                }
                 self.glyph_index += 1;
             }
             let end = self.glyph_index;
@@ -359,8 +367,11 @@ mod tests {
             .map(|&(index, x)| ShapedGlyph {
                 id: GlyphId(0),
                 position: point(px(x), px(0.0)),
+                render_offset: point(px(0.0), px(0.0)),
+                font_size: px(16.0),
                 index,
                 is_emoji: false,
+                is_cjk: false,
             })
             .collect();
 
@@ -451,20 +462,29 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(0.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 0,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(10.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 1,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(20.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 2,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                         ],
                     },
@@ -474,20 +494,29 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(30.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 3,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(40.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 4,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(0),
                                 position: point(px(50.0), px(0.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 5,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                         ],
                     },
@@ -568,6 +597,8 @@ mod tests {
                     len: 2,
                     color: red,
                     background_color: None,
+                    background_corner_radius: None,
+                    background_padding: None,
                     underline: None,
                     strikethrough: None,
                 },
@@ -575,6 +606,8 @@ mod tests {
                     len: 3,
                     color: green,
                     background_color: None,
+                    background_corner_radius: None,
+                    background_padding: None,
                     underline: None,
                     strikethrough: None,
                 },
@@ -582,6 +615,8 @@ mod tests {
                     len: 1,
                     color: blue,
                     background_color: None,
+                    background_corner_radius: None,
+                    background_padding: None,
                     underline: None,
                     strikethrough: None,
                 },
@@ -620,20 +655,29 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(11),
                                 position: point(px(0.0), px(1.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 0,
                                 is_emoji: true,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(12),
                                 position: point(px(17.0), px(1.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 1,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(13),
                                 position: point(px(19.0), px(-1.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 1,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                         ],
                     },
@@ -643,14 +687,20 @@ mod tests {
                             ShapedGlyph {
                                 id: GlyphId(21),
                                 position: point(px(25.0), px(1.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 5,
                                 is_emoji: true,
+                                is_cjk: false,
                             },
                             ShapedGlyph {
                                 id: GlyphId(22),
                                 position: point(px(41.0), px(1.0)),
+                                render_offset: point(px(0.0), px(0.0)),
+                                font_size: px(16.0),
                                 index: 7,
                                 is_emoji: false,
+                                is_cjk: false,
                             },
                         ],
                     },
@@ -741,6 +791,8 @@ mod tests {
                     a: 1.0,
                 },
                 background_color: None,
+                background_corner_radius: None,
+                background_padding: None,
                 underline: None,
                 strikethrough: None,
             }],
@@ -764,6 +816,8 @@ mod tests {
                     a: 1.0,
                 },
                 background_color: Some(black()),
+                background_corner_radius: None,
+                background_padding: None,
                 underline: None,
                 strikethrough: None,
             })

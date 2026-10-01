@@ -32,7 +32,7 @@ impl Window {
         };
         if should_request_frame {
             self.record_frame_request_reason(reason);
-            self.request_platform_frame(PlatformFrameRequest::presentation());
+            self.request_platform_frame(PlatformFrameRequest::animation_tick());
         }
     }
 
@@ -106,7 +106,7 @@ impl Window {
                 cx.notify(entity);
             }));
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(PlatformFrameRequest::presentation());
+            self.request_platform_frame(PlatformFrameRequest::animation_tick());
         } else {
             self.animation_frame_pending_entities
                 .borrow_mut()
@@ -150,24 +150,27 @@ impl Window {
         // ReconcileSubtree is distinct from InvalidateSubtree. Descendants are visited so a fixed
         // parent cannot hide a moving child, but reusable leaves/subtrees may still prove equality.
         self.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
-        self.enqueue_next_frame_callback(FrameRequestReason::LayoutAnimation, move |window, _cx| {
-            if !window
-                .invalidator
-                .take_layout_animation_frame(entity, &retained_id)
-            {
-                return;
-            }
-            if window.invalidator.invalidate_retained_path_with_scope(
-                entity,
-                Some(&retained_id),
-                RetainedInvalidationScope::ReconcileSubtree,
-            ) {
-                // This callback already runs inside the platform frame requested by the
-                // layout cadence. Marking the target dirty is enough for the current
-                // evaluate_frame_work pass; scheduling here would queue a redundant frame.
-                window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
-            }
-        });
+        self.enqueue_next_frame_callback(
+            FrameRequestReason::LayoutAnimation,
+            move |window, _cx| {
+                if !window
+                    .invalidator
+                    .take_layout_animation_frame(entity, &retained_id)
+                {
+                    return;
+                }
+                if window.invalidator.invalidate_retained_path_with_scope(
+                    entity,
+                    Some(&retained_id),
+                    RetainedInvalidationScope::ReconcileSubtree,
+                ) {
+                    // This callback already runs inside the platform frame requested by the
+                    // layout cadence. Marking the target dirty is enough for the current
+                    // evaluate_frame_work pass; scheduling here would queue a redundant frame.
+                    window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
+                }
+            },
+        );
     }
 
     /// Schedule a delayed layout-animation sample for one retained element path.
@@ -252,7 +255,7 @@ impl Window {
             && (self.active.get() || self.inactive_animation_engine_enabled)
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(PlatformFrameRequest::presentation());
+            self.request_platform_frame(PlatformFrameRequest::animation_tick());
         }
         if self.invalidator.is_dirty() && !self.refreshing {
             self.schedule_dirty_frame();
@@ -279,7 +282,7 @@ impl Window {
             && self.animation_engine_frame_driver.get().is_some()
         {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(PlatformFrameRequest::presentation());
+            self.request_platform_frame(PlatformFrameRequest::animation_tick());
         }
     }
 
@@ -302,17 +305,13 @@ impl Window {
         }
 
         let mut driver = driver;
-        if let Some((_, _, delayed_driver)) =
-            self.animation_engine_frame_deadline.replace(None)
-        {
-            self.animation_engine_frame_deadline_generation
-                .set(self.animation_engine_frame_deadline_generation.get().wrapping_add(1));
+        if let Some((_, _, delayed_driver)) = self.animation_engine_frame_deadline.replace(None) {
+            self.animation_engine_frame_deadline_generation.set(
+                self.animation_engine_frame_deadline_generation
+                    .get()
+                    .wrapping_add(1),
+            );
             driver = merge_requested_drivers(Some(delayed_driver), driver);
-        }
-
-        if !self.animation_engine.borrow_mut().mark_frame_pending() {
-            record_coalesced_refresh();
-            return;
         }
 
         self.animation_engine_frame_driver
@@ -320,13 +319,17 @@ impl Window {
                 self.animation_engine_frame_driver.get(),
                 driver,
             )));
+        if !self.animation_engine.borrow_mut().mark_frame_pending() {
+            record_coalesced_refresh();
+            return;
+        }
         if !self.visibility.is_visible()
             || (!self.active.get() && !self.inactive_animation_engine_enabled)
         {
             return;
         }
         self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-        self.request_platform_frame(PlatformFrameRequest::presentation());
+        self.request_platform_frame(PlatformFrameRequest::animation_tick());
     }
 
     pub(crate) fn request_animation_engine_frame_at(
@@ -344,8 +347,11 @@ impl Window {
         {
             let merged_driver = merge_requested_drivers(Some(existing_driver), driver);
             if existing_deadline <= deadline {
-                self.animation_engine_frame_deadline
-                    .set(Some((existing_deadline, generation, merged_driver)));
+                self.animation_engine_frame_deadline.set(Some((
+                    existing_deadline,
+                    generation,
+                    merged_driver,
+                )));
                 return;
             }
         }
@@ -354,7 +360,8 @@ impl Window {
             .animation_engine_frame_deadline_generation
             .get()
             .wrapping_add(1);
-        self.animation_engine_frame_deadline_generation.set(generation);
+        self.animation_engine_frame_deadline_generation
+            .set(generation);
         self.animation_engine_frame_deadline
             .set(Some((deadline, generation, driver)));
 
@@ -465,16 +472,89 @@ impl Window {
         let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
         self.next_scene_animation_id
             .set(self.next_scene_animation_id.get().wrapping_add(1));
+        self.start_scene_animation_with_id(
+            element_id,
+            property,
+            spec,
+            bounds,
+            from,
+            to,
+            animation_id,
+            false,
+        );
+        animation_id
+    }
+
+    pub(crate) fn start_grouped_scene_animation(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spec: AnimationSpec,
+        bounds: Bounds<Pixels>,
+        from: [f32; 4],
+        to: [f32; 4],
+        animation_id: Option<SceneAnimationId>,
+    ) -> SceneAnimationId {
+        let animation_id = animation_id.unwrap_or_else(|| {
+            let animation_id = SceneAnimationId(self.next_scene_animation_id.get());
+            self.next_scene_animation_id
+                .set(self.next_scene_animation_id.get().wrapping_add(1));
+            animation_id
+        });
+        self.start_scene_animation_with_id(
+            element_id,
+            property,
+            spec,
+            bounds,
+            from,
+            to,
+            animation_id,
+            true,
+        );
+        animation_id
+    }
+
+    pub(crate) fn start_scene_animation_with_id(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        spec: AnimationSpec,
+        bounds: Bounds<Pixels>,
+        from: [f32; 4],
+        to: [f32; 4],
+        animation_id: SceneAnimationId,
+        grouped_visual: bool,
+    ) {
         let mut engine = self.animation_engine.borrow_mut();
         engine.start_transition(element_id, property, spec, self.animation_time());
         engine.set_transition_bounds(element_id, property, bounds);
         engine.bind_scene_animation(element_id, property, animation_id, from, to);
+        engine.set_grouped_visual_scene_animation(
+            element_id,
+            property,
+            animation_id,
+            grouped_visual,
+        );
         let driver = engine
             .transition_driver(element_id, property)
             .unwrap_or(crate::AnimationDriver::Paint);
         drop(engine);
+        self.scene_animation_needs_commit.set(true);
         self.request_animation_engine_frame(driver);
-        animation_id
+    }
+
+    pub(crate) fn translate_scene_animation_origin(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        delta: [f32; 2],
+        dirty_bounds: Bounds<Pixels>,
+    ) {
+        let mut engine = self.animation_engine.borrow_mut();
+        if engine.translate_scene_animation_origin(element_id, property, delta) {
+            engine.set_transition_bounds(element_id, property, dirty_bounds);
+            self.scene_animation_needs_commit.set(true);
+        }
     }
 
     pub(crate) fn retarget_scene_animation(
@@ -511,6 +591,9 @@ impl Window {
             .flatten();
         drop(engine);
 
+        if retargeted {
+            self.scene_animation_needs_commit.set(true);
+        }
         if let Some(driver) = driver {
             self.request_animation_engine_frame(driver);
         }
@@ -528,10 +611,67 @@ impl Window {
             .set_transition_spring(element_id, property, spring);
     }
 
+    pub(crate) fn scene_animation_track_is_active(
+        &self,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> bool {
+        self.animation_engine
+            .borrow()
+            .scene_animation_track_is_active(animation_id, property)
+    }
+
+    pub(crate) fn scene_animation_track_is_bound(
+        &self,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> bool {
+        self.animation_engine
+            .borrow()
+            .scene_animation_track_is_bound(animation_id, property)
+    }
+
+    pub(crate) fn set_grouped_visual_scene_animation(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+        grouped: bool,
+    ) {
+        if self
+            .animation_engine
+            .borrow_mut()
+            .set_grouped_visual_scene_animation(element_id, property, animation_id, grouped)
+        {
+            self.scene_animation_needs_commit.set(true);
+        }
+    }
+
+    pub(crate) fn cancel_scene_animation_track(
+        &self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+    ) {
+        if self
+            .animation_engine
+            .borrow_mut()
+            .cancel_scene_animation_track(element_id, property, animation_id)
+        {
+            self.scene_animation_needs_commit.set(true);
+        }
+    }
+
     pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {
         self.animation_engine
             .borrow()
             .scene_animation_is_active(animation_id)
+    }
+
+    pub(crate) fn scene_animation_is_bound(&self, animation_id: SceneAnimationId) -> bool {
+        self.animation_engine
+            .borrow()
+            .scene_animation_is_bound(animation_id)
     }
 
     /// Notify the current view at or after the given deadline without requesting
@@ -620,8 +760,7 @@ impl Window {
         // Slow media still sleeps until its real deadline below, so this does not redraw the same
         // frame continuously.
         let follow_platform_cadence = self.active.get()
-            && presentation_deadline
-                <= now + self.frame_throttle.presentation_interval_hint();
+            && presentation_deadline <= now + self.frame_throttle.presentation_interval_hint();
         if follow_platform_cadence || presentation_deadline <= now {
             // A previously armed slower deadline is now obsolete. Its task observes the missing
             // map entry and exits without notifying the view.

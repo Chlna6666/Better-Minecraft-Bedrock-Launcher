@@ -300,11 +300,7 @@ impl DispatchTree {
     /// Selective view reconciliation recreates this one node rather than replaying stale view
     /// listeners. Any additional context/focus/listener state makes the optimization conservative
     /// and falls back to the normal ancestor traversal.
-    pub(crate) fn node_is_plain_view_boundary(
-        &self,
-        index: usize,
-        view_id: EntityId,
-    ) -> bool {
+    pub(crate) fn node_is_plain_view_boundary(&self, index: usize, view_id: EntityId) -> bool {
         self.nodes.get(index).is_some_and(|node| {
             node.view_id == Some(view_id)
                 && node.context.is_none()
@@ -336,8 +332,7 @@ impl DispatchTree {
         // parent may be supplied by an earlier fragment, or occur earlier in this same fragment.
         for index in old_range.clone() {
             let parent = source.nodes.get(index)?.parent?;
-            let parent_precedes_in_fragment =
-                parent.0 >= old_range.start && parent.0 < index;
+            let parent_precedes_in_fragment = parent.0 >= old_range.start && parent.0 < index;
             if !node_map.contains_key(&parent) && !parent_precedes_in_fragment {
                 return None;
             }
@@ -354,9 +349,7 @@ impl DispatchTree {
                 .expect("dispatch fragment parent mapping was validated");
             self.set_active_node(new_parent);
 
-            if source.nodes[index].focus_id.is_some()
-                && source.nodes[index].focus_id == focus
-            {
+            if source.nodes[index].focus_id.is_some() && source.nodes[index].focus_id == focus {
                 contains_focus = true;
             }
             let source_node = &mut source.nodes[index];

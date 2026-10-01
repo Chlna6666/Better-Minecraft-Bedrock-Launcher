@@ -1,7 +1,7 @@
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, ElementId,
-    GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels, ScrollDelta,
-    ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
+    GlobalElementId, HitboxBehavior, InspectorElementId, IntoElement, Overflow, Pixels,
+    ScrollDelta, ScrollWheelEvent, Style, StyleRefinement, Styled, Window, px, size,
 };
 use refineable::Refineable as _;
 use sum_tree::SumTree;
@@ -161,29 +161,16 @@ impl Element for List {
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
-        let layout = match state.prepaint_items(
-            bounds,
-            padding,
-            true,
-            &mut self.render_item,
-            window,
-            cx,
-        ) {
-            Ok(layout) => layout,
-            Err(autoscroll_request) => {
-                state.logical_scroll_top = Some(autoscroll_request);
-                state
-                    .prepaint_items(
-                        bounds,
-                        padding,
-                        false,
-                        &mut self.render_item,
-                        window,
-                        cx,
-                    )
-                    .unwrap()
-            }
-        };
+        let layout =
+            match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
+                Ok(layout) => layout,
+                Err(autoscroll_request) => {
+                    state.logical_scroll_top = Some(autoscroll_request);
+                    state
+                        .prepaint_items(bounds, padding, false, &mut self.render_item, window, cx)
+                        .unwrap()
+                }
+            };
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);

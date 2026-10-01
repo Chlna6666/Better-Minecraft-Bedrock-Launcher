@@ -114,7 +114,8 @@ impl LineLayoutSingleflight {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     (shape
                         .take()
-                        .expect("line layout singleflight leader missing shaper"))()
+                        .expect("line layout singleflight leader missing shaper"))(
+                    )
                 }));
 
                 match result {
@@ -186,11 +187,7 @@ impl LineLayoutSingleflight {
         self.flights
             .lock()
             .get(&key)
-            .map(|flight| {
-                flight
-                    .followers
-                    .load(std::sync::atomic::Ordering::Acquire)
-            })
+            .map(|flight| flight.followers.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or_default()
     }
 }
@@ -558,11 +555,7 @@ impl LineLayoutCache {
 
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             return self.layout_wrapped_line::<&SharedString>(
-                &key.text,
-                font_size,
-                runs,
-                wrap_width,
-                max_lines,
+                &key.text, font_size, runs, wrap_width, max_lines,
             );
         }
 
@@ -570,11 +563,7 @@ impl LineLayoutCache {
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             drop(current_frame);
             return self.layout_wrapped_line::<&SharedString>(
-                &key.text,
-                font_size,
-                runs,
-                wrap_width,
-                max_lines,
+                &key.text, font_size, runs, wrap_width, max_lines,
             );
         }
         current_frame.insert_wrapped_line(key.clone(), layout.clone());
@@ -651,21 +640,17 @@ impl LineLayoutCache {
             force_width,
         });
         let platform_identity = platform_text_system_identity(&self.platform_text_system);
-        let layout = LINE_LAYOUT_SINGLEFLIGHT.shape(
-            platform_identity,
-            font_generation,
-            key.clone(),
-            || {
-                let mut layout =
-                    self.platform_text_system
-                        .layout_line(&text, font_size, runs);
+        let layout =
+            LINE_LAYOUT_SINGLEFLIGHT.shape(platform_identity, font_generation, key.clone(), || {
+                let mut layout = self
+                    .platform_text_system
+                    .layout_line(&text, font_size, runs);
 
                 if let Some(force_width) = force_width {
                     apply_force_width_to_layout(&mut layout, force_width);
                 }
                 layout
-            },
-        );
+            });
 
         if self.font_generation.load(Ordering::Acquire) != font_generation {
             return self.layout_line::<&SharedString>(&text, font_size, runs, force_width);
@@ -1115,8 +1100,12 @@ fn rebase_estimated_entry_bytes(
 
 fn estimate_line_layout_bytes(layout: &LineLayout) -> usize {
     layout.runs.iter().fold(
-        size_of::<LineLayout>()
-            .saturating_add(layout.runs.capacity().saturating_mul(size_of::<ShapedRun>())),
+        size_of::<LineLayout>().saturating_add(
+            layout
+                .runs
+                .capacity()
+                .saturating_mul(size_of::<ShapedRun>()),
+        ),
         |total, run| {
             total.saturating_add(
                 run.glyphs
@@ -1200,10 +1189,7 @@ fn compact_retained_recency<K, V>(
 ) where
     K: Eq + Hash,
 {
-    recency.retain(|(key, stamp)| {
-        map.get(key)
-            .is_some_and(|entry| entry.stamp == *stamp)
-    });
+    recency.retain(|(key, stamp)| map.get(key).is_some_and(|entry| entry.stamp == *stamp));
 }
 
 fn trim_map_capacity<K, V>(map: &mut FxHashMap<K, V>, floor: usize, multiplier: usize)
@@ -1339,7 +1325,9 @@ mod tests {
             wrapped_lines_index: 9,
         };
         assert!(
-            different_generation.rebased_from(&source, &target).is_none(),
+            different_generation
+                .rebased_from(&source, &target)
+                .is_none(),
             "retained layout indices from another font generation must never be rebased"
         );
     }
@@ -1494,10 +1482,8 @@ mod tests {
 
     #[test]
     fn finish_frame_observes_incremental_working_set_bytes() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1514,10 +1500,8 @@ mod tests {
 
     #[test]
     fn finish_frame_reuses_precomputed_entry_bytes_for_retention() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1534,17 +1518,21 @@ mod tests {
         assert_eq!(retained.lines.len(), 1);
         assert_eq!(retained.estimated_bytes, expected);
         assert_eq!(
-            retained.lines.values().next().unwrap().entry.estimated_bytes,
+            retained
+                .lines
+                .values()
+                .next()
+                .unwrap()
+                .entry
+                .estimated_bytes,
             expected
         );
     }
 
     #[test]
     fn layout_line_records_same_frame_hits() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1563,10 +1551,8 @@ mod tests {
 
     #[test]
     fn layout_line_records_previous_frame_reuse() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1586,10 +1572,8 @@ mod tests {
 
     #[test]
     fn layout_line_reuses_retained_entry_after_idle_frame() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1662,10 +1646,7 @@ mod tests {
     #[test]
     fn font_generation_invalidates_frame_and_retained_layouts() {
         let generation = Arc::new(AtomicU64::new(0));
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            generation.clone(),
-        );
+        let cache = LineLayoutCache::new(Arc::new(NoopTextSystem::new()), generation.clone());
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),
@@ -1685,10 +1666,8 @@ mod tests {
 
     #[test]
     fn aggressive_trim_clears_layout_cache_entries() {
-        let cache = LineLayoutCache::new(
-            Arc::new(NoopTextSystem::new()),
-            Arc::new(AtomicU64::new(0)),
-        );
+        let cache =
+            LineLayoutCache::new(Arc::new(NoopTextSystem::new()), Arc::new(AtomicU64::new(0)));
         let runs = [FontRun {
             len: 5,
             font_id: FontId(1),

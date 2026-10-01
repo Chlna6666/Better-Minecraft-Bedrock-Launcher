@@ -4,13 +4,13 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
 use crate::{
     AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
     CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError, ImageMemoryTrimLevel,
     ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage, Size,
     SizedImagePreload, Window, drop_image_asset_retained, hash,
 };
+use anyhow::Result;
 
 use super::App;
 
@@ -208,9 +208,7 @@ impl App {
             .asset_entries
             .get(&asset_id)
             .and_then(|entry| {
-                entry.downcast_ref::<
-                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
-                >()
+                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
             })
             .is_some_and(|entry| entry.shares_pin(&pin) && entry.pin_count() == 1);
 
@@ -244,9 +242,7 @@ impl App {
         self.asset_entries
             .get(&asset_id)
             .and_then(|entry| {
-                entry.downcast_ref::<
-                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
-                >()
+                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
             })
             .map_or(0, OwnedAssetEntry::pin_count)
     }
@@ -396,9 +392,7 @@ impl App {
             .asset_entries
             .get(&asset_id)
             .and_then(|entry| {
-                entry.downcast_ref::<
-                    OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>,
-                >()
+                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
             })
             .is_some_and(|entry| entry.pin_count() != 0);
         let preload = self.remove_image_render_request(target_source)?;

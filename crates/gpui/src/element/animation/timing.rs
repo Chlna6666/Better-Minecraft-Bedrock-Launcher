@@ -29,11 +29,7 @@ pub(super) fn sample_element_animation(
             if elapsed < animation.spec.delay {
                 return (
                     index,
-                    animation
-                        .spec
-                        .fill_mode
-                        .fills_backwards()
-                        .then_some(0.0),
+                    animation.spec.fill_mode.fills_backwards().then_some(0.0),
                     false,
                 );
             }

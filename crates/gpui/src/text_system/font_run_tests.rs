@@ -3,7 +3,11 @@ use crate::{
     Bounds, DevicePixels, GlyphRasterization, Hsla, Pixels, PlatformTextSystem, Point, Result,
     SharedString, Size, blue, font, px, red, size,
 };
-use std::{borrow::Cow, path::PathBuf, sync::{Arc, Mutex}};
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Default)]
 struct RunRecordingTextSystem {

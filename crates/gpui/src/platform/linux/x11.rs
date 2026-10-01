@@ -1,3 +1,4 @@
+mod background;
 mod client;
 mod clipboard;
 mod display;

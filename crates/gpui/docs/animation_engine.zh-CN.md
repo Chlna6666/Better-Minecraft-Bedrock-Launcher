@@ -11,9 +11,8 @@ transition metadata、窗口调度、renderer animation id 和 grouped timeline�
 
 ## 目标
 
-- 保持 `Animation::new`、`Animation::repeat`、`Animation::with_easing`、
-  `AnimationExt::with_animation`、`AnimationExt::with_animations` 和现有
-  easing helper 的源码兼容。
+- 保留现有动画构造器、element-wrapper 方法和 easing helper 名称；自定义视觉
+  easing 闭包必须满足线程安全约束。
 - 为 styled element 的状态变化提供 transition API。
 - 对支持的纯视觉属性使用 retained paint 或 GPU 路径。
 - 对影响 layout 的属性使用 layout invalidation，因为它们必须重新计算布局。
@@ -26,8 +25,8 @@ transition metadata、窗口调度、renderer animation id 和 grouped timeline�
 公开 animation 模块导出：
 
 - `Easing`：内置曲线包括 `Linear`、`InCubic`、`OutCubic`、`InOutCubic`、
-  `OutBack`、`OutElastic`、`OutQuint` 和 `Spring`，并通过
-  `Custom(Rc<dyn Fn(f32) -> f32>)` 保持兼容性。
+  `OutBack`、`OutElastic`、`OutQuint` 和 `Spring`，并支持运行时自定义曲线
+  `Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>)`。
 - `AnimationSpec`：duration、delay、repeat mode、direction、fill mode、
   easing 和 driver policy。
 - `AnimationSequence`、`AnimationParallel` 和 `AnimationStagger`：由同一个 engine
@@ -35,12 +34,19 @@ transition metadata、窗口调度、renderer animation id 和 grouped timeline�
 - `AnimationGroupId` 和 `AnimationGroupSample`：窗口拥有的 grouped timeline handle
   与采样结果。
 - `AnimationDriver`：`Auto`、`Gpu`、`Paint` 和 `Layout`。
+- `VisualAnimationError`：callback-free retained visual 动画的校验错误。
 - `Animatable`：为 `f32`、`Pixels`、`Hsla`、`Point<Pixels>`、
   `Size<Pixels>`、`TransformationMatrix`、shadow 和 layout length 等核心
   值提供插值。
 - `Transition`：状态变化动画 metadata 的 builder。
 - `TransitionProperty`：对 opacity、transform、color、blur、shadow、width、
   height、inset、margin、padding、gap 和 border width 进行属性分类。
+
+绑定到 Scene 的视觉 timeline 会复制到不可变 `PresentationPacket`，并在采样时不读取
+可变的 `Window` 或 `App` 状态。动画完成通过 ID 和 retained target 作为事件回传，最终
+invalidation 仍由 UI owner 处理。Windows 已将 winit/Nova 原生 owner 与 GPUI UI 线程分离，
+DX12 和 Vulkan 在 UI `Render` 阻塞 200 ms 期间仍可采样和呈现不同帧。Linux Wayland/X11
+仍需完成相同的所有权切分。
 
 ## Transition API
 
@@ -85,6 +91,58 @@ if let Some(sample) = window.sample_animation_group(group_id) {
 公开 `Window` API 还包括 `start_animation_parallel`、`start_animation_stagger`、
 `cancel_animation_group` 和 `set_animation_group_bounds`。engine 会根据 child spec
 把 group 解析到 `Paint`、`Gpu` 或 `Layout`，并调度对应的 frame 路径。
+
+### Retained 并行视觉轨道
+
+### 单轨 retained visual 动画
+
+一个已声明的视觉属性可以直接使用 `with_visual_animation`。它会校验视觉属性并拒绝
+`Layout` driver，不分配或调用 animator closure：
+
+~~~rust
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, div};
+
+let fade = div()
+    .with_visual_animation(
+        "fade",
+        Animation::new(Duration::from_millis(180)).with_opacity(0.0, 1.0),
+    )
+    .expect("opacity 是 presentation 属性");
+~~~
+
+单轨入口也支持通过 `with_property` 声明的子树捕获、rotation、元素 filter blur 和 clip。
+当每个 sample 确实需要改变 layout 或内容时，使用 `with_animation`。
+
+### Retained 并行视觉轨道
+
+同一个 retained element 需要同时改变多个视觉属性、且每条轨道有独立时序时，使用
+`AnimationGroup`。每条轨道保留自己的 duration、delay、repeat、fill mode、easing
+或 spring；presentation 会把 opacity、translation 和 scale 合并为一次 renderer 值：
+
+```rust
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, AnimationGroup, Point, div, point, px};
+
+let enter = AnimationGroup::parallel([
+    Animation::new(Duration::from_millis(220)).with_opacity(0.0, 1.0),
+    Animation::new(Duration::from_millis(320)).with_translation(
+        Point::default(),
+        point(px(0.0), px(18.0)),
+    ),
+])
+.expect("每条轨道必须使用不同的视觉属性");
+
+let row = div().with_animation_group("row-enter", enter);
+```
+
+一个 group 最多包含一条 opacity、translation 和 scale 轨道。完成后仍保留同一元素绑定，
+包括 `fill-forwards` 终值；采样不会调用所属 view 的 `Render`。Scale 沿用每个 primitive
+自身中心的 pivot。影响 layout、捕获子树的属性（例如 `clipped_translation`）和重复属性
+都会被拒绝，避免悄悄改变渲染语义。单轨 rotation、clip、blur、显式共享 pivot 的
+transform 或捕获子树动画使用 `with_visual_animation`。
 
 ## Driver 选择
 
@@ -137,56 +195,46 @@ let element = div().with_animation(
 但仍通过 animation engine 请求 layout animation frame，因为 closure 可以修改任意
 element builder 状态。
 
-## Scene 与 nova-gfx 数据通道
+## Scene 与 Nova 动画路径
 
-可参与视觉动画的 scene primitive 可以携带 `SceneAnimationId`。nova-gfx frame
-upload 路径会记录 packed animation binding，包含：
+视觉 scene value 随 retained scene 传递，并作为打包后的 animation binding 上传。
+presentation owner 每帧采样 timeline 和 easing；Nova shader 将结果应用到支持的
+primitive。当前 shader 路径包括 opacity、translation、scale、scale 加 opacity 的
+transform、clip reveal，以及打包后的 opacity/translation/scale group。支持范围因
+primitive 类型而异，不代表每种 draw type 都支持所有属性。影响 layout 的属性仍需 UI
+重新布局；不支持的视觉绑定沿用现有 CPU 或 retained-composite 路径。
 
-- scene animation id；
-- animated primitive kind；
-- primitive buffer index；
-- 为后续扩展保留的数据位。
-
-这是 shader-side interpolation 所需的 renderer 数据通道。对不支持的 primitive、
-custom easing 和 layout property，当前 CPU fallback 仍保持正确。某个属性要宣称完整
-GPU 加速前，应按 primitive 类型继续接入 shader-side interpolation。
+并行视觉 group 将打包契约限制为一条 opacity、translation 和 scale 轨道。每个目标的
+一次呈现采样只提交一个 renderer value，各轨道仍保留独立 timing 和 retarget 状态。这与
+[Qt Quick Animator](https://doc.qt.io/qt-6/qml-qtquick-animator.html) 和 [Avalonia
+Composition](https://docs.avaloniaui.net/docs/graphics-animation/composition-animations)
+采用的 retained scene 与 render-thread 分工相近，但 GPUI 目前没有它们完整的 style
+transition 或属性覆盖范围。
 
 ## 当前不足与改进方向
 
-当前 engine 已经建立框架契约和调度基础，但还不是完整端到端动画系统。主要不足包括：
+支持的 retained presentation 视觉轨道已可在不调用所属 view `Render` 的情况下推进，
+但引擎仍有以下明确缺口：
 
-- GPU 加速目前是数据通道，不是完整 shader 路径。Scene primitive 可以携带
-  animation id，nova-gfx 也可以上传 animation binding，但 primitive shader 仍需要
-  针对 opacity、transform、color、blur 和 shadow 做属性级插值，才能称为完整 GPU
-  加速。
-- Transition metadata 已存在，但 style diff 应用还不完整。engine 可以描述哪些属性
-  应该 transition，但仍需要 computed style 的 previous/current 比较层，才能自动从旧
-  style 值过渡到新 style 值。
-- 旧 closure 动画安全但成本较高。closure 可能修改任意 element builder 状态，所以必须
-  使用 layout driver。这保留了兼容性，但即使 closure 只改 opacity 或 transform，也可能
-  notify view 并重新计算 layout。
-- `Easing::Custom` 只适合运行时路径。它适用于旧动画 closure，但不能可靠序列化进
-  `StyleRefinement`，也不能直接由 GPU shader 执行，必须显式 fallback。
-- Grouped timeline 已由 engine 拥有，但仍是低层 API。GPUI 还没有提供 style-diff
-  driven 的 sequence 编排、可复用 motion token、父子传播或 timeline reuse pool。
-- Layout 动画仍然受 CPU 限制。对影响 layout 的属性这是正确设计，但在深层 element tree
-  中大量动画 width、height、margin 或 padding 仍会昂贵。
-- 调用方为 engine-owned timeline 提供 bounds 时，paint invalidation 已能精确标记区域。
-  但所有 animated primitive 和 CPU fallback 路径的自动 bounds 发现仍未完整。
-- 编写体验仍处于早期。Transition builder 和 grouped timeline API 可用，但 GPUI 还没有
-  提供 grouped transition、可复用 motion token 或 reduced-motion policy 这类更高层
-  helper。
-- 可观测性还不完整。测试覆盖了 timing、scheduling 和 nova binding packing，但运行时
-  diagnostics 应继续暴露活跃动画数量、driver fallback 原因、layout-vs-paint frame 数量和
-  长时间运行动画。
+- `Transition` 会保存 metadata；自动比较 computed style 前后值并启动 transition 尚未实现。
+- 并行视觉 group 目前只支持 opacity、translation 和 scale。Rotation、blur、clip reveal
+  和显式共享 pivot 的 transform 继续走各自的单轨或 composite 路径。
+- 旧 closure wrapper 无法判断它修改了哪些属性，因此仍使用 UI/layout invalidation。
+  纯视觉变化应使用按属性描述的 retained animation。
+- 影响 layout 的动画仍由 UI 所有；在深层树中仍可能产生较高成本。
+- 自动 dirty-bounds 发现，以及 driver fallback 和活跃动画数量的诊断尚未完整。
+- Windows DX12/Vulkan 已有独立原生 presentation owner。Linux Wayland/X11 仍需完成相同的
+  所有权切分和原生生命周期验证。
 
-性能改进应优先处理最大的可避免成本：
+性能结论必须来自实际工作负载。packet 自有 scratch storage 已避免呈现采样时重复创建
+临时集合，但在称为实测收益前，仍需比较 CPU p50/p95/p99、上传成本、帧间隔和输入延迟。
 
-1. 实现 style-diff driven transition，让纯视觉变化不再依赖 closure wrapper。
-2. 为已携带 `SceneAnimationId` 的 GPU-eligible primitive 完成 shader interpolation。
-3. 添加 fallback diagnostics，让不支持的属性和 custom easing 在开发期可见。
-4. 补完整 CPU paint fallback 的自动 dirty bounds 发现。
-5. 等底层属性路径稳定后，再添加更高层 motion helper。
+后续优先级：
+
+1. 增加 computed-style diff，让常见视觉 transition 不需要 closure 或逐属性样板代码。
+2. 仅在保持明确属性语义且一次 renderer 更新可以表达时，扩展并行 retained 轨道。
+3. 补充 fallback diagnostics 和 CPU paint 路径的自动 dirty-bounds 发现。
+4. 先比较 Windows DX12/Vulkan 的 CPU、上传、帧间隔和输入延迟，再接纳后续热路径改动。
 
 ## 实现边界
 
@@ -205,6 +253,30 @@ rtk cargo test -p gpui animation
 rtk cargo test -p gpui window::tests
 rtk cargo test -p gpui nova
 ```
+
+### Animation 性能测试台
+
+`animation_perf_lab` 会打开一个真实窗口，展示 retained 视觉动画属性、spring retarget，
+以及单独对照的 layout/color callback 动画。compositor 轨道以往返方向无限重复，避免只因
+动画最终到达终点就误判通过。测基线前会先填满 256 个样本的间隔历史，避免 surface 启动时的
+间隔污染稳态门槛。200 ms UI `Render` 阻塞门槛记录精确起止时间，按成功 present 时间戳检查
+阻塞区间内每个样本及首尾覆盖；相邻样本间隔须小于基准中位数的 1.8 倍，每个样本中的活动
+视觉轨道合成值都必须变化，UI `Render` 计数在阻塞边界间保持不变。样本历史溢出会判失败。
+持续报告对每个测量区间执行相同的逐样本和帧间隔检查；timeline 是否到达终点不作为通过条件。
+最近 256 项间隔分位数、窗口回调的帧间隔和 present 间隔 p50、p95、p99 仅作为辅助数据。
+Windows 报告还会给出成功样本对应的 DWM 节拍等待、winit 事件队列、逐窗口派发和 active present
+阶段最大耗时，用于定位间隔；这些阶段数据不能替代或放宽逐帧连续性检查。
+
+Windows 上同时构建 Nova 两种后端，并分别运行：
+
+```powershell
+cargo run --manifest-path crates/gpui/Cargo.toml --example animation_perf_lab --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan -- --backend=nova-dx12 --copies=4 --seconds=30
+cargo run --manifest-path crates/gpui/Cargo.toml --example animation_perf_lab --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan -- --backend=nova-vulkan --copies=4 --seconds=30
+```
+
+`--copies` 增加 retained 轨道数量；`--seconds` 控制完整测量时长。动画样本间隔分位数和最大值
+取最近 256 个活动动画 present 间隔。窗口回调时间分位数是另一组辅助指标，不能替代成功
+present 的样本连续性记录。
 
 如果没有无关格式漂移，可以跑全 workspace formatting；否则对触碰文件做定向
 format check。checkout 中存在项目 clippy 脚本时优先使用该脚本。

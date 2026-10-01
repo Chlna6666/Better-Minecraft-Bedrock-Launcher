@@ -392,11 +392,7 @@ impl ForegroundWorkSpan {
         span
     }
 
-    fn new(
-        kind: ForegroundWorkKind,
-        window_id: Option<u64>,
-        seal_idle_on_drop: bool,
-    ) -> Self {
+    fn new(kind: ForegroundWorkKind, window_id: Option<u64>, seal_idle_on_drop: bool) -> Self {
         let started_at = Instant::now();
         let validity = with_state(|state| {
             state.active_work_depth = state.active_work_depth.saturating_add(1);
@@ -536,9 +532,7 @@ impl ProfilerState {
         self.interval.started_at.get_or_insert(event.started_at);
 
         let duration = event.duration();
-        if matches!(event.kind, ForegroundWorkKind::TaskPoll { .. })
-            && duration < TASK_POLL_FLOOR
-        {
+        if matches!(event.kind, ForegroundWorkKind::TaskPoll { .. }) && duration < TASK_POLL_FLOOR {
             self.interval.small_poll_count = self.interval.small_poll_count.saturating_add(1);
             self.interval.small_poll_total += duration;
             return;
@@ -586,10 +580,9 @@ impl ProfilerState {
 
     fn has_unexpired_pending_frame(&mut self, now: Instant) -> bool {
         for window in self.windows.values_mut() {
-            if window
-                .pending_frame
-                .is_some_and(|frame| now.saturating_duration_since(frame.request_at) >= PENDING_FRAME_DEADLINE)
-            {
+            if window.pending_frame.is_some_and(|frame| {
+                now.saturating_duration_since(frame.request_at) >= PENDING_FRAME_DEADLINE
+            }) {
                 window.pending_frame = None;
             }
         }
@@ -624,10 +617,7 @@ impl ProfilerState {
         self.snapshots.push_back((sequence, snapshot));
     }
 
-    fn snapshots_since(
-        &self,
-        next_sequence: &mut u64,
-    ) -> CollectedForegroundIntervals {
+    fn snapshots_since(&self, next_sequence: &mut u64) -> CollectedForegroundIntervals {
         let first_retained = self
             .snapshots
             .front()
@@ -748,7 +738,8 @@ pub(crate) fn record_frame_presented(window_id: u64, presented_at: Instant) {
         };
 
         let between = |start: Option<Instant>, end: Option<Instant>| {
-            start.zip(end)
+            start
+                .zip(end)
                 .map(|(start, end)| end.saturating_duration_since(start))
         };
         let sample = FramePipelineSample {
@@ -828,7 +819,6 @@ pub(crate) fn record_frame_no_present(window_id: u64) {
     });
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,7 +834,10 @@ mod tests {
         }
     }
 
-    fn snapshot(events: Vec<ForegroundWorkSample>, dropped_events: u64) -> ForegroundIntervalSnapshot {
+    fn snapshot(
+        events: Vec<ForegroundWorkSample>,
+        dropped_events: u64,
+    ) -> ForegroundIntervalSnapshot {
         let started_at = events
             .first()
             .map(|event| event.started_at)
@@ -881,7 +874,10 @@ mod tests {
 
         assert_eq!(incident.trigger, HangTrigger::Threshold);
         assert_eq!(incident.contributors.len(), 1);
-        assert_eq!(incident.contributors[0].duration(), Duration::from_millis(12));
+        assert_eq!(
+            incident.contributors[0].duration(),
+            Duration::from_millis(12)
+        );
     }
 
     #[test]

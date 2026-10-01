@@ -201,8 +201,9 @@ impl<V: EntityInputHandler> InputHandler for ElementInputHandler<V> {
     }
 
     fn prefers_ime_for_printable_keys(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        self.view
-            .update(cx, |view, cx| view.prefers_ime_for_printable_keys(window, cx))
+        self.view.update(cx, |view, cx| {
+            view.prefers_ime_for_printable_keys(window, cx)
+        })
     }
 
     fn text_input_editable_range(

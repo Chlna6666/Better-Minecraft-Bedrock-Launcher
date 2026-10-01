@@ -252,6 +252,8 @@ impl NovaRenderer {
                     first_frame_reported: false,
                     submitted_frames: 0,
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
+                    active_presentation_packet: None,
+                    pending_animation_completions: SmallVec::new(),
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-dx12", target_os = "windows")))]
@@ -376,6 +378,8 @@ impl NovaRenderer {
                     first_frame_reported: false,
                     submitted_frames: 0,
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
+                    active_presentation_packet: None,
+                    pending_animation_completions: SmallVec::new(),
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-metal", target_os = "macos")))]
@@ -524,6 +528,8 @@ impl NovaRenderer {
                     first_frame_reported: false,
                     submitted_frames: 0,
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
+                    active_presentation_packet: None,
+                    pending_animation_completions: SmallVec::new(),
                 })
             }
             #[cfg(not(all(

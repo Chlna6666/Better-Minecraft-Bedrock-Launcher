@@ -239,7 +239,7 @@ mod tests {
         child.insert_animated_primitive(
             crate::PolychromeSprite {
                 order: 2,
-                pad: 0,
+                sampling: 0,
                 grayscale: false,
                 opacity: 1.0,
                 animation_id: None,

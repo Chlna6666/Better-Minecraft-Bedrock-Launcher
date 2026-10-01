@@ -97,7 +97,10 @@ impl LineLayout {
                         glyph
                     })
                     .collect();
-                right_runs.push(ShapedRun { font_id: run.font_id, glyphs });
+                right_runs.push(ShapedRun {
+                    font_id: run.font_id,
+                    glyphs,
+                });
             }
         }
 

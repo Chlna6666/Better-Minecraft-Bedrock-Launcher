@@ -1,8 +1,6 @@
 use super::state::ElementVisualTransform;
 use super::*;
-use crate::element::{
-    RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey,
-};
+use crate::element::{RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey};
 use std::borrow::Borrow;
 
 pub(crate) struct DeferredDraw {
@@ -270,8 +268,16 @@ pub(crate) struct PrepaintStateIndex {
 impl PrepaintStateIndex {
     pub(crate) fn rebased_from(&self, source: &Self, target: &Self) -> Option<Self> {
         Some(Self {
-            hitboxes_index: rebase_index(self.hitboxes_index, source.hitboxes_index, target.hitboxes_index)?,
-            tooltips_index: rebase_index(self.tooltips_index, source.tooltips_index, target.tooltips_index)?,
+            hitboxes_index: rebase_index(
+                self.hitboxes_index,
+                source.hitboxes_index,
+                target.hitboxes_index,
+            )?,
+            tooltips_index: rebase_index(
+                self.tooltips_index,
+                source.tooltips_index,
+                target.tooltips_index,
+            )?,
             deferred_draws_index: rebase_index(
                 self.deferred_draws_index,
                 source.deferred_draws_index,
@@ -324,13 +330,19 @@ impl PaintIndex {
                 target.debug_bounds_index,
             )?,
             mouse_listeners_index: rebase_index(
-                self.mouse_listeners_index, source.mouse_listeners_index, target.mouse_listeners_index,
+                self.mouse_listeners_index,
+                source.mouse_listeners_index,
+                target.mouse_listeners_index,
             )?,
             input_handlers_index: rebase_index(
-                self.input_handlers_index, source.input_handlers_index, target.input_handlers_index,
+                self.input_handlers_index,
+                source.input_handlers_index,
+                target.input_handlers_index,
             )?,
             cursor_styles_index: rebase_index(
-                self.cursor_styles_index, source.cursor_styles_index, target.cursor_styles_index,
+                self.cursor_styles_index,
+                source.cursor_styles_index,
+                target.cursor_styles_index,
             )?,
             window_control_hitboxes_index: rebase_index(
                 self.window_control_hitboxes_index,
@@ -343,7 +355,9 @@ impl PaintIndex {
                 target.accessed_element_states_index,
             )?,
             tab_handle_index: rebase_index(
-                self.tab_handle_index, source.tab_handle_index, target.tab_handle_index,
+                self.tab_handle_index,
+                source.tab_handle_index,
+                target.tab_handle_index,
             )?,
             line_layout_index: self
                 .line_layout_index
@@ -358,11 +372,7 @@ fn rebase_index(value: usize, source: usize, target: usize) -> Option<usize> {
 
 impl Frame {
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn record_debug_bounds(
-        &mut self,
-        selector: String,
-        bounds: Bounds<Pixels>,
-    ) {
+    pub(crate) fn record_debug_bounds(&mut self, selector: String, bounds: Bounds<Pixels>) {
         self.debug_bounds.insert(selector.clone(), bounds);
         self.debug_bounds_records.push((selector, bounds));
     }
@@ -514,9 +524,10 @@ impl Frame {
             }
         }
 
-        self.has_continuous_mouse_move_listener = self.mouse_listeners.iter().any(|listener| {
-            listener.handles(TypeId::of::<MouseMoveEvent>(), true)
-        });
+        self.has_continuous_mouse_move_listener = self
+            .mouse_listeners
+            .iter()
+            .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
         self.scene.finish_retaining_revision(&prev_frame.scene);
     }
 
@@ -581,15 +592,13 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        let input_handler_target =
-            FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len());
+        let input_handler_target = FRAME_MIN_RETAINED_CAPACITY.max(self.input_handlers.len());
         trim_frame_vec_capacity(
             &mut self.input_handlers,
             input_handler_target,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        let tooltip_request_target =
-            FRAME_MIN_RETAINED_CAPACITY.max(self.tooltip_requests.len());
+        let tooltip_request_target = FRAME_MIN_RETAINED_CAPACITY.max(self.tooltip_requests.len());
         trim_frame_vec_capacity(
             &mut self.tooltip_requests,
             tooltip_request_target,
@@ -668,8 +677,7 @@ impl Frame {
         trim_vec_against!(retained_scene_segments);
         trim_vec_against!(retained_element_order);
 
-        let ranges_target =
-            FRAME_MIN_RETAINED_CAPACITY.max(current.retained_element_ranges.len());
+        let ranges_target = FRAME_MIN_RETAINED_CAPACITY.max(current.retained_element_ranges.len());
         if self.retained_element_ranges.capacity()
             > ranges_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
         {
@@ -715,10 +723,8 @@ impl Frame {
                 self.retained_replay_scratch.shrink_to(floor);
                 self.retained_layout_semantics
                     .shrink_to(floor.max(self.retained_layout_semantics.len()));
-                self.tab_stops.trim_retained_capacity(matches!(
-                    level,
-                    GpuiMemoryTrimLevel::Aggressive
-                ));
+                self.tab_stops
+                    .trim_retained_capacity(matches!(level, GpuiMemoryTrimLevel::Aggressive));
                 #[cfg(any(test, feature = "test-support"))]
                 {
                     self.debug_bounds

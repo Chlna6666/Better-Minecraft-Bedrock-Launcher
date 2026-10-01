@@ -68,10 +68,7 @@ impl BackgroundExecutor {
         Task::spawned(task)
     }
 
-    fn schedule(
-        &self,
-        label: Option<TaskLabel>,
-    ) -> impl Fn(Runnable) + Send + Sync + 'static {
+    fn schedule(&self, label: Option<TaskLabel>) -> impl Fn(Runnable) + Send + Sync + 'static {
         let dispatcher = self.dispatcher.clone();
         move |runnable| dispatcher.dispatch(runnable, label)
     }

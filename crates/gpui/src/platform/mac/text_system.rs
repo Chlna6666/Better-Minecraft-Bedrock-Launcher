@@ -1,9 +1,9 @@
 use crate::{
-    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
-    FontRun, FontStyle, FontWeight, GlyphId, LineLayout, MissingGlyph, MissingGlyphSink, Pixels,
-    PlatformTextSystem, Point, RenderGlyphParams, Result, SUBPIXEL_VARIANTS_X, ShapedGlyph,
-    ShapedRun, SharedString, Size,
-    point, px, size, swap_rgba_pa_to_bgra_buffer,
+    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId,
+    FontMetrics, FontRun, FontStyle, FontWeight, GlyphId, LineLayout, MissingGlyph,
+    MissingGlyphSink, Pixels, PlatformTextSystem, Point, RenderGlyphParams, Result,
+    SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size, point, px, size,
+    swap_rgba_pa_to_bgra_buffer,
 };
 use anyhow::anyhow;
 use cocoa::appkit::CGFloat;
@@ -603,9 +603,10 @@ impl MacTextSystemState {
         if font.family_name().eq_ignore_ascii_case("LastResort") {
             return true;
         }
-        font.postscript_name()
-            .as_deref()
-            .is_some_and(|name| name.trim_start_matches('.').eq_ignore_ascii_case("LastResort"))
+        font.postscript_name().as_deref().is_some_and(|name| {
+            name.trim_start_matches('.')
+                .eq_ignore_ascii_case("LastResort")
+        })
     }
 
     fn missing_glyphs(

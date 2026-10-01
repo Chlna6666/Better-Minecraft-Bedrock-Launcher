@@ -1,10 +1,10 @@
 use std::{any::TypeId, sync::Arc};
 
-use anyhow::Result;
 use crate::{
     AnimationQueueSnapshot, App, BitmapPoolSnapshot, ImageCacheError, RenderImage,
     compressed_cache_snapshot, performance_metrics_snapshot,
 };
+use anyhow::Result;
 
 use super::asset_loading::cached_asset_output;
 
@@ -155,10 +155,9 @@ impl App {
                         .saturating_add(image.resident_byte_len());
                 }
             } else if *type_id == compressed_type {
-                if let Some(Ok(bytes)) =
-                    cached_asset_output::<Result<crate::CompressedImageBytes, ImageCacheError>>(
-                        entry.as_ref(),
-                    )
+                if let Some(Ok(bytes)) = cached_asset_output::<
+                    Result<crate::CompressedImageBytes, ImageCacheError>,
+                >(entry.as_ref())
                 {
                     snapshot.compressed_count = snapshot.compressed_count.saturating_add(1);
                     snapshot.compressed_bytes =

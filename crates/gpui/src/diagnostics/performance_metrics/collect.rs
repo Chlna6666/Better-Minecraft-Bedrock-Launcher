@@ -182,11 +182,8 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         atlas_textures: shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize,
         last_draw_time: (last_draw_micros > 0).then(|| Duration::from_micros(last_draw_micros)),
         present_fps,
-        dirty_to_present_average: (dirty_to_present_count > 0).then(|| {
-            Duration::from_micros(
-                dirty_to_present_total_micros / dirty_to_present_count,
-            )
-        }),
+        dirty_to_present_average: (dirty_to_present_count > 0)
+            .then(|| Duration::from_micros(dirty_to_present_total_micros / dirty_to_present_count)),
         dirty_to_present_max: (dirty_to_present_count > 0)
             .then(|| Duration::from_micros(dirty_to_present_max_micros)),
         dirty_to_present_count: dirty_to_present_count as usize,
@@ -242,6 +239,9 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
             .load(Ordering::Relaxed) as usize,
         direct_present_count: shared_metrics()
             .direct_present_count
+            .load(Ordering::Relaxed) as usize,
+        presentation_animation_distinct_sample_count: shared_metrics()
+            .presentation_animation_distinct_sample_count
             .load(Ordering::Relaxed) as usize,
         backdrop_blur_frame_count: shared_metrics()
             .backdrop_blur_frame_count

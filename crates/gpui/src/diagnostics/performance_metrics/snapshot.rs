@@ -78,6 +78,8 @@ pub struct PerformanceMetricsSnapshot {
     pub retained_present_count: usize,
     /// Number of frames presented directly to the swapchain since process start.
     pub direct_present_count: usize,
+    /// Number of successfully presented frames whose first animation sample differed from the previous one.
+    pub presentation_animation_distinct_sample_count: usize,
     /// Number of frames that submitted backdrop blur work since process start.
     pub backdrop_blur_frame_count: usize,
     /// Full-window pixels sampled by the latest retained present copy.

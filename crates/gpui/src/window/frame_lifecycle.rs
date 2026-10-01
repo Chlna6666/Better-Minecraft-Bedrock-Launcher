@@ -65,10 +65,40 @@ impl DirtyFrameSchedulingClass {
 }
 
 impl Window {
+    pub(crate) fn presentation_animation_completed(
+        &mut self,
+        completion: crate::SceneAnimationCompletion,
+    ) {
+        let mut animation_engine = self.animation_engine.borrow_mut();
+        if animation_engine
+            .complete_scene_animation(&completion)
+            .is_none()
+        {
+            return;
+        }
+        let has_active_timelines = animation_engine.has_active_timelines();
+        drop(animation_engine);
+
+        if !has_active_timelines {
+            self.animation_engine_frame_driver.set(None);
+        }
+
+        if let (Some(view_id), Some(retained_id)) =
+            (completion.view_id, completion.retained_id.as_ref())
+            && self
+                .invalidator
+                .invalidate_retained_path(view_id, Some(retained_id), true)
+        {
+            self.request_platform_frame(PlatformFrameRequest::ui_commit());
+        }
+    }
+
     pub(crate) fn record_rendered_view(&self, entity_id: EntityId, type_name: &'static str) {
-        self.dirty_frame_diagnostics
-            .borrow_mut()
-            .record_rendered_view(entity_id, type_name);
+        let mut diagnostics = self.dirty_frame_diagnostics.borrow_mut();
+        diagnostics.record_rendered_view(entity_id, type_name);
+        if self.view_dirty_scope(entity_id) == Some(ViewDirtyScope::TraversalAncestor) {
+            diagnostics.record_rendered_traversal_ancestor();
+        }
     }
 
     pub(crate) fn record_selective_splice_attempt(&self) {
@@ -81,6 +111,12 @@ impl Window {
         self.dirty_frame_diagnostics
             .borrow_mut()
             .record_selective_splice_hit();
+    }
+
+    pub(crate) fn record_selective_splice_miss(&self, reason: SelectiveSpliceMissReason) {
+        self.dirty_frame_diagnostics
+            .borrow_mut()
+            .record_selective_splice_miss(reason);
     }
 
     #[track_caller]
@@ -349,7 +385,9 @@ impl Window {
                     if window.invalidator.is_dirty() && !window.refreshing {
                         window.dirty_frame_scheduled = true;
                         window.record_frame_request_reason(FrameRequestReason::ProgressiveWork);
-                        window.request_platform_frame(PlatformFrameRequest::ui_commit_and_presentation());
+                        window.request_platform_frame(
+                            PlatformFrameRequest::ui_commit_and_presentation(),
+                        );
                     }
                 }));
             })
@@ -450,7 +488,9 @@ impl Window {
                 .or_else(|| self.invalidator.pending_dirty_started_at()),
         );
         self.platform_window.request_frame(options);
-        self.arm_platform_frame_watchdog(options);
+        if !options.is_presentation_only() {
+            self.arm_platform_frame_watchdog(options);
+        }
     }
 
     fn arm_platform_frame_watchdog(&self, options: PlatformFrameRequest) {
@@ -618,10 +658,14 @@ impl Window {
 
         if presentation.submitted_early && self.needs_present.get() {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            self.request_platform_frame(PlatformFrameRequest::presentation());
+            let request = if self.presentation_state.has_pending_scene() {
+                PlatformFrameRequest::ui_commit()
+            } else {
+                PlatformFrameRequest::presentation()
+            };
+            self.request_platform_frame(request);
         }
     }
-
 
     /// Advance renderer-owned retained animation without entering App/entity state.
     fn run_presentation_phase(
@@ -635,17 +679,15 @@ impl Window {
             debug_assert!(self.presentation_state.activate_pending());
         }
         let preserve_unpresented_damage = self.needs_present.get();
-        let presentation_tick =
-            self.run_animation_engine_frame(preserve_unpresented_damage);
-        let presentation_ready =
-            preserve_unpresented_damage || presentation_tick;
+        let presentation_tick = self.run_animation_engine_frame(preserve_unpresented_damage);
+        let presentation_ready = preserve_unpresented_damage || presentation_tick;
         let submitted_early = should_present_before_ui_commit(
             presentation_ready,
             frame_request,
             self.has_completed_rendered_frame,
             self.visibility.is_visible(),
             self.platform_window.is_minimized(),
-        ) && self.present_framebuffer_only() == PlatformFrameResult::Submitted;
+        ) && self.present_framebuffer_only().is_accepted();
 
         PresentationPhaseOutcome { submitted_early }
     }
@@ -705,20 +747,34 @@ impl Window {
             return false;
         }
 
-        let tick = self
-            .animation_engine
-            .borrow_mut()
-            .tick_driver(driver, self.animation_time());
+        let has_active_presentation_animations =
+            self.platform_window.has_active_presentation_animations();
+        let tick = {
+            let mut animation_engine = self.animation_engine.borrow_mut();
+            if has_active_presentation_animations {
+                animation_engine.tick_driver_with_compositor(driver, self.animation_time())
+            } else {
+                animation_engine.tick_driver(driver, self.animation_time())
+            }
+        };
+        for completion in &tick.completion_events {
+            if let (Some(view_id), Some(retained_id)) =
+                (completion.view_id, completion.retained_id.as_ref())
+            {
+                let _ = self
+                    .invalidator
+                    .invalidate_retained_path(view_id, Some(retained_id), true);
+            }
+        }
         {
             let presentation_scene = self
                 .presentation_state
                 .active_scene()
                 .unwrap_or(&self.rendered_frame.scene);
-            let mut tick_blur_damage = presentation_scene
-                .backdrop_blur_animation_damage_plan(
-                    self.presentation_state.active_engine_animation_values(),
-                    &tick.scene_values,
-                );
+            let mut tick_blur_damage = presentation_scene.backdrop_blur_animation_damage_plan(
+                self.presentation_state.active_engine_animation_values(),
+                &tick.scene_values,
+            );
             if preserve_unpresented_damage {
                 tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
             }
@@ -746,7 +802,7 @@ impl Window {
             viewport.scale(self.scale_factor),
             DIRTY_REGION_FULL_REDRAW_RATIO,
         );
-        if tick.active_visual_count > 0
+        if tick.ui_active_visual_count > 0
             && tick.has_gpu_or_paint
             && self.visibility.is_visible()
             && (self.active.get() || self.inactive_animation_engine_enabled)
@@ -759,10 +815,7 @@ impl Window {
             if interval.is_zero() {
                 self.request_animation_engine_frame(driver);
             } else {
-                self.request_animation_engine_frame_at(
-                    driver,
-                    self.animation_time() + interval,
-                );
+                self.request_animation_engine_frame_at(driver, self.animation_time() + interval);
             }
         }
         if tick.has_layout {
@@ -786,7 +839,7 @@ impl Window {
             frame_started_at,
         );
         let draw_frame =
-            !defer_inactive_dirty_draw && (activity.dirty || frame_request.needs_ui_commit());
+            !defer_inactive_dirty_draw && (activity.dirty || frame_request.needs_ui_rebuild());
         let degrade_to_present = draw_frame
             && self.should_degrade_dirty_frame_to_retained_present(frame_request, frame_started_at);
         let submit_visible_frame = draw_frame
@@ -859,7 +912,7 @@ impl Window {
         } else if decision.degrade_to_present {
             let result = self.present_framebuffer_only();
             self.refreshing = false;
-            result == PlatformFrameResult::Submitted
+            result.is_accepted()
         } else if decision.defer_inactive_dirty_draw {
             self.refreshing = false;
             log::trace!(
@@ -875,7 +928,7 @@ impl Window {
         } else if decision.draw_frame {
             self.draw_visible_frame(frame_request.needs_presentation(), frame_budget, cx)
         } else if decision.present_frame {
-            self.present_framebuffer_only() == PlatformFrameResult::Submitted
+            self.present_framebuffer_only().is_accepted()
         } else if decision.activity.active {
             record_retained_frame_skip();
             false
@@ -892,18 +945,13 @@ impl Window {
         presented_frame
     }
 
-    fn commit_visible_frame_after_presentation(
-        &mut self,
-        frame_budget: Duration,
-        cx: &mut App,
-    ) {
+    fn commit_visible_frame_after_presentation(&mut self, frame_budget: Duration, cx: &mut App) {
         let draw_started_at = Instant::now();
         let arena_clear_needed = measure("frame generation", || {
             #[cfg(feature = "profiler")]
-            let _profile =
-                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
-                    self.handle.window_id().as_u64(),
-                );
+            let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
+                self.handle.window_id().as_u64(),
+            );
             self.draw(cx)
         });
         let draw_elapsed = draw_started_at.elapsed();
@@ -920,15 +968,14 @@ impl Window {
         let draw_started_at = Instant::now();
         let arena_clear_needed = measure("frame generation", || {
             #[cfg(feature = "profiler")]
-            let _profile =
-                crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
-                    self.handle.window_id().as_u64(),
-                );
+            let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::draw(
+                self.handle.window_id().as_u64(),
+            );
             self.draw(cx)
         });
         let draw_elapsed = draw_started_at.elapsed();
         let presented_frame = if presentation || self.needs_present.get() {
-            measure("frame presentation", || self.present()) == PlatformFrameResult::Submitted
+            measure("frame presentation", || self.present()).is_accepted()
         } else {
             false
         };
@@ -959,7 +1006,7 @@ impl Window {
             let first_rendered_entity = dirty_frame_diagnostics.first_rendered_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::warn!(
-                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} degraded_count={} recovery_full_redraw_count={} deadline_remaining_at_prepaint_start_us={:?} deadline_remaining_at_layout_start_us={:?} deadline_remaining_at_paint_start_us={:?} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame generation budget hit: window={} elapsed={:?} budget={:?} progressive_budget={:?} progressive_degraded={} degraded_count={} recovery_full_redraw_count={} deadline_remaining_at_prepaint_start_us={:?} deadline_remaining_at_layout_start_us={:?} deadline_remaining_at_paint_start_us={:?} layout_nodes={} measured_layout_nodes={} layout_roots={} layout_cache_hits={} layout_cache_misses={} layout_cache_reused_roots={} layout_cache_saved_nodes={} layout_bounds_cache_hits={} layout_bounds_cache_misses={} text_layout_hits={} text_layout_reuses={} text_layout_misses={} list_measured_items={} scene_primitives={} scene_batches={} scene_replayed_primitives={} scene_retained_capacity={} frame_retained_capacity={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} selective_splice_misses={:?} rendered_views={} rendered_traversal_ancestor_renders={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_rendered_entity={:?} first_rendered_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
                 generation_elapsed,
                 warning_budget,
@@ -994,7 +1041,9 @@ impl Window {
                 dirty_frame_diagnostics.traversal_ancestor_views,
                 dirty_frame_diagnostics.selective_splice_attempts,
                 dirty_frame_diagnostics.selective_splice_hits,
+                dirty_frame_diagnostics.selective_splice_miss_reasons(),
                 dirty_frame_diagnostics.rendered_views,
+                dirty_frame_diagnostics.rendered_traversal_ancestors,
                 &dirty_frame_diagnostics.rendered_view_types
                     [..dirty_frame_diagnostics.rendered_view_type_count],
                 dirty_frame_diagnostics.rendered_view_type_overflow,
@@ -1044,7 +1093,10 @@ impl Window {
             && self.animation_dirty_region.is_empty()
             && !self.recently_received_input(now)
             && self.animation_engine_frame_driver.get().is_none()
-            && !self.dirty_frame_diagnostics.borrow().is_interactive_or_animating()
+            && !self
+                .dirty_frame_diagnostics
+                .borrow()
+                .is_interactive_or_animating()
             && self.frame_throttle.should_delay(now)
             && self.rendered_frame.scene.len() != 0
     }
@@ -1167,7 +1219,7 @@ impl Window {
         let dirty_frame_diagnostics =
             std::mem::take(&mut *self.dirty_frame_diagnostics.borrow_mut());
         log::trace!(
-            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} rendered_views={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
+            "gpui complete_frame: window={} was_dirty={} refreshing={} idle_render_frames={} needs_present={} trim_policy={:?} completion={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} selective_splice_attempts={} selective_splice_hits={} selective_splice_misses={:?} rendered_views={} rendered_traversal_ancestor_renders={} rendered_view_types={:?} rendered_view_type_overflow={} dirty_notify_invalidations={} frame_request_reasons=0x{:04x} first_frame_request={:?} first_view_dirty_entity={:?} first_rendered_entity={:?} first_notify_entity={:?}",
             self.handle.window_id().as_u64(),
             was_dirty,
             self.refreshing,
@@ -1181,7 +1233,9 @@ impl Window {
             dirty_frame_diagnostics.traversal_ancestor_views,
             dirty_frame_diagnostics.selective_splice_attempts,
             dirty_frame_diagnostics.selective_splice_hits,
+            dirty_frame_diagnostics.selective_splice_miss_reasons(),
             dirty_frame_diagnostics.rendered_views,
+            dirty_frame_diagnostics.rendered_traversal_ancestors,
             &dirty_frame_diagnostics.rendered_view_types
                 [..dirty_frame_diagnostics.rendered_view_type_count],
             dirty_frame_diagnostics.rendered_view_type_overflow,
@@ -1247,6 +1301,7 @@ fn should_present_before_ui_commit(
 ) -> bool {
     presentation_ready
         && frame_request.needs_presentation()
+        && !frame_request.needs_ui_commit()
         && has_committed_scene
         && visible
         && !minimized
@@ -1257,10 +1312,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_work_precedes_coalesced_ui_commit() {
-        assert!(should_present_before_ui_commit(
+    fn fresh_ui_commit_precedes_old_scene_presentation() {
+        assert!(!should_present_before_ui_commit(
             true,
             PlatformFrameRequest::ui_commit_and_presentation(),
+            true,
+            true,
+            false,
+        ));
+        assert!(should_present_before_ui_commit(
+            true,
+            PlatformFrameRequest::presentation(),
             true,
             true,
             false,

@@ -50,8 +50,10 @@ pub trait Styled: Sized {
     /// the element's opacity, ancestor opacity, scale, corner radii and clipping.
     /// Its own background, border and children are painted after the filter and
     /// remain sharp. Accepts a radius such as `px(3.0)` or a [`crate::BackdropBlurStyle`].
-    fn backdrop_blur(mut self, blur: impl Into<crate::BackdropBlurStyle>) -> Self {
-        self.style().backdrop_blur = Some(blur.into());
+    /// This filters previously drawn application content, not the desktop or window material.
+    /// Radius and explicit quality settings are preserved by the retained renderer.
+    fn background_blur(mut self, blur: impl Into<crate::BackdropBlurStyle>) -> Self {
+        self.style().background_blur = Some(blur.into());
         self
     }
 
@@ -59,8 +61,10 @@ pub trait Styled: Sized {
     ///
     /// The value is the Gaussian standard deviation (sigma) in logical pixels. The element's
     /// own background, border, text and children are captured together and blurred as one group.
-    fn blur(mut self, sigma: impl Into<crate::Pixels>) -> Self {
-        self.style().blur = Some(sigma.into());
+    /// Filtering does not affect layout or hit testing. Visual-only animation reuses the stable
+    /// source layer; radius animation changes the GPU filter without rebuilding the element tree.
+    fn filter_blur(mut self, sigma: impl Into<crate::Pixels>) -> Self {
+        self.style().filter_blur = Some(sigma.into());
         self
     }
 

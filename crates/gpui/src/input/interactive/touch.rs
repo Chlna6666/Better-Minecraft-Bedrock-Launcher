@@ -31,7 +31,6 @@ impl InputEvent for TouchEvent {
     }
 }
 
-
 /// A direct touch drag claimed by an element before the contact becomes a tap, long press, or pan.
 #[derive(Clone, Debug)]
 pub struct TouchDragEvent {

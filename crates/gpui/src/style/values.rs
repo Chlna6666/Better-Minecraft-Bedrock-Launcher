@@ -320,11 +320,11 @@ pub struct Style {
     pub background: Option<Fill>,
 
     /// Filters content behind this element before painting its own background and children.
-    pub backdrop_blur: Option<BackdropBlurStyle>,
+    pub background_blur: Option<BackdropBlurStyle>,
 
     /// Applies a CSS `filter: blur(...)` to this element's complete painted subtree.
     /// The value is the Gaussian standard deviation (sigma) in logical pixels.
-    pub blur: Option<Pixels>,
+    pub filter_blur: Option<Pixels>,
 
     /// The border color of this element
     pub border_color: Option<Hsla>,
@@ -412,8 +412,8 @@ impl Default for Style {
             flex_shrink: 1.0,
             flex_basis: Length::Auto,
             background: None,
-            backdrop_blur: None,
-            blur: None,
+            background_blur: None,
+            filter_blur: None,
             border_color: None,
             border_style: BorderStyle::default(),
             corner_radii: Corners::default(),

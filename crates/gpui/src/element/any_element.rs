@@ -63,18 +63,13 @@ impl<C: RenderOnce> Element for Component<C> {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let component = &mut self.component;
-        request_layout_component(
-            type_name::<C>(),
-            window,
-            cx,
-            &mut |window, cx| {
-                component
-                    .take()
-                    .unwrap()
-                    .render(window, cx)
-                    .into_any_element()
-            },
-        )
+        request_layout_component(type_name::<C>(), window, cx, &mut |window, cx| {
+            component
+                .take()
+                .unwrap()
+                .render(window, cx)
+                .into_any_element()
+        })
     }
 
     fn prepaint(
@@ -179,8 +174,7 @@ impl AnyElement {
         source: &'static core::panic::Location<'static>,
         ordinal: u32,
     ) -> Self {
-        self.0
-            .set_retained_source_location(source, Some(ordinal));
+        self.0.set_retained_source_location(source, Some(ordinal));
         self
     }
 

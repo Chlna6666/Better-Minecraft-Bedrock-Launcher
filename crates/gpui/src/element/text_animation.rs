@@ -71,32 +71,20 @@ mod tests {
 
     #[test]
     fn visual_text_size_uses_larger_endpoint_as_raster_size() {
-        let animation = VisualTextSizeAnimation::between(
-            px(14.0),
-            px(18.0),
-            TransformOrigin::CENTER,
-        );
+        let animation =
+            VisualTextSizeAnimation::between(px(14.0), px(18.0), TransformOrigin::CENTER);
 
         assert_eq!(animation.raster_font_size(), px(18.0));
         assert_eq!(
             animation.property(),
-            AnimationProperty::scale_opacity(
-                14.0 / 18.0,
-                1.0,
-                1.0,
-                1.0,
-                TransformOrigin::CENTER,
-            )
+            AnimationProperty::scale_opacity(14.0 / 18.0, 1.0, 1.0, 1.0, TransformOrigin::CENTER,)
         );
     }
 
     #[test]
     fn visual_text_size_sanitizes_invalid_endpoints() {
-        let animation = VisualTextSizeAnimation::between(
-            px(f32::NAN),
-            px(-4.0),
-            TransformOrigin::CENTER,
-        );
+        let animation =
+            VisualTextSizeAnimation::between(px(f32::NAN), px(-4.0), TransformOrigin::CENTER);
 
         assert!(animation.raster_font_size().0.is_finite());
         assert!(animation.raster_font_size().0 > 0.0);
@@ -106,13 +94,7 @@ mod tests {
     fn scale_is_a_scale_only_renderer_property() {
         assert_eq!(
             AnimationProperty::scale(0.8, 1.0, TransformOrigin::CENTER),
-            AnimationProperty::scale_opacity(
-                0.8,
-                1.0,
-                1.0,
-                1.0,
-                TransformOrigin::CENTER,
-            )
+            AnimationProperty::scale_opacity(0.8, 1.0, 1.0, 1.0, TransformOrigin::CENTER,)
         );
     }
 }

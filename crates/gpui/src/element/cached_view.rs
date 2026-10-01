@@ -1,15 +1,17 @@
-use super::any_view::{AnyView, AnyWeakView};
 #[cfg(test)]
 use super::any_view::ViewElement;
+use super::any_view::{AnyView, AnyWeakView};
 use super::fingerprint::render_fingerprint;
 use crate::Styled;
+use crate::window::debug_visualization::ViewCacheDebugStatus;
+use crate::window::{
+    CachedViewTraversalContext, RetainedElementRange, SelectiveSpliceMissReason, ViewDirtyScope,
+};
 use crate::{
     AnyElement, App, Bounds, ContentMask, Element, ElementId, Entity, EntityId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, PaintIndex, ParentElement, Pixels, Point,
     PrepaintStateIndex, Render, Style, StyleRefinement, TextStyle, Window, div,
 };
-use crate::window::debug_visualization::ViewCacheDebugStatus;
-use crate::window::{CachedViewTraversalContext, RetainedElementRange, ViewDirtyScope};
 use collections::FxHashSet;
 use refineable::Refineable;
 use std::hash::Hash;
@@ -43,7 +45,6 @@ struct CachedViewCacheKey {
     paint_context: CachedViewPaintContext,
     fingerprint: u64,
 }
-
 
 /// Opaque paint handoff used internally by CachedView reconciliation.
 #[doc(hidden)]
@@ -96,45 +97,56 @@ fn selective_cached_view_target(
     window: &Window,
     ancestor_retained_id: &GlobalElementId,
     parent_state: &CachedViewState,
-) -> Option<SelectiveCachedViewTarget> {
-    let (owner_id, retained_id) = window.invalidator.single_reconcile_target_below(
-        ancestor_retained_id,
-        parent_state.weak_view.view.entity_id(),
-        &window.rendered_frame.dispatch_tree,
-    )?;
+) -> Result<SelectiveCachedViewTarget, SelectiveSpliceMissReason> {
+    let (owner_id, retained_id) = window
+        .invalidator
+        .single_reconcile_target_below(
+            ancestor_retained_id,
+            parent_state.weak_view.view.entity_id(),
+            &window.rendered_frame.dispatch_tree,
+        )
+        .ok_or(SelectiveSpliceMissReason::NoUniqueTarget)?;
     if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
-        return None;
+        return Err(SelectiveSpliceMissReason::TargetNotDirect);
     }
 
     let source_outer = window
         .rendered_frame
         .retained_element_ranges
-        .get(&retained_id)?
+        .get(&retained_id)
+        .ok_or(SelectiveSpliceMissReason::InvalidRetainedRange)?
         .clone();
     if !source_outer.identity_stable
         || source_outer.metadata_range.start < parent_state.metadata_range.start
         || source_outer.metadata_range.end > parent_state.metadata_range.end
     {
-        return None;
+        return Err(SelectiveSpliceMissReason::InvalidRetainedRange);
     }
 
     let state_global_id = window
         .invalidator
-        .cached_view_state_global_id(owner_id, &retained_id)?;
+        .cached_view_state_global_id(owner_id, &retained_id)
+        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?;
     let boxed = window
         .rendered_frame
         .element_states
-        .get(&(state_global_id.clone(), TypeId::of::<CachedViewState>()))?;
+        .get(&(state_global_id.clone(), TypeId::of::<CachedViewState>()))
+        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?;
     let state = boxed
         .inner
-        .downcast_ref::<Option<CachedViewState>>()?
-        .as_ref()?;
+        .downcast_ref::<Option<CachedViewState>>()
+        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?
+        .as_ref()
+        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?;
     if state.weak_view.view.entity_id() != owner_id {
-        return None;
+        return Err(SelectiveSpliceMissReason::TargetStateUnavailable);
     }
 
-    Some(SelectiveCachedViewTarget {
-        view: state.weak_view.upgrade()?,
+    Ok(SelectiveCachedViewTarget {
+        view: state
+            .weak_view
+            .upgrade()
+            .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?,
         state_global_id,
         retained_id,
         traversal_context: state.traversal_context.clone(),
@@ -147,7 +159,7 @@ fn try_selective_cached_view_prepaint(
     parent_state: &CachedViewState,
     window: &mut Window,
     cx: &mut App,
-) -> Option<SelectiveCachedViewPatch> {
+) -> Result<SelectiveCachedViewPatch, SelectiveSpliceMissReason> {
     let target = selective_cached_view_target(window, ancestor_retained_id, parent_state)?;
     let source = &target.source_outer;
 
@@ -155,26 +167,22 @@ fn try_selective_cached_view_prepaint(
         parent_state.prepaint_range.start.clone()..source.prepaint_range.start.clone();
     let source_paint_before =
         parent_state.paint_range.start.clone()..source.paint_range.start.clone();
-    let source_metadata_before =
-        parent_state.metadata_range.start..source.metadata_range.start;
+    let source_metadata_before = parent_state.metadata_range.start..source.metadata_range.start;
     let source_prepaint_tail =
         source.prepaint_range.end.clone()..parent_state.prepaint_range.end.clone();
-    let source_paint_tail =
-        source.paint_range.end.clone()..parent_state.paint_range.end.clone();
-    let source_metadata_tail =
-        source.metadata_range.end..parent_state.metadata_range.end;
+    let source_paint_tail = source.paint_range.end.clone()..parent_state.paint_range.end.clone();
+    let source_metadata_tail = source.metadata_range.end..parent_state.metadata_range.end;
 
     if !window.can_splice_plain_view_target(
         &parent_state.prepaint_range,
         &source.prepaint_range,
         target.view.entity_id(),
-    )
-        || !window.can_reuse_prepaint_fragment(&source_prepaint_before)
+    ) || !window.can_reuse_prepaint_fragment(&source_prepaint_before)
         || !window.can_reuse_paint(&source_paint_before)
         || !window.can_reuse_prepaint_fragment(&source_prepaint_tail)
         || !window.can_reuse_paint(&source_paint_tail)
     {
-        return None;
+        return Err(SelectiveSpliceMissReason::UnsafeFragment);
     }
 
     let context_matches =
@@ -183,16 +191,18 @@ fn try_selective_cached_view_prepaint(
                 && window.current_retained_paint_context() == source.paint_context
         });
     if !context_matches {
-        return None;
+        return Err(SelectiveSpliceMissReason::ContextMismatch);
     }
 
     let parent_prepaint_start = window.prepaint_index();
-    let mut replay = window.begin_prepaint_fragment_replay(&parent_state.prepaint_range)?;
+    let mut replay = window
+        .begin_prepaint_fragment_replay(&parent_state.prepaint_range)
+        .ok_or(SelectiveSpliceMissReason::ReplayUnavailable)?;
 
     let target_prepaint_before_start = window.prepaint_index();
     if !window.reuse_prepaint_fragment(source_prepaint_before.clone(), &mut replay) {
         window.degrade_current_draw();
-        return None;
+        return Err(SelectiveSpliceMissReason::ReplayFailed);
     }
     let target_prepaint_before_end = window.prepaint_index();
 
@@ -203,7 +213,7 @@ fn try_selective_cached_view_prepaint(
         &mut replay,
     ) {
         window.degrade_current_draw();
-        return None;
+        return Err(SelectiveSpliceMissReason::DispatchBoundaryChanged);
     }
 
     let source_target = target.source_outer;
@@ -243,13 +253,13 @@ fn try_selective_cached_view_prepaint(
     let target_prepaint_tail_start = window.prepaint_index();
     if !window.reuse_prepaint_fragment(source_prepaint_tail.clone(), &mut replay) {
         window.degrade_current_draw();
-        return None;
+        return Err(SelectiveSpliceMissReason::ReplayFailed);
     }
     let target_prepaint_tail_end = window.prepaint_index();
 
     cx.entities.extend_accessed(&parent_state.accessed_entities);
 
-    Some(SelectiveCachedViewPatch {
+    Ok(SelectiveCachedViewPatch {
         target: target_patch,
         source_prepaint_tail,
         source_paint_tail,
@@ -258,7 +268,6 @@ fn try_selective_cached_view_prepaint(
         parent_prepaint_range: parent_prepaint_start..target_prepaint_tail_end,
     })
 }
-
 
 /// A weak handle to an explicit cached view boundary.
 ///
@@ -377,11 +386,7 @@ impl AnyView {
     }
 
     /// Create an explicit cached boundary using a caller-supplied stable subtree fingerprint.
-    pub fn cached_with_fingerprint(
-        self,
-        style: StyleRefinement,
-        fingerprint: u64,
-    ) -> CachedView {
+    pub fn cached_with_fingerprint(self, style: StyleRefinement, fingerprint: u64) -> CachedView {
         CachedView::new(self, style, Some(fingerprint))
     }
 
@@ -403,11 +408,7 @@ impl<V: Render> Entity<V> {
     }
 
     /// Wrap this entity in an explicit cached boundary using a caller-supplied stable fingerprint.
-    pub fn cached_with_fingerprint(
-        self,
-        style: StyleRefinement,
-        fingerprint: u64,
-    ) -> CachedView {
+    pub fn cached_with_fingerprint(self, style: StyleRefinement, fingerprint: u64) -> CachedView {
         AnyView::from(self).cached_with_fingerprint(style, fingerprint)
     }
 
@@ -452,7 +453,9 @@ impl Element for CachedView {
             } else {
                 window.record_rendered_view(
                     self.entity_id(),
-                    cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                    cx.entities
+                        .type_name_for_id(self.entity_id())
+                        .unwrap_or("unknown"),
                 );
                 let mut element = self.view.render_element(window, cx);
                 let layout_id = element.request_layout(window, cx);
@@ -558,63 +561,92 @@ impl Element for CachedView {
                             && stable_cache_key
                             && !force_refresh
                             && !window.recovering_degraded_draw();
-
-                    if dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
-                        && !selective_candidate
-                        && log::log_enabled!(log::Level::Trace)
-                    {
-                        log::trace!(
-                            "gpui selective splice blocked: view={} type={} stable_cache_key={} force_refresh={} recovering_degraded={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
-                            self.entity_id().as_u64(),
-                            cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
-                            stable_cache_key,
-                            force_refresh,
-                            window.recovering_degraded_draw(),
-                            window.draw_budget_exhausted(),
-                            targeted_replay,
-                            window.invalidator.active_targeted_element_count(),
-                            window.invalidator.active_generic_dirty_view_count()
-                        );
+                    if dirty_scope == Some(ViewDirtyScope::TraversalAncestor) {
+                        if !stable_cache_key {
+                            window.record_selective_splice_miss(
+                                SelectiveSpliceMissReason::UnstableCacheKey,
+                            );
+                        } else if force_refresh {
+                            window.record_selective_splice_miss(
+                                SelectiveSpliceMissReason::ForcedRefresh,
+                            );
+                        } else if window.recovering_degraded_draw() {
+                            window.record_selective_splice_miss(
+                                SelectiveSpliceMissReason::DegradedRecovery,
+                            );
+                        }
+                        if !selective_candidate && log::log_enabled!(log::Level::Trace) {
+                            log::trace!(
+                                "gpui selective splice blocked: view={} type={} reason={} stable_cache_key={} force_refresh={} recovering_degraded={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
+                                self.entity_id().as_u64(),
+                                cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                                if !stable_cache_key {
+                                    "unstable_cache_key"
+                                } else if force_refresh {
+                                    "forced_refresh"
+                                } else {
+                                    "degraded_recovery"
+                                },
+                                stable_cache_key,
+                                force_refresh,
+                                window.recovering_degraded_draw(),
+                                window.draw_budget_exhausted(),
+                                targeted_replay,
+                                window.invalidator.active_targeted_element_count(),
+                                window.invalidator.active_generic_dirty_view_count()
+                            );
+                        }
                     }
 
-                    if selective_candidate {
+                    let selective_result = if selective_candidate {
                         window.record_selective_splice_attempt();
-                    }
-                    if selective_candidate
-                        && let Some(state) = element_state.as_ref()
-                        && let Some(patch) = try_selective_cached_view_prepaint(
-                            &retained_id,
-                            state,
-                            window,
-                            cx,
-                        )
-                    {
-                        window.record_selective_splice_hit();
-                        window.record_debug_view_cache_status(
-                            bounds,
-                            ViewCacheDebugStatus::Hit,
-                            cx,
-                        );
-                        let mut state = element_state
-                            .take()
-                            .expect("selective traversal requires an existing cache state");
-                        state.prepaint_range = patch.parent_prepaint_range.clone();
-                        return (
-                            CachedViewPrepaintState(CachedViewPrepaintStateKind::Selective(Box::new(patch))),
-                            state,
-                        );
-                    }
-                    if selective_candidate && log::log_enabled!(log::Level::Trace) {
-                        log::trace!(
-                            "gpui selective splice plan miss: view={} type={} retained_id={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
-                            self.entity_id().as_u64(),
-                            cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
-                            retained_id,
-                            window.draw_budget_exhausted(),
-                            targeted_replay,
-                            window.invalidator.active_targeted_element_count(),
-                            window.invalidator.active_generic_dirty_view_count()
-                        );
+                        Some(match element_state.as_ref() {
+                            Some(state) => try_selective_cached_view_prepaint(
+                                &retained_id,
+                                state,
+                                window,
+                                cx,
+                            ),
+                            None => Err(SelectiveSpliceMissReason::TargetStateUnavailable),
+                        })
+                    } else {
+                        None
+                    };
+                    match selective_result {
+                        Some(Ok(patch)) => {
+                            window.record_selective_splice_hit();
+                            window.record_debug_view_cache_status(
+                                bounds,
+                                ViewCacheDebugStatus::Hit,
+                                cx,
+                            );
+                            let mut state = element_state
+                                .take()
+                                .expect("selective traversal requires an existing cache state");
+                            state.prepaint_range = patch.parent_prepaint_range.clone();
+                            return (
+                                CachedViewPrepaintState(CachedViewPrepaintStateKind::Selective(
+                                    Box::new(patch),
+                                )),
+                                state,
+                            );
+                        }
+                        Some(Err(reason)) => {
+                            window.record_selective_splice_miss(reason);
+                            if log::log_enabled!(log::Level::Trace) {
+                                log::trace!(
+                                    "gpui selective splice miss: view={} type={} reason={reason:?} retained_id={} budget_exhausted={} targeted_replay={} active_targets={} generic_dirty_views={}",
+                                    self.entity_id().as_u64(),
+                                    cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                                    retained_id,
+                                    window.draw_budget_exhausted(),
+                                    targeted_replay,
+                                    window.invalidator.active_targeted_element_count(),
+                                    window.invalidator.active_generic_dirty_view_count()
+                                );
+                            }
+                        }
+                        None => {}
                     }
 
                     let cache_debug_status = match element_state.as_ref() {
@@ -839,8 +871,7 @@ impl Element for CachedView {
                                 }
 
                                 let target_paint_start = before_paint_end;
-                                let target_metadata_start =
-                                    window.retained_element_metadata_len();
+                                let target_metadata_start = window.retained_element_metadata_len();
                                 if !window.activate_reconciled_view_dispatch(
                                     target.target_view.entity_id(),
                                 ) {
@@ -878,8 +909,7 @@ impl Element for CachedView {
                                     window.degrade_current_draw();
                                 }
                                 let tail_paint_end = window.paint_index();
-                                let target_paint_tail =
-                                    tail_paint_start..tail_paint_end;
+                                let target_paint_tail = tail_paint_start..tail_paint_end;
                                 if !window.replay_retained_element_metadata_fragment(
                                     &patch.source_prepaint_tail,
                                     &patch.source_paint_tail,
@@ -915,7 +945,6 @@ impl Element for CachedView {
         });
     }
 }
-
 
 #[cfg(test)]
 mod retained_boundary_tests;

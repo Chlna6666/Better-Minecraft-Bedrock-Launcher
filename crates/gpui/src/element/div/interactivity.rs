@@ -290,11 +290,8 @@ impl Interactivity {
         f: PaintContents,
     ) -> Style
     where
-        ResolveSelfScene: FnOnce(
-            &Style,
-            &mut Window,
-            &mut App,
-        ) -> Option<(Range<usize>, Range<usize>)>,
+        ResolveSelfScene:
+            FnOnce(&Style, &mut Window, &mut App) -> Option<(Range<usize>, Range<usize>)>,
         PaintContents: FnOnce(&Style, &mut Window, &mut App),
     {
         self.hovered = hitbox.map(|hitbox| hitbox.is_hovered(window));
@@ -344,9 +341,12 @@ impl Interactivity {
 
                                                 if let Some(drag) = cx.active_drag.as_ref() {
                                                     if let Some(mouse_cursor) = drag.cursor_style {
-                                                        window.set_window_cursor_style(mouse_cursor);
+                                                        window
+                                                            .set_window_cursor_style(mouse_cursor);
                                                     }
-                                                } else if let Some(mouse_cursor) = style.mouse_cursor {
+                                                } else if let Some(mouse_cursor) =
+                                                    style.mouse_cursor
+                                                {
                                                     window.set_cursor_style(mouse_cursor, hitbox);
                                                 }
 
@@ -368,14 +368,19 @@ impl Interactivity {
                                                     window,
                                                     cx,
                                                 );
-                                                self.paint_scroll_listener(hitbox, &style, window, cx);
+                                                self.paint_scroll_listener(
+                                                    hitbox, &style, window, cx,
+                                                );
                                             }
 
                                             self.paint_keyboard_listeners(window, cx);
                                             f(&style, window, cx);
 
                                             if let Some(_hitbox) = hitbox {
-                                                #[cfg(any(feature = "inspector", debug_assertions))]
+                                                #[cfg(any(
+                                                    feature = "inspector",
+                                                    debug_assertions
+                                                ))]
                                                 window.insert_inspector_hitbox(
                                                     _hitbox.id,
                                                     inspector_id,

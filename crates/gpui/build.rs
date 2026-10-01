@@ -51,7 +51,11 @@ fn check_nova_wgsl_shaders() {
         (
             "nova solid quad shader",
             "",
-            &[CORE, ANIMATION, "./src/platform/nova/shaders/solid_quad.wgsl"][..],
+            &[
+                CORE,
+                ANIMATION,
+                "./src/platform/nova/shaders/solid_quad.wgsl",
+            ][..],
         ),
         (
             "nova mono sprite shader",
@@ -102,7 +106,12 @@ fn check_nova_wgsl_shaders() {
         (
             "nova shadow shader",
             "",
-            &[CORE, ANIMATION, SHAPE, "./src/platform/nova/shaders/shadow.wgsl"][..],
+            &[
+                CORE,
+                ANIMATION,
+                SHAPE,
+                "./src/platform/nova/shaders/shadow.wgsl",
+            ][..],
         ),
         (
             "nova path shader",
@@ -488,11 +497,8 @@ mod windows {
         let rc_file = resource_dir.join("gpui.rc");
         println!("cargo:rerun-if-changed={}", manifest.display());
         println!("cargo:rerun-if-changed={}", rc_file.display());
-        embed_resource::compile(
-            rc_file,
-            embed_resource::ParamsIncludeDirs([resource_dir]),
-        )
-        .manifest_required()
-        .unwrap();
+        embed_resource::compile(rc_file, embed_resource::ParamsIncludeDirs([resource_dir]))
+            .manifest_required()
+            .unwrap();
     }
 }

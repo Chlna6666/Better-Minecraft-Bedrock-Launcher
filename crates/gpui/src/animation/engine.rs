@@ -9,15 +9,39 @@ use super::{
 use crate::{Bounds, GlobalElementId, Pixels, SceneAnimationId, SceneAnimationValue};
 use collections::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
-use std::{fmt, rc::Rc, time::{Duration, Instant}};
+use std::{
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const MIN_COMPLETED_SCENE_TEXT_RASTER_SCALE: f32 = 1.0 / 4096.0;
 const SCENE_TEXT_RASTER_SCALE_EPSILON: f32 = 0.0001;
 const MAX_SCENE_RETARGET_NORMALIZED_VELOCITY: f32 = 24.0;
 
+fn translate_scene_geometry(property: TransitionProperty, value: &mut [f32; 4], delta: [f32; 2]) {
+    match property {
+        TransitionProperty::Transform => {
+            value[2] += delta[0];
+            value[3] += delta[1];
+        }
+        TransitionProperty::Rotation => {
+            value[1] += delta[0];
+            value[2] += delta[1];
+        }
+        TransitionProperty::ClipReveal => {
+            value[0] += delta[0];
+            value[1] += delta[0];
+            value[2] += delta[1];
+            value[3] += delta[1];
+        }
+        _ => {}
+    }
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct AnimationTimelineKey {
-    element_id: Rc<GlobalElementId>,
+    element_id: Arc<GlobalElementId>,
     property: TransitionProperty,
 }
 
@@ -30,9 +54,32 @@ struct AnimationTimeline {
     driver: AnimationDriver,
     bounds: Option<Bounds<Pixels>>,
     scene_animation: Option<SceneAnimation>,
+    grouped_visual_scene_animation: bool,
+    scene_animation_generation: u64,
     endpoint_text_raster_scale: Option<f32>,
     needs_endpoint_reraster: bool,
-    completion_invalidation: Option<Rc<dyn Fn()>>,
+    completion_invalidation: Option<CompletionInvalidationTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompletionInvalidationTarget {
+    view_id: crate::EntityId,
+    retained_id: GlobalElementId,
+}
+
+/// UI invalidation to process after a renderer-owned scene animation reaches its endpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SceneAnimationCompletion {
+    /// Scene animation whose endpoint needs a retained reraster or equivalent UI update.
+    pub(crate) animation_id: SceneAnimationId,
+    /// Property identifies one track when several compositor tracks share a scene binding.
+    pub(crate) property: TransitionProperty,
+    /// Timeline generation that produced this event, so a queued completion cannot finish a retarget.
+    pub(crate) generation: u64,
+    /// Owning view identified when the animation was committed.
+    pub(crate) view_id: Option<crate::EntityId>,
+    /// Retained element path that must be refreshed on the UI owner.
+    pub(crate) retained_id: Option<GlobalElementId>,
 }
 
 impl AnimationTimeline {
@@ -52,10 +99,8 @@ impl AnimationTimeline {
             }
 
             let active_elapsed = elapsed.saturating_sub(self.spec.delay);
-            let sample = spring.sample_with_velocity(
-                active_elapsed.as_secs_f32(),
-                self.spring_initial_velocity,
-            );
+            let sample = spring
+                .sample_with_velocity(active_elapsed.as_secs_f32(), self.spring_initial_velocity);
             return (
                 TimelineSample {
                     raw_progress: sample.progress,
@@ -75,11 +120,70 @@ impl AnimationTimeline {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SceneAnimation {
     id: SceneAnimationId,
     from: [f32; 4],
     to: [f32; 4],
+}
+
+/// Immutable scene-animation input that can be sampled by a presentation owner.
+#[derive(Clone)]
+pub(crate) struct SceneAnimationTimeline {
+    timeline: AnimationTimeline,
+    animation: SceneAnimation,
+    property: TransitionProperty,
+    completion: Option<SceneAnimationCompletion>,
+}
+
+pub(crate) struct SceneAnimationSample {
+    pub(crate) value: Option<SceneAnimationValue>,
+    pub(crate) done: bool,
+    pub(crate) completion: Option<SceneAnimationCompletion>,
+}
+
+impl SceneAnimationTimeline {
+    pub(crate) fn sample_at(&mut self, now: Instant) -> SceneAnimationSample {
+        let mut sample = self.timeline.sample(now);
+        let repeats = self.timeline.spring.is_some()
+            && matches!(self.timeline.spec.repeat, super::RepeatMode::Forever);
+        if sample.done && repeats {
+            // Match the UI driver's repeating-spring behavior: present the settled endpoint for
+            // this sample, then begin a fresh physical cycle from the next compositor frame.
+            self.timeline.started_at = now;
+            sample.done = false;
+            sample.applies = true;
+        }
+        SceneAnimationSample {
+            value: sample.applies.then_some(SceneAnimationValue {
+                animation_id: self.animation.id,
+                property: self.property,
+                progress: sample.eased_progress,
+                from: self.animation.from,
+                to: self.animation.to,
+            }),
+            done: sample.done,
+            completion: (sample.done && !repeats)
+                .then(|| self.completion.clone())
+                .flatten(),
+        }
+    }
+
+    pub(crate) fn animation_id(&self) -> SceneAnimationId {
+        self.animation.id
+    }
+
+    pub(crate) fn track_key(&self) -> (SceneAnimationId, TransitionProperty) {
+        (self.animation.id, self.property)
+    }
+
+    pub(crate) fn is_grouped_visual(&self) -> bool {
+        self.timeline.grouped_visual_scene_animation
+    }
+
+    pub(crate) fn bounds(&self) -> Option<Bounds<Pixels>> {
+        self.timeline.bounds
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +222,14 @@ impl AnimationGroupTimelineKind {
             Self::Stagger(stagger) => {
                 AnimationGroupSample::Stagger(stagger.sample_elapsed(elapsed))
             }
+        }
+    }
+
+    fn is_done_at(&self, elapsed: std::time::Duration) -> bool {
+        match self {
+            Self::Sequence(sequence) => sequence.is_done_at(elapsed),
+            Self::Parallel(parallel) => parallel.is_done_at(elapsed),
+            Self::Stagger(stagger) => stagger.is_done_at(elapsed),
         }
     }
 }
@@ -159,6 +271,8 @@ pub struct AnimationTick {
     pub active_count: usize,
     /// Remaining active GPU/paint timeline count.
     pub active_visual_count: usize,
+    /// Remaining visual timelines that still need another UI-owned sample.
+    pub(crate) ui_active_visual_count: usize,
     /// Whether this tick involved GPU/paint timelines.
     pub has_gpu_or_paint: bool,
     /// Whether this tick involved layout timelines.
@@ -166,6 +280,7 @@ pub struct AnimationTick {
     /// Dirty visual bounds touched by sampled paint/GPU timelines.
     pub dirty_bounds: SmallVec<[Bounds<Pixels>; 4]>,
     pub(crate) scene_values: SmallVec<[SceneAnimationValue; 4]>,
+    pub(crate) completion_events: SmallVec<[SceneAnimationCompletion; 4]>,
 }
 
 /// Per-window animation timeline engine.
@@ -173,13 +288,15 @@ pub struct AnimationTick {
 pub struct AnimationEngine {
     timelines: FxHashMap<AnimationTimelineKey, AnimationTimeline>,
     completed_scene_values: FxHashMap<AnimationTimelineKey, CompletedSceneAnimation>,
-    timelines_by_element: FxHashMap<Rc<GlobalElementId>, SmallVec<[TransitionProperty; 4]>>,
+    timelines_by_element: FxHashMap<Arc<GlobalElementId>, SmallVec<[TransitionProperty; 4]>>,
     visual_timeline_keys: FxHashSet<AnimationTimelineKey>,
+    ui_visual_timeline_keys: FxHashSet<AnimationTimelineKey>,
     layout_timeline_keys: FxHashSet<AnimationTimelineKey>,
     group_timelines: FxHashMap<AnimationGroupId, AnimationGroupTimeline>,
     visual_group_ids: FxHashSet<AnimationGroupId>,
     layout_group_ids: FxHashSet<AnimationGroupId>,
     live_scene_animation_ids_scratch: FxHashSet<SceneAnimationId>,
+    next_scene_animation_generation: u64,
     next_group_id: u64,
     frame_pending: bool,
 }
@@ -190,6 +307,7 @@ impl fmt::Debug for AnimationEngine {
             .field("timelines", &self.timelines.len())
             .field("indexed_elements", &self.timelines_by_element.len())
             .field("visual_timelines", &self.visual_timeline_keys.len())
+            .field("ui_visual_timelines", &self.ui_visual_timeline_keys.len())
             .field("layout_timelines", &self.layout_timeline_keys.len())
             .field("groups", &self.group_timelines.len())
             .field("frame_pending", &self.frame_pending)
@@ -249,6 +367,8 @@ impl AnimationEngine {
                 driver,
                 bounds,
                 scene_animation: None,
+                grouped_visual_scene_animation: false,
+                scene_animation_generation: 0,
                 endpoint_text_raster_scale: None,
                 needs_endpoint_reraster: false,
                 completion_invalidation: None,
@@ -296,12 +416,15 @@ impl AnimationEngine {
         }
 
         let (sample, normalized_velocity) = previous.sample_with_velocity(now);
-        let mut current =
-            interpolate_scene_value(scene.from, scene.to, sample.eased_progress);
-        let current_velocity =
-            scene_property_velocity(scene.from, scene.to, normalized_velocity);
+        let mut current = interpolate_scene_value(scene.from, scene.to, sample.eased_progress);
+        let current_velocity = scene_property_velocity(scene.from, scene.to, normalized_velocity);
 
-        if property == TransitionProperty::Translation {
+        if matches!(
+            property,
+            TransitionProperty::HorizontalEdgeFirst | TransitionProperty::HorizontalEdgeSecond
+        ) {
+            current[0] += base_translation_delta[0];
+        } else if property == TransitionProperty::Translation {
             current[0] += base_translation_delta[0];
             current[1] += base_translation_delta[1];
             current[3] = requested_to[3];
@@ -336,6 +459,9 @@ impl AnimationEngine {
         timeline.started_at = now;
         timeline.driver = driver;
         timeline.bounds = Some(dirty_bounds);
+        self.next_scene_animation_generation =
+            self.next_scene_animation_generation.wrapping_add(1).max(1);
+        timeline.scene_animation_generation = self.next_scene_animation_generation;
         timeline.scene_animation = Some(SceneAnimation {
             id: animation_id,
             from: current,
@@ -344,13 +470,7 @@ impl AnimationEngine {
         timeline.completion_invalidation = None;
         self.insert_driver_index(key.clone(), driver);
 
-        self.bind_scene_animation(
-            element_id,
-            property,
-            animation_id,
-            current,
-            requested_to,
-        );
+        self.bind_scene_animation(element_id, property, animation_id, current, requested_to);
         true
     }
 
@@ -438,10 +558,7 @@ impl AnimationEngine {
     ///
     /// None means no visual timeline is active. A zero duration means at least one active visual
     /// timeline requests the raw platform cadence. Visual groups remain uncapped.
-    pub(crate) fn visual_presentation_interval(
-        &self,
-        driver: AnimationDriver,
-    ) -> Option<Duration> {
+    pub(crate) fn visual_presentation_interval(&self, driver: AnimationDriver) -> Option<Duration> {
         if matches!(driver, AnimationDriver::Layout) {
             return None;
         }
@@ -493,14 +610,46 @@ impl AnimationEngine {
         let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
             return false;
         };
-        let Some(timeline) = self.timelines.get_mut(&AnimationTimelineKey {
+        let key = AnimationTimelineKey {
             element_id: indexed_element_id,
             property,
-        }) else {
+        };
+        let Some(timeline) = self.timelines.get_mut(&key) else {
             return false;
         };
         timeline.bounds = Some(bounds);
         true
+    }
+
+    /// Move screen-space origin/clip coordinates without restarting the logical timeline.
+    pub(crate) fn translate_scene_animation_origin(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        delta: [f32; 2],
+    ) -> bool {
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return false;
+        };
+        let key = AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        };
+        if let Some(animation) = self
+            .timelines
+            .get_mut(&key)
+            .and_then(|timeline| timeline.scene_animation.as_mut())
+        {
+            translate_scene_geometry(property, &mut animation.from, delta);
+            translate_scene_geometry(property, &mut animation.to, delta);
+            return true;
+        }
+        if let Some(completed) = self.completed_scene_values.get_mut(&key) {
+            translate_scene_geometry(property, &mut completed.value.from, delta);
+            translate_scene_geometry(property, &mut completed.value.to, delta);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn bind_scene_animation(
@@ -514,13 +663,20 @@ impl AnimationEngine {
         let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
             return false;
         };
-        let Some(timeline) = self.timelines.get_mut(&AnimationTimelineKey {
+        let key = AnimationTimelineKey {
             element_id: indexed_element_id,
             property,
-        }) else {
+        };
+        let Some(timeline) = self.timelines.get_mut(&key) else {
             return false;
         };
-        timeline.scene_animation = Some(SceneAnimation { id, from, to });
+        let scene_animation = SceneAnimation { id, from, to };
+        if timeline.scene_animation != Some(scene_animation) {
+            self.next_scene_animation_generation =
+                self.next_scene_animation_generation.wrapping_add(1).max(1);
+            timeline.scene_animation_generation = self.next_scene_animation_generation;
+        }
+        timeline.scene_animation = Some(scene_animation);
 
         let endpoint_text_raster_scale = if matches!(
             property,
@@ -538,6 +694,37 @@ impl AnimationEngine {
         });
         timeline.endpoint_text_raster_scale = endpoint_text_raster_scale;
         timeline.completion_invalidation = None;
+        self.ui_visual_timeline_keys.remove(&key);
+        true
+    }
+
+    /// Returns whether the matching track's presentation grouping changed.
+    pub(crate) fn set_grouped_visual_scene_animation(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+        grouped: bool,
+    ) -> bool {
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return false;
+        };
+        let Some(timeline) = self.timelines.get_mut(&AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        }) else {
+            return false;
+        };
+        if !timeline
+            .scene_animation
+            .is_some_and(|animation| animation.id == animation_id)
+        {
+            return false;
+        }
+        if timeline.grouped_visual_scene_animation == grouped {
+            return false;
+        }
+        timeline.grouped_visual_scene_animation = grouped;
         true
     }
 
@@ -546,7 +733,9 @@ impl AnimationEngine {
         animation_id: SceneAnimationId,
     ) -> bool {
         self.timelines.values().any(|timeline| {
-            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
+            timeline
+                .scene_animation
+                .is_some_and(|animation| animation.id == animation_id)
                 && timeline.completion_invalidation.is_none()
         })
     }
@@ -554,24 +743,144 @@ impl AnimationEngine {
     pub(crate) fn set_scene_animation_completion_invalidation(
         &mut self,
         animation_id: SceneAnimationId,
-        completion_invalidation: Rc<dyn Fn()>,
+        view_id: crate::EntityId,
+        retained_id: GlobalElementId,
     ) -> bool {
-        let Some(timeline) = self.timelines.values_mut().find(|timeline| {
-            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
-        }) else {
-            return false;
-        };
-        if timeline.completion_invalidation.is_some() {
-            return false;
+        let mut updated = false;
+        for timeline in self.timelines.values_mut().filter(|timeline| {
+            timeline
+                .scene_animation
+                .is_some_and(|animation| animation.id == animation_id)
+        }) {
+            if timeline.completion_invalidation.is_none() {
+                timeline.completion_invalidation = Some(CompletionInvalidationTarget {
+                    view_id,
+                    retained_id: retained_id.clone(),
+                });
+                updated = true;
+            }
         }
-        timeline.completion_invalidation = Some(completion_invalidation);
-        true
+        updated
+    }
+
+    /// Transfer a compositor completion back into UI-owned animation state.
+    pub(crate) fn complete_scene_animation(
+        &mut self,
+        completion: &SceneAnimationCompletion,
+    ) -> Option<SceneAnimationCompletion> {
+        let (key, timeline) = self.timelines.iter().find_map(|(key, timeline)| {
+            timeline
+                .scene_animation
+                .is_some_and(|animation| {
+                    animation.id == completion.animation_id && key.property == completion.property
+                })
+                .then(|| (key.clone(), timeline.clone()))
+        })?;
+        let animation = timeline.scene_animation?;
+        let target = timeline.completion_invalidation.as_ref();
+        let current_completion = SceneAnimationCompletion {
+            animation_id: animation.id,
+            property: key.property,
+            generation: timeline.scene_animation_generation,
+            view_id: target.map(|target| target.view_id),
+            retained_id: target.map(|target| target.retained_id.clone()),
+        };
+        if &current_completion != completion {
+            return None;
+        }
+
+        if timeline.spec.fill_mode.fills_forwards() {
+            self.completed_scene_values.insert(
+                key.clone(),
+                CompletedSceneAnimation {
+                    value: SceneAnimationValue {
+                        animation_id: animation.id,
+                        property: key.property,
+                        progress: 1.0,
+                        from: animation.from,
+                        to: animation.to,
+                    },
+                    endpoint_text_raster_scale: timeline.endpoint_text_raster_scale,
+                },
+            );
+        } else {
+            self.completed_scene_values.remove(&key);
+        }
+        self.remove_timeline(&key);
+        if !self.has_active_timelines() {
+            self.frame_pending = false;
+        }
+
+        Some(current_completion)
     }
 
     pub(crate) fn scene_animation_is_active(&self, animation_id: SceneAnimationId) -> bool {
         self.timelines.values().any(|timeline| {
-            timeline.scene_animation.is_some_and(|animation| animation.id == animation_id)
+            timeline
+                .scene_animation
+                .is_some_and(|animation| animation.id == animation_id)
         })
+    }
+
+    pub(crate) fn scene_animation_track_is_active(
+        &self,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> bool {
+        self.timelines.iter().any(|(key, timeline)| {
+            key.property == property
+                && timeline
+                    .scene_animation
+                    .is_some_and(|animation| animation.id == animation_id)
+        })
+    }
+
+    pub(crate) fn scene_animation_track_is_bound(
+        &self,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> bool {
+        self.scene_animation_track_is_active(animation_id, property)
+            || self.completed_scene_values.values().any(|completed| {
+                completed.value.animation_id == animation_id && completed.value.property == property
+            })
+    }
+
+    pub(crate) fn scene_animation_is_bound(&self, animation_id: SceneAnimationId) -> bool {
+        self.scene_animation_is_active(animation_id)
+            || self
+                .completed_scene_values
+                .values()
+                .any(|completed| completed.value.animation_id == animation_id)
+    }
+
+    pub(crate) fn cancel_scene_animation_track(
+        &mut self,
+        element_id: &GlobalElementId,
+        property: TransitionProperty,
+        animation_id: SceneAnimationId,
+    ) -> bool {
+        let Some(indexed_element_id) = self.indexed_element_id(element_id).cloned() else {
+            return false;
+        };
+        let key = AnimationTimelineKey {
+            element_id: indexed_element_id,
+            property,
+        };
+        if !self
+            .timelines
+            .get(&key)
+            .and_then(|timeline| timeline.scene_animation)
+            .is_some_and(|animation| animation.id == animation_id)
+        {
+            return false;
+        }
+        self.remove_timeline(&key);
+        self.completed_scene_values.remove(&key);
+        if !self.has_active_timelines() {
+            self.frame_pending = false;
+        }
+        true
     }
 
     pub(crate) fn completed_scene_text_raster_scale(
@@ -580,8 +889,8 @@ impl AnimationEngine {
     ) -> Option<f32> {
         self.completed_scene_values
             .values()
-            .find(|completed| completed.value.animation_id == animation_id)
-            .and_then(|completed| completed.endpoint_text_raster_scale)
+            .filter(|completed| completed.value.animation_id == animation_id)
+            .find_map(|completed| completed.endpoint_text_raster_scale)
     }
 
     pub(crate) fn set_transition_spring(
@@ -616,7 +925,12 @@ impl AnimationEngine {
             .map(|timeline| timeline.driver)
     }
 
-    pub(crate) fn retain_scene_animations_for_scene(&mut self, scene: &crate::scene::Scene) {
+    /// Returns whether pruning removed timeline or endpoint metadata from the presentation packet.
+    pub(crate) fn retain_scene_animations_for_scene(
+        &mut self,
+        scene: &crate::scene::Scene,
+    ) -> bool {
+        let previous_counts = (self.timelines.len(), self.completed_scene_values.len());
         let mut live_ids = std::mem::take(&mut self.live_scene_animation_ids_scratch);
         live_ids.clear();
         scene.collect_animation_ids_into(&mut live_ids);
@@ -630,6 +944,7 @@ impl AnimationEngine {
         }
         live_ids.clear();
         self.live_scene_animation_ids_scratch = live_ids;
+        previous_counts != (self.timelines.len(), self.completed_scene_values.len())
     }
 
     pub(crate) fn retain_scene_animations(&mut self, live_ids: &FxHashSet<SceneAnimationId>) {
@@ -672,17 +987,47 @@ impl AnimationEngine {
             .collect()
     }
 
+    /// Snapshot active scene timelines for sampling outside the UI frame owner.
+    pub(crate) fn presentation_timelines(&self) -> SmallVec<[SceneAnimationTimeline; 4]> {
+        self.timelines
+            .iter()
+            .filter_map(|(key, timeline)| {
+                timeline
+                    .scene_animation
+                    .map(|animation| SceneAnimationTimeline {
+                        timeline: timeline.clone(),
+                        animation,
+                        property: key.property,
+                        completion: Some(SceneAnimationCompletion {
+                            animation_id: animation.id,
+                            property: key.property,
+                            generation: timeline.scene_animation_generation,
+                            view_id: timeline
+                                .completion_invalidation
+                                .as_ref()
+                                .map(|target| target.view_id),
+                            retained_id: timeline
+                                .completion_invalidation
+                                .as_ref()
+                                .map(|target| target.retained_id.clone()),
+                        }),
+                    })
+            })
+            .collect()
+    }
+
     /// Returns true when there are active timelines.
     pub fn has_active_timelines(&self) -> bool {
         !self.timelines.is_empty() || !self.group_timelines.is_empty()
     }
 
     #[cfg(test)]
-    pub(crate) fn test_index_counts(&self) -> (usize, usize, usize) {
+    pub(crate) fn test_index_counts(&self) -> (usize, usize, usize, usize) {
         (
             self.timelines_by_element.len(),
             self.visual_timeline_keys.len(),
             self.layout_timeline_keys.len(),
+            self.ui_visual_timeline_keys.len(),
         )
     }
 
@@ -709,6 +1054,19 @@ impl AnimationEngine {
         self.tick_keys(now, keys, group_ids)
     }
 
+    /// Tick visual work that is not already sampled from the committed scene by the platform.
+    pub(crate) fn tick_driver_with_compositor(
+        &mut self,
+        driver: AnimationDriver,
+        now: Instant,
+    ) -> AnimationTick {
+        let keys = self.ui_timeline_keys_for_driver(driver);
+        let group_ids = self.group_ids_for_driver(driver);
+        let mut tick = self.tick_keys(now, keys, group_ids);
+        tick.ui_active_visual_count = self.ui_active_visual_count_for(driver);
+        tick
+    }
+
     /// Sample all active timelines once and remove finite completed timelines.
     pub fn tick(&mut self, now: Instant) -> AnimationTick {
         let keys = self.timelines.keys().cloned().collect();
@@ -727,6 +1085,7 @@ impl AnimationEngine {
         let mut has_gpu_or_paint = false;
         let mut has_layout = false;
         let mut dirty_bounds = SmallVec::new();
+        let mut completion_events = SmallVec::new();
         let mut scene_values: SmallVec<[SceneAnimationValue; 4]> = self
             .completed_scene_values
             .values()
@@ -741,9 +1100,7 @@ impl AnimationEngine {
             let repeats = timeline.spring.is_some()
                 && matches!(timeline.spec.repeat, super::RepeatMode::Forever);
 
-            if let Some(animation) = timeline.scene_animation
-                && sample.applies
-            {
+            if let Some(animation) = timeline.scene_animation {
                 let value = SceneAnimationValue {
                     animation_id: animation.id,
                     property: key.property,
@@ -751,21 +1108,38 @@ impl AnimationEngine {
                     from: animation.from,
                     to: animation.to,
                 };
-                scene_values.push(value);
-                if sample.done && !repeats {
-                    self.completed_scene_values.insert(
-                        key.clone(),
-                        CompletedSceneAnimation {
-                            value,
-                            endpoint_text_raster_scale: timeline.endpoint_text_raster_scale,
-                        },
-                    );
-                    if let Some(completion_invalidation) = &timeline.completion_invalidation {
-                        completion_invalidation();
-                    }
+                if sample.applies {
+                    scene_values.push(value);
+                } else {
+                    self.completed_scene_values.remove(&key);
                 }
-            } else if !sample.applies {
-                self.completed_scene_values.remove(&key);
+
+                if sample.done && !repeats {
+                    if sample.applies && timeline.spec.fill_mode.fills_forwards() {
+                        self.completed_scene_values.insert(
+                            key.clone(),
+                            CompletedSceneAnimation {
+                                value,
+                                endpoint_text_raster_scale: timeline.endpoint_text_raster_scale,
+                            },
+                        );
+                    } else {
+                        self.completed_scene_values.remove(&key);
+                    }
+                    completion_events.push(SceneAnimationCompletion {
+                        animation_id: animation.id,
+                        property: key.property,
+                        generation: timeline.scene_animation_generation,
+                        view_id: timeline
+                            .completion_invalidation
+                            .as_ref()
+                            .map(|target| target.view_id),
+                        retained_id: timeline
+                            .completion_invalidation
+                            .as_ref()
+                            .map(|target| target.retained_id.clone()),
+                    });
+                }
             }
 
             match timeline.driver {
@@ -795,9 +1169,9 @@ impl AnimationEngine {
                 self.remove_group_driver_index(group_id);
                 continue;
             };
-            let sample = timeline
+            let done = timeline
                 .kind
-                .sample_elapsed(now.saturating_duration_since(timeline.started_at));
+                .is_done_at(now.saturating_duration_since(timeline.started_at));
 
             match timeline.driver {
                 AnimationDriver::Gpu | AnimationDriver::Paint | AnimationDriver::Auto => {
@@ -809,7 +1183,7 @@ impl AnimationEngine {
                 AnimationDriver::Layout => has_layout = true,
             }
 
-            if sample.is_done() {
+            if done {
                 self.remove_group(group_id);
             }
         }
@@ -817,10 +1191,12 @@ impl AnimationEngine {
         AnimationTick {
             active_count: self.active_count(),
             active_visual_count: self.visual_timeline_keys.len() + self.visual_group_ids.len(),
+            ui_active_visual_count: self.visual_timeline_keys.len() + self.visual_group_ids.len(),
             has_gpu_or_paint,
             has_layout,
             dirty_bounds,
             scene_values,
+            completion_events,
         }
     }
 
@@ -837,6 +1213,24 @@ impl AnimationEngine {
         }
     }
 
+    fn ui_timeline_keys_for_driver(
+        &self,
+        driver: AnimationDriver,
+    ) -> SmallVec<[AnimationTimelineKey; 16]> {
+        match driver {
+            AnimationDriver::Auto => self
+                .ui_visual_timeline_keys
+                .iter()
+                .chain(self.layout_timeline_keys.iter())
+                .cloned()
+                .collect(),
+            AnimationDriver::Layout => self.layout_timeline_keys.iter().cloned().collect(),
+            AnimationDriver::Gpu | AnimationDriver::Paint => {
+                self.ui_visual_timeline_keys.iter().cloned().collect()
+            }
+        }
+    }
+
     fn group_ids_for_driver(&self, driver: AnimationDriver) -> SmallVec<[AnimationGroupId; 8]> {
         match driver {
             AnimationDriver::Auto => self.group_timelines.keys().copied().collect(),
@@ -845,6 +1239,14 @@ impl AnimationEngine {
                 self.visual_group_ids.iter().copied().collect()
             }
         }
+    }
+
+    fn ui_active_visual_count_for(&self, driver: AnimationDriver) -> usize {
+        if matches!(driver, AnimationDriver::Layout) {
+            return 0;
+        }
+
+        self.ui_visual_timeline_keys.len() + self.visual_group_ids.len()
     }
 
     fn remove_timeline(&mut self, key: &AnimationTimelineKey) -> Option<AnimationTimeline> {
@@ -884,12 +1286,20 @@ impl AnimationEngine {
         if matches!(driver, AnimationDriver::Layout) {
             self.layout_timeline_keys.insert(key);
         } else {
+            if self
+                .timelines
+                .get(&key)
+                .is_some_and(|timeline| timeline.scene_animation.is_none())
+            {
+                self.ui_visual_timeline_keys.insert(key.clone());
+            }
             self.visual_timeline_keys.insert(key);
         }
     }
 
     fn remove_driver_index(&mut self, key: &AnimationTimelineKey) {
         self.visual_timeline_keys.remove(key);
+        self.ui_visual_timeline_keys.remove(key);
         self.layout_timeline_keys.remove(key);
     }
 
@@ -918,7 +1328,7 @@ impl AnimationEngine {
 
     fn remove_indexed_property(
         &mut self,
-        element_id: &Rc<GlobalElementId>,
+        element_id: &Arc<GlobalElementId>,
         property: TransitionProperty,
     ) {
         let remove_element = if let Some(properties) = self.timelines_by_element.get_mut(element_id)
@@ -933,16 +1343,16 @@ impl AnimationEngine {
         }
     }
 
-    fn indexed_element_id(&self, element_id: &GlobalElementId) -> Option<&Rc<GlobalElementId>> {
+    fn indexed_element_id(&self, element_id: &GlobalElementId) -> Option<&Arc<GlobalElementId>> {
         self.timelines_by_element
             .get_key_value(element_id)
             .map(|(indexed_element_id, _)| indexed_element_id)
     }
 
-    fn shared_element_id(&mut self, element_id: &GlobalElementId) -> Rc<GlobalElementId> {
+    fn shared_element_id(&mut self, element_id: &GlobalElementId) -> Arc<GlobalElementId> {
         self.indexed_element_id(element_id)
             .cloned()
-            .unwrap_or_else(|| Rc::new(element_id.clone()))
+            .unwrap_or_else(|| Arc::new(element_id.clone()))
     }
 }
 
@@ -955,11 +1365,7 @@ fn interpolate_scene_value(from: [f32; 4], to: [f32; 4], progress: f32) -> [f32;
     ]
 }
 
-fn scene_property_velocity(
-    from: [f32; 4],
-    to: [f32; 4],
-    normalized_velocity: f32,
-) -> [f32; 4] {
+fn scene_property_velocity(from: [f32; 4], to: [f32; 4], normalized_velocity: f32) -> [f32; 4] {
     [
         (to[0] - from[0]) * normalized_velocity,
         (to[1] - from[1]) * normalized_velocity,
@@ -985,10 +1391,7 @@ fn responsive_scene_retarget_velocity(velocity: [f32; 4], delta: [f32; 4]) -> f3
         .sum::<f32>();
     let magnitude_squared = delta.iter().map(|delta| delta * delta).sum::<f32>();
 
-    if !dot.is_finite()
-        || !magnitude_squared.is_finite()
-        || magnitude_squared <= 1e-8
-        || dot <= 0.0
+    if !dot.is_finite() || !magnitude_squared.is_finite() || magnitude_squared <= 1e-8 || dot <= 0.0
     {
         return 0.0;
     }
@@ -1014,5 +1417,66 @@ fn resolve_specs_driver<'a>(specs: impl IntoIterator<Item = &'a AnimationSpec>) 
         AnimationDriver::Gpu
     } else {
         AnimationDriver::Paint
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn scrolling_origin_preserves_animation_phase_and_clip_relative_to_content() {
+        let now = Instant::now();
+        let element_id = GlobalElementId::from_path(&[crate::ElementId::from("scrolling")]);
+        for (property, from, to, expected_from, expected_to) in [
+            (
+                TransitionProperty::Transform,
+                [0.7, 1.0, 100.0, 200.0],
+                [1.0, 1.0, 100.0, 200.0],
+                [0.7, 1.0, 100.0, 120.0],
+                [1.0, 1.0, 100.0, 120.0],
+            ),
+            (
+                TransitionProperty::Rotation,
+                [0.0, 100.0, 200.0, 0.0],
+                [0.3, 100.0, 200.0, 0.0],
+                [0.0, 100.0, 120.0, 0.0],
+                [0.3, 100.0, 120.0, 0.0],
+            ),
+            (
+                TransitionProperty::ClipReveal,
+                [50.0, 150.0, 200.0, 200.0],
+                [50.0, 150.0, 200.0, 300.0],
+                [50.0, 150.0, 120.0, 120.0],
+                [50.0, 150.0, 120.0, 220.0],
+            ),
+        ] {
+            let mut engine = AnimationEngine::new();
+            engine.start_transition(
+                &element_id,
+                property,
+                AnimationSpec::new(Duration::from_secs(1))
+                    .ease(super::super::Easing::Linear)
+                    .driver(AnimationDriver::Gpu),
+                now,
+            );
+            assert!(engine.bind_scene_animation(
+                &element_id,
+                property,
+                SceneAnimationId(77),
+                from,
+                to
+            ));
+            let before = engine.scene_values(now + Duration::from_millis(250))[0];
+            assert!(engine.translate_scene_animation_origin(&element_id, property, [0.0, -80.0]));
+            let after = engine.scene_values(now + Duration::from_millis(250))[0];
+            assert_eq!(after.progress, before.progress);
+            assert_eq!(after.from, expected_from);
+            assert_eq!(after.to, expected_to);
+            assert_eq!(
+                engine.scene_values(now + Duration::from_millis(500))[0].progress,
+                0.5
+            );
+        }
     }
 }

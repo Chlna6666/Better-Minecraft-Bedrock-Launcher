@@ -205,28 +205,32 @@ struct ClipDependencyRoot {
 
 impl Render for ClipDependencyRoot {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        crate::div().relative().w(px(200.0)).h(px(80.0)).child(CapturedDiv {
-            id: "retained-changing-clip",
-            inner: crate::div()
-                .absolute()
-                .left(px(0.0))
-                .top(px(0.0))
-                .w(px(self.clip_width))
-                .h(px(20.0))
-                .overflow_hidden()
-                .child(PaintCountLeaf {
-                    id: "retained-clipped-child",
-                    inner: crate::div()
-                        .absolute()
-                        .left(px(0.0))
-                        .top(px(0.0))
-                        .w(px(100.0))
-                        .h(px(20.0))
-                        .bg(crate::white()),
-                    paints: self.child_paints.clone(),
-                }),
-            path: self.clip_path.clone(),
-        })
+        crate::div()
+            .relative()
+            .w(px(200.0))
+            .h(px(80.0))
+            .child(CapturedDiv {
+                id: "retained-changing-clip",
+                inner: crate::div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(0.0))
+                    .w(px(self.clip_width))
+                    .h(px(20.0))
+                    .overflow_hidden()
+                    .child(PaintCountLeaf {
+                        id: "retained-clipped-child",
+                        inner: crate::div()
+                            .absolute()
+                            .left(px(0.0))
+                            .top(px(0.0))
+                            .w(px(100.0))
+                            .h(px(20.0))
+                            .bg(crate::white()),
+                        paints: self.child_paints.clone(),
+                    }),
+                path: self.clip_path.clone(),
+            })
     }
 }
 
@@ -238,9 +242,7 @@ fn draw_window(window: AnyWindowHandle, cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn targeted_child_change_keeps_unrelated_same_parent_siblings_retained(
-    cx: &mut TestAppContext,
-) {
+fn targeted_child_change_keeps_unrelated_same_parent_siblings_retained(cx: &mut TestAppContext) {
     let left_paints = Rc::new(Cell::new(0));
     let right_paints = Rc::new(Cell::new(0));
     let dirty_path = Rc::new(RefCell::new(None));

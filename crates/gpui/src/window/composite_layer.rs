@@ -13,11 +13,7 @@ impl Window {
     ) -> R {
         self.invalidator.debug_assert_paint();
         let checkpoint = self.next_frame.scene.composite_capture_checkpoint();
-        let result = self.paint_element_blur(
-            bounds,
-            px(COMPOSITE_CAPTURE_IDENTITY_SIGMA),
-            paint,
-        );
+        let result = self.paint_element_blur(bounds, px(COMPOSITE_CAPTURE_IDENTITY_SIGMA), paint);
         self.next_frame.scene.finalize_composite_capture(checkpoint);
         result
     }
@@ -32,7 +28,10 @@ impl Window {
         if !scale_factor.is_finite() || scale_factor <= f32::EPSILON {
             return None;
         }
-        let bounds = self.next_frame.scene.animation_visual_bounds(animation_id)?;
+        let bounds = self
+            .next_frame
+            .scene
+            .animation_visual_bounds(animation_id)?;
         Some(Bounds::new(
             point(
                 px(bounds.origin.x.0 / scale_factor),

@@ -13,9 +13,8 @@ application-specific effects such as "button hover" or "page enter".
 
 ## Goals
 
-- Keep `Animation::new`, `Animation::repeat`, `Animation::with_easing`,
-  `AnimationExt::with_animation`, `AnimationExt::with_animations`, and the
-  existing easing helper functions source-compatible.
+- Keep the existing animation constructors, element-wrapper methods, and easing
+  helper names while requiring custom visual easing closures to be thread-safe.
 - Provide a transition API for state-change animations on styled elements.
 - Route visual-only properties to retained paint or GPU paths where supported.
 - Route layout-affecting properties through layout invalidation because they
@@ -31,7 +30,7 @@ The public animation module exports:
 
 - `Easing`: built-in curves such as `Linear`, `InCubic`, `OutCubic`,
   `InOutCubic`, `OutBack`, `OutElastic`, `OutQuint`, and `Spring`, plus
-  `Custom(Rc<dyn Fn(f32) -> f32>)` for compatibility.
+  `Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>)` for custom runtime curves.
 - `AnimationSpec`: duration, delay, repeat mode, direction, fill mode, easing,
   and driver policy.
 - `AnimationSequence`, `AnimationParallel`, and `AnimationStagger`: grouped
@@ -39,12 +38,22 @@ The public animation module exports:
 - `AnimationGroupId` and `AnimationGroupSample`: handles and samples for
   window-owned grouped timelines.
 - `AnimationDriver`: `Auto`, `Gpu`, `Paint`, and `Layout`.
+- `VisualAnimationError`: validation errors for callback-free retained visual
+  animations.
 - `Animatable`: interpolation for core value types such as `f32`, `Pixels`,
   `Hsla`, `Point<Pixels>`, `Size<Pixels>`, `TransformationMatrix`, shadows, and
   layout lengths.
 - `Transition`: builder for state-change animation metadata.
 - `TransitionProperty`: property classification for opacity, transform, color,
   blur, shadow, width, height, inset, margin, padding, gap, and border width.
+
+Scene-bound visual timelines are copied into an immutable `PresentationPacket`
+and sampled without reading mutable `Window` or `App` state. Completion is sent
+back as an animation ID and retained target, so the UI owner performs any final
+invalidation. Windows now submits these packets to a native winit/Nova owner
+separate from the GPUI UI thread. DX12 and Vulkan continue sampling and
+presenting while UI `Render` is blocked for 200 ms. Linux Wayland/X11 still
+need this ownership split.
 
 ## Transition API
 
@@ -91,6 +100,64 @@ The public `Window` API also includes `start_animation_parallel`,
 `start_animation_stagger`, `cancel_animation_group`, and
 `set_animation_group_bounds`. The engine resolves each group to `Paint`, `Gpu`,
 or `Layout` from its child specs and schedules the matching frame path.
+
+### Retained parallel visual tracks
+
+### Single-track retained visual animation
+
+Use `with_visual_animation` when one declared visual property owns the whole
+motion. It requires an `AnimationProperty` and rejects the layout driver; it
+does not allocate or call an animator closure:
+
+~~~rust
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, div};
+
+let fade = div()
+    .with_visual_animation(
+        "fade",
+        Animation::new(Duration::from_millis(180)).with_opacity(0.0, 1.0),
+    )
+    .expect("opacity is a presentation property");
+~~~
+
+The single-track path also supports captured subtree, rotation, element filter blur, and clip
+properties declared with `with_property`. Use `with_animation` when each sample
+must change layout or content.
+
+### Retained parallel visual tracks
+
+Use `AnimationGroup` when one retained element needs multiple visual properties
+with independent timing. Each track keeps its own duration, delay, repeat,
+fill mode, easing, or spring, while one presentation sample packs opacity,
+translation, and scale into one renderer value:
+
+```rust
+use std::time::Duration;
+
+use gpui::{Animation, AnimationExt as _, AnimationGroup, Point, div, point, px};
+
+let enter = AnimationGroup::parallel([
+    Animation::new(Duration::from_millis(220)).with_opacity(0.0, 1.0),
+    Animation::new(Duration::from_millis(320)).with_translation(
+        Point::default(),
+        point(px(0.0), px(18.0)),
+    ),
+])
+.expect("each track must target a distinct visual property");
+
+let row = div().with_animation_group("row-enter", enter);
+```
+
+The group accepts at most one opacity, translation, and scale track. These
+tracks keep the same element identity through completion, including
+`fill-forwards` endpoints, and samples do not call the owning view's `Render`.
+Scale keeps the existing per-primitive center pivot. Layout properties,
+subtree-capturing properties such as `clipped_translation`, and duplicate
+properties are rejected so they cannot silently change rendering semantics.
+Use `with_visual_animation` for single rotation, clip, blur, explicit
+shared-pivot transform, or captured subtree motion.
 
 ## Driver Selection
 
@@ -148,71 +215,61 @@ sampled through the v2 timing code but continue to request a layout animation
 frame through the animation engine because the closure can mutate any element
 builder state.
 
-## Scene And nova-gfx Data Path
+## Scene And Nova Animation Path
 
-Scene primitives that can participate in visual animation may carry a
-`SceneAnimationId`. The nova-gfx frame upload path records packed animation
-bindings containing:
+Visual scene values are carried with the retained scene and uploaded as packed
+animation bindings. The presentation owner samples timelines and easing once per
+frame; Nova shaders apply the resulting values to eligible primitives. Current
+shader paths include opacity, translation, scale, scale-plus-opacity transforms,
+clip reveal, and the packed opacity/translation/scale group. Availability is
+primitive-specific; it does not mean every property is supported by every draw
+type. Layout-affecting properties still require UI layout work, and unsupported
+visual bindings use their existing CPU or retained-composite path.
 
-- scene animation ID;
-- animated primitive kind;
-- primitive buffer index;
-- reserved data for future expansion.
-
-This is the renderer data channel needed for shader-side interpolation. Current
-CPU fallback remains correct for unsupported primitives, custom easing, and
-layout properties. Shader-side interpolation should be added per primitive type
-before declaring a property fully GPU accelerated.
+The parallel visual group intentionally limits its packed contract to one
+opacity, translation, and scale track. It submits one renderer value per target
+sample while keeping each track's timing and retarget state independent. This
+follows the retained-scene/render-thread split used by [Qt Quick
+Animator](https://doc.qt.io/qt-6/qml-qtquick-animator.html) and [Avalonia
+Composition](https://docs.avaloniaui.net/docs/graphics-animation/composition-animations),
+without claiming that GPUI has their full style-transition or property coverage.
 
 ## Current Limitations And Improvement Areas
 
-The current engine establishes the framework contract and scheduling foundation,
-but it is not yet a complete end-to-end animation system. The main limitations
-are:
+The retained presentation path now advances supported visual tracks without
+calling the owning view's `Render`, but the engine remains incomplete in several
+specific areas:
 
-- GPU acceleration is a data path, not a completed shader path. Scene primitives
-  can carry animation IDs and nova-gfx can upload animation bindings, but
-  primitive shaders still need property-specific interpolation for opacity,
-  transform, colors, blur, and shadows before those properties are fully GPU
-  accelerated.
-- Transition metadata exists, but style-diff application is still limited.
-  The engine can describe which properties should transition, but a complete
-  computed-style previous/current comparison layer is still needed to
-  automatically start transitions from old style values to new style values.
-- Legacy closure animations are safe but expensive. They must use the layout
-  driver because the closure can mutate any element builder state. This
-  preserves compatibility, but it can notify views and recompute layout even
-  when the closure only changes opacity or transform.
-- `Easing::Custom` is runtime-only. It works for legacy animation closures, but
-  it cannot be serialized into `StyleRefinement` or evaluated by GPU shader code
-  without an explicit fallback.
-- Grouped timelines are engine-owned, but they are still a low-level API. GPUI
-  does not yet provide style-diff driven sequence orchestration, reusable motion
-  tokens, parent/child propagation, or a timeline reuse pool.
-- Layout animation remains CPU-bound. This is correct for layout-affecting
-  properties, but heavy width/height/margin/padding animation can still be
-  expensive in deep element trees.
-- Paint invalidation is precise when callers provide bounds for engine-owned
-  timelines. Automatic bounds discovery for all animated primitives and CPU
-  fallback paths is still incomplete.
-- Authoring ergonomics are early. The transition builder and grouped timeline
-  APIs are usable, but GPUI does not yet provide higher-level helpers for common
-  patterns such as grouped transitions, reusable motion tokens, or
-  reduced-motion policies.
-- Observability is incomplete. Tests cover timing, scheduling, and nova binding
-  packing, but runtime diagnostics should expose active animation counts, driver
-  fallback reasons, layout-vs-paint frame counts, and long-running animations.
+- `Transition` stores metadata; automatic computed-style diffing does not yet
+  start transitions from previous to new style values.
+- The parallel visual group supports opacity, translation, and scale only.
+  Rotation, blur, clip reveal, and explicit shared-pivot transforms keep their
+  property-specific single-track or composite paths.
+- The legacy closure wrapper cannot know which properties it changes, so it
+  still uses UI/layout invalidation. Callers should use property-based retained
+  animations for visual-only changes.
+- Layout-affecting animations remain UI-owned and can be expensive in deep trees.
+- Automatic dirty-bounds discovery and diagnostics for driver fallbacks and
+  active animation counts are still incomplete.
+- The independent native presentation owner is implemented for Windows DX12
+  and Vulkan. Linux Wayland/X11 still needs the same ownership split and its
+  native lifecycle validation.
+
+Performance claims require measured workloads. In particular, packet-owned
+scratch storage avoids rebuilding temporary collections during presentation
+sampling, but CPU p50/p95/p99, upload cost, frame intervals, and input latency
+must be compared before calling the change a measured win.
 
 Performance work should prioritize the largest avoidable costs first:
 
-1. Implement style-diff driven transitions so visual-only changes do not need
-   closure wrappers.
-2. Complete shader interpolation for the GPU-eligible primitives already carrying
-   `SceneAnimationId`.
-3. Add fallback diagnostics so unsupported properties and custom easing are
-   visible during development.
-4. Complete automatic dirty-bound discovery for CPU paint fallback.
-5. Add ergonomic motion helpers only after the low-level property path is stable.
+1. Add computed-style diffing so common visual transitions do not need closure
+   wrappers or per-property boilerplate.
+2. Extend grouped retained tracks only when property semantics and a single
+   renderer update can both be preserved.
+3. Add fallback diagnostics and automatic dirty-bound discovery for CPU paint
+   paths.
+4. Compare Windows DX12/Vulkan CPU, upload, frame interval, and input-latency
+   measurements before accepting further hot-path changes.
 
 ## Implementation Boundaries
 
@@ -233,6 +290,41 @@ rtk cargo test -p gpui animation
 rtk cargo test -p gpui window::tests
 rtk cargo test -p gpui nova
 ```
+
+### Animation performance lab
+
+`animation_perf_lab` opens one real window with the retained visual animation
+properties, spring retargeting, and separate layout/color callback examples.
+Its compositor tracks repeat forever in alternating directions so a cycle
+boundary cannot pass merely because an animation eventually reached its end.
+Before taking the cadence baseline, the example fills the 256-sample interval
+history so initial surface startup does not contaminate the steady-state gap
+limit.
+The 200 ms UI `Render` block gate records exact start/end times and checks each
+successful present sample and both interval boundaries inside that window.
+Every gap must stay below 1.8 times the baseline median, each combined active
+visual-animation value must change, and UI `Render` must not run again between
+the block boundaries. A sample-history overflow fails the gate. Sustained
+reports apply the same per-sample and per-interval checks; reaching a timeline's
+end is never sufficient to pass. Recent 256-interval percentiles and window
+callback frame/present p50, p95, and p99 values remain supplemental diagnostics.
+On Windows, each interval also reports the maximum DWM pacing wait, winit event
+queue delay, per-window dispatch delay, and active-present duration attached to
+successful samples. These stage timings help locate a gap; they do not relax or
+replace the per-frame continuity checks.
+
+On Windows, build both Nova backends and run each separately:
+
+```powershell
+cargo run --manifest-path crates/gpui/Cargo.toml --example animation_perf_lab --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan -- --backend=nova-dx12 --copies=4 --seconds=30
+cargo run --manifest-path crates/gpui/Cargo.toml --example animation_perf_lab --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan -- --backend=nova-vulkan --copies=4 --seconds=30
+```
+
+`--copies` scales retained tracks; `--seconds` controls the full measurement.
+Animation-sample interval percentiles and maximum are computed from the most
+recent 256 active-animation presentation intervals. Window callback timing
+percentiles are separate diagnostics and do not substitute for the successful
+present sample trace.
 
 Run formatting for touched files or the whole workspace when unrelated
 formatting drift is not present. Use the project clippy script if it exists in

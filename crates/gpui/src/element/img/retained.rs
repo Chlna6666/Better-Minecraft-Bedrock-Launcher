@@ -1,8 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use crate::{
-    AnimatedFrame, App, AssetPin, AsyncApp, ImageCacheError, RenderImage, Task, Window,
-};
+use crate::{AnimatedFrame, App, AssetPin, AsyncApp, ImageCacheError, RenderImage, Task, Window};
 
 use super::loader::ImageRenderRequest;
 

@@ -104,9 +104,9 @@ UI / entity state                         retained presentation
       └─ commit next immutable Scene snapshot
 ```
 
-When a platform callback contains both a renderer-owned animation tick and dirty UI work, the presentation lane runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
+When a platform callback contains both a renderer-owned animation tick and dirty UI work, presentation runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
 
-This is intentionally analogous to Chromium's main/compositor split and Qt Quick's GUI/render-thread contract even though GPUI may still execute both lanes on one platform thread on some backends. The ordering invariant is the important first step: **a presentation animation frame must not wait for UI render**. Backends may later move the presentation lane to a dedicated render thread without changing application animation semantics.
+Windows now has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene; the UI owner builds the next `PresentationPacket` and sends it through an ordered native command queue. Native presentation continues from the active scene while UI `Render` is blocked. Both Windows DX12 and Vulkan pass the 200 ms blocked-`Render` gate with distinct animation samples and no per-frame UI rendering. Linux Wayland/X11 retain the earlier single-thread callback path and still need the corresponding ownership split.
 
 A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
 

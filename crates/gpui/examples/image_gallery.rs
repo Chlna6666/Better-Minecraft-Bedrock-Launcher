@@ -1,8 +1,8 @@
 use gpui::{
     App, Application, BoundedImageCache, BoundedImageCacheConfig, Bounds, ClickEvent, Context,
-    ElementId, Entity, ImageCache, ImageCacheProvider,
-    KeyBinding, Menu, MenuItem, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    actions, div, hash, image_cache, img, prelude::*, px, rgb, size,
+    ElementId, Entity, ImageCache, ImageCacheProvider, KeyBinding, Menu, MenuItem, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, hash, image_cache, img,
+    prelude::*, px, rgb, size,
 };
 use std::{collections::HashMap, sync::Arc};
 

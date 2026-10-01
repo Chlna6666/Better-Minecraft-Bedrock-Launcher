@@ -30,11 +30,7 @@ impl FrameUpload {
             self.animation_values.clear();
             self.sampled_animation_values.clear();
             summary.animation_value_count = 0;
-            self.append_retained_animation_values(
-                scene,
-                presentation_animation_values,
-                summary,
-            );
+            self.append_retained_animation_values(scene, presentation_animation_values, summary);
         } else {
             summary.animation_value_count = refreshed_count as u32;
         }

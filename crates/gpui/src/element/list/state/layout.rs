@@ -115,12 +115,13 @@ impl StateInner {
             // identity of visible rows.
             if visible_height < available_height || item_size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
-                let (element, element_size) = with_item_retained_key(window, item_index, |window| {
-                    let mut element = render_item(item_index, window, cx);
-                    measured_item_count += 1;
-                    let element_size = element.layout_as_root(available_item_space, window, cx);
-                    (element, element_size)
-                });
+                let (element, element_size) =
+                    with_item_retained_key(window, item_index, |window| {
+                        let mut element = render_item(item_index, window, cx);
+                        measured_item_count += 1;
+                        let element_size = element.layout_as_root(available_item_space, window, cx);
+                        (element, element_size)
+                    });
                 item_size = Some(element_size);
                 if visible_height < available_height {
                     item_layouts.push_back(ItemLayout {
@@ -247,7 +248,8 @@ impl StateInner {
                         with_item_retained_key(window, item_index, |window| {
                             let mut element = render_item(item_index, window, cx);
                             measured_item_count += 1;
-                            let item_size = element.layout_as_root(available_item_space, window, cx);
+                            let item_size =
+                                element.layout_as_root(available_item_space, window, cx);
                             (element, item_size)
                         });
                     item_layouts.push_back(ItemLayout {

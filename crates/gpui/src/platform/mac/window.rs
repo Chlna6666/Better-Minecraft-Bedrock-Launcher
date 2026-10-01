@@ -1,13 +1,13 @@
 use super::{
     BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
-    TISGetInputSourceProperty, kTISPropertyInputSourceIsASCIICapable,
-    kTISPropertyInputSourceType, kTISTypeKeyboardInputMode, ns_string, renderer,
+    TISGetInputSourceProperty, kTISPropertyInputSourceIsASCIICapable, kTISPropertyInputSourceType,
+    kTISTypeKeyboardInputMode, ns_string, renderer,
 };
 use crate::{
     AnyWindowHandle, Bounds, Capslock, DisplayLink, ExternalPaths, FileDropEvent,
     ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel, PlatformFrameRequest,
+    PlatformFrameRequest, PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel,
     SharedString, Size, Timer, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowKind, WindowParams, WindowTab, dispatch_get_main_queue,
     dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point, px, size,
@@ -398,9 +398,10 @@ struct MacWindowState {
     native_window: id,
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
+    background_appearance: WindowBackgroundAppearance,
     display_link: Option<DisplayLink>,
     renderer: renderer::Renderer,
-    request_frame_callback: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
+    request_frame_callback: Option<crate::platform::frame::PlatformFrameRequestSender>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -698,6 +699,7 @@ impl MacWindow {
                 native_window,
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
+                background_appearance: WindowBackgroundAppearance::Opaque,
                 display_link: None,
                 renderer: renderer::new_renderer(
                     renderer_context,
@@ -1298,6 +1300,11 @@ impl PlatformWindow for MacWindow {
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();
+        this.background_appearance = background_appearance;
+        let background_appearance = crate::WindowBackgroundCapabilities {
+            blurred: true,
+            ..crate::WindowBackgroundCapabilities::default()
+        }.resolve(background_appearance);
 
         let opaque = background_appearance == WindowBackgroundAppearance::Opaque;
         this.renderer.update_transparency(!opaque);
@@ -1349,6 +1356,17 @@ impl PlatformWindow for MacWindow {
                     this.blurred_view = Some(blur_view.autorelease());
                 }
             }
+        }
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.lock().background_appearance
+    }
+
+    fn background_capabilities(&self) -> crate::WindowBackgroundCapabilities {
+        crate::WindowBackgroundCapabilities {
+            blurred: true,
+            ..crate::WindowBackgroundCapabilities::default()
         }
     }
 
@@ -1418,8 +1436,8 @@ impl PlatformWindow for MacWindow {
         }
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
-        self.0.as_ref().lock().request_frame_callback = Some(callback);
+    fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
+        self.0.as_ref().lock().request_frame_callback = Some(sender);
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -1730,8 +1748,7 @@ unsafe fn is_ime_input_source_active() -> bool {
             source,
             kTISPropertyInputSourceIsASCIICapable as *const c_void,
         );
-        let is_ascii_capable =
-            !is_ascii.is_null() && CFBooleanGetValue(is_ascii as CFBooleanRef);
+        let is_ascii_capable = !is_ascii.is_null() && CFBooleanGetValue(is_ascii as CFBooleanRef);
 
         CFRelease(source as CFTypeRef);
         is_input_mode && !is_ascii_capable
@@ -2147,15 +2164,16 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
         let mut lock = window_state.lock();
 
         if lock.activated_least_once {
-            if let Some(mut callback) = lock.request_frame_callback.take() {
+            if let Some(sender) = lock.request_frame_callback.clone() {
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(true);
                 lock.stop_display_link();
                 drop(lock);
-                callback(Default::default());
+                if !sender.request(Default::default()) {
+                    log::trace!("discarding macOS frame request after its UI receiver closed");
+                }
 
                 let mut lock = window_state.lock();
-                lock.request_frame_callback = Some(callback);
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(false);
                 lock.start_display_link();
@@ -2275,15 +2293,16 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
 extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { window_state(this) };
     let mut lock = window_state.lock();
-    if let Some(mut callback) = lock.request_frame_callback.take() {
+    if let Some(sender) = lock.request_frame_callback.clone() {
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(true);
         lock.stop_display_link();
         drop(lock);
-        callback(Default::default());
+        if !sender.request(Default::default()) {
+            log::trace!("discarding macOS frame request after its UI receiver closed");
+        }
 
         let mut lock = window_state.lock();
-        lock.request_frame_callback = Some(callback);
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(false);
         lock.start_display_link();
@@ -2295,10 +2314,11 @@ unsafe extern "C" fn step(view: *mut c_void) {
     let window_state = unsafe { window_state(&*view) };
     let mut lock = window_state.lock();
 
-    if let Some(mut callback) = lock.request_frame_callback.take() {
+    if let Some(sender) = lock.request_frame_callback.clone() {
         drop(lock);
-        callback(Default::default());
-        window_state.lock().request_frame_callback = Some(callback);
+        if !sender.request(Default::default()) {
+            log::trace!("discarding macOS frame request after its UI receiver closed");
+        }
     }
 }
 

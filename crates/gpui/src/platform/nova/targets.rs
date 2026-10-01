@@ -237,7 +237,7 @@ where
                 source.texture_view,
                 descriptor.sampler,
                 buffers.backdrop_blur_pass_buffer,
-            buffers.animation_value_buffer,
+                buffers.animation_value_buffer,
             ),
         })?);
     }
@@ -265,7 +265,7 @@ where
                     target.texture_view,
                     descriptor.sampler,
                     buffers.backdrop_blur_pass_buffer,
-                buffers.animation_value_buffer,
+                    buffers.animation_value_buffer,
                 ),
             })?);
         }

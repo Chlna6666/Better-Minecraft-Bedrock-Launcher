@@ -47,7 +47,6 @@ impl Drop for ActivityGuard {
     }
 }
 
-
 #[cfg(target_os = "windows")]
 static TEXT_RASTERIZATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -85,6 +84,8 @@ mod test;
 
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::WindowsPlatform;
 
 pub use app_menu::*;
 pub(crate) use atlas::*;

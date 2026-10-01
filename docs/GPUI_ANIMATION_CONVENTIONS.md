@@ -56,7 +56,7 @@ If a state transition is discovered while rendering, initialize and sample that 
 
 ## 1.1 Presentation frames do not wait for UI commits
 
-Renderer-owned animation has a separate presentation lane. If a platform frame contains both an active presentation animation and unrelated dirty UI work, GPUI must submit the retained animation sample first and only then perform the UI commit.
+Renderer-owned animation has a separate presentation work domain. If a platform callback contains both an active presentation animation and unrelated dirty UI work, GPUI submits the retained animation sample first and only then performs the UI commit.
 
 ```text
 vsync
@@ -69,7 +69,19 @@ vsync
 
 Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
 
+On Windows, winit and Nova own the native event loop, surface, active scene, sampling, and present on the native thread. `Application::run_separate` constructs `App` and renders on the GPUI UI thread; scene packets and window commands cross to the native owner, while input and animation completion events return to UI. DX12 and Vulkan both pass the native 200 ms blocked-`Render` gate with changing presentation samples and no additional UI `Render` calls. Linux Wayland/X11 still execute UI commit and presentation in the same native callback; their independent owner split remains outstanding.
+
 Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `PresentationPacket` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably. The packet itself owns dynamic/dirty/blur metadata and shares only the immutable Scene through `Arc`, so presentation submission no longer borrows Window state.
+
+Packet damage represents work not yet submitted. Successful renderer submission consumes dirty and
+backdrop-source damage; deferred or failed submission preserves it. The next animation sample
+generates fresh damage from the previous/current values, rather than replaying submitted history.
+
+Windows AutoVsync uses DWM pacing with DX12 `Present(0, 0)` (the Nova Mailbox mapping, without
+tearing flags); Vulkan retains FIFO. Do not gate refresh continuity against the application's own
+measured p50: the performance lab uses the current monitor's nominal refresh period and marks
+inactive/invisible intervals ineligible for foreground validation. Submission timestamps still do
+not establish physical scanout timing.
 
 Committed scenes use active/pending ownership with latest-wins pending replacement. Pending promotion belongs to the presentation phase, before renderer-owned sampling/submission, not to UI scene generation. Sharing a committed Scene must never trigger copy-on-write of the whole display list: mutable UI scratch storage either stays uniquely owned and reuses capacity, or detaches to a fresh empty Scene while an older presentation snapshot is still alive.
 
@@ -90,6 +102,11 @@ Choose the narrowest owner that can produce the visual result.
 ## 3. Text geometry must remain stable for visual-only animation
 
 Visual-only animation MUST NOT change text layout origin, wrapping width, baseline, or glyph subpixel variant.
+
+Glyphs bound to retained geometry animation use genuine platform grayscale rasterization at scene
+commit, including fill-forward bindings. A moving LCD coverage texture cannot preserve its physical
+RGB pixel phase. Do not simulate grayscale by averaging an already rasterized ClearType texture or
+switch coverage at Spring progress crossings; progress reaching one does not imply zero velocity.
 
 For reveal/open/close effects:
 
@@ -177,8 +194,12 @@ let panel = panel
 ```
 
 When the renderer-owned animation engine can own the complete transition and retarget semantics,
-prefer `with_animation(... Animation::spring(...).with_property(...))`; it can advance presentation
-without rerendering the view on every sample.
+prefer the callback-free `with_visual_animation(id, animation)` entry point with
+`Animation::with_opacity`, `with_translation`, or `with_scale`. It requires a declared visual
+property and rejects the layout driver, so the retained scene advances without a per-animation
+callback allocation or a view rerender on each sample. Use `with_animation` when its callback
+really must change layout or content; use `with_animation_group` for multiple independent
+compositor properties.
 
 ## 5. Nova GPU animation binding
 

@@ -13,10 +13,7 @@ impl Bounds<Pixels> {
         display
             .map(|display| {
                 let visible_bounds = display.visible_bounds();
-                Bounds::centered_at(
-                    visible_bounds.center(),
-                    size.min(&visible_bounds.size),
-                )
+                Bounds::centered_at(visible_bounds.center(), size.min(&visible_bounds.size))
             })
             .unwrap_or_else(|| Bounds {
                 origin: point(px(0.), px(0.)),

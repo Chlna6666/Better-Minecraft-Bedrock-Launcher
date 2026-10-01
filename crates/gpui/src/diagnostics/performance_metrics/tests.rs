@@ -1,7 +1,8 @@
+use super::animation::record_animation_worker_pool_wake;
 use super::*;
 use std::{
     sync::{LazyLock, Mutex, MutexGuard},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static PERFORMANCE_METRICS_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -426,11 +427,26 @@ fn records_window_scoped_metrics() {
 
     assert_eq!(window.logical_width_milli, 972_000);
     assert_eq!(window.logical_height_milli, 600_000);
-    assert_eq!(lightweight_window.logical_width_milli, window.logical_width_milli);
-    assert_eq!(lightweight_window.logical_height_milli, window.logical_height_milli);
-    assert_eq!(lightweight_window.physical_width_px, window.physical_width_px);
-    assert_eq!(lightweight_window.physical_height_px, window.physical_height_px);
-    assert_eq!(lightweight_window.scale_factor_milli, window.scale_factor_milli);
+    assert_eq!(
+        lightweight_window.logical_width_milli,
+        window.logical_width_milli
+    );
+    assert_eq!(
+        lightweight_window.logical_height_milli,
+        window.logical_height_milli
+    );
+    assert_eq!(
+        lightweight_window.physical_width_px,
+        window.physical_width_px
+    );
+    assert_eq!(
+        lightweight_window.physical_height_px,
+        window.physical_height_px
+    );
+    assert_eq!(
+        lightweight_window.scale_factor_milli,
+        window.scale_factor_milli
+    );
     assert_eq!(lightweight_window.active, window.active);
     assert_eq!(lightweight_window.minimized, window.minimized);
     assert_eq!(lightweight_window.visible, window.visible);
@@ -473,4 +489,235 @@ fn records_window_scoped_metrics() {
     assert_eq!(window.gpu_surface_error_count, 1);
     assert!(window.layout_recompute_count >= 1);
     assert_eq!(window.upload_bytes, 2048);
+}
+
+#[test]
+fn records_per_present_animation_sample_continuity() {
+    let _lock = lock_performance_metrics();
+    use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
+
+    let before = window_metrics_snapshot()
+        .into_iter()
+        .find(|window| window.window_id == 12)
+        .unwrap_or_default();
+
+    let fixed_first_track = SceneAnimationValue {
+        animation_id: SceneAnimationId(7),
+        property: TransitionProperty::Opacity,
+        progress: 0.0,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    let make_second_track = |progress| SceneAnimationValue {
+        animation_id: SceneAnimationId(8),
+        property: TransitionProperty::Translation,
+        progress,
+        from: [0.0; 4],
+        to: [50.0, 0.0, 0.0, 0.0],
+    };
+    super::renderer::record_presentation_animation_sample(
+        12,
+        &[fixed_first_track, make_second_track(0.0)],
+        None,
+        None,
+    );
+    super::renderer::record_presentation_animation_sample(
+        12,
+        &[fixed_first_track, make_second_track(0.5)],
+        None,
+        None,
+    );
+    super::renderer::record_presentation_animation_sample(
+        12,
+        &[fixed_first_track, make_second_track(0.5)],
+        None,
+        None,
+    );
+
+    let after = window_metrics_snapshot()
+        .into_iter()
+        .find(|window| window.window_id == 12)
+        .expect("animation sample metrics should be tracked");
+    assert_eq!(
+        after.animation_sampled_present_count,
+        before.animation_sampled_present_count + 3
+    );
+    assert_eq!(
+        after.animation_sample_changed_present_count,
+        before.animation_sample_changed_present_count + 1
+    );
+    assert_eq!(
+        after.animation_sample_unchanged_present_count,
+        before.animation_sample_unchanged_present_count + 1
+    );
+    assert_eq!(
+        after.animation_sample_interval_sample_count,
+        before.animation_sample_interval_sample_count + 2
+    );
+}
+
+#[test]
+fn retains_ordered_active_animation_samples_after_a_cursor() {
+    let _lock = lock_performance_metrics();
+    use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
+
+    let window_id = 91_743;
+    let initial = window_animation_samples_since(window_id, 0);
+    assert!(initial.is_none());
+
+    let make_sample = |progress| {
+        [SceneAnimationValue {
+            animation_id: SceneAnimationId(1),
+            property: TransitionProperty::Opacity,
+            progress,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        }]
+    };
+    super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.0), None, None);
+    let cursor = window_metrics_snapshot()
+        .into_iter()
+        .find(|window| window.window_id == window_id)
+        .expect("animation sample metrics should be tracked")
+        .animation_sampled_present_count as u64;
+
+    super::renderer::record_presentation_animation_sample(
+        window_id,
+        &make_sample(0.25),
+        None,
+        None,
+    );
+    super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.5), None, None);
+    super::renderer::record_presentation_animation_sample(window_id, &make_sample(0.5), None, None);
+
+    let samples = window_animation_samples_since(window_id, cursor)
+        .expect("animation sample history should be tracked");
+    assert_eq!(samples.after_sequence, cursor);
+    assert_eq!(samples.latest_sequence, cursor + 3);
+    assert!(!samples.history_overflowed);
+    assert_eq!(samples.samples.len(), 3);
+    assert_eq!(samples.samples[0].sequence, cursor + 1);
+    assert_eq!(samples.samples[1].sequence, cursor + 2);
+    assert_eq!(samples.samples[2].sequence, cursor + 3);
+    assert_eq!(
+        samples
+            .samples
+            .iter()
+            .map(|sample| sample.changed_from_previous)
+            .collect::<Vec<_>>(),
+        [Some(true), Some(true), Some(false)]
+    );
+    assert!(
+        samples
+            .samples
+            .windows(2)
+            .all(|pair| pair[0].presented_at <= pair[1].presented_at)
+    );
+}
+
+#[test]
+fn records_windows_vsync_stages_with_the_successful_animation_sample() {
+    let _lock = lock_performance_metrics();
+    use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
+
+    let window_id = 91_745;
+    let frame_started_at = Instant::now() - Duration::from_millis(8);
+    let sample = [SceneAnimationValue {
+        animation_id: SceneAnimationId(1),
+        property: TransitionProperty::Opacity,
+        progress: 0.5,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    }];
+    super::renderer::record_presentation_animation_sample(
+        window_id,
+        &sample,
+        Some(crate::ActivePresentationTiming {
+            frame_pacing_wait: Duration::from_millis(4),
+            vsync_event_queue_delay: Duration::from_micros(300),
+            window_dispatch_delay: Duration::from_micros(200),
+            frame_started_at,
+            renderer_scene_prepare: Duration::from_micros(600),
+            submission_prepare: Duration::from_micros(700),
+            retained_resource_prepare: Duration::from_micros(800),
+            frame_prepare_upload: Duration::from_micros(900),
+            draw_step_prepare: Duration::from_micros(550),
+            buffer_upload: Duration::from_micros(120),
+            atlas_upload: Duration::from_micros(130),
+            offscreen_render: Duration::from_micros(140),
+            backend_present: Duration::from_millis(5),
+            renderer_post_present: Duration::from_micros(1_000),
+        }),
+        Some(gfx_core::PresentationTimings {
+            acquire_fence_wait: Duration::from_micros(100),
+            image_acquire: Duration::from_micros(200),
+            command_encoder_create: Duration::from_micros(300),
+            command_record: Duration::from_micros(400),
+            fence_reset: Duration::from_micros(500),
+            queue_submit: Duration::from_micros(300),
+            submission_wait: Duration::from_micros(400),
+            queue_present: Duration::from_millis(5),
+            post_present_cleanup: Duration::from_micros(600),
+        }),
+    );
+
+    let samples = window_animation_samples_since(window_id, 0)
+        .expect("animation sample history should be tracked");
+    let timing = samples.samples[0]
+        .presentation_timing
+        .expect("Windows VSync timing should be associated with the successful sample");
+    assert_eq!(timing.frame_pacing_wait, Duration::from_millis(4));
+    assert_eq!(timing.vsync_event_queue_delay, Duration::from_micros(300));
+    assert_eq!(timing.window_dispatch_delay, Duration::from_micros(200));
+    assert_eq!(
+        timing
+            .backend_timings
+            .expect("Vulkan timings should be associated with the sample")
+            .queue_present,
+        Duration::from_millis(5),
+    );
+    assert_eq!(
+        timing
+            .backend_timings
+            .expect("Vulkan timings should be associated with the sample")
+            .command_record,
+        Duration::from_micros(400),
+    );
+    assert_eq!(timing.renderer_scene_prepare, Duration::from_micros(600));
+    assert_eq!(timing.submission_prepare, Duration::from_micros(700));
+    assert_eq!(timing.retained_resource_prepare, Duration::from_micros(800));
+    assert_eq!(timing.frame_prepare_upload, Duration::from_micros(900));
+    assert_eq!(timing.draw_step_prepare, Duration::from_micros(550));
+    assert_eq!(timing.buffer_upload, Duration::from_micros(120));
+    assert_eq!(timing.atlas_upload, Duration::from_micros(130));
+    assert_eq!(timing.offscreen_render, Duration::from_micros(140));
+    assert_eq!(timing.backend_present, Duration::from_millis(5));
+    assert_eq!(timing.renderer_post_present, Duration::from_micros(1_000));
+    assert!(timing.active_present_duration >= Duration::from_millis(8));
+}
+
+#[test]
+fn reports_active_animation_sample_history_overflow() {
+    let _lock = lock_performance_metrics();
+    use crate::{SceneAnimationId, SceneAnimationValue, TransitionProperty};
+
+    let window_id = 91_744;
+    let sample_capacity = super::store::WINDOW_ANIMATION_SAMPLE_HISTORY_CAPACITY;
+    for index in 0..=sample_capacity {
+        let value = [SceneAnimationValue {
+            animation_id: SceneAnimationId(1),
+            property: TransitionProperty::Opacity,
+            progress: index as f32 / sample_capacity as f32,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        }];
+        super::renderer::record_presentation_animation_sample(window_id, &value, None, None);
+    }
+
+    let samples = window_animation_samples_since(window_id, 0)
+        .expect("animation sample history should be tracked");
+    assert_eq!(samples.latest_sequence as usize, sample_capacity + 1);
+    assert!(samples.history_overflowed);
+    assert_eq!(samples.samples.len(), sample_capacity);
+    assert_eq!(samples.samples[0].sequence, 2);
 }

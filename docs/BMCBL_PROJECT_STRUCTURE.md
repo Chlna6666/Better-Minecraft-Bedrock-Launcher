@@ -79,7 +79,7 @@ Configuration is a product concern. GPUI should not read BMCBL config directly.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/core/minecraft` | Minecraft Bedrock versions, paths, worlds, maps, screenshots, servers, resource packs, skin packs, AppX, GDK, launch preflight, and integration utilities. |
+| `src/core/minecraft` | Minecraft Bedrock versions, paths, worlds, maps, screenshots, servers, resource packs, skin packs, AppX, GDK, launch preflight, and integration utilities. `map/` owns map-image processing, map-generation workflows, viewer cache, and world editing; `worlds.rs` owns saved-world discovery. |
 | `src/core/curseforge` | CurseForge queries and data handling. |
 | `src/core/easytier` | EasyTier runtime assets, API, and networking runtime integration. |
 | `src/core/inject` | PE and injection utilities. |
@@ -99,7 +99,8 @@ domain logic.
 | `crates/bedrock-leveldb` | Mojang LevelDB storage driver, validation, recovery, locking, flush, and compaction. It must not contain Minecraft world-domain decoding. |
 | `crates/bedrock-world` | Minecraft Bedrock world, chunk, block state, biome, player, entity, item, structure, and compatibility APIs built on `bedrock-leveldb`. |
 | `crates/bedrock-block-model` | Locally vendored resource-pack block-model resolver. It consumes `bedrock-world::BlockState` directly so model selection includes direction, open/closed, upper/lower, waterlogged, connection, and other Bedrock block states. |
-| `crates/bedrock-render` | Rendering and editing pipelines over the current `bedrock-world` API. |
+| `crates/bedrock-render` | Bedrock world-tile and map-item image rendering over the current `bedrock-world` API. It does not parse OBJ files or own world-edit workflows. |
+| `crates/bedrock-voxel` | Pure image and OBJ/MTL conversion into local Bedrock block-placement plans. It does not read or write world storage. |
 
 These crates are developed together and use their current APIs directly. During
 development, do not add compatibility aliases for removed APIs or keep parallel
@@ -115,7 +116,7 @@ rules are recorded in `crates/bedrock-block-model/UPSTREAM.md`.
 | `src/http` | HTTP request wrapper, GPUI-compatible HTTP client, and proxy handling. |
 | `src/downloads` | Download manager, single and multi-file downloads, integrity, MD5, and Windows Update client support. |
 | `src/archive` | Archive extraction APIs and ZIP handling. |
-| `src/tasks` | Process-wide `AppRuntime` facade, background task manager, and task snapshot/event model. |
+| `src/tasks` | Process-wide `AppRuntime` facade, generic background task manager, and task snapshot/event model. Feature-specific map conversion and workflow APIs live under `src/core/minecraft/map`. |
 | `src/plugins` | Plugin manifest, runtime, watcher, UI DSL, events, state, and plugin windows. |
 | `src/utils` | Cross-cutting utilities such as logging, file operations, diagnostics, system info, network helpers, registry support, updater, and single-instance support. |
 

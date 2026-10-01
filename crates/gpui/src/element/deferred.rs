@@ -102,9 +102,7 @@ impl Element for DeferredContextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        with_deferred_inherited_context(&self.context, window, |window| {
-            child.prepaint(window, cx)
-        });
+        with_deferred_inherited_context(&self.context, window, |window| child.prepaint(window, cx));
     }
 
     fn paint(
@@ -117,9 +115,7 @@ impl Element for DeferredContextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        with_deferred_inherited_context(&self.context, window, |window| {
-            child.paint(window, cx)
-        });
+        with_deferred_inherited_context(&self.context, window, |window| child.paint(window, cx));
     }
 }
 
@@ -214,13 +210,14 @@ impl Element for Deferred {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        let scene_animation = window.scene_animation.map(|(animation_id, property)| {
-            DeferredSceneAnimationContext {
-                animation_id,
-                property,
-                text_raster_scale: window.scene_text_raster_scale(),
-            }
-        });
+        let scene_animation =
+            window
+                .scene_animation
+                .map(|(animation_id, property)| DeferredSceneAnimationContext {
+                    animation_id,
+                    property,
+                    text_raster_scale: window.scene_text_raster_scale(),
+                });
         if let Some(context) = self.context.borrow_mut().as_mut() {
             context.scene_animation = scene_animation;
         }

@@ -101,9 +101,7 @@ impl PlatformAtlas for MetalAtlas {
             let lock = self.0.lock();
             lock.tiles_by_key
                 .keys()
-                .filter(|key| {
-                    matches!(key, AtlasKey::Image(params) if params.image_id == image_id)
-                })
+                .filter(|key| matches!(key, AtlasKey::Image(params) if params.image_id == image_id))
                 .cloned()
                 .collect::<Vec<_>>()
         };

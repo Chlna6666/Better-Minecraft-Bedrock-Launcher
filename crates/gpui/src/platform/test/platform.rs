@@ -200,8 +200,8 @@ impl Platform for TestPlatform {
         Box::new(TestKeyboardLayout)
     }
 
-    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        Rc::new(DummyKeyboardMapper)
+    fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
+        Arc::new(DummyKeyboardMapper)
     }
 
     fn on_keyboard_layout_change(&self, _: Box<dyn FnMut()>) {}

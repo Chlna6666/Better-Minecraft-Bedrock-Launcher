@@ -48,10 +48,7 @@ impl Window {
     ///
     /// Callers that retry a transactional prepaint must create a new scope for every attempt so the
     /// same logical children receive the same slots after rollback.
-    pub(crate) fn with_retained_child_scope<R>(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
+    pub(crate) fn with_retained_child_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.retained_child_slot_stack.push(0);
         let result = f(self);
         self.retained_child_slot_stack.pop();
@@ -95,7 +92,10 @@ impl Window {
         }
 
         let retained_id = self.current_retained_element_id()?;
-        let parent = self.rendered_frame.retained_element_ranges.get(&retained_id)?;
+        let parent = self
+            .rendered_frame
+            .retained_element_ranges
+            .get(&retained_id)?;
         if parent.paint_context != self.current_retained_paint_context() {
             return None;
         }
@@ -141,7 +141,9 @@ impl Window {
         if range.is_empty() {
             return;
         }
-        self.next_frame.scene.replay(range, &self.rendered_frame.scene);
+        self.next_frame
+            .scene
+            .replay(range, &self.rendered_frame.scene);
     }
 
     /// Bound the persistent focus-target lookup when applications create and discard many unique

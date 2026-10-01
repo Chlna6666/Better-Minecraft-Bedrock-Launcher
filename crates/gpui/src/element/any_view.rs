@@ -1,12 +1,12 @@
 use crate::{
-    AnyElement, AnyEntity, AnyWeakEntity, App, Bounds, Context, Element, ElementId, Entity, EntityId,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Render, WeakEntity, Window,
+    AnyElement, AnyEntity, AnyWeakEntity, App, Bounds, Context, Element, ElementId, Entity,
+    EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Render, WeakEntity,
+    Window,
 };
 use anyhow::Result;
 use std::{any::TypeId, fmt};
 
-type RenderViewFn =
-    fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
+type RenderViewFn = fn(&mut dyn std::any::Any, AnyWeakEntity, &mut Window, &mut App) -> AnyElement;
 
 /// A dynamically typed renderable entity handle.
 ///

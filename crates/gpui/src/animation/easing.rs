@@ -1,7 +1,7 @@
 use super::spring::Spring;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{fmt, rc::Rc};
+use std::{fmt, sync::Arc};
 
 /// Step easing edge behavior.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -52,7 +52,10 @@ pub enum Easing {
         position: StepPosition,
     },
     /// Caller-provided easing function.
-    Custom(Rc<dyn Fn(f32) -> f32>),
+    ///
+    /// The closure is `Send + Sync` so retained visual timelines can move to an independent
+    /// presentation owner without capturing UI-thread-only state.
+    Custom(Arc<dyn Fn(f32) -> f32 + Send + Sync>),
 }
 
 impl fmt::Debug for Easing {
@@ -123,7 +126,7 @@ impl PartialEq for Easing {
                     position: right_position,
                 },
             ) => left_count == right_count && left_position == right_position,
-            (Self::Custom(left), Self::Custom(right)) => Rc::ptr_eq(left, right),
+            (Self::Custom(left), Self::Custom(right)) => Arc::ptr_eq(left, right),
             _ => false,
         }
     }
@@ -332,7 +335,7 @@ impl From<TransitionEasing> for Easing {
     fn from(easing: TransitionEasing) -> Self {
         match easing {
             TransitionEasing::Linear => Self::Linear,
-            TransitionEasing::Custom => Self::Custom(Rc::new(|progress| progress)),
+            TransitionEasing::Custom => Self::Custom(Arc::new(|progress| progress)),
             TransitionEasing::InCubic => Self::InCubic,
             TransitionEasing::OutCubic => Self::OutCubic,
             TransitionEasing::InOutCubic => Self::InOutCubic,

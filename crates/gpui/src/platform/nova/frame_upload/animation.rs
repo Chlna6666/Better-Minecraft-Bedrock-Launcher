@@ -35,6 +35,8 @@ pub(in crate::platform::nova) enum AnimationProperty {
     BlurRadius = 6,
     Shadow = 7,
     ClipReveal = 8,
+    VisualState = 9,
+    HorizontalEdges = 10,
 }
 
 impl AnimationProperty {
@@ -48,9 +50,13 @@ impl AnimationProperty {
             crate::TransitionProperty::Scale => Some(Self::Scale),
             crate::TransitionProperty::Rotation => Some(Self::Rotation),
             crate::TransitionProperty::Color => Some(Self::SolidColor),
-            crate::TransitionProperty::Blur => Some(Self::BlurRadius),
+            crate::TransitionProperty::FilterBlur => Some(Self::BlurRadius),
             crate::TransitionProperty::Shadow => Some(Self::Shadow),
             crate::TransitionProperty::ClipReveal => Some(Self::ClipReveal),
+            crate::TransitionProperty::VisualState => Some(Self::VisualState),
+            crate::TransitionProperty::HorizontalEdges => Some(Self::HorizontalEdges),
+            crate::TransitionProperty::HorizontalEdgeFirst
+            | crate::TransitionProperty::HorizontalEdgeSecond => None,
             crate::TransitionProperty::Width
             | crate::TransitionProperty::Height
             | crate::TransitionProperty::Inset

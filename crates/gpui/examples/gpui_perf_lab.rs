@@ -8,11 +8,16 @@ use std::{
 };
 
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, PerformanceMetricsSnapshot, RenderPolicy,
-    RendererBackend, RendererOptions, SharedString, Window, WindowBounds, WindowOptions, div, hsla,
-    img, performance_metrics_snapshot, prelude::*, px, rgb, size,
+    App, Application, AssetSource, Bounds, Context, Entity, PerformanceMetricsSnapshot,
+    PresentModePreference, RenderPolicy, RendererBackend, RendererOptions, SharedString,
+    StyleRefinement, Window, WindowBounds, WindowOptions, div, hsla, img,
+    performance_metrics_snapshot, prelude::*, px, rgb, size,
 };
 use serde::Serialize;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 const DEFAULT_FRAMES: usize = 600;
 const DEFAULT_REFRESH_RATE: f32 = 120.0;
@@ -30,6 +35,7 @@ enum Scenario {
     OverdrawModal,
     Effects,
     Animation,
+    TraversalAncestor,
 }
 
 impl Scenario {
@@ -44,6 +50,7 @@ impl Scenario {
             "overdraw-modal" => Ok(Self::OverdrawModal),
             "effects" => Ok(Self::Effects),
             "animation" => Ok(Self::Animation),
+            "traversal-ancestor" => Ok(Self::TraversalAncestor),
             _ => Err(format!("unknown scenario: {value}").into()),
         }
     }
@@ -60,9 +67,18 @@ impl Scenario {
 #[derive(Clone)]
 struct Config {
     backend: RendererBackend,
+    host: Host,
+    present_mode: PresentModePreference,
     scenario: Scenario,
     refresh_rate: f32,
     frames: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Host {
+    Single,
+    Separate,
 }
 
 #[derive(Serialize)]
@@ -120,6 +136,8 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
 struct LabReport {
     schema_version: u32,
     backend: &'static str,
+    host: Host,
+    requested_present_mode: PresentModePreference,
     scenario: Scenario,
     refresh_rate: f32,
     warmup_frames: usize,
@@ -131,8 +149,16 @@ struct LabReport {
     surface_format: String,
     surface_alpha_mode: String,
     surface_present_mode: String,
+    traversal_render_counts: Option<TraversalRenderCounts>,
     summary: BTreeMap<String, PercentileSummary>,
     samples: Vec<FrameSample>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct TraversalRenderCounts {
+    root: usize,
+    parent: usize,
+    leaf: usize,
 }
 
 #[derive(Serialize)]
@@ -166,28 +192,51 @@ struct PerfLab {
     config: Config,
     animation_started_at: Instant,
     rendered_frames: usize,
+    traversal_parent: Entity<TraversalParentView>,
+    traversal_leaf: Entity<TraversalLeafView>,
+    traversal: Rc<RefCell<TraversalRun>>,
     samples: Vec<FrameSample>,
     finished: bool,
 }
 
 impl Render for PerfLab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.finished {
-            window.request_animation_frame();
-        }
-        if self.rendered_frames > self.config.scenario.warmup_frames()
-            && self.samples.len() < self.config.frames
-        {
-            self.samples
-                .push(FrameSample::from(&performance_metrics_snapshot()));
-        }
-        if self.samples.len() == self.config.frames && !self.finished {
-            self.finished = true;
-            print_report(&self.config, std::mem::take(&mut self.samples));
-            cx.spawn(async move |_view, cx| {
-                let _ = cx.update(|cx| cx.quit());
-            })
-            .detach();
+        if matches!(self.config.scenario, Scenario::TraversalAncestor) {
+            if !self.finished {
+                let should_schedule = {
+                    let mut traversal = self.traversal.borrow_mut();
+                    traversal
+                        .root_renders
+                        .set(traversal.root_renders.get().saturating_add(1));
+                    if traversal.scheduled {
+                        false
+                    } else {
+                        traversal.scheduled = true;
+                        true
+                    }
+                };
+                if should_schedule {
+                    schedule_traversal_frame(
+                        self.traversal.clone(),
+                        self.config.clone(),
+                        self.traversal_leaf.clone(),
+                        window,
+                    );
+                }
+            }
+        } else {
+            if !self.finished {
+                window.request_animation_frame();
+            }
+            if self.rendered_frames > self.config.scenario.warmup_frames()
+                && self.samples.len() < self.config.frames
+            {
+                self.samples
+                    .push(FrameSample::from(&performance_metrics_snapshot()));
+            }
+            if self.samples.len() == self.config.frames && !self.finished {
+                self.finish(cx);
+            }
         }
         self.rendered_frames = self.rendered_frames.saturating_add(1);
         self.workload(window)
@@ -211,7 +260,138 @@ impl PerfLab {
                     .as_secs_f32();
                 animation(elapsed)
             }
+            Scenario::TraversalAncestor => {
+                let mut content = div().size_full();
+                for index in 0..256 {
+                    content = content.child(div().h(px(1.0)).bg(rgb(if index % 2 == 0 {
+                        0x172033
+                    } else {
+                        0x1e293b
+                    })));
+                }
+                content
+                    .child(
+                        self.traversal_parent
+                            .clone()
+                            .cached(StyleRefinement::default().w(px(180.0)).h(px(40.0))),
+                    )
+                    .into_any_element()
+            }
         }
+    }
+
+    fn finish(&mut self, cx: &mut Context<Self>) {
+        self.finished = true;
+        print_report(&self.config, std::mem::take(&mut self.samples), None);
+        cx.spawn(async move |_view, cx| {
+            let _ = cx.update(|cx| cx.quit());
+        })
+        .detach();
+    }
+}
+
+#[derive(Default)]
+struct TraversalRun {
+    frames: usize,
+    samples: Vec<FrameSample>,
+    root_renders: Rc<Cell<usize>>,
+    parent_renders: Rc<Cell<usize>>,
+    leaf_renders: Rc<Cell<usize>>,
+    initial_render_counts: Option<TraversalRenderCounts>,
+    scheduled: bool,
+}
+
+fn schedule_traversal_frame(
+    traversal: Rc<RefCell<TraversalRun>>,
+    config: Config,
+    leaf: Entity<TraversalLeafView>,
+    window: &Window,
+) {
+    window.on_next_frame(move |window, cx| {
+        let report = {
+            let mut traversal = traversal.borrow_mut();
+            let sampled_frame = traversal.frames;
+            traversal.frames = traversal.frames.saturating_add(1);
+            let current_render_counts = TraversalRenderCounts {
+                root: traversal.root_renders.get(),
+                parent: traversal.parent_renders.get(),
+                leaf: traversal.leaf_renders.get(),
+            };
+            let initial_render_counts = *traversal
+                .initial_render_counts
+                .get_or_insert(current_render_counts);
+            if sampled_frame > config.scenario.warmup_frames()
+                && traversal.samples.len() < config.frames
+            {
+                traversal
+                    .samples
+                    .push(FrameSample::from(&performance_metrics_snapshot()));
+            }
+            if traversal.samples.len() == config.frames {
+                Some((
+                    std::mem::take(&mut traversal.samples),
+                    TraversalRenderCounts {
+                        root: current_render_counts
+                            .root
+                            .saturating_sub(initial_render_counts.root),
+                        parent: current_render_counts
+                            .parent
+                            .saturating_sub(initial_render_counts.parent),
+                        leaf: current_render_counts
+                            .leaf
+                            .saturating_sub(initial_render_counts.leaf),
+                    },
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some((samples, render_counts)) = report {
+            print_report(&config, samples, Some(render_counts));
+            cx.quit();
+            return;
+        }
+
+        leaf.update(cx, |leaf, cx| {
+            leaf.revision = leaf.revision.saturating_add(1);
+            cx.notify();
+        });
+        schedule_traversal_frame(traversal, config, leaf, window);
+    });
+}
+
+struct TraversalParentView {
+    leaf: Entity<TraversalLeafView>,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for TraversalParentView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        div().size_full().bg(rgb(0x0f172a)).child(
+            self.leaf
+                .clone()
+                .cached(StyleRefinement::default().w(px(180.0)).h(px(40.0))),
+        )
+    }
+}
+
+struct TraversalLeafView {
+    revision: usize,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for TraversalLeafView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get().saturating_add(1));
+        div()
+            .size_full()
+            .bg(rgb(if self.revision % 2 == 0 {
+                0x2563eb
+            } else {
+                0x0891b2
+            }))
+            .child(format!("Target revision {}", self.revision))
     }
 }
 
@@ -331,7 +511,7 @@ fn effects() -> gpui::AnyElement {
                 .w(px(560.0))
                 .h(px(340.0))
                 .rounded_lg()
-                .backdrop_blur(px(24.0))
+                .background_blur(px(24.0))
                 .bg(hsla(0.0, 0.0, 0.12, 0.35))
                 .child("Backdrop blur / damage workload"),
         )
@@ -360,6 +540,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = parse_config()?;
     let options = RendererOptions {
         backend: config.backend,
+        present_mode: config.present_mode,
         render_policy: RenderPolicy::Continuous {
             max_fps: config.refresh_rate,
         },
@@ -367,66 +548,82 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..RendererOptions::default()
     };
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
-
-    Application::with_renderer_options(options)
-        .with_assets(Assets { examples })
-        .run(move |cx: &mut App| {
-            let bounds = Bounds::centered(None, size(px(800.0), px(520.0)), cx);
-            let result = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..WindowOptions::default()
-                },
-                |_, cx| {
-                    cx.new(|_| PerfLab {
-                        config: config.clone(),
-                        animation_started_at: Instant::now(),
-                        rendered_frames: 0,
-                        samples: Vec::with_capacity(config.frames),
-                        finished: false,
-                    })
-                },
-            );
-            if let Err(error) = result {
-                eprintln!("failed to open gpui_perf_lab: {error:#}");
-                cx.quit();
-                return;
-            }
-            cx.activate(true);
-        });
+    let host = config.host;
+    let launch = move |cx: &mut App| open_lab_window(config, cx);
+    match host {
+        Host::Single => Application::with_renderer_options(options)
+            .with_assets(Assets { examples })
+            .run(launch),
+        Host::Separate => Application::run_separate(
+            options.clone(),
+            move || Application::with_renderer_options(options).with_assets(Assets { examples }),
+            launch,
+        )?,
+    }
     Ok(())
+}
+
+fn open_lab_window(config: Config, cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(800.0), px(520.0)), cx);
+    let result = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..WindowOptions::default()
+        },
+        |_, cx| {
+            cx.new(|cx| {
+                let traversal = Rc::new(RefCell::new(TraversalRun::default()));
+                traversal.borrow_mut().samples = Vec::with_capacity(config.frames);
+                let traversal_parent_renders = traversal.borrow().parent_renders.clone();
+                let traversal_leaf_renders = traversal.borrow().leaf_renders.clone();
+                let traversal_leaf = cx.new(|_| TraversalLeafView {
+                    revision: 0,
+                    renders: traversal_leaf_renders.clone(),
+                });
+                let traversal_parent = cx.new(|_| TraversalParentView {
+                    leaf: traversal_leaf.clone(),
+                    renders: traversal_parent_renders.clone(),
+                });
+                PerfLab {
+                    config: config.clone(),
+                    animation_started_at: Instant::now(),
+                    rendered_frames: 0,
+                    traversal_parent,
+                    traversal_leaf,
+                    traversal,
+                    samples: Vec::with_capacity(config.frames),
+                    finished: false,
+                }
+            })
+        },
+    );
+    if let Err(error) = result {
+        eprintln!("failed to open gpui_perf_lab: {error:#}");
+        cx.quit();
+        return;
+    }
+    cx.activate(true);
 }
 
 fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut config = Config {
         backend: default_backend(),
+        host: Host::Single,
+        present_mode: PresentModePreference::AutoVsync,
         scenario: Scenario::StaticIdle,
         refresh_rate: DEFAULT_REFRESH_RATE,
         frames: DEFAULT_FRAMES,
     };
 
     for argument in std::env::args().skip(1) {
-        if let Some(value) = argument.strip_prefix("--backend=") {
-            config.backend = value.parse()?;
-        } else if let Some(value) = argument.strip_prefix("--scenario=") {
-            config.scenario = Scenario::parse(value)?;
-        } else if let Some(value) = argument.strip_prefix("--refresh-rate=") {
-            config.refresh_rate = value.parse()?;
-        } else if let Some(value) = argument.strip_prefix("--frames=") {
-            config.frames = value.parse()?;
-        } else if argument == "--help" || argument == "-h" {
-            print_help();
-            std::process::exit(0);
-        } else {
-            return Err(format!("unknown argument: {argument}").into());
-        }
+        parse_argument(&mut config, &argument)?;
     }
 
     if !matches!(
         config.backend,
-        RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
+        RendererBackend::Auto | RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
     ) {
-        return Err("--backend must be nova-dx12 or nova-vulkan".into());
+        return Err("--backend must be auto, nova-dx12, or nova-vulkan".into());
     }
     if !config.refresh_rate.is_finite() || config.refresh_rate <= 0.0 {
         return Err("--refresh-rate must be a positive finite number".into());
@@ -435,6 +632,37 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
         return Err("--frames must be greater than zero".into());
     }
     Ok(config)
+}
+
+fn parse_argument(config: &mut Config, argument: &str) -> Result<(), Box<dyn Error>> {
+    if let Some(value) = argument.strip_prefix("--backend=") {
+        config.backend = value.parse()?;
+    } else if let Some(value) = argument.strip_prefix("--host=") {
+        config.host = match value {
+            "single" => Host::Single,
+            "separate" => Host::Separate,
+            _ => return Err("--host must be single or separate".into()),
+        };
+    } else if let Some(value) = argument.strip_prefix("--present-mode=") {
+        config.present_mode = match value {
+            "auto-vsync" => PresentModePreference::AutoVsync,
+            "mailbox" => PresentModePreference::Mailbox,
+            "immediate" => PresentModePreference::Immediate,
+            _ => return Err("--present-mode must be auto-vsync, mailbox, or immediate".into()),
+        };
+    } else if let Some(value) = argument.strip_prefix("--scenario=") {
+        config.scenario = Scenario::parse(value)?;
+    } else if let Some(value) = argument.strip_prefix("--refresh-rate=") {
+        config.refresh_rate = value.parse()?;
+    } else if let Some(value) = argument.strip_prefix("--frames=") {
+        config.frames = value.parse()?;
+    } else if argument == "--help" || argument == "-h" {
+        print_help();
+        std::process::exit(0);
+    } else {
+        return Err(format!("unknown argument: {argument}").into());
+    }
+    Ok(())
 }
 
 fn default_backend() -> RendererBackend {
@@ -451,12 +679,18 @@ fn duration_us(duration: Option<Duration>) -> u64 {
     })
 }
 
-fn print_report(config: &Config, samples: Vec<FrameSample>) {
+fn print_report(
+    config: &Config,
+    samples: Vec<FrameSample>,
+    traversal_render_counts: Option<TraversalRenderCounts>,
+) {
     let snapshot = performance_metrics_snapshot();
     let summary = summarize(&samples);
     let report = LabReport {
-        schema_version: 1,
-        backend: backend_label(config.backend),
+        schema_version: 2,
+        backend: backend_label(snapshot.renderer_backend),
+        host: config.host,
+        requested_present_mode: config.present_mode,
         scenario: config.scenario,
         refresh_rate: config.refresh_rate,
         warmup_frames: config.scenario.warmup_frames(),
@@ -468,6 +702,7 @@ fn print_report(config: &Config, samples: Vec<FrameSample>) {
         surface_format: snapshot.gpu_surface_format,
         surface_alpha_mode: snapshot.gpu_surface_alpha_mode,
         surface_present_mode: snapshot.gpu_surface_present_mode,
+        traversal_render_counts,
         summary,
         samples,
     };
@@ -479,6 +714,7 @@ fn print_report(config: &Config, samples: Vec<FrameSample>) {
 
 fn backend_label(backend: RendererBackend) -> &'static str {
     match backend {
+        RendererBackend::Auto => "auto",
         RendererBackend::NovaDx12 => "nova-dx12",
         RendererBackend::NovaVulkan => "nova-vulkan",
         _ => "unsupported",
@@ -537,8 +773,9 @@ fn percentile(values: &[u64], percentile: usize) -> u64 {
 
 fn print_help() {
     println!(
-        "gpui_perf_lab --backend=nova-dx12|nova-vulkan \
-         --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation \
+        "gpui_perf_lab --backend=auto|nova-dx12|nova-vulkan \
+         --host=single|separate --present-mode=auto-vsync|mailbox|immediate \
+         --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor \
          --refresh-rate=120 --frames=600"
     );
 }

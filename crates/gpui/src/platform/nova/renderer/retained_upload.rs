@@ -486,10 +486,7 @@ impl NovaRenderer {
         crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
         let started_at = Instant::now();
         #[cfg(target_os = "windows")]
-        if self
-            .draw_step_scratch
-            .backdrop_blur_damage_region
-            .is_full()
+        if self.draw_step_scratch.backdrop_blur_damage_region.is_full()
             && self.rendering_parameters.refresh_for_current_monitor()
         {
             // A monitor transition already forces a full high-level redraw and glyph-atlas refresh.

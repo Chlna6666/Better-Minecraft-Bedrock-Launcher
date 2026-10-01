@@ -11,7 +11,7 @@ GPUI skill.
 rtk cargo fmt --manifest-path Cargo.toml --all
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 rtk cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
-rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
+rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan --examples
 rtk cargo bench --manifest-path Cargo.toml --features bench-support --no-run
 ```
 
@@ -54,8 +54,17 @@ text.
 ## Example Checks
 
 Examples must compile with current GPUI APIs and avoid references to missing
-dependencies. Platform-specific examples should compile on unsupported
-platforms through a guarded fallback entry point.
+dependencies. The Windows no-default-features example check must enable the Nova
+backends so `RendererBackend::Auto` has DX12 and a Vulkan fallback. Platform-specific
+examples should compile on unsupported platforms through a guarded fallback entry
+point.
 
 When updating GPU examples, verify they use current GPUI scene primitives and
 available nova-gfx renderer extension points rather than removed surface APIs.
+
+For the Windows presentation owner, run `presentation_lane_block` with both
+`--backend=nova-dx12` and `--backend=nova-vulkan`. Each run must report at least
+two distinct presented animation samples during its 200 ms blocked UI `Render`
+interval while the UI Render count stays unchanged. A compile check or a single
+backend does not satisfy this gate. Linux Wayland/X11 need the same native gate
+after their owner split is implemented; Windows builds do not validate Linux.

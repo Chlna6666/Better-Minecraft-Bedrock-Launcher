@@ -28,8 +28,7 @@ use xkbcommon::xkb::{self, Keycode, Keysym, State};
 use crate::{
     Action, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle,
     DisplayId, ForegroundExecutor, ForegroundTaskQueue, Keymap, LinuxDispatcher, Menu, MenuItem,
-    OwnedMenu,
-    PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
+    OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay, PlatformKeyboardLayout,
     PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, Result, Task,
     WindowAppearance, WindowParams, px,
 };
@@ -165,8 +164,8 @@ impl<P: LinuxClient + 'static> Platform for P {
         self.keyboard_layout()
     }
 
-    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        Rc::new(crate::DummyKeyboardMapper)
+    fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
+        Arc::new(crate::DummyKeyboardMapper)
     }
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {

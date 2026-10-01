@@ -73,6 +73,28 @@ struct EntityRefCounts {
     leak_detector: LeakDetector,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+struct EntityRefCountsDropHandle(Arc<RwLock<EntityRefCounts>>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for EntityRefCountsDropHandle {
+    fn drop(&mut self) {
+        #[cfg(any(test, feature = "leak-detection"))]
+        {
+            let mut ref_counts = self.0.write();
+            let entity_ids = ref_counts
+                .leak_detector
+                .entity_handles
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            for entity_id in entity_ids {
+                ref_counts.leak_detector.assert_released(entity_id);
+            }
+        }
+    }
+}
+
 pub(super) struct LeaseInner {
     pub(super) entity: Option<Box<dyn Any>>,
 }
@@ -93,6 +115,11 @@ impl EntityMap {
                 },
             })),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ref_counts_drop_handle(&self) -> impl Drop + 'static {
+        EntityRefCountsDropHandle(self.ref_counts.clone())
     }
 
     /// Reserve a slot for an entity, which you can subsequently use with `insert`.
@@ -588,7 +615,12 @@ mod test {
         entity_map.end_lease_erased(handle.entity_id(), lease);
 
         assert_eq!(entity_map.read(&handle).i, 2);
-        assert!(entity_map.accessed_entities.borrow().contains(&handle.entity_id()));
+        assert!(
+            entity_map
+                .accessed_entities
+                .borrow()
+                .contains(&handle.entity_id())
+        );
     }
 
     #[test]

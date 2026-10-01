@@ -1,10 +1,7 @@
 use super::*;
 
 #[inline]
-fn snap_measured_size_to_device_pixels(
-    measured: Size<Pixels>,
-    scale_factor: f32,
-) -> Size<Pixels> {
+fn snap_measured_size_to_device_pixels(measured: Size<Pixels>, scale_factor: f32) -> Size<Pixels> {
     measured.map(|axis| {
         let device_pixels = (axis.0.max(0.0) * scale_factor).ceil();
         Pixels(device_pixels / scale_factor)
@@ -62,12 +59,17 @@ impl Window {
         self.layout_engine
             .as_mut()
             .unwrap()
-            .request_measured_layout(style, rem_size, scale_factor, move |known, available, window, cx| {
-                snap_measured_size_to_device_pixels(
-                    measure(known, available, window, cx),
-                    scale_factor,
-                )
-            })
+            .request_measured_layout(
+                style,
+                rem_size,
+                scale_factor,
+                move |known, available, window, cx| {
+                    snap_measured_size_to_device_pixels(
+                        measure(known, available, window, cx),
+                        scale_factor,
+                    )
+                },
+            )
     }
 
     pub(crate) fn request_measured_layout_with_fingerprint<

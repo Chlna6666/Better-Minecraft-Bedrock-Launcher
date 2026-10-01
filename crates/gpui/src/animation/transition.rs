@@ -33,8 +33,8 @@ pub enum TransitionProperty {
     ClipReveal,
     /// Background or foreground color.
     Color,
-    /// Blur radius.
-    Blur,
+    /// Gaussian standard deviation for the element's retained subtree, in logical pixels.
+    FilterBlur,
     /// Shadow fields.
     Shadow,
     /// Width.
@@ -51,6 +51,21 @@ pub enum TransitionProperty {
     Gap,
     /// Border width.
     BorderWidth,
+    /// Packed compositor sample for a group of independently sampled opacity, translation, and
+    /// scale tracks. GPUI creates this value after sampling; callers should declare the individual
+    /// properties instead of using this variant in a `Transition`.
+    #[doc(hidden)]
+    VisualState,
+    /// First independently sampled horizontal offset in a retained decoration edge pair.
+    /// Created by `AnimationGroup::horizontal_edges`; not a layout transition.
+    #[doc(hidden)]
+    HorizontalEdgeFirst,
+    /// Second independently sampled horizontal offset in a retained decoration edge pair.
+    #[doc(hidden)]
+    HorizontalEdgeSecond,
+    /// Packed horizontal edge offsets, preserving decoration height and corner radii.
+    #[doc(hidden)]
+    HorizontalEdges,
 }
 
 impl TransitionProperty {
@@ -90,8 +105,11 @@ impl TransitionProperty {
                 | Self::Translation
                 | Self::Scale
                 | Self::Rotation
-                | Self::Blur
+                | Self::FilterBlur
                 | Self::ClipReveal
+                | Self::HorizontalEdgeFirst
+                | Self::HorizontalEdgeSecond
+                | Self::HorizontalEdges
         )
     }
 }

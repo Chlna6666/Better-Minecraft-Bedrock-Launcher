@@ -10,7 +10,7 @@ use std::{
     ptr::NonNull,
     rc::Rc,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use collections::HashMap;
@@ -29,6 +29,7 @@ use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
 use wayland_client::{Proxy, protocol::wl_surface};
 use wayland_protocols::wp::viewporter::client::wp_viewport;
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
@@ -41,12 +42,12 @@ use winit::raw_window_handle as rwh;
 
 use crate::WindowKind;
 use crate::{
-    AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, PresentationPacket, Globals,
-    GpuSpecs, GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
-    PlatformFrameResult, PlatformInput, Point, PromptButton, PromptLevel, RendererOptions,
-    PlatformFrameRequest, ResizeEdge, Size, Tiling, WaylandClientStatePtr, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls, WindowDecorations,
-    WindowParams, point, px, size,
+    AnyWindowHandle, Bounds, CursorStyle, Decorations, DevicePixels, Globals, GpuSpecs,
+    GpuiMemoryTrimLevel, Modifiers, MouseButton, Output, Pixels, PlatformDisplay,
+    PlatformFrameRequest, PlatformFrameResult, PlatformInput, Point, PresentationPacket,
+    PromptButton, PromptLevel, RendererOptions, ResizeEdge, SceneAnimationCompletion, Size, Tiling,
+    WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowControls, WindowDecorations, WindowParams, point, px, size,
 };
 use crate::{
     Capslock,
@@ -59,7 +60,9 @@ use util::ResultExt;
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
-    request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
+    request_frame: Option<crate::platform::frame::PlatformFrameRequestSender>,
+    presentation_animation_completed:
+        Option<crate::platform::frame::SceneAnimationCompletionSender>,
     input: Option<Box<dyn FnMut(crate::PlatformInput) -> crate::DispatchEventResult>>,
     active_status_change: Option<Box<dyn FnMut(bool)>>,
     visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -117,6 +120,7 @@ pub struct WaylandWindowState {
     app_id: Option<String>,
     appearance: WindowAppearance,
     blur: Option<org_kde_kwin_blur::OrgKdeKwinBlur>,
+    background_effect: Option<ExtBackgroundEffectSurfaceV1>,
     toplevel: xdg_toplevel::XdgToplevel,
     viewport: Option<wp_viewport::WpViewport>,
     outputs: HashMap<ObjectId, Output>,
@@ -251,6 +255,7 @@ impl WaylandWindowState {
             decoration,
             app_id: None,
             blur: None,
+            background_effect: None,
             toplevel,
             viewport,
             globals,
@@ -472,6 +477,9 @@ impl Drop for WaylandWindow {
         if let Some(blur) = &state.blur {
             blur.release();
         }
+        if let Some(effect) = state.background_effect.take() {
+            effect.destroy();
+        }
         state.toplevel.destroy();
         if let Some(viewport) = &state.viewport {
             viewport.destroy();
@@ -570,6 +578,11 @@ impl WaylandWindow {
 }
 
 impl WaylandWindowStatePtr {
+    pub(super) fn refresh_background_effects(&self) {
+        update_window(self.state.borrow_mut());
+        self.surface().commit();
+    }
+
     pub fn handle(&self) -> AnyWindowHandle {
         self.state.borrow().handle
     }
@@ -584,6 +597,37 @@ impl WaylandWindowStatePtr {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.state, &other.state)
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        let mut state = self.state.borrow_mut();
+        if state.visibility != WindowVisibility::Visible {
+            return Ok(None);
+        }
+        state.renderer.present_active_frame(now, None)
+    }
+
+    fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
+        let callbacks = self.callbacks.borrow();
+        if let Some(sender) = callbacks.presentation_animation_completed.as_ref()
+            && sender.unbounded_send(completion).is_err()
+        {
+            log::trace!("discarding presentation completion after its UI receiver closed");
+        }
+    }
+
+    fn finish_frame(&self) {
+        let mut state = self.state.borrow_mut();
+        state.frame_in_progress = false;
+        if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
+            state.surface.frame(&state.globals.qh, state.surface.id());
+            state.frame_callback_pending = true;
+        }
+        state.surface.commit();
     }
 
     pub fn handle_client_frame_pointer_motion(
@@ -722,12 +766,29 @@ impl WaylandWindowStatePtr {
         state.frame_in_progress = true;
         drop(state);
 
-        let mut cb = self.callbacks.borrow_mut();
-        if let Some(fun) = cb.request_frame.as_mut() {
-            fun(request);
+        if request.is_presentation_only() {
+            match self.present_active_frame(Instant::now(), None) {
+                Ok(Some(frame)) => {
+                    if frame.continues {
+                        self.request_frame(PlatformFrameRequest::presentation());
+                    }
+                    for completion in frame.completed_animations {
+                        self.invoke_presentation_animation_completed(completion);
+                    }
+                    self.finish_frame();
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => log::error!("failed to present active Wayland scene: {error:#}"),
+            }
         }
-        drop(cb);
 
+        let sender = self.callbacks.borrow().request_frame.clone();
+        if let Some(sender) = sender
+            && !sender.request(request)
+        {
+            log::trace!("discarding Wayland frame request after its UI receiver closed");
+        }
         // Normally Window::complete_frame reaches PlatformWindow::completed_frame synchronously.
         // If the window vanished or the callback exited before that boundary, recover the scheduler
         // here so a later request cannot remain permanently latched behind frame_in_progress.
@@ -1428,8 +1489,20 @@ impl PlatformWindow for WaylandWindow {
         }
         state.background_appearance = background_appearance;
         update_window(state);
-        self.0
-            .request_frame(PlatformFrameRequest::ui_commit());
+        self.surface().commit();
+        self.0.request_frame(PlatformFrameRequest::ui_commit());
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.borrow().background_appearance
+    }
+
+    fn background_capabilities(&self) -> crate::WindowBackgroundCapabilities {
+        self.borrow()
+            .globals
+            .background_effects
+            .borrow()
+            .capabilities()
     }
 
     fn minimize(&self) {
@@ -1466,8 +1539,8 @@ impl PlatformWindow for WaylandWindow {
         self.0.clear_timed_out_frame_request(options);
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
-        self.0.callbacks.borrow_mut().request_frame = Some(callback);
+    fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
+        self.0.callbacks.borrow_mut().request_frame = Some(sender);
         let should_request_frame = {
             let state = self.0.state.borrow();
             state.pending_frame_request.requires_frame() && !state.frame_callback_pending
@@ -1475,6 +1548,16 @@ impl PlatformWindow for WaylandWindow {
         if should_request_frame {
             self.0.request_frame(PlatformFrameRequest::default());
         }
+    }
+
+    fn set_presentation_animation_completion_sender(
+        &self,
+        sender: crate::platform::frame::SceneAnimationCompletionSender,
+    ) {
+        self.0
+            .callbacks
+            .borrow_mut()
+            .presentation_animation_completed = Some(sender);
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -1517,9 +1600,36 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let result = self.borrow_mut().renderer.draw(packet);
+        let (result, has_active_presentation_animations, completed_animations) = {
+            let mut state = self.borrow_mut();
+            let result = state.renderer.draw(packet);
+            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
+                state.renderer.take_animation_completions()
+            } else {
+                smallvec::SmallVec::new()
+            };
+            let has_active_presentation_animations =
+                state.renderer.has_active_presentation_animations();
+            (
+                result,
+                has_active_presentation_animations,
+                completed_animations,
+            )
+        };
         match result {
-            Ok(()) => PlatformFrameResult::Submitted,
+            Ok(true) => {
+                for completion in completed_animations {
+                    self.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.0.request_frame(PlatformFrameRequest::presentation());
+                }
+                PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
+            }
             Err(error) => {
                 log::error!("failed to draw Wayland frame: {error:#}");
                 self.0.request_frame(PlatformFrameRequest::ui_commit());
@@ -1529,12 +1639,36 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let result = self
-            .borrow_mut()
-            .renderer
-            .present_framebuffer_only(packet);
+        let (result, has_active_presentation_animations, completed_animations) = {
+            let mut state = self.borrow_mut();
+            let result = state.renderer.present_framebuffer_only(packet);
+            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
+                state.renderer.take_animation_completions()
+            } else {
+                smallvec::SmallVec::new()
+            };
+            let has_active_presentation_animations =
+                state.renderer.has_active_presentation_animations();
+            (
+                result,
+                has_active_presentation_animations,
+                completed_animations,
+            )
+        };
         match result {
-            Ok(()) => PlatformFrameResult::Submitted,
+            Ok(true) => {
+                for completion in completed_animations {
+                    self.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.0.request_frame(PlatformFrameRequest::presentation());
+                }
+                PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.0.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
+            }
             Err(error) => {
                 log::error!("failed to present Wayland framebuffer: {error:#}");
                 self.0.request_frame(PlatformFrameRequest::ui_commit());
@@ -1543,14 +1677,24 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        _timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        self.0.present_active_frame(now, None)
+    }
+
+    fn has_active_presentation_animations(&self) -> bool {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .has_active_presentation_animations()
+    }
+
     fn completed_frame(&self) {
-        let mut state = self.borrow_mut();
-        state.frame_in_progress = false;
-        if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
-            state.surface.frame(&state.globals.qh, state.surface.id());
-            state.frame_callback_pending = true;
-        }
-        state.surface.commit();
+        self.0.finish_frame();
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
@@ -1630,8 +1774,7 @@ impl PlatformWindow for WaylandWindow {
         if Some(inset) != state.client_inset {
             state.client_inset = Some(inset);
             update_window(state);
-            self.0
-                .request_frame(PlatformFrameRequest::ui_commit());
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
         }
     }
 
@@ -1676,22 +1819,41 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
         state.surface.set_opaque_region(None);
     }
 
-    if let Some(ref blur_manager) = state.globals.blur_manager {
-        if state.background_appearance == WindowBackgroundAppearance::Blurred {
-            if state.blur.is_none() {
-                let blur = blur_manager.create(&state.surface, &state.globals.qh, ());
-                state.blur = Some(blur);
-            }
-            state.blur.as_ref().unwrap().commit();
-        } else {
-            // It probably doesn't hurt to clear the blur for opaque windows
-            blur_manager.unset(&state.surface);
-            if let Some(b) = state.blur.take() {
-                b.release()
+    let effects = state.globals.background_effects.clone();
+    let effects = effects.borrow();
+    let effective = effects.capabilities().resolve(state.background_appearance);
+    let blur = effective == WindowBackgroundAppearance::Blurred;
+    let ext_blur = blur && effects.blur_supported && effects.manager.is_some();
+    if ext_blur {
+        if state.background_effect.is_none() {
+            if let Some(manager) = effects.manager.as_ref() {
+                state.background_effect = Some(manager.get_background_effect(&state.surface, &state.globals.qh, ()));
             }
         }
+        if let Some(effect) = state.background_effect.as_ref() {
+            // A non-null region is required: null removes the effect. These bounds are in
+            // surface-local logical coordinates, independent of buffer scale/fractional DPI.
+            let blur_region = state.globals.compositor.create_region(&state.globals.qh, ());
+            blur_region.add(0, 0, state.window_bounds.size.width.0.ceil().max(1.0) as i32,
+                state.window_bounds.size.height.0.ceil().max(1.0) as i32);
+            effect.set_blur_region(Some(&blur_region));
+            blur_region.destroy();
+        }
+    } else if let Some(effect) = state.background_effect.take() {
+        effect.set_blur_region(None);
+        effect.destroy();
     }
-
+    if blur && !ext_blur {
+        if let Some(manager) = effects.kde_manager.as_ref() {
+            if state.blur.is_none() {
+                state.blur = Some(manager.create(&state.surface, &state.globals.qh, ()));
+            }
+            if let Some(blur) = state.blur.as_ref() { blur.commit(); }
+        }
+    } else if let Some(blur) = state.blur.take() {
+        if let Some(manager) = effects.kde_manager.as_ref() { manager.unset(&state.surface); }
+        blur.release();
+    }
     region.destroy();
 }
 

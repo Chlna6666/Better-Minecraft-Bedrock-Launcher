@@ -10,7 +10,7 @@
 rtk cargo fmt --manifest-path Cargo.toml --all
 rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 rtk cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
-rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
+rtk cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan --examples
 rtk cargo bench --manifest-path Cargo.toml --features bench-support --no-run
 ```
 
@@ -48,8 +48,15 @@ headings。
 
 ## 示例检查
 
-示例必须使用当前 GPUI APIs 编译，并避免引用缺失 dependencies。平台专用示例应通过
-guarded fallback entry point 在不支持的平台上通过编译。
+示例必须使用当前 GPUI APIs 编译，并避免引用缺失 dependencies。Windows 的
+no-default-features 示例检查必须启用 Nova backends，让 `RendererBackend::Auto` 有已编译的
+DX12 backend 和 Vulkan fallback。平台专用示例应通过 guarded fallback entry point 在不支持的平台上通过编译。
+
+Windows presentation owner 必须分别以 `--backend=nova-dx12` 和
+`--backend=nova-vulkan` 运行 `presentation_lane_block`。每次运行均须在 UI
+`Render` 阻塞 200 ms 期间提交至少两个不同的动画样本，并保持 UI Render 次数不变。
+仅编译通过或只验证一个 backend 不算通过。Linux Wayland/X11 完成 owner 切分后需在
+原生平台执行相同门槛；Windows 构建不能替代 Linux 验证。
 
 更新 GPU examples 时，确认 flow 根据渲染发生的位置使用 `removed surface API`、
 `back_buffer_view`、`present` 或 `swap_buffers`，以及 `removed surface paint API`。

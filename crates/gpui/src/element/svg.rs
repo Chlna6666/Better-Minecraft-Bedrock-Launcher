@@ -141,14 +141,7 @@ impl Element for Svg {
 
                     if let Some(data) = self.data.as_deref() {
                         window
-                            .paint_svg_data(
-                                bounds,
-                                path.clone(),
-                                data,
-                                transformation,
-                                color,
-                                cx,
-                            )
+                            .paint_svg_data(bounds, path.clone(), data, transformation, color, cx)
                             .log_err();
                     } else {
                         window

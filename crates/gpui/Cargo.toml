@@ -153,6 +153,10 @@ name = "animation"
 path = "examples/animation.rs"
 
 [[example]]
+name = "blur"
+path = "examples/blur.rs"
+
+[[example]]
 name = "data_table"
 path = "examples/data_table.rs"
 
@@ -163,6 +167,14 @@ path = "examples/drag_drop.rs"
 [[example]]
 name = "gpui_perf_lab"
 path = "examples/gpui_perf_lab.rs"
+
+[[example]]
+name = "presentation_lane_block"
+path = "examples/presentation_lane_block.rs"
+
+[[example]]
+name = "animation_perf_lab"
+path = "examples/animation_perf_lab.rs"
 
 [[example]]
 name = "gif_viewer"

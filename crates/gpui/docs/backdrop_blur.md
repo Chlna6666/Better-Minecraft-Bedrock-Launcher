@@ -6,8 +6,8 @@ Two distinct `Styled` properties share a GPU Gaussian kernel:
 
 | GPUI | Web CSS | Input |
 | --- | --- | --- |
-| `.blur(px(3.))` | `filter: blur(3px)` | Element background, shadow, border and descendants |
-| `.backdrop_blur(px(3.))` | `backdrop-filter: blur(3px)` | Previously painted content behind the element |
+| `.filter_blur(px(3.))` | `filter: blur(3px)` | Element background, shadow, border and descendants |
+| `.background_blur(px(3.))` | `backdrop-filter: blur(3px)` | Previously painted content behind the element |
 | `.bg(rgba(0xffffffcc))` | `background: rgb(255 255 255 / 80%)` | The element's own fill |
 | `.opacity(0.5)` | `opacity: .5` | Element opacity, including the filter output |
 
@@ -20,10 +20,10 @@ Backdrop Root/stacking-context model are not implied by these two properties.
 ```rust
 use gpui::{div, px, rgba, prelude::*};
 
-let content = div().blur(px(3.)).child("Blurred text");
+let content = div().filter_blur(px(3.)).child("Blurred text");
 let panel = div()
     .id("account-panel")
-    .backdrop_blur(px(6.))
+    .background_blur(px(6.))
     .bg(rgba(0xffffffeb))
     .rounded(px(16.))
     .opacity(0.8)
@@ -43,6 +43,27 @@ approximates a Gaussian through three standard deviations and preserves
 fractional values; output is not guaranteed pixel-identical to browsers.
 The old API measured kernel support: migrate old values `r` to `r / 3` to
 preserve their visual strength.
+
+## Native window materials
+
+`WindowBackgroundAppearance` is separate from element filtering. Request `Opaque`,
+`Transparent`, `Blurred`, `Mica`, or `MicaAlt` through window options or
+`Window::set_background_appearance`. `background_appearance()` preserves the request;
+`background_capabilities()` describes native support and `effective_background_appearance()`
+returns the accepted mode after fallback. Compositor policy can still change the final pixels.
+
+Windows uses `DWMWA_SYSTEMBACKDROP_TYPE`: `Blurred` requests Desktop Acrylic,
+`Mica` requests the main-window material and `MicaAlt` the tabbed-window material.
+Unsupported systems and failed material requests fall back to transparency. Plain
+transparency clears the native material. See the [DWM contract](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type).
+
+Wayland prefers `ext-background-effect-v1` when its blur capability is advertised,
+then KDE blur. Regions use surface-local logical coordinates and take effect on
+surface commit; capability changes update existing windows. X11 requires both a
+compositor selection owner and its KDE blur support announcement on the root window.
+An existing atom alone does not establish support. Linux substitutes native blur for
+Mica variants, then transparency. macOS substitutes its existing native blur.
+These paths request system effects and never capture desktop pixels.
 
 ## Scene Data
 

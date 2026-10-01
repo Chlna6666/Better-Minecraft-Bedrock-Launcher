@@ -226,7 +226,8 @@ impl ImageSource {
                 }
             }
             ImageSource::Encoded(encoded_image) => {
-                if let Some(preload) = cx.take_asset::<AssetLogger<EncodedImageLoader>>(encoded_image)
+                if let Some(preload) =
+                    cx.take_asset::<AssetLogger<EncodedImageLoader>>(encoded_image)
                     && let Some(Ok(image)) = preload.get()
                 {
                     cx.drop_image(image, None);

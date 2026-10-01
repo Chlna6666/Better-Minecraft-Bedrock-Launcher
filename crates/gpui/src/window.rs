@@ -6,16 +6,16 @@ use crate::{
     BackdropBlurDamagePlan, BackdropBlurStyle, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, Context, Corners, CursorStyle, DevicePixels, DirtyRegion, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
-    FileDropEvent, FontId, FramePhaseMetrics, PresentationPacket, Global, GlobalElementId, GlyphId,
-    GpuMesh3d, GpuMesh3dDrawParameters, GpuSpecs, GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel,
+    FileDropEvent, FontId, FramePhaseMetrics, Global, GlobalElementId, GlyphId, GpuMesh3d,
+    GpuMesh3dDrawParameters, GpuSpecs, GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel,
     ImagePipelineConfig, ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext,
     KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId,
     LineLayoutFrameMetrics, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
     MonochromeSpriteSampling, MouseButton, MouseDownEvent, MouseEvent, MouseExitEvent,
     MouseMoveEvent, MouseUpEvent, PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PolychromeSprite, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams,
-    RenderSvgParams, Replay, PlatformFrameRequest, RetainedResourceTrimPolicy,
+    PlatformFrameRequest, PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PolychromeSprite, PresentationPacket, Quad, Render, RenderGlyphParams, RenderImage,
+    RenderImageParams, RenderSvgParams, Replay, RetainedResourceTrimPolicy,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
     Task, TextStyle, TextStyleRefinement, TransformationMatrix, Underline, UnderlineStyle,
@@ -33,9 +33,10 @@ use crate::{
     record_inactive_present_skip, record_layout_cache_metrics, record_layout_frame_metrics,
     record_retained_frame_skip, record_scene_frame_metrics, record_skipped_pointer_frame,
     record_window_dirty_to_present, record_window_frame_disposition,
-    record_window_layout_recompute, record_window_runtime_state, record_window_visibility, rems,
+    record_window_layout_recompute, record_window_runtime_state, rems,
     size, transparent_black,
 };
+use crate::diagnostics::performance_metrics::record_window_visibility;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use derive_more::{Deref, DerefMut};
@@ -115,8 +116,7 @@ use dispatch::{log_timed_gpui_event, platform_input_name};
 pub(crate) use element_context::RetainedElementIdentity;
 pub use element_id::ElementId;
 pub(crate) use focus::{
-    AnyWindowFocusListener, ElementArenaScope, FocusMap, WindowFocusEvent,
-    with_element_arena,
+    AnyWindowFocusListener, ElementArenaScope, FocusMap, WindowFocusEvent, with_element_arena,
 };
 pub use focus::{
     ArenaClearNeeded, DismissEvent, FocusHandle, FocusId, FocusOutEvent, Focusable, ManagedView,
@@ -126,8 +126,7 @@ use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
 pub(crate) use frame::{
-    DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedElementRange,
-    RetainedSceneSegment,
+    DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedElementRange, RetainedSceneSegment,
 };
 #[cfg(test)]
 use frame_lifecycle::FrameCompletion;
@@ -145,7 +144,7 @@ pub(crate) use lifecycle::{
 pub(crate) use open::DEFAULT_WINDOW_SIZE;
 pub use options::*;
 pub use paint::{PaintQuad, fill, outline, quad};
-pub use paint_resources::{ImagePaintProgress, ImagePaintRequest};
+pub use paint_resources::{ImagePaintProgress, ImagePaintRequest, ImageSampling};
 pub use prompts::*;
 pub use state::Window;
 use state::{
@@ -153,8 +152,8 @@ use state::{
     ImagePaintTileCacheKey, LayoutCacheFrameMetrics, ModifierState, PendingInput,
 };
 pub(crate) use state::{
-    CachedViewTraversalContext, DispatchEventResult, DrawPhase, ElementStateBox, ViewBoundsFrame,
-    ViewDirtyScope,
+    CachedViewTraversalContext, DispatchEventResult, DrawPhase, ElementStateBox,
+    SelectiveSpliceMissReason, ViewBoundsFrame, ViewDirtyScope,
 };
 pub(crate) use tab_stop::*;
 pub use titlebar::TitlebarGesture;

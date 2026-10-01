@@ -3,7 +3,7 @@ use collections::HashMap;
 use crate::{KeybindingKeystroke, Keystroke};
 
 /// A trait for platform-specific keyboard layouts
-pub trait PlatformKeyboardLayout {
+pub trait PlatformKeyboardLayout: Send + Sync {
     /// Get the keyboard layout ID, which should be unique to the layout
     fn id(&self) -> &str;
     /// Get the keyboard layout display name
@@ -11,7 +11,7 @@ pub trait PlatformKeyboardLayout {
 }
 
 /// A trait for platform-specific keyboard mappings
-pub trait PlatformKeyboardMapper {
+pub trait PlatformKeyboardMapper: Send + Sync {
     /// Map a key equivalent to its platform-specific representation
     fn map_key_equivalent(
         &self,

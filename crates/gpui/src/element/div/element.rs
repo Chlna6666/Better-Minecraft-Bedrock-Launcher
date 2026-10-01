@@ -189,8 +189,8 @@ fn retained_div_self_scene_style(style: &Style) -> RetainedDivSelfSceneStyle {
 fn style_allows_self_scene_replay(style: &Style, window: &Window, cx: &App) -> bool {
     style.display != Display::None
         && style.visibility == Visibility::Visible
-        && style.backdrop_blur.is_none()
-        && style.blur.is_none()
+        && style.background_blur.is_none()
+        && style.filter_blur.is_none()
         && style.opacity.is_none()
         && style.scale == 1.0
         && style.transition.is_none()
@@ -212,8 +212,7 @@ fn retained_div_self_scene_style_if_replayable(
     window: &Window,
     cx: &App,
 ) -> Option<RetainedDivSelfSceneStyle> {
-    style_allows_self_scene_replay(style, window, cx)
-        .then(|| retained_div_self_scene_style(style))
+    style_allows_self_scene_replay(style, window, cx).then(|| retained_div_self_scene_style(style))
 }
 
 fn retained_div_semantic_key_if_replayable(
@@ -476,8 +475,8 @@ impl Element for Div {
                         return None;
                     }
 
-                    let ranges = window
-                        .retained_self_scene_ranges_for_current(bounds, &self_scene_style)?;
+                    let ranges =
+                        window.retained_self_scene_ranges_for_current(bounds, &self_scene_style)?;
                     if ranges.prefix.is_empty() && ranges.suffix.is_empty() {
                         return None;
                     }

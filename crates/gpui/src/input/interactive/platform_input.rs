@@ -49,9 +49,9 @@ impl PlatformInput {
             | PlatformInput::KeyUp(_)
             | PlatformInput::ModifiersChanged(_) => PlatformInputDispatchClass::Keyboard,
             PlatformInput::FileDrop(_) => PlatformInputDispatchClass::DragDrop,
-            PlatformInput::Touch(_)
-            | PlatformInput::LongPress(_)
-            | PlatformInput::TouchDrag(_) => PlatformInputDispatchClass::InteractivePointerMove,
+            PlatformInput::Touch(_) | PlatformInput::LongPress(_) | PlatformInput::TouchDrag(_) => {
+                PlatformInputDispatchClass::InteractivePointerMove
+            }
             PlatformInput::MouseExited(_) => PlatformInputDispatchClass::PassivePointerMove,
         }
     }

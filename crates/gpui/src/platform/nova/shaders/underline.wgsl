@@ -61,6 +61,13 @@ fn resolve_underline_visual_animation(slot_plus_one: u32, bounds: Bounds) -> Und
             animation.scale = max(sampled.x, 0.0);
             animation.scales_geometry = 1u;
         }
+        // Presentation-lane sample composed from independent visual property tracks.
+        case 9u: {
+            animation.translation = sampled.xy;
+            animation.scale = max(sampled.z, 0.0);
+            animation.opacity = clamp(sampled.w, 0.0, 1.0);
+            animation.scales_geometry = 1u;
+        }
         default: {}
     }
     return animation;

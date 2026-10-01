@@ -1,9 +1,6 @@
 //! Animation primitives shared by GPUI elements, styles, and window scheduling.
 
-use std::{
-    sync::OnceLock,
-    time::Instant,
-};
+use std::{sync::OnceLock, time::Instant};
 
 static PRESENTATION_CLOCK_EPOCH: OnceLock<Instant> = OnceLock::new();
 
@@ -30,6 +27,7 @@ mod tween;
 pub use animatable::Animatable;
 pub use easing::{Easing, StepPosition, TransitionEasing};
 pub use engine::{AnimationEngine, AnimationGroupId, AnimationGroupSample, AnimationTick};
+pub(crate) use engine::{SceneAnimationCompletion, SceneAnimationTimeline};
 pub use keyframe::{Keyframe, KeyframeTrack};
 pub use physics::{SpringMotion, SpringPhysics};
 pub use scheduler::AnimationDriver;
@@ -72,7 +70,7 @@ mod tests {
     use crate::{
         ElementId, GlobalElementId, Radians, TransformationMatrix, bounds, hsla, point, px, size,
     };
-    use std::{rc::Rc, time::Duration, time::Instant};
+    use std::{sync::Arc, time::Duration, time::Instant};
 
     fn test_global_element_id(name: &'static str) -> GlobalElementId {
         GlobalElementId::from_path(&[ElementId::from(name)])
@@ -119,8 +117,249 @@ mod tests {
             .sample(1.0),
             1.0
         );
-        assert_eq!(Easing::Custom(Rc::new(|_| 3.0)).sample(0.5), 3.0);
-        assert_eq!(Easing::Custom(Rc::new(|_| f32::NAN)).sample(0.5), 0.5);
+        assert_eq!(Easing::Custom(Arc::new(|_| 3.0)).sample(0.5), 3.0);
+        assert_eq!(Easing::Custom(Arc::new(|_| f32::NAN)).sample(0.5), 0.5);
+    }
+
+    #[test]
+    fn presentation_timeline_samples_without_ticking_the_ui_engine() {
+        let started_at = Instant::now();
+        let element_id = test_global_element_id("presentation-lane");
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::from_secs(1))
+                .ease(Easing::Linear)
+                .driver(AnimationDriver::Gpu),
+            started_at,
+        );
+        engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            crate::SceneAnimationId(100),
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+
+        let mut timeline = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("bound scene animation has a presentation timeline");
+        let quarter = timeline
+            .sample_at(started_at + Duration::from_millis(250))
+            .value
+            .expect("timeline applies during its active interval");
+        let three_quarters = timeline
+            .sample_at(started_at + Duration::from_millis(750))
+            .value
+            .expect("timeline applies during its active interval");
+
+        assert!((quarter.progress - 0.25).abs() < 0.001);
+        assert!((three_quarters.progress - 0.75).abs() < 0.001);
+        assert!(engine.has_active_timelines());
+    }
+
+    #[test]
+    fn compositor_owned_scene_timeline_is_not_sampled_by_the_ui_tick() {
+        let started_at = Instant::now();
+        let element_id = test_global_element_id("compositor-owned-ui-tick");
+        let animation_id = crate::SceneAnimationId(106);
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::from_secs(1))
+                .ease(Easing::Linear)
+                .driver(AnimationDriver::Gpu),
+            started_at,
+        );
+        engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            animation_id,
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let ui_element_id = test_global_element_id("ui-owned-ui-tick");
+        engine.start_transition(
+            &ui_element_id,
+            TransitionProperty::Rotation,
+            AnimationSpec::new(Duration::from_secs(1))
+                .ease(Easing::Linear)
+                .driver(AnimationDriver::Gpu),
+            started_at,
+        );
+        assert_eq!(engine.test_index_counts(), (2, 2, 0, 1));
+
+        let tick = engine.tick_driver_with_compositor(
+            AnimationDriver::Gpu,
+            started_at + Duration::from_millis(250),
+        );
+
+        assert_eq!(tick.active_visual_count, 2);
+        assert_eq!(tick.ui_active_visual_count, 1);
+        assert!(tick.has_gpu_or_paint);
+        assert!(tick.scene_values.is_empty());
+        assert!(engine.scene_animation_is_active(animation_id));
+        assert_eq!(engine.test_index_counts(), (2, 2, 0, 1));
+
+        let sample = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("active scene animation remains available to presentation")
+            .sample_at(started_at + Duration::from_millis(250));
+        assert!((sample.value.expect("timeline produces a value").progress - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn presentation_timeline_emits_completion_for_its_ui_target() {
+        let started_at = Instant::now();
+        let element_id = test_global_element_id("presentation-completion");
+        let retained_id = test_global_element_id("retained-target");
+        let view_id = crate::EntityId::from(91);
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::from_millis(10)).ease(Easing::Linear),
+            started_at,
+        );
+        engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            crate::SceneAnimationId(101),
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        assert!(engine.set_scene_animation_completion_invalidation(
+            crate::SceneAnimationId(101),
+            view_id,
+            retained_id.clone(),
+        ));
+
+        let mut timeline = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("bound scene animation has a presentation timeline");
+        let sample = timeline.sample_at(started_at + Duration::from_millis(20));
+
+        let completion = sample
+            .completion
+            .expect("completed timeline identifies the UI invalidation target");
+        assert_eq!(completion.animation_id, crate::SceneAnimationId(101));
+        assert_eq!(completion.view_id, Some(view_id));
+        assert_eq!(completion.retained_id, Some(retained_id));
+    }
+
+    #[test]
+    fn presentation_completion_removes_the_ui_timeline_without_render_callback() {
+        let started_at = Instant::now();
+        let element_id = test_global_element_id("presentation-completion-without-invalidation");
+        let animation_id = crate::SceneAnimationId(102);
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::from_millis(10)).ease(Easing::Linear),
+            started_at,
+        );
+        engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            animation_id,
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+
+        let completion = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("bound scene animation has a presentation timeline")
+            .sample_at(started_at + Duration::from_millis(20))
+            .completion
+            .expect("finite presentation timeline emits a completion event");
+
+        assert_eq!(completion.animation_id, animation_id);
+        assert_eq!(completion.view_id, None);
+        assert_eq!(completion.retained_id, None);
+        assert_eq!(
+            engine.complete_scene_animation(&completion),
+            Some(completion)
+        );
+        assert!(!engine.scene_animation_is_active(animation_id));
+        assert!(!engine.has_active_timelines());
+    }
+
+    #[test]
+    fn stale_presentation_completion_cannot_finish_a_retargeted_timeline() {
+        let started_at = Instant::now();
+        let element_id = test_global_element_id("retargeted-presentation-completion");
+        let animation_id = crate::SceneAnimationId(105);
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(Duration::from_millis(10))
+                .ease(Easing::Linear)
+                .driver(AnimationDriver::Gpu),
+            started_at,
+        );
+        engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            animation_id,
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        );
+        let stale_completion = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("bound scene animation has a presentation timeline")
+            .sample_at(started_at + Duration::from_millis(20))
+            .completion
+            .expect("the old timeline should have completed");
+
+        let retargeted_at = started_at + Duration::from_millis(5);
+        assert!(
+            engine.retarget_scene_animation(
+                &element_id,
+                TransitionProperty::Opacity,
+                animation_id,
+                AnimationSpec::new(Duration::from_millis(20))
+                    .ease(Easing::Linear)
+                    .driver(AnimationDriver::Gpu),
+                None,
+                retargeted_at,
+                bounds(point(px(0.0), px(0.0)), size(px(1.0), px(1.0))),
+                [0.0; 2],
+                [0.0; 4],
+            )
+        );
+
+        assert!(engine.complete_scene_animation(&stale_completion).is_none());
+        assert!(engine.scene_animation_is_active(animation_id));
+
+        let current_completion = engine
+            .presentation_timelines()
+            .into_iter()
+            .next()
+            .expect("retargeted scene animation keeps its presentation timeline")
+            .sample_at(retargeted_at + Duration::from_millis(21))
+            .completion
+            .expect("retargeted timeline emits its own completion");
+        assert_ne!(stale_completion.generation, current_completion.generation);
+        assert!(
+            engine
+                .complete_scene_animation(&current_completion)
+                .is_some()
+        );
+        assert!(!engine.scene_animation_is_active(animation_id));
     }
 
     #[test]
@@ -207,6 +446,114 @@ mod tests {
         assert!((sample.samples[1].raw_progress - 0.25).abs() < 0.001);
         assert_eq!(sample.samples[2].raw_progress, 0.0);
         assert!(!sample.done);
+    }
+
+    #[test]
+    fn animation_group_completion_fast_path_matches_samples() {
+        let elapsed_times = [
+            Duration::ZERO,
+            Duration::from_nanos(1),
+            Duration::from_millis(49),
+            Duration::from_millis(50),
+            Duration::from_millis(99),
+            Duration::from_millis(100),
+            Duration::from_millis(149),
+            Duration::from_millis(150),
+            Duration::from_millis(349),
+            Duration::from_millis(350),
+            Duration::from_millis(351),
+            Duration::MAX,
+        ];
+        let specs = [
+            AnimationSpec::new(Duration::from_millis(100)),
+            AnimationSpec::new(Duration::from_millis(100))
+                .delay(Duration::from_millis(50))
+                .repeat(RepeatMode::Count(2)),
+            AnimationSpec::new(Duration::from_millis(100)).repeat(RepeatMode::Forever),
+            AnimationSpec::new(Duration::ZERO).repeat(RepeatMode::Forever),
+            AnimationSpec::new(Duration::ZERO).delay(Duration::from_millis(50)),
+        ];
+        let fill_modes = [
+            FillMode::None,
+            FillMode::Backwards,
+            FillMode::Forwards,
+            FillMode::Both,
+        ];
+
+        for spec in &specs {
+            for fill_mode in fill_modes {
+                let spec = spec.clone().fill_mode(fill_mode);
+                for elapsed in elapsed_times {
+                    assert_eq!(
+                        spec.is_done_at(elapsed),
+                        spec.sample_elapsed(elapsed).done,
+                        "AnimationSpec at {elapsed:?}: {spec:?}"
+                    );
+                }
+            }
+        }
+
+        let sequences = [
+            AnimationSequence::new(vec![]),
+            AnimationSequence::new(vec![
+                AnimationSpec::new(Duration::from_millis(100)),
+                AnimationSpec::new(Duration::from_millis(200)).delay(Duration::from_millis(50)),
+            ]),
+            AnimationSequence::new(vec![
+                AnimationSpec::new(Duration::from_millis(100)),
+                AnimationSpec::new(Duration::from_millis(100)).repeat(RepeatMode::Forever),
+            ]),
+        ];
+        for sequence in &sequences {
+            for elapsed in elapsed_times {
+                assert_eq!(
+                    sequence.is_done_at(elapsed),
+                    sequence.sample_elapsed(elapsed).done,
+                    "AnimationSequence at {elapsed:?}: {sequence:?}"
+                );
+            }
+        }
+
+        let parallels = [
+            AnimationParallel::new(vec![]),
+            AnimationParallel::new(specs.to_vec()),
+        ];
+        for parallel in &parallels {
+            for elapsed in elapsed_times {
+                assert_eq!(
+                    parallel.is_done_at(elapsed),
+                    parallel.sample_elapsed(elapsed).done,
+                    "AnimationParallel at {elapsed:?}: {parallel:?}"
+                );
+            }
+        }
+
+        let staggers = [
+            AnimationStagger::new(
+                AnimationSpec::new(Duration::from_millis(100)),
+                0,
+                Duration::ZERO,
+            ),
+            AnimationStagger::new(
+                AnimationSpec::new(Duration::from_millis(100)).delay(Duration::from_millis(50)),
+                3,
+                Duration::from_millis(50),
+            ),
+            AnimationStagger::new(
+                AnimationSpec::new(Duration::ZERO),
+                3,
+                Duration::from_millis(50),
+            ),
+        ];
+        for stagger in &staggers {
+            for elapsed in elapsed_times {
+                assert_eq!(
+                    stagger.is_done_at(elapsed),
+                    stagger.sample_elapsed(elapsed).done,
+                    "AnimationStagger at {elapsed:?}: {stagger:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -407,7 +754,7 @@ mod tests {
     #[test]
     fn custom_easing_fallbacks_to_paint_for_visual_properties() {
         let transition = Transition::new(Duration::from_millis(100))
-            .ease(Easing::Custom(Rc::new(|progress| progress)))
+            .ease(Easing::Custom(Arc::new(|progress| progress)))
             .properties([TransitionProperty::Opacity])
             .driver(AnimationDriver::Auto);
         assert_eq!(transition.resolved_driver(), AnimationDriver::Paint);
@@ -424,7 +771,7 @@ mod tests {
     #[test]
     fn custom_easing_keeps_layout_driver_for_layout_properties() {
         let transition = Transition::new(Duration::from_millis(100))
-            .ease(Easing::Custom(Rc::new(|progress| progress)))
+            .ease(Easing::Custom(Arc::new(|progress| progress)))
             .properties([TransitionProperty::Width])
             .driver(AnimationDriver::Auto);
         assert_eq!(transition.resolved_driver(), AnimationDriver::Layout);
@@ -1071,7 +1418,7 @@ mod tests {
                 .driver(AnimationDriver::Layout),
             now,
         );
-        assert_eq!(engine.test_index_counts(), (1, 1, 1));
+        assert_eq!(engine.test_index_counts(), (1, 1, 1, 0));
 
         engine.start_transition(
             &element,
@@ -1081,7 +1428,7 @@ mod tests {
                 .driver(AnimationDriver::Layout),
             now,
         );
-        assert_eq!(engine.test_index_counts(), (1, 0, 2));
+        assert_eq!(engine.test_index_counts(), (1, 0, 2, 0));
 
         engine.start_transition(
             &element,
@@ -1091,10 +1438,10 @@ mod tests {
         );
         let tick = engine.tick_driver(AnimationDriver::Layout, now);
         assert_eq!(tick.active_count, 1);
-        assert_eq!(engine.test_index_counts(), (1, 0, 1));
+        assert_eq!(engine.test_index_counts(), (1, 0, 1, 0));
 
         engine.cancel_element(&element);
-        assert_eq!(engine.test_index_counts(), (0, 0, 0));
+        assert_eq!(engine.test_index_counts(), (0, 0, 0, 0));
         assert_eq!(engine.active_count(), 0);
     }
 
@@ -1128,8 +1475,7 @@ mod tests {
             .into_iter()
             .find(|value| value.animation_id == animation_id)
             .expect("active scene value before retarget");
-        let before_translation =
-            before.from[0] + (before.to[0] - before.from[0]) * before.progress;
+        let before_translation = before.from[0] + (before.to[0] - before.from[0]) * before.progress;
         let old_base_x = 100.0;
         let presented_before = old_base_x + before_translation;
 
@@ -1150,8 +1496,7 @@ mod tests {
             .into_iter()
             .find(|value| value.animation_id == animation_id)
             .expect("active scene value after retarget");
-        let after_translation =
-            after.from[0] + (after.to[0] - after.from[0]) * after.progress;
+        let after_translation = after.from[0] + (after.to[0] - after.from[0]) * after.progress;
         let new_base_x = 200.0;
         let presented_after = new_base_x + after_translation;
 
@@ -1209,8 +1554,8 @@ mod tests {
             .find(|value| value.animation_id == animation_id)
             .expect("active retargeted scene value");
 
-        let x0 = at_retarget.from[0]
-            + (at_retarget.to[0] - at_retarget.from[0]) * at_retarget.progress;
+        let x0 =
+            at_retarget.from[0] + (at_retarget.to[0] - at_retarget.from[0]) * at_retarget.progress;
         let x1 = shortly_after.from[0]
             + (shortly_after.to[0] - shortly_after.from[0]) * shortly_after.progress;
         assert!(

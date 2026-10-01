@@ -251,8 +251,7 @@ mod tests {
     fn unpack(value: PackedSubpixelParameters) -> (bool, f32) {
         let packed = u32::from(value);
         let is_bgr = packed & PackedSubpixelParameters::BGR_BIT != 0;
-        let clear_type_level =
-            f32::from_bits(packed & PackedSubpixelParameters::VALUE_BITS);
+        let clear_type_level = f32::from_bits(packed & PackedSubpixelParameters::VALUE_BITS);
         (is_bgr, clear_type_level)
     }
 

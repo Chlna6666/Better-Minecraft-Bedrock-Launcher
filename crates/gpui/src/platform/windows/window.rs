@@ -22,23 +22,25 @@ use windows::{
         Foundation::{HWND, LPARAM, WPARAM},
         Graphics::{
             Dwm::{
-                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
-                DwmSetWindowAttribute,
+                DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW,
+                DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE,
+                DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DwmExtendFrameIntoClientArea,
+                DwmGetWindowAttribute, DwmSetWindowAttribute,
             },
             Gdi::{
                 CreateRoundRectRgn, DeleteObject, HGDIOBJ, RDW_INVALIDATE, RDW_NOERASE,
                 RDW_UPDATENOW, RedrawWindow, SetWindowRgn,
             },
         },
-        System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
             Controls::*,
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsWindowVisible,
-                IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, SW_RESTORE,
-                SendMessageW, SetForegroundWindow, SetTimer, ShowWindow, USER_TIMER_MINIMUM,
-                PostQuitMessage, WM_ENDSESSION, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
+                IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, PostQuitMessage,
+                SW_RESTORE, SendMessageW, SetForegroundWindow, SetTimer, ShowWindow,
+                USER_TIMER_MINIMUM, WM_ENDSESSION, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
                 WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_SETICON,
                 WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
             },
@@ -51,12 +53,11 @@ use crate::diagnostics::performance_metrics::{
     record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
     record_window_request_redraw,
 };
-use crate::platform::windows::with_dll_library;
 use crate::platform::winit::{
-    begin_windows_native_size_move, end_windows_native_size_move, maximize_window, minimize_window,
-    request_window_inner_size, restore_window as restore_winit_window,
-    start_window_move as start_winit_window_move, start_window_resize as start_winit_window_resize,
-    toggle_window_fullscreen, toggle_window_maximized,
+    maximize_window, minimize_window, request_window_inner_size,
+    restore_window as restore_winit_window, start_window_move as start_winit_window_move,
+    start_window_resize as start_winit_window_resize, toggle_window_fullscreen,
+    toggle_window_maximized,
 };
 use crate::platform::{NovaRenderer, NovaRendererAtlas};
 use crate::*;
@@ -73,7 +74,7 @@ const SIZE_MOVE_LOOP_SUBCLASS_ID: usize = 0x4750_5549;
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 0x4750_5549;
 
 thread_local! {
-    static WINDOWS_IN_SIZE_MOVE_LOOP: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
+    static WINDOWS_WITH_SIZE_MOVE_TIMER: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
     static WINDOWS_BY_HWND: RefCell<HashMap<isize, Weak<WindowsWindowInner>>> =
         RefCell::new(HashMap::new());
 }
@@ -106,19 +107,28 @@ fn native_window(hwnd: HWND) -> Option<WindowsWindow> {
     })
 }
 
-fn enter_size_move_loop(hwnd: HWND) {
-    let entered =
-        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow_mut().insert(hwnd.0 as isize));
-    if entered {
-        begin_windows_native_size_move();
+fn start_size_move_timer(hwnd: HWND) {
+    // SAFETY: This live HWND owns the fallback timer, removed on exit/destroy.
+    let timer = unsafe {
+        SetTimer(
+            Some(hwnd),
+            SIZE_MOVE_LOOP_TIMER_ID,
+            USER_TIMER_MINIMUM,
+            None,
+        )
+    };
+    if timer == 0 {
+        log::warn!("failed to start GPUI native size/move redraw timer");
+    } else {
+        WINDOWS_WITH_SIZE_MOVE_TIMER.with(|windows| windows.borrow_mut().insert(hwnd.0 as isize));
     }
 }
 
-fn leave_size_move_loop(hwnd: HWND) {
-    let left =
-        WINDOWS_IN_SIZE_MOVE_LOOP.with(|windows| windows.borrow_mut().remove(&(hwnd.0 as isize)));
-    if left {
-        end_windows_native_size_move();
+fn stop_size_move_timer(hwnd: HWND) {
+    let owned = WINDOWS_WITH_SIZE_MOVE_TIMER
+        .with(|windows| windows.borrow_mut().remove(&(hwnd.0 as isize)));
+    if owned && let Err(error) = unsafe { KillTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID) } {
+        log::warn!("failed to stop GPUI native size/move redraw timer: {error}");
     }
 }
 
@@ -126,6 +136,7 @@ fn leave_size_move_loop(hwnd: HWND) {
 enum SizeMoveLoopAction {
     Start,
     Tick,
+    VSync,
     Finish,
     SyncExtent,
     SuppressErase,
@@ -137,6 +148,7 @@ fn size_move_loop_action(message: u32, timer_id: usize) -> SizeMoveLoopAction {
     match message {
         WM_ENTERSIZEMOVE => SizeMoveLoopAction::Start,
         WM_TIMER if timer_id == SIZE_MOVE_LOOP_TIMER_ID => SizeMoveLoopAction::Tick,
+        super::vsync::WM_MODAL_VSYNC => SizeMoveLoopAction::VSync,
         WM_EXITSIZEMOVE => SizeMoveLoopAction::Finish,
         WM_SIZE | WM_WINDOWPOSCHANGED => SizeMoveLoopAction::SyncExtent,
         WM_ERASEBKGND => SizeMoveLoopAction::SuppressErase,
@@ -168,9 +180,8 @@ fn dispatch_size_move_frame(hwnd: HWND) {
         return;
     };
 
-    // Mature Win32 loops such as SDL drive their live-resize update directly from this timer.
-    // Going through WM_PAINT alone is insufficient because winit may buffer RedrawRequested while
-    // its event-loop runner is already borrowed by another window event.
+    // The timer is a fallback when DWM scheduling is unavailable. WM_PAINT alone is insufficient
+    // while winit's outer event-loop runner is already borrowed.
     window.sync_current_native_size();
     window.dispatch_pending_update();
 }
@@ -189,8 +200,8 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
 
     if message == WM_ENDSESSION {
         if wparam.0 != 0 {
-            let shutdown_completed = native_window(hwnd)
-                .is_some_and(|window| (window.0.end_session_event)());
+            let shutdown_completed =
+                native_window(hwnd).is_some_and(|window| (window.0.end_session_event)());
             log::logger().flush();
             if shutdown_completed {
                 std::process::exit(0);
@@ -210,19 +221,10 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
 
     match size_move_loop_action(message, wparam.0) {
         SizeMoveLoopAction::Start => {
-            // Track the actual Win32 modal loop as well as GPUI-initiated drag calls. Native
-            // decorated windows can enter this path without calling winit's drag helpers.
-            enter_size_move_loop(hwnd);
-            let timer = unsafe {
-                SetTimer(
-                    Some(hwnd),
-                    SIZE_MOVE_LOOP_TIMER_ID,
-                    USER_TIMER_MINIMUM,
-                    None,
-                )
-            };
-            if timer == 0 {
-                log::warn!("failed to start GPUI native size/move redraw timer");
+            let scheduled = native_window(hwnd)
+                .is_some_and(|window| window.0.vsync_scheduler.start_modal_loop(hwnd.0 as isize));
+            if !scheduled {
+                start_size_move_timer(hwnd);
             }
         }
         SizeMoveLoopAction::Tick => {
@@ -230,15 +232,12 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             return windows::Win32::Foundation::LRESULT(0);
         }
         SizeMoveLoopAction::Finish => {
-            if let Err(error) = unsafe { KillTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID) } {
-                log::warn!("failed to stop GPUI native size/move redraw timer: {error}");
-            }
+            stop_size_move_timer(hwnd);
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-            // Resume normal frame pacing before flushing the final coalesced extent. Otherwise
-            // the final request is made while the global native-size/move guard still suspends
-            // VSync, leaving the client at its new size with an older frame covering only part of
-            // it until some unrelated event requests another frame.
-            leave_size_move_loop(hwnd);
+            if let Some(window) = native_window(hwnd) {
+                window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
+            }
+            // Resume outer-loop delivery before flushing the final coalesced extent.
             dispatch_size_move_frame(hwnd);
             return result;
         }
@@ -261,9 +260,11 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             return windows::Win32::Foundation::LRESULT(1);
         }
         SizeMoveLoopAction::Destroy => {
+            if let Some(window) = native_window(hwnd) {
+                window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
+            }
             unregister_native_window(hwnd);
-            leave_size_move_loop(hwnd);
-            let _ = unsafe { KillTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID) };
+            stop_size_move_timer(hwnd);
             if !unsafe {
                 RemoveWindowSubclass(
                     hwnd,
@@ -275,6 +276,16 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             {
                 log::debug!("GPUI native size/move window subclass was already removed");
             }
+        }
+        SizeMoveLoopAction::VSync => {
+            if let Some(window) = native_window(hwnd)
+                && let Some(timing) = window.0.vsync_scheduler.take_modal_frame(hwnd.0 as isize)
+            {
+                let event_received_at = Instant::now();
+                window.sync_current_native_size();
+                window.dispatch_pending_update_from_vsync(timing, event_received_at);
+            }
+            return windows::Win32::Foundation::LRESULT(0);
         }
         SizeMoveLoopAction::Forward => {}
     }
@@ -345,26 +356,27 @@ fn renderer_backend_candidates(
     candidates
 }
 
-fn accent_state_for_background(background_appearance: WindowBackgroundAppearance) -> u32 {
+fn system_backdrop(background_appearance: WindowBackgroundAppearance) -> DWM_SYSTEMBACKDROP_TYPE {
     match background_appearance {
-        WindowBackgroundAppearance::Opaque => 0,
-        WindowBackgroundAppearance::Transparent | WindowBackgroundAppearance::Blurred => 2,
+        WindowBackgroundAppearance::Opaque | WindowBackgroundAppearance::Transparent => DWMSBT_NONE,
+        WindowBackgroundAppearance::Blurred => DWMSBT_TRANSIENTWINDOW,
+        WindowBackgroundAppearance::Mica => DWMSBT_MAINWINDOW,
+        WindowBackgroundAppearance::MicaAlt => DWMSBT_TABBEDWINDOW,
     }
 }
 
-#[repr(C)]
-struct WindowCompositionAttributeData {
-    attribute: u32,
-    data: *mut c_void,
-    data_size: usize,
-}
-
-#[repr(C)]
-struct AccentPolicy {
-    state: u32,
-    flags: u32,
-    gradient_color: u32,
-    animation_id: u32,
+fn native_system_backdrop(hwnd: HWND) -> windows::core::Result<DWM_SYSTEMBACKDROP_TYPE> {
+    let mut backdrop = DWMSBT_NONE;
+    // SAFETY: The live HWND and correctly sized stack output remain valid during this call.
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &raw mut backdrop as *mut c_void,
+            std::mem::size_of_val(&backdrop) as u32,
+        )?;
+    }
+    Ok(backdrop)
 }
 
 fn window_corner_preference_to_windows(
@@ -544,7 +556,8 @@ impl WindowsWindow {
             return;
         }
         let window = Rc::downgrade(&self.0);
-        self.0.executor
+        self.0
+            .executor
             .spawn(async move {
                 let Some(window) = window.upgrade() else {
                     return;
@@ -583,11 +596,20 @@ impl WindowsWindow {
     }
 
     pub(crate) fn invoke_request_frame(&self, options: PlatformFrameRequest) {
-        let mut state = self.0.state.borrow_mut();
-        if let Some(mut callback) = state.callbacks.request_frame.take() {
-            drop(state);
-            callback(options);
-            self.0.state.borrow_mut().callbacks.request_frame = Some(callback);
+        let sender = self.0.state.borrow().callbacks.request_frame.clone();
+        if let Some(sender) = sender
+            && !sender.request(options)
+        {
+            log::trace!("discarding frame request after its UI receiver closed");
+        }
+    }
+
+    fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
+        let state = self.0.state.borrow();
+        if let Some(sender) = state.callbacks.presentation_animation_completed.as_ref()
+            && sender.unbounded_send(completion).is_err()
+        {
+            log::trace!("discarding presentation completion after its UI receiver closed");
         }
     }
 
@@ -766,15 +788,49 @@ impl WindowsRenderer {
         }
     }
 
-    pub fn draw(&mut self, packet: PresentationPacket) -> Result<()> {
+    pub fn draw(&mut self, packet: PresentationPacket) -> Result<bool> {
         match self {
             Self::Nova(renderer) => renderer.draw(packet),
         }
     }
 
-    pub fn present_framebuffer_only(&mut self, packet: PresentationPacket) -> Result<()> {
+    pub fn present_framebuffer_only(&mut self, packet: PresentationPacket) -> Result<bool> {
         match self {
             Self::Nova(renderer) => renderer.present_framebuffer_only(packet),
+        }
+    }
+
+    fn has_active_presentation_animations(&self) -> bool {
+        match self {
+            Self::Nova(renderer) => renderer.has_active_presentation_animations(),
+        }
+    }
+
+    fn take_animation_completions(
+        &mut self,
+    ) -> smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]> {
+        match self {
+            Self::Nova(renderer) => renderer.take_animation_completions(),
+        }
+    }
+
+    fn present_active_frame(
+        &mut self,
+        now: Instant,
+        timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        match self {
+            Self::Nova(renderer) => {
+                // DXGI's frame-latency waitable object can consume its readiness signal.
+                // An idle presentation request must not take that signal from the next UI frame.
+                if !renderer.has_active_presentation_animations() {
+                    return Ok(None);
+                }
+                if !renderer.can_present_without_wait()? {
+                    return Ok(None);
+                }
+                renderer.present_active_frame(now, timing)
+            }
         }
     }
 
@@ -805,43 +861,43 @@ fn apply_window_background_appearance(
         return;
     }
 
-    type SetWindowCompositionAttribute =
-        unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> i32;
-
-    let result = with_dll_library(windows::core::s!("user32.dll"), |library| {
-        // SAFETY: The DLL is loaded for the duration of this closure and the symbol name is fixed.
-        let proc =
-            unsafe { GetProcAddress(library, windows::core::s!("SetWindowCompositionAttribute")) };
-        let Some(proc) = proc else {
-            anyhow::bail!("SetWindowCompositionAttribute is unavailable");
-        };
-        // SAFETY: The symbol is dynamically resolved from user32.dll and this signature matches
-        // winit's dark mode use and GPUI's previous Windows backend.
-        let set_window_composition_attribute: SetWindowCompositionAttribute =
-            unsafe { std::mem::transmute(proc) };
-        let accent = AccentPolicy {
-            state: accent_state_for_background(background_appearance),
-            flags: 2,
-            gradient_color: 0,
-            animation_id: 0,
-        };
-        let mut data = WindowCompositionAttributeData {
-            attribute: 0x13,
-            data: &accent as *const _ as *mut c_void,
-            data_size: std::mem::size_of::<AccentPolicy>(),
-        };
-
-        // SAFETY: `hwnd` is a live window handle, and `data` points to stack values that remain
-        // valid for the duration of the synchronous call.
-        let status = unsafe { set_window_composition_attribute(hwnd, &mut data) };
-        if status == 0 {
-            anyhow::bail!("SetWindowCompositionAttribute returned false");
-        }
-        Ok(())
+    let backdrop = system_backdrop(background_appearance);
+    // Expose native material across the client area. Plain transparency must remove the frame
+    // extension as well as the material, so it reveals other windows instead of DWM's frame fill.
+    let inset = if backdrop == DWMSBT_NONE { 0 } else { -1 };
+    let margins = MARGINS {
+        cxLeftWidth: inset,
+        cxRightWidth: inset,
+        cyTopHeight: inset,
+        cyBottomHeight: inset,
+    };
+    // Attribute support is probed by DWM itself; older Windows versions reject it. No legacy
+    // AccentPolicy or desktop capture is used to emulate an unavailable native material.
+    // SAFETY: The live HWND and correctly sized stack input remain valid during this call.
+    let result = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }.and_then(|()| unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &raw const backdrop as *const c_void,
+            std::mem::size_of_val(&backdrop) as u32,
+        )
     });
-
     if let Err(error) = result {
-        log::debug!("applying Windows transparent background failed: {error:#}");
+        log::debug!("applying native Windows background failed: {error}");
+        if backdrop != DWMSBT_NONE {
+            let none = DWMSBT_NONE;
+            // SAFETY: Same live window and synchronous stack-input contract as above.
+            if let Err(error) = unsafe {
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_SYSTEMBACKDROP_TYPE,
+                    &raw const none as *const c_void,
+                    std::mem::size_of_val(&none) as u32,
+                )
+            } {
+                log::debug!("clearing native Windows background failed: {error}");
+            }
+        }
     }
 }
 
@@ -1049,7 +1105,9 @@ fn merge_frame_request(
     )
 }
 
-fn clear_pending_frame_request_after_timeout(pending: PlatformFrameRequest) -> PlatformFrameRequest {
+fn clear_pending_frame_request_after_timeout(
+    pending: PlatformFrameRequest,
+) -> PlatformFrameRequest {
     // A pending request is tied to one foreground callback. If that callback timed out,
     // merged flags in the same slot are stranded too.
     if pending.requires_frame() {
@@ -1061,7 +1119,9 @@ fn clear_pending_frame_request_after_timeout(pending: PlatformFrameRequest) -> P
 
 #[derive(Default)]
 pub(crate) struct Callbacks {
-    pub(crate) request_frame: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
+    pub(crate) request_frame: Option<crate::platform::frame::PlatformFrameRequestSender>,
+    pub(crate) presentation_animation_completed:
+        Option<crate::platform::frame::SceneAnimationCompletionSender>,
     pub(crate) input: Option<Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>>,
     pub(crate) active_status_change: Option<Box<dyn FnMut(bool)>>,
     pub(crate) visibility_change: Option<Box<dyn FnMut(WindowVisibility)>>,
@@ -1407,6 +1467,21 @@ impl WindowsWindow {
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
+        self.dispatch_pending_update_with_vsync(None);
+    }
+
+    pub(crate) fn dispatch_pending_update_from_vsync(
+        &self,
+        timing: super::vsync::VSyncEventTiming,
+        event_received_at: Instant,
+    ) {
+        self.dispatch_pending_update_with_vsync(Some((timing, event_received_at)));
+    }
+
+    fn dispatch_pending_update_with_vsync(
+        &self,
+        vsync_timing: Option<(super::vsync::VSyncEventTiming, Instant)>,
+    ) {
         // A frame callback may synchronously pump another native message. Leave any newly queued
         // resize/frame request in its latest-wins slot for the next timer or redraw instead of
         // taking it while the callback is temporarily removed from `Callbacks`.
@@ -1416,9 +1491,72 @@ impl WindowsWindow {
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
-            self.invoke_request_frame(options);
+            let had_active_presentation = self.has_active_presentation_animations();
+            let presented = if had_active_presentation && !options.needs_ui_commit() {
+                let frame_started_at = Instant::now();
+                let presentation_timing = vsync_timing.map(|(timing, event_received_at)| {
+                    crate::platform::frame::ActivePresentationTiming {
+                        frame_pacing_wait: timing.pacing_wait,
+                        vsync_event_queue_delay: event_received_at
+                            .saturating_duration_since(timing.enqueued_at),
+                        window_dispatch_delay: frame_started_at
+                            .saturating_duration_since(event_received_at),
+                        frame_started_at,
+                        renderer_scene_prepare: Duration::ZERO,
+                        submission_prepare: Duration::ZERO,
+                        retained_resource_prepare: Duration::ZERO,
+                        frame_prepare_upload: Duration::ZERO,
+                        draw_step_prepare: Duration::ZERO,
+                        buffer_upload: Duration::ZERO,
+                        atlas_upload: Duration::ZERO,
+                        offscreen_render: Duration::ZERO,
+                        backend_present: Duration::ZERO,
+                        renderer_post_present: Duration::ZERO,
+                    }
+                });
+                match PlatformWindow::present_active_frame(
+                    self,
+                    frame_started_at,
+                    presentation_timing,
+                ) {
+                    Ok(Some(frame)) => {
+                        if frame.continues {
+                            self.request_frame(PlatformFrameRequest::presentation());
+                        }
+                        for completion in frame.completed_animations {
+                            self.invoke_presentation_animation_completed(completion);
+                        }
+                        true
+                    }
+                    Ok(None) => false,
+                    Err(error) => {
+                        log::error!("failed to present active Windows scene: {error:#}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if had_active_presentation
+                && !presented
+                && !options.needs_ui_commit()
+                && matches!(self.current_visibility(), WindowVisibility::Visible)
+            {
+                // A saturated DXGI frame-latency queue is transient. Retry on the native
+                // cadence without waiting for a UI commit to unblock the compositor.
+                self.request_frame(PlatformFrameRequest::presentation());
+            }
+            if options.needs_ui_commit() || (!presented && !had_active_presentation) {
+                self.invoke_request_frame(options);
+            }
         }
         self.0.frame_dispatch_in_progress.set(false);
+        // A native message loop can dispatch the scheduled redraw reentrantly while the
+        // callback above is still running. Re-arm requests left behind by that callback.
+        let pending = self.0.state.borrow().pending_frame_request.get();
+        if pending.requires_frame() && !self.0.vsync_scheduler.request_frame() {
+            self.window().request_redraw();
+        }
     }
 
     pub(crate) fn dispatch_pending_resize(&self) {
@@ -1715,6 +1853,33 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow().background_appearance.get()
     }
 
+    fn background_capabilities(&self) -> WindowBackgroundCapabilities {
+        let supported = self
+            .native_hwnd()
+            .is_some_and(|hwnd| native_system_backdrop(hwnd).is_ok());
+        WindowBackgroundCapabilities {
+            blurred: supported,
+            mica: supported,
+            mica_alt: supported,
+        }
+    }
+
+    fn effective_background_appearance(&self) -> WindowBackgroundAppearance {
+        let requested = self.background_appearance();
+        if requested == WindowBackgroundAppearance::Opaque {
+            return requested;
+        }
+        match self
+            .native_hwnd()
+            .and_then(|hwnd| native_system_backdrop(hwnd).ok())
+        {
+            Some(DWMSBT_MAINWINDOW) => WindowBackgroundAppearance::Mica,
+            Some(DWMSBT_TABBEDWINDOW) => WindowBackgroundAppearance::MicaAlt,
+            Some(DWMSBT_TRANSIENTWINDOW) => WindowBackgroundAppearance::Blurred,
+            _ => WindowBackgroundAppearance::Transparent,
+        }
+    }
+
     fn show(&self) {
         self.update_presentation_state(WindowsWindowPresentationState::request_show);
         self.request_frame(PlatformFrameRequest::ui_commit_and_presentation());
@@ -1784,8 +1949,45 @@ impl PlatformWindow for WindowsWindow {
         (!self.0.use_native_decorations).then(Self::default_resize_inset)
     }
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
-        self.0.state.borrow_mut().callbacks.request_frame = Some(callback);
+    fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
+        self.0.state.borrow_mut().callbacks.request_frame = Some(sender);
+    }
+
+    fn set_presentation_animation_completion_sender(
+        &self,
+        sender: crate::platform::frame::SceneAnimationCompletionSender,
+    ) {
+        self.0
+            .state
+            .borrow_mut()
+            .callbacks
+            .presentation_animation_completed = Some(sender);
+    }
+
+    fn present_active_frame(
+        &self,
+        now: Instant,
+        timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
+        if !matches!(self.current_visibility(), WindowVisibility::Visible)
+            || !self.try_apply_queued_renderer_resize()
+        {
+            return Ok(None);
+        }
+
+        let mut renderer_state = self.0.renderer.borrow_mut();
+        let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
+            return Ok(None);
+        };
+        renderer.present_active_frame(now, timing)
+    }
+
+    fn has_active_presentation_animations(&self) -> bool {
+        let renderer_state = self.0.renderer.borrow();
+        let WindowsRendererState::Ready(renderer) = &*renderer_state else {
+            return false;
+        };
+        renderer.has_active_presentation_animations()
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>) {
@@ -1835,27 +2037,50 @@ impl PlatformWindow for WindowsWindow {
         if !self.try_apply_queued_renderer_resize() {
             return PlatformFrameResult::Deferred;
         }
-        let draw_result = {
+        let (draw_result, has_active_presentation_animations, completed_animations) = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
                 return PlatformFrameResult::Deferred;
             };
             match renderer.can_present_without_wait() {
-                Ok(true) => Some(renderer.draw(packet)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
+                Ok(true) => {
+                    let result = renderer.draw(packet);
+                    let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
+                    {
+                        renderer.take_animation_completions()
+                    } else {
+                        smallvec::SmallVec::new()
+                    };
+                    (
+                        Some(result),
+                        renderer.has_active_presentation_animations(),
+                        completed_animations,
+                    )
+                }
+                Ok(false) => (None, false, smallvec::SmallVec::new()),
+                Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
         let Some(draw_result) = draw_result else {
-            // The CPU frame is already retained. Retry only presentation on the next platform
-            // frame; never refresh or dirty the View tree just because DXGI has no free slot yet.
-            self.request_frame(PlatformFrameRequest::presentation());
+            // The renderer has not accepted this scene. A presentation-only request can keep
+            // replaying its previous animated packet without delivering the latest UI commit.
+            self.request_frame(PlatformFrameRequest::ui_commit());
             return PlatformFrameResult::Deferred;
         };
         match draw_result {
-            Ok(()) => {
+            Ok(true) => {
                 self.mark_first_frame_presented();
+                for completion in completed_animations {
+                    self.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.request_frame(PlatformFrameRequest::presentation());
+                }
                 PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
             }
             Err(error) => {
                 log::error!("failed to draw Windows frame: {error:#}");
@@ -1869,25 +2094,48 @@ impl PlatformWindow for WindowsWindow {
         if !self.try_apply_queued_renderer_resize() {
             return PlatformFrameResult::Deferred;
         }
-        let present_result = {
+        let (present_result, has_active_presentation_animations, completed_animations) = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
                 return PlatformFrameResult::Deferred;
             };
             match renderer.can_present_without_wait() {
-                Ok(true) => Some(renderer.present_framebuffer_only(packet)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
+                Ok(true) => {
+                    let result = renderer.present_framebuffer_only(packet);
+                    let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
+                    {
+                        renderer.take_animation_completions()
+                    } else {
+                        smallvec::SmallVec::new()
+                    };
+                    (
+                        Some(result),
+                        renderer.has_active_presentation_animations(),
+                        completed_animations,
+                    )
+                }
+                Ok(false) => (None, false, smallvec::SmallVec::new()),
+                Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
         let Some(present_result) = present_result else {
-            self.request_frame(PlatformFrameRequest::presentation());
+            self.request_frame(PlatformFrameRequest::ui_commit());
             return PlatformFrameResult::Deferred;
         };
         match present_result {
-            Ok(()) => {
+            Ok(true) => {
                 self.mark_first_frame_presented();
+                for completion in completed_animations {
+                    self.invoke_presentation_animation_completed(completion);
+                }
+                if has_active_presentation_animations {
+                    self.request_frame(PlatformFrameRequest::presentation());
+                }
                 PlatformFrameResult::Submitted
+            }
+            Ok(false) => {
+                self.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
             }
             Err(error) => {
                 log::error!("failed to present Windows framebuffer: {error:#}");
@@ -1978,6 +2226,33 @@ impl ClickState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_material_requests_use_distinct_dwm_backdrops() {
+        use super::system_backdrop;
+        use windows::Win32::Graphics::Dwm::{
+            DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW, DWMSBT_TRANSIENTWINDOW,
+        };
+        assert_eq!(
+            system_backdrop(WindowBackgroundAppearance::Opaque),
+            DWMSBT_NONE
+        );
+        assert_eq!(
+            system_backdrop(WindowBackgroundAppearance::Transparent),
+            DWMSBT_NONE
+        );
+        assert_eq!(
+            system_backdrop(WindowBackgroundAppearance::Blurred),
+            DWMSBT_TRANSIENTWINDOW
+        );
+        assert_eq!(
+            system_backdrop(WindowBackgroundAppearance::Mica),
+            DWMSBT_MAINWINDOW
+        );
+        assert_eq!(
+            system_backdrop(WindowBackgroundAppearance::MicaAlt),
+            DWMSBT_TABBEDWINDOW
+        );
+    }
     use super::{
         ClickState, NativeWindowVisibilityAction, SIZE_MOVE_LOOP_TIMER_ID, SizeMoveLoopAction,
         WindowsWindowPresentationState, clear_pending_frame_request_after_timeout,
@@ -1985,7 +2260,7 @@ mod tests {
         should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
-        DevicePixels, MouseButton, RendererBackend, RendererOptions, PlatformFrameRequest,
+        DevicePixels, MouseButton, PlatformFrameRequest, RendererBackend, RendererOptions,
         TitlebarOptions, WindowBackgroundAppearance, WindowCornerPreference, WindowKind,
         WindowParams, point,
     };
@@ -2107,6 +2382,10 @@ mod tests {
             SizeMoveLoopAction::Forward
         );
         assert_eq!(
+            size_move_loop_action(super::super::vsync::WM_MODAL_VSYNC, 0),
+            SizeMoveLoopAction::VSync
+        );
+        assert_eq!(
             size_move_loop_action(WM_EXITSIZEMOVE, 0),
             SizeMoveLoopAction::Finish
         );
@@ -2198,10 +2477,7 @@ mod tests {
 
         let (merged, should_schedule_frame) = merge_frame_request(first, second);
 
-        assert_eq!(
-            merged,
-            PlatformFrameRequest::ui_commit_and_presentation()
-        );
+        assert_eq!(merged, PlatformFrameRequest::ui_commit_and_presentation());
         assert!(!should_schedule_frame);
     }
 
@@ -2212,10 +2488,7 @@ mod tests {
 
         let (merged, should_schedule_frame) = merge_frame_request(pending, resize_refresh);
 
-        assert_eq!(
-            merged,
-            PlatformFrameRequest::ui_commit_and_presentation()
-        );
+        assert_eq!(merged, PlatformFrameRequest::ui_commit_and_presentation());
         assert!(!should_schedule_frame);
     }
 

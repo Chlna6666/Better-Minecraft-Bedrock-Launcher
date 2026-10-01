@@ -1,6 +1,8 @@
 mod font_catalog;
 mod font_fallbacks;
 mod font_features;
+#[cfg(test)]
+mod font_run_tests;
 mod line;
 mod line_layout;
 mod line_wrapper;
@@ -9,8 +11,6 @@ mod primitives;
 mod raster_policy;
 pub(crate) mod script;
 mod system;
-#[cfg(test)]
-mod font_run_tests;
 #[cfg(test)]
 mod tests;
 

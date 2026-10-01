@@ -2,7 +2,11 @@ use crate::{
     self as gpui, Element, ElementId, GlobalElementId, InspectorElementId, LayoutId, Style,
 };
 use core::panic;
-use std::{cell::{Cell, RefCell}, ops::Range, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+};
 
 use crate::{
     Action, ActionRegistry, App, Bounds, Context, DispatchPhase, DispatchTree, FocusHandle,
@@ -236,7 +240,8 @@ fn test_input_handler_pending(cx: &mut TestAppContext) {
     });
     let (test, cx) = cx.add_window_view(|_, cx| CustomElement::new(cx));
     cx.update(|window, cx| {
-        window.focus(&test.read(cx).focus_handle, cx);
+        let focus_handle = test.read(cx).focus_handle.clone();
+        window.focus(&focus_handle, cx);
         window.activate_window();
     });
 

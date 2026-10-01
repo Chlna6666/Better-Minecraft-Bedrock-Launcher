@@ -1,5 +1,8 @@
 use super::display::PlatformDisplay;
-use super::frame::{PlatformFrameResult, PlatformFrameRequest, PresentationPacket};
+use super::frame::{
+    ActivePresentationFrame, PlatformFrameRequest, PlatformFrameRequestSender, PlatformFrameResult,
+    PresentationPacket, SceneAnimationCompletionSender,
+};
 use super::{
     ClipboardItem, CursorStyle, GlyphRasterization, Menu, MenuItem, OwnedMenu, PathPromptOptions,
     PlatformAtlas, PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper,
@@ -9,12 +12,11 @@ use super::{
 use super::{TestDispatcher, TestWindow};
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DevicePixels,
-    DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GlyphId, GpuSpecs,
-    GestureTuning, GpuiMemoryTrimLevel, Keymap, LineLayout, MissingGlyphSink, Modifiers, Pixels,
-    PlatformInput, Point, RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size, Task,
-    TaskLabel,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
-    WindowDecorations, WindowParams, WindowTab, point, px, size,
+    DispatchEventResult, Font, FontId, FontMetrics, FontRun, ForegroundExecutor, GestureTuning,
+    GlyphId, GpuSpecs, GpuiMemoryTrimLevel, Keymap, LineLayout, MissingGlyphSink, Modifiers,
+    Pixels, PlatformInput, Point, RenderGlyphParams, ShapedGlyph, ShapedRun, SharedString, Size,
+    Task, TaskLabel, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowControls, WindowDecorations, WindowParams, WindowTab, point, px, size,
     window::{Decorations, ResizeEdge},
 };
 use anyhow::Result;
@@ -151,7 +153,7 @@ pub(crate) trait Platform: 'static {
     fn delete_credentials(&self, url: &str) -> Task<Result<()>>;
 
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
-    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
+    fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
 
     /// Prevents idle system sleep while the returned guard is held.
@@ -210,6 +212,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn background_appearance(&self) -> WindowBackgroundAppearance {
         WindowBackgroundAppearance::Opaque
     }
+    fn background_capabilities(&self) -> crate::WindowBackgroundCapabilities {
+        crate::WindowBackgroundCapabilities::default()
+    }
+    fn effective_background_appearance(&self) -> WindowBackgroundAppearance {
+        self.background_capabilities().resolve(self.background_appearance())
+    }
     fn show(&self) {}
     fn hide_window(&self) {}
     fn minimize(&self);
@@ -224,7 +232,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_fullscreen(&self) -> bool;
     fn request_frame(&self, _options: PlatformFrameRequest) {}
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>);
+    fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender);
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
     /// Registers a callback for presentation visibility transitions.
@@ -239,6 +247,23 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult;
     fn present_framebuffer_only(&self, _packet: PresentationPacket) -> PlatformFrameResult {
         PlatformFrameResult::Submitted
+    }
+    fn present_active_frame(
+        &self,
+        _now: Instant,
+        _timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<Option<ActivePresentationFrame>> {
+        Ok(None)
+    }
+    /// Whether the platform currently has a committed scene whose visual timelines are sampled
+    /// directly by native presentation frames.
+    fn has_active_presentation_animations(&self) -> bool {
+        false
+    }
+    fn set_presentation_animation_completion_sender(
+        &self,
+        _sender: SceneAnimationCompletionSender,
+    ) {
     }
     fn completed_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;

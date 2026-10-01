@@ -44,6 +44,23 @@ impl Render for AbsoluteCachedRootView {
     }
 }
 
+struct WindowRootViewportProbe {
+    bounds: Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+}
+
+impl Render for WindowRootViewportProbe {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let bounds = self.bounds.clone();
+        crate::canvas(
+            move |canvas_bounds, _window, _cx| {
+                *bounds.borrow_mut() = Some(canvas_bounds);
+            },
+            |_, (), _window, _cx| {},
+        )
+        .size_full()
+    }
+}
+
 struct RenderCountCachedLeafView {
     renders: Rc<std::cell::Cell<usize>>,
 }
@@ -206,9 +223,8 @@ impl Render for SelectiveParentView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get().saturating_add(1));
         crate::div().child(
-            AnyView::from(self.leaf.clone()).cached(
-                StyleRefinement::default().w(px(120.)).h(px(32.)),
-            ),
+            AnyView::from(self.leaf.clone())
+                .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
         )
     }
 }
@@ -222,13 +238,11 @@ impl Render for SelectiveRootView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get().saturating_add(1));
         crate::div().child(
-            AnyView::from(self.parent.clone()).cached(
-                StyleRefinement::default().w(px(120.)).h(px(32.)),
-            ),
+            AnyView::from(self.parent.clone())
+                .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
         )
     }
 }
-
 
 struct SelectiveFallbackParentView {
     renders: Rc<std::cell::Cell<usize>>,
@@ -253,13 +267,11 @@ impl Render for SelectiveFallbackRootView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.renders.set(self.renders.get().saturating_add(1));
         crate::div().child(
-            AnyView::from(self.parent.clone()).cached(
-                StyleRefinement::default().w(px(120.)).h(px(32.)),
-            ),
+            AnyView::from(self.parent.clone())
+                .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
         )
     }
 }
-
 
 struct SelectiveBudgetRootView {
     renders: Rc<std::cell::Cell<usize>>,
@@ -274,13 +286,11 @@ impl Render for SelectiveBudgetRootView {
             window.test_expire_draw_budget();
         }
         crate::div().child(
-            AnyView::from(self.parent.clone()).cached(
-                StyleRefinement::default().w(px(120.)).h(px(32.)),
-            ),
+            AnyView::from(self.parent.clone())
+                .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
         )
     }
 }
-
 
 struct SelectiveMultiRootView {
     renders: Rc<std::cell::Cell<usize>>,
@@ -294,14 +304,12 @@ impl Render for SelectiveMultiRootView {
         crate::div()
             .flex()
             .child(
-                AnyView::from(self.left.clone()).cached(
-                    StyleRefinement::default().w(px(120.)).h(px(32.)),
-                ),
+                AnyView::from(self.left.clone())
+                    .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
             )
             .child(
-                AnyView::from(self.right.clone()).cached(
-                    StyleRefinement::default().w(px(120.)).h(px(32.)),
-                ),
+                AnyView::from(self.right.clone())
+                    .cached(StyleRefinement::default().w(px(120.)).h(px(32.))),
             )
     }
 }
@@ -323,7 +331,7 @@ impl Render for SelectiveCompositeRootView {
 }
 
 #[gpui::test]
-fn uncached_window_root_preserves_nested_single_target_selective_splice(
+fn window_root_and_nested_ancestor_skip_render_for_single_target_selective_splice(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -370,8 +378,8 @@ fn uncached_window_root_preserves_nested_single_target_selective_splice(
 
         assert_eq!(
             root_renders.get(),
-            root_baseline + revision,
-            "the window root is intentionally uncached and must rebuild structurally"
+            root_baseline,
+            "TraversalAncestor must not call the window root Render"
         );
         assert_eq!(
             parent_renders.get(),
@@ -387,9 +395,7 @@ fn uncached_window_root_preserves_nested_single_target_selective_splice(
 }
 
 #[gpui::test]
-fn selective_splice_survives_expired_draw_budget(
-    cx: &mut TestAppContext,
-) {
+fn selective_splice_survives_expired_draw_budget(cx: &mut TestAppContext) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
     let parent_renders = Rc::new(std::cell::Cell::new(0));
     let leaf_renders = Rc::new(std::cell::Cell::new(0));
@@ -453,7 +459,7 @@ fn selective_splice_survives_expired_draw_budget(
 }
 
 #[gpui::test]
-fn generic_dirty_descendant_promotes_to_nearest_cached_parent_with_uncached_root(
+fn generic_dirty_descendant_promotes_to_nearest_cached_parent_without_rendering_root(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -500,8 +506,8 @@ fn generic_dirty_descendant_promotes_to_nearest_cached_parent_with_uncached_root
 
     assert_eq!(
         root_renders.get(),
-        root_baseline + 1,
-        "the uncached window root rebuilds while the nearest cached boundary remains the targeted fresh owner"
+        root_baseline,
+        "the window root must remain a traversal-only ancestor"
     );
     assert_eq!(
         parent_renders.get(),
@@ -516,7 +522,7 @@ fn generic_dirty_descendant_promotes_to_nearest_cached_parent_with_uncached_root
 }
 
 #[gpui::test]
-fn uncached_window_root_rebuilds_two_dirty_cached_siblings(
+fn window_root_renders_when_multiple_dirty_targets_prevent_selective_splice(
     cx: &mut TestAppContext,
 ) {
     let root_renders = Rc::new(std::cell::Cell::new(0));
@@ -569,7 +575,7 @@ fn uncached_window_root_rebuilds_two_dirty_cached_siblings(
         assert_eq!(
             root_renders.get(),
             root_baseline + revision,
-            "multiple dirty targets intentionally fall back through the uncached window root"
+            "the cached root must rebuild when multiple dirty targets cannot be spliced"
         );
         assert_eq!(left_renders.get(), left_baseline + revision);
         assert_eq!(right_renders.get(), right_baseline + revision);
@@ -973,6 +979,35 @@ fn cached_absolute_view_lays_out_nested_absolute_root_to_cache_bounds(cx: &mut T
 }
 
 #[gpui::test]
+fn cached_window_root_fills_the_viewport(cx: &mut TestAppContext) {
+    let recorded_bounds = Rc::new(std::cell::RefCell::new(None));
+    let window = cx.update(|cx| {
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| WindowRootViewportProbe {
+                    bounds: recorded_bounds.clone(),
+                })
+            })
+            .unwrap();
+        AnyWindowHandle::from(window)
+    });
+    let expected_size = cx
+        .update_window(window, |_, window, _| window.bounds().size)
+        .unwrap();
+
+    cx.update_window(window, |_, window, cx| {
+        window.draw(cx).clear();
+    })
+    .unwrap();
+
+    let bounds = recorded_bounds
+        .borrow()
+        .expect("cached window root should prepaint its viewport-sized child");
+    assert_eq!(bounds.origin, point(px(0.0), px(0.0)));
+    assert_eq!(bounds.size, expected_size);
+}
+
+#[gpui::test]
 fn progressive_cached_view_preserves_flag_through_weak_upgrade(cx: &mut TestAppContext) {
     let view = cx.update(|cx| cx.new(|_| EmptyView));
     let cached_view = AnyView::from(view)
@@ -1001,7 +1036,6 @@ fn reuse_on_window_refresh_cached_view_preserves_flag_through_weak_upgrade(
     assert!(upgraded.reuse_on_window_refresh);
     assert_eq!(upgraded.cache_fingerprint(), expected_fingerprint);
 }
-
 
 #[test]
 fn cache_boundary_is_separate_from_plain_view_element() {

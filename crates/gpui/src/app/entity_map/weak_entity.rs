@@ -44,9 +44,7 @@ impl AnyWeakEntity {
     }
 
     /// Converts this weak handle into a typed weak handle when its runtime type matches.
-    pub(crate) fn downcast<T: 'static>(
-        self,
-    ) -> std::result::Result<WeakEntity<T>, AnyWeakEntity> {
+    pub(crate) fn downcast<T: 'static>(self) -> std::result::Result<WeakEntity<T>, AnyWeakEntity> {
         if TypeId::of::<T>() == self.entity_type {
             Ok(WeakEntity::new(self, PhantomData))
         } else {

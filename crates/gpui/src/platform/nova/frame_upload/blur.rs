@@ -409,8 +409,7 @@ impl FrameUpload {
         let levels = read_u32(record, BLUR_LEVELS_OFFSET)?;
         let recompute_overlap = read_u32(record, BLUR_RECOMPUTE_OVERLAP_OFFSET)? != 0;
         let radius = f32::from_bits(read_u32(record, BLUR_RADIUS_OFFSET)?);
-        let animation_slot_plus_one =
-            read_u32(record, BLUR_COMPOSITE_KIND_OFFSET)? >> 2;
+        let animation_slot_plus_one = read_u32(record, BLUR_COMPOSITE_KIND_OFFSET)? >> 2;
         let bounds = [
             f32::from_bits(read_u32(record, BLUR_BOUNDS_X_OFFSET)?),
             f32::from_bits(read_u32(record, BLUR_BOUNDS_Y_OFFSET)?),
@@ -511,8 +510,7 @@ mod tests {
         let mut upload = FrameUpload::default();
         push_blur_record(&mut upload, 10, 1, 2, 18.0, [0.0, 0.0, 300.0, 80.0], false);
         let slot_plus_one = 3_u32;
-        upload.backdrop_blurs
-            [BLUR_COMPOSITE_KIND_OFFSET..BLUR_COMPOSITE_KIND_OFFSET + 4]
+        upload.backdrop_blurs[BLUR_COMPOSITE_KIND_OFFSET..BLUR_COMPOSITE_KIND_OFFSET + 4]
             .copy_from_slice(&(1_u32 | (slot_plus_one << 2)).to_ne_bytes());
         upload
             .batches
@@ -529,7 +527,10 @@ mod tests {
             upload.backdrop_blur_passes.len(),
             BACKDROP_BLUR_PASS_BYTES * 2
         );
-        assert_eq!(read_u32(&upload.backdrop_blur_passes, 40), Some(slot_plus_one));
+        assert_eq!(
+            read_u32(&upload.backdrop_blur_passes, 40),
+            Some(slot_plus_one)
+        );
     }
 
     #[test]

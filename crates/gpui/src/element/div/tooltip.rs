@@ -1,6 +1,6 @@
 use crate::{
-    AnyTooltip, AnyView, App, Bounds, DispatchPhase, LongPressEvent, MouseDownEvent, MouseExitEvent,
-    MouseMoveEvent, Pixels, ScrollWheelEvent, Task, TooltipId, TouchPhase, Window,
+    AnyTooltip, AnyView, App, Bounds, DispatchPhase, LongPressEvent, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, Pixels, ScrollWheelEvent, Task, TooltipId, TouchPhase, Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -164,9 +164,7 @@ pub(crate) fn register_tooltip_mouse_handlers(
             }
 
             match event.phase {
-                TouchPhase::Started
-                    if !window.default_prevented() && check_is_hovered(window) =>
-                {
+                TouchPhase::Started if !window.default_prevented() && check_is_hovered(window) => {
                     if show_tooltip(
                         &active_tooltip,
                         &build_tooltip,

@@ -57,6 +57,22 @@ pub struct WindowMetricsSnapshot {
     pub draw_count: usize,
     /// Presented frames.
     pub present_count: usize,
+    /// Successful presentations that carried an active animation sample.
+    pub animation_sampled_present_count: usize,
+    /// Active-animation presentations whose combined animation sample changed from the previous one.
+    pub animation_sample_changed_present_count: usize,
+    /// Active-animation presentations whose combined animation sample matched the previous one.
+    pub animation_sample_unchanged_present_count: usize,
+    /// Median interval between successful presentations carrying an active animation sample.
+    pub animation_sample_interval_p50_micros: usize,
+    /// 95th percentile interval between active-animation presentations.
+    pub animation_sample_interval_p95_micros: usize,
+    /// 99th percentile interval between active-animation presentations.
+    pub animation_sample_interval_p99_micros: usize,
+    /// Maximum retained interval between active-animation presentations.
+    pub animation_sample_interval_max_micros: usize,
+    /// Number of recent active-animation presentation intervals retained.
+    pub animation_sample_interval_sample_count: usize,
     /// Skipped frame decisions.
     pub skip_count: usize,
     /// Skipped frame opportunities.
@@ -69,6 +85,112 @@ pub struct WindowMetricsSnapshot {
     pub layout_recompute_count: usize,
     /// Uploaded bytes.
     pub upload_bytes: usize,
+}
+
+/// A successful presentation that sampled an active visual animation.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowAnimationSample {
+    /// Monotonically increasing sequence number within the window.
+    pub sequence: u64,
+    /// Time at which the successful presentation sample was recorded.
+    pub presented_at: Instant,
+    /// Whether the combined active-animation value changed from the previous sample.
+    /// This is `None` when the window had no previous active-animation sample.
+    pub changed_from_previous: Option<bool>,
+    /// Windows pacing and active-present timings when this frame was initiated by a VSync event.
+    pub presentation_timing: Option<WindowAnimationPresentationTiming>,
+}
+
+/// Windows frame-pacing stages measured for one successful active-animation presentation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowAnimationPresentationTiming {
+    /// Time spent waiting for DWM pacing or the inactive-window cadence.
+    pub frame_pacing_wait: Duration,
+    /// Time from enqueueing the VSync event until winit delivered it.
+    pub vsync_event_queue_delay: Duration,
+    /// Time from event delivery until this window began its active frame.
+    pub window_dispatch_delay: Duration,
+    /// Wall time from the active-frame start through successful backend presentation.
+    pub active_present_duration: Duration,
+    /// Compositor scene preparation before the submission-readiness stage.
+    pub renderer_scene_prepare: Duration,
+    /// Time spent polling or waiting for frame submission resources.
+    pub submission_prepare: Duration,
+    /// Time spent synchronizing retained atlas and mesh resources.
+    pub retained_resource_prepare: Duration,
+    /// Frame construction, uploads, and offscreen passes before main presentation.
+    pub frame_prepare_upload: Duration,
+    /// Draw-step and render-plan preparation before backend uploads.
+    pub draw_step_prepare: Duration,
+    /// Host time spent uploading per-frame geometry and uniforms.
+    pub buffer_upload: Duration,
+    /// Host time spent uploading retained atlas regions.
+    pub atlas_upload: Duration,
+    /// Host time spent recording and submitting offscreen passes.
+    pub offscreen_render: Duration,
+    /// Wall time inside the backend's main render and present operation.
+    pub backend_present: Duration,
+    /// Renderer bookkeeping after a successful backend present.
+    pub renderer_post_present: Duration,
+    /// Synchronous Vulkan host-side presentation stages when the backend reported them.
+    pub backend_timings: Option<gfx_core::PresentationTimings>,
+}
+
+/// Recent successful active-animation samples for one window.
+#[derive(Clone, Debug)]
+pub struct WindowAnimationSamples {
+    /// Sequence supplied to `window_animation_samples_since`.
+    pub after_sequence: u64,
+    /// Sequence of the newest recorded active-animation presentation.
+    pub latest_sequence: u64,
+    /// Whether one or more requested samples were evicted from the bounded history.
+    pub history_overflowed: bool,
+    /// Retained samples newer than `after_sequence`, in presentation order.
+    pub samples: Vec<WindowAnimationSample>,
+}
+
+/// Returns recent successful active-animation samples newer than `after_sequence`.
+///
+/// The bounded history retains at most 1,024 samples per window. Timestamps share the process
+/// monotonic clock and describe successful presentation submission, not display scanout. Callers
+/// that need strict continuity must reject a result whose `history_overflowed` field is true.
+///
+/// # Returns
+///
+/// Returns `None` when the window has no metrics entry or the metrics lock is poisoned.
+pub fn window_animation_samples_since(
+    window_id: u64,
+    after_sequence: u64,
+) -> Option<WindowAnimationSamples> {
+    let shared_metrics = shared_metrics();
+    let window_metrics = shared_metrics.window_metrics.lock().ok()?;
+    let metrics = window_metrics.get(&window_id)?;
+    let latest_sequence = metrics.animation_sampled_present_count;
+    let first_retained_sequence = metrics.animation_sample_history.front().map_or_else(
+        || latest_sequence.saturating_add(1),
+        |(sequence, _, _, _)| *sequence,
+    );
+
+    Some(WindowAnimationSamples {
+        after_sequence,
+        latest_sequence,
+        history_overflowed: after_sequence.saturating_add(1) < first_retained_sequence,
+        samples: metrics
+            .animation_sample_history
+            .iter()
+            .filter(|(sequence, _, _, _)| *sequence > after_sequence)
+            .map(
+                |(sequence, presented_at, changed_from_previous, presentation_timing)| {
+                    WindowAnimationSample {
+                        sequence: *sequence,
+                        presented_at: *presented_at,
+                        changed_from_previous: *changed_from_previous,
+                        presentation_timing: *presentation_timing,
+                    }
+                },
+            )
+            .collect(),
+    })
 }
 
 /// Returns a lightweight point-in-time snapshot of all window-local metrics.
@@ -84,35 +206,30 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
             window_metrics
                 .iter()
                 .map(|(&window_id, metrics)| {
-                    let present_fps_milli = if metrics
-                        .last_present_at
-                        .is_some_and(|last_present_at| {
-                            now.saturating_duration_since(last_present_at)
-                                <= Duration::from_secs(1)
-                        })
-                    {
-                        metrics.present_fps_milli as usize
-                    } else {
-                        0
-                    };
-
-                    let dirty_to_present_average_micros =
-                        if metrics.dirty_to_present_count == 0 {
-                            0
+                    let present_fps_milli =
+                        if metrics.last_present_at.is_some_and(|last_present_at| {
+                            now.saturating_duration_since(last_present_at) <= Duration::from_secs(1)
+                        }) {
+                            metrics.present_fps_milli as usize
                         } else {
-                            metrics.dirty_to_present_total_micros
-                                / metrics.dirty_to_present_count
+                            0
                         };
+
+                    let dirty_to_present_average_micros = if metrics.dirty_to_present_count == 0 {
+                        0
+                    } else {
+                        metrics.dirty_to_present_total_micros / metrics.dirty_to_present_count
+                    };
                     let frame_duration = metrics.frame_duration_samples.percentiles();
                     let present_interval = metrics.present_interval_samples.percentiles();
+                    let animation_sample_interval =
+                        metrics.animation_sample_interval_samples.percentiles();
 
                     WindowMetricsSnapshot {
                         window_id,
                         present_fps_milli,
-                        dirty_to_present_average_micros:
-                            dirty_to_present_average_micros as usize,
-                        dirty_to_present_max_micros:
-                            metrics.dirty_to_present_max_micros as usize,
+                        dirty_to_present_average_micros: dirty_to_present_average_micros as usize,
+                        dirty_to_present_max_micros: metrics.dirty_to_present_max_micros as usize,
                         dirty_to_present_count: metrics.dirty_to_present_count as usize,
                         frame_duration_p50_micros: frame_duration.p50_micros as usize,
                         frame_duration_p95_micros: frame_duration.p95_micros as usize,
@@ -122,6 +239,25 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         present_interval_p95_micros: present_interval.p95_micros as usize,
                         present_interval_p99_micros: present_interval.p99_micros as usize,
                         present_interval_sample_count: present_interval.count,
+                        animation_sampled_present_count: metrics.animation_sampled_present_count
+                            as usize,
+                        animation_sample_changed_present_count: metrics
+                            .animation_sample_changed_present_count
+                            as usize,
+                        animation_sample_unchanged_present_count: metrics
+                            .animation_sample_unchanged_present_count
+                            as usize,
+                        animation_sample_interval_p50_micros: animation_sample_interval.p50_micros
+                            as usize,
+                        animation_sample_interval_p95_micros: animation_sample_interval.p95_micros
+                            as usize,
+                        animation_sample_interval_p99_micros: animation_sample_interval.p99_micros
+                            as usize,
+                        animation_sample_interval_max_micros: metrics
+                            .animation_sample_interval_samples
+                            .max_micros()
+                            as usize,
+                        animation_sample_interval_sample_count: animation_sample_interval.count,
                         logical_width_milli: metrics.logical_width_milli as usize,
                         logical_height_milli: metrics.logical_height_milli as usize,
                         physical_width_px: metrics.physical_width_px as usize,
@@ -135,7 +271,8 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         present_count: metrics.present_count as usize,
                         skip_count: metrics.skip_count as usize,
                         skipped_frame_count: metrics.skipped_frame_count as usize,
-                        gpu_surface_reconfigure_count: metrics.gpu_surface_reconfigure_count as usize,
+                        gpu_surface_reconfigure_count: metrics.gpu_surface_reconfigure_count
+                            as usize,
                         gpu_surface_error_count: metrics.gpu_surface_error_count as usize,
                         layout_recompute_count: metrics.layout_recompute_count as usize,
                         upload_bytes: metrics.upload_bytes as usize,
@@ -209,6 +346,81 @@ pub fn record_window_frame_disposition(window_id: u64, disposition: WindowFrameD
     }
 }
 
+/// Records the combined active-animation sample carried by a successful presentation.
+pub(crate) fn record_window_animation_sample(
+    window_id: u64,
+    sample_hash: u64,
+    presentation_timing: Option<crate::ActivePresentationTiming>,
+    backend_timings: Option<gfx_core::PresentationTimings>,
+) {
+    let now = Instant::now();
+    let presentation_timing =
+        (presentation_timing.is_some() || backend_timings.is_some()).then(|| {
+            let timing = presentation_timing;
+            WindowAnimationPresentationTiming {
+                frame_pacing_wait: timing.map_or(Duration::ZERO, |timing| timing.frame_pacing_wait),
+                vsync_event_queue_delay: timing
+                    .map_or(Duration::ZERO, |timing| timing.vsync_event_queue_delay),
+                window_dispatch_delay: timing
+                    .map_or(Duration::ZERO, |timing| timing.window_dispatch_delay),
+                active_present_duration: timing.map_or(Duration::ZERO, |timing| {
+                    now.saturating_duration_since(timing.frame_started_at)
+                }),
+                renderer_scene_prepare: timing
+                    .map_or(Duration::ZERO, |timing| timing.renderer_scene_prepare),
+                submission_prepare: timing
+                    .map_or(Duration::ZERO, |timing| timing.submission_prepare),
+                retained_resource_prepare: timing
+                    .map_or(Duration::ZERO, |timing| timing.retained_resource_prepare),
+                frame_prepare_upload: timing
+                    .map_or(Duration::ZERO, |timing| timing.frame_prepare_upload),
+                draw_step_prepare: timing.map_or(Duration::ZERO, |timing| timing.draw_step_prepare),
+                buffer_upload: timing.map_or(Duration::ZERO, |timing| timing.buffer_upload),
+                atlas_upload: timing.map_or(Duration::ZERO, |timing| timing.atlas_upload),
+                offscreen_render: timing.map_or(Duration::ZERO, |timing| timing.offscreen_render),
+                backend_present: timing.map_or(Duration::ZERO, |timing| timing.backend_present),
+                renderer_post_present: timing
+                    .map_or(Duration::ZERO, |timing| timing.renderer_post_present),
+                backend_timings,
+            }
+        });
+    if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
+        let metrics = window_metrics.entry(window_id).or_default();
+        let sequence = metrics.animation_sampled_present_count.saturating_add(1);
+        let changed_from_previous = metrics
+            .last_animation_sample_hash
+            .map(|previous_hash| previous_hash != sample_hash);
+        metrics.animation_sampled_present_count = sequence;
+
+        if let Some(previous_at) = metrics.last_animation_sample_at.replace(now) {
+            let interval = now.saturating_duration_since(previous_at);
+            metrics.animation_sample_interval_samples.record(interval);
+
+            if changed_from_previous == Some(false) {
+                metrics.animation_sample_unchanged_present_count = metrics
+                    .animation_sample_unchanged_present_count
+                    .saturating_add(1);
+            } else {
+                metrics.animation_sample_changed_present_count = metrics
+                    .animation_sample_changed_present_count
+                    .saturating_add(1);
+            }
+        }
+        metrics.last_animation_sample_hash = Some(sample_hash);
+        if metrics.animation_sample_history.len()
+            == super::store::WINDOW_ANIMATION_SAMPLE_HISTORY_CAPACITY
+        {
+            metrics.animation_sample_history.pop_front();
+        }
+        metrics.animation_sample_history.push_back((
+            sequence,
+            now,
+            changed_from_previous,
+            presentation_timing,
+        ));
+    }
+}
+
 /// Records one end-to-end latency sample from the first dirty edge to a submitted presentation.
 pub fn record_window_dirty_to_present(window_id: u64, duration: Duration) {
     let micros = duration.as_micros().min(u64::MAX as u128) as u64;
@@ -228,8 +440,7 @@ pub fn record_window_dirty_to_present(window_id: u64, duration: Duration) {
         metrics.dirty_to_present_total_micros =
             metrics.dirty_to_present_total_micros.saturating_add(micros);
         metrics.dirty_to_present_count = metrics.dirty_to_present_count.saturating_add(1);
-        metrics.dirty_to_present_max_micros =
-            metrics.dirty_to_present_max_micros.max(micros);
+        metrics.dirty_to_present_max_micros = metrics.dirty_to_present_max_micros.max(micros);
     }
 }
 
@@ -245,6 +456,11 @@ pub fn record_window_runtime_state(
 ) {
     if let Ok(mut window_metrics) = shared_metrics().window_metrics.lock() {
         let metrics = window_metrics.entry(window_id).or_default();
+        if metrics.visible != visible || metrics.minimized != minimized || metrics.active != active
+        {
+            metrics.last_animation_sample_at = None;
+            metrics.last_animation_sample_hash = None;
+        }
         let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
             scale_factor
         } else {
@@ -279,6 +495,8 @@ pub fn record_window_visibility(window_id: u64, visible: bool) {
             metrics.visible = visible;
             metrics.last_present_at = None;
             metrics.present_fps_milli = 0;
+            metrics.last_animation_sample_at = None;
+            metrics.last_animation_sample_hash = None;
         }
     }
 }

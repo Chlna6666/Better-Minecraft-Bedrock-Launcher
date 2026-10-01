@@ -164,6 +164,20 @@ impl AnimationSpec {
         self
     }
 
+    pub(crate) fn is_done_at(&self, elapsed: Duration) -> bool {
+        if elapsed < self.delay {
+            return false;
+        }
+        if self.duration.is_zero() {
+            return true;
+        }
+
+        let active_elapsed = elapsed.saturating_sub(self.delay);
+        let iteration = (active_elapsed.as_secs_f64() / self.duration.as_secs_f64()).floor() as u64;
+        self.final_iteration()
+            .is_some_and(|final_iteration| iteration > final_iteration)
+    }
+
     /// Sample this spec relative to the supplied elapsed time.
     pub fn sample_elapsed(&self, elapsed: Duration) -> TimelineSample {
         if elapsed < self.delay {
@@ -466,6 +480,27 @@ impl AnimationSequence {
             done: true,
         }
     }
+
+    pub(crate) fn is_done_at(&self, elapsed: Duration) -> bool {
+        let Some(last_index) = self.specs.len().checked_sub(1) else {
+            return true;
+        };
+
+        let mut segment_elapsed = elapsed;
+        for (animation_index, spec) in self.specs.iter().enumerate() {
+            let Some(segment_duration) = spec.finite_total_duration() else {
+                return false;
+            };
+
+            if segment_elapsed < segment_duration || animation_index == last_index {
+                return animation_index == last_index && spec.is_done_at(segment_elapsed);
+            }
+
+            segment_elapsed = segment_elapsed.saturating_sub(segment_duration);
+        }
+
+        true
+    }
 }
 
 /// Sampled state for an [`AnimationSequence`].
@@ -515,6 +550,10 @@ impl AnimationParallel {
             .collect::<Vec<_>>();
         let done = samples.iter().all(|sample| sample.done);
         ParallelTimelineSample { samples, done }
+    }
+
+    pub(crate) fn is_done_at(&self, elapsed: Duration) -> bool {
+        self.specs.iter().all(|spec| spec.is_done_at(elapsed))
     }
 }
 
@@ -584,6 +623,21 @@ impl AnimationStagger {
             .collect::<Vec<_>>();
         let done = samples.iter().all(|sample| sample.done);
         StaggerTimelineSample { samples, done }
+    }
+
+    pub(crate) fn is_done_at(&self, elapsed: Duration) -> bool {
+        for index in 0..self.count {
+            let offset = duration_mul(self.interval, usize_to_u32_saturating(index));
+            let child_elapsed = if elapsed < offset {
+                Duration::ZERO
+            } else {
+                elapsed.saturating_sub(offset)
+            };
+            if !self.spec.is_done_at(child_elapsed) {
+                return false;
+            }
+        }
+        true
     }
 }
 

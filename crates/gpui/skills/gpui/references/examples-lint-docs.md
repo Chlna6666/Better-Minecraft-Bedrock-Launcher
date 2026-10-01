@@ -44,7 +44,7 @@ are English-only.
 cargo fmt --manifest-path Cargo.toml --all
 cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect
 cargo clippy --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --lib -- -D warnings
-cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect --examples
+cargo check --manifest-path Cargo.toml --no-default-features --features windows-manifest,mimalloc-collect,nova-gfx-dx12,nova-gfx-vulkan --examples
 ```
 
 Docs and skill searches:

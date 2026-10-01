@@ -103,8 +103,9 @@ BMCBL product defaults belong outside the framework:
 - `src/ui`: GPUI views, route composition, window chrome, overlays, page state,
   visual components, and UI-only interaction state.
 - `src/core`: domain and platform integrations such as Minecraft versions,
-  AppX/GDK handling, CurseForge queries, EasyTier runtime, online rooms,
-  sponsors, version parsing, and UI preference persistence.
+  AppX/GDK handling, Minecraft map processing and workflows, CurseForge queries,
+  EasyTier runtime, online rooms, sponsors, version parsing, and UI preference
+  persistence.
 - `src/downloads`, `src/archive`, `src/http`, `src/tasks`: durable background
   workflows, transport, extraction, task snapshots, integrity, and progress.
 - `src/plugins`: plugin manifest, watcher, runtime, events, UI DSL, and plugin

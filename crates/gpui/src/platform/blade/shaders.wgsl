@@ -1219,7 +1219,7 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
 
 struct PolychromeSprite {
     order: u32,
-    pad: u32,
+    sampling: u32,
     grayscale: u32,
     opacity: f32,
     bounds: Bounds,
@@ -1251,13 +1251,22 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
-    let sample = textureSample(t_sprite, s_sprite, input.tile_position);
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
 
     let sprite = b_poly_sprites[input.sprite_id];
+    var sample: vec4<f32>;
+    if (sprite.sampling == 1u) {
+        let atlas_size = max(vec2<i32>(1), vec2<i32>(textureDimensions(t_sprite, 0)));
+        let requested_texel = vec2<i32>(floor(input.tile_position * vec2<f32>(atlas_size)));
+        let tile_max = sprite.tile.bounds.origin + sprite.tile.bounds.size - vec2<i32>(1);
+        let texel = clamp(requested_texel, sprite.tile.bounds.origin, tile_max);
+        sample = textureLoad(t_sprite, texel, 0);
+    } else {
+        sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    }
     let distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 
     var color = sample;

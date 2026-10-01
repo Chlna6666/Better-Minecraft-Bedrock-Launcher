@@ -64,12 +64,12 @@ first_notify_entity=AppChromeView
 
 ### TODO
 
-- [ ] 将 dirty 状态拆成至少两类：`DirectDirty` 与 `TraversalAncestor`。Ancestor 只用于定位/遍历 retained path，不自动失效其 build/layout/paint cache。
+- [x] 将 dirty 状态拆成至少两类：direct invalidation 与 `TraversalAncestor`。Ancestor 只用于定位/遍历 retained path，不自动失效其 build/layout/paint cache。
 - [ ] 为 dirty 原因增加 bitset/enum，例如 `STATE / LAYOUT / PAINT / TRANSFORM / HIT_TEST / CHILD_ROUTE`，不要用一个 bool 表示所有无效化。
-- [ ] `cx.notify()` 只记录直接 owner；祖先由 scheduler 作为 traversal metadata 处理，而不是直接升级为普通 render invalidation。
-- [ ] retained reconciliation 从 root 向下时，允许 ancestor 仅“穿过”，到真正 dirty child 才执行 render。
+- [x] `cx.notify()` 只记录直接 owner；祖先由 scheduler 作为 traversal metadata 处理，而不是直接升级为普通 render invalidation。
+- [x] retained reconciliation 从 root 向下时，允许 ancestor 仅“穿过”，到真正 dirty child 才执行 render。
 - [ ] 增加 `view_render_count_by_type` 与 `view_dirty_reason_by_type`，动画一帧明确看到 `MainWindowView` 是否真的执行了 render。
-- [ ] 增加 `ancestor_only_dirty_count`，验证优化后 root 只作为 traversal node。
+- [x] 增加 ancestor-only dirty scope 计数，验证优化后 root 只作为 traversal node。
 
 ### 推荐设计
 
@@ -80,6 +80,12 @@ first_notify_entity=AppChromeView
 - [ ] 顶栏 pill/chevron 动画时，`MainWindowView` 可以出现在 traversal path，但不得因此执行完整 render/layout。
 - [ ] 一个叶子 transform/opacity 动画不得让 route sibling、background、page body 重新 build。
 - [ ] Debug overlay 能明确显示 “direct dirty” 与 “ancestor traversal” 数量。
+
+### 2026-09-26 本轮阶段一验证
+
+`TraversalAncestor` synthetic workload 在 Windows DX12 / AMD Radeon 780M 上以 120 帧预热、30 帧采样，包含 256 个稳定 root sibling。关闭窗口 root selective splice 时，150 次叶子更新使 root Render 151 次；启用安全单目标 root splice 后，150 次更新中 root 与中间祖先 Render 都为 0，叶子 Render 150 次。两次 A/B 的 CPU p50 为：build 1574→717 μs，prepaint 972→186 μs，layout 102→88 μs，paint 500→472 μs。
+
+这验证的是安全单目标和无 capture 的 synthetic 路径；GPU draw p50 在这两次运行中为 895→1518 μs，尚不能据此宣称所有平台和其他场景无回退。多目标、capture 与降级恢复仍需可运行的行为测试和平台回归。
 
 ---
 
@@ -320,6 +326,8 @@ CompositorIndependent
 ## P0-G — Main-thread 与 renderer/compositor 解耦
 
 当前目标不是简单“加一条渲染线程”，而是让可独立更新的视觉属性在 main UI thread 卡住时仍然可继续。
+
+当前回调仍在同一平台事件线程内串行执行 presentation tick、renderer submit 和 UI commit。先呈现的顺序能让该回调中的旧场景早于 UI Render 提交，但不能在 UI Render 阻塞期间产生后续帧；`Easing: Send + Sync` 与 ID 完成事件只是跨线程迁移的准备工作，不代表独立 compositor lane 已完成。
 
 ### TODO
 

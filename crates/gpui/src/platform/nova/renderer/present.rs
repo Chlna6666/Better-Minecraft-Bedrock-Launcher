@@ -268,7 +268,7 @@ fn render_main_and_present<D>(
     device: &mut D,
     descriptor: MainPresentDescriptor<'_>,
     draw_steps: &[RenderStepDescriptor],
-) -> Result<()>
+) -> Result<Option<gfx_core::PresentationFrame>>
 where
     D: BackendPresentationCompat + BackendQueue + BackendResources,
 {
@@ -297,6 +297,11 @@ fn render_backdrop_blur_groups<D>(
 where
     D: BackendPresentationCompat,
 {
+    let pass_count = groups
+        .iter()
+        .map(|group| 1 + group.filter_passes.len())
+        .sum();
+    let mut passes = Vec::with_capacity(pass_count);
     for (group_index, group) in groups.iter().enumerate() {
         let first_group = group_index == 0;
         let source_load_op = if first_group {
@@ -312,13 +317,13 @@ where
                 LoadOp::Load
             },
         };
-        device.render_steps_to_texture(
-            source_texture_view,
+        passes.push(gfx_core::TextureRenderStepList {
+            texture_view: source_texture_view,
             render_pass,
-            &group.source_steps,
-            source_load_op,
-            Some(source_depth_attachment),
-        )?;
+            steps: RenderStepList::from_render_steps(&group.source_steps),
+            color_load_op: source_load_op,
+            depth_attachment: Some(source_depth_attachment),
+        });
         let filter_depth_attachment = RenderPassDepthAttachment {
             target: depth_attachment.target,
             depth_load_op: LoadOp::Load,
@@ -329,16 +334,16 @@ where
             LoadOp::Clear(clear_color())
         };
         for pass in &group.filter_passes {
-            device.render_step_list_to_texture(
-                pass.target_texture_view,
+            passes.push(gfx_core::TextureRenderStepList {
+                texture_view: pass.target_texture_view,
                 render_pass,
-                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                filter_load_op,
-                Some(filter_depth_attachment),
-            )?;
+                steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                color_load_op: filter_load_op,
+                depth_attachment: Some(filter_depth_attachment),
+            });
         }
     }
-    Ok(())
+    Ok(device.render_step_lists_to_textures_compat(&passes)?)
 }
 
 fn render_element_blur_layers<D>(
@@ -350,6 +355,18 @@ fn render_element_blur_layers<D>(
 where
     D: BackendPresentationCompat,
 {
+    let pass_count = layers
+        .iter()
+        .map(|layer| {
+            layer
+                .source_groups
+                .iter()
+                .map(|group| 1 + group.filter_passes.len())
+                .sum::<usize>()
+                + layer.filter_passes.len()
+        })
+        .sum();
+    let mut passes = Vec::with_capacity(pass_count);
     for layer in layers {
         let filter_depth_attachment = RenderPassDepthAttachment {
             target: depth_attachment.target,
@@ -364,30 +381,30 @@ where
                     LoadOp::Load
                 },
             };
-            device.render_steps_to_texture(
-                layer.source_texture_view,
+            passes.push(gfx_core::TextureRenderStepList {
+                texture_view: layer.source_texture_view,
                 render_pass,
-                &group.source_steps,
-                if group_index == 0 {
+                steps: RenderStepList::from_render_steps(&group.source_steps),
+                color_load_op: if group_index == 0 {
                     LoadOp::Clear(clear_color())
                 } else {
                     LoadOp::Load
                 },
-                Some(source_depth_attachment),
-            )?;
+                depth_attachment: Some(source_depth_attachment),
+            });
             let filter_load_op = if group.preserve_filtered_pixels {
                 LoadOp::Load
             } else {
                 LoadOp::Clear(clear_color())
             };
             for pass in &group.filter_passes {
-                device.render_step_list_to_texture(
-                    pass.target_texture_view,
+                passes.push(gfx_core::TextureRenderStepList {
+                    texture_view: pass.target_texture_view,
                     render_pass,
-                    RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                    filter_load_op,
-                    Some(filter_depth_attachment),
-                )?;
+                    steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                    color_load_op: filter_load_op,
+                    depth_attachment: Some(filter_depth_attachment),
+                });
             }
         }
         let filter_load_op = if layer.preserve_filtered_pixels {
@@ -396,16 +413,16 @@ where
             LoadOp::Clear(clear_color())
         };
         for pass in &layer.filter_passes {
-            device.render_step_list_to_texture(
-                pass.target_texture_view,
+            passes.push(gfx_core::TextureRenderStepList {
+                texture_view: pass.target_texture_view,
                 render_pass,
-                RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
-                filter_load_op,
-                Some(filter_depth_attachment),
-            )?;
+                steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
+                color_load_op: filter_load_op,
+                depth_attachment: Some(filter_depth_attachment),
+            });
         }
     }
-    Ok(())
+    Ok(device.render_step_lists_to_textures_compat(&passes)?)
 }
 
 fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
@@ -583,10 +600,20 @@ impl NovaRenderer {
     pub(super) fn draw_present(
         &mut self,
         upload: FrameUploadSummary,
-        packet: &PresentationPacket,
+        packet: &mut PresentationPacket,
         backdrop_blur_quality: BackdropBlurQuality,
-    ) -> Result<()> {
+        presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<bool> {
+        if let Some(timing) = presentation_timing.as_mut() {
+            timing.renderer_scene_prepare =
+                Instant::now().saturating_duration_since(timing.frame_started_at);
+        }
+        let submission_prepare_started = Instant::now();
         self.prepare_for_frame_submission()?;
+        if let Some(timing) = presentation_timing.as_mut() {
+            timing.submission_prepare = submission_prepare_started.elapsed();
+        }
+        let retained_resource_prepare_started = Instant::now();
         if self.atlas.has_pending_removals() {
             // A retained Scene stores AtlasTile identities directly. Asset/cache eviction can queue
             // a removal after that Scene was built but before this submission starts, so never
@@ -595,17 +622,16 @@ impl NovaRenderer {
             packet
                 .scene
                 .collect_atlas_tile_ids_into(&mut live_scene_tiles);
-            if self
-                .atlas
-                .has_retirable_pending_removals(&live_scene_tiles)
-            {
+            if self.atlas.has_retirable_pending_removals(&live_scene_tiles) {
                 self.wait_for_pending_submissions()?;
-                self.atlas
-                    .apply_pending_removals_except(&live_scene_tiles);
+                self.atlas.apply_pending_removals_except(&live_scene_tiles);
             }
         }
         self.sync_atlas_textures_for_current_backend()?;
         self.ensure_custom_mesh_3d_cache_for_current_backend()?;
+        if let Some(timing) = presentation_timing.as_mut() {
+            timing.retained_resource_prepare = retained_resource_prepare_started.elapsed();
+        }
         let frame_started = Instant::now();
         let backend_label = self.backend.label();
         let async_capabilities = self.backend.async_capabilities();
@@ -863,10 +889,17 @@ impl NovaRenderer {
         let mesh_buffer_count = self.custom_mesh_3d_buffer_count();
         let atlas_texture_region_count: usize;
         let atlas_texture_upload_bytes: usize;
+        let backend_work_started = Instant::now();
 
-        let render_result: Result<()> = match &mut self.backend {
+        let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> = match &mut self
+            .backend
+        {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.draw_step_prepare =
+                        backend_work_started.saturating_duration_since(frame_started);
+                }
                 let upload_started = Instant::now();
                 upload_frame_buffers(
                     device,
@@ -876,7 +909,11 @@ impl NovaRenderer {
                     static_uploads,
                     &quad_upload_plan,
                 )?;
-                let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
+                let buffer_upload_elapsed = upload_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.buffer_upload = buffer_upload_elapsed;
+                }
+                let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                 let atlas_started = Instant::now();
                 let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                     self.gpu_atlas_textures
@@ -890,7 +927,11 @@ impl NovaRenderer {
                             )
                         })
                 })?;
-                let atlas_upload_elapsed_ms = atlas_started.elapsed().as_millis();
+                let atlas_upload_elapsed = atlas_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.atlas_upload = atlas_upload_elapsed;
+                }
+                let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                 atlas_texture_region_count = atlas_stats.upload_count;
                 atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
@@ -931,9 +972,17 @@ impl NovaRenderer {
                         &backdrop_blur_groups,
                     )?;
                 }
-                let offscreen_elapsed_ms = offscreen_started.elapsed().as_millis();
+                let offscreen_elapsed = offscreen_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.offscreen_render = offscreen_elapsed;
+                }
+                let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
                 let present_started = Instant::now();
-                render_main_and_present(
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.frame_prepare_upload =
+                        present_started.saturating_duration_since(frame_started);
+                }
+                let presentation_frame = render_main_and_present(
                     device,
                     MainPresentDescriptor {
                         submission_mode,
@@ -947,6 +996,12 @@ impl NovaRenderer {
                     },
                     &self.draw_step_scratch.draw_steps,
                 )?;
+                let did_present = presentation_frame.is_some();
+                let backend_presentation_timings =
+                    presentation_frame.and_then(|frame| frame.timings);
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.backend_present = present_started.elapsed();
+                }
                 let present_elapsed_ms = present_started.elapsed().as_millis();
                 let total_elapsed_ms = frame_started.elapsed().as_millis();
                 if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
@@ -970,10 +1025,14 @@ impl NovaRenderer {
                         element_blur_layers.len(),
                     );
                 }
-                Ok(())
+                Ok((did_present, backend_presentation_timings))
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             NovaBackend::Metal(device) => {
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.draw_step_prepare =
+                        backend_work_started.saturating_duration_since(frame_started);
+                }
                 upload_frame_buffers(
                     device,
                     frame_buffers,
@@ -1033,7 +1092,12 @@ impl NovaRenderer {
                         &backdrop_blur_groups,
                     )?;
                 }
-                render_main_and_present(
+                let present_started = Instant::now();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.frame_prepare_upload =
+                        present_started.saturating_duration_since(frame_started);
+                }
+                let presentation_frame = render_main_and_present(
                     device,
                     MainPresentDescriptor {
                         submission_mode,
@@ -1047,13 +1111,23 @@ impl NovaRenderer {
                     },
                     &self.draw_step_scratch.draw_steps,
                 )?;
-                Ok(())
+                let did_present = presentation_frame.is_some();
+                let backend_presentation_timings =
+                    presentation_frame.and_then(|frame| frame.timings);
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.backend_present = present_started.elapsed();
+                }
+                Ok((did_present, backend_presentation_timings))
             }
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             NovaBackend::Vulkan(device) => {
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.draw_step_prepare =
+                        backend_work_started.saturating_duration_since(frame_started);
+                }
                 let upload_started = Instant::now();
                 upload_frame_buffers(
                     device,
@@ -1063,7 +1137,11 @@ impl NovaRenderer {
                     static_uploads,
                     &quad_upload_plan,
                 )?;
-                let buffer_upload_elapsed_ms = upload_started.elapsed().as_millis();
+                let buffer_upload_elapsed = upload_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.buffer_upload = buffer_upload_elapsed;
+                }
+                let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                 let atlas_started = Instant::now();
                 let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                     self.gpu_atlas_textures
@@ -1077,7 +1155,11 @@ impl NovaRenderer {
                             )
                         })
                 })?;
-                let atlas_upload_elapsed_ms = atlas_started.elapsed().as_millis();
+                let atlas_upload_elapsed = atlas_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.atlas_upload = atlas_upload_elapsed;
+                }
+                let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                 atlas_texture_region_count = atlas_stats.upload_count;
                 atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                 record_nova_upload_metrics(
@@ -1118,9 +1200,17 @@ impl NovaRenderer {
                         &backdrop_blur_groups,
                     )?;
                 }
-                let offscreen_elapsed_ms = offscreen_started.elapsed().as_millis();
+                let offscreen_elapsed = offscreen_started.elapsed();
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.offscreen_render = offscreen_elapsed;
+                }
+                let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
                 let present_started = Instant::now();
-                render_main_and_present(
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.frame_prepare_upload =
+                        present_started.saturating_duration_since(frame_started);
+                }
+                let presentation_frame = render_main_and_present(
                     device,
                     MainPresentDescriptor {
                         submission_mode,
@@ -1134,6 +1224,12 @@ impl NovaRenderer {
                     },
                     &self.draw_step_scratch.draw_steps,
                 )?;
+                let did_present = presentation_frame.is_some();
+                let backend_presentation_timings =
+                    presentation_frame.and_then(|frame| frame.timings);
+                if let Some(timing) = presentation_timing.as_mut() {
+                    timing.backend_present = present_started.elapsed();
+                }
                 let present_elapsed_ms = present_started.elapsed().as_millis();
                 let total_elapsed_ms = frame_started.elapsed().as_millis();
                 if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
@@ -1157,7 +1253,7 @@ impl NovaRenderer {
                         element_blur_layers.len(),
                     );
                 }
-                Ok(())
+                Ok((did_present, backend_presentation_timings))
             }
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
@@ -1197,7 +1293,11 @@ impl NovaRenderer {
                 error,
             );
         }
-        render_result?;
+        let (did_present, backend_presentation_timings) = render_result?;
+        if !did_present {
+            return Ok(false);
+        }
+        let presentation_finished_at = Instant::now();
         // A composition swapchain may still be stretching the last old-size frame while its
         // buffers are rebuilt. Only publish the identity transform after the first new-size
         // frame has been successfully presented; resetting it during ResizeBuffers exposes
@@ -1301,7 +1401,19 @@ impl NovaRenderer {
                 upload.mono_sprite_count
             );
         }
+        if packet.sampled_active_presentation_animation {
+            if let Some(timing) = presentation_timing.as_mut() {
+                timing.renderer_post_present = presentation_finished_at.elapsed();
+            }
+            crate::diagnostics::performance_metrics::record_presentation_animation_sample(
+                packet.window_id,
+                &packet.presentation_animation_values,
+                *presentation_timing,
+                backend_presentation_timings,
+            );
+        }
         let _ = (self.surface, self.atlas_sampler, self.path_texture);
-        Ok(())
+        packet.consume_submitted_damage();
+        Ok(true)
     }
 }

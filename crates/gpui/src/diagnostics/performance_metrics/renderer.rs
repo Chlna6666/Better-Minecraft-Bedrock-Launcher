@@ -1,4 +1,6 @@
-use crate::RendererBackend;
+use crate::{RendererBackend, SceneAnimationValue};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -139,6 +141,45 @@ pub fn record_direct_present() {
     metrics
         .retained_copy_estimated_bytes
         .store(0, Ordering::Relaxed);
+}
+
+pub(crate) fn record_presentation_animation_sample(
+    window_id: u64,
+    samples: &[SceneAnimationValue],
+    presentation_timing: Option<crate::ActivePresentationTiming>,
+    backend_timings: Option<gfx_core::PresentationTimings>,
+) {
+    if samples.is_empty() {
+        return;
+    }
+
+    let metrics = shared_metrics();
+    let mut hasher = DefaultHasher::new();
+    samples.len().hash(&mut hasher);
+    for sample in samples {
+        sample.animation_id.hash(&mut hasher);
+        sample.property.hash(&mut hasher);
+        sample.progress.to_bits().hash(&mut hasher);
+        for component in sample.from.into_iter().chain(sample.to) {
+            component.to_bits().hash(&mut hasher);
+        }
+    }
+    let sample = hasher.finish();
+    if metrics
+        .presentation_animation_sample
+        .swap(sample, Ordering::Relaxed)
+        != sample
+    {
+        metrics
+            .presentation_animation_distinct_sample_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    super::window::record_window_animation_sample(
+        window_id,
+        sample,
+        presentation_timing,
+        backend_timings,
+    );
 }
 
 /// Records a retained full-window texture present.

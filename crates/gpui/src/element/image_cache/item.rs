@@ -39,10 +39,7 @@ impl ImageCacheItem {
     }
 
     /// Returns the completed image or subscribes the current view to exact retained invalidation.
-    pub fn use_image(
-        &self,
-        window: &Window,
-    ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+    pub fn use_image(&self, window: &Window) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
         self.0
             .use_by(window.any_window_handle(), window.current_view())
     }

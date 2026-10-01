@@ -1,6 +1,6 @@
 use crate::{
-    AnyElement, App, Bounds, ContentMask, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Window, point, size,
+    AnyElement, App, Bounds, ContentMask, Element, ElementId, GlobalElementId, InspectorElementId,
+    IntoElement, LayoutId, Pixels, Window, point, size,
 };
 
 /// The fixed edge from which a vertical paint-only reveal exposes its child.

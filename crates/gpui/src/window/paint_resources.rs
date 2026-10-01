@@ -18,6 +18,18 @@ pub struct ImagePaintRequest<'a> {
     pub frame_index: usize,
     /// Whether this image should be sampled in grayscale.
     pub grayscale: bool,
+    /// How source texels are sampled for this image.
+    pub sampling: ImageSampling,
+}
+
+/// Controls how an image sprite samples source texels.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageSampling {
+    /// Use GPUI's default image sampling behavior.
+    #[default]
+    Default,
+    /// Select the nearest source texel without blending adjacent texels.
+    Nearest,
 }
 
 impl<'a> ImagePaintRequest<'a> {
@@ -29,7 +41,15 @@ impl<'a> ImagePaintRequest<'a> {
             image,
             frame_index: 0,
             grayscale: false,
+            sampling: ImageSampling::Default,
         }
+    }
+
+    /// Selects how this image samples source texels.
+    #[must_use]
+    pub fn with_sampling(mut self, sampling: ImageSampling) -> Self {
+        self.sampling = sampling;
+        self
     }
 }
 
@@ -181,15 +201,7 @@ impl Window {
         animation_id: Option<SceneAnimationId>,
         cx: &App,
     ) -> Result<()> {
-        self.paint_svg_source(
-            bounds,
-            path,
-            None,
-            transformation,
-            color,
-            animation_id,
-            cx,
-        )
+        self.paint_svg_source(bounds, path, None, transformation, color, animation_id, cx)
     }
 
     fn paint_svg_source(
@@ -307,6 +319,7 @@ impl Window {
                 request.image,
                 frame,
                 request.grayscale,
+                request.sampling,
             )?;
         }
 
@@ -370,6 +383,7 @@ impl Window {
                 request.image,
                 frame,
                 request.grayscale,
+                request.sampling,
             )?;
             progress.painted_requests = progress.painted_requests.saturating_add(1);
             if requires_new_image_tile {
@@ -425,6 +439,7 @@ impl Window {
             data.as_ref(),
             frame,
             grayscale,
+            ImageSampling::Default,
         )
     }
 
@@ -448,6 +463,7 @@ impl Window {
             data.as_ref(),
             frame,
             grayscale,
+            ImageSampling::Default,
         )
     }
 
@@ -471,6 +487,7 @@ impl Window {
         data: &RenderImage,
         frame: AnimatedFrame,
         grayscale: bool,
+        sampling: ImageSampling,
     ) -> Result<()> {
         let bounds = context
             .visual_transform
@@ -557,17 +574,18 @@ impl Window {
         let tile = crop_image_tile_to_visible_bounds(tile, image_bounds, visible_bounds);
         let corner_radii =
             corner_radii.scale(context.scale_factor * context.visual_transform.scale);
+        let animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            sampling: u32::from(sampling == ImageSampling::Nearest),
             grayscale,
-            animation_id: self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]),
+            animation_id,
             bounds: image_sprite_bounds(bounds, context.visual_transform),
             content_mask: context.content_mask,
             corner_radii,
@@ -600,14 +618,15 @@ impl Window {
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
         let opacity = self.element_opacity();
+        let animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
         self.next_frame.scene.insert_primitive(PaintBackdropBlur {
             order: 0,
-            animation_id: self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]),
+            animation_id,
             bounds,
             content_mask,
             corner_radii: corner_radii.scale(scale_factor * visual_scale),
@@ -640,18 +659,19 @@ impl Window {
         let scale_factor = self.scale_factor();
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
+        let animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
         self.next_frame.scene.insert_primitive(PaintGpuMesh3d {
             order: 0,
             bounds,
             content_mask,
             mesh,
             parameters,
-            animation_id: self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]),
+            animation_id,
         });
     }
 
@@ -711,8 +731,7 @@ impl Window {
         }
 
         let has_live_static_residency = self.image_paint_tile_cache.iter().any(|(key, tile)| {
-            key.image_id == image_id
-                && live_tiles.contains(&(tile.texture_id, tile.tile_id.0))
+            key.image_id == image_id && live_tiles.contains(&(tile.texture_id, tile.tile_id.0))
         });
 
         if has_live_static_residency {
@@ -807,8 +826,7 @@ impl Window {
         }
 
         let live_target = MIN_RETAINED_IMAGE_TILES.max(live_tiles.len());
-        if live_tiles.capacity()
-            > live_target.saturating_mul(IMAGE_TILE_TRIM_WATERMARK_MULTIPLIER)
+        if live_tiles.capacity() > live_target.saturating_mul(IMAGE_TILE_TRIM_WATERMARK_MULTIPLIER)
         {
             live_tiles.shrink_to(live_target);
         }

@@ -200,10 +200,7 @@ impl TestDispatcher {
     /// Background work is intentionally excluded: renderer benchmarks use this to model the
     /// platform UI-thread pump instead of randomly executing worker-pool tasks on the frame path.
     #[cfg(any(test, feature = "bench-support"))]
-    pub(crate) fn run_ready_foreground_tasks(
-        &self,
-        mut after_poll: impl FnMut(),
-    ) -> usize {
+    pub(crate) fn run_ready_foreground_tasks(&self, mut after_poll: impl FnMut()) -> usize {
         assert!(
             self.is_main_thread(),
             "foreground tasks must be serviced from the main thread"

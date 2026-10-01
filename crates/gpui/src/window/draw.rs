@@ -201,10 +201,8 @@ impl Window {
             directly_dirty_views,
             accumulate_unpresented_damage,
         );
-        self.presentation_state.publish_pending(
-            self.next_frame.scene.snapshot(),
-            scene_animation_values,
-        );
+        self.presentation_state
+            .publish_pending(self.next_frame.scene.snapshot(), scene_animation_values);
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
@@ -242,9 +240,13 @@ impl Window {
                     .next()
                     .is_none()
             });
-        self.animation_engine
+        if self
+            .animation_engine
             .borrow_mut()
-            .retain_scene_animations_for_scene(&self.rendered_frame.scene);
+            .retain_scene_animations_for_scene(&self.rendered_frame.scene)
+        {
+            self.scene_animation_needs_commit.set(true);
+        }
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
 
@@ -269,7 +271,10 @@ impl Window {
         // converged. Retain the newly built CPU scene, but do not encode, upload, or present an
         // identical framebuffer. Platform exposure and explicit presentation requests still use
         // the presentation-only path without coming through this flag.
-        self.needs_present.set(!self.render_dirty_region.is_empty());
+        // A new animation generation is a compositor update even if the retained primitives
+        // have identical pixels. Hand it off here before native presentation resumes the old packet.
+        self.needs_present
+            .set(self.scene_animation_needs_commit.get() || !self.render_dirty_region.is_empty());
         if self.draw_was_degraded {
             self.invalidator.set_dirty(true);
         } else {
@@ -550,16 +555,24 @@ impl Window {
             .presentation_state
             .active_scene_snapshot()
             .unwrap_or_else(|| self.rendered_frame.scene.snapshot());
-        PresentationPacket::new(
+        let animation_engine = self.animation_engine.borrow();
+        let presentation_animation_timelines = animation_engine.presentation_timelines();
+        drop(animation_engine);
+        let mut packet = PresentationPacket::new(
             scene,
             self.presentation_state
                 .active_engine_animation_values()
                 .iter()
                 .copied(),
+            presentation_animation_timelines,
+            self.animation_time(),
+            self.scale_factor,
             self.render_dirty_region.clone(),
             self.backdrop_blur_damage_plan.clone(),
             self.render_present_mode,
-        )
+        );
+        packet.window_id = self.handle.window_id().as_u64();
+        packet
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {
@@ -586,14 +599,14 @@ impl Window {
     #[profiling::function]
     pub(super) fn present(&mut self) -> PlatformFrameResult {
         #[cfg(feature = "profiler")]
-        let _profile =
-            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
-                self.handle.window_id().as_u64(),
-            );
+        let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
+            self.handle.window_id().as_u64(),
+        );
         self.presentation_state.activate_pending();
         let result = self.platform_window.draw(self.presentation_packet());
-        if result == PlatformFrameResult::Submitted {
+        if result.is_accepted() {
             self.needs_present.set(false);
+            self.scene_animation_needs_commit.set(false);
         }
         profiling::finish_frame!();
         result
@@ -601,16 +614,16 @@ impl Window {
 
     pub(super) fn present_framebuffer_only(&mut self) -> PlatformFrameResult {
         #[cfg(feature = "profiler")]
-        let _profile =
-            crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
-                self.handle.window_id().as_u64(),
-            );
+        let _profile = crate::diagnostics::foreground_profiler::ForegroundWorkSpan::submit(
+            self.handle.window_id().as_u64(),
+        );
         self.presentation_state.activate_pending();
         let result = self
             .platform_window
             .present_framebuffer_only(self.presentation_packet());
-        if result == PlatformFrameResult::Submitted {
+        if result.is_accepted() {
             self.needs_present.set(false);
+            self.scene_animation_needs_commit.set(false);
         }
         profiling::finish_frame!();
         result
@@ -636,12 +649,8 @@ impl Window {
             }
         };
 
-        // Keep the window root outside retained selective splice.
-        //
-        // Root-level retained splicing widened ordinary child/image invalidation into whole-window
-        // scene surgery. Nested cached AnyViews still retain/reconcile normally, but the shell root
-        // rebuilds structurally so blur/composite/image capture boundaries are re-established from
-        // a complete tree before those nested caches are consulted.
+        // Root-level selective splice must prove image/blur capture ordering before it can
+        // replace the complete structural traversal. Nested cached boundaries remain active.
         let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);

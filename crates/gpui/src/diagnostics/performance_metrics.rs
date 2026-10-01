@@ -24,6 +24,7 @@ pub use collect::performance_metrics_snapshot;
 pub use frame::*;
 pub use image::*;
 pub use layout::*;
+pub(crate) use renderer::record_presentation_animation_sample;
 pub use renderer::*;
 pub use scene::*;
 pub use snapshot::*;

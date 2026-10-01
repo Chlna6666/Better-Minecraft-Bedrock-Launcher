@@ -1,6 +1,9 @@
 #![expect(unsafe_code, reason = "native dialogs call Win32 and COM interfaces")]
 
-use std::{sync::{Arc, Mutex}, thread};
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+};
 
 use anyhow::{Context, Result};
 use futures::channel::oneshot;

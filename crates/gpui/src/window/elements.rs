@@ -8,10 +8,7 @@ impl Window {
     /// This bypasses the App-level entity -> window lookup deliberately: an asset may finish during
     /// a window's first frame before that lookup has been published. The invalidation remains
     /// view-scoped, so unrelated cached views can still retain and replay their previous ranges.
-    pub(crate) fn schedule_asset_ready_views(
-        &mut self,
-        views: impl IntoIterator<Item = EntityId>,
-    ) {
+    pub(crate) fn schedule_asset_ready_views(&mut self, views: impl IntoIterator<Item = EntityId>) {
         let mut any = false;
         for entity_id in views {
             any = true;
@@ -242,5 +239,4 @@ impl Window {
         })
         .detach();
     }
-
 }

@@ -1,4 +1,4 @@
-use super::state::{ElementVisualTransform, InputModality};
+use super::state::{ElementVisualTransform, InputModality, PresentationState};
 use super::*;
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -34,10 +34,7 @@ impl Window {
 
         self.visibility = visibility;
         self.reset_dirty_to_present_timing(visibility.is_visible());
-        record_window_visibility(
-            self.handle.window_id().as_u64(),
-            visibility.is_visible(),
-        );
+        record_window_visibility(self.handle.window_id().as_u64(), visibility.is_visible());
         #[cfg(feature = "profiler")]
         crate::diagnostics::foreground_profiler::record_window_visibility(
             self.handle.window_id().as_u64(),
@@ -134,14 +131,6 @@ impl Window {
         let dirty_frame_diagnostics = Rc::new(RefCell::new(DirtyFrameDiagnostics::default()));
         invalidator.set_dirty_frame_diagnostics(dirty_frame_diagnostics.clone());
         let active = Rc::new(Cell::new(platform_window.is_active()));
-        let visibility = platform_window.visibility();
-        invalidator.reset_dirty_to_present_epoch(visibility.is_visible());
-        record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
-        #[cfg(feature = "profiler")]
-        crate::diagnostics::foreground_profiler::record_window_visibility(
-            handle.window_id().as_u64(),
-            visibility.is_visible(),
-        );
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
         let next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>> = Default::default();
@@ -172,23 +161,40 @@ impl Window {
             let mut cx = cx.to_async();
             move || {
                 #[cfg(feature = "profiler")]
-                crate::diagnostics::foreground_profiler::record_window_closed(
-                    window_id.as_u64(),
-                );
+                crate::diagnostics::foreground_profiler::record_window_closed(window_id.as_u64());
                 let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
                 let _ = cx.update(|cx| {
                     WindowTabRegistry::remove_tab(cx, window_id);
                 });
             }
         }));
-        platform_window.on_request_frame(Box::new({
-            let mut cx = cx.to_async();
-            move |frame_options| {
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
-                    window.run_platform_frame(frame_options, cx);
-                }));
-            }
-        }));
+        let (frame_request_sender, frame_request_receiver) =
+            crate::PlatformFrameRequestSender::channel();
+        cx.spawn_stream(
+            frame_request_receiver.into_stream(),
+            move |frame_request, cx| {
+                let result = handle.update(cx, |_, window, cx| {
+                    window.run_platform_frame(frame_request, cx);
+                });
+                let Some(()) = ignore_window_not_found(result) else {
+                    return;
+                };
+            },
+        )
+        .detach();
+        platform_window.set_frame_request_sender(frame_request_sender);
+        let (animation_completion_sender, animation_completion_receiver) =
+            futures::channel::mpsc::unbounded();
+        cx.spawn_stream(animation_completion_receiver, move |completion, cx| {
+            let result = handle.update(cx, |_, window, _| {
+                window.presentation_animation_completed(completion);
+            });
+            let Some(()) = ignore_window_not_found(result) else {
+                return;
+            };
+        })
+        .detach();
+        platform_window.set_presentation_animation_completion_sender(animation_completion_sender);
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             move |_, _| {
@@ -224,11 +230,9 @@ impl Window {
         platform_window.on_visibility_change(Box::new({
             let mut cx = cx.to_async();
             move |visibility| {
-                let _ = ignore_window_not_found(
-                    handle.update(&mut cx, |_, window, cx| {
-                        window.update_visibility(visibility, cx);
-                    }),
-                );
+                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                    window.update_visibility(visibility, cx);
+                }));
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -363,6 +367,17 @@ impl Window {
 
         platform_window.map_window().unwrap();
 
+        // Mapping may synchronously change visibility before Window exists to receive callbacks.
+        // Initialize from the mapped native state rather than retaining the pre-map hidden state.
+        let visibility = platform_window.visibility();
+        invalidator.reset_dirty_to_present_epoch(visibility.is_visible());
+        record_window_visibility(handle.window_id().as_u64(), visibility.is_visible());
+        #[cfg(feature = "profiler")]
+        crate::diagnostics::foreground_profiler::record_window_visibility(
+            handle.window_id().as_u64(),
+            visibility.is_visible(),
+        );
+
         let client_inset = if matches!(
             platform_window.window_decorations(),
             Decorations::Client { .. }
@@ -440,6 +455,7 @@ impl Window {
             visibility_observers: SubscriberSet::new(),
             hovered,
             needs_present,
+            scene_animation_needs_commit: Cell::new(false),
             last_input_timestamp,
             last_input_modality: InputModality::Mouse,
             active_dirty_to_present_started_at: None,

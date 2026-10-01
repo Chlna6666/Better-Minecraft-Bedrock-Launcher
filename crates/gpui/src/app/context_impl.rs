@@ -1,4 +1,7 @@
-use std::{any::{Any, TypeId}, future::Future};
+use std::{
+    any::{Any, TypeId},
+    future::Future,
+};
 
 use anyhow::{Context as _, Result, anyhow};
 
@@ -105,9 +108,7 @@ impl AppContext for App {
     ) -> R {
         let mut update = Some(update);
         self.update_entity_typed(handle, &mut |entity, cx| {
-            update
-                .take()
-                .expect("entity update callback runs once")(entity, cx)
+            update.take().expect("entity update callback runs once")(entity, cx)
         })
     }
 

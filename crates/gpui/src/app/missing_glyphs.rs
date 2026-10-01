@@ -82,7 +82,10 @@ impl App {
             let callback = self.missing_glyph_callback.clone();
             self.spawn(async move |cx| {
                 while let Ok(missing_glyphs) = receiver.recv().await {
-                    if cx.update(|cx| callback.invoke(&missing_glyphs, cx)).is_err() {
+                    if cx
+                        .update(|cx| callback.invoke(&missing_glyphs, cx))
+                        .is_err()
+                    {
                         break;
                     }
                 }

@@ -360,8 +360,7 @@ impl FrameUpload {
                             register_scene_animated_primitive(
                                 self,
                                 &mut summary,
-                                quad.animation_id
-                                    .map(|_| crate::Primitive::Quad(quad)),
+                                quad.animation_id.map(|_| crate::Primitive::Quad(quad)),
                                 AnimatedPrimitiveKind::Quad,
                                 primitive_index,
                             );
@@ -647,8 +646,7 @@ impl FrameUpload {
                         });
                     cached.bytes.clear();
                     if cached.bytes.capacity()
-                        > byte_target
-                            .saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
+                        > byte_target.saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
                     {
                         cached.bytes.shrink_to(byte_target);
                     }
@@ -726,8 +724,7 @@ impl FrameUpload {
             register_scene_animated_primitive(
                 self,
                 summary,
-                quad.animation_id
-                    .map(|_| crate::Primitive::Quad(*quad)),
+                quad.animation_id.map(|_| crate::Primitive::Quad(*quad)),
                 AnimatedPrimitiveKind::Quad,
                 primitive_index,
             );
@@ -787,7 +784,8 @@ impl FrameUpload {
             .saturating_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
         self.path_rasterization_encode_scratch.clear();
         if self.path_rasterization_encode_scratch.capacity() < encoded_bytes {
-            self.path_rasterization_encode_scratch.reserve(encoded_bytes);
+            self.path_rasterization_encode_scratch
+                .reserve(encoded_bytes);
         }
         for vertex in &path.vertices {
             write_path_rasterization_vertex(

@@ -350,7 +350,9 @@ impl Interactivity {
                         && event.delta.precise()
                         && let Some(ongoing_scroll) = &ongoing_scroll
                     {
-                        ongoing_scroll.borrow_mut().filter(&mut delta, event.touch_phase);
+                        ongoing_scroll
+                            .borrow_mut()
+                            .filter(&mut delta, event.touch_phase);
                     }
 
                     let mut delta_x = Pixels::ZERO;

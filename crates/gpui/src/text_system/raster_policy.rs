@@ -80,8 +80,8 @@ impl RenderGlyphParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FontId, GlyphId, Point, ShapedGlyph, point, px};
     use crate::text_system::script::text_cluster_properties;
+    use crate::{FontId, GlyphId, Point, ShapedGlyph, point, px};
 
     fn test_render_params() -> RenderGlyphParams {
         RenderGlyphParams {

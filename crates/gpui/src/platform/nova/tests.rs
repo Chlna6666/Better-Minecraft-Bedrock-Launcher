@@ -116,12 +116,16 @@ fn fs_test_mesh(input: MeshOut) -> @location(0) vec4<f32> {
 }
 
 #[test]
-fn dx12_and_vulkan_auto_vsync_use_fifo_present_mode() {
+fn auto_vsync_uses_the_platform_pacing_authority() {
     let options = RendererOptions::default();
 
     assert_eq!(
         nova_present_mode_for_backend(RendererBackend::NovaDx12, &options),
-        gfx_core::PresentMode::Fifo
+        if cfg!(target_os = "windows") {
+            gfx_core::PresentMode::Mailbox
+        } else {
+            gfx_core::PresentMode::Fifo
+        }
     );
     assert_eq!(
         nova_present_mode_for_backend(RendererBackend::NovaVulkan, &options),
@@ -806,7 +810,7 @@ fn path_sprite_packer_matches_shader_storage_stride() {
 fn polychrome_sprite_packer_matches_shader_storage_stride() {
     let sprite = PolychromeSprite {
         order: 0,
-        pad: 0,
+        sampling: 0,
         grayscale: false,
         opacity: 1.0,
         animation_id: None,
@@ -1072,7 +1076,6 @@ fn frame_upload_records_scene_animation_values() {
     assert_eq!(read_f32_at(&upload.animation_values, 8), 0.25);
     assert_eq!(read_f32_at(&upload.animation_values, 32), 1.0);
 }
-
 
 #[test]
 fn frame_upload_accepts_presentation_animation_values_outside_scene() {
@@ -2068,21 +2071,32 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
         PresentationPacket::new(
             Arc::clone(&scene),
             [],
+            [],
+            std::time::Instant::now(),
+            1.0,
             dirty_region.clone(),
             backdrop_blur_damage_plan.clone(),
             PartialPresentMode::Partial,
         )
     };
 
+    let mut partial_result_packet = partial_packet();
+    resolve_surface_packet(&mut partial_result_packet, false);
     assert_eq!(
-        resolve_surface_packet(partial_packet(), false).partial_present_mode,
+        partial_result_packet.partial_present_mode,
         PartialPresentMode::Partial
     );
+
+    let mut full_redraw_packet = partial_packet();
+    resolve_surface_packet(&mut full_redraw_packet, true);
     assert_eq!(
-        resolve_surface_packet(partial_packet(), true).partial_present_mode,
+        full_redraw_packet.partial_present_mode,
         PartialPresentMode::FullRedraw
     );
-    assert!(!resolve_surface_packet(partial_packet(), true).force_full_backdrop_blur_refresh);
+
+    let mut no_blur_refresh_packet = partial_packet();
+    resolve_surface_packet(&mut no_blur_refresh_packet, true);
+    assert!(!no_blur_refresh_packet.force_full_backdrop_blur_refresh);
 }
 
 #[test]
@@ -2240,15 +2254,22 @@ fn nova_shaders_do_not_guard_division_with_select() {
 
         for statement in source_without_comments.split(';') {
             let compact_statement = statement.split_whitespace().collect::<String>();
+            // This eager select operand has its own positive denominator clamp; select is
+            // choosing the tap fallback, rather than guarding an unsafe division.
+            let reviewed_statement = if shader_name == "blur.wgsl" {
+                compact_statement.replace("/max(pair_weight,1e-8)", "*1.0")
+            } else {
+                compact_statement
+            };
             assert!(
-                !select_arguments_contain_division(&compact_statement),
+                !select_arguments_contain_dynamic_division(&reviewed_statement),
                 "{shader_name} contains a select() guarded division; use an explicit branch instead: {statement}"
             );
         }
     }
 }
 
-fn select_arguments_contain_division(statement: &str) -> bool {
+fn select_arguments_contain_dynamic_division(statement: &str) -> bool {
     let mut search_start = 0;
     while let Some(relative_start) = statement[search_start..].find("select(") {
         let select_start = search_start + relative_start;
@@ -2260,7 +2281,20 @@ fn select_arguments_contain_division(statement: &str) -> bool {
                     depth -= 1;
                     if depth == 0 {
                         let select_expression = &statement[select_start..select_start + offset];
-                        if select_expression.contains('/') {
+                        if select_expression.split('/').skip(1).any(|denominator| {
+                            let literal = denominator
+                                .chars()
+                                .take_while(|character| {
+                                    character.is_ascii_alphanumeric()
+                                        || matches!(character, '.' | '+' | '-')
+                                })
+                                .collect::<String>();
+                            !literal
+                                .strip_suffix('f')
+                                .unwrap_or(&literal)
+                                .parse::<f32>()
+                                .is_ok_and(|value| value.is_finite() && value > 0.0)
+                        }) {
                             return true;
                         }
                         search_start = select_start + offset + 1;
@@ -2277,6 +2311,27 @@ fn select_arguments_contain_division(statement: &str) -> bool {
     }
 
     false
+}
+
+#[test]
+fn nova_select_division_review_distinguishes_positive_constants_from_dynamic_guards() {
+    for expression in [
+        "select(support/8.0,1.0,adjacent_taps)",
+        "select(1.0,select(support/4096.0,0.0,enabled),active)",
+        "select(support/1.0e3f,1.0,enabled)",
+    ] {
+        assert!(!select_arguments_contain_dynamic_division(expression));
+    }
+    for expression in [
+        "select(value/divisor,0.0,divisor>0.0)",
+        "select(value/0.0,0.0,enabled)",
+        "select(value/8.0/divisor,0.0,enabled)",
+        "select(1.0,select(value/divisor,0.0,enabled),active)",
+        "select(value/1.0e-999,0.0,enabled)",
+        "select(value/8.0foo,0.0,enabled)",
+    ] {
+        assert!(select_arguments_contain_dynamic_division(expression));
+    }
 }
 
 #[test]
@@ -2364,7 +2419,8 @@ fn nova_fragment_shaders_skip_work_before_sampling_transparent_pixels() {
             "let coverage = saturate(SDF_ANTIALIAS_THRESHOLD - distance)",
             "if (coverage <= 0.0)",
             "var sample: vec4<f32>",
-            "if (input.texture_kind == 2u)",
+            "if (input.sampling == 1u || input.texture_kind == 2u)",
+            "let texel = clamp(requested_texel, input.tile_origin, tile_max)",
             "sample = textureLoad(t_sprite, texel, 0)",
             "sample = textureSampleLevel(t_sprite, s_sprite, input.tile_position, 0.0)",
             "if (sample.a <= 0.0)",
@@ -2407,7 +2463,7 @@ fn nova_fragment_shaders_skip_fully_transparent_instances() {
             "if (input.background_tag == 0u &&",
             "input.background_solid.a <= 0.0 &&",
             "input.border_color.a <= 0.0)",
-            "let quad = b_quads[input.quad_id]",
+            "var quad = b_quads[input.quad_id]",
             "var background_color = input.background_solid",
             "if (background_color.a <= 0.0 && input.border_color.a <= 0.0)",
         ],
@@ -2461,9 +2517,35 @@ fn nova_shader_discard_usage_matches_clip_strategy() {
     );
 
     for (shader_name, source) in nova_shader_sources() {
+        let (entry, coverage) = match shader_name {
+            "subpixel_sprite.wgsl" => ("fs_subpixel_sprite", "corrected_subpixel_coverage(input)"),
+            "subpixel_sprite_grayscale.wgsl" => (
+                "fs_subpixel_sprite_grayscale",
+                "corrected_grayscale_subpixel_atlas_coverage(input)",
+            ),
+            _ => {
+                assert!(
+                    !source.contains("discard;"),
+                    "{shader_name} should return transparent for software clipping instead of discarding"
+                );
+                continue;
+            }
+        };
+        // Windows text entries discard before sampling; dual-source RGB blending must leave
+        // both destination color and alpha untouched outside coverage.
+        assert_fragment_contains_in_order(
+            shader_name,
+            source,
+            entry,
+            &[
+                "if (any(input.clip_distances < vec4<f32>(0.0)) || clip_coverage <= 0.0 || input.color.a <= 0.0)",
+                "discard;",
+                coverage,
+            ],
+        );
         assert!(
-            !source.contains("discard;"),
-            "{shader_name} should return transparent for software clipping instead of discarding"
+            source.matches("discard;").count() == 1,
+            "{shader_name} should only discard at its clip/alpha guard"
         );
     }
 }
@@ -2551,6 +2633,7 @@ fn nova_shader_divisions_are_guarded_or_constant() {
         "/ 12.92",
         "1.0 / 2.4",
         "1.0 / 3.0",
+        "1.0 / 4096.0",
         "* M_PI_F / 180.0",
         "safe_size.y / safe_size.x",
         "safe_size.x / safe_size.y",
@@ -2602,10 +2685,17 @@ fn nova_shader_divisions_are_guarded_or_constant() {
         for (line_number, line) in source.lines().enumerate() {
             let code = line.split_once("//").map_or(line, |(code, _)| code);
             if code.contains('/') {
+                let guarded_sprite_division = shader_name == "sprite_common.wgsl"
+                    && matches!(
+                        code.trim(),
+                        "raster_scale = f32(sprite.tile.bounds.size.x) / static_width;"
+                            | "raster_scale = f32(sprite.tile.bounds.size.y) / static_height;"
+                    );
                 assert!(
-                    ALLOWED_DIVISIONS
-                        .iter()
-                        .any(|division| code.contains(division)),
+                    guarded_sprite_division
+                        || ALLOWED_DIVISIONS
+                            .iter()
+                            .any(|division| code.contains(division)),
                     "{shader_name}:{} uses division without an explicit safety review: {line}",
                     line_number + 1
                 );
@@ -2646,6 +2736,14 @@ fn nova_shader_modulo_uses_have_nonzero_divisors() {
 
 #[test]
 fn nova_shader_edge_guards_cover_degenerate_inputs() {
+    let sprites = include_str!("shaders/sprite_common.wgsl")
+        .split_whitespace()
+        .collect::<String>();
+    for (dimension, axis) in [("static_width", "x"), ("static_height", "y")] {
+        assert!(sprites.contains(&format!(
+            "if({dimension}>0.0001&&sprite.tile.bounds.size.{axis}>0){{raster_scale=f32(sprite.tile.bounds.size.{axis})/{dimension};}}"
+        )), "sprite raster-density division must remain inside its positive-size guard");
+    }
     assert_shader_contains(
         "core.wgsl",
         include_str!("shaders/core.wgsl"),
@@ -2727,8 +2825,8 @@ fn nova_shader_edge_guards_cover_degenerate_inputs() {
         include_str!("shaders/blur.wgsl"),
         &[
             "let source_size = max(vec2<f32>(textureDimensions(t_sprite, 0)), vec2<f32>(1.0))",
-            "screen_position / max(blur.blurred_size, vec2<f32>(1.0))",
-            "quad_sdf_from_packed(input.position.xy, input.bounds, input.corner_radii)",
+            "source_position / max(blur.blurred_size, vec2<f32>(1.0))",
+            "quad_sdf_from_packed(input.local_position, input.bounds, input.corner_radii)",
             "let alpha = saturate(SDF_ANTIALIAS_THRESHOLD - distance)",
             "if (alpha <= 0.0)",
             "textureSampleLevel(t_sprite, s_sprite, texture_coords, 0.0)",
@@ -3048,8 +3146,9 @@ fn nova_runtime_source() -> String {
     .join("\n")
 }
 
-fn nova_shader_sources() -> [(&'static str, &'static str); 15] {
+fn nova_shader_sources() -> [(&'static str, &'static str); 18] {
     [
+        ("animation.wgsl", include_str!("shaders/animation.wgsl")),
         ("blur.wgsl", include_str!("shaders/blur.wgsl")),
         ("core.wgsl", include_str!("shaders/core.wgsl")),
         ("mono_sprite.wgsl", include_str!("shaders/mono_sprite.wgsl")),
@@ -3067,6 +3166,14 @@ fn nova_shader_sources() -> [(&'static str, &'static str); 15] {
         (
             "subpixel_sprite.wgsl",
             include_str!("shaders/subpixel_sprite.wgsl"),
+        ),
+        (
+            "subpixel_sprite_common.wgsl",
+            include_str!("shaders/subpixel_sprite_common.wgsl"),
+        ),
+        (
+            "subpixel_sprite_grayscale.wgsl",
+            include_str!("shaders/subpixel_sprite_grayscale.wgsl"),
         ),
         ("surface.wgsl", include_str!("shaders/surface.wgsl")),
         ("text.wgsl", include_str!("shaders/text.wgsl")),

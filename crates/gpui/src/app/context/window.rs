@@ -79,13 +79,7 @@ impl<'a, T: 'static> Context<'a, T> {
         self.new_observer(
             observed_id,
             Box::new(move |cx| {
-                invoke_observer_in(
-                    window_handle,
-                    &observer,
-                    &observed,
-                    cx,
-                    &mut on_notify,
-                )
+                invoke_observer_in(window_handle, &observer, &observed, cx, &mut on_notify)
             }),
         )
     }
@@ -199,12 +193,7 @@ impl<'a, T: 'static> Context<'a, T> {
     pub fn observe_window_visibility(
         &self,
         window: &mut Window,
-        mut callback: impl FnMut(
-            &mut T,
-            WindowVisibility,
-            &mut Window,
-            &mut Context<T>,
-        ) + 'static,
+        mut callback: impl FnMut(&mut T, WindowVisibility, &mut Window, &mut Context<T>) + 'static,
     ) -> Subscription {
         let view = self.weak_entity();
         let (subscription, activate) = window.visibility_observers.insert(
@@ -528,4 +517,3 @@ fn invoke_subscriber_in<T: 'static, Emitter: 'static, Event: 'static>(
         })
         .unwrap_or(false)
 }
-

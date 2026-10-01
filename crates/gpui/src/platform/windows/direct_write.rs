@@ -381,9 +381,8 @@ impl DirectWriteState {
             // The exact face remains authoritative for metrics/rasterization. This final fallback
             // only keeps FontInfo structurally usable if DirectWrite cannot expose a face reference.
             .unwrap_or_else(|| self.system_font_collection.clone());
-        let features = unsafe {
-            Self::generate_font_features(&components.factory, &font.features).log_err()?
-        };
+        let features =
+            unsafe { Self::generate_font_features(&components.factory, &font.features).log_err()? };
 
         let font_id = FontId(self.fonts.len());
         self.fonts.push(FontInfo {
@@ -1456,8 +1455,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         for (cluster_utf16_len, cluster_glyph_count) in cluster_analyzer {
             context.index_converter.advance_to_utf16_ix(utf16_idx);
             let cluster_utf8_index = context.index_converter.utf8_ix;
-            let cluster_glyph_ids =
-                &glyph_ids[glyph_idx..(glyph_idx + cluster_glyph_count)];
+            let cluster_glyph_ids = &glyph_ids[glyph_idx..(glyph_idx + cluster_glyph_count)];
             if cluster_glyph_ids.iter().any(|glyph_id| *glyph_id == 0)
                 && let Some(missing_text_indices) = context.missing_text_indices.as_mut()
             {
@@ -1848,10 +1846,7 @@ fn should_use_subpixel_rendering(
         )
 }
 
-fn should_use_system_subpixel_rendering(
-    system_subpixel_rendering: bool,
-    is_emoji: bool,
-) -> bool {
+fn should_use_system_subpixel_rendering(system_subpixel_rendering: bool, is_emoji: bool) -> bool {
     // DirectWrite owns the small-size rendering mode and grid fitting. A framework-level
     // physical-pixel cutoff makes identical UI text change AA strategy across DPI values and
     // unnecessarily removes ClearType resolution exactly where small text benefits from it most.
@@ -1961,7 +1956,8 @@ const DEFAULT_LOCALE_NAME: PCWSTR = windows::core::w!("en-US");
 
 #[cfg(test)]
 mod missing_glyph_tests {
-    use super::*;
+    use super::{FallbackFontClass, MissingGlyph, missing_glyphs_for_text};
+    use crate::{FontId, FontRun};
 
     #[test]
     fn missing_indices_collapse_to_graphemes_and_preserve_font_class() {
@@ -1997,10 +1993,7 @@ mod missing_glyph_tests {
 
         assert_eq!(
             missing,
-            vec![MissingGlyph::new(
-                "👩‍🚀".into(),
-                FallbackFontClass::Monospace
-            )]
+            vec![MissingGlyph::new("👩‍🚀".into(), FallbackFontClass::Monospace)]
         );
     }
 }
@@ -2009,8 +2002,8 @@ mod missing_glyph_tests {
 mod tests {
     use super::{
         ClusterAnalyzer, DirectWriteTextSystem, glyph_rendering_mode,
-        should_use_system_subpixel_rendering, utf16_cluster_contains_cjk, utf8_run_end,
-        utf8_run_start,
+        should_use_system_subpixel_rendering, utf8_run_end, utf8_run_start,
+        utf16_cluster_contains_cjk,
     };
     use crate::{
         FontRun, GlyphRasterization, PlatformTextSystem, RenderGlyphParams, RendererCapabilities,

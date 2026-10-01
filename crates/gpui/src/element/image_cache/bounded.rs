@@ -1,7 +1,6 @@
 use crate::{
     App, AppContext, AssetLocation, ElementId, Entity, ImageCacheError, RenderImage, Window,
-    drop_image_cache_metrics, hash,
-    record_image_cache_eviction, record_image_cache_metrics,
+    drop_image_cache_metrics, hash, record_image_cache_eviction, record_image_cache_metrics,
 };
 use linked_hash_map::LinkedHashMap;
 use std::{
@@ -352,6 +351,4 @@ mod tests {
             assert_eq!(cache.entries.back().map(|(hash, _)| *hash), Some(1));
         });
     }
-
-
 }

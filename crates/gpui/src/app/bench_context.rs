@@ -1,10 +1,4 @@
-use std::{
-    cell::RefCell,
-    future::Future,
-    rc::Rc,
-    sync::Arc,
-    time::Duration,
-};
+use std::{cell::RefCell, future::Future, rc::Rc, sync::Arc, time::Duration};
 
 use crate::{
     AnyView, AnyWindowHandle, App, AppCell, AppContext, BackgroundExecutor, Bounds, Context,
@@ -99,7 +93,10 @@ impl BenchReport {
             benchmark_name.unwrap_or("unknown benchmark")
         );
         eprintln!("  target frame budget: {:?}", self.frame_budget);
-        eprintln!("  delivered platform frame callbacks: {}", state.frame_callbacks);
+        eprintln!(
+            "  delivered platform frame callbacks: {}",
+            state.frame_callbacks
+        );
         if state.foreground_polls != 0 {
             eprintln!(
                 "  foreground polls: {} across {} busy iterations (max batch {})",
@@ -151,8 +148,7 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
         let dispatcher = Arc::new(TestDispatcher::with_seed(StdRng::seed_from_u64(0), 0));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher.clone());
-        let platform =
-            TestPlatform::new(background_executor.clone(), foreground_executor.clone());
+        let platform = TestPlatform::new(background_executor.clone(), foreground_executor.clone());
         let app = App::new_app(
             platform,
             Arc::new(()),
@@ -346,10 +342,7 @@ impl<'a, 'measurement> BenchAppContext<'a, 'measurement> {
 impl AppContext for BenchAppContext<'_, '_> {
     type Result<T> = T;
 
-    fn new<T: 'static>(
-        &mut self,
-        build_entity: impl FnOnce(&mut Context<T>) -> T,
-    ) -> Entity<T> {
+    fn new<T: 'static>(&mut self, build_entity: impl FnOnce(&mut Context<T>) -> T) -> Entity<T> {
         self.app.borrow_mut().new(build_entity)
     }
 
@@ -362,7 +355,9 @@ impl AppContext for BenchAppContext<'_, '_> {
         reservation: Reservation<T>,
         build_entity: impl FnOnce(&mut Context<T>) -> T,
     ) -> Entity<T> {
-        self.app.borrow_mut().insert_entity(reservation, build_entity)
+        self.app
+            .borrow_mut()
+            .insert_entity(reservation, build_entity)
     }
 
     fn update_entity<T: 'static, R>(
@@ -380,11 +375,7 @@ impl AppContext for BenchAppContext<'_, '_> {
         panic!("Cannot use as_mut with BenchAppContext. Call update() instead.")
     }
 
-    fn read_entity<T, R>(
-        &self,
-        handle: &Entity<T>,
-        read: impl FnOnce(&T, &App) -> R,
-    ) -> R
+    fn read_entity<T, R>(&self, handle: &Entity<T>, read: impl FnOnce(&T, &App) -> R) -> R
     where
         T: 'static,
     {

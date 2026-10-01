@@ -43,6 +43,8 @@ pub(super) struct SharedMetrics {
     pub(super) gpu_surface_error_count: AtomicU64,
     pub(super) retained_present_count: AtomicU64,
     pub(super) direct_present_count: AtomicU64,
+    pub(super) presentation_animation_sample: AtomicU64,
+    pub(super) presentation_animation_distinct_sample_count: AtomicU64,
     pub(super) backdrop_blur_frame_count: AtomicU64,
     pub(super) retained_copy_pixels: AtomicU64,
     pub(super) retained_copy_estimated_bytes: AtomicU64,
@@ -202,7 +204,8 @@ pub(super) struct SharedMetrics {
     pub(super) window_metrics: Mutex<HashMap<u64, WindowMetrics>>,
 }
 
-const WINDOW_TIMING_SAMPLE_CAPACITY: usize = 256;
+pub(super) const WINDOW_TIMING_SAMPLE_CAPACITY: usize = 256;
+pub(super) const WINDOW_ANIMATION_SAMPLE_HISTORY_CAPACITY: usize = 1_024;
 
 #[derive(Clone, Debug)]
 pub(super) struct WindowTimingSamples {
@@ -242,10 +245,7 @@ impl WindowTimingSamples {
         let mut sorted = self.values_micros.iter().copied().collect::<Vec<_>>();
         sorted.sort_unstable();
         let percentile = |percent: usize| {
-            let rank = percent
-                .saturating_mul(sorted.len())
-                .saturating_add(99)
-                / 100;
+            let rank = percent.saturating_mul(sorted.len()).saturating_add(99) / 100;
             sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
         };
 
@@ -255,6 +255,10 @@ impl WindowTimingSamples {
             p99_micros: percentile(99),
             count: sorted.len(),
         }
+    }
+
+    pub(super) fn max_micros(&self) -> u64 {
+        self.values_micros.iter().copied().max().unwrap_or_default()
     }
 }
 
@@ -267,6 +271,18 @@ pub(super) struct WindowMetrics {
     pub(super) dirty_to_present_count: u64,
     pub(super) frame_duration_samples: WindowTimingSamples,
     pub(super) present_interval_samples: WindowTimingSamples,
+    pub(super) last_animation_sample_at: Option<Instant>,
+    pub(super) last_animation_sample_hash: Option<u64>,
+    pub(super) animation_sampled_present_count: u64,
+    pub(super) animation_sample_changed_present_count: u64,
+    pub(super) animation_sample_unchanged_present_count: u64,
+    pub(super) animation_sample_interval_samples: WindowTimingSamples,
+    pub(super) animation_sample_history: VecDeque<(
+        u64,
+        Instant,
+        Option<bool>,
+        Option<super::window::WindowAnimationPresentationTiming>,
+    )>,
     pub(super) logical_width_milli: u64,
     pub(super) logical_height_milli: u64,
     pub(super) physical_width_px: u64,
@@ -297,7 +313,6 @@ pub(super) fn shared_metrics() -> &'static Arc<SharedMetrics> {
         .get()
         .expect("shared metrics should be initialized")
 }
-
 
 #[cfg(test)]
 mod tests {

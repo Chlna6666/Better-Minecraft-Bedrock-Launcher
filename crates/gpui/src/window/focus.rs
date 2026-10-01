@@ -39,11 +39,11 @@ pub(crate) fn with_element_arena<R>(callback: impl FnOnce(&mut Arena) -> R) -> R
     let mut callback = Some(callback);
     let mut result = None;
     with_element_arena_erased(&mut |arena| {
-        result = Some(
-            callback
-                .take()
-                .expect("element arena callback runs exactly once")(arena),
-        );
+        result = Some(callback
+            .take()
+            .expect("element arena callback runs exactly once")(
+            arena
+        ));
     });
     result.expect("element arena callback produces a result")
 }
@@ -130,18 +130,11 @@ impl Window {
 
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
-        self.invalidator.invalidate_retained_path(
-            target.view_id,
-            Some(&target.retained_id),
-            false,
-        )
+        self.invalidator
+            .invalidate_retained_path(target.view_id, Some(&target.retained_id), false)
     }
 
-    fn invalidate_focus_transition(
-        &mut self,
-        previous: Option<FocusId>,
-        current: Option<FocusId>,
-    ) {
+    fn invalidate_focus_transition(&mut self, previous: Option<FocusId>, current: Option<FocusId>) {
         self.prune_focus_retained_targets_if_needed();
 
         let mut schedule = false;

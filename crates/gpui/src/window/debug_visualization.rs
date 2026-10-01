@@ -199,11 +199,7 @@ impl Window {
     }
 
     /// Sets the direct Scene frame-time overlay mode.
-    pub fn set_debug_frame_overlay_mode(
-        &mut self,
-        mode: DebugFrameOverlayMode,
-        cx: &mut App,
-    ) {
+    pub fn set_debug_frame_overlay_mode(&mut self, mode: DebugFrameOverlayMode, cx: &mut App) {
         let mut options = self.debug_visualization(cx);
         options.frame_time_overlay = mode;
         self.set_debug_visualization(options, cx);
@@ -211,7 +207,10 @@ impl Window {
 
     /// Cycles the frame-time overlay through hidden, minimal, and full modes.
     pub fn cycle_debug_frame_overlay_mode(&mut self, cx: &mut App) {
-        self.set_debug_frame_overlay_mode(self.debug_visualization(cx).frame_time_overlay.next(), cx);
+        self.set_debug_frame_overlay_mode(
+            self.debug_visualization(cx).frame_time_overlay.next(),
+            cx,
+        );
     }
 
     /// Clears the bounded frame-time sample window while keeping the overlay enabled.
@@ -380,8 +379,8 @@ impl Window {
             runtime.element_update_painted_this_frame = false;
             runtime.element_paint_markers.clear();
             runtime.view_cache_markers.clear();
-            runtime.flash_this_frame = runtime.options.flash_surface_updates
-                && !runtime.cleanup_this_frame;
+            runtime.flash_this_frame =
+                runtime.options.flash_surface_updates && !runtime.cleanup_this_frame;
 
             if runtime.flash_this_frame {
                 runtime.surface_flash_generation = runtime.surface_flash_generation.wrapping_add(1);
@@ -756,7 +755,6 @@ mod tests {
     }
 }
 
-
 fn format_frame_ms(duration: Option<Duration>) -> String {
     duration
         .map(|duration| format!("{:>5.1}MS", duration.as_secs_f64() * 1000.0))
@@ -774,12 +772,16 @@ fn debug_frame_overlay_paint(
         return;
     }
 
-    let max_chars = lines.iter().map(|line| line.chars().count()).max().unwrap_or(0);
+    let max_chars = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
     let cell = (FRAME_OVERLAY_CELL * scale_factor).max(1.0);
-    let width = cell
-        * (max_chars as f32 * FRAME_OVERLAY_CHAR_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
-    let height = cell
-        * (lines.len() as f32 * FRAME_OVERLAY_LINE_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
+    let width =
+        cell * (max_chars as f32 * FRAME_OVERLAY_CHAR_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
+    let height =
+        cell * (lines.len() as f32 * FRAME_OVERLAY_LINE_ADVANCE + FRAME_OVERLAY_PADDING * 2.0);
     let viewport = viewport_size.scale(scale_factor);
     let left = (viewport.width.0 - width - cell * FRAME_OVERLAY_MARGIN).max(0.0);
     let top = cell * FRAME_OVERLAY_MARGIN;
@@ -800,8 +802,8 @@ fn debug_frame_overlay_paint(
 
     let foreground: Hsla = rgba(0x39ff6aff).into();
     for (line_index, line) in lines.iter().enumerate() {
-        let row_top = top
-            + cell * (FRAME_OVERLAY_PADDING + line_index as f32 * FRAME_OVERLAY_LINE_ADVANCE);
+        let row_top =
+            top + cell * (FRAME_OVERLAY_PADDING + line_index as f32 * FRAME_OVERLAY_LINE_ADVANCE);
         for (char_index, character) in line.chars().enumerate() {
             if character == ' ' {
                 continue;
@@ -810,8 +812,7 @@ fn debug_frame_overlay_paint(
                 continue;
             };
             let glyph_left = left
-                + cell * (FRAME_OVERLAY_PADDING
-                    + char_index as f32 * FRAME_OVERLAY_CHAR_ADVANCE);
+                + cell * (FRAME_OVERLAY_PADDING + char_index as f32 * FRAME_OVERLAY_CHAR_ADVANCE);
             for (glyph_row, bits) in rows.iter().copied().enumerate() {
                 let mut column = 0usize;
                 while column < FRAME_OVERLAY_GLYPH_WIDTH {
@@ -832,7 +833,10 @@ fn debug_frame_overlay_paint(
                                 ScaledPixels(glyph_left + start as f32 * cell),
                                 ScaledPixels(row_top + glyph_row as f32 * cell),
                             ),
-                            size(ScaledPixels((column - start) as f32 * cell), ScaledPixels(cell)),
+                            size(
+                                ScaledPixels((column - start) as f32 * cell),
+                                ScaledPixels(cell),
+                            ),
                         ),
                         mask.clone(),
                         foreground,

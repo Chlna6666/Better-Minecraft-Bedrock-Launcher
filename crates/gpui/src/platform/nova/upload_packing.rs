@@ -398,7 +398,7 @@ pub(super) fn write_monochrome_sprite(bytes: &mut Vec<u8>, sprite: &MonochromeSp
 
 pub(super) fn write_polychrome_sprite(bytes: &mut Vec<u8>, sprite: &PolychromeSprite) {
     write_animation_slot_placeholder(bytes);
-    write_u32_vec(bytes, sprite.pad);
+    write_u32_vec(bytes, sprite.sampling);
     write_u32_vec(bytes, u32::from(sprite.grayscale));
     write_f32_vec(bytes, sprite.opacity);
     write_bounds_scaled(bytes, &sprite.bounds);

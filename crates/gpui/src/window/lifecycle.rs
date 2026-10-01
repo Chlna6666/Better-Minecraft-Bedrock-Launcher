@@ -154,7 +154,8 @@ impl Window {
         schedule_frame: bool,
     ) {
         if !bounds.is_empty() {
-            self.animation_dirty_region.push(bounds.scale(self.scale_factor));
+            self.animation_dirty_region
+                .push(bounds.scale(self.scale_factor));
         }
         self.idle_render_frames = 0;
         self.render_trim_policy = RetainedResourceTrimPolicy::None;
@@ -209,13 +210,11 @@ struct WindowInvalidatorInner {
     pub pending_layout_animation_frames: FxHashSet<(EntityId, GlobalElementId)>,
     /// Delayed layout-animation tickets keyed by the exact retained target. The earliest deadline
     /// wins; generation changes make superseded timers exit without touching retained state.
-    pub pending_layout_animation_deadlines:
-        FxHashMap<(EntityId, GlobalElementId), (Instant, u64)>,
+    pub pending_layout_animation_deadlines: FxHashMap<(EntityId, GlobalElementId), (Instant, u64)>,
     pub layout_animation_deadline_generation: u64,
     /// Snapshot consumed by the frame currently being generated.
     pub active_targeted_replay: bool,
-    pub active_targeted_elements:
-        FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
+    pub active_targeted_elements: FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
     pub active_generic_dirty_views: FxHashSet<EntityId>,
     /// Stable retained boundaries for explicitly cached AnyViews in the last committed frame.
     ///
@@ -376,8 +375,10 @@ impl WindowInvalidator {
                     .or_else(|| inner.cached_view_fallback_boundaries.get(&entity).copied());
 
                 if let Some(target_owner) = target_owner
-                    && let Some(targets) =
-                        inner.cached_view_retained_targets.get(&target_owner).cloned()
+                    && let Some(targets) = inner
+                        .cached_view_retained_targets
+                        .get(&target_owner)
+                        .cloned()
                     && !targets.is_empty()
                 {
                     // A non-cached dirty child is rebuilt by freshly rendering the nearest cached
@@ -1037,14 +1038,14 @@ mod retained_dirty_scope_tests {
         ));
         invalidator.set_dirty(false);
 
-        assert!(!invalidator.retained_path_is_dirty_for_view_route(
-            &descendant,
-            &|owner| owner == first_view,
-        ));
-        assert!(invalidator.retained_path_is_dirty_for_view_route(
-            &descendant,
-            &|owner| owner == second_view,
-        ));
+        assert!(
+            !invalidator
+                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == first_view,)
+        );
+        assert!(
+            invalidator
+                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == second_view,)
+        );
     }
 
     #[test]
@@ -1162,12 +1163,9 @@ mod retained_dirty_scope_tests {
             .expect("first delayed ticket");
 
         assert!(invalidator.arm_layout_animation_frame(entity, &target));
-        assert!(!invalidator.take_layout_animation_deadline(
-            entity,
-            &target,
-            deadline,
-            generation,
-        ));
+        assert!(
+            !invalidator.take_layout_animation_deadline(entity, &target, deadline, generation,)
+        );
     }
 
     #[test]

@@ -161,13 +161,8 @@ impl ToTaffy<taffy::style::Style> for LayoutStyle {
             unit: &Option<u16>,
         ) -> Vec<taffy::GridTemplateComponent<T>> {
             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
-            unit.map(|count| {
-                vec![repeat(
-                    count,
-                    vec![minmax(length(0.0_f32), fr(1.0_f32))],
-                )]
-            })
-            .unwrap_or_default()
+            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
+                .unwrap_or_default()
         }
 
         let has_grid =
@@ -309,9 +304,11 @@ impl ToTaffy<taffy::style::Dimension> for DefiniteLength {
 
 impl ToTaffy<taffy::style::LengthPercentage> for AbsoluteLength {
     fn to_taffy(&self, rem_size: Pixels, scale_factor: f32) -> taffy::style::LengthPercentage {
-        taffy::style::LengthPercentage::length(
-            <AbsoluteLength as ToTaffy<f32>>::to_taffy(self, rem_size, scale_factor),
-        )
+        taffy::style::LengthPercentage::length(<AbsoluteLength as ToTaffy<f32>>::to_taffy(
+            self,
+            rem_size,
+            scale_factor,
+        ))
     }
 }
 
@@ -418,10 +415,16 @@ mod tests {
     #[test]
     fn absolute_lengths_snap_before_taffy_layout() {
         let length = AbsoluteLength::Pixels(px(1.0));
-        assert_eq!(<AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.5), 1.0);
+        assert_eq!(
+            <AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.5),
+            1.0
+        );
 
         let length = AbsoluteLength::Pixels(px(1.6));
-        assert_eq!(<AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.0), 2.0);
+        assert_eq!(
+            <AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.0),
+            2.0
+        );
     }
 
     #[test]

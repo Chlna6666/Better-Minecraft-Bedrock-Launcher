@@ -116,11 +116,7 @@ impl Window {
     pub(crate) fn begin_retained_element(
         &mut self,
         identity: RetainedElementIdentity,
-    ) -> (
-        ElementId,
-        GlobalElementId,
-        SmallVec<[Rc<Cell<bool>>; 4]>,
-    ) {
+    ) -> (ElementId, GlobalElementId, SmallVec<[Rc<Cell<bool>>; 4]>) {
         let depth = self.retained_child_slot_stack.len();
         let slot = if let Some(next_slot) = self.retained_child_slot_stack.last_mut() {
             let slot = *next_slot;
@@ -165,9 +161,7 @@ impl Window {
             }
 
             let (segment, ambiguity) = match identity {
-                RetainedElementIdentity::Explicit(explicit_id) => {
-                    (explicit_id, SmallVec::new())
-                }
+                RetainedElementIdentity::Explicit(explicit_id) => (explicit_id, SmallVec::new()),
                 RetainedElementIdentity::Auto {
                     mount,
                     source,
@@ -183,10 +177,7 @@ impl Window {
                         let Some(parent) = scopes.active.last_mut() else {
                             return 0;
                         };
-                        let next = parent
-                            .auto_occurrences
-                            .entry(identity_token)
-                            .or_insert(0);
+                        let next = parent.auto_occurrences.entry(identity_token).or_insert(0);
                         let occurrence = *next;
                         *next = next.saturating_add(1);
                         occurrence
@@ -422,14 +413,7 @@ impl Window {
         text_raster_scale: f32,
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_scene_animation_impl(
-            animation_id,
-            property,
-            text_raster_scale,
-            None,
-            None,
-            paint,
-        )
+        self.with_scene_animation_impl(animation_id, property, text_raster_scale, None, None, paint)
     }
 
     pub(crate) fn with_scene_composite_animation<R>(
@@ -445,6 +429,7 @@ impl Window {
             crate::TransitionProperty::Transform
                 | crate::TransitionProperty::Rotation
                 | crate::TransitionProperty::ClipReveal
+                | crate::TransitionProperty::Translation
         ));
         self.with_scene_animation_impl(
             animation_id,
@@ -466,7 +451,7 @@ impl Window {
     ) -> R {
         self.with_scene_animation_impl(
             animation_id,
-            crate::TransitionProperty::Blur,
+            crate::TransitionProperty::FilterBlur,
             text_raster_scale,
             Some(capture_bounds),
             Some((capture_bounds, max_radius_device)),
@@ -499,19 +484,9 @@ impl Window {
                 self.current_retained_element_id(),
             )
         {
-            let invalidator = self.invalidator.clone();
             self.animation_engine
                 .borrow_mut()
-                .set_scene_animation_completion_invalidation(
-                    animation_id,
-                    Rc::new(move || {
-                        let _ = invalidator.invalidate_retained_path(
-                            view_id,
-                            Some(&retained_id),
-                            true,
-                        );
-                    }),
-                );
+                .set_scene_animation_completion_invalidation(animation_id, view_id, retained_id);
         }
 
         let text_raster_scale = match completed_text_raster_scale {
@@ -543,7 +518,7 @@ impl Window {
                 // paint_composite_layer temporarily removes the promoted parent animation while
                 // capturing. Re-enter through the property-specific path so child bounds/blur
                 // metadata are not lost merely because this animation is nested.
-                if property == crate::TransitionProperty::Blur
+                if property == crate::TransitionProperty::FilterBlur
                     && let Some((blur_bounds, max_radius_device)) = blur_capture
                 {
                     window.with_scene_blur_animation(
@@ -558,7 +533,9 @@ impl Window {
                     crate::TransitionProperty::Transform
                         | crate::TransitionProperty::Rotation
                         | crate::TransitionProperty::ClipReveal
-                ) {
+                ) || property == crate::TransitionProperty::Translation
+                    && subtree_capture_bounds.is_some()
+                {
                     window.with_scene_composite_animation(
                         animation_id,
                         property,
@@ -579,7 +556,7 @@ impl Window {
         // animation. Radius sampling is clamped to that endpoint interval; retained frames upload
         // only the dense animation-value sidecar while the primitive, pass descriptors and targets
         // remain byte-for-byte stable.
-        if property == crate::TransitionProperty::Blur {
+        if property == crate::TransitionProperty::FilterBlur {
             const MIN_SIGMA: f32 = 1.0 / 4096.0;
             let (capture_bounds, max_radius_device) = blur_capture.unwrap_or_else(|| {
                 let scale = (self.scale_factor() * self.visual_scale()).abs();
@@ -598,15 +575,17 @@ impl Window {
             return result;
         }
 
-        // Subtree transforms and reveals must bind to one zero-filter retained composite so
-        // backgrounds, paths, images, SVGs and text share one sample. Path, underline and surface
-        // primitives do not carry direct scene animation ids.
+        // Subtree transforms, reveals and explicitly clipped translations bind to one retained
+        // composite so backgrounds, paths, images, SVGs and text share one sample. Path, underline
+        // and surface primitives do not carry direct scene animation ids.
         if matches!(
             property,
             crate::TransitionProperty::Transform
                 | crate::TransitionProperty::Rotation
                 | crate::TransitionProperty::ClipReveal
-        ) {
+        ) || property == crate::TransitionProperty::Translation
+            && subtree_capture_bounds.is_some()
+        {
             let previous_animation = self.scene_animation.replace((animation_id, property));
             let capture_bounds =
                 subtree_capture_bounds.unwrap_or_else(|| self.content_mask().bounds);

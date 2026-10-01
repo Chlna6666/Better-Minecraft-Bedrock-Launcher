@@ -106,28 +106,25 @@ impl Render for FrameLocalBoundaryRoot {
         // bounds (which correctly requires a cache miss).
         let mut variable = crate::div().absolute().flex().flex_col();
         for _ in 0..self.variable_primitives {
-            variable = variable.child(
-                crate::div()
-                    .w(px(1.))
-                    .h(px(1.))
-                    .bg(crate::white()),
-            );
+            variable = variable.child(crate::div().w(px(1.)).h(px(1.)).bg(crate::white()));
         }
 
         crate::div()
             // Keep each AnyView below a normal retained ancestor. The regression was not just direct
             // AnyView replay: an unrelated ancestor could previously replay across the cache boundary
             // and skip CachedView::prepaint/paint, leaving its absolute frame-local ranges stale.
-            .child(crate::div().child(
-                AnyView::from(self.before.clone()).cached(StyleRefinement::default()),
-            ))
+            .child(
+                crate::div()
+                    .child(AnyView::from(self.before.clone()).cached(StyleRefinement::default())),
+            )
             .child(CapturedVariableDiv {
                 inner: variable,
                 path: self.variable_path.clone(),
             })
-            .child(crate::div().child(
-                AnyView::from(self.after.clone()).cached(StyleRefinement::default()),
-            ))
+            .child(
+                crate::div()
+                    .child(AnyView::from(self.after.clone()).cached(StyleRefinement::default())),
+            )
     }
 }
 

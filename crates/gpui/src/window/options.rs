@@ -422,7 +422,7 @@ pub enum WindowAppearance {
 
 /// The appearance of the background of the window itself, when there is
 /// no content or the content is transparent.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum WindowBackgroundAppearance {
     /// Opaque.
     ///
@@ -439,4 +439,78 @@ pub enum WindowBackgroundAppearance {
     ///
     /// Not always supported.
     Blurred,
+    /// The native main-window material (Mica on supported Windows versions).
+    ///
+    /// Other platforms use native background blur, or plain transparency when unavailable.
+    Mica,
+    /// The native tabbed-window material (Mica Alt on supported Windows versions).
+    ///
+    /// Other platforms use native background blur, or plain transparency when unavailable.
+    MicaAlt,
+}
+
+/// Native window materials advertised by the window's platform/compositor.
+///
+/// Opaque and plain transparent backgrounds are always available. These capabilities describe
+/// accepted native requests, not a guarantee of pixels: system accessibility and compositor
+/// policies may replace a material. They can change during the window's lifetime.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowBackgroundCapabilities {
+    /// Whether native background blur can be requested.
+    pub blurred: bool,
+    /// Whether the native main-window material can be requested without substitution.
+    pub mica: bool,
+    /// Whether the native tabbed-window material can be requested without substitution.
+    pub mica_alt: bool,
+}
+
+impl WindowBackgroundCapabilities {
+    /// Whether this appearance can be requested without a material substitution.
+    pub fn supports(self, appearance: WindowBackgroundAppearance) -> bool {
+        match appearance {
+            WindowBackgroundAppearance::Opaque | WindowBackgroundAppearance::Transparent => true,
+            WindowBackgroundAppearance::Blurred => self.blurred,
+            WindowBackgroundAppearance::Mica => self.mica,
+            WindowBackgroundAppearance::MicaAlt => self.mica_alt,
+        }
+    }
+
+    pub(crate) fn resolve(self, requested: WindowBackgroundAppearance) -> WindowBackgroundAppearance {
+        if self.supports(requested) {
+            requested
+        } else if self.blurred {
+            WindowBackgroundAppearance::Blurred
+        } else {
+            WindowBackgroundAppearance::Transparent
+        }
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::{WindowBackgroundAppearance as Appearance, WindowBackgroundCapabilities};
+
+    #[test]
+    fn unsupported_materials_fall_back_without_changing_plain_backgrounds() {
+        let none = WindowBackgroundCapabilities::default();
+        assert_eq!(none.resolve(Appearance::Opaque), Appearance::Opaque);
+        assert_eq!(none.resolve(Appearance::Transparent), Appearance::Transparent);
+        for material in [Appearance::Blurred, Appearance::Mica, Appearance::MicaAlt] {
+            assert!(!none.supports(material));
+            assert_eq!(none.resolve(material), Appearance::Transparent);
+        }
+        let blur = WindowBackgroundCapabilities {
+            blurred: true,
+            ..none
+        };
+        assert_eq!(blur.resolve(Appearance::Mica), Appearance::Blurred);
+        assert_eq!(blur.resolve(Appearance::MicaAlt), Appearance::Blurred);
+        let mica = WindowBackgroundCapabilities {
+            mica: true,
+            mica_alt: true,
+            ..blur
+        };
+        assert_eq!(mica.resolve(Appearance::Mica), Appearance::Mica);
+        assert_eq!(mica.resolve(Appearance::MicaAlt), Appearance::MicaAlt);
+    }
 }

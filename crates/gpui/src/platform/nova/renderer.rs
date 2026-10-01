@@ -1,4 +1,6 @@
 use super::*;
+use crate::platform::frame::ActivePresentationFrame;
+use smallvec::SmallVec;
 
 mod chunk_upload;
 mod custom_mesh_pipeline;
@@ -38,10 +40,18 @@ fn surface_alpha_allows_partial_presentation(surface_alpha: SurfaceAlphaState) -
 }
 
 pub(super) fn nova_present_mode_for_backend(
-    _backend: RendererBackend,
+    backend: RendererBackend,
     renderer_options: &RendererOptions,
 ) -> gfx_core::PresentMode {
     match renderer_options.present_mode {
+        // Windows already paces the native owner with DwmFlush. Asking DXGI to wait for another
+        // vblank after that wake can halve the display cadence. Mailbox maps to Present(0, 0),
+        // without ALLOW_TEARING; DWM remains the pacing authority for the composed surface.
+        PresentModePreference::AutoVsync
+            if cfg!(target_os = "windows") && backend == RendererBackend::NovaDx12 =>
+        {
+            gfx_core::PresentMode::Mailbox
+        }
         PresentModePreference::AutoVsync => gfx_core::PresentMode::Fifo,
         PresentModePreference::Mailbox => gfx_core::PresentMode::Mailbox,
         PresentModePreference::Immediate => gfx_core::PresentMode::Immediate,
@@ -150,6 +160,8 @@ pub(crate) struct NovaRenderer {
     first_frame_reported: bool,
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
+    active_presentation_packet: Option<PresentationPacket>,
+    pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
 }
 
 #[derive(Clone, Copy)]
@@ -213,25 +225,33 @@ impl NovaRenderer {
         self.backend.can_present_without_wait(self.swapchain)
     }
 
-    pub(crate) fn draw(&mut self, packet: PresentationPacket) -> Result<()> {
+    pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
+        self.pending_animation_completions
+            .extend(packet.sample_animations(packet.frame_time));
         let started_at = Instant::now();
-        let result = self.draw_frame(packet);
+        let mut presentation_timing = None;
+        let result = self.draw_frame(&mut packet, &mut presentation_timing);
+        self.active_presentation_packet = Some(packet);
         let elapsed = started_at.elapsed();
         crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
         crate::diagnostics::performance_metrics::record_first_frame_backend_draw_time(elapsed);
         result
     }
 
-    fn draw_frame(&mut self, packet: PresentationPacket) -> Result<()> {
+    fn draw_frame(
+        &mut self,
+        packet: &mut PresentationPacket,
+        presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<bool> {
         if !self.apply_pending_drawable_size()? {
-            return Ok(());
+            return Ok(false);
         }
         self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
             && self.backend.supports_partial_presentation(self.swapchain);
-        let packet = resolve_surface_packet(packet, !supports_partial);
-        let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
+        resolve_surface_packet(packet, !supports_partial);
+        let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
             packet.scene.as_ref(),
             packet.presentation_animation_values.as_slice(),
@@ -242,8 +262,7 @@ impl NovaRenderer {
             self.ensure_backdrop_blur_targets()?;
         }
         self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, &packet, backdrop_blur_quality)?;
-        Ok(())
+        self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
     }
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
@@ -320,29 +339,80 @@ impl NovaRenderer {
 
     pub(crate) fn present_framebuffer_only(
         &mut self,
-        packet: PresentationPacket,
-    ) -> Result<()> {
-        if !self.apply_pending_drawable_size()? {
-            return Ok(());
+        mut packet: PresentationPacket,
+    ) -> Result<bool> {
+        self.pending_animation_completions
+            .extend(packet.sample_animations(packet.frame_time));
+        let result = (|| {
+            if !self.apply_pending_drawable_size()? {
+                return Ok(false);
+            }
+            self.observe_presentation_packet(&packet);
+            let supports_partial = self.swapchain_warmup_frames == 0
+                && surface_alpha_allows_partial_presentation(self.surface_alpha)
+                && self.backend.supports_partial_presentation(self.swapchain);
+            resolve_surface_packet(&mut packet, !supports_partial);
+            let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
+            let upload = self.pack_scene(
+                packet.scene.as_ref(),
+                packet.presentation_animation_values.as_slice(),
+                backdrop_blur_quality,
+            );
+            self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
+            if !self.frame_upload.backdrop_blurs.is_empty() {
+                self.ensure_backdrop_blur_targets()?;
+            }
+            self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
+            let mut presentation_timing = None;
+            self.draw_present(
+                upload,
+                &mut packet,
+                backdrop_blur_quality,
+                &mut presentation_timing,
+            )
+        })();
+        self.active_presentation_packet = Some(packet);
+        result
+    }
+
+    /// Present the active immutable scene using a compositor-owned frame timestamp.
+    pub(crate) fn present_active_frame(
+        &mut self,
+        now: Instant,
+        presentation_timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<Option<ActivePresentationFrame>> {
+        let Some(mut packet) = self.active_presentation_packet.take() else {
+            return Ok(None);
+        };
+        if !packet.has_pending_presentation() {
+            self.active_presentation_packet = Some(packet);
+            return Ok(None);
         }
-        self.observe_presentation_packet(&packet);
-        let supports_partial = self.swapchain_warmup_frames == 0
-            && surface_alpha_allows_partial_presentation(self.surface_alpha)
-            && self.backend.supports_partial_presentation(self.swapchain);
-        let packet = resolve_surface_packet(packet, !supports_partial);
-        let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
-        let upload = self.pack_scene(
-            packet.scene.as_ref(),
-            packet.presentation_animation_values.as_slice(),
-            backdrop_blur_quality,
-        );
-        self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
-        if !self.frame_upload.backdrop_blurs.is_empty() {
-            self.ensure_backdrop_blur_targets()?;
+        self.pending_animation_completions
+            .extend(packet.sample_animations(now));
+        let continues = !packet.presentation_animation_timelines.is_empty();
+        let mut presentation_timing = presentation_timing;
+        let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
+        self.active_presentation_packet = Some(packet);
+        if !draw_result? {
+            return Ok(None);
         }
-        self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
-        self.draw_present(upload, &packet, backdrop_blur_quality)?;
-        Ok(())
+        Ok(Some(ActivePresentationFrame {
+            continues,
+            completed_animations: self.take_animation_completions(),
+        }))
+    }
+
+    pub(crate) fn has_active_presentation_animations(&self) -> bool {
+        self.active_presentation_packet
+            .as_ref()
+            .is_some_and(PresentationPacket::has_pending_presentation)
+    }
+
+    pub(crate) fn take_animation_completions(
+        &mut self,
+    ) -> SmallVec<[crate::SceneAnimationCompletion; 4]> {
+        std::mem::take(&mut self.pending_animation_completions)
     }
 
     pub(crate) fn gpu_specs(&self) -> GpuSpecs {
@@ -411,6 +481,7 @@ impl NovaRenderer {
     }
 
     pub(crate) fn destroy(&mut self) {
+        self.active_presentation_packet = None;
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
@@ -418,8 +489,7 @@ impl NovaRenderer {
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
         self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
-        self.draw_step_scratch.backdrop_blur_damage_plan =
-            packet.backdrop_blur_damage_plan.clone();
+        self.draw_step_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
         self.draw_step_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
             self.backdrop_blur_cache_valid,
             packet.force_full_backdrop_blur_refresh,

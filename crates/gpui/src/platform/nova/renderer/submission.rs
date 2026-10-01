@@ -40,8 +40,7 @@ impl NovaRenderer {
         const CLOCK_BYTES: usize = 8;
 
         let seconds = crate::animation::presentation_clock_seconds_now();
-        let tick_60hz =
-            ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
+        let tick_60hz = ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
         let mut bytes = [0_u8; CLOCK_BYTES];
         bytes[..4].copy_from_slice(&seconds.to_ne_bytes());
         bytes[4..].copy_from_slice(&tick_60hz.to_ne_bytes());
@@ -272,25 +271,11 @@ impl NovaRenderer {
         depth_attachment: Option<RenderPassDepthAttachment>,
         frame_resource_index: usize,
         damage: Option<ScissorRect>,
-    ) -> Result<()>
+    ) -> Result<Option<gfx_core::PresentationFrame>>
     where
         D: BackendPresentationCompat + BackendQueue,
     {
-        if submission_mode == GpuSubmissionMode::Synchronous
-            || !async_capabilities.async_presentation
-        {
-            device.render_step_list_and_present_with_damage_compat(
-                swapchain,
-                render_pass,
-                RenderStepList::from_render_steps(steps),
-                clear_color,
-                depth_attachment,
-                damage,
-            )?;
-            return Ok(());
-        }
-
-        let submission = device.render_step_list_and_present_deferred_with_damage_compat(
+        let mut frame = device.render_step_list_and_present_deferred_with_damage_measured(
             swapchain,
             render_pass,
             RenderStepList::from_render_steps(steps),
@@ -298,13 +283,24 @@ impl NovaRenderer {
             depth_attachment,
             damage,
         )?;
-        if is_real_submission(submission) {
+
+        let use_deferred_submission = submission_mode != GpuSubmissionMode::Synchronous
+            && async_capabilities.async_presentation;
+        if !use_deferred_submission {
+            if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
+                let wait_started = Instant::now();
+                gfx_core::GfxSubmissionDevice::wait_submission(device, submission)?;
+                if let Some(timings) = frame.as_mut().and_then(|frame| frame.timings.as_mut()) {
+                    timings.submission_wait = wait_started.elapsed();
+                }
+            }
+        } else if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
             pending_submissions.push(PendingSubmission {
                 submission,
                 frame_resource_index,
             });
         }
-        Ok(())
+        Ok(frame)
     }
 
     pub(super) fn presentation_submission_mode(&self) -> GpuSubmissionMode {
@@ -323,8 +319,4 @@ impl NovaRenderer {
         }
         anyhow::bail!("no available nova frame resource slot")
     }
-}
-
-fn is_real_submission(submission: SubmissionId) -> bool {
-    submission.raw() != 0
 }

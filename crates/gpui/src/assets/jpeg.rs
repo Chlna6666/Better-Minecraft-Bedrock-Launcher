@@ -121,7 +121,7 @@ fn jpeg_orientation(bytes: &[u8]) -> Orientation {
         offset += 1;
 
         match marker {
-            0xd9 | 0xda => break, // EOI / SOS
+            0xd9 | 0xda => break,           // EOI / SOS
             0x01 | 0xd0..=0xd7 => continue, // TEM / restart markers have no payload length.
             0x00 => break,
             _ => {}
@@ -194,7 +194,6 @@ fn jpeg_pixels_to_rgba_image(pixels: &[u8], info: jpeg_decoder::ImageInfo) -> Re
         .ok_or_else(|| anyhow::anyhow!("JPEG decoded buffer dimensions were invalid"))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,13 +201,32 @@ mod tests {
     fn jpeg_with_little_endian_orientation(value: u16) -> Vec<u8> {
         // TIFF header + one IFD entry for tag 0x0112 (Orientation), type SHORT, count 1.
         let mut exif = vec![
-            b'I', b'I', 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00,
-            0x01, 0x00,
-            0x12, 0x01,
-            0x03, 0x00,
-            0x01, 0x00, 0x00, 0x00,
-            value as u8, (value >> 8) as u8, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            b'I',
+            b'I',
+            0x2a,
+            0x00,
+            0x08,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+            0x00,
+            0x12,
+            0x01,
+            0x03,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            value as u8,
+            (value >> 8) as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
         ];
         let mut payload = b"Exif\0\0".to_vec();
         payload.append(&mut exif);

@@ -77,9 +77,7 @@ impl TabStopMap {
         }
 
         let by_id_target = Self::MIN_RETAINED_CAPACITY.max(current.by_id.len());
-        if self.by_id.capacity()
-            > by_id_target.saturating_mul(Self::TRIM_WATERMARK_MULTIPLIER)
-        {
+        if self.by_id.capacity() > by_id_target.saturating_mul(Self::TRIM_WATERMARK_MULTIPLIER) {
             self.by_id.shrink_to(by_id_target);
         }
     }

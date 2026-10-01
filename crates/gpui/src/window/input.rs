@@ -1,7 +1,7 @@
 use super::state::{FrameRequestReason, InputModality};
 use super::*;
-use crate::{ExternalPaths, TouchEvent, TouchPhase};
 use crate::gestures::RecognizedTouchGesture;
+use crate::{ExternalPaths, TouchEvent, TouchPhase};
 
 mod window_control;
 
@@ -257,7 +257,10 @@ impl Window {
         self.default_prevented = false;
 
         if input_modality_changed && self.has_completed_rendered_frame {
-            if matches!(&event, PlatformInput::KeyDown(_) | PlatformInput::MouseMove(_)) {
+            if matches!(
+                &event,
+                PlatformInput::KeyDown(_) | PlatformInput::MouseMove(_)
+            ) {
                 // KeyDown only suppresses pointer hover, while a real MouseMove legitimately
                 // restores it. Re-run framework-owned hover-transition listeners without forcing
                 // every cached view through MissRefresh.
@@ -329,11 +332,7 @@ impl Window {
                         // additional files are discovered. Keep ExternalPaths latest-wins so
                         // DragMoveEvent::drag() and the eventual on_drop handler see the complete
                         // batch instead of the first path that entered the window.
-                        if active_drag
-                            .value
-                            .downcast_ref::<ExternalPaths>()
-                            .is_some()
-                        {
+                        if active_drag.value.downcast_ref::<ExternalPaths>().is_some() {
                             active_drag.value = Arc::new(paths);
                         }
                     } else {
@@ -494,11 +493,7 @@ impl Window {
         }
     }
 
-    fn dispatch_recognized_touch_gesture(
-        &mut self,
-        gesture: RecognizedTouchGesture,
-        cx: &mut App,
-    ) {
+    fn dispatch_recognized_touch_gesture(&mut self, gesture: RecognizedTouchGesture, cx: &mut App) {
         match gesture {
             RecognizedTouchGesture::Scroll(scroll) => {
                 self.mouse_position = scroll.position;

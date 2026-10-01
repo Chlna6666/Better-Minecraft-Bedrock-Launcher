@@ -1,12 +1,13 @@
-use crate::{
-    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId, FontMetrics,
-    FontRun, FontStyle, FontWeight, GlyphId, GlyphRasterization, LineLayout, MissingGlyph,
-    MissingGlyphSink, Pixels, PlatformTextSystem, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, point, size,
-};
 use crate::text_system::script::{
     text_cluster_properties, text_cluster_properties_for_char, text_font_coverage_probe_character,
     text_uses_stable_vertical_raster_frame,
+};
+use crate::{
+    Bounds, DevicePixels, FallbackFontClass, Font, FontFallbacks, FontFeatures, FontId,
+    FontMetrics, FontRun, FontStyle, FontWeight, GlyphId, GlyphRasterization, LineLayout,
+    MissingGlyph, MissingGlyphSink, Pixels, PlatformTextSystem, Point, RenderGlyphParams,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, point,
+    size,
 };
 use anyhow::{Context as _, Ok, Result};
 use collections::HashMap;
@@ -19,6 +20,8 @@ use cosmic_text::{
 
 use parking_lot::RwLock;
 use smallvec::SmallVec;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::{
     borrow::Cow,
     collections::{
@@ -29,8 +32,6 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-#[cfg(target_os = "linux")]
-use std::sync::OnceLock;
 use unicode_segmentation::UnicodeSegmentation;
 #[cfg(target_os = "windows")]
 use windows::Win32::{
@@ -431,8 +432,7 @@ impl CosmicTextSystemState {
             changed = true;
         }
 
-        let resolved_family: SharedString =
-            resolved_platform_font_name(&self.font_system).into();
+        let resolved_family: SharedString = resolved_platform_font_name(&self.font_system).into();
         if self.platform_font_family != resolved_family {
             self.platform_font_family = resolved_family.clone();
             self.font_system
@@ -461,7 +461,9 @@ impl CosmicTextSystemState {
                 .filter(|path| path.is_file())
                 .collect::<Vec<_>>();
             if let Err(error) = self.add_font_paths(paths) {
-                log::warn!("gpui_system_font_fallback: failed to load Windows targeted fallback fonts: {error}");
+                log::warn!(
+                    "gpui_system_font_fallback: failed to load Windows targeted fallback fonts: {error}"
+                );
             }
         }
     }
@@ -550,11 +552,14 @@ impl CosmicTextSystemState {
         }
 
         let best_face = probe_character
-            .and_then(|character| best_system_text_fallback_face_for_character(&self.font_system, character))
+            .and_then(|character| {
+                best_system_text_fallback_face_for_character(&self.font_system, character)
+            })
             .or_else(|| self.system_coverage_fallback_face());
         if let Some(best_face) = best_face
             && !best_face.family.eq_ignore_ascii_case(primary_family)
-            && let Some(fallback) = self.load_system_fallback_face(&best_face, features, probe_character)
+            && let Some(fallback) =
+                self.load_system_fallback_face(&best_face, features, probe_character)
         {
             return Arc::from(vec![fallback]);
         }
@@ -563,24 +568,29 @@ impl CosmicTextSystemState {
     }
 
     fn ensure_automatic_system_fallback_for_text(&mut self, font_id: FontId, text: &str) {
-        let Some((features, primary_family, probe_character)) = self.loaded_fonts.get(font_id.0).and_then(|font| {
-            if !font.automatic_system_fallback_pending {
-                return None;
-            }
+        let Some((features, primary_family, probe_character)) =
+            self.loaded_fonts.get(font_id.0).and_then(|font| {
+                if !font.automatic_system_fallback_pending {
+                    return None;
+                }
 
-            let probe_character = first_missing_font_coverage_probe(text, |character| {
-                font.font.as_swash().charmap().map(character) != 0
-            })?;
-            let face = self.font_system.db().face(font.font.id())?;
-            let family = face.families.first()?.0.clone();
-            Some((font.source_features.clone(), family, probe_character))
-        }) else {
+                let probe_character = first_missing_font_coverage_probe(text, |character| {
+                    font.font.as_swash().charmap().map(character) != 0
+                })?;
+                let face = self.font_system.db().face(font.font.id())?;
+                let family = face.families.first()?.0.clone();
+                Some((font.source_features.clone(), family, probe_character))
+            })
+        else {
             return;
         };
 
         self.load_platform_targeted_fallback_fonts();
-        let fallback_chain =
-            self.automatic_system_fallback_chain(&features, primary_family.as_str(), Some(probe_character));
+        let fallback_chain = self.automatic_system_fallback_chain(
+            &features,
+            primary_family.as_str(),
+            Some(probe_character),
+        );
         if let Some(font) = self.loaded_fonts.get_mut(font_id.0) {
             font.user_fallback_chain = fallback_chain;
             font.automatic_system_fallback_pending = false;
@@ -1007,7 +1017,10 @@ impl CosmicTextSystemState {
         Some(swash_image_bounds(&image))
     }
 
-    fn stable_vertical_raster_frame(&mut self, params: &RenderGlyphParams) -> StableVerticalRasterFrame {
+    fn stable_vertical_raster_frame(
+        &mut self,
+        params: &RenderGlyphParams,
+    ) -> StableVerticalRasterFrame {
         let key = StableVerticalFrameKey {
             font_id: params.font_id,
             font_size_bits: params.font_size.0.to_bits(),
@@ -1182,18 +1195,17 @@ impl CosmicTextSystemState {
             let primary_cache_key_flags = loaded_font.cache_key_flags;
             let primary_features = loaded_font.features.clone();
             let fallback_chain = Arc::clone(&loaded_font.user_fallback_chain);
-            let fallback_trace_families = if script_text_trace_enabled()
-                && !fallback_chain.is_empty()
-            {
-                Some(
-                    fallback_chain
-                        .iter()
-                        .map(|(_, family)| family.to_string())
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                None
-            };
+            let fallback_trace_families =
+                if script_text_trace_enabled() && !fallback_chain.is_empty() {
+                    Some(
+                        fallback_chain
+                            .iter()
+                            .map(|(_, family)| family.to_string())
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    None
+                };
 
             let primary_attrs = Attrs::new()
                 .metadata(run.font_id.0)
@@ -1323,7 +1335,8 @@ impl CosmicTextSystemState {
                 continue;
             }
             let cluster_text = text.get(glyph.start..glyph.end).unwrap_or_default();
-            let uses_stable_vertical_raster_frame = text_uses_stable_vertical_raster_frame(cluster_text);
+            let uses_stable_vertical_raster_frame =
+                text_uses_stable_vertical_raster_frame(cluster_text);
             if trace_script_text
                 && text_font_coverage_probe_character(cluster_text).is_some()
                 && let Some(face) = self.font_system.db().face(loaded_font.font.id())
@@ -1744,7 +1757,9 @@ fn best_system_text_fallback_face_for_character(
         .db()
         .faces()
         .filter(|face| FontSourceSelection::SystemOnly.matches(&face.source))
-        .filter(|face| face_allowed_for_text_fallback(&face.post_script_name, Some(probe_character)))
+        .filter(|face| {
+            face_allowed_for_text_fallback(&face.post_script_name, Some(probe_character))
+        })
         .filter_map(|face| {
             let score = system_text_coverage_score(font_system, face, Some(probe_character));
             let family = face.families.first()?.0.clone();
@@ -1783,10 +1798,13 @@ fn system_text_coverage_score(
             let charmap = font.charmap();
             if let Some(character) = probe_character {
                 return if charmap.map(character) != 0 {
-                    1_000 + SYSTEM_FALLBACK_COVERAGE_SAMPLE
-                        .iter()
-                        .filter_map(|(sample, weight)| (charmap.map(*sample) != 0).then_some(*weight))
-                        .sum::<u32>()
+                    1_000
+                        + SYSTEM_FALLBACK_COVERAGE_SAMPLE
+                            .iter()
+                            .filter_map(|(sample, weight)| {
+                                (charmap.map(*sample) != 0).then_some(*weight)
+                            })
+                            .sum::<u32>()
                 } else {
                     0
                 };
@@ -1903,8 +1921,8 @@ fn copy_mask_to_frame(
         usize::try_from(source_bounds.size.width.0).context("invalid source glyph bitmap width")?;
     let source_height = usize::try_from(source_bounds.size.height.0)
         .context("invalid source glyph bitmap height")?;
-    let frame_width =
-        usize::try_from(frame_bounds.size.width.0).context("invalid stable vertical frame bitmap width")?;
+    let frame_width = usize::try_from(frame_bounds.size.width.0)
+        .context("invalid stable vertical frame bitmap width")?;
     let frame_height = usize::try_from(frame_bounds.size.height.0)
         .context("invalid stable vertical frame bitmap height")?;
     let expected_source_len = source_width
@@ -2623,7 +2641,10 @@ mod tests {
 
                 for run in &layout.runs {
                     for glyph in &run.glyphs {
-                        assert!(glyph.is_cjk, "test glyph should use stable vertical raster frame");
+                        assert!(
+                            glyph.is_cjk,
+                            "test glyph should use stable vertical raster frame"
+                        );
                         glyph_count += 1;
                         let params = RenderGlyphParams {
                             font_id: run.font_id,

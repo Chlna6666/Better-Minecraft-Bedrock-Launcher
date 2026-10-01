@@ -2,7 +2,7 @@
 
 struct PolychromeSprite {
     animation_slot: u32,
-    pad: u32,
+    sampling: u32,
     grayscale: u32,
     opacity: f32,
     bounds: Bounds,
@@ -25,6 +25,7 @@ struct PolySpriteVarying {
     @location(8) @interpolate(flat) tile_origin: vec2<i32>,
     @location(9) @interpolate(flat) tile_size: vec2<i32>,
     @location(10) @interpolate(flat) texture_kind: u32,
+    @location(11) @interpolate(flat) sampling: u32,
 }
 
 @vertex
@@ -54,6 +55,7 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     out.tile_origin = vec2<i32>(sprite.tile.bounds.origin);
     out.tile_size = max(vec2<i32>(1), vec2<i32>(sprite.tile.bounds.size));
     out.texture_kind = sprite.tile.texture_id.kind;
+    out.sampling = sprite.sampling;
     return out;
 }
 
@@ -77,7 +79,7 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     }
 
     var sample: vec4<f32>;
-    if (input.texture_kind == 2u) {
+    if (input.sampling == 1u || input.texture_kind == 2u) {
         let atlas_size = max(vec2<i32>(1), vec2<i32>(textureDimensions(t_sprite, 0)));
         let requested_texel = vec2<i32>(floor(input.tile_position * vec2<f32>(atlas_size)));
         let tile_max = input.tile_origin + input.tile_size - vec2<i32>(1);

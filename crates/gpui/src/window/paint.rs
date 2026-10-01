@@ -188,15 +188,17 @@ impl Window {
                     | crate::TransitionProperty::Transform
                     | crate::TransitionProperty::Translation
                     | crate::TransitionProperty::Rotation
-                    | crate::TransitionProperty::Blur
+                    | crate::TransitionProperty::FilterBlur
                     | crate::TransitionProperty::ClipReveal
             )
             .then_some((animation_id, property))
         });
+        let blur_bounds = self.visual_bounds(bounds).scale(scale_factor);
+        let content_mask = self.visual_content_mask().scale(scale_factor);
         self.next_frame.scene.begin_blur(crate::scene::BlurCapture {
             animation_id: composite_animation.map(|(animation_id, _)| animation_id),
-            bounds: self.visual_bounds(bounds).scale(scale_factor),
-            content_mask: self.visual_content_mask().scale(scale_factor),
+            bounds: blur_bounds,
+            content_mask,
             radius: ScaledPixels(sigma * scale_factor * visual_scale),
             opacity: previous_opacity,
         });
@@ -233,15 +235,18 @@ impl Window {
         for shadow in shadows {
             let shadow_bounds = (bounds + shadow.offset).dilate(shadow.spread_radius);
             let shadow_bounds = self.visual_bounds(shadow_bounds);
+            let animation_id = self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+                crate::TransitionProperty::HorizontalEdgeFirst,
+                crate::TransitionProperty::HorizontalEdgeSecond,
+            ]);
             self.next_frame.scene.insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor * visual_scale),
-                animation_id: self.scene_animation_id_for(&[
-                    crate::TransitionProperty::Opacity,
-                    crate::TransitionProperty::Scale,
-                    crate::TransitionProperty::Transform,
-                    crate::TransitionProperty::Translation,
-                ]),
+                animation_id,
                 bounds: shadow_bounds.scale(scale_factor),
                 content_mask: content_mask.scale(scale_factor),
                 corner_radii: corner_radii.scale(scale_factor * visual_scale),
@@ -280,6 +285,8 @@ impl Window {
                 crate::TransitionProperty::Scale,
                 crate::TransitionProperty::Transform,
                 crate::TransitionProperty::Translation,
+                crate::TransitionProperty::HorizontalEdgeFirst,
+                crate::TransitionProperty::HorizontalEdgeSecond,
             ])
         });
         let quad = Quad {
@@ -378,11 +385,8 @@ impl Window {
         path.color = color.opacity(opacity);
         let transform = self.element_visual_transform;
         let translation = transform.translation.map(|value| value.scale(scale_factor));
-        let mut path = path.scale_and_transform_for_paint(
-            scale_factor,
-            transform.scale,
-            translation,
-        );
+        let mut path =
+            path.scale_and_transform_for_paint(scale_factor, transform.scale, translation);
         path.content_mask = content_mask.scale(scale_factor);
         self.next_frame.scene.insert_primitive(path);
     }
@@ -411,17 +415,19 @@ impl Window {
         let content_mask = self.visual_content_mask();
         let visual_scale = self.visual_scale();
         let element_opacity = self.element_opacity();
+        let animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
+        let bounds = self.visual_bounds(bounds).scale(scale_factor);
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
-            animation_id: self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]),
-            bounds: self.visual_bounds(bounds).scale(scale_factor),
+            animation_id,
+            bounds,
             content_mask: content_mask.scale(scale_factor),
             color: style
                 .color
@@ -453,17 +459,19 @@ impl Window {
         let content_mask = self.visual_content_mask();
         let visual_scale = self.visual_scale();
         let opacity = self.element_opacity();
+        let animation_id = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Opacity,
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
+        let bounds = self.visual_bounds(bounds).scale(scale_factor);
 
         self.next_frame.scene.insert_primitive(Underline {
             order: 0,
             pad: 0,
-            animation_id: self.scene_animation_id_for(&[
-                crate::TransitionProperty::Opacity,
-                crate::TransitionProperty::Scale,
-                crate::TransitionProperty::Transform,
-                crate::TransitionProperty::Translation,
-            ]),
-            bounds: self.visual_bounds(bounds).scale(scale_factor),
+            animation_id,
+            bounds,
             content_mask: content_mask.scale(scale_factor),
             thickness: style.thickness.scale(scale_factor * visual_scale),
             color: style.color.unwrap_or_default().opacity(opacity).into(),
@@ -501,6 +509,11 @@ impl Window {
         let visual_origin = self.visual_point(origin);
         let (_, subpixel_variant) =
             glyph_device_origin(visual_origin, Point::default(), scale_factor);
+        let geometry_animation = self.scene_animation_id_for(&[
+            crate::TransitionProperty::Scale,
+            crate::TransitionProperty::Transform,
+            crate::TransitionProperty::Translation,
+        ]);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -511,6 +524,7 @@ impl Window {
                 self.platform_window.background_appearance(),
                 self.next_frame.scene.is_capturing_blur(),
                 self.text_rendering_mode.get(),
+                geometry_animation.is_some(),
             ),
             is_emoji: false,
             is_cjk,
@@ -548,15 +562,16 @@ impl Window {
                     .map(|value| downsample_raster_pixel(value, scene_text_raster_scale)),
             };
             let content_mask = self.visual_content_mask().scale(scale_factor);
+            let animation_id = self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]);
             self.next_frame.scene.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: MonochromeSpriteSampling::Glyph as u32,
-                animation_id: self.scene_animation_id_for(&[
-                    crate::TransitionProperty::Opacity,
-                    crate::TransitionProperty::Scale,
-                    crate::TransitionProperty::Transform,
-                    crate::TransitionProperty::Translation,
-                ]),
+                animation_id,
                 bounds,
                 content_mask,
                 color: color.opacity(element_opacity).into(),
@@ -632,17 +647,18 @@ impl Window {
             };
             let content_mask = self.visual_content_mask().scale(scale_factor);
             let opacity = self.element_opacity();
+            let animation_id = self.scene_animation_id_for(&[
+                crate::TransitionProperty::Opacity,
+                crate::TransitionProperty::Scale,
+                crate::TransitionProperty::Transform,
+                crate::TransitionProperty::Translation,
+            ]);
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                sampling: 0,
                 grayscale: false,
-                animation_id: self.scene_animation_id_for(&[
-                    crate::TransitionProperty::Opacity,
-                    crate::TransitionProperty::Scale,
-                    crate::TransitionProperty::Transform,
-                    crate::TransitionProperty::Translation,
-                ]),
+                animation_id,
                 bounds,
                 corner_radii: Default::default(),
                 content_mask,
@@ -667,11 +683,18 @@ fn glyphs_require_grayscale_antialiasing(
     background_appearance: WindowBackgroundAppearance,
     is_capturing_blur: bool,
     requested_mode: TextRenderingMode,
+    has_geometry_animation: bool,
 ) -> bool {
     // Element blur captures and translucent windows do not have the opaque RGB destination that
     // ClearType-style coverage requires. They remain a hard grayscale veto regardless of the
     // application preference.
-    if is_capturing_blur || background_appearance != WindowBackgroundAppearance::Opaque {
+    // A retained moving glyph cannot preserve the LCD pixel phase of its raster. Select a real
+    // grayscale atlas tile at commit time, including fill-forward bindings, so retargeting uses
+    // the same raster throughout the motion instead of changing coverage between frames.
+    if has_geometry_animation
+        || is_capturing_blur
+        || background_appearance != WindowBackgroundAppearance::Opaque
+    {
         return true;
     }
 
@@ -696,6 +719,7 @@ mod tests {
             WindowBackgroundAppearance::Opaque,
             true,
             TextRenderingMode::Subpixel,
+            false,
         ));
     }
 
@@ -705,6 +729,7 @@ mod tests {
             WindowBackgroundAppearance::Transparent,
             false,
             TextRenderingMode::Subpixel,
+            false,
         ));
     }
 
@@ -714,6 +739,7 @@ mod tests {
             WindowBackgroundAppearance::Opaque,
             false,
             TextRenderingMode::PlatformDefault,
+            false,
         ));
     }
 
@@ -723,6 +749,17 @@ mod tests {
             WindowBackgroundAppearance::Opaque,
             false,
             TextRenderingMode::Grayscale,
+            false,
+        ));
+    }
+
+    #[test]
+    fn retained_geometry_uses_grayscale_even_on_an_opaque_subpixel_target() {
+        assert!(glyphs_require_grayscale_antialiasing(
+            WindowBackgroundAppearance::Opaque,
+            false,
+            TextRenderingMode::Subpixel,
+            true,
         ));
     }
 

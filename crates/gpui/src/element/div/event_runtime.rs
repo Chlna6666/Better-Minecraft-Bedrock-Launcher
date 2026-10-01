@@ -99,20 +99,18 @@ impl Interactivity {
                 });
             }
 
-            window.on_mouse_hit_test_transition(
-                move |_: &MouseMoveEvent, phase, window, cx| {
-                    let hovered = hitbox.is_hovered(window);
-                    if phase == DispatchPhase::Capture && hovered != was_hovered {
-                        window.notify_interactive_region_scoped(
-                            current_view,
-                            interaction_path.as_ref(),
-                            hitbox.bounds,
-                            descendants_dirty,
-                            cx,
-                        );
-                    }
-                },
-            );
+            window.on_mouse_hit_test_transition(move |_: &MouseMoveEvent, phase, window, cx| {
+                let hovered = hitbox.is_hovered(window);
+                if phase == DispatchPhase::Capture && hovered != was_hovered {
+                    window.notify_interactive_region_scoped(
+                        current_view,
+                        interaction_path.as_ref(),
+                        hitbox.bounds,
+                        descendants_dirty,
+                        cx,
+                    );
+                }
+            });
         }
         let drag_cursor_style = self.base_style.as_ref().mouse_cursor;
 
@@ -241,8 +239,8 @@ impl Interactivity {
                 // Reconcile against the newly painted hitbox instead of waiting for another
                 // MouseMoveEvent. Keep a pressed element stable until the mouse button resolves.
                 if has_mouse_down.borrow().is_none() {
-                    let is_hovered = !cx.has_active_drag()
-                        && hover_listener_mode.is_hovered(&hitbox, window);
+                    let is_hovered =
+                        !cx.has_active_drag() && hover_listener_mode.is_hovered(&hitbox, window);
                     if is_hovered != *was_hovered.borrow() {
                         let update_hover = update_hover.clone();
                         window.defer(cx, move |window, cx| {
@@ -276,8 +274,7 @@ impl Interactivity {
             if let Some(tooltip_builder) = self.tooltip_builder.take() {
                 let active_tooltip = element_state.ensure_active_tooltip();
                 let pending_mouse_down = element_state.ensure_pending_mouse_down();
-                let long_press_tooltip_active =
-                    element_state.ensure_long_press_tooltip_active();
+                let long_press_tooltip_active = element_state.ensure_long_press_tooltip_active();
 
                 let tooltip_is_hoverable = tooltip_builder.hoverable;
                 let build_tooltip = Rc::new(move |window: &mut Window, cx: &mut App| {

@@ -500,7 +500,10 @@ mod tests {
         write_paint_blur(
             &mut blur_bytes,
             &blur,
-            DrawableSize { width: 640, height: 480 },
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
         );
         let mut upload = FrameUpload {
             globals: vec![0; GLOBAL_UPLOAD_BYTES],
@@ -513,7 +516,7 @@ mod tests {
             )],
             sampled_animation_values: vec![crate::SceneAnimationValue {
                 animation_id: id,
-                property: crate::TransitionProperty::Blur,
+                property: crate::TransitionProperty::FilterBlur,
                 progress: 0.5,
                 from: [4.0, 0.0, 0.0, 0.0],
                 to: [20.0, 0.0, 0.0, 0.0],
@@ -534,7 +537,10 @@ mod tests {
             read_u32(&upload.backdrop_blurs, PAINT_BLUR_COMPOSITE_KIND_OFFSET),
             ELEMENT_COMPOSITE_KIND | (1 << 2)
         );
-        assert_eq!(upload.backdrop_blur_configs()[0].animation_slot_plus_one(), 1);
+        assert_eq!(
+            upload.backdrop_blur_configs()[0].animation_slot_plus_one(),
+            1
+        );
         assert_eq!(read_u32(&upload.backdrop_blur_passes, 40), 1);
 
         write_animation_value(

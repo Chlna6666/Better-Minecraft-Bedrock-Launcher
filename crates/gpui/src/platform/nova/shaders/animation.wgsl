@@ -23,6 +23,7 @@ struct VisualAnimation {
     clip_top: f32,
     clip_bottom: f32,
     clips_geometry: u32,
+    horizontal_edges: vec2<f32>,
 }
 
 fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimation {
@@ -37,6 +38,7 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.clip_top = 0.0;
     animation.clip_bottom = 0.0;
     animation.clips_geometry = 0u;
+    animation.horizontal_edges = vec2<f32>(0.0);
 
     // GlobalParams.pad is renderer-owned in Nova and becomes an ABI feature gate. This keeps the
     // same shader binaries safe for static streams whose first u32 still contains legacy draw order.
@@ -86,6 +88,19 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
             animation.clip_bottom = max(sampled.z, sampled.w);
             animation.clips_geometry = 1u;
         }
+        // One presentation-lane sample composed from independent opacity, translation, and scale
+        // tracks. The compositor resolves each easing/spring before upload, so the GPU still reads
+        // one compact value for every primitive in the retained target.
+        case 9u: {
+            animation.translation = sampled.xy;
+            animation.scale = max(sampled.z, 0.0);
+            animation.opacity = clamp(sampled.w, 0.0, 1.0);
+            animation.scales_geometry = 1u;
+        }
+        // Two independently sampled edges reshape a decoration without stretching its radii.
+        case 10u: {
+            animation.horizontal_edges = sampled.xy;
+        }
         // Rotation is promoted to a retained subtree composite; raw 2D primitives must not rotate
         // independently. Other transition properties are likewise no-ops in the old CPU path.
         default: {}
@@ -100,6 +115,8 @@ fn animation_bounds(bounds: Bounds, animation: VisualAnimation) -> Bounds {
         result.size = bounds.size * animation.scale;
     }
     result.origin += animation.translation;
+    result.origin.x += min(animation.horizontal_edges.x, animation.horizontal_edges.y);
+    result.size.x += abs(animation.horizontal_edges.x - animation.horizontal_edges.y);
     return result;
 }
 

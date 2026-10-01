@@ -175,10 +175,13 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
     );
     assert!(
         scene
-            .backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
-                progress: 1.0,
-                ..value
-            }])
+            .backdrop_blur_animation_damage_plan(
+                &[value],
+                &[SceneAnimationValue {
+                    progress: 1.0,
+                    ..value
+                }]
+            )
             .refresh_required()
     );
 }
@@ -213,10 +216,13 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
-        progress: 1.0,
-        ..value
-    }]);
+    let plan = scene.backdrop_blur_animation_damage_plan(
+        &[value],
+        &[SceneAnimationValue {
+            progress: 1.0,
+            ..value
+        }],
+    );
 
     assert!(!plan.refresh_required());
 }
@@ -241,10 +247,13 @@ fn transform_after_blur_never_invalidates_that_blur() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
-        progress: 1.0,
-        ..value
-    }]);
+    let plan = scene.backdrop_blur_animation_damage_plan(
+        &[value],
+        &[SceneAnimationValue {
+            progress: 1.0,
+            ..value
+        }],
+    );
 
     assert!(!plan.refresh_required());
 }
@@ -279,10 +288,13 @@ fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
         to: [100.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(&[value], &[SceneAnimationValue {
-        progress: 0.92,
-        ..value
-    }]);
+    let plan = scene.backdrop_blur_animation_damage_plan(
+        &[value],
+        &[SceneAnimationValue {
+            progress: 0.92,
+            ..value
+        }],
+    );
 
     assert!(plan.refresh_required());
 }

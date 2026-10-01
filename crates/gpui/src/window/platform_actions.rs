@@ -147,10 +147,32 @@ impl Window {
         self.platform_window.set_app_id(app_id);
     }
 
-    /// Sets the window background appearance.
+    /// Requests a native window material without capturing the desktop.
+    ///
+    /// Unsupported materials fall back to native blur, then plain transparency. The system may
+    /// override the visible material; use [`Self::effective_background_appearance`] to query the
+    /// mode accepted by the backend. This does not change the window's application content.
     pub fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         self.platform_window
             .set_background_appearance(background_appearance);
+    }
+
+    /// Returns the requested window material, including requests that required a fallback.
+    pub fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.platform_window.background_appearance()
+    }
+
+    /// Returns native materials currently advertised by this window's backend.
+    pub fn background_capabilities(&self) -> WindowBackgroundCapabilities {
+        self.platform_window.background_capabilities()
+    }
+
+    /// Returns the native material accepted by the backend, after capability/error fallback.
+    ///
+    /// This reports platform state, not a pixel measurement. The compositor retains control of
+    /// material appearance and can suppress it according to system policy.
+    pub fn effective_background_appearance(&self) -> WindowBackgroundAppearance {
+        self.platform_window.effective_background_appearance()
     }
 
     /// Mark the window as dirty at the platform level.

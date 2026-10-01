@@ -164,10 +164,7 @@ impl<T> AssetLease<T>
 where
     T: Clone + Send + 'static,
 {
-    pub(crate) fn spawn(
-        future: impl Future<Output = T> + Send + 'static,
-        cx: &App,
-    ) -> Self {
+    pub(crate) fn spawn(future: impl Future<Output = T> + Send + 'static, cx: &App) -> Self {
         let state = Arc::new(parking_lot::Mutex::new(AssetLeaseState::Loading {
             observers: FxHashMap::default(),
         }));
@@ -370,7 +367,11 @@ mod ownership_tests {
         let (sender, receiver) = oneshot::channel::<usize>();
         let lease = cx.update(|cx| {
             AssetLease::spawn(
-                async move { receiver.await.expect("sender is kept alive until cancellation") },
+                async move {
+                    receiver
+                        .await
+                        .expect("sender is kept alive until cancellation")
+                },
                 cx,
             )
         });

@@ -264,6 +264,30 @@ impl Application {
         }));
     }
 
+    /// Starts the Windows native event loop and creates the GPUI app on its UI owner thread.
+    /// The builder runs after native display initialization and must construct the app there.
+    #[cfg(target_os = "windows")]
+    pub fn run_separate<B, F>(
+        renderer_options: RendererOptions,
+        build: B,
+        on_finish_launching: F,
+    ) -> Result<()>
+    where
+        B: FnOnce() -> Application + Send + 'static,
+        F: FnOnce(&mut App) + Send + 'static,
+    {
+        crate::platform::WindowsPlatform::run_separate(renderer_options, move |shutdown| {
+            let application = build();
+            let this = application.0.clone();
+            {
+                let app = this.borrow();
+                app.text_system.log_platform_default_font_once();
+            }
+            on_finish_launching(&mut this.borrow_mut());
+            crate::platform::WindowsPlatform::run_ui_owner_tasks(shutdown);
+        })
+    }
+
     /// Register a handler to be invoked when the platform instructs the application
     /// to open one or more URLs.
     pub fn on_open_urls<F>(&self, mut callback: F) -> &Self

@@ -56,6 +56,7 @@ pub(crate) struct WindowsDisplay {
     visible_bounds: Bounds<Pixels>,
     uuid: Uuid,
     key: DisplaySnapshotKey,
+    refresh_interval: Option<std::time::Duration>,
 }
 
 impl WindowsDisplay {
@@ -73,8 +74,8 @@ impl WindowsDisplay {
             origin: logical_point(position.x as f32, position.y as f32, scale_factor),
             size: physical_size.to_pixels(scale_factor),
         };
-        let visible_bounds = windows_visible_bounds(position, monitor_size, scale_factor)
-            .unwrap_or(bounds);
+        let visible_bounds =
+            windows_visible_bounds(position, monitor_size, scale_factor).unwrap_or(bounds);
 
         Self {
             display_id,
@@ -82,6 +83,10 @@ impl WindowsDisplay {
             visible_bounds,
             uuid: key.uuid(),
             key,
+            refresh_interval: monitor
+                .refresh_rate_millihertz()
+                .filter(|rate| *rate > 0)
+                .map(|rate| std::time::Duration::from_secs_f64(1000.0 / f64::from(rate))),
         }
     }
 
@@ -103,6 +108,10 @@ impl WindowsDisplay {
 }
 
 impl PlatformDisplay for WindowsDisplay {
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.refresh_interval
+    }
+
     fn id(&self) -> DisplayId {
         self.display_id
     }

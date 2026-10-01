@@ -12,11 +12,10 @@ use super::*;
 /// background blur barrier unchanged. In that case the cached blur target remains valid and should
 /// be sampled directly instead of recapturing and filtering the whole window.
 pub(super) fn resolve_surface_packet(
-    mut packet: PresentationPacket,
+    packet: &mut PresentationPacket,
     surface_requires_full_redraw: bool,
-) -> PresentationPacket {
+) {
     if surface_requires_full_redraw || packet.scene.has_backdrop_blurs() {
         packet.partial_present_mode = PartialPresentMode::FullRedraw;
     }
-    packet
 }

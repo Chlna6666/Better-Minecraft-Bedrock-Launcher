@@ -195,7 +195,10 @@ impl RasterBoundsCache {
 
     fn take_hit_ratio_percent(&self) -> usize {
         let lookups = self.lookups_since_sweep.swap(0, Ordering::Relaxed);
-        let hits = self.hits_since_sweep.swap(0, Ordering::Relaxed).min(lookups);
+        let hits = self
+            .hits_since_sweep
+            .swap(0, Ordering::Relaxed)
+            .min(lookups);
         if lookups == 0 {
             100
         } else {
@@ -294,7 +297,11 @@ impl TextSystem {
         let font_ids = {
             let cache = self.font_id_cache.read();
             let mut font_ids = SmallVec::<[FontId; 8]>::new();
-            for font_id in cache.ids_by_font.values().filter_map(|result| result.as_ref().ok()) {
+            for font_id in cache
+                .ids_by_font
+                .values()
+                .filter_map(|result| result.as_ref().ok())
+            {
                 if !font_ids.contains(font_id) {
                     font_ids.push(*font_id);
                 }
@@ -353,8 +360,7 @@ impl TextSystem {
 
     #[cfg(test)]
     pub(crate) fn report_missing_glyphs_in_test(&self, missing_glyphs: Vec<MissingGlyph>) {
-        self.missing_glyph_reporter
-            .report_for_test(missing_glyphs);
+        self.missing_glyph_reporter.report_for_test(missing_glyphs);
     }
 
     /// Add font files to the text system by path.

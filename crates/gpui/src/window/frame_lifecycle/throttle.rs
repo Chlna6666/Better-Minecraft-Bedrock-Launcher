@@ -115,7 +115,10 @@ impl WindowFrameThrottle {
         let frame_interval = self
             .estimated_frame_interval
             .unwrap_or(HIGH_REFRESH_FRAME_INTERVAL);
-        frame_interval.clamp(FASTEST_SUPPORTED_DISPLAY_INTERVAL, HIGH_REFRESH_FRAME_INTERVAL)
+        frame_interval.clamp(
+            FASTEST_SUPPORTED_DISPLAY_INTERVAL,
+            HIGH_REFRESH_FRAME_INTERVAL,
+        )
     }
 
     pub(super) fn generation_warning_budget(self) -> Duration {

@@ -40,7 +40,6 @@ fn movements_oppose(left: Point<Pixels>, right: Point<Pixels>) -> bool {
     f32::from(left.x) * f32::from(right.x) + f32::from(left.y) * f32::from(right.y) < 0.0
 }
 
-
 /// Tracks the dominant axis across one precise scroll gesture.
 ///
 /// Touchpads and touch-derived wheel streams often contain small motion on the orthogonal axis.
@@ -169,8 +168,7 @@ impl ScrollPhysics {
                 if speed <= MOMENTUM_STOP_VELOCITY {
                     return Duration::ZERO;
                 }
-                let milliseconds =
-                    (MOMENTUM_STOP_VELOCITY / speed).ln() / decay_per_ms.ln();
+                let milliseconds = (MOMENTUM_STOP_VELOCITY / speed).ln() / decay_per_ms.ln();
                 Duration::from_secs_f32((milliseconds / 1000.0).max(0.0))
             }
             Self::FrictionSpline {
@@ -180,10 +178,8 @@ impl ScrollPhysics {
                 if speed <= 0.0 {
                     return Duration::ZERO;
                 }
-                let deceleration =
-                    friction_spline::deceleration(speed, friction, pixels_per_inch);
-                let seconds =
-                    (deceleration / (friction_spline::deceleration_rate() - 1.0)).exp();
+                let deceleration = friction_spline::deceleration(speed, friction, pixels_per_inch);
+                let seconds = (deceleration / (friction_spline::deceleration_rate() - 1.0)).exp();
                 Duration::from_secs_f64(seconds.max(0.0))
             }
         }
@@ -198,23 +194,19 @@ impl ScrollPhysics {
         match self {
             Self::Exponential { decay_per_ms } => {
                 let milliseconds = elapsed.as_secs_f32() * 1000.0;
-                (speed / 1000.0)
-                    * (decay_per_ms.powf(milliseconds) - 1.0)
-                    / decay_per_ms.ln()
+                (speed / 1000.0) * (decay_per_ms.powf(milliseconds) - 1.0) / decay_per_ms.ln()
             }
             Self::FrictionSpline {
                 friction,
                 pixels_per_inch,
             } => {
-                let deceleration =
-                    friction_spline::deceleration(speed, friction, pixels_per_inch);
+                let deceleration = friction_spline::deceleration(speed, friction, pixels_per_inch);
                 let rate = friction_spline::deceleration_rate();
                 let total_distance = friction as f64
                     * friction_spline::physical_coefficient(pixels_per_inch)
                     * (rate / (rate - 1.0) * deceleration).exp();
                 let progress = elapsed.as_secs_f64() / duration.as_secs_f64();
-                total_distance as f32
-                    * friction_spline::distance_coefficient(progress as f32)
+                total_distance as f32 * friction_spline::distance_coefficient(progress as f32)
             }
         }
     }
@@ -253,8 +245,7 @@ mod friction_spline {
                     x_min = x;
                 }
             };
-            *output =
-                coefficient * ((1.0 - x) * START_TENSION + x) + x * x * x;
+            *output = coefficient * ((1.0 - x) * START_TENSION + x) + x * x * x;
         }
         values[SAMPLE_COUNT] = 1.0;
         values
@@ -274,15 +265,13 @@ mod friction_spline {
         if time >= 1.0 {
             return 1.0;
         }
-        let index =
-            ((SAMPLE_COUNT as f32 * time) as usize).min(SAMPLE_COUNT - 1);
+        let index = ((SAMPLE_COUNT as f32 * time) as usize).min(SAMPLE_COUNT - 1);
         let time_lower = index as f32 / SAMPLE_COUNT as f32;
         let time_upper = (index + 1) as f32 / SAMPLE_COUNT as f32;
         let distance_lower = SPLINE_POSITION[index];
         let distance_upper = SPLINE_POSITION[index + 1];
         distance_lower
-            + (time - time_lower)
-                * ((distance_upper - distance_lower) / (time_upper - time_lower))
+            + (time - time_lower) * ((distance_upper - distance_lower) / (time_upper - time_lower))
     }
 }
 
@@ -426,8 +415,7 @@ impl TouchGestureRecognizer {
                         let accumulated = event.position - touch.start_position;
                         if accumulated.magnitude() > f64::from(self.tuning.touch_slop) {
                             let axis = dominant_axis(accumulated);
-                            let mut target =
-                                event.predicted_position.unwrap_or(event.position);
+                            let mut target = event.predicted_position.unwrap_or(event.position);
                             let mut delta = target - touch.start_position;
                             lock_delta_to_axis(&mut delta, axis);
                             touch.last_movement = accumulated;
@@ -443,8 +431,7 @@ impl TouchGestureRecognizer {
                                 delta,
                                 TouchPhase::Started,
                             )));
-                            self.state =
-                                TouchGestureState::Panning { touch, axis };
+                            self.state = TouchGestureState::Panning { touch, axis };
                         } else {
                             self.state = TouchGestureState::Pending {
                                 touch,
@@ -454,10 +441,7 @@ impl TouchGestureRecognizer {
                             };
                         }
                     }
-                    TouchGestureState::Panning {
-                        mut touch,
-                        axis,
-                    } if touch.id == event.id => {
+                    TouchGestureState::Panning { mut touch, axis } if touch.id == event.id => {
                         let mut raw_delta = event.position - touch.raw_position;
                         lock_delta_to_axis(&mut raw_delta, axis);
                         if raw_delta != Point::default() {
@@ -465,8 +449,7 @@ impl TouchGestureRecognizer {
                         }
                         touch.velocity_tracker.push(now, event.position);
                         touch.raw_position = event.position;
-                        let mut target =
-                            event.predicted_position.unwrap_or(event.position);
+                        let mut target = event.predicted_position.unwrap_or(event.position);
                         let mut delta = target - touch.emitted_position;
                         lock_delta_to_axis(&mut delta, axis);
 
@@ -489,33 +472,24 @@ impl TouchGestureRecognizer {
                             delta,
                             TouchPhase::Moved,
                         )));
-                        self.state =
-                            TouchGestureState::Panning { touch, axis };
+                        self.state = TouchGestureState::Panning { touch, axis };
                     }
-                    TouchGestureState::LongPressing(mut touch)
-                        if touch.id == event.id =>
-                    {
+                    TouchGestureState::LongPressing(mut touch) if touch.id == event.id => {
                         touch.raw_position = event.position;
-                        recognized.push(RecognizedTouchGesture::LongPress(
-                            LongPressEvent {
-                                phase: TouchPhase::Moved,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
+                        recognized.push(RecognizedTouchGesture::LongPress(LongPressEvent {
+                            phase: TouchPhase::Moved,
+                            start_position: touch.start_position,
+                            position: event.position,
+                        }));
                         self.state = TouchGestureState::LongPressing(touch);
                     }
-                    TouchGestureState::TouchDragging(mut touch)
-                        if touch.id == event.id =>
-                    {
+                    TouchGestureState::TouchDragging(mut touch) if touch.id == event.id => {
                         touch.raw_position = event.position;
-                        recognized.push(RecognizedTouchGesture::TouchDrag(
-                            TouchDragEvent {
-                                phase: TouchPhase::Moved,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
+                        recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                            phase: TouchPhase::Moved,
+                            start_position: touch.start_position,
+                            position: event.position,
+                        }));
                         self.state = TouchGestureState::TouchDragging(touch);
                     }
                     other => self.state = other,
@@ -523,9 +497,7 @@ impl TouchGestureRecognizer {
             }
             TouchPhase::Ended => {
                 match mem::replace(&mut self.state, TouchGestureState::Idle) {
-                    TouchGestureState::Pending { touch, .. }
-                        if touch.id == event.id =>
-                    {
+                    TouchGestureState::Pending { touch, .. } if touch.id == event.id => {
                         let count = match &self.last_tap {
                             Some(tap)
                                 if now.duration_since(tap.time)
@@ -558,16 +530,11 @@ impl TouchGestureRecognizer {
                             },
                         });
                     }
-                    TouchGestureState::Panning { touch, axis }
-                        if touch.id == event.id =>
-                    {
+                    TouchGestureState::Panning { touch, axis } if touch.id == event.id => {
                         let stopped = touch
                             .velocity_tracker
                             .latest_sample_time()
-                            .map(|latest| {
-                                now.duration_since(latest)
-                                    > VELOCITY_ASSUME_STOPPED_GAP
-                            })
+                            .map(|latest| now.duration_since(latest) > VELOCITY_ASSUME_STOPPED_GAP)
                             .unwrap_or(true);
                         let mut velocity = if stopped {
                             Point::default()
@@ -578,9 +545,7 @@ impl TouchGestureRecognizer {
                             Axis::Vertical => velocity.x = 0.0,
                             Axis::Horizontal => velocity.y = 0.0,
                         }
-                        let mut speed =
-                            (velocity.x * velocity.x + velocity.y * velocity.y)
-                                .sqrt();
+                        let mut speed = (velocity.x * velocity.x + velocity.y * velocity.y).sqrt();
                         if speed > MAX_FLING_VELOCITY {
                             let scale = MAX_FLING_VELOCITY / speed;
                             velocity.x *= scale;
@@ -588,22 +553,15 @@ impl TouchGestureRecognizer {
                             speed = MAX_FLING_VELOCITY;
                         }
 
-                        let mut release_delta =
-                            event.position - touch.emitted_position;
+                        let mut release_delta = event.position - touch.emitted_position;
                         lock_delta_to_axis(&mut release_delta, axis);
 
                         if speed >= self.tuning.min_fling_velocity {
-                            let direction = point(
-                                velocity.x / speed,
-                                velocity.y / speed,
-                            );
-                            let duration =
-                                self.tuning.scroll_physics.fling_duration(speed);
+                            let direction = point(velocity.x / speed, velocity.y / speed);
+                            let duration = self.tuning.scroll_physics.fling_duration(speed);
                             if !duration.is_zero() {
-                                let total_distance = self
-                                    .tuning
-                                    .scroll_physics
-                                    .fling_distance(speed, duration);
+                                let total_distance =
+                                    self.tuning.scroll_physics.fling_distance(speed, duration);
                                 // If prediction left the emitted content ahead of the raw finger,
                                 // do not visibly snap backwards on release. Start the momentum curve
                                 // already advanced by that overshoot instead.
@@ -638,69 +596,48 @@ impl TouchGestureRecognizer {
                             TouchPhase::Ended,
                         )));
                     }
-                    TouchGestureState::LongPressing(touch)
-                        if touch.id == event.id =>
-                    {
-                        recognized.push(RecognizedTouchGesture::LongPress(
-                            LongPressEvent {
-                                phase: TouchPhase::Ended,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
+                    TouchGestureState::LongPressing(touch) if touch.id == event.id => {
+                        recognized.push(RecognizedTouchGesture::LongPress(LongPressEvent {
+                            phase: TouchPhase::Ended,
+                            start_position: touch.start_position,
+                            position: event.position,
+                        }));
                     }
-                    TouchGestureState::TouchDragging(touch)
-                        if touch.id == event.id =>
-                    {
-                        recognized.push(RecognizedTouchGesture::TouchDrag(
-                            TouchDragEvent {
-                                phase: TouchPhase::Ended,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
+                    TouchGestureState::TouchDragging(touch) if touch.id == event.id => {
+                        recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                            phase: TouchPhase::Ended,
+                            start_position: touch.start_position,
+                            position: event.position,
+                        }));
                     }
                     other => self.state = other,
                 }
             }
-            TouchPhase::Cancelled => {
-                match mem::replace(&mut self.state, TouchGestureState::Idle) {
-                    TouchGestureState::Panning { touch, .. }
-                        if touch.id == event.id =>
-                    {
-                        recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
-                            touch.start_position,
-                            Point::default(),
-                            TouchPhase::Cancelled,
-                        )));
-                    }
-                    TouchGestureState::LongPressing(touch)
-                        if touch.id == event.id =>
-                    {
-                        recognized.push(RecognizedTouchGesture::LongPress(
-                            LongPressEvent {
-                                phase: TouchPhase::Cancelled,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
-                    }
-                    TouchGestureState::TouchDragging(touch)
-                        if touch.id == event.id =>
-                    {
-                        recognized.push(RecognizedTouchGesture::TouchDrag(
-                            TouchDragEvent {
-                                phase: TouchPhase::Cancelled,
-                                start_position: touch.start_position,
-                                position: event.position,
-                            },
-                        ));
-                    }
-                    TouchGestureState::Pending { touch, .. }
-                        if touch.id == event.id => {}
-                    other => self.state = other,
+            TouchPhase::Cancelled => match mem::replace(&mut self.state, TouchGestureState::Idle) {
+                TouchGestureState::Panning { touch, .. } if touch.id == event.id => {
+                    recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
+                        touch.start_position,
+                        Point::default(),
+                        TouchPhase::Cancelled,
+                    )));
                 }
-            }
+                TouchGestureState::LongPressing(touch) if touch.id == event.id => {
+                    recognized.push(RecognizedTouchGesture::LongPress(LongPressEvent {
+                        phase: TouchPhase::Cancelled,
+                        start_position: touch.start_position,
+                        position: event.position,
+                    }));
+                }
+                TouchGestureState::TouchDragging(touch) if touch.id == event.id => {
+                    recognized.push(RecognizedTouchGesture::TouchDrag(TouchDragEvent {
+                        phase: TouchPhase::Cancelled,
+                        start_position: touch.start_position,
+                        position: event.position,
+                    }));
+                }
+                TouchGestureState::Pending { touch, .. } if touch.id == event.id => {}
+                other => self.state = other,
+            },
         }
         recognized
     }
@@ -715,16 +652,10 @@ impl TouchGestureRecognizer {
         else {
             return None;
         };
-        Some((
-            touch.id,
-            deadline.saturating_duration_since(Instant::now()),
-        ))
+        Some((touch.id, deadline.saturating_duration_since(Instant::now())))
     }
 
-    pub(crate) fn offer_long_press(
-        &mut self,
-        id: TouchId,
-    ) -> Option<RecognizedTouchGesture> {
+    pub(crate) fn offer_long_press(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
         let TouchGestureState::Pending {
             touch,
             long_press_offered,
@@ -759,10 +690,7 @@ impl TouchGestureRecognizer {
         };
     }
 
-    pub(crate) fn offer_touch_drag(
-        &mut self,
-        id: TouchId,
-    ) -> Option<RecognizedTouchGesture> {
+    pub(crate) fn offer_touch_drag(&mut self, id: TouchId) -> Option<RecognizedTouchGesture> {
         let TouchGestureState::Pending {
             touch,
             touch_drag_offered,
@@ -806,8 +734,7 @@ impl TouchGestureRecognizer {
         let elapsed = Instant::now()
             .duration_since(momentum.started_at)
             .min(momentum.duration);
-        let distance =
-            momentum.physics.fling_distance(momentum.speed, elapsed);
+        let distance = momentum.physics.fling_distance(momentum.speed, elapsed);
         let step = (distance - momentum.emitted_distance).max(0.0);
         momentum.emitted_distance = momentum.emitted_distance.max(distance);
 
@@ -867,19 +794,15 @@ impl VelocityTracker {
             return Point::default();
         };
 
-        let mut times: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> =
-            SmallVec::new();
-        let mut horizontal: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> =
-            SmallVec::new();
-        let mut vertical: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> =
-            SmallVec::new();
+        let mut times: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
+        let mut horizontal: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
+        let mut vertical: SmallVec<[f64; VELOCITY_MAX_SAMPLES]> = SmallVec::new();
         let mut previous_time = *newest_time;
 
         for (time, position) in self.samples.iter().rev() {
             let age = newest_time.duration_since(*time);
             if age > VELOCITY_WINDOW
-                || previous_time.duration_since(*time)
-                    > VELOCITY_ASSUME_STOPPED_GAP
+                || previous_time.duration_since(*time) > VELOCITY_ASSUME_STOPPED_GAP
             {
                 break;
             }
@@ -894,16 +817,12 @@ impl VelocityTracker {
             if elapsed <= f64::EPSILON {
                 return 0.0;
             }
-            ((values.first().copied().unwrap_or(0.0)
-                - values.last().copied().unwrap_or(0.0))
+            ((values.first().copied().unwrap_or(0.0) - values.last().copied().unwrap_or(0.0))
                 / elapsed) as f32
         };
 
         if times.len() < 3 {
-            return point(
-                endpoint_estimate(&horizontal),
-                endpoint_estimate(&vertical),
-            );
+            return point(endpoint_estimate(&horizontal), endpoint_estimate(&vertical));
         }
 
         point(
@@ -915,15 +834,10 @@ impl VelocityTracker {
     }
 }
 
-fn quadratic_velocity_at_newest(
-    times: &[f64],
-    values: &[f64],
-) -> Option<f64> {
+fn quadratic_velocity_at_newest(times: &[f64], values: &[f64]) -> Option<f64> {
     let count = times.len() as f64;
-    let (mut sum_t1, mut sum_t2, mut sum_t3, mut sum_t4) =
-        (0.0, 0.0, 0.0, 0.0);
-    let (mut sum_v, mut sum_vt, mut sum_vt2) =
-        (0.0, 0.0, 0.0);
+    let (mut sum_t1, mut sum_t2, mut sum_t3, mut sum_t4) = (0.0, 0.0, 0.0, 0.0);
+    let (mut sum_v, mut sum_vt, mut sum_vt2) = (0.0, 0.0, 0.0);
 
     for (&time, &value) in times.iter().zip(values) {
         let time_squared = time * time;
@@ -936,32 +850,24 @@ fn quadratic_velocity_at_newest(
         sum_vt2 += value * time_squared;
     }
 
-    let determinant =
-        count * (sum_t2 * sum_t4 - sum_t3 * sum_t3)
-            - sum_t1 * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
-            + sum_t2 * (sum_t1 * sum_t3 - sum_t2 * sum_t2);
+    let determinant = count * (sum_t2 * sum_t4 - sum_t3 * sum_t3)
+        - sum_t1 * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
+        + sum_t2 * (sum_t1 * sum_t3 - sum_t2 * sum_t2);
     if determinant.abs() < 1e-12 {
         return None;
     }
 
-    let linear_determinant =
-        count * (sum_vt * sum_t4 - sum_t3 * sum_vt2)
-            - sum_v * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
-            + sum_t2 * (sum_t1 * sum_vt2 - sum_vt * sum_t2);
+    let linear_determinant = count * (sum_vt * sum_t4 - sum_t3 * sum_vt2)
+        - sum_v * (sum_t1 * sum_t4 - sum_t3 * sum_t2)
+        + sum_t2 * (sum_t1 * sum_vt2 - sum_vt * sum_t2);
     Some(linear_determinant / determinant)
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn touch_event(
-        id: TouchId,
-        phase: TouchPhase,
-        y: f32,
-        predicted_y: Option<f32>,
-    ) -> TouchEvent {
+    fn touch_event(id: TouchId, phase: TouchPhase, y: f32, predicted_y: Option<f32>) -> TouchEvent {
         TouchEvent {
             id,
             phase,
@@ -984,12 +890,8 @@ mod tests {
         let now = Instant::now();
         let id = TouchId(11);
 
-        recognizer.handle_event_at(
-            &touch_event(id, TouchPhase::Started, 20.0, None),
-            now,
-        );
-        let Some(RecognizedTouchGesture::TouchDrag(started)) =
-            recognizer.offer_touch_drag(id)
+        recognizer.handle_event_at(&touch_event(id, TouchPhase::Started, 20.0, None), now);
+        let Some(RecognizedTouchGesture::TouchDrag(started)) = recognizer.offer_touch_drag(id)
         else {
             panic!("expected touch drag offer");
         };
@@ -1025,10 +927,7 @@ mod tests {
         let now = Instant::now();
         let id = TouchId(12);
 
-        recognizer.handle_event_at(
-            &touch_event(id, TouchPhase::Started, 0.0, None),
-            now,
-        );
+        recognizer.handle_event_at(&touch_event(id, TouchPhase::Started, 0.0, None), now);
         assert!(recognizer.offer_touch_drag(id).is_some());
         recognizer.resolve_touch_drag(false);
 
@@ -1051,10 +950,7 @@ mod tests {
         let now = Instant::now();
         let id = TouchId(1);
 
-        recognizer.handle_event_at(
-            &touch_event(id, TouchPhase::Started, 100.0, None),
-            now,
-        );
+        recognizer.handle_event_at(&touch_event(id, TouchPhase::Started, 100.0, None), now);
 
         let recognized = recognizer.handle_event_at(
             &touch_event(id, TouchPhase::Moved, 120.0, Some(130.0)),
@@ -1093,10 +989,7 @@ mod tests {
         let now = Instant::now();
         let id = TouchId(7);
 
-        recognizer.handle_event_at(
-            &touch_event(id, TouchPhase::Started, 100.0, None),
-            now,
-        );
+        recognizer.handle_event_at(&touch_event(id, TouchPhase::Started, 100.0, None), now);
         recognizer.handle_event_at(
             &touch_event(id, TouchPhase::Moved, 120.0, Some(130.0)),
             now + Duration::from_millis(16),

@@ -144,9 +144,7 @@ impl PlatformDisplay for MacDisplay {
 
             let frame = NSScreen::frame(screen);
             let visible_frame = NSScreen::visibleFrame(screen);
-            let origin_y = frame.size.height
-                - visible_frame.origin.y
-                - visible_frame.size.height
+            let origin_y = frame.size.height - visible_frame.origin.y - visible_frame.size.height
                 + frame.origin.y;
 
             Bounds {

@@ -1,7 +1,10 @@
 use std::{
     cell::Cell,
     rc::Rc,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -45,6 +48,194 @@ pub struct Animation {
     spring: Option<crate::Spring>,
 }
 
+/// Why an animation cannot use the callback-free visual animation path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisualAnimationError {
+    /// A renderer-owned visual property was not declared.
+    MissingProperty,
+    /// Layout-driven animations need an animator callback and cannot use the presentation lane.
+    LayoutDrivenProperty(TransitionProperty),
+}
+
+impl std::fmt::Display for VisualAnimationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingProperty => {
+                formatter.write_str("a visual animation must declare its animated property")
+            }
+            Self::LayoutDrivenProperty(property) => {
+                write!(formatter, "{property:?} is layout-driven")
+            }
+        }
+    }
+}
+
+impl std::error::Error for VisualAnimationError {}
+
+/// A small set of independent visual property tracks committed as one retained target.
+///
+/// Each track keeps its own duration, easing, and spring. GPUI samples the tracks together on the
+/// presentation owner and packs their current opacity, translation, and scale into one renderer
+/// value, so the group adds no nested composite layers. Scale keeps the existing primitive-center
+/// pivot semantics; use a composite transform when the whole subtree must scale around one shared
+/// origin.
+#[derive(Clone)]
+pub struct AnimationGroup {
+    tracks: SmallVec<[Animation; 3]>,
+}
+
+/// Why an [`AnimationGroup`] cannot be created from the supplied tracks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnimationGroupError {
+    /// A group needs at least one track.
+    Empty,
+    /// At most three independent visual properties fit in one packed renderer value.
+    TooManyTracks,
+    /// Every track must declare an [`AnimationProperty`].
+    MissingVisualProperty,
+    /// Layout-driven tracks cannot run on the presentation owner.
+    LayoutDrivenProperty(TransitionProperty),
+    /// The packed group currently supports only opacity, translation, and scale.
+    UnsupportedProperty(TransitionProperty),
+    /// Properties that capture a subtree must keep using their composite animation wrapper.
+    CapturedSubtreeProperty(TransitionProperty),
+    /// A group can contain each visual property only once.
+    DuplicateProperty(TransitionProperty),
+    /// Combined translation-opacity values overlap the group's independent opacity channel.
+    CombinedTranslationOpacity,
+}
+
+impl std::fmt::Display for AnimationGroupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("an animation group cannot be empty"),
+            Self::TooManyTracks => {
+                formatter.write_str("an animation group supports at most three tracks")
+            }
+            Self::MissingVisualProperty => {
+                formatter.write_str("each animation group track must declare a visual property")
+            }
+            Self::LayoutDrivenProperty(property) => {
+                write!(
+                    formatter,
+                    "{property:?} is layout-driven and cannot run in a visual group"
+                )
+            }
+            Self::UnsupportedProperty(property) => {
+                write!(
+                    formatter,
+                    "{property:?} is not supported by packed visual groups"
+                )
+            }
+            Self::CapturedSubtreeProperty(property) => {
+                write!(
+                    formatter,
+                    "{property:?} captures a subtree and cannot run in a packed visual group"
+                )
+            }
+            Self::DuplicateProperty(property) => {
+                write!(
+                    formatter,
+                    "{property:?} appears more than once in the animation group"
+                )
+            }
+            Self::CombinedTranslationOpacity => formatter.write_str(
+                "translation-opacity must use separate tracks when declared in an animation group",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AnimationGroupError {}
+
+impl AnimationGroup {
+    /// Animate a background decoration with two independent horizontal springs.
+    ///
+    /// Both offsets are relative to its stable final layout. The smaller offset moves its left
+    /// edge; their absolute difference extends its width. Height, border widths, and corner radii
+    /// remain unchanged. This is intended for quad/shadow decorations without text or images;
+    /// it does not change child layout or hit targets. Stable element identity preserves current
+    /// presentation values and velocities when either target changes.
+    pub fn horizontal_edges(
+        from: Pixels,
+        to: Pixels,
+        first: crate::Spring,
+        second: crate::Spring,
+    ) -> Self {
+        let track = |spring, property| {
+            Animation::spring(spring).with_property(AnimationProperty {
+                property,
+                from: [from.0, 0.0, 0.0, 0.0],
+                to: [to.0, 0.0, 0.0, 0.0],
+                capture_subtree: false,
+            })
+        };
+        Self {
+            tracks: smallvec::smallvec![
+                track(first, TransitionProperty::HorizontalEdgeFirst),
+                track(second, TransitionProperty::HorizontalEdgeSecond),
+            ],
+        }
+    }
+
+    /// Create parallel compositor tracks for one retained element.
+    ///
+    /// The group accepts one to three unique opacity, translation, and scale properties. Tracks
+    /// retain independent specs and springs; geometry/layout properties and subtree-capture
+    /// properties remain on their existing APIs. A scale track scales each primitive around that
+    /// primitive's center, matching [`AnimationProperty::uniform_scale`].
+    pub fn parallel(
+        tracks: impl IntoIterator<Item = Animation>,
+    ) -> Result<Self, AnimationGroupError> {
+        let mut group_tracks = SmallVec::<[Animation; 3]>::new();
+        for track in tracks {
+            if group_tracks.len() == 3 {
+                return Err(AnimationGroupError::TooManyTracks);
+            }
+            group_tracks.push(track);
+        }
+        if group_tracks.is_empty() {
+            return Err(AnimationGroupError::Empty);
+        }
+
+        let mut properties = SmallVec::<[TransitionProperty; 3]>::new();
+        for track in &group_tracks {
+            let Some(property) = track.property else {
+                return Err(AnimationGroupError::MissingVisualProperty);
+            };
+            if matches!(track.spec.driver, AnimationDriver::Layout) {
+                return Err(AnimationGroupError::LayoutDrivenProperty(property.property));
+            }
+            if property.capture_subtree {
+                return Err(AnimationGroupError::CapturedSubtreeProperty(
+                    property.property,
+                ));
+            }
+            if !matches!(
+                property.property,
+                TransitionProperty::Opacity
+                    | TransitionProperty::Translation
+                    | TransitionProperty::Scale
+            ) {
+                return Err(AnimationGroupError::UnsupportedProperty(property.property));
+            }
+            if property.property == TransitionProperty::Translation
+                && (property.from[3] == 1.0 || property.to[3] == 1.0)
+            {
+                return Err(AnimationGroupError::CombinedTranslationOpacity);
+            }
+            if properties.contains(&property.property) {
+                return Err(AnimationGroupError::DuplicateProperty(property.property));
+            }
+            properties.push(property.property);
+        }
+
+        Ok(Self {
+            tracks: group_tracks,
+        })
+    }
+}
+
 /// A renderer-owned visual property animated by [`AnimationExt::with_animation`].
 ///
 /// Declaring one of these properties lets GPUI select the GPU or paint driver
@@ -55,6 +246,7 @@ pub struct AnimationProperty {
     property: TransitionProperty,
     from: [f32; 4],
     to: [f32; 4],
+    capture_subtree: bool,
 }
 
 /// The fixed edge from which a horizontal renderer-owned reveal exposes its child.
@@ -73,6 +265,20 @@ impl AnimationProperty {
             property: TransitionProperty::Opacity,
             from: [from.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
             to: [to.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
+            capture_subtree: false,
+        }
+    }
+
+    /// Animate visual scale around each primitive's static center without changing layout.
+    ///
+    /// This property can be combined with opacity and translation in an [`AnimationGroup`].
+    /// Use [`AnimationProperty::scale_opacity`] when both values need one explicit shared origin.
+    pub fn uniform_scale(from: f32, to: f32) -> Self {
+        Self {
+            property: TransitionProperty::Scale,
+            from: [from, 0.0, 0.0, 0.0],
+            to: [to, 0.0, 0.0, 0.0],
+            capture_subtree: false,
         }
     }
 
@@ -82,6 +288,7 @@ impl AnimationProperty {
             property: TransitionProperty::Rotation,
             from: [from.into().0, 0.0, 0.0, 0.0],
             to: [to.into().0, 0.0, 0.0, 0.0],
+            capture_subtree: false,
         }
     }
 
@@ -89,7 +296,7 @@ impl AnimationProperty {
     ///
     /// Values are logical pixels. Nova captures the subtree once using the largest endpoint
     /// radius, then advances the actual filter radius without rerendering the owning view.
-    pub fn blur(from: Pixels, to: Pixels) -> Self {
+    pub fn filter_blur(from: Pixels, to: Pixels) -> Self {
         let sanitize = |value: Pixels| {
             let value = f32::from(value);
             if value.is_finite() {
@@ -99,9 +306,10 @@ impl AnimationProperty {
             }
         };
         Self {
-            property: TransitionProperty::Blur,
+            property: TransitionProperty::FilterBlur,
             from: [sanitize(from), 0.0, 0.0, 0.0],
             to: [sanitize(to), 0.0, 0.0, 0.0],
+            capture_subtree: false,
         }
     }
 
@@ -111,6 +319,16 @@ impl AnimationProperty {
             property: TransitionProperty::Translation,
             from: [from.x.0, from.y.0, 0.0, 0.0],
             to: [to.x.0, to.y.0, 0.0, 0.0],
+            capture_subtree: false,
+        }
+    }
+
+    /// Translate a clipped subtree as one retained image so its local text and image clips move
+    /// with it while an ancestor scroll viewport remains fixed.
+    pub fn clipped_translation(from: Point<Pixels>, to: Point<Pixels>) -> Self {
+        Self {
+            capture_subtree: true,
+            ..Self::translation(from, to)
         }
     }
 
@@ -125,6 +343,7 @@ impl AnimationProperty {
             // Lane 3 is declaration-only metadata and is cleared before values reach Nova.
             from: [from.x, from.y, 0.0, 2.0],
             to: [to.x, to.y, 0.0, 2.0],
+            capture_subtree: false,
         }
     }
 
@@ -140,13 +359,9 @@ impl AnimationProperty {
     ) -> Self {
         Self {
             property: TransitionProperty::Translation,
-            from: [
-                from.x.0,
-                from.y.0,
-                from_opacity.clamp(0.0, 1.0),
-                1.0,
-            ],
+            from: [from.x.0, from.y.0, from_opacity.clamp(0.0, 1.0), 1.0],
             to: [to.x.0, to.y.0, to_opacity.clamp(0.0, 1.0), 1.0],
+            capture_subtree: false,
         }
     }
 
@@ -168,6 +383,7 @@ impl AnimationProperty {
             // [fraction, fixed-edge, axis, reserved], where axis 0 is vertical.
             from: [from_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
             to: [to_fraction.clamp(0.0, 1.0), edge, 0.0, 0.0],
+            capture_subtree: false,
         }
     }
 
@@ -189,6 +405,7 @@ impl AnimationProperty {
             // [fraction, fixed-edge, axis, reserved], where axis 1 is horizontal.
             from: [from_fraction.clamp(0.0, 1.0), edge, 1.0, 0.0],
             to: [to_fraction.clamp(0.0, 1.0), edge, 1.0, 0.0],
+            capture_subtree: false,
         }
     }
 
@@ -204,6 +421,7 @@ impl AnimationProperty {
             property: TransitionProperty::Transform,
             from: [from_scale, from_opacity.clamp(0.0, 1.0), origin.x, origin.y],
             to: [to_scale, to_opacity.clamp(0.0, 1.0), origin.x, origin.y],
+            capture_subtree: false,
         }
     }
 
@@ -214,6 +432,13 @@ impl AnimationProperty {
         visual_scale: f32,
     ) -> ([f32; 4], [f32; 4]) {
         match self.property {
+            TransitionProperty::HorizontalEdgeFirst | TransitionProperty::HorizontalEdgeSecond => {
+                let mut from = self.from;
+                let mut to = self.to;
+                from[0] *= scale_factor;
+                to[0] *= scale_factor;
+                (from, to)
+            }
             TransitionProperty::Translation => {
                 // Scene primitive bounds are already converted to device-scaled `ScaledPixels`.
                 // Translation is declared in logical `Pixels`, so resolve it into the same device
@@ -225,7 +450,7 @@ impl AnimationProperty {
                 to[1] *= scale_factor;
                 (from, to)
             }
-            TransitionProperty::Blur => {
+            TransitionProperty::FilterBlur => {
                 let scale = if scale_factor.is_finite() && visual_scale.is_finite() {
                     (scale_factor * visual_scale).abs()
                 } else {
@@ -290,10 +515,7 @@ impl AnimationProperty {
         }
     }
 
-    fn translation_values_for_bounds(
-        self,
-        bounds: Bounds<Pixels>,
-    ) -> ([f32; 4], [f32; 4]) {
+    fn translation_values_for_bounds(self, bounds: Bounds<Pixels>) -> ([f32; 4], [f32; 4]) {
         if self.property != TransitionProperty::Translation
             || self.from[3] != 2.0
             || self.to[3] != 2.0
@@ -328,12 +550,14 @@ impl AnimationProperty {
         visual_scale: f32,
     ) -> Bounds<Pixels> {
         match self.property {
-            TransitionProperty::Translation => {
+            TransitionProperty::Translation
+            | TransitionProperty::HorizontalEdgeFirst
+            | TransitionProperty::HorizontalEdgeSecond => {
                 let (from, to) = self.translation_values_for_bounds(bounds);
                 translated_bounds(bounds, from).union(&translated_bounds(bounds, to))
             }
             TransitionProperty::Rotation => rotation_bounds(bounds),
-            TransitionProperty::Blur => {
+            TransitionProperty::FilterBlur => {
                 let visual_scale = if visual_scale.is_finite() {
                     visual_scale.abs()
                 } else {
@@ -351,22 +575,18 @@ impl AnimationProperty {
     }
 
     fn spring_translation_dirty_bounds(self, bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
-        if self.property != TransitionProperty::Translation {
+        if !matches!(
+            self.property,
+            TransitionProperty::Translation
+                | TransitionProperty::HorizontalEdgeFirst
+                | TransitionProperty::HorizontalEdgeSecond
+        ) {
             return None;
         }
         let (from, to) = self.translation_values_for_bounds(bounds);
-        let first = translated_bounds_at_progress(
-            bounds,
-            from,
-            to,
-            SPRING_TRANSLATION_PROGRESS_MIN,
-        );
-        let last = translated_bounds_at_progress(
-            bounds,
-            from,
-            to,
-            SPRING_TRANSLATION_PROGRESS_MAX,
-        );
+        let first =
+            translated_bounds_at_progress(bounds, from, to, SPRING_TRANSLATION_PROGRESS_MIN);
+        let last = translated_bounds_at_progress(bounds, from, to, SPRING_TRANSLATION_PROGRESS_MAX);
         Some(first.union(&last))
     }
 }
@@ -380,7 +600,7 @@ fn paint_scene_animation<R>(
     to: [f32; 4],
     paint: impl FnOnce(&mut Window) -> R,
 ) -> R {
-    if property.property == TransitionProperty::Blur {
+    if property.property == TransitionProperty::FilterBlur {
         let max_radius_device = from[0].abs().max(to[0].abs());
         window.with_scene_blur_animation(
             animation_id,
@@ -389,12 +609,14 @@ fn paint_scene_animation<R>(
             max_radius_device,
             paint,
         )
-    } else if matches!(
-        property.property,
-        TransitionProperty::Transform
-            | TransitionProperty::Rotation
-            | TransitionProperty::ClipReveal
-    ) {
+    } else if property.capture_subtree
+        || matches!(
+            property.property,
+            TransitionProperty::Transform
+                | TransitionProperty::Rotation
+                | TransitionProperty::ClipReveal
+        )
+    {
         // These properties capture a complete retained subtree. Use this animation element's own
         // stable layout box, not the inherited content mask (which may be the entire viewport).
         window.with_scene_composite_animation(
@@ -463,9 +685,11 @@ impl Animation {
     /// Set the easing function to use for this animation.
     /// The easing function will take a time delta between 0 and 1 and return a new delta
     /// that may overshoot the 0 to 1 range.
-    pub fn with_easing(mut self, easing: impl Fn(f32) -> f32 + 'static) -> Self {
+    /// The closure must be thread-safe so retained visual timelines can be sampled by an
+    /// independent presentation owner.
+    pub fn with_easing(mut self, easing: impl Fn(f32) -> f32 + Send + Sync + 'static) -> Self {
         self.spring = None;
-        self.spec.easing = crate::Easing::Custom(Rc::new(easing));
+        self.spec.easing = crate::Easing::Custom(Arc::new(easing));
         self
     }
 
@@ -483,6 +707,21 @@ impl Animation {
     pub fn with_property(mut self, property: AnimationProperty) -> Self {
         self.property = Some(property);
         self
+    }
+
+    /// Animate opacity as a renderer-owned property without changing layout.
+    pub fn with_opacity(self, from: f32, to: f32) -> Self {
+        self.with_property(AnimationProperty::opacity(from, to))
+    }
+
+    /// Animate translation as a renderer-owned property without changing layout.
+    pub fn with_translation(self, from: Point<Pixels>, to: Point<Pixels>) -> Self {
+        self.with_property(AnimationProperty::translation(from, to))
+    }
+
+    /// Animate scale around each primitive's static center without changing layout.
+    pub fn with_scale(self, from: f32, to: f32) -> Self {
+        self.with_property(AnimationProperty::uniform_scale(from, to))
     }
 
     fn scene_animation(&self) -> Option<(AnimationProperty, &AnimationSpec)> {
@@ -506,8 +745,9 @@ pub trait AnimationExt {
         AnimationElement {
             id: id.into(),
             element: Some(self),
-            animator: Box::new(move |this, _, value| animator(this, value)),
+            animator: Some(Box::new(move |this, _, value| animator(this, value))),
             animations: smallvec::smallvec![animation],
+            parallel_group: false,
         }
     }
 
@@ -524,8 +764,65 @@ pub trait AnimationExt {
         AnimationElement {
             id: id.into(),
             element: Some(self),
-            animator: Box::new(animator),
+            animator: Some(Box::new(animator)),
             animations: animations.into(),
+            parallel_group: false,
+        }
+    }
+
+    /// Animate a declared visual property on the presentation lane without an animator callback.
+    ///
+    /// The element's layout and paint are committed once; subsequent visual samples are applied
+    /// to the retained scene. Use [`AnimationExt::with_animation`] when each sample must change
+    /// layout or content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualAnimationError::MissingProperty`] when `animation` does not declare an
+    /// [`AnimationProperty`], or [`VisualAnimationError::LayoutDrivenProperty`] when its driver is
+    /// `Layout`.
+    fn with_visual_animation(
+        self,
+        id: impl Into<ElementId>,
+        animation: Animation,
+    ) -> Result<AnimationElement<Self>, VisualAnimationError>
+    where
+        Self: Sized,
+    {
+        let Some(property) = animation.property else {
+            return Err(VisualAnimationError::MissingProperty);
+        };
+        if matches!(animation.spec.driver, AnimationDriver::Layout) {
+            return Err(VisualAnimationError::LayoutDrivenProperty(
+                property.property,
+            ));
+        }
+
+        Ok(AnimationElement {
+            id: id.into(),
+            element: Some(self),
+            animator: None,
+            animations: smallvec::smallvec![animation],
+            parallel_group: false,
+        })
+    }
+
+    /// Animate up to three visual properties in parallel without rebuilding or relaying out the
+    /// retained element on each sample. Every track keeps its own easing and spring.
+    fn with_animation_group(
+        self,
+        id: impl Into<ElementId>,
+        group: AnimationGroup,
+    ) -> AnimationElement<Self>
+    where
+        Self: Sized,
+    {
+        AnimationElement {
+            id: id.into(),
+            element: Some(self),
+            animator: None,
+            animations: group.tracks,
+            parallel_group: true,
         }
     }
 
@@ -582,10 +879,7 @@ pub trait AnimationExt {
     /// The target identity comes from the parent mount path, this wrapper's call site, and its type;
     /// application code does not need to invent a rendering-only element ID.
     #[track_caller]
-    fn with_layout_animation_target(
-        self,
-        animating: bool,
-    ) -> LayoutAnimationTargetElement<Self>
+    fn with_layout_animation_target(self, animating: bool) -> LayoutAnimationTargetElement<Self>
     where
         Self: Sized,
     {
@@ -752,18 +1046,23 @@ impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let (from, to) = self.property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
-        window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
-            animation_id: state.animation_id,
-            property: self.property.property,
-            progress: if self.progress.is_finite() {
-                self.progress
-            } else {
-                0.0
-            },
-            from,
-            to,
-        });
+        let (from, to) =
+            self.property
+                .resolved_values(bounds, window.scale_factor(), window.visual_scale());
+        window
+            .next_frame
+            .scene
+            .push_animation_value(crate::SceneAnimationValue {
+                animation_id: state.animation_id,
+                property: self.property.property,
+                progress: if self.progress.is_finite() {
+                    self.progress
+                } else {
+                    0.0
+                },
+                from,
+                to,
+            });
         paint_scene_animation(
             window,
             state.animation_id,
@@ -838,8 +1137,9 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let global_id = global_id
-            .expect("StableSampledAnimationElement always supplies an element id for state tracking");
+        let global_id = global_id.expect(
+            "StableSampledAnimationElement always supplies an element id for state tracking",
+        );
         let (state, binding_changed) = window.with_element_state(
             global_id,
             |state: Option<StableSampledAnimationState>, _window| {
@@ -872,9 +1172,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
 
         // Entering or leaving renderer ownership must repaint descendants once. Without this
         // boundary, retained rows may keep a stale SceneAnimationId after the transition ends.
-        window.with_retained_replay_barrier(binding_changed, |window| {
-            element.prepaint(window, cx)
-        });
+        window.with_retained_replay_barrier(binding_changed, |window| element.prepaint(window, cx));
 
         self.animating.then_some(state)
     }
@@ -894,18 +1192,23 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             return;
         };
 
-        let (from, to) = self.property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
-        window.next_frame.scene.push_animation_value(crate::SceneAnimationValue {
-            animation_id: state.animation_id,
-            property: self.property.property,
-            progress: if self.progress.is_finite() {
-                self.progress
-            } else {
-                0.0
-            },
-            from,
-            to,
-        });
+        let (from, to) =
+            self.property
+                .resolved_values(bounds, window.scale_factor(), window.visual_scale());
+        window
+            .next_frame
+            .scene
+            .push_animation_value(crate::SceneAnimationValue {
+                animation_id: state.animation_id,
+                property: self.property.property,
+                progress: if self.progress.is_finite() {
+                    self.progress
+                } else {
+                    0.0
+                },
+                from,
+                to,
+            });
         paint_scene_animation(
             window,
             state.animation_id,
@@ -922,7 +1225,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             let retained_id = window
                 .current_retained_element_id()
                 .expect("stable sampled animation must have a retained identity");
-            let dirty_bounds = if self.property.property == TransitionProperty::Blur {
+            let dirty_bounds = if self.property.property == TransitionProperty::FilterBlur {
                 self.property.dirty_bounds_with_visual_scale(
                     window.visual_bounds(bounds),
                     window.visual_scale(),
@@ -948,8 +1251,9 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
 pub struct AnimationElement<E> {
     id: ElementId,
     element: Option<E>,
-    animations: SmallVec<[Animation; 1]>,
-    animator: Box<dyn Fn(E, usize, f32) -> E + 'static>,
+    animations: SmallVec<[Animation; 3]>,
+    animator: Option<Box<dyn Fn(E, usize, f32) -> E + 'static>>,
+    parallel_group: bool,
 }
 
 impl<E> AnimationElement<E> {
@@ -986,7 +1290,7 @@ pub struct SceneAnimationState {
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     type RequestLayoutState = AnyElement;
-    type PrepaintState = Option<SceneAnimationState>;
+    type PrepaintState = Option<SmallVec<[SceneAnimationState; 3]>>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -1012,9 +1316,12 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         if let Some((animation_index, progress)) = self.initial_scene_animation_sample() {
             let element = self.element.take().expect("should only be called once");
             let mut element = match progress {
-                Some(progress) => {
-                    (self.animator)(element, animation_index, progress).into_any_element()
-                }
+                Some(progress) => match self.animator.as_ref() {
+                    Some(animator) => {
+                        animator(element, animation_index, progress).into_any_element()
+                    }
+                    None => element.into_any_element(),
+                },
                 None => element.into_any_element(),
             };
             return (element.request_layout(window, cx), element);
@@ -1039,7 +1346,10 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
 
             let element = self.element.take().expect("should only be called once");
             let mut element = match delta {
-                Some(delta) => (self.animator)(element, animation_ix, delta).into_any_element(),
+                Some(delta) => match self.animator.as_ref() {
+                    Some(animator) => animator(element, animation_ix, delta).into_any_element(),
+                    None => element.into_any_element(),
+                },
                 None => element.into_any_element(),
             };
 
@@ -1062,109 +1372,243 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let Some((property, spec)) = self
-            .scene_animation()
-            .map(|(property, spec)| (property, spec.clone()))
-        else {
+        let Some(animations) = self.scene_animations() else {
             element.prepaint(window, cx);
             return None;
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
-        let spring = self.animations[0].spring;
-        let (from, to) = property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
-        // Custom curves may overshoot by an arbitrary amount. Translation starts conservatively at
-        // viewport scope; a physical spring can be tightened after paint reveals actual scene bounds.
-        let dirty_bounds = if property.property == TransitionProperty::Translation {
-            Bounds::new(Point::default(), window.viewport_size())
-        } else if property.property == TransitionProperty::Blur {
-            property.dirty_bounds_with_visual_scale(
-                window.visual_bounds(bounds),
-                window.visual_scale(),
-            )
-        } else {
-            property.dirty_bounds(bounds)
-        };
-        let (state, binding_changed, active) = window.with_element_state(
+        let mut prepared = SmallVec::<
+            [(
+                AnimationProperty,
+                AnimationSpec,
+                Option<crate::Spring>,
+                [f32; 4],
+                [f32; 4],
+                Bounds<Pixels>,
+            ); 3],
+        >::new();
+        for animation in animations {
+            let Some((property, spec)) = animation.scene_animation() else {
+                element.prepaint(window, cx);
+                return None;
+            };
+            let (from, to) =
+                property.resolved_values(bounds, window.scale_factor(), window.visual_scale());
+            // Custom curves can overshoot. Translation uses the conservative viewport until paint
+            // has registered the exact retained subtree bounds.
+            let dirty_bounds = if property.property == TransitionProperty::Translation {
+                Bounds::new(Point::default(), window.viewport_size())
+            } else if property.property == TransitionProperty::FilterBlur {
+                property.dirty_bounds_with_visual_scale(
+                    window.visual_bounds(bounds),
+                    window.visual_scale(),
+                )
+            } else {
+                property.dirty_bounds(bounds)
+            };
+            prepared.push((
+                property,
+                spec.clone(),
+                animation.spring,
+                from,
+                to,
+                dirty_bounds,
+            ));
+        }
+
+        let parallel_group = self.parallel_group;
+        let (states, binding_changed, bound) = window.with_element_state(
             global_id,
-            |state: Option<SceneAnimationState>, window| {
-                let (mut state, binding_changed, active) = match state {
-                    Some(mut state)
-                        if state.property == property
-                            && state.spec == spec
-                            && state.spring == spring
-                            && state.from == from
-                            && state.to == to =>
-                    {
-                        let active = window.scene_animation_is_active(state.animation_id);
-                        let binding_changed = state.bound != active;
-                        state.bounds = bounds;
-                        state.bound = active;
-                        (state, binding_changed, active)
+            |state: Option<SmallVec<[SceneAnimationState; 3]>>, window| {
+                let previous = state.unwrap_or_default();
+                let mut animation_id = previous.first().map(|state| state.animation_id);
+                let mut states = SmallVec::<[SceneAnimationState; 3]>::new();
+                let mut binding_changed = false;
+                let mut bound = false;
+
+                for old_state in previous.iter().filter(|old_state| {
+                    !prepared
+                        .iter()
+                        .any(|track| track.0.property == old_state.property.property)
+                }) {
+                    window.cancel_scene_animation_track(
+                        global_id,
+                        old_state.property.property,
+                        old_state.animation_id,
+                    );
+                    if !parallel_group {
+                        binding_changed |= old_state.bound;
                     }
-                    Some(mut state)
-                        if state.property == property
-                            && state.spec == spec
-                            && state.spring == spring
-                            && window.scene_animation_is_active(state.animation_id)
-                            && window.retarget_scene_animation(
+                }
+
+                for (property, spec, spring, from, to, dirty_bounds) in &prepared {
+                    let previous_state = previous
+                        .iter()
+                        .find(|state| state.property.property == property.property);
+                    let next_state = match previous_state {
+                        Some(state)
+                            if state.property == *property
+                                && state.spec == *spec
+                                && state.spring == *spring
+                                && (!matches!(
+                                    property.property,
+                                    TransitionProperty::HorizontalEdgeFirst
+                                        | TransitionProperty::HorizontalEdgeSecond
+                                ) || state.bounds.origin == bounds.origin)
+                                && ((state.from == *from && state.to == *to)
+                                    || (state.bounds.size == bounds.size
+                                        && state.property.resolved_values(
+                                            state.bounds,
+                                            window.scale_factor(),
+                                            window.visual_scale(),
+                                        ) == (state.from, state.to)
+                                        && matches!(
+                                            property.property,
+                                            TransitionProperty::Transform
+                                                | TransitionProperty::Rotation
+                                                | TransitionProperty::ClipReveal
+                                        ))) =>
+                        {
+                            if state.from != *from || state.to != *to {
+                                let delta = bounds.origin - state.bounds.origin;
+                                let scale = window.scale_factor();
+                                window.translate_scene_animation_origin(
+                                    global_id,
+                                    property.property,
+                                    [delta.x.0 * scale, delta.y.0 * scale],
+                                    *dirty_bounds,
+                                );
+                            }
+                            let track_bound = window.scene_animation_track_is_bound(
+                                state.animation_id,
+                                property.property,
+                            );
+                            let mut state = state.clone();
+                            state.from = *from;
+                            state.to = *to;
+                            state.bounds = bounds;
+                            state.bound = track_bound;
+                            if !parallel_group {
+                                binding_changed |= previous_state
+                                    .is_some_and(|previous| previous.bound != track_bound);
+                            }
+                            bound |= track_bound;
+                            state
+                        }
+                        Some(state)
+                            if window.scene_animation_track_is_active(
+                                state.animation_id,
+                                property.property,
+                            ) && window.retarget_scene_animation(
                                 global_id,
                                 property.property,
                                 state.animation_id,
                                 spec.clone(),
-                                spring,
+                                *spring,
                                 state.bounds,
                                 bounds,
-                                dirty_bounds,
-                                to,
+                                *dirty_bounds,
+                                *to,
                             ) =>
-                    {
-                        state.from = from;
-                        state.to = to;
-                        state.bounds = bounds;
-                        state.bound = true;
-                        (state, true, true)
-                    }
-                    _ => {
-                        let animation_id = window.start_scene_animation(
-                            global_id,
-                            property.property,
-                            spec.clone(),
-                            dirty_bounds,
-                            from,
-                            to,
-                        );
-                        if let Some(spring) = spring {
-                            window.set_scene_animation_spring(global_id, property.property, spring);
+                        {
+                            let mut state = state.clone();
+                            state.spec = spec.clone();
+                            state.spring = *spring;
+                            state.from = *from;
+                            state.to = *to;
+                            state.bounds = bounds;
+                            state.bound = true;
+                            bound = true;
+                            binding_changed = true;
+                            state
                         }
-                        (
+                        _ => {
+                            let track_id = if parallel_group {
+                                window.start_grouped_scene_animation(
+                                    global_id,
+                                    property.property,
+                                    spec.clone(),
+                                    *dirty_bounds,
+                                    *from,
+                                    *to,
+                                    animation_id,
+                                )
+                            } else if let Some(animation_id) = animation_id {
+                                window.start_scene_animation_with_id(
+                                    global_id,
+                                    property.property,
+                                    spec.clone(),
+                                    *dirty_bounds,
+                                    *from,
+                                    *to,
+                                    animation_id,
+                                    false,
+                                );
+                                animation_id
+                            } else {
+                                window.start_scene_animation(
+                                    global_id,
+                                    property.property,
+                                    spec.clone(),
+                                    *dirty_bounds,
+                                    *from,
+                                    *to,
+                                )
+                            };
+                            if let Some(spring) = spring {
+                                window.set_scene_animation_spring(
+                                    global_id,
+                                    property.property,
+                                    *spring,
+                                );
+                            }
+                            animation_id = Some(track_id);
+                            bound = true;
+                            binding_changed = true;
                             SceneAnimationState {
-                                animation_id,
-                                property,
-                                spec,
-                                spring,
-                                from,
-                                to,
+                                animation_id: track_id,
+                                property: *property,
+                                spec: spec.clone(),
+                                spring: *spring,
+                                from: *from,
+                                to: *to,
                                 bounds,
                                 bound: true,
-                            },
-                            true,
-                            true,
-                        )
+                            }
+                        }
+                    };
+                    window.set_grouped_visual_scene_animation(
+                        global_id,
+                        property.property,
+                        next_state.animation_id,
+                        parallel_group,
+                    );
+                    states.push(next_state);
+                }
+
+                if parallel_group {
+                    let group_bound = animation_id
+                        .is_some_and(|animation_id| window.scene_animation_is_bound(animation_id));
+                    binding_changed |= previous
+                        .first()
+                        .is_some_and(|previous| previous.bound != group_bound);
+                    for state in &mut states {
+                        state.bound = group_bound;
                     }
-                };
-                ((state.clone(), binding_changed, active), state)
+                    bound = group_bound;
+                }
+
+                ((states.clone(), binding_changed, bound), states)
             },
         );
 
         // The renderer owns this subtree only while the timeline is active. Completion schedules
         // one targeted repaint, and this barrier guarantees descendants drop the old animation id
         // instead of replaying it forever into later hover/scroll frames.
-        window.with_retained_replay_barrier(binding_changed, |window| {
-            element.prepaint(window, cx)
-        });
+        window.with_retained_replay_barrier(binding_changed, |window| element.prepaint(window, cx));
 
-        active.then_some(state)
+        bound.then_some(states)
     }
 
     fn paint(
@@ -1177,35 +1621,75 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let Some(state) = state.as_ref() else {
+        let Some(states) = state.as_ref() else {
             element.paint(window, cx);
             return;
         };
         let global_id =
             global_id.expect("AnimationElement always supplies an element id for state tracking");
-        paint_scene_animation(
-            window,
-            state.animation_id,
-            state.property,
-            bounds,
-            state.from,
-            state.to,
-            |window| {
-                element.paint(window, cx);
+        // The scope must retain geometry semantics even when opacity is the group's first track.
+        // In particular, glyph rasterization needs to know that the shared binding moves/scales.
+        let representative = states
+            .iter()
+            .find(|state| {
+                self.parallel_group
+                    && matches!(
+                        state.property.property,
+                        TransitionProperty::Scale
+                            | TransitionProperty::Transform
+                            | TransitionProperty::Translation
+                            | TransitionProperty::Rotation
+                            | TransitionProperty::ClipReveal
+                    )
+            })
+            .or_else(|| states.first())
+            .expect("active scene group has a track");
+        let paint = |window: &mut Window| {
+            element.paint(window, cx);
+            for state in states {
                 if state.spring.is_some()
-                    && state.property.property == TransitionProperty::Translation
-                    && let Some(bounds) = window.scene_animation_visual_bounds(state.animation_id)
-                    && let Some(dirty_bounds) =
-                        state.property.spring_translation_dirty_bounds(bounds)
+                    && matches!(
+                        state.property.property,
+                        TransitionProperty::Translation
+                            | TransitionProperty::HorizontalEdgeFirst
+                            | TransitionProperty::HorizontalEdgeSecond
+                    )
+                    && let Some(visual_bounds) =
+                        window.scene_animation_visual_bounds(state.animation_id)
+                    && let Some(dirty_bounds) = state
+                        .property
+                        .spring_translation_dirty_bounds(visual_bounds)
                 {
-                    let _ = window.set_scene_animation_dirty_bounds(
+                    window.set_scene_animation_dirty_bounds(
                         global_id,
                         state.property.property,
                         dirty_bounds,
                     );
                 }
-            },
-        );
+            }
+        };
+        if self.parallel_group {
+            let text_raster_scale = states
+                .iter()
+                .map(|state| state.property.text_raster_scale())
+                .fold(1.0_f32, f32::max);
+            window.with_scene_animation(
+                representative.animation_id,
+                representative.property.property,
+                text_raster_scale,
+                paint,
+            );
+        } else {
+            paint_scene_animation(
+                window,
+                representative.animation_id,
+                representative.property,
+                bounds,
+                representative.from,
+                representative.to,
+                paint,
+            );
+        }
     }
 }
 
@@ -1216,7 +1700,18 @@ impl<E> AnimationElement<E> {
             .flatten()
     }
 
+    fn scene_animations(&self) -> Option<&[Animation]> {
+        if self.parallel_group {
+            Some(&self.animations)
+        } else {
+            self.scene_animation().map(|_| self.animations.as_slice())
+        }
+    }
+
     fn initial_scene_animation_sample(&self) -> Option<(usize, Option<f32>)> {
+        if self.parallel_group {
+            return Some((0, None));
+        }
         let (_, spec) = self.scene_animation()?;
         let sample = spec.sample_elapsed(Duration::ZERO);
         Some((
@@ -1303,6 +1798,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn callback_free_visual_animation_requires_a_presentation_property() {
+        let element = crate::div()
+            .with_visual_animation(
+                "fade",
+                Animation::new(Duration::from_millis(180)).with_opacity(0.0, 1.0),
+            )
+            .expect("opacity is a presentation property");
+        assert!(element.animator.is_none());
+        assert!(element.scene_animation().is_some());
+
+        let missing_property = crate::div().with_visual_animation(
+            "missing-property",
+            Animation::new(Duration::from_millis(180)),
+        );
+        assert!(matches!(
+            missing_property,
+            Err(VisualAnimationError::MissingProperty)
+        ));
+
+        let layout_driven = crate::div().with_visual_animation(
+            "layout-driven",
+            Animation::from_spec(
+                AnimationSpec::new(Duration::from_millis(180)).driver(AnimationDriver::Layout),
+            )
+            .with_opacity(0.0, 1.0),
+        );
+        assert!(matches!(
+            layout_driven,
+            Err(VisualAnimationError::LayoutDrivenProperty(
+                TransitionProperty::Opacity
+            ))
+        ));
+    }
+
+    #[test]
     fn declared_opacity_uses_scene_animation_metadata() {
         let animation = Animation::new(Duration::from_millis(900))
             .with_property(AnimationProperty::opacity(0.25, 0.9));
@@ -1312,6 +1842,50 @@ mod tests {
         assert_eq!(property.from, [0.25, 0.0, 0.0, 0.0]);
         assert_eq!(property.to, [0.9, 0.0, 0.0, 0.0]);
         assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
+    fn visual_animation_group_keeps_independent_timing_and_rejects_capture() {
+        let group = AnimationGroup::parallel([
+            Animation::new(Duration::from_millis(180)).with_opacity(0.0, 1.0),
+            Animation::spring(crate::Spring::default()).with_translation(
+                Point::default(),
+                Point::new(crate::px(24.0), crate::px(0.0)),
+            ),
+            Animation::new(Duration::from_millis(320)).with_scale(0.9, 1.0),
+        ])
+        .expect("the group uses three distinct compositor properties");
+
+        assert_eq!(group.tracks.len(), 3);
+        assert_eq!(
+            group.tracks[0].property.expect("opacity track").property,
+            TransitionProperty::Opacity
+        );
+        assert_eq!(
+            group.tracks[1]
+                .property
+                .expect("translation track")
+                .property,
+            TransitionProperty::Translation
+        );
+        assert_eq!(
+            group.tracks[2].property.expect("scale track").property,
+            TransitionProperty::Scale
+        );
+        assert!(group.tracks[1].spring.is_some());
+
+        let captured = Animation::new(Duration::from_millis(180)).with_property(
+            AnimationProperty::clipped_translation(
+                Point::default(),
+                Point::new(crate::px(4.0), crate::px(0.0)),
+            ),
+        );
+        assert!(matches!(
+            AnimationGroup::parallel([captured]),
+            Err(AnimationGroupError::CapturedSubtreeProperty(
+                TransitionProperty::Translation
+            ))
+        ));
     }
 
     #[test]
@@ -1329,7 +1903,7 @@ mod tests {
 
     #[test]
     fn declared_blur_uses_renderer_gpu_driver_and_device_radius() {
-        let property = AnimationProperty::blur(crate::px(2.0), crate::px(12.0));
+        let property = AnimationProperty::filter_blur(crate::px(2.0), crate::px(12.0));
         let animation = Animation::new(Duration::from_millis(240)).with_property(property);
         let (declared, spec) = animation.scene_animation().expect("scene animation");
         let bounds = Bounds::new(
@@ -1337,13 +1911,16 @@ mod tests {
             crate::size(crate::px(100.0), crate::px(60.0)),
         );
 
-        assert_eq!(declared.property, TransitionProperty::Blur);
+        assert_eq!(declared.property, TransitionProperty::FilterBlur);
         assert_eq!(
             declared.resolved_values(bounds, 2.0, 1.5),
             ([6.0, 0.0, 0.0, 0.0], [36.0, 0.0, 0.0, 0.0])
         );
-        assert!(TransitionProperty::Blur.supports_gpu_driver());
-        assert_eq!(TransitionProperty::Blur.preferred_driver(), AnimationDriver::Gpu);
+        assert!(TransitionProperty::FilterBlur.supports_gpu_driver());
+        assert_eq!(
+            TransitionProperty::FilterBlur.preferred_driver(),
+            AnimationDriver::Gpu
+        );
         assert_eq!(spec.driver, AnimationDriver::Auto);
     }
 
@@ -1366,10 +1943,8 @@ mod tests {
 
     #[test]
     fn relative_translation_resolves_against_final_bounds() {
-        let property = AnimationProperty::relative_translation(
-            Point::new(-0.75, 0.25),
-            Point::new(0.0, 0.0),
-        );
+        let property =
+            AnimationProperty::relative_translation(Point::new(-0.75, 0.25), Point::new(0.0, 0.0));
         let bounds = Bounds::new(
             Point::new(crate::px(10.0), crate::px(20.0)),
             crate::size(crate::px(200.0), crate::px(40.0)),
@@ -1483,7 +2058,7 @@ mod tests {
 
     #[test]
     fn blur_dirty_bounds_include_outer_visual_scale() {
-        let property = AnimationProperty::blur(crate::px(2.0), crate::px(10.0));
+        let property = AnimationProperty::filter_blur(crate::px(2.0), crate::px(10.0));
         let visual_bounds = Bounds::new(
             Point::new(crate::px(20.0), crate::px(30.0)),
             crate::size(crate::px(150.0), crate::px(90.0)),

@@ -34,10 +34,11 @@ impl AsyncApp {
         let mut f = Some(f);
         let mut result = None;
         self.with_app_mut_erased(&mut |app| {
-            result = Some(
-                f.take()
-                    .expect("async app callback must execute exactly once")(app),
-            );
+            result = Some(f
+                .take()
+                .expect("async app callback must execute exactly once")(
+                app
+            ));
         })?;
         Ok(result.expect("async app callback must produce a result"))
     }
@@ -55,10 +56,11 @@ impl AsyncApp {
         let mut f = Some(f);
         let mut result = None;
         self.try_with_app_mut_erased(&mut |app| {
-            result = Some(
-                f.take()
-                    .expect("async app callback must execute exactly once")(app),
-            );
+            result = Some(f
+                .take()
+                .expect("async app callback must execute exactly once")(
+                app
+            ));
         })?;
         Ok(result.expect("async app callback must produce a result"))
     }
@@ -76,10 +78,11 @@ impl AsyncApp {
         let mut f = Some(f);
         let mut result = None;
         self.with_app_erased(&mut |app| {
-            result = Some(
-                f.take()
-                    .expect("async app callback must execute exactly once")(app),
-            );
+            result = Some(f
+                .take()
+                .expect("async app callback must execute exactly once")(
+                app
+            ));
         })?;
         Ok(result.expect("async app callback must produce a result"))
     }

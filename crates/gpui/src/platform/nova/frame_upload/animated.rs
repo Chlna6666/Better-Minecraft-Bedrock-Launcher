@@ -36,7 +36,7 @@ impl ResolvedAnimationValue {
         let mut sampled = std::array::from_fn(|index| {
             value.from[index] + (value.to[index] - value.from[index]) * progress
         });
-        if value.property == TransitionProperty::Blur {
+        if value.property == TransitionProperty::FilterBlur {
             // Blur capture reserves the largest endpoint's 3-sigma footprint once. Keep CPU
             // fallback sampling inside that same endpoint interval even when easing overshoots,
             // otherwise an out-of-range sigma could sample beyond the retained target.
@@ -181,7 +181,6 @@ impl AnimatedByteMetadata {
     pub(in crate::platform::nova) const fn len(self) -> usize {
         self.len
     }
-
 }
 
 /// A retained primitive and its small, independently uploadable animated range.
@@ -273,7 +272,7 @@ impl AnimatedUpload {
         let mut primitive = self.primitive.clone();
         let resolved_value = values.get(&self.animation_id).copied();
         let filter_parameters_changed = resolved_value.is_some_and(|value| {
-            value.property == TransitionProperty::Blur
+            value.property == TransitionProperty::FilterBlur
                 && matches!(primitive, Primitive::BackdropBlur(_) | Primitive::Blur(_))
         });
         let composite_rotation = resolved_value.filter(|value| {
@@ -672,7 +671,7 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             }
         }
         TransitionProperty::Rotation => {}
-        TransitionProperty::Blur => {
+        TransitionProperty::FilterBlur => {
             let radius = if sampled[0].is_finite() {
                 crate::ScaledPixels(sampled[0].max(0.0))
             } else {
@@ -698,6 +697,26 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                     crate::ScaledPixels(sampled[3]),
                 )),
             );
+        }
+        TransitionProperty::VisualState => {
+            apply_scale(primitive, sampled[2], None);
+            apply_resolved_value(
+                primitive,
+                ResolvedAnimationValue {
+                    property: TransitionProperty::Translation,
+                    sampled: [sampled[0], sampled[1], 0.0, 0.0],
+                },
+            );
+            apply_opacity(primitive, sampled[3].clamp(0.0, 1.0));
+        }
+        TransitionProperty::HorizontalEdges => {
+            let bounds = match primitive {
+                Primitive::Quad(value) => &mut value.bounds,
+                Primitive::Shadow(value) => &mut value.bounds,
+                _ => return,
+            };
+            bounds.origin.x += crate::ScaledPixels(sampled[0].min(sampled[1]));
+            bounds.size.width += crate::ScaledPixels((sampled[0] - sampled[1]).abs());
         }
         _ => {}
     }
@@ -880,6 +899,41 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_edges_preserve_height_radius_and_crossing_order() {
+        for edges in [[-20.0, -5.0], [-5.0, -20.0]] {
+            let mut primitive = Primitive::Quad(Quad {
+                bounds: crate::bounds(
+                    crate::point(crate::ScaledPixels(100.0), crate::ScaledPixels(10.0)),
+                    crate::size(crate::ScaledPixels(35.0), crate::ScaledPixels(34.0)),
+                ),
+                corner_radii: crate::Corners::all(crate::ScaledPixels(17.0)),
+                ..Default::default()
+            });
+            apply_value(
+                &mut primitive,
+                &SceneAnimationValue {
+                    animation_id: crate::SceneAnimationId(1),
+                    property: TransitionProperty::HorizontalEdges,
+                    progress: 1.0,
+                    from: [edges[0], edges[1], 0.0, 0.0],
+                    to: [edges[0], edges[1], 0.0, 0.0],
+                },
+            );
+            let Primitive::Quad(quad) = primitive else {
+                panic!("quad decoration");
+            };
+            assert_eq!(quad.bounds.origin.x, crate::ScaledPixels(80.0));
+            assert_eq!(quad.bounds.size.width, crate::ScaledPixels(50.0));
+            assert_eq!(quad.bounds.origin.y, crate::ScaledPixels(10.0));
+            assert_eq!(quad.bounds.size.height, crate::ScaledPixels(34.0));
+            assert_eq!(
+                quad.corner_radii,
+                crate::Corners::all(crate::ScaledPixels(17.0))
+            );
+        }
+    }
+
+    #[test]
     fn retained_translation_preserves_overshoot_without_accumulating_deltas() {
         let id = crate::SceneAnimationId(1);
         let quad = Quad {
@@ -991,7 +1045,7 @@ mod tests {
             &mut primitive,
             &SceneAnimationValue {
                 animation_id: crate::SceneAnimationId(3),
-                property: TransitionProperty::Blur,
+                property: TransitionProperty::FilterBlur,
                 progress: 1.5,
                 from: [4.0, 0.0, 0.0, 0.0],
                 to: [20.0, 0.0, 0.0, 0.0],
@@ -1023,7 +1077,7 @@ mod tests {
             &mut primitive,
             &SceneAnimationValue {
                 animation_id: crate::SceneAnimationId(3),
-                property: TransitionProperty::Blur,
+                property: TransitionProperty::FilterBlur,
                 progress: 0.5,
                 from: [4.0, 0.0, 0.0, 0.0],
                 to: [20.0, 0.0, 0.0, 0.0],

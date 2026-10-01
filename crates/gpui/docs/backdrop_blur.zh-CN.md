@@ -2,12 +2,21 @@
 
 [English](backdrop_blur.md)
 
+交互示例见 [`examples/blur.rs`](../examples/blur.rs)：四种半径的背景/元素模糊、
+嵌套玻璃、圆角裁剪、阴影，以及原生窗口材质切换与请求/生效模式查询。
+Windows 可分别运行：
+
+```powershell
+cargo run -p gpui --example blur --features nova-gfx-dx12 -- --backend=nova-dx12
+cargo run -p gpui --example blur --features nova-gfx-vulkan -- --backend=nova-vulkan
+```
+
 两种独立的 `Styled` 属性共享 GPU 高斯核，但不互为别名：
 
 | GPUI | Web CSS | 处理对象 |
 | --- | --- | --- |
-| `.blur(px(3.))` | `filter: blur(3px)` | 元素自身背景、阴影、边框和子元素（含文字） |
-| `.backdrop_blur(px(3.))` | `backdrop-filter: blur(3px)` | 此前绘制、位于元素后方的内容 |
+| `.filter_blur(px(3.))` | `filter: blur(3px)` | 元素自身背景、阴影、边框和子元素（含文字） |
+| `.background_blur(px(3.))` | `backdrop-filter: blur(3px)` | 此前绘制、位于元素后方的内容 |
 | `.bg(rgba(0xffffffcc))` | `background: rgb(255 255 255 / 80%)` | 元素自身填充色 |
 | `.opacity(0.5)` | `opacity: .5` | 元素透明度，包含滤镜输出 |
 
@@ -19,10 +28,10 @@ Backdrop Root/stacking-context 模型。
 ```rust
 use gpui::{div, px, rgba, prelude::*};
 
-let content = div().blur(px(3.)).child("文字也模糊");
+let content = div().filter_blur(px(3.)).child("文字也模糊");
 let panel = div()
     .id("account-panel")
-    .backdrop_blur(px(6.))
+    .background_blur(px(6.))
     .bg(rgba(0xffffffeb))
     .rounded(px(16.))
     .opacity(0.8)
@@ -39,6 +48,22 @@ let panel = div()
 元素和窗口缩放将它转换为设备像素。有限 GPU 核在三个标准差内近似高斯分布，保留
 小数值，但不承诺与浏览器逐像素一致。旧 API 参数为核采样范围；保持原有视觉强度时
 将旧值 `r` 迁移成 `r / 3`。
+
+## 原生窗口材质
+
+窗口材质与元素过滤分别处理。`WindowBackgroundAppearance` 支持 `Opaque`、
+`Transparent`、`Blurred`、`Mica`、`MicaAlt`；通过窗口 options 或
+`Window::set_background_appearance` 请求。`background_appearance()` 保留请求值，
+`background_capabilities()` 查询原生支持，`effective_background_appearance()` 查询
+降级后的生效请求。系统/compositor 策略仍可能改变最终视觉。
+
+Windows 使用 [DWMWA_SYSTEMBACKDROP_TYPE](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwm_systembackdrop_type)，
+分别请求 Desktop Acrylic、Mica、Mica Alt；旧系统或失败请求降级透明，透明模式清除系统材质。
+Wayland 优先使用具有 blur capability 的 ext-background-effect-v1，再尝试 KDE；
+区域采用 surface-local 逻辑坐标，在 surface commit 时生效，能力变化会更新现有窗口。
+X11 同时检查 compositor selection owner 与 root window 的 KDE blur 支持公告，
+仅存在 atom 不代表支持。Linux 的 Mica 系列先降级原生 blur，再透明；macOS 使用既有原生 blur。
+这些窗口材质路径只请求系统效果，不捕获桌面像素。
 
 ## Scene Data
 

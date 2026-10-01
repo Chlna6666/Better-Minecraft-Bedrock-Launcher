@@ -1,10 +1,8 @@
+use crate::window::{RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus};
 use crate::{
-    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId, PaintIndex,
-    Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
+    App, AvailableSpace, Bounds, DispatchNodeId, ElementId, InspectorElementId, LayoutId,
+    PaintIndex, Pixels, PrepaintStateIndex, SharedString, Size, TextLayout, TextStyle, Window,
     WrappedLineLayout,
-};
-use crate::window::{
-    RetainedElementIdentity, debug_visualization::ViewCacheDebugStatus,
 };
 use derive_more::Deref;
 use smallvec::SmallVec;
@@ -614,16 +612,14 @@ impl<E: Element> Drawable<E> {
             } => {
                 let bounds = window.layout_bounds(layout_id);
                 let layout_fingerprint = window.retained_layout_fingerprint(layout_id);
-                let identity_stable =
-                    retained_identity_is_stable(&retained_identity_ambiguity);
+                let identity_stable = retained_identity_is_stable(&retained_identity_ambiguity);
                 // ReconcileSubtree proof needs exact shaped text output. Non-text elements exit
                 // this helper after two cheap type checks; safe Divs use semantic generations.
-                let mut plain_text_key =
-                    retained_plain_text_key(
-                        &self.element as &dyn Any,
-                        &request_layout as &dyn Any,
-                        window,
-                    );
+                let mut plain_text_key = retained_plain_text_key(
+                    &self.element as &dyn Any,
+                    &request_layout as &dyn Any,
+                    window,
+                );
                 if let Some((
                     source_prepaint_range,
                     source_paint_range,
@@ -728,8 +724,7 @@ impl<E: Element> Drawable<E> {
                     },
                 );
                 let div_self_scene = retained_div_self_scene(&prepaint as &dyn Any);
-                let identity_stable =
-                    retained_identity_is_stable(&retained_identity_ambiguity);
+                let identity_stable = retained_identity_is_stable(&retained_identity_ambiguity);
                 record_retained_painted_element(
                     retained_id,
                     bounds,

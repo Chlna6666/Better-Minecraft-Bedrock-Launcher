@@ -265,9 +265,10 @@ impl NovaAtlas {
         live_tiles: &FxHashSet<(AtlasTextureId, u32)>,
     ) -> bool {
         let state = self.state.lock().expect("nova atlas lock poisoned");
-        state.pending_removals.iter().any(|pending| {
-            !live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0))
-        })
+        state
+            .pending_removals
+            .iter()
+            .any(|pending| !live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0)))
     }
 
     /// Applies queued atlas retirements except for allocations referenced by the Scene that is

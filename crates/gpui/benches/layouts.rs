@@ -153,11 +153,7 @@ fn text_layout_cache(criterion: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     let sample = shape_text_frame(&mut context, black_box(&lines), Some(px(420.0)));
-                    black_box((
-                        sample.requests,
-                        sample.reuses,
-                        sample.cache_rate_percent,
-                    ));
+                    black_box((sample.requests, sample.reuses, sample.cache_rate_percent));
                 });
             },
         );

@@ -411,7 +411,8 @@ impl From<MonochromeSprite> for Primitive {
 #[repr(C)]
 pub(crate) struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32,
+    /// Image sampling mode; 1 selects the nearest source texel.
+    pub sampling: u32,
     pub grayscale: bool,
     pub opacity: f32,
     pub animation_id: Option<SceneAnimationId>,

@@ -296,10 +296,10 @@ impl Style {
             .clamp_radii_for_quad_size(bounds.size);
 
         // Sample only earlier elements, never this element's own fill or shadow.
-        if let Some(blur) = self.backdrop_blur {
+        if let Some(blur) = self.background_blur {
             window.paint_backdrop_blur(bounds, corner_radii, blur);
         }
-        if let Some(sigma) = self.blur {
+        if let Some(sigma) = self.filter_blur {
             window.paint_element_blur(bounds, sigma, |window| {
                 self.paint_contents(bounds, corner_radii, window, cx, continuation);
             });

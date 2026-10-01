@@ -35,6 +35,7 @@ pub(crate) struct WindowsDispatcher {
     main_thread_wakeup_pending: Arc<AtomicBool>,
     main_thread_id: ThreadId,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    ui_owner_mode: bool,
 }
 
 impl WindowsDispatcher {
@@ -42,6 +43,7 @@ impl WindowsDispatcher {
         main_sender: Sender<Runnable>,
         main_thread_wakeup_pending: Arc<AtomicBool>,
         event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+        ui_owner_mode: bool,
     ) -> Self {
         let main_thread_id = current().id();
 
@@ -50,6 +52,7 @@ impl WindowsDispatcher {
             main_thread_wakeup_pending,
             main_thread_id,
             event_loop_proxy,
+            ui_owner_mode,
         }
     }
 
@@ -70,11 +73,7 @@ impl WindowsDispatcher {
         // run_work_callback when Windows executes the submitted callback. The callback
         // environment is stack-owned only for the duration of submission, as required by Win32.
         if let Err(error) = unsafe {
-            TrySubmitThreadpoolCallback(
-                Some(run_work_callback),
-                Some(context),
-                Some(&environment),
-            )
+            TrySubmitThreadpoolCallback(Some(run_work_callback), Some(context), Some(&environment))
         } {
             log::error!(
                 "WindowsDispatcher::dispatch_on_threadpool failed: {:?}",
@@ -91,7 +90,9 @@ impl WindowsDispatcher {
 
         // SAFETY: context is a valid async-task Runnable raw pointer. The timer callback consumes
         // it exactly once and closes the one-shot thread-pool timer after running the task.
-        let timer = match unsafe { CreateThreadpoolTimer(Some(run_timer_callback), Some(context), None) } {
+        let timer = match unsafe {
+            CreateThreadpoolTimer(Some(run_timer_callback), Some(context), None)
+        } {
             Ok(timer) => timer,
             Err(error) => {
                 log::error!(
@@ -133,6 +134,9 @@ impl PlatformDispatcher for WindowsDispatcher {
     fn dispatch_on_main_thread(&self, runnable: Runnable) {
         match self.main_sender.send(runnable) {
             Ok(_) => {
+                if self.ui_owner_mode {
+                    return;
+                }
                 if !self.main_thread_wakeup_pending.swap(true, Ordering::AcqRel) {
                     let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
                     if let Some(event_loop_proxy) = event_loop_proxy {
@@ -201,8 +205,7 @@ unsafe extern "system" fn run_work_callback(
 ) {
     // SAFETY: context was produced by Runnable::into_raw in dispatch_on_threadpool and this
     // callback is the unique consumer installed for that submission.
-    let runnable =
-        unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(context as *mut ())) };
+    let runnable = unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(context as *mut ())) };
     runnable.run();
 }
 
@@ -213,8 +216,7 @@ unsafe extern "system" fn run_timer_callback(
 ) {
     // SAFETY: context was produced by Runnable::into_raw in dispatch_on_threadpool_after and this
     // one-shot callback is the unique consumer.
-    let runnable =
-        unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(context as *mut ())) };
+    let runnable = unsafe { Runnable::<()>::from_raw(NonNull::new_unchecked(context as *mut ())) };
     runnable.run();
 
     // SAFETY: timer is the callback's valid PTP_TIMER and is no longer armed after this one-shot

@@ -131,9 +131,7 @@ fn trim_resolved_mesh_animation_scratch(
     working_set: usize,
 ) {
     let target = CUSTOM_MESH_ANIMATION_SCRATCH_MIN_CAPACITY.max(working_set);
-    if scratch.capacity()
-        > target.saturating_mul(CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER)
-    {
+    if scratch.capacity() > target.saturating_mul(CUSTOM_MESH_ANIMATION_SCRATCH_TRIM_MULTIPLIER) {
         scratch.shrink_to(target);
     }
 }
@@ -208,8 +206,7 @@ mod tests {
                 < oversized_scratch_capacity,
             "mesh animation scratch should retire a one-frame high-water mark"
         );
-        let retained_scratch_capacity =
-            upload.custom_mesh_3d_resolved_animation_scratch.capacity();
+        let retained_scratch_capacity = upload.custom_mesh_3d_resolved_animation_scratch.capacity();
         upload.rebuild_custom_mesh_3d_animations();
         assert_eq!(
             upload.custom_mesh_3d_resolved_animation_scratch.capacity(),
@@ -228,7 +225,10 @@ mod tests {
         );
         assert_eq!(read_u32(&upload.custom_mesh_3d_animations, first + 4), 1);
         assert_eq!(read_f32(&upload.custom_mesh_3d_animations, first + 16), 6.0);
-        assert_eq!(read_f32(&upload.custom_mesh_3d_animations, first + 20), 12.0);
+        assert_eq!(
+            read_f32(&upload.custom_mesh_3d_animations, first + 20),
+            12.0
+        );
 
         let second = PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES;
         assert_eq!(

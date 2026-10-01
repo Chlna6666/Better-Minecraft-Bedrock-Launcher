@@ -142,8 +142,7 @@ impl Asset for CompressedImageAssetLoader {
     type Source = CompressedImageSource;
     type Output = Result<CompressedImageBytes, ImageCacheError>;
 
-    const RETENTION: crate::AssetRetentionPolicy =
-        crate::AssetRetentionPolicy::TransientAfterReady;
+    const RETENTION: crate::AssetRetentionPolicy = crate::AssetRetentionPolicy::TransientAfterReady;
 
     fn load(
         source: Self::Source,
@@ -304,11 +303,11 @@ impl Asset for SizedImageAssetLoader {
         let pipeline_config = cx.image_pipeline_config();
         let image_config = pipeline_config.animated;
         let slow_image_threshold = pipeline_config.slow_image_threshold;
-        let image_input = SizedImageInput::PreloadedBytes(
-            cx.fetch_asset::<CompressedImageLoader>(&CompressedImageSource {
+        let image_input = SizedImageInput::PreloadedBytes(cx.fetch_asset::<CompressedImageLoader>(
+            &CompressedImageSource {
                 resource: source.resource.clone(),
-            }),
-        );
+            },
+        ));
         async move {
             let processing_started = Instant::now();
             let scale_factor = f32::from_bits(source.scale_factor_bits);

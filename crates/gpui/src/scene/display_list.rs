@@ -162,10 +162,7 @@ impl BackdropBlurDamagePlan {
             }
             for damage in &entry.source_damage {
                 self.push(entry.order, *damage);
-                if self
-                    .entry_mut(entry.order)
-                    .source_damage
-                    .len()
+                if self.entry_mut(entry.order).source_damage.len()
                     > MAX_ACCUMULATED_BACKDROP_DAMAGE_RECTS
                 {
                     self.mark_full(entry.order);
@@ -485,8 +482,7 @@ impl Scene {
         &self,
         mut visit: impl FnMut(Range<usize>, Bounds<ScaledPixels>),
     ) {
-        let mut stack =
-            SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
+        let mut stack = SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
 
         for (index, operation) in self.paint_operations.iter().enumerate() {
             match operation {
@@ -940,10 +936,7 @@ impl Scene {
         }
     }
 
-    pub(crate) fn collect_animation_ids_into(
-        &self,
-        ids: &mut FxHashSet<SceneAnimationId>,
-    ) {
+    pub(crate) fn collect_animation_ids_into(&self, ids: &mut FxHashSet<SceneAnimationId>) {
         for operation in &self.paint_operations {
             match operation {
                 PaintOperation::Primitive(primitive) => {
@@ -1413,8 +1406,7 @@ impl Scene {
         trim_vec_against!(retained_chunk_candidates);
         trim_vec_against!(prepared_retained_quad_chunks);
 
-        let batch_target =
-            SCENE_MIN_RETAINED_CAPACITY.max(current.prepared_batches.batches.len());
+        let batch_target = SCENE_MIN_RETAINED_CAPACITY.max(current.prepared_batches.batches.len());
         if self.prepared_batches.batches.capacity()
             > batch_target.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
         {
@@ -1887,11 +1879,7 @@ fn animation_value_changed(
         return false;
     };
     animation_value_for(scene, animation_id, presentation_values)
-        != animation_value_for(
-            previous_scene,
-            animation_id,
-            previous_presentation_values,
-        )
+        != animation_value_for(previous_scene, animation_id, previous_presentation_values)
 }
 
 fn animation_swept_bounds(
@@ -1905,8 +1893,7 @@ fn animation_swept_bounds(
         return primitive.visual_bounds();
     };
     let current = animation_value_for(scene, animation_id, presentation_values);
-    let previous =
-        animation_value_for(previous_scene, animation_id, previous_presentation_values);
+    let previous = animation_value_for(previous_scene, animation_id, previous_presentation_values);
     animation_sampled_bounds(primitive, current)
         .union(&animation_sampled_bounds(primitive, previous))
 }
@@ -1922,8 +1909,7 @@ fn blur_capture_animation_swept_bounds(
         return blur_capture_visual_bounds(blur);
     };
     let current = animation_value_for(scene, animation_id, presentation_values);
-    let previous =
-        animation_value_for(previous_scene, animation_id, previous_presentation_values);
+    let previous = animation_value_for(previous_scene, animation_id, previous_presentation_values);
     animation_sampled_blur_capture_bounds(blur, current)
         .union(&animation_sampled_blur_capture_bounds(blur, previous))
 }
@@ -1960,6 +1946,11 @@ fn animation_sampled_blur_capture_bounds(
             sampled[0],
             crate::point(ScaledPixels(sampled[1]), ScaledPixels(sampled[2])),
         ),
+        TransitionProperty::VisualState => {
+            let mut bounds = scaled_animation_bounds(bounds, sampled[2], bounds.center());
+            bounds.origin += crate::point(ScaledPixels(sampled[0]), ScaledPixels(sampled[1]));
+            bounds
+        }
         // Opacity changes pixels but not geometry, so the whole composite output is source damage
         // for a later backdrop barrier.
         TransitionProperty::Opacity => bounds,
@@ -2007,6 +1998,11 @@ fn animation_sampled_bounds(
             sampled[0],
             crate::point(ScaledPixels(sampled[1]), ScaledPixels(sampled[2])),
         ),
+        TransitionProperty::VisualState => {
+            let mut bounds = scaled_animation_bounds(bounds, sampled[2], primitive.bounds().center());
+            bounds.origin += crate::point(ScaledPixels(sampled[0]), ScaledPixels(sampled[1]));
+            bounds
+        }
         _ => bounds,
     }
 }

@@ -7,6 +7,12 @@ use crate::{Bounds, DEFAULT_WINDOW_SIZE, Pixels, point};
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
 pub trait PlatformDisplay: Send + Sync + Debug {
+    /// Nominal refresh period reported by the display's current mode, if available.
+    /// This is a hardware timing target, not a measurement of application presentation or VRR.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Get the ID for this display
     fn id(&self) -> DisplayId;
 

@@ -47,6 +47,7 @@ use objc::{
 };
 use parking_lot::Mutex;
 use ptr::null_mut;
+use std::sync::Arc;
 use std::{
     cell::Cell,
     convert::TryInto,
@@ -187,7 +188,7 @@ pub(crate) struct MacPlatformState {
     finish_launching: Option<Box<dyn FnOnce()>>,
     dock_menu: Option<id>,
     menus: Option<Vec<OwnedMenu>>,
-    keyboard_mapper: Rc<MacKeyboardMapper>,
+    keyboard_mapper: Arc<MacKeyboardMapper>,
 }
 
 impl Default for MacPlatform {
@@ -203,7 +204,7 @@ impl MacPlatform {
         let text_system = Arc::new(crate::MacTextSystem::new());
 
         let keyboard_layout = MacKeyboardLayout::new();
-        let keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
+        let keyboard_mapper = Arc::new(MacKeyboardMapper::new(keyboard_layout.id()));
 
         Self(Mutex::new(MacPlatformState {
             headless,
@@ -907,7 +908,7 @@ impl Platform for MacPlatform {
         Box::new(MacKeyboardLayout::new())
     }
 
-    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
+    fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
         self.0.lock().keyboard_mapper.clone()
     }
 
@@ -1478,7 +1479,7 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
     let platform = unsafe { mac_platform(this) };
     let mut lock = platform.0.lock();
     let keyboard_layout = MacKeyboardLayout::new();
-    lock.keyboard_mapper = Rc::new(MacKeyboardMapper::new(keyboard_layout.id()));
+    lock.keyboard_mapper = Arc::new(MacKeyboardMapper::new(keyboard_layout.id()));
     if let Some(mut callback) = lock.on_keyboard_layout_change.take() {
         drop(lock);
         callback();

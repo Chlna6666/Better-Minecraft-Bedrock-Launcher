@@ -49,6 +49,7 @@ use wayland_client::{
         wl_shm_pool, wl_surface,
     },
 };
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use wayland_protocols::wp::cursor_shape::v1::client::{
     wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
 };
@@ -213,7 +214,7 @@ pub struct Globals {
     pub fractional_scale_manager:
         Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
     pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
-    pub blur_manager: Option<org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
+    pub(super) background_effects: Rc<RefCell<super::background::BackgroundEffects>>,
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub executor: ForegroundExecutor,
 }
@@ -260,7 +261,7 @@ impl Globals {
             viewporter: globals.bind(&qh, 1..=1, ()).ok(),
             fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
             decoration_manager: globals.bind(&qh, 1..=1, ()).ok(),
-            blur_manager: globals.bind(&qh, 1..=1, ()).ok(),
+            background_effects: super::background::BackgroundEffects::bind(&globals, &qh),
             text_input_manager: globals.bind(&qh, 1..=1, ()).ok(),
             executor,
             qh,
@@ -977,6 +978,18 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
         let mut client = this.client();
         let mut state = client.borrow_mut();
 
+        let backgrounds_changed = match &event {
+            wl_registry::Event::Global { name, interface, .. } => state.globals.background_effects.borrow_mut().global_added(registry, *name, interface, qh),
+            wl_registry::Event::GlobalRemove { name } => state.globals.background_effects.borrow_mut().global_removed(*name),
+            _ => false,
+        };
+        if backgrounds_changed {
+            let windows = state.windows.values().cloned().collect::<Vec<_>>();
+            drop(state);
+            for window in windows { window.refresh_background_effects(); }
+            return;
+        }
+
         match event {
             wl_registry::Event::Global {
                 name,
@@ -1016,6 +1029,29 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                 // TODO: handle global removal
             }
             _ => {}
+        }
+    }
+}
+
+impl WaylandClientStatePtr {
+    pub(super) fn background_effect_capabilities_changed(
+        &self,
+        manager: &ExtBackgroundEffectManagerV1,
+        supported: bool,
+    ) {
+        let client = self.client();
+        let state = client.borrow();
+        {
+            let mut effects = state.globals.background_effects.borrow_mut();
+            if effects.manager.as_ref() != Some(manager) {
+                return;
+            }
+            effects.blur_supported = supported;
+        }
+        let windows = state.windows.values().cloned().collect::<Vec<_>>();
+        drop(state);
+        for window in windows {
+            window.refresh_background_effects();
         }
     }
 }

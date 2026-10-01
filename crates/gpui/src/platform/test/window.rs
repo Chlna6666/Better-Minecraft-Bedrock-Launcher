@@ -1,9 +1,9 @@
 use crate::{
     AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DispatchEventResult, GpuSpecs,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameResult, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptButton, PlatformFrameRequest, Size,
-    TestPlatform, TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowParams,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest, PlatformFrameResult,
+    PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton, Size, TestPlatform,
+    TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
+    WindowParams,
 };
 use collections::HashMap;
 use parking_lot::Mutex;
@@ -34,7 +34,7 @@ pub(crate) struct TestWindowState {
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
     appearance_change_callback: Option<Box<dyn FnMut()>>,
-    request_frame_callback: Option<Box<dyn FnMut(PlatformFrameRequest)>>,
+    request_frame_callback: Option<crate::platform::frame::PlatformFrameRequestSender>,
     request_frame_count: Rc<Cell<usize>>,
     last_requested_frame: Rc<Cell<Option<PlatformFrameRequest>>>,
     start_window_move_count: Rc<Cell<usize>>,
@@ -47,6 +47,7 @@ pub(crate) struct TestWindowState {
     is_fullscreen: bool,
     scale_factor: f32,
     appearance: WindowAppearance,
+    background_appearance: WindowBackgroundAppearance,
 }
 
 #[derive(Clone)]
@@ -79,6 +80,7 @@ impl TestWindow {
     ) -> Self {
         Self(Rc::new(Mutex::new(TestWindowState {
             bounds: params.bounds,
+            background_appearance: params.window_background,
             display,
             platform,
             handle,
@@ -188,13 +190,13 @@ impl TestWindow {
 
     #[cfg(test)]
     pub(crate) fn simulate_request_frame(&self, options: PlatformFrameRequest) {
-        let mut lock = self.0.lock();
-        let Some(mut callback) = lock.request_frame_callback.take() else {
+        let sender = self.0.lock().request_frame_callback.clone();
+        let Some(sender) = sender else {
             return;
         };
-        drop(lock);
-        callback(options);
-        self.0.lock().request_frame_callback = Some(callback);
+        if !sender.request(options) {
+            log::trace!("discarding test frame request after its UI receiver closed");
+        }
     }
 
     #[cfg(feature = "bench-support")]
@@ -208,14 +210,12 @@ impl TestWindow {
         let Some(options) = lock.last_requested_frame.take() else {
             return false;
         };
-        let Some(mut callback) = lock.request_frame_callback.take() else {
+        let Some(sender) = lock.request_frame_callback.clone() else {
             lock.last_requested_frame.set(Some(options));
             return false;
         };
         drop(lock);
-        callback(options);
-        self.0.lock().request_frame_callback = Some(callback);
-        true
+        sender.request(options)
     }
 
     #[cfg(test)]
@@ -352,7 +352,13 @@ impl PlatformWindow for TestWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
-    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
+    fn set_background_appearance(&self, background: WindowBackgroundAppearance) {
+        self.0.lock().background_appearance = background;
+    }
+
+    fn background_appearance(&self) -> WindowBackgroundAppearance {
+        self.0.lock().background_appearance
+    }
 
     fn set_edited(&mut self, is_edited: bool) {
         self.0.lock().edited = is_edited;
@@ -401,8 +407,8 @@ impl PlatformWindow for TestWindow {
 
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
 
-    fn on_request_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest)>) {
-        self.0.lock().request_frame_callback = Some(callback);
+    fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
+        self.0.lock().request_frame_callback = Some(sender);
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>) {
@@ -451,10 +457,7 @@ impl PlatformWindow for TestWindow {
         frame_result
     }
 
-    fn present_framebuffer_only(
-        &self,
-        _packet: crate::PresentationPacket,
-    ) -> PlatformFrameResult {
+    fn present_framebuffer_only(&self, _packet: crate::PresentationPacket) -> PlatformFrameResult {
         let lock = self.0.lock();
         lock.present_framebuffer_only_count
             .set(lock.present_framebuffer_only_count.get() + 1);

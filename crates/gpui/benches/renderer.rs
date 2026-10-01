@@ -6,9 +6,7 @@ struct RendererBenchView {
 
 impl Render for RendererBenchView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w(px(320.0 + (self.revision & 1) as f32))
-            .h(px(180.0))
+        div().w(px(320.0 + (self.revision & 1) as f32)).h(px(180.0))
     }
 }
 

@@ -38,8 +38,7 @@ impl Window {
                 .deferred_retained_metadata
                 .resize_with(round_end, DeferredRetainedMetadata::default);
 
-            let mut traversal_order =
-                (round_start..round_end).collect::<SmallVec<[usize; 8]>>();
+            let mut traversal_order = (round_start..round_end).collect::<SmallVec<[usize; 8]>>();
             traversal_order.sort_by_key(|ix| self.next_frame.deferred_draws[*ix].priority);
 
             for deferred_draw_ix in traversal_order {
@@ -388,10 +387,7 @@ impl Window {
     /// Deferred draws are excluded for the first conservative implementation because their parent
     /// node IDs require a second fragment-level rebasing table. Normal subtree replay continues to
     /// support them unchanged.
-    pub(crate) fn can_reuse_prepaint_fragment(
-        &self,
-        range: &Range<PrepaintStateIndex>,
-    ) -> bool {
+    pub(crate) fn can_reuse_prepaint_fragment(&self, range: &Range<PrepaintStateIndex>) -> bool {
         self.prepaint_range_indices_are_valid(range)
             && range.start.deferred_draws_index == range.end.deferred_draws_index
     }
@@ -402,8 +398,7 @@ impl Window {
         source_parent: &Range<PrepaintStateIndex>,
     ) -> Option<PrepaintFragmentReplay> {
         if !self.can_reuse_prepaint_fragment(source_parent)
-            || source_parent.start.dispatch_tree_index
-                >= source_parent.end.dispatch_tree_index
+            || source_parent.start.dispatch_tree_index >= source_parent.end.dispatch_tree_index
         {
             return None;
         }
@@ -433,8 +428,7 @@ impl Window {
         }
 
         self.next_frame.hitboxes.extend(
-            self.rendered_frame.hitboxes
-                [range.start.hitboxes_index..range.end.hitboxes_index]
+            self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
                 .cloned(),
         );
@@ -445,9 +439,8 @@ impl Window {
                 .map(|request| request.take()),
         );
         self.next_frame.accessed_element_states.extend(
-            self.rendered_frame.accessed_element_states
-                [range.start.accessed_element_states_index
-                    ..range.end.accessed_element_states_index]
+            self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
+                ..range.end.accessed_element_states_index]
                 .iter()
                 .map(|(id, type_id)| (id.clone(), *type_id)),
         );
@@ -455,8 +448,7 @@ impl Window {
             range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
         );
 
-        let dispatch_range =
-            range.start.dispatch_tree_index..range.end.dispatch_tree_index;
+        let dispatch_range = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
         let contains_focus = {
             let next = &mut self.next_frame.dispatch_tree;
             let source = &mut self.rendered_frame.dispatch_tree;
@@ -611,9 +603,7 @@ impl Window {
         ) && self
             .rendered_frame
             .scene
-            .range_is_independently_replayable(
-                range.start.scene_index..range.end.scene_index,
-            )
+            .range_is_independently_replayable(range.start.scene_index..range.end.scene_index)
             && {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -629,32 +619,38 @@ impl Window {
                 }
             }
             && frame_range_is_valid(
-            range.start.mouse_listeners_index,
-            range.end.mouse_listeners_index,
-            self.rendered_frame.mouse_listeners.len(),
-        ) && frame_range_is_valid(
-            range.start.input_handlers_index,
-            range.end.input_handlers_index,
-            self.rendered_frame.input_handlers.len(),
-        ) && frame_range_is_valid(
-            range.start.cursor_styles_index,
-            range.end.cursor_styles_index,
-            self.rendered_frame.cursor_styles.len(),
-        ) && frame_range_is_valid(
-            range.start.window_control_hitboxes_index,
-            range.end.window_control_hitboxes_index,
-            self.rendered_frame.window_control_hitboxes.len(),
-        ) && frame_range_is_valid(
-            range.start.accessed_element_states_index,
-            range.end.accessed_element_states_index,
-            self.rendered_frame.accessed_element_states.len(),
-        ) && frame_range_is_valid(
-            range.start.tab_handle_index,
-            range.end.tab_handle_index,
-            self.rendered_frame.tab_stops.insertion_history.len(),
-        ) && self.text_system.can_reuse_layouts(
-            range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
-        )
+                range.start.mouse_listeners_index,
+                range.end.mouse_listeners_index,
+                self.rendered_frame.mouse_listeners.len(),
+            )
+            && frame_range_is_valid(
+                range.start.input_handlers_index,
+                range.end.input_handlers_index,
+                self.rendered_frame.input_handlers.len(),
+            )
+            && frame_range_is_valid(
+                range.start.cursor_styles_index,
+                range.end.cursor_styles_index,
+                self.rendered_frame.cursor_styles.len(),
+            )
+            && frame_range_is_valid(
+                range.start.window_control_hitboxes_index,
+                range.end.window_control_hitboxes_index,
+                self.rendered_frame.window_control_hitboxes.len(),
+            )
+            && frame_range_is_valid(
+                range.start.accessed_element_states_index,
+                range.end.accessed_element_states_index,
+                self.rendered_frame.accessed_element_states.len(),
+            )
+            && frame_range_is_valid(
+                range.start.tab_handle_index,
+                range.end.tab_handle_index,
+                self.rendered_frame.tab_stops.insertion_history.len(),
+            )
+            && self.text_system.can_reuse_layouts(
+                range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
+            )
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) -> bool {
@@ -976,7 +972,10 @@ impl Window {
             .filter(|entry| entry.identity_is_stable())
             .and_then(|entry| {
                 let generation = entry.stamp.generation;
-                entry.descriptor.take().map(|descriptor| (descriptor, generation))
+                entry
+                    .descriptor
+                    .take()
+                    .map(|descriptor| (descriptor, generation))
             });
         let (semantic_descriptor, semantic_generation) = semantic_proof
             .map(|(descriptor, generation)| (Some(descriptor), Some(generation)))
@@ -1091,7 +1090,7 @@ impl Window {
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
     ) -> bool {
-        if !retained_metadata_range_is_valid(
+        if !retained_metadata_fragment_range_is_valid(
             source_metadata,
             self.rendered_frame.retained_element_order.len(),
         ) {
@@ -1166,7 +1165,9 @@ impl Window {
             let Some(range) = self.rendered_frame.retained_element_ranges.remove(&key) else {
                 // Duplicate/missing identity: restore every payload already moved and abandon replay.
                 for (key, range) in moved.drain(..) {
-                    self.rendered_frame.retained_element_ranges.insert(key, range);
+                    self.rendered_frame
+                        .retained_element_ranges
+                        .insert(key, range);
                 }
                 self.next_frame.retained_replay_scratch = moved;
                 return false;
@@ -1175,22 +1176,15 @@ impl Window {
         }
 
         for (key, mut range) in moved.drain(..) {
-            range.prepaint_range = rebase_prepaint_range(
-                &range.prepaint_range,
-                source_prepaint,
-                target_prepaint,
-            )
-            .expect("retained metadata prepaint range was validated before transfer");
-            range.paint_range =
-                rebase_paint_range(&range.paint_range, source_paint, target_paint)
-                    .expect("retained metadata paint range was validated before transfer");
+            range.prepaint_range =
+                rebase_prepaint_range(&range.prepaint_range, source_prepaint, target_prepaint)
+                    .expect("retained metadata prepaint range was validated before transfer");
+            range.paint_range = rebase_paint_range(&range.paint_range, source_paint, target_paint)
+                .expect("retained metadata paint range was validated before transfer");
             if let Some(self_scene) = range.div_self_scene.as_mut() {
-                self_scene.child_scene_range = rebase_scene_range(
-                    &self_scene.child_scene_range,
-                    source_paint,
-                    target_paint,
-                )
-                .expect("retained div scene range was validated before transfer");
+                self_scene.child_scene_range =
+                    rebase_scene_range(&self_scene.child_scene_range, source_paint, target_paint)
+                        .expect("retained div scene range was validated before transfer");
             }
 
             let metadata_start_offset = range
@@ -1203,8 +1197,8 @@ impl Window {
                 .end
                 .checked_sub(source_metadata.start)
                 .expect("retained metadata end offset was validated before transfer");
-            range.metadata_range =
-                target_metadata_start + metadata_start_offset..target_metadata_start + metadata_end_offset;
+            range.metadata_range = target_metadata_start + metadata_start_offset
+                ..target_metadata_start + metadata_end_offset;
 
             self.next_frame.retained_element_order.push(key.clone());
             self.next_frame.retained_element_ranges.insert(key, range);
@@ -1213,9 +1207,7 @@ impl Window {
         // Keep a stable replay subtree allocation hot, but let a much smaller later replay retire a
         // pathological high-water mark. Normal frame swapping must not use len()==0 to shrink this.
         let target = RETAINED_REPLAY_SCRATCH_MIN_CAPACITY.max(replayed_count);
-        if moved.capacity()
-            > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER)
-        {
+        if moved.capacity() > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER) {
             moved.shrink_to(target);
         }
         self.next_frame.retained_replay_scratch = moved;
@@ -1269,12 +1261,8 @@ impl Window {
                 target_prepaint,
             )
             .is_none()
-                || rebase_paint_range(
-                    &source_range.paint_range,
-                    source_paint,
-                    target_paint,
-                )
-                .is_none()
+                || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
+                    .is_none()
                 || source_range
                     .div_self_scene
                     .as_ref()
@@ -1337,7 +1325,9 @@ impl Window {
             let key = self.rendered_frame.retained_element_order[source_index].clone();
             let Some(range) = self.rendered_frame.retained_element_ranges.remove(&key) else {
                 for (key, range) in moved.drain(..) {
-                    self.rendered_frame.retained_element_ranges.insert(key, range);
+                    self.rendered_frame
+                        .retained_element_ranges
+                        .insert(key, range);
                 }
                 self.next_frame.retained_replay_scratch = moved;
                 return false;
@@ -1346,41 +1336,28 @@ impl Window {
         }
 
         for (key, mut range) in moved.drain(..) {
-            range.prepaint_range = rebase_prepaint_range(
-                &range.prepaint_range,
-                source_prepaint,
-                target_prepaint,
-            )
-            .expect("fragment retained prepaint range was validated before transfer");
-            range.paint_range = rebase_paint_range(
-                &range.paint_range,
-                source_paint,
-                target_paint,
-            )
-            .expect("fragment retained paint range was validated before transfer");
+            range.prepaint_range =
+                rebase_prepaint_range(&range.prepaint_range, source_prepaint, target_prepaint)
+                    .expect("fragment retained prepaint range was validated before transfer");
+            range.paint_range = rebase_paint_range(&range.paint_range, source_paint, target_paint)
+                .expect("fragment retained paint range was validated before transfer");
             if let Some(self_scene) = range.div_self_scene.as_mut() {
-                self_scene.child_scene_range = rebase_scene_range(
-                    &self_scene.child_scene_range,
-                    source_paint,
-                    target_paint,
-                )
-                .expect("fragment retained div scene range was validated before transfer");
+                self_scene.child_scene_range =
+                    rebase_scene_range(&self_scene.child_scene_range, source_paint, target_paint)
+                        .expect("fragment retained div scene range was validated before transfer");
             }
 
             let source_start = range.metadata_range.start - source_metadata.start;
             let source_end = range.metadata_range.end - source_metadata.start;
-            range.metadata_range =
-                target_metadata_start + included_prefix[source_start]
-                    ..target_metadata_start + included_prefix[source_end];
+            range.metadata_range = target_metadata_start + included_prefix[source_start]
+                ..target_metadata_start + included_prefix[source_end];
 
             self.next_frame.retained_element_order.push(key.clone());
             self.next_frame.retained_element_ranges.insert(key, range);
         }
 
         let target = RETAINED_REPLAY_SCRATCH_MIN_CAPACITY.max(replayed_count);
-        if moved.capacity()
-            > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER)
-        {
+        if moved.capacity() > target.saturating_mul(RETAINED_REPLAY_SCRATCH_TRIM_MULTIPLIER) {
             moved.shrink_to(target);
         }
         self.next_frame.retained_replay_scratch = moved;
@@ -1467,6 +1444,27 @@ fn retained_metadata_range_is_valid(range: &Range<usize>, len: usize) -> bool {
     range.start < range.end && range.end <= len
 }
 
+fn retained_metadata_fragment_range_is_valid(range: &Range<usize>, len: usize) -> bool {
+    range.start <= range.end && range.end <= len
+}
+
 fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
     start <= end && end <= len
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retained_metadata_fragment_range_is_valid;
+
+    #[test]
+    fn retained_metadata_fragment_range_accepts_empty_slices() {
+        assert!(retained_metadata_fragment_range_is_valid(&(0..0), 0));
+        assert!(retained_metadata_fragment_range_is_valid(&(2..2), 4));
+    }
+
+    #[test]
+    fn retained_metadata_fragment_range_rejects_invalid_bounds() {
+        assert!(!retained_metadata_fragment_range_is_valid(&(3..2), 4));
+        assert!(!retained_metadata_fragment_range_is_valid(&(2..5), 4));
+    }
 }

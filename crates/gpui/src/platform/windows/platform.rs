@@ -12,7 +12,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ::util::{ResultExt, paths::SanitizedPath};
@@ -26,6 +26,7 @@ use windows::{
     UI::ViewManagement::UISettings,
     Win32::{
         Foundation::*,
+        Graphics::Gdi::ScreenToClient,
         Security::Credentials::*,
         System::{
             Com::*,
@@ -61,7 +62,11 @@ use super::{
     apply_cursor_style_to_window, keystroke_from_winit, modifiers_from_winit,
     mouse_button_from_winit, spawn_sta_dialog,
 };
+use crate::window::Decorations;
 use crate::*;
+
+mod proxy;
+use proxy::WindowsWindowProxy;
 
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
 const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
@@ -94,6 +99,15 @@ fn spawn_startup_working_set_trim_task() {
 
 thread_local! {
     static ACTIVE_CONTEXT: RefCell<Option<(*const ActiveEventLoop, *mut WindowsApplication)>> = const { RefCell::new(None) };
+    static UI_OWNER_BRIDGE: RefCell<Option<WindowsUiBridge>> = const { RefCell::new(None) };
+    static UI_OWNER_TASKS: RefCell<Option<flume::Receiver<Runnable>>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+struct WindowsUiBridge {
+    event_loop: EventLoopProxy<WindowsUserEvent>,
+    displays: Vec<WindowsDisplay>,
+    primary_display_id: Option<DisplayId>,
 }
 
 fn with_active_context<R>(
@@ -106,12 +120,129 @@ fn with_active_context<R>(
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
-    VSync,
+    VSync(super::vsync::VSyncEventTiming),
     DockMenuAction(usize),
+    NativeCommand(WindowsNativeCommand),
+    ActivateApp,
+    SetCursorStyle(CursorStyle),
     Quit,
+}
+
+pub(crate) enum WindowsNativeCommand {
+    CreateWindow {
+        handle: AnyWindowHandle,
+        options: WindowParams,
+        reply: std::sync::mpsc::Sender<Result<WindowsNativeWindow>>,
+    },
+    CommitScene {
+        window_id: winit::window::WindowId,
+        packet: PresentationPacket,
+        reply: std::sync::mpsc::Sender<PlatformFrameResult>,
+    },
+    SetFrameRequestSender {
+        window_id: winit::window::WindowId,
+        sender: PlatformFrameRequestSender,
+    },
+    SetAnimationCompletionSender {
+        window_id: winit::window::WindowId,
+        sender: SceneAnimationCompletionSender,
+    },
+    SetEventSender {
+        window_id: winit::window::WindowId,
+        sender: flume::Sender<WindowsNativeEvent>,
+    },
+    CloseWindow {
+        window_id: winit::window::WindowId,
+    },
+    WindowAction {
+        window_id: winit::window::WindowId,
+        action: WindowsWindowAction,
+    },
+    WindowCall {
+        window_id: winit::window::WindowId,
+        call: Box<dyn FnOnce(Option<&mut WindowsWindow>) + Send>,
+    },
+}
+
+pub(crate) enum WindowsWindowAction {
+    RequestFrame(PlatformFrameRequest),
+    FrameRequestTimedOut(PlatformFrameRequest),
+    StartMove,
+    StartResize(ResizeEdge),
+    Resize(Size<Pixels>),
+    SetTitle(String),
+    SetBackgroundAppearance(WindowBackgroundAppearance),
+    Activate,
+    Show,
+    Hide,
+    Minimize,
+    Maximize,
+    Restore,
+    Zoom,
+    ToggleFullscreen,
+}
+
+pub(crate) enum WindowsNativeEvent {
+    Input(PlatformInput),
+    Active(bool),
+    Visibility(WindowVisibility),
+    Hovered(bool),
+    Resized(Size<Pixels>, f32),
+    Moved,
+    AppearanceChanged,
+    CloseRequested,
+    Closed,
+}
+
+impl std::fmt::Debug for WindowsNativeCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::CreateWindow { .. } => "CreateWindow",
+            Self::CommitScene { .. } => "CommitScene",
+            Self::SetFrameRequestSender { .. } => "SetFrameRequestSender",
+            Self::SetAnimationCompletionSender { .. } => "SetAnimationCompletionSender",
+            Self::SetEventSender { .. } => "SetEventSender",
+            Self::CloseWindow { .. } => "CloseWindow",
+            Self::WindowAction { .. } => "WindowAction",
+            Self::WindowCall { .. } => "WindowCall",
+        })
+    }
+}
+
+pub(crate) struct WindowsNativeWindow {
+    pub(crate) window_id: winit::window::WindowId,
+    pub(crate) window: Arc<winit::window::Window>,
+    pub(crate) atlas: Arc<dyn PlatformAtlas>,
+    pub(crate) display: Option<WindowsDisplay>,
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) window_bounds: WindowBounds,
+    pub(crate) content_size: Size<Pixels>,
+    pub(crate) scale_factor: f32,
+    pub(crate) appearance: WindowAppearance,
+    pub(crate) background_appearance: WindowBackgroundAppearance,
+    pub(crate) mouse_position: Point<Pixels>,
+    pub(crate) modifiers: Modifiers,
+    pub(crate) capslock: Capslock,
+    pub(crate) active: bool,
+    pub(crate) hovered: bool,
+    pub(crate) visibility: WindowVisibility,
+    pub(crate) maximized: bool,
+    pub(crate) minimized: bool,
+    pub(crate) fullscreen: bool,
+    pub(crate) gpu_specs: Option<GpuSpecs>,
+    pub(crate) decorations: Decorations,
+    pub(crate) default_client_inset: Option<Pixels>,
+}
+
+#[allow(dead_code)]
+fn assert_native_window_boundary_is_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<WindowsNativeCommand>();
+    assert_send::<WindowsNativeWindow>();
+    assert_send::<WindowsNativeEvent>();
 }
 
 pub(crate) struct WindowsPlatform {
@@ -124,6 +255,7 @@ pub(crate) struct WindowsPlatform {
     renderer_backend: RendererBackend,
     renderer_options: RendererOptions,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    ui_bridge: Option<WindowsUiBridge>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     ole_initialized: bool,
 }
@@ -278,7 +410,99 @@ fn set_process_dpi_awareness(awareness: PROCESS_DPI_AWARENESS) -> windows::core:
 }
 
 impl WindowsPlatform {
-    fn new_common_parts() -> (
+    pub(crate) fn run_separate(
+        renderer_options: RendererOptions,
+        ui_main: impl FnOnce(flume::Receiver<()>) + Send + 'static,
+    ) -> Result<()> {
+        let native = Rc::new(Self::new(renderer_options)?);
+        let (shutdown, shutdown_receiver) = flume::bounded(1);
+        let ui_thread = Rc::new(RefCell::new(None));
+        let ui_thread_slot = ui_thread.clone();
+        let native_for_launch = native.clone();
+        native.run(Box::new(move || {
+            let Some(event_loop) = native_for_launch.event_loop_proxy.lock().unwrap().clone()
+            else {
+                log::error!("Windows native event loop proxy was not initialized");
+                return;
+            };
+            let state = native_for_launch.inner.state.borrow();
+            let bridge = WindowsUiBridge {
+                event_loop,
+                displays: state.displays.clone(),
+                primary_display_id: state.primary_display_id,
+            };
+            drop(state);
+            let native_events = bridge.event_loop.clone();
+            match std::thread::Builder::new()
+                .name("gpui-ui".into())
+                .spawn(move || {
+                    UI_OWNER_BRIDGE.with(|slot| *slot.borrow_mut() = Some(bridge));
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ui_main(shutdown_receiver);
+                    }));
+                    let _ = native_events.send_event(WindowsUserEvent::Quit);
+                    if let Err(payload) = result {
+                        std::panic::resume_unwind(payload);
+                    }
+                }) {
+                Ok(handle) => *ui_thread_slot.borrow_mut() = Some(handle),
+                Err(error) => {
+                    log::error!("failed to start GPUI UI owner thread: {error}");
+                    let _ = native_for_launch
+                        .event_loop_proxy
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|proxy| proxy.send_event(WindowsUserEvent::Quit));
+                }
+            }
+        }));
+        if shutdown.send(()).is_err() {
+            log::debug!("GPUI UI owner was already stopped when native event loop exited");
+        }
+        if let Some(handle) = ui_thread.borrow_mut().take() {
+            handle
+                .join()
+                .map_err(|_| anyhow!("GPUI UI owner thread panicked"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn run_ui_owner_tasks(shutdown: flume::Receiver<()>) {
+        let tasks = UI_OWNER_TASKS.with(|slot| slot.borrow_mut().take());
+        let Some(tasks) = tasks else {
+            log::error!("GPUI UI owner task queue was not initialized");
+            return;
+        };
+        loop {
+            enum Event {
+                Task(Result<Runnable, flume::RecvError>),
+                Shutdown,
+            }
+            match flume::Selector::new()
+                .recv(&tasks, Event::Task)
+                .recv(&shutdown, |_| Event::Shutdown)
+                .wait()
+            {
+                Event::Task(Ok(runnable)) => {
+                    runnable.run();
+                }
+                Event::Task(Err(_)) => break,
+                Event::Shutdown => {
+                    // Native close events are queued before the event loop exits. Let the UI
+                    // owner consume those callbacks before dropping its App and windows.
+                    while let Ok(runnable) = tasks.try_recv() {
+                        runnable.run();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn new_common_parts(
+        ui_owner_mode: bool,
+    ) -> (
         Rc<WindowsPlatformInner>,
         BackgroundExecutor,
         ForegroundExecutor,
@@ -296,6 +520,7 @@ impl WindowsPlatform {
             main_sender,
             main_thread_wakeup_pending,
             event_loop_proxy.clone(),
+            ui_owner_mode,
         ));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -310,7 +535,7 @@ impl WindowsPlatform {
 
     pub(crate) fn new_headless() -> Self {
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
-            Self::new_common_parts();
+            Self::new_common_parts(false);
         let renderer_backend = RendererBackend::HeadlessTest;
         let text_system = create_windows_text_system(renderer_backend.capabilities())
             .unwrap_or_else(|_| Arc::new(NoopTextSystem) as Arc<dyn PlatformTextSystem>);
@@ -324,6 +549,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options: RendererOptions::with_backend(renderer_backend),
             event_loop_proxy,
+            ui_bridge: None,
             vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
             ole_initialized: false,
         }
@@ -381,8 +607,17 @@ impl WindowsPlatform {
         let text_system = create_windows_text_system(renderer_backend.capabilities())?;
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
+        let ui_bridge = UI_OWNER_BRIDGE.with(|bridge| bridge.borrow().clone());
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
-            Self::new_common_parts();
+            Self::new_common_parts(ui_bridge.is_some());
+        if let Some(bridge) = &ui_bridge {
+            let mut state = inner.state.borrow_mut();
+            state.displays = bridge.displays.clone();
+            state.primary_display_id = bridge.primary_display_id;
+            UI_OWNER_TASKS.with(|tasks| {
+                *tasks.borrow_mut() = Some(inner.main_receiver.clone());
+            });
+        }
 
         if startup_working_set_trim_enabled() {
             spawn_startup_working_set_trim_task();
@@ -397,6 +632,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options,
             event_loop_proxy,
+            ui_bridge,
             vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
             ole_initialized: true,
         })
@@ -549,8 +785,8 @@ impl Platform for WindowsPlatform {
         )
     }
 
-    fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        Rc::new(WindowsKeyboardMapper::new())
+    fn keyboard_mapper(&self) -> Arc<dyn PlatformKeyboardMapper> {
+        Arc::new(WindowsKeyboardMapper::new())
     }
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
@@ -590,6 +826,7 @@ impl Platform for WindowsPlatform {
             inner,
             on_finish_launching: Some(on_finish_launching),
             event_loop_proxy,
+            creation_info: self.generate_creation_info(),
             windows: FxHashMap::default(),
             focused_window_id: None,
             current_modifiers: Modifiers::default(),
@@ -608,6 +845,10 @@ impl Platform for WindowsPlatform {
     }
 
     fn quit(&self) {
+        if let Some(bridge) = &self.ui_bridge {
+            let _ = bridge.event_loop.send_event(WindowsUserEvent::Quit);
+            return;
+        }
         if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
             let _ = proxy.send_event(WindowsUserEvent::Quit);
         }
@@ -652,6 +893,10 @@ impl Platform for WindowsPlatform {
     }
 
     fn activate(&self, _ignoring_other_apps: bool) {
+        if let Some(bridge) = &self.ui_bridge {
+            let _ = bridge.event_loop.send_event(WindowsUserEvent::ActivateApp);
+            return;
+        }
         let _ = with_active_context(|_event_loop, app| app.activate_window());
     }
 
@@ -706,6 +951,29 @@ impl Platform for WindowsPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
+        if let Some(bridge) = &self.ui_bridge {
+            let (reply, receiver) = std::sync::mpsc::channel();
+            bridge
+                .event_loop
+                .send_event(WindowsUserEvent::NativeCommand(
+                    WindowsNativeCommand::CreateWindow {
+                        handle,
+                        options,
+                        reply,
+                    },
+                ))
+                .map_err(|error| anyhow!("native Windows owner is closed: {error:?}"))?;
+            let snapshot = receiver
+                .recv()
+                .context("native Windows owner did not answer window creation")??;
+            return Ok(Box::new(WindowsWindowProxy::new(
+                snapshot,
+                handle,
+                Rc::downgrade(&self.inner),
+                bridge.event_loop.clone(),
+                self.foreground_executor.clone(),
+            )));
+        }
         let creation_info = self.generate_creation_info();
         let cursor_style = self.inner.state.borrow().cursor_style;
         let window = with_active_context(|event_loop, app| {
@@ -859,6 +1127,13 @@ impl Platform for WindowsPlatform {
         }
         lock.cursor_style = style;
         drop(lock);
+
+        if let Some(bridge) = &self.ui_bridge {
+            let _ = bridge
+                .event_loop
+                .send_event(WindowsUserEvent::SetCursorStyle(style));
+            return;
+        }
 
         let _ = with_active_context(|_event_loop, app| {
             for window in app.windows.values() {
@@ -1073,6 +1348,7 @@ struct WindowsApplication {
     inner: Rc<WindowsPlatformInner>,
     on_finish_launching: Option<Box<dyn FnOnce()>>,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
+    creation_info: WindowCreationInfo,
     windows: FxHashMap<winit::window::WindowId, WindowsWindow>,
     focused_window_id: Option<winit::window::WindowId>,
     current_modifiers: Modifiers,
@@ -1084,7 +1360,9 @@ struct WindowsApplication {
 
 #[cfg(test)]
 mod pending_file_drop_tests {
-    use super::*;
+    use super::PendingFileDrop;
+    use crate::{point, px};
+    use std::path::PathBuf;
 
     #[test]
     fn multi_file_drop_submits_only_after_every_hovered_path_arrives() {
@@ -1093,9 +1371,10 @@ mod pending_file_drop_tests {
         pending.push_hovered(PathBuf::from("b.mcpack"));
         pending.push_hovered(PathBuf::from("c.mcpack"));
 
-        assert!(!pending.mark_dropped(PathBuf::from("a.mcpack")));
-        assert!(!pending.mark_dropped(PathBuf::from("b.mcpack")));
-        assert!(pending.mark_dropped(PathBuf::from("c.mcpack")));
+        pending.mark_dropped(PathBuf::from("a.mcpack"), point(px(0.0), px(0.0)));
+        assert!(pending.is_ready_to_submit());
+        pending.mark_dropped(PathBuf::from("b.mcpack"), point(px(0.0), px(0.0)));
+        pending.mark_dropped(PathBuf::from("c.mcpack"), point(px(0.0), px(0.0)));
         assert_eq!(pending.external_paths().paths().len(), 3);
     }
 
@@ -1105,14 +1384,201 @@ mod pending_file_drop_tests {
         pending.push_hovered(PathBuf::from("a.mcpack"));
         pending.push_hovered(PathBuf::from("a.mcpack"));
 
-        assert!(pending.mark_dropped(PathBuf::from("a.mcpack")));
-        assert!(pending.mark_dropped(PathBuf::from("a.mcpack")));
+        pending.mark_dropped(PathBuf::from("a.mcpack"), point(px(0.0), px(0.0)));
+        pending.mark_dropped(PathBuf::from("a.mcpack"), point(px(1.0), px(1.0)));
+        assert!(pending.is_ready_to_submit());
         assert_eq!(pending.external_paths().paths().len(), 1);
-        assert_eq!(pending.dropped_paths.len(), 1);
+        assert_eq!(pending.submit_position, Some(point(px(1.0), px(1.0))));
     }
 }
 
 impl WindowsApplication {
+    fn close_window(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId) {
+        let Some(window) = self.windows.get(&window_id).cloned() else {
+            return;
+        };
+        window.invoke_close();
+        if self.hovered_window_id == Some(window_id) {
+            self.hovered_window_id = None;
+        }
+        if self.focused_window_id == Some(window_id) {
+            self.focused_window_id = None;
+        }
+        self.windows.remove(&window_id);
+        self.sync_active_window_handle();
+        if self.windows.is_empty() {
+            event_loop.exit();
+        }
+    }
+
+    fn create_native_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        handle: AnyWindowHandle,
+        options: WindowParams,
+    ) -> Result<WindowsNativeWindow> {
+        let window = WindowsWindow::new(event_loop, handle, options, self.creation_info.clone())?;
+        let native_window = window
+            .0
+            .winit_window
+            .get()
+            .cloned()
+            .context("native Windows window is not initialized")?;
+        let snapshot = WindowsNativeWindow {
+            window_id: window.window_id(),
+            display: WindowsDisplay::from_window_monitor(&native_window),
+            bounds: window.bounds(),
+            window_bounds: window.window_bounds(),
+            content_size: window.content_size(),
+            scale_factor: window.scale_factor(),
+            appearance: window.appearance(),
+            background_appearance: window.background_appearance(),
+            mouse_position: window.mouse_position(),
+            modifiers: window.modifiers(),
+            capslock: window.capslock(),
+            active: window.is_active(),
+            hovered: window.is_hovered(),
+            visibility: window.visibility(),
+            maximized: window.is_maximized(),
+            minimized: window.is_minimized(),
+            fullscreen: window.is_fullscreen(),
+            gpu_specs: window.gpu_specs(),
+            decorations: window.window_decorations(),
+            default_client_inset: window.default_client_inset(),
+            atlas: window.sprite_atlas(),
+            window: native_window,
+        };
+        apply_cursor_style_to_window(window.window(), self.inner.state.borrow().cursor_style);
+        self.windows.insert(snapshot.window_id, window);
+        Ok(snapshot)
+    }
+
+    fn handle_native_command(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        command: WindowsNativeCommand,
+    ) {
+        match command {
+            WindowsNativeCommand::CreateWindow {
+                handle,
+                options,
+                reply,
+            } => {
+                if reply
+                    .send(self.create_native_window(event_loop, handle, options))
+                    .is_err()
+                {
+                    log::warn!("Windows UI owner dropped native window creation reply");
+                }
+            }
+            WindowsNativeCommand::CommitScene {
+                window_id,
+                mut packet,
+                reply,
+            } => {
+                // UI Render may have started before an active compositor sample was presented.
+                // Sample the committed visual timelines on the native owner's clock, otherwise
+                // installing this scene can rewind geometry to the older UI frame timestamp.
+                packet.frame_time = Instant::now();
+                let result = self
+                    .windows
+                    .get(&window_id)
+                    .map_or(PlatformFrameResult::Deferred, |window| window.draw(packet));
+                if reply.send(result).is_err() {
+                    log::warn!("Windows UI owner dropped native scene submission reply");
+                }
+            }
+            WindowsNativeCommand::SetFrameRequestSender { window_id, sender } => {
+                if let Some(window) = self.windows.get(&window_id) {
+                    window.set_frame_request_sender(sender);
+                }
+            }
+            WindowsNativeCommand::SetAnimationCompletionSender { window_id, sender } => {
+                if let Some(window) = self.windows.get(&window_id) {
+                    window.set_presentation_animation_completion_sender(sender);
+                }
+            }
+            WindowsNativeCommand::SetEventSender { window_id, sender } => {
+                if let Some(window) = self.windows.get(&window_id) {
+                    let input_sender = sender.clone();
+                    window.on_input(Box::new(move |input| {
+                        if input_sender.send(WindowsNativeEvent::Input(input)).is_err() {
+                            log::warn!("Windows UI owner dropped input event");
+                        }
+                        DispatchEventResult::default()
+                    }));
+                    let active_sender = sender.clone();
+                    window.on_active_status_change(Box::new(move |active| {
+                        let _ = active_sender.send(WindowsNativeEvent::Active(active));
+                    }));
+                    let visibility_sender = sender.clone();
+                    window.on_visibility_change(Box::new(move |visibility| {
+                        let _ = visibility_sender.send(WindowsNativeEvent::Visibility(visibility));
+                    }));
+                    let hover_sender = sender.clone();
+                    window.on_hover_status_change(Box::new(move |hovered| {
+                        let _ = hover_sender.send(WindowsNativeEvent::Hovered(hovered));
+                    }));
+                    let resize_sender = sender.clone();
+                    window.on_resize(Box::new(move |size, scale| {
+                        let _ = resize_sender.send(WindowsNativeEvent::Resized(size, scale));
+                    }));
+                    let move_sender = sender.clone();
+                    window.on_moved(Box::new(move || {
+                        let _ = move_sender.send(WindowsNativeEvent::Moved);
+                    }));
+                    let appearance_sender = sender.clone();
+                    window.on_appearance_changed(Box::new(move || {
+                        let _ = appearance_sender.send(WindowsNativeEvent::AppearanceChanged);
+                    }));
+                    let close_request_sender = sender.clone();
+                    window.on_should_close(Box::new(move || {
+                        close_request_sender
+                            .send(WindowsNativeEvent::CloseRequested)
+                            .is_err()
+                    }));
+                    window.on_close(Box::new(move || {
+                        let _ = sender.send(WindowsNativeEvent::Closed);
+                    }));
+                }
+            }
+            WindowsNativeCommand::CloseWindow { window_id } => {
+                self.close_window(event_loop, window_id);
+            }
+            WindowsNativeCommand::WindowAction { window_id, action } => {
+                // Moving/resizing pumps native messages synchronously; release the registry
+                // borrow before entering that loop.
+                let Some(mut window) = self.windows.get(&window_id).cloned() else {
+                    return;
+                };
+                match action {
+                    WindowsWindowAction::RequestFrame(request) => window.request_frame(request),
+                    WindowsWindowAction::FrameRequestTimedOut(request) => {
+                        window.frame_request_timed_out(request);
+                    }
+                    WindowsWindowAction::Resize(size) => window.resize(size),
+                    WindowsWindowAction::StartMove => window.start_window_move(),
+                    WindowsWindowAction::StartResize(edge) => window.start_window_resize(edge),
+                    WindowsWindowAction::SetTitle(title) => window.set_title(&title),
+                    WindowsWindowAction::SetBackgroundAppearance(appearance) => {
+                        window.set_background_appearance(appearance);
+                    }
+                    WindowsWindowAction::Activate => window.activate(),
+                    WindowsWindowAction::Show => window.show(),
+                    WindowsWindowAction::Hide => window.hide_window(),
+                    WindowsWindowAction::Minimize => window.minimize(),
+                    WindowsWindowAction::Maximize => window.maximize(),
+                    WindowsWindowAction::Restore => window.restore(),
+                    WindowsWindowAction::Zoom => window.zoom(),
+                    WindowsWindowAction::ToggleFullscreen => window.toggle_fullscreen(),
+                }
+            }
+            WindowsNativeCommand::WindowCall { window_id, call } => {
+                call(self.windows.get_mut(&window_id));
+            }
+        }
+    }
+
     fn run_foreground_tasks(&self, event_loop: &ActiveEventLoop) {
         let control_flow = if self.inner.run_foreground_tasks() {
             ControlFlow::Poll
@@ -1122,14 +1588,11 @@ impl WindowsApplication {
         event_loop.set_control_flow(control_flow);
     }
 
-    fn dispatch_pending_window_update(window: &WindowsWindow) {
-        window.dispatch_pending_update();
-    }
-
-    fn dispatch_pending_window_updates(&self) {
+    fn dispatch_pending_window_updates(&self, timing: super::vsync::VSyncEventTiming) {
+        let event_received_at = Instant::now();
         let windows: Vec<_> = self.windows.values().cloned().collect();
         for window in windows {
-            Self::dispatch_pending_window_update(&window);
+            window.dispatch_pending_update_from_vsync(timing, event_received_at);
         }
     }
 
@@ -1224,6 +1687,20 @@ impl WindowsApplication {
     }
 }
 
+fn current_cursor_position(hwnd: HWND, scale_factor: f32) -> Option<Point<Pixels>> {
+    let mut cursor = POINT::default();
+    unsafe {
+        GetCursorPos(&mut cursor).ok()?;
+        if !ScreenToClient(hwnd, &mut cursor).as_bool() {
+            return None;
+        }
+    }
+    Some(point(
+        px(cursor.x as f32 / scale_factor),
+        px(cursor.y as f32 / scale_factor),
+    ))
+}
+
 impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         ACTIVE_CONTEXT.with(|storage| {
@@ -1244,9 +1721,19 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         });
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
-            WindowsUserEvent::VSync => self.dispatch_pending_window_updates(),
+            WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
+            }
+            WindowsUserEvent::NativeCommand(command) => {
+                self.handle_native_command(event_loop, command);
+            }
+            WindowsUserEvent::ActivateApp => self.activate_window(),
+            WindowsUserEvent::SetCursorStyle(style) => {
+                self.inner.state.borrow_mut().cursor_style = style;
+                for window in self.windows.values() {
+                    apply_cursor_style_to_window(window.window(), style);
+                }
             }
             WindowsUserEvent::Quit => event_loop.exit(),
         }
@@ -1330,25 +1817,14 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::CloseRequested => {
                 let should_close = window.should_close().unwrap_or(true);
                 if should_close {
-                    window.invoke_close();
-                    if self.hovered_window_id == Some(window_id) {
-                        self.hovered_window_id = None;
-                    }
-                    if self.focused_window_id == Some(window_id) {
-                        self.focused_window_id = None;
-                    }
-                    self.windows.remove(&window_id);
-                    self.sync_active_window_handle();
-                    if self.windows.is_empty() {
-                        event_loop.exit();
-                    }
+                    self.close_window(event_loop, window_id);
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
                 // WM_PAINT is also the foreground-task/frame pump while Win32 is inside its modal
                 // size/move loop. Run queued work before consuming the newest resize generation.
                 self.run_foreground_tasks(event_loop);
-                Self::dispatch_pending_window_update(&window);
+                window.dispatch_pending_update();
             }
             winit::event::WindowEvent::CursorEntered { .. } => {
                 self.hovered_window_id = Some(window_id);
@@ -1470,9 +1946,13 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(button) = mouse_button_from_winit(button) {
                     let mut window_state = window.0.state.borrow_mut();
-                    let position = window_state.mouse_position.get();
                     let modifiers = self.current_modifiers;
                     let scale_factor = window_state.scale_factor.get();
+                    let position = window
+                        .native_hwnd()
+                        .and_then(|hwnd| current_cursor_position(hwnd, scale_factor))
+                        .unwrap_or_else(|| window_state.mouse_position.get());
+                    window_state.mouse_position.set(position);
                     let input_callback = window_state.callbacks.input.take();
                     match state {
                         winit::event::ElementState::Pressed => {
@@ -1515,7 +1995,12 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             }
             winit::event::WindowEvent::MouseWheel { delta, phase, .. } => {
                 let mut state = window.0.state.borrow_mut();
-                let position = state.mouse_position.get();
+                let scale_factor = state.scale_factor.get();
+                let position = window
+                    .native_hwnd()
+                    .and_then(|hwnd| current_cursor_position(hwnd, scale_factor))
+                    .unwrap_or_else(|| state.mouse_position.get());
+                state.mouse_position.set(position);
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         ScrollDelta::Lines(point(x, y))
@@ -1634,7 +2119,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.vsync_scheduler.shutdown();
         if !self.inner.handle_end_session() {
-            log::warn!("GPUI shutdown callback remained borrowed while the Windows event loop exited");
+            log::warn!(
+                "GPUI shutdown callback remained borrowed while the Windows event loop exited"
+            );
         }
         *self.event_loop_proxy.lock().unwrap() = None;
         ACTIVE_CONTEXT.with(|storage| {
@@ -1657,6 +2144,7 @@ impl Drop for WindowsPlatformState {
     fn drop(&mut self) {}
 }
 
+#[derive(Clone)]
 pub(crate) struct WindowCreationInfo {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) executor: ForegroundExecutor,
@@ -1984,7 +2472,7 @@ mod tests {
     #[test]
     fn windows_foreground_task_drain_clears_coalesced_wakeup() {
         let (inner, _background_executor, foreground_executor, _event_loop_proxy) =
-            super::WindowsPlatform::new_common_parts();
+            super::WindowsPlatform::new_common_parts(false);
         let task_ran = Rc::new(Cell::new(false));
 
         foreground_executor
@@ -2007,7 +2495,9 @@ mod tests {
 
 #[cfg(test)]
 mod file_drop_batch_tests {
-    use super::*;
+    use super::PendingFileDrop;
+    use crate::{point, px};
+    use std::path::PathBuf;
 
     #[test]
     fn pending_file_drop_keeps_complete_unique_batch() {
@@ -2015,10 +2505,7 @@ mod file_drop_batch_tests {
         pending.push_hovered(PathBuf::from("a.mcpack"));
         pending.push_hovered(PathBuf::from("b.mcpack"));
         pending.push_hovered(PathBuf::from("a.mcpack"));
-        pending.mark_dropped(
-            PathBuf::from("c.mcpack"),
-            point(px(10.0), px(20.0)),
-        );
+        pending.mark_dropped(PathBuf::from("c.mcpack"), point(px(10.0), px(20.0)));
 
         assert!(pending.is_ready_to_submit());
         assert_eq!(

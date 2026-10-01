@@ -29,6 +29,17 @@ struct StableOutputView {
     revision: usize,
 }
 
+struct AnimationTickView {
+    renders: usize,
+}
+
+impl Render for AnimationTickView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
+        crate::div().w(px(48.0)).h(px(36.0)).bg(crate::red())
+    }
+}
+
 impl Render for StableOutputView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         crate::div()
@@ -150,6 +161,115 @@ fn visually_identical_notify_skips_gpu_present(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn clean_animation_tick_does_not_render_view(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| AnimationTickView { renders: 0 })
+        })
+        .expect("test window should open")
+    });
+    cx.update_window(window.into(), |view, window, cx| {
+        window.active.set(true);
+        window.visibility = WindowVisibility::Visible;
+        window.draw(cx).clear();
+        assert!(window.present().is_accepted());
+        window.invalidator.set_dirty(false);
+        let view = view
+            .downcast::<AnimationTickView>()
+            .expect("test view type");
+        let renders = view.read(cx).renders;
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let draws = test_window.draw_count();
+        let presents = test_window.present_framebuffer_only_count();
+
+        window.run_platform_frame(PlatformFrameRequest::animation_tick(), cx);
+
+        assert_eq!(view.read(cx).renders, renders);
+        assert_eq!(test_window.draw_count(), draws);
+        assert_eq!(test_window.present_framebuffer_only_count(), presents + 1);
+    })
+    .expect("a clean UI animation tick must preserve retained view output");
+}
+
+#[gpui::test]
+fn clean_on_next_frame_callback_runs_without_rendering_view(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| AnimationTickView { renders: 0 })
+        })
+        .expect("test window should open")
+    });
+    let callback_runs = std::rc::Rc::new(std::cell::Cell::new(0));
+
+    cx.update_window(window.into(), |view, window, cx| {
+        window.active.set(true);
+        window.visibility = WindowVisibility::Visible;
+        window.draw(cx).clear();
+        assert!(window.present().is_accepted());
+        window.invalidator.set_dirty(false);
+
+        let view = view
+            .downcast::<AnimationTickView>()
+            .expect("test view type");
+        let renders = view.read(cx).renders;
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let draws = test_window.draw_count();
+        let presents = test_window.present_framebuffer_only_count();
+        let callback_runs_for_frame = callback_runs.clone();
+
+        window.on_next_frame(move |_, _| {
+            callback_runs_for_frame.set(callback_runs_for_frame.get() + 1);
+        });
+        assert_eq!(
+            test_window.last_requested_frame(),
+            Some(PlatformFrameRequest::animation_tick())
+        );
+
+        window.run_platform_frame(PlatformFrameRequest::animation_tick(), cx);
+
+        assert_eq!(callback_runs.get(), 1);
+        assert_eq!(view.read(cx).renders, renders);
+        assert_eq!(test_window.draw_count(), draws);
+        assert_eq!(test_window.present_framebuffer_only_count(), presents + 1);
+    })
+    .expect("a clean on-next-frame callback should run without rebuilding the view");
+}
+
+#[gpui::test]
+fn animation_metadata_commit_presents_without_pixel_damage(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| StableOutputView { revision: 0 })
+        })
+        .expect("test window should open")
+    });
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.active.set(true);
+        window.visibility = WindowVisibility::Visible;
+        window.draw(cx).clear();
+        assert!(window.present().is_accepted());
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.draw_count();
+
+        // A timeline update can leave every retained primitive unchanged. Its handoff must
+        // happen in this UI commit, without a later pointer event or presentation request.
+        window.scene_animation_needs_commit.set(true);
+        window.run_platform_frame(PlatformFrameRequest::ui_commit(), cx);
+
+        assert!(window.render_dirty_region.is_empty());
+        assert_eq!(test_window.draw_count(), baseline + 1);
+        assert!(!window.presentation_state.has_pending_scene());
+        assert!(!window.scene_animation_needs_commit.get());
+        assert!(!window.needs_present.get());
+
+        window.run_platform_frame(PlatformFrameRequest::ui_commit(), cx);
+        assert_eq!(test_window.draw_count(), baseline + 1);
+    })
+    .expect("animation metadata should reach the compositor without input");
+}
+
+#[gpui::test]
 fn animation_frame_presents_even_when_scene_diff_is_empty(cx: &mut TestAppContext) {
     let (view, window) = cx.update(|cx| {
         let view = cx.new(|_| StableOutputView { revision: 0 });
@@ -177,10 +297,7 @@ fn animation_frame_presents_even_when_scene_diff_is_empty(cx: &mut TestAppContex
             let test_window = window.platform_window.as_test().unwrap().clone();
             let baseline = test_window.draw_count();
 
-            window.run_platform_frame(
-                PlatformFrameRequest::ui_commit_and_presentation(),
-                cx,
-            );
+            window.run_platform_frame(PlatformFrameRequest::ui_commit_and_presentation(), cx);
 
             assert!(window.render_dirty_region.is_empty());
             assert_eq!(test_window.draw_count(), baseline + 1);

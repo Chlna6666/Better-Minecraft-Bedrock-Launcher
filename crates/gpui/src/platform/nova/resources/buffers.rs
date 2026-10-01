@@ -174,7 +174,9 @@ where
         memory_location: MemoryLocation::CpuToGpu,
     })?;
     let custom_mesh_3d_parameters_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D params + animation sidecar")),
+        label: Some(format!(
+            "{label} custom GPU mesh 3D params + animation sidecar"
+        )),
         size: CUSTOM_MESH_3D_FRAME_BUFFER_BYTES as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
