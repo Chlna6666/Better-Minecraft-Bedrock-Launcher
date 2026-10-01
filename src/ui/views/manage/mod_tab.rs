@@ -17,11 +17,7 @@ impl ManagePageView {
         ) {
             Ok(task_id) => {
                 let _i18n = cx.global::<I18n>();
-                watch_manage_asset_mutation_task(
-                    task_id,
-                    t!("ManagePage.mod_status_updated"),
-                    cx,
-                );
+                watch_manage_asset_mutation_task(task_id, t!("ManagePage.mod_status_updated"), cx);
             }
             Err(error) => {
                 toast::error(cx, SharedString::from(error));

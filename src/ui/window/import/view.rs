@@ -382,11 +382,7 @@ impl ImportWindowView {
         .detach();
     }
 
-    pub(crate) fn append_paths(
-        &mut self,
-        paths: Vec<PathBuf>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn append_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         if self.is_importing || paths.is_empty() {
             return;
         }
@@ -410,11 +406,7 @@ impl ImportWindowView {
         self.is_inspecting
             || self.batch_previews.len() != self.file_paths.len()
             || self.batch_previews.iter().any(|entry| {
-                entry.error.is_some()
-                    || entry
-                        .preview
-                        .as_ref()
-                        .is_none_or(|preview| !preview.valid)
+                entry.error.is_some() || entry.preview.as_ref().is_none_or(|preview| !preview.valid)
             })
     }
 
@@ -434,10 +426,7 @@ impl ImportWindowView {
             return;
         }
         if self.has_invalid_or_failed_preview() {
-            self.status = Some((
-                StatusKind::Error,
-                t!("Import.batch_invalid_or_unreadable"),
-            ));
+            self.status = Some((StatusKind::Error, t!("Import.batch_invalid_or_unreadable")));
             cx.notify();
             return;
         }
@@ -648,9 +637,7 @@ impl ImportWindowView {
                     .unwrap_or_else(|| snapshot.status.to_string());
                 warn!(
                     "Import window finish failed: task_id={}, status={}, error={}",
-                    snapshot.id,
-                    snapshot.status,
-                    error
+                    snapshot.id, snapshot.status, error
                 );
                 self.close_after_launch_completion = false;
                 self.launch_completion_close_scheduled = false;
@@ -2069,15 +2056,12 @@ fn render_batch_preview_cards(
                             .child(SharedString::from(file_name)),
                     )
                     .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(colors.danger)
-                            .child(
-                                entry
-                                    .error
-                                    .clone()
-                                    .unwrap_or_else(|| t!("Import.preview_unavailable")),
-                            ),
+                        div().text_size(px(10.)).text_color(colors.danger).child(
+                            entry
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| t!("Import.preview_unavailable")),
+                        ),
                     ),
             )
         };

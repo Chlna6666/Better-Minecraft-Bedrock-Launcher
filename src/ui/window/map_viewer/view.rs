@@ -27,6 +27,9 @@ fn visible_tile_frontend_ready(
 
 impl Drop for MapViewerWindowView {
     fn drop(&mut self) {
+        self.release_map_image_preview();
+        self.release_live_preview(MapViewerRightPanel::Generator);
+        self.release_live_preview(MapViewerRightPanel::ImageGenerator);
         if let Some(completion) = self.pending_paste_task_completion.take() {
             task_manager::finish_task(
                 &completion.task_id,
@@ -109,6 +112,13 @@ impl MapViewerWindowView {
         }
         for image in self.paste_preview_images.iter() {
             collect_image(image.image.clone());
+        }
+        if let Some(super::player_map_preview::PlayerMapPreview {
+            status: super::player_map_preview::PlayerMapPreviewStatus::Ready(image),
+            ..
+        }) = self.player_workspace.map_preview.take()
+        {
+            collect_image(image);
         }
         for image in self.professional.copied_chunk_preview_images.values() {
             collect_image(image.image.clone());
@@ -209,8 +219,7 @@ impl Render for MapViewerWindowView {
         if !self.viewport_interaction_active() {
             self.sync_canvas_snapshot(colors, cx);
         }
-        let slime_advanced_scan_modal =
-            self.render_slime_farm_advanced_scan_modal(&colors, cx);
+        let slime_advanced_scan_modal = self.render_slime_farm_advanced_scan_modal(&colors, cx);
 
         let root = div()
             .relative()
@@ -330,17 +339,6 @@ impl Render for MapViewerWindowView {
                     .flex_col()
                     .child(self.top_bar_view.clone())
                     .child(self.render_workspace(&colors, cx))
-                    .when(self.ui_state.bottom_panel_open, |this| {
-                        this.child(
-                            split_handle(SplitPaneAxis::Vertical, colors.border).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, _window, cx| {
-                                    this.begin_bottom_panel_resize(event.position, cx)
-                                }),
-                            ),
-                        )
-                        .child(self.render_bottom_dock(&colors, cx))
-                    })
                     .child(self.render_map_status_bar(&colors, cx)),
             )
             .when(self.ui_state.dock_drag.is_some(), |this| {

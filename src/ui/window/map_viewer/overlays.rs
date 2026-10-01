@@ -3,6 +3,21 @@ use super::prelude::*;
 use super::query_cache::{MapQueryCacheKey, MapQueryKind};
 use super::viewport::*;
 
+impl OverlayOptions {
+    pub(super) fn query_options(self) -> RegionOverlayQueryOptions {
+        RegionOverlayQueryOptions {
+            include_slime: self.slime_chunks,
+            include_entities: self.entities || self.load_risk,
+            include_block_entities: self.block_entities || self.load_risk,
+            include_pending_ticks: self.pending_ticks || self.load_risk,
+            include_villages: self.villages,
+            include_hardcoded_spawn_areas: self.hardcoded_spawn_areas,
+            max_chunks: 4_096,
+            max_items_per_kind: 10_000,
+        }
+    }
+}
+
 impl MapViewerWindowView {
     pub(super) fn preload_entity_avatar_pool(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |handle, cx| {
@@ -367,11 +382,8 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
+                        .map_err(|error| error.to_string())?;
                     VillageOverlayIndex::build(&world, &cancel)
                         .map(Arc::new)
                         .map_err(|error| error.to_string())
@@ -529,16 +541,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn professional_overlay_query_options(&self) -> RegionOverlayQueryOptions {
-        RegionOverlayQueryOptions {
-            include_slime: self.overlay_options.slime_chunks,
-            include_entities: self.overlay_options.entities,
-            include_block_entities: self.overlay_options.block_entities,
-            include_pending_ticks: self.overlay_options.pending_ticks,
-            include_villages: self.overlay_options.villages,
-            include_hardcoded_spawn_areas: self.overlay_options.hardcoded_spawn_areas,
-            max_chunks: 4_096,
-            max_items_per_kind: 10_000,
-        }
+        self.overlay_options.query_options()
     }
 
     pub(super) fn professional_overlay_prefetch_options(&self) -> RegionOverlayQueryOptions {
@@ -708,8 +711,7 @@ impl MapViewerWindowView {
         if self.professional.slime_farm_candidates_loading {
             if self.professional.slime_farm_candidates_request_bounds == Some(bounds)
                 && self.professional.slime_farm_candidates_request_mode == Some(requested_mode)
-                && self.professional.slime_farm_candidates_request_max_results
-                    == Some(max_results)
+                && self.professional.slime_farm_candidates_request_max_results == Some(max_results)
             {
                 return;
             }
@@ -795,15 +797,15 @@ impl MapViewerWindowView {
                 }
                 if this.slime_farm_candidate_result_limit() != max_results
                     || !accept_slime_farm_candidate_result(
-                    this.metadata_generation,
-                    this.professional.slime_farm_candidates_generation,
-                    this.slime_farm_search_scope().map(|scope| scope.bounds),
-                    this.slime_farm_search_mode,
-                    metadata_generation,
-                    generation,
-                    bounds,
-                    requested_mode,
-                )
+                        this.metadata_generation,
+                        this.professional.slime_farm_candidates_generation,
+                        this.slime_farm_search_scope().map(|scope| scope.bounds),
+                        this.slime_farm_search_mode,
+                        metadata_generation,
+                        generation,
+                        bounds,
+                        requested_mode,
+                    )
                 {
                     return;
                 }
@@ -842,10 +844,7 @@ impl MapViewerWindowView {
         }
 
         if let Some(scan) = self.slime_farm_advanced_scan {
-            return practical_slime_farm_scope(
-                scan.bounds,
-                SlimeFarmSearchScopeSource::Advanced,
-            );
+            return practical_slime_farm_scope(scan.bounds, SlimeFarmSearchScopeSource::Advanced);
         }
 
         let (mut requested, source) = match self.slime_farm_scope_mode {
@@ -1003,18 +1002,10 @@ pub(super) fn practical_slime_farm_scope(
     }
     let bounds = SlimeChunkBounds {
         dimension: requested.dimension,
-        min_chunk_x: requested
-            .min_chunk_x
-            .max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
-        max_chunk_x: requested
-            .max_chunk_x
-            .min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
-        min_chunk_z: requested
-            .min_chunk_z
-            .max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
-        max_chunk_z: requested
-            .max_chunk_z
-            .min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        min_chunk_x: requested.min_chunk_x.max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        max_chunk_x: requested.max_chunk_x.min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        min_chunk_z: requested.min_chunk_z.max(-SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
+        max_chunk_z: requested.max_chunk_z.min(SLIME_FARM_PRACTICAL_CHUNK_LIMIT),
     };
     if bounds.min_chunk_x > bounds.max_chunk_x || bounds.min_chunk_z > bounds.max_chunk_z {
         return None;

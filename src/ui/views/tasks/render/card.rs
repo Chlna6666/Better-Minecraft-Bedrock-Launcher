@@ -53,6 +53,28 @@ fn meta_separator(colors: &ThemeColors) -> Div {
 }
 
 fn task_amount_text(_i18n: &I18n, model: &TaskCardViewModel) -> SharedString {
+    if model.stage.starts_with("map_")
+        || matches!(
+            model.stage.as_ref(),
+            "生成地图记录"
+                | "读取地图包"
+                | "检查目标与地图 ID"
+                | "创建撤销快照"
+                | "原子提交地图与物品"
+                | "保存撤销历史"
+                | "匹配方块"
+                | "体素化三角形"
+                | "保存预览结果"
+                | "逐张生成地图"
+                | "逐张合并预览"
+                | "裁剪、缩放与方块匹配"
+        )
+    {
+        return model.total.map_or_else(
+            || SharedString::from(model.done.to_string()),
+            |total| SharedString::from(format!("{} / {total}", model.done)),
+        );
+    }
     let done = crate::utils::format_bytes::format_bytes_compact(model.done);
     match model.total {
         Some(total) => SharedString::from(format!(
@@ -348,14 +370,18 @@ pub(crate) fn render_task_card(
     if let Some(motion_kind) = motion {
         return match motion_kind {
             TaskCardMotionKind::Enter => base_card
+                .composite_layer()
                 .with_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
-                    spring_motion(spring_smooth()),
-                    |card, progress| {
-                        card.opacity(0.15 + progress * 0.85)
-                            .relative()
-                            .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-                    },
+                    spring_motion(spring_smooth()).with_property(
+                        AnimationProperty::translation_opacity(
+                            point(px(0.0), px(motion::ENTRANCE_OFFSET)),
+                            Point::default(),
+                            0.15,
+                            1.0,
+                        ),
+                    ),
+                    |card, _progress| card,
                 )
                 .into_any_element(),
             TaskCardMotionKind::Complete => base_card

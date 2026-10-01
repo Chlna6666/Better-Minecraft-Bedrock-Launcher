@@ -1,5 +1,6 @@
 use super::model::*;
 use super::panels::*;
+use super::player_map_preview::PlayerMapPreview;
 use super::players::*;
 use super::prelude::*;
 use crate::ui::components::icon::themed_icon;
@@ -52,6 +53,8 @@ pub(super) struct PlayerWorkspaceState {
     pub(super) center: PlayerWorkspaceCenter,
     pub(super) inspector_mode: PlayerInspectorMode,
     pub(super) selected_item: Option<PlayerItemSelection>,
+    pub(super) map_preview: Option<PlayerMapPreview>,
+    pub(super) map_preview_generation: u64,
     pub(super) multi_selected_items: Vec<PlayerItemSelection>,
     pub(super) pressed_item: Option<PlayerItemSelection>,
     pub(super) press_generation: u64,
@@ -95,6 +98,8 @@ impl PlayerWorkspaceState {
             center: PlayerWorkspaceCenter::Inventory,
             inspector_mode: PlayerInspectorMode::Visual,
             selected_item: None,
+            map_preview: None,
+            map_preview_generation: 0,
             multi_selected_items: Vec::new(),
             pressed_item: None,
             press_generation: 0,
@@ -389,13 +394,14 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn close_player_workspace(&mut self, cx: &mut Context<Self>) {
-        self.clear_player_workspace_context();
+        self.clear_player_workspace_context(cx);
         self.ui_state.close_player_panes();
         self.update_viewport_after_dock_change(cx);
         cx.notify();
     }
 
-    pub(super) fn clear_player_workspace_context(&mut self) {
+    pub(super) fn clear_player_workspace_context(&mut self, cx: &mut Context<Self>) {
+        self.clear_player_map_preview(cx);
         self.players.selected = None;
         self.players.detail = None;
         self.players.loading = false;
@@ -704,6 +710,7 @@ impl MapViewerWindowView {
         self.ui_state.left_panel_open = true;
         self.player_workspace.center = center;
         if player_changed {
+            self.clear_player_map_preview(cx);
             self.player_workspace.selected_item = None;
             self.player_workspace.multi_selected_items.clear();
             self.player_workspace.pressed_item = None;
@@ -1499,11 +1506,12 @@ impl MapViewerWindowView {
             })
     }
 
-    fn selected_workspace_entry(&self) -> Option<PlayerInventoryEntry> {
+    pub(super) fn selected_workspace_entry(&self) -> Option<PlayerInventoryEntry> {
         self.workspace_entry_for_selection(self.player_workspace.selected_item?)
     }
 
     pub(super) fn sync_selected_player_item_visual_inputs(&mut self, cx: &mut Context<Self>) {
+        self.sync_selected_player_map_preview(cx);
         let Some(selection) = self.player_workspace.selected_item else {
             return;
         };
@@ -1929,6 +1937,9 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .gap(px(9.0))
+            .when_some(self.render_player_map_preview(colors), |this, preview| {
+                this.child(preview)
+            })
             .child(player_form_field(
                 colors,
                 t!("MapViewer.item_id"),
@@ -2472,8 +2483,7 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = World::open(&world_path, options)
-                        .map_err(|e| e.to_string())?;
+                    let world = World::open(&world_path, options).map_err(|e| e.to_string())?;
                     let history = capture_player_history(
                         &world_path,
                         &id,
@@ -2519,10 +2529,8 @@ impl MapViewerWindowView {
                         replace_player_slot(&mut data.nbt, dst, Some(item))?;
                         last = dst;
                     }
-                    data = PlayerData::from_nbt(id.clone(), data.nbt).map_err(|e| e.to_string())?;
-                    world
-                        .save_player(&data)
-                        .map_err(|e| e.to_string())?;
+                    data.refresh_saved_items();
+                    world.save_player(&data).map_err(|e| e.to_string())?;
                     let detail = player_detail_from_data(data)?;
                     if let Ok(capture) = history {
                         complete_after(capture, format!("玩家物品：批量拖拽 {count} 项"))?;
@@ -2599,8 +2607,8 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = World::open(&world_path, options)
-                        .map_err(|error| error.to_string())?;
+                    let world =
+                        World::open(&world_path, options).map_err(|error| error.to_string())?;
                     let history_capture =
                         capture_player_history(&world_path, &id, "玩家物品：拖拽移动/交换");
                     let mut data = world
@@ -2612,8 +2620,7 @@ impl MapViewerWindowView {
                     let target_item = player_slot_item(&data.nbt, target);
                     replace_player_slot(&mut data.nbt, source, target_item)?;
                     replace_player_slot(&mut data.nbt, target, Some(source_item))?;
-                    data = PlayerData::from_nbt(id.clone(), data.nbt)
-                        .map_err(|error| error.to_string())?;
+                    data.refresh_saved_items();
                     world
                         .save_player(&data)
                         .map_err(|error| error.to_string())?;
@@ -2686,8 +2693,8 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = World::open(&world_path, options)
-                        .map_err(|error| error.to_string())?;
+                    let world =
+                        World::open(&world_path, options).map_err(|error| error.to_string())?;
                     let history_capture =
                         capture_player_history(&world_path, &id, label_string.clone());
                     let mut data = world
@@ -2695,8 +2702,7 @@ impl MapViewerWindowView {
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     replace_player_slot(&mut data.nbt, selection, replacement)?;
-                    data = PlayerData::from_nbt(id.clone(), data.nbt)
-                        .map_err(|error| error.to_string())?;
+                    data.refresh_saved_items();
                     world
                         .save_player(&data)
                         .map_err(|error| error.to_string())?;

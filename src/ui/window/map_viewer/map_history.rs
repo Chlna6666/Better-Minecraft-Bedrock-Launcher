@@ -13,7 +13,7 @@ const HISTORY_OBJECT_STORE_DIR: &str = "objects";
 const HISTORY_OBJECT_MIN_BYTES: usize = 128;
 const HISTORY_STORAGE_INLINE_ZSTD: &str = "inlineZstd";
 const HISTORY_STORAGE_OBJECT_STORE_V1: &str = "objectStoreV1";
-const HISTORY_APPLY_BATCH_RECORDS: usize = 256;
+const HISTORY_ATOMIC_BATCH_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -522,7 +522,7 @@ pub(crate) fn capture_before(spec: MapHistoryCaptureSpec) -> Result<MapHistoryCa
     capture_before_with_progress(spec, |_| {})
 }
 
-    pub(super) fn capture_before_with_progress(
+pub(super) fn capture_before_with_progress(
     spec: MapHistoryCaptureSpec,
     progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryCapture, String> {
@@ -530,7 +530,7 @@ pub(crate) fn capture_before(spec: MapHistoryCaptureSpec) -> Result<MapHistoryCa
     capture_before_with_world_and_progress(spec, &world, progress)
 }
 
-    pub(super) fn capture_before_with_world_and_progress(
+pub(super) fn capture_before_with_world_and_progress(
     spec: MapHistoryCaptureSpec,
     world: &World,
     mut progress: impl FnMut(MapHistoryApplyProgress),
@@ -591,7 +591,7 @@ pub(crate) fn complete_after(
     complete_after_with_progress(capture, message, |_| {})
 }
 
-    pub(super) fn complete_after_with_progress(
+pub(super) fn complete_after_with_progress(
     capture: MapHistoryCapture,
     message: impl Into<String>,
     progress: impl FnMut(MapHistoryApplyProgress),
@@ -600,7 +600,7 @@ pub(crate) fn complete_after(
     complete_after_with_world_and_progress(capture, &world, message, progress)
 }
 
-    pub(super) fn complete_after_with_world_and_progress(
+pub(super) fn complete_after_with_world_and_progress(
     capture: MapHistoryCapture,
     world: &World,
     message: impl Into<String>,
@@ -1312,6 +1312,7 @@ fn decode_history_legacy_terrain(
 
 pub(super) fn apply_undo_with_progress(
     world_path: &Path,
+    cancel: &CancelFlag,
     progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryApplyOutcome, String> {
     let Some(entry) = list_history(world_path)?
@@ -1320,7 +1321,7 @@ pub(super) fn apply_undo_with_progress(
     else {
         return Err("没有可撤回的地图修改".to_string());
     };
-    let applied_change = apply_history_entry(world_path, &entry, true, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, true, cancel, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Undone, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
@@ -1332,6 +1333,7 @@ pub(super) fn apply_undo_with_progress(
 
 pub(super) fn apply_redo_with_progress(
     world_path: &Path,
+    cancel: &CancelFlag,
     progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryApplyOutcome, String> {
     let Some(entry) = list_history(world_path)?
@@ -1340,7 +1342,7 @@ pub(super) fn apply_redo_with_progress(
     else {
         return Err("没有可重做的地图修改".to_string());
     };
-    let applied_change = apply_history_entry(world_path, &entry, false, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, false, cancel, progress)?;
     mark_entry_status(world_path, &entry.id, MapHistoryEntryStatus::Success, None)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
@@ -1353,6 +1355,7 @@ pub(super) fn apply_redo_with_progress(
 pub(super) fn restore_history_entry_with_progress(
     world_path: &Path,
     entry_id: &str,
+    cancel: &CancelFlag,
     progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryApplyOutcome, String> {
     let entries = list_history(world_path)?;
@@ -1362,7 +1365,7 @@ pub(super) fn restore_history_entry_with_progress(
     if entry.status == MapHistoryEntryStatus::Failed {
         return Err("失败的历史项不能回档".to_string());
     }
-    let applied_change = apply_history_entry(world_path, &entry, true, progress)?;
+    let applied_change = apply_history_entry(world_path, &entry, true, cancel, progress)?;
     Ok(MapHistoryApplyOutcome {
         affected_chunks: applied_change.affected_chunks,
         refresh_all_tiles: applied_change.refresh_all_tiles,
@@ -1443,13 +1446,43 @@ fn apply_history_entry(
     world_path: &Path,
     entry: &MapHistoryEntry,
     undo: bool,
+    cancel: &CancelFlag,
     mut progress: impl FnMut(MapHistoryApplyProgress),
 ) -> Result<MapHistoryAppliedChange, String> {
+    if cancel.is_cancelled() {
+        return Err("历史操作已取消".to_owned());
+    }
     let change = read_history_change(&history_dir_for_world(world_path), &entry.id)?;
+    if cancel.is_cancelled() {
+        return Err("历史操作已取消".to_owned());
+    }
+    if change.level_dat.is_some() && !change.raw_records.is_empty() {
+        return Err("历史项同时修改 LevelDB 和 level.dat，无法作为一次原子撤销应用".to_owned());
+    }
+    let estimated_bytes = change
+        .raw_records
+        .iter()
+        .try_fold(0_usize, |total, delta| {
+            let source = if undo { &delta.after } else { &delta.before };
+            let target = if undo { &delta.before } else { &delta.after };
+            total
+                .checked_add(delta.key.len().saturating_mul(2))
+                .and_then(|total| total.checked_add(source.as_ref().map_or(0, Vec::len)))
+                .and_then(|total| total.checked_add(target.as_ref().map_or(0, Vec::len)))
+                .and_then(|total| total.checked_add(32))
+        })
+        .ok_or_else(|| "历史原子批次容量计算溢出".to_owned())?;
+    if estimated_bytes > HISTORY_ATOMIC_BATCH_MAX_BYTES {
+        return Err(format!(
+            "历史原子批次约需 {estimated_bytes} 字节，超过 {} 字节上限",
+            HISTORY_ATOMIC_BATCH_MAX_BYTES
+        ));
+    }
     let applied_change = history_applied_change(entry.chunks.iter().copied(), &change);
     let raw_total = change.raw_records.len();
     let total = raw_total
         .saturating_add(usize::from(change.level_dat.is_some()))
+        .saturating_add(usize::from(raw_total != 0))
         .max(1);
     let phase = SharedString::from(if undo {
         "应用历史回档"
@@ -1463,51 +1496,60 @@ fn apply_history_entry(
     });
     let mut options = bedrock_world::OpenOptions::default();
     options.read_only = false;
-    let world = World::open(world_path, options)
-        .map_err(|error| format!("打开世界失败: {error}"))?;
-    let mut completed = 0usize;
-    for batch in change.raw_records.chunks(HISTORY_APPLY_BATCH_RECORDS) {
-        let mut storage_batch = bedrock_world::StorageBatch::new();
-        for delta in batch {
-            let value = if undo {
-                delta.before.as_ref()
+    let world =
+        World::open(world_path, options).map_err(|error| format!("打开世界失败: {error}"))?;
+    if raw_total != 0 {
+        let mut transaction = world.transaction();
+        for (index, delta) in change.raw_records.iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err("历史操作已取消".to_owned());
+            }
+            if delta.key.is_empty() {
+                return Err("应用历史记录失败: 历史项包含空 LevelDB key".to_owned());
+            }
+            let (source, target) = if undo {
+                (&delta.after, &delta.before)
             } else {
-                delta.after.as_ref()
+                (&delta.before, &delta.after)
             };
-            apply_history_raw_delta(&mut storage_batch, delta.key.as_slice(), value)?;
+            let key = Bytes::copy_from_slice(&delta.key);
+            transaction.require_raw_key(
+                key.clone(),
+                source.as_ref().map(|value| Bytes::copy_from_slice(value)),
+            );
+            match target {
+                Some(value) => transaction.put_raw_key(key, Bytes::copy_from_slice(value)),
+                None => transaction.delete_raw_key(key),
+            }
+            if (index + 1) % 1024 == 0 || index + 1 == raw_total {
+                progress(MapHistoryApplyProgress {
+                    phase: SharedString::from("暂存历史记录"),
+                    completed: index + 1,
+                    total,
+                });
+            }
         }
-        world
-            .storage()
-            .write_batch(&storage_batch)
-            .map_err(|error| {
-                let first_key = batch
-                    .first()
-                    .map(|delta| history_key_label(&delta.key))
-                    .unwrap_or_else(|| "<empty batch>".to_string());
-                let last_key = batch
-                    .last()
-                    .map(|delta| history_key_label(&delta.key))
-                    .unwrap_or_else(|| first_key.clone());
-                format!(
-                    "应用历史记录失败: {error}（批次 {}..{}，{} 条）",
-                    first_key,
-                    last_key,
-                    batch.len()
-                )
-            })?;
-        completed = completed.saturating_add(batch.len());
+        if cancel.is_cancelled() {
+            return Err("历史操作已取消".to_owned());
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("应用历史原子批次失败: {error}"))?;
         progress(MapHistoryApplyProgress {
             phase: phase.clone(),
-            completed,
+            completed: raw_total + 1,
             total,
         });
     }
     if let Some(delta) = change.level_dat {
+        if cancel.is_cancelled() {
+            return Err("历史操作已取消".to_owned());
+        }
         let value = if undo { delta.before } else { delta.after };
         write_optional_file(world_path.join("level.dat"), value)?;
         progress(MapHistoryApplyProgress {
             phase,
-            completed: raw_total.saturating_add(1),
+            completed: total,
             total,
         });
     } else if raw_total == 0 {
@@ -1549,35 +1591,6 @@ fn history_delta_chunk(key: &[u8]) -> Option<ChunkPos> {
         bedrock_world::BedrockDbKey::Chunk(chunk_key) => Some(chunk_key.pos),
         bedrock_world::BedrockDbKey::ActorDigest { pos } => Some(pos),
         _ => None,
-    }
-}
-
-fn apply_history_raw_delta(
-    storage_batch: &mut bedrock_world::StorageBatch,
-    key: &[u8],
-    value: Option<&Vec<u8>>,
-) -> Result<(), String> {
-    if key.is_empty() {
-        return Err("应用历史记录失败: 历史项包含空 LevelDB key".to_string());
-    }
-    match value {
-        Some(value) => {
-            storage_batch.put(Bytes::copy_from_slice(key), Bytes::copy_from_slice(value));
-            Ok(())
-        }
-        None => {
-            storage_batch.delete(Bytes::copy_from_slice(key));
-            Ok(())
-        }
-    }
-}
-
-fn history_key_label(key: &[u8]) -> String {
-    let hex = hex::encode(key);
-    if hex.len() > 48 {
-        format!("{}...", &hex[..48])
-    } else {
-        hex
     }
 }
 
@@ -1665,10 +1678,7 @@ fn complete_snapshot(
     Ok(entry)
 }
 
-fn collect_chunk_raw_keys(
-    world: &World,
-    chunk: ChunkPos,
-) -> Result<BTreeSet<Vec<u8>>, String> {
+fn collect_chunk_raw_keys(world: &World, chunk: ChunkPos) -> Result<BTreeSet<Vec<u8>>, String> {
     let mut keys = BTreeSet::new();
     let records = world
         .chunk(chunk)
@@ -1696,8 +1706,7 @@ fn collect_chunk_raw_keys(
 fn open_world_readonly(world_path: &Path) -> Result<World, String> {
     let mut options = bedrock_world::OpenOptions::default();
     options.read_only = true;
-    World::open(world_path, options)
-        .map_err(|error| format!("打开世界失败: {error}"))
+    World::open(world_path, options).map_err(|error| format!("打开世界失败: {error}"))
 }
 
 fn write_history_entry(

@@ -4,7 +4,6 @@ use crate::ui::components::modal;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
-use crate::ui::theme::tokens::motion;
 use crate::ui::views::tools::state::ToolsPageState;
 use gpui::AnimationExt as _;
 use gpui::*;
@@ -36,15 +35,21 @@ pub(super) fn render_settings_overlay(
             state.easytier_settings_open = false;
         });
     });
-    let card = render_settings_card(colors, i18n, width, state, dismiss.clone()).with_animation(
-        "online-settings-card-enter",
-        spring_motion(spring_smooth()),
-        |card, progress| {
-            card.opacity(progress.clamp(0.0, 1.0))
-                .relative()
-                .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-        },
-    );
+    let card = render_settings_card(colors, i18n, width, state, dismiss.clone())
+        .composite_layer()
+        .with_animation(
+            "online-settings-card-enter",
+            spring_motion(spring_smooth()).with_property(AnimationProperty::translation_opacity(
+                point(
+                    px(0.0),
+                    px(crate::ui::theme::tokens::motion::ENTRANCE_OFFSET),
+                ),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
+            |card, _progress| card,
+        );
 
     Some(modal::modal_layer_dismissible(card, colors.backdrop, dismiss).into_any_element())
 }

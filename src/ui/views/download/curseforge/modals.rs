@@ -70,13 +70,7 @@ pub(super) fn render_curseforge_install_modal(
     selected_folder: Option<SharedString>,
     local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
 ) -> AnyElement {
-    super::render_curseforge_install_modal(
-        colors,
-        i18n,
-        state,
-        selected_folder,
-        local_versions,
-    )
+    super::render_curseforge_install_modal(colors, i18n, state, selected_folder, local_versions)
 }
 
 pub(super) fn render_curseforge_mod_page_modal(

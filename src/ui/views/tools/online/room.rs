@@ -438,7 +438,11 @@ fn render_header(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageState) -> D
         )
 }
 
-fn render_quick_action(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> Stateful<Div> {
+fn render_quick_action(
+    colors: &ThemeColors,
+    _i18n: &I18n,
+    state: &ToolsPageState,
+) -> Stateful<Div> {
     let stopping =
         state.online_operation == crate::ui::views::tools::state::OnlineOperation::Stopping;
     let (id, label, icon) = if state.easytier_running {

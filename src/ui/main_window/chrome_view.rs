@@ -100,7 +100,8 @@ impl Render for AppChromeView {
         chrome::render_shell(
             &colors,
             self.glass_effect_enabled,
-            self.brand.clone()
+            self.brand
+                .clone()
                 .cached_by(
                     StyleRefinement::default()
                         .w(px(300.))
@@ -109,7 +110,8 @@ impl Render for AppChromeView {
                     &"chrome-brand",
                 )
                 .into_any_element(),
-            self.controls.clone()
+            self.controls
+                .clone()
                 .cached_by(
                     StyleRefinement::default()
                         .w(px(124.))
@@ -118,10 +120,12 @@ impl Render for AppChromeView {
                     &"chrome-controls",
                 )
                 .into_any_element(),
-            self.nav.clone()
+            self.nav
+                .clone()
                 .cached_by(StyleRefinement::default().size_full(), &"chrome-nav")
                 .into_any_element(),
-            self.auth.clone()
+            self.auth
+                .clone()
                 .cached_absolute_by(&"chrome-auth")
                 .into_any_element(),
         )
@@ -259,15 +263,13 @@ impl Render for NavChromeView {
             window.request_animation_frame();
         }
         let nav = cx.global::<NavState>();
-        let (pill_left_steps, pill_right_steps) = nav.pill_edges(now);
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
-            pill_left_steps,
-            pill_right_steps,
+            pill_from_index: nav.pill_from_index,
+            pill_to_index: nav.pill_to_index,
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
-            nav_animating: nav.is_animating(now),
         };
         div()
             .size_full()

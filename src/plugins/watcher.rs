@@ -74,7 +74,8 @@ async fn run_watcher_loop(
         let (mut change_count, mut last_path) = match message {
             PluginWatcherMessage::Stop => return,
             PluginWatcherMessage::AsyncHostRefresh => {
-                let refreshed = cx.update(|cx| crate::plugins::runtime::drain_async_host_refreshes(cx));
+                let refreshed =
+                    cx.update(|cx| crate::plugins::runtime::drain_async_host_refreshes(cx));
                 match refreshed {
                     Ok(true) => {
                         if let Err(error) = cx.update(|cx| cx.refresh_windows()) {

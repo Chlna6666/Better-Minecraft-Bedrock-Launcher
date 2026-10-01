@@ -89,10 +89,7 @@ pub fn tab_content_motion(from_index: usize, to_index: usize) -> Animation {
 ///
 /// The previous list moves opposite to the incoming direction and stays partially visible instead
 /// of being replaced by a full-panel loading placeholder.
-pub fn tab_stale_content_motion(
-    _from_index: usize,
-    _to_index: usize,
-) -> Animation {
+pub fn tab_stale_content_motion(_from_index: usize, _to_index: usize) -> Animation {
     Animation::from_spec(
         AnimationSpec::new(Duration::from_millis(160))
             .fill_mode(FillMode::Both)
@@ -444,10 +441,7 @@ pub fn request_layout_animation_frame_until(window: &mut Window, deadline: Optio
 
 /// Active-window variant of [`request_layout_animation_frame_until`].
 #[track_caller]
-pub fn request_layout_animation_frame_until_active(
-    window: &mut Window,
-    deadline: Option<Instant>,
-) {
+pub fn request_layout_animation_frame_until_active(window: &mut Window, deadline: Option<Instant>) {
     if window.is_window_active() {
         request_layout_animation_frame_until(window, deadline);
     }

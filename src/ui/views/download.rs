@@ -296,9 +296,7 @@ fn apply_task_event_to_download_state(
                 .operations_by_package
                 .iter()
                 .find(|(_, operation)| operation.task_id.as_ref() == snapshot.id.as_ref())
-                .map(|(package_id, operation)| {
-                    (package_id.clone(), operation.file_name.clone())
-                });
+                .map(|(package_id, operation)| (package_id.clone(), operation.file_name.clone()));
             let Some((package_id, file_name)) = operation_entry else {
                 return None;
             };
@@ -308,10 +306,9 @@ fn apply_task_event_to_download_state(
                 state.operations_by_package.remove(&package_id);
                 if snapshot.status.as_ref() == "completed" {
                     if let Some(local_path) = snapshot.message.as_ref() {
-                        state.local_path_by_package.insert(
-                            package_id,
-                            SharedString::from(local_path.to_string()),
-                        );
+                        state
+                            .local_path_by_package
+                            .insert(package_id, SharedString::from(local_path.to_string()));
                     }
                     state.local_files.insert(file_name);
                     return None;
@@ -441,10 +438,7 @@ impl DownloadPageView {
                 return;
             }
 
-            if this.active
-                && tab == DownloadTab::ResourcePack
-                && curseforge_toolbar_changed
-            {
+            if this.active && tab == DownloadTab::ResourcePack && curseforge_toolbar_changed {
                 cx.notify();
             }
         }));
@@ -705,16 +699,14 @@ pub(super) fn render_download_page(
                 .map(IntoElement::into_any_element)
                 .unwrap_or_else(|| div().size_full().into_any_element()),
             DownloadTab::ResourcePack => curseforge_resource_panel.clone().into_any_element(),
-            DownloadTab::Mod => {
-                mods::render_mod_panel(
-                    cx,
-                    &colors,
-                    mod_panel_cache,
-                    native_mod_panel_cache,
-                    mod_image_cache,
-                )
-                .into_any_element()
-            }
+            DownloadTab::Mod => mods::render_mod_panel(
+                cx,
+                &colors,
+                mod_panel_cache,
+                native_mod_panel_cache,
+                mod_image_cache,
+            )
+            .into_any_element(),
         }
     };
 

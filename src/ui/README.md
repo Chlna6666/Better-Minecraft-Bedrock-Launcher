@@ -385,8 +385,9 @@ inside their focused submodules rather than expanding the root files.
 All network work must happen off the UI thread. Preferred patterns:
 
 - call existing core/service APIs from a background task;
-- call `src/tasks` services for business filesystem access, parsing, decoding,
-  networking, processes, timers, and other Tokio work;
+- call the owning `src/core` or service API for business filesystem access,
+  parsing, decoding, networking, processes, timers, and other Tokio work; these
+  APIs use `src/tasks` runtime and task-management primitives where needed;
 - reserve GPUI `background_spawn_blocking` for bounded UI-only helpers such as
   native dialogs and small presentation preparation;
 - do not call `tokio::spawn` or `tokio::task::spawn_blocking` directly from a

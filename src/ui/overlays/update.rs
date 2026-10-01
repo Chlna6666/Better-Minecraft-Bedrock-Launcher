@@ -1,8 +1,6 @@
 use crate::tasks::task_manager::{self, TaskSnapshot};
 use crate::ui::animation::repeating_linear_motion;
-use crate::ui::components::adaptive::{
-    AdaptiveModalSpec, WindowMetrics, adaptive_modal_size,
-};
+use crate::ui::components::adaptive::{AdaptiveModalSpec, WindowMetrics, adaptive_modal_size};
 use crate::ui::components::markdown_renderer::{
     MarkdownDocument, MarkdownItem, render_markdown_item,
 };
@@ -12,10 +10,10 @@ use crate::ui::state::update::UpdateState;
 use crate::ui::theme::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use crate::utils::format_bytes::{format_bytes, format_bytes_per_sec};
 use crate::utils::updater::ReleaseSummary;
+use gpui::AnimationExt;
 use gpui::list;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui::AnimationExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -524,13 +522,19 @@ pub fn render_update_modal(
                             .absolute()
                             .top(px(0.))
                             .bottom(px(0.))
+                            .left(relative(-0.36))
                             .w(relative(0.36))
                             .rounded_full()
                             .bg(colors.accent)
                             .with_animation(
                                 "update-download-indeterminate",
-                                repeating_linear_motion(Duration::from_millis(1200)),
-                                |this, t| this.left(relative(-0.36 + t * 1.42)),
+                                repeating_linear_motion(Duration::from_millis(1200)).with_property(
+                                    AnimationProperty::relative_translation(
+                                        Point::default(),
+                                        point(1.42 / 0.36, 0.0),
+                                    ),
+                                ),
+                                |this, _progress| this,
                             )
                             .into_any_element()
                     } else {
@@ -552,9 +556,7 @@ pub fn render_update_modal(
                     .justify_between()
                     .text_size(px(12.))
                     .text_color(colors.text_secondary)
-                    .child(
-                        div().child(format!("{} / {}", format_bytes(done), total_label)),
-                    )
+                    .child(div().child(format!("{} / {}", format_bytes(done), total_label)))
                     .child(
                         div()
                             .flex()
@@ -565,11 +567,11 @@ pub fn render_update_modal(
                                     .text_color(colors.text_muted)
                                     .child(format_bytes_per_sec(speed)),
                             )
-                            .child(
-                                div()
-                                    .text_color(colors.text_muted)
-                                    .child(format!("{}: {}", t!("UpdateModal.progress.eta"), eta)),
-                            ),
+                            .child(div().text_color(colors.text_muted).child(format!(
+                                "{}: {}",
+                                t!("UpdateModal.progress.eta"),
+                                eta
+                            ))),
                     ),
             )
             .children(download_error.clone().map(|e| {
@@ -587,13 +589,7 @@ pub fn render_update_modal(
                     .whitespace_normal()
                     .child(e)
             }))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .pt(px(2.))
-                    .child(cancel_btn),
-            )
+            .child(div().flex().justify_end().pt(px(2.)).child(cancel_btn))
     };
 
     // ========== 更新日志 / 信息状态 UI ==========

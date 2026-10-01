@@ -95,10 +95,7 @@ fn nightly_update_available(
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
-pub async fn check_updates(
-    owner: String,
-    repo: String,
-) -> Result<serde_json::Value, String> {
+pub async fn check_updates(owner: String, repo: String) -> Result<serde_json::Value, String> {
     let config = read_config().map_err(|e| format!("读取配置失败：{}", e))?;
     let update_channel = config.launcher.update_channel;
     let github_source = config.launcher.download.github.source;
@@ -327,8 +324,8 @@ pub async fn download_and_apply_update(
     let client = get_client_for_proxy()
         .map_err(|e| fail_update_task(&task_id, format!("构建 HTTP 客户端失败：{}", e)))?;
     let manager = DownloaderManager::with_client(client);
-    let download_urls = crate::github::configured_download_urls(&url)
-        .map_err(|e| fail_update_task(&task_id, e))?;
+    let download_urls =
+        crate::github::configured_download_urls(&url).map_err(|e| fail_update_task(&task_id, e))?;
     info!(
         source_url = %url,
         candidate_count = download_urls.len(),
@@ -349,9 +346,7 @@ pub async fn download_and_apply_update(
     let bytes_len = match res {
         Ok(CoreResult::Success(_)) => {
             let bytes_len = fs::metadata(&target)
-                .map_err(|e| {
-                    fail_update_task(&task_id, format!("获取文件大小失败：{}", e))
-                })?
+                .map_err(|e| fail_update_task(&task_id, format!("获取文件大小失败：{}", e)))?
                 .len();
             reset_progress(&task_id, None, Some("preparing_update"));
             set_task_message(&task_id, Some("更新包已下载，正在准备更新程序".to_string()));
@@ -517,10 +512,7 @@ where
 }
 
 /// 阻塞式检查更新函数 - 在 GPUI 线程池中使用
-pub fn check_updates_blocking(
-    owner: String,
-    repo: String,
-) -> Result<serde_json::Value, String> {
+pub fn check_updates_blocking(owner: String, repo: String) -> Result<serde_json::Value, String> {
     block_on_app_runtime(check_updates(owner, repo))
 }
 

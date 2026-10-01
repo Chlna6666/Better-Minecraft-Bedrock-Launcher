@@ -162,23 +162,21 @@ impl MapViewerWindowView {
             let Some(view) = handle.upgrade() else {
                 return Ok(());
             };
-            view.update(cx, move |this, cx| {
-                match result {
-                    Ok(Ok(tag)) => {
-                        this.player_workspace.selected_item = Some(selection);
-                        this.write_player_workspace_slot(
-                            selection,
-                            Some(tag),
-                            "玩家物品：配置文件导入",
-                            cx,
-                        );
-                    }
-                    Ok(Err(error)) | Err(error) => {
-                        this.player_workspace.item_editor_error =
-                            Some(SharedString::from(error.clone()));
-                        this.status = SharedString::from(error);
-                        cx.notify();
-                    }
+            view.update(cx, move |this, cx| match result {
+                Ok(Ok(tag)) => {
+                    this.player_workspace.selected_item = Some(selection);
+                    this.write_player_workspace_slot(
+                        selection,
+                        Some(tag),
+                        "玩家物品：配置文件导入",
+                        cx,
+                    );
+                }
+                Ok(Err(error)) | Err(error) => {
+                    this.player_workspace.item_editor_error =
+                        Some(SharedString::from(error.clone()));
+                    this.status = SharedString::from(error);
+                    cx.notify();
                 }
             })?;
             Ok::<(), anyhow::Error>(())
@@ -352,9 +350,7 @@ impl MapViewerWindowView {
             };
             view.update(cx, move |this, cx| {
                 this.status = match result {
-                    Ok(Ok(())) => {
-                        SharedString::from(format!("玩家背包配置已导出：{success_path}"))
-                    }
+                    Ok(Ok(())) => SharedString::from(format!("玩家背包配置已导出：{success_path}")),
                     Ok(Err(error)) | Err(error) => SharedString::from(error),
                 };
                 cx.notify();

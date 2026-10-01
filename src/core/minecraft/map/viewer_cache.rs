@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-const CACHE_VERSION: u16 = 4;
+const CACHE_VERSION: u16 = 5;
 const INDEX_FILE: &str = "index.bin";
 const MAP_INFO_CACHE_DIRECTORY: &str = "map-info";
 const MAX_MAP_INFO_QUERY_WORKERS: usize = 4;
@@ -94,6 +94,8 @@ pub struct MapInfoBlockRect {
 /// Persisted overlay data for one tile.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MapInfoTilePayload {
+    /// Counts of saved ticking-capable block entities, not active tick timings.
+    pub ticking_block_entity_counts: Vec<MapInfoChunkCount>,
     /// Entity markers within the tile's chunk range.
     pub entities: Vec<MapInfoEntity>,
     /// Parsed entity roots omitted only because they had no usable Pos value.
@@ -125,6 +127,8 @@ pub enum MapInfoEntityCacheStatus {
 /// Aggregated payloads for a visible set of tiles.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapInfoOverlaySnapshot {
+    /// Saved ticking-capable block-entity counts from the available tiles.
+    pub ticking_block_entity_counts: Vec<MapInfoChunkCount>,
     /// Entity markers from all requested tiles.
     pub entities: Vec<MapInfoEntity>,
     /// Cache provenance aligned by index with [`Self::entities`].
@@ -421,6 +425,7 @@ impl MapInfoTilePayload {
     fn from_records(records: &[ChunkRecordQueryResult]) -> Self {
         let mut payload = Self::default();
         let mut pending_tick_counts = BTreeMap::<(i32, i32), u32>::new();
+        let mut ticking_counts = BTreeMap::<(i32, i32), u32>::new();
         for result in records {
             for record in &result.records {
                 match &record.value {
@@ -452,10 +457,21 @@ impl MapInfoTilePayload {
                                 block_x: position[0],
                                 block_z: position[2],
                             });
+                            if super::load_risk::is_ticking_block_entity(entity.id.as_deref()) {
+                                let count = ticking_counts
+                                    .entry((position[0].div_euclid(16), position[2].div_euclid(16)))
+                                    .or_default();
+                                *count = count.saturating_add(1);
+                            }
                         }
                     }
                     ChunkValue::PendingTicks(ticks) => {
-                        let count = u32::try_from(ticks.len()).unwrap_or(u32::MAX);
+                        let count = ticks.iter().fold(0_u32, |count, root| {
+                            count.saturating_add(super::load_risk::pending_tick_count(root))
+                        });
+                        if count == 0 {
+                            continue;
+                        }
                         let entry = pending_tick_counts
                             .entry((result.pos.x, result.pos.z))
                             .or_default();
@@ -475,6 +491,14 @@ impl MapInfoTilePayload {
                 }
             }
         }
+        payload.ticking_block_entity_counts = ticking_counts
+            .into_iter()
+            .map(|((chunk_x, chunk_z), count)| MapInfoChunkCount {
+                chunk_x,
+                chunk_z,
+                count,
+            })
+            .collect();
         payload.pending_tick_counts = pending_tick_counts
             .into_iter()
             .map(|((chunk_x, chunk_z), count)| MapInfoChunkCount {
@@ -511,6 +535,9 @@ impl MapInfoOverlaySnapshot {
                 .extend(std::iter::repeat_n(cache_status, payload.entities.len()));
             snapshot.entities.extend(payload.entities);
             snapshot.block_entities.extend(payload.block_entities);
+            snapshot
+                .ticking_block_entity_counts
+                .extend(payload.ticking_block_entity_counts);
             snapshot
                 .pending_tick_counts
                 .extend(payload.pending_tick_counts);
@@ -819,5 +846,33 @@ mod tests {
             ]
         );
         assert!(snapshot.source_fingerprints_validated);
+    }
+
+    #[test]
+    fn ticking_counts_survive_cache_encoding_and_snapshot_aggregation() {
+        let payload = MapInfoTilePayload {
+            ticking_block_entity_counts: vec![MapInfoChunkCount {
+                chunk_x: -1,
+                chunk_z: 2,
+                count: 32,
+            }],
+            ..MapInfoTilePayload::default()
+        };
+        let bytes = postcard::to_allocvec(&payload).unwrap();
+        let decoded: MapInfoTilePayload = postcard::from_bytes(&bytes).unwrap();
+        let snapshot = MapInfoOverlaySnapshot::from_payloads(
+            [(decoded, MapInfoEntityCacheStatus::Rebuilt)],
+            0,
+            1,
+            1,
+            true,
+        );
+        let loads = super::super::load_risk::from_snapshot(&snapshot);
+        assert_eq!(loads.len(), 1);
+        assert_eq!(loads[0].ticking_block_entities, 32);
+        assert_eq!(
+            loads[0].level(),
+            Some(super::super::load_risk::RiskLevel::Orange)
+        );
     }
 }

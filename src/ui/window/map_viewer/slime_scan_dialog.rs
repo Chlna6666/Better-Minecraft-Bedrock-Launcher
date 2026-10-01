@@ -4,8 +4,7 @@ use super::panels::{mode_button, panel_field_label, status_badge};
 use super::prelude::*;
 use crate::ui::components::{
     button::{ghost_button, primary_button},
-    dialog,
-    modal,
+    dialog, modal,
 };
 use std::rc::Rc;
 
@@ -99,12 +98,13 @@ impl MapViewerWindowView {
                 let (block_x, block_z) = self.viewport.center_block(self.active_layout);
                 Some((block_x.div_euclid(16), block_z.div_euclid(16)))
             }
-            SlimeFarmAdvancedScanAnchor::SelectionCenter => {
-                self.professional.selection.map(|selection| selection.bounds().center())
-            }
-            SlimeFarmAdvancedScanAnchor::SelectedPlayer => {
-                self.selected_player_slime_bounds().map(SlimeChunkBounds::center)
-            }
+            SlimeFarmAdvancedScanAnchor::SelectionCenter => self
+                .professional
+                .selection
+                .map(|selection| selection.bounds().center()),
+            SlimeFarmAdvancedScanAnchor::SelectedPlayer => self
+                .selected_player_slime_bounds()
+                .map(SlimeChunkBounds::center),
             SlimeFarmAdvancedScanAnchor::WorldOrigin => Some((0, 0)),
         }
     }
@@ -316,10 +316,7 @@ impl MapViewerWindowView {
                     .gap(px(7.0))
                     .children(preset_buttons),
             )
-            .child(panel_field_label(
-                colors,
-                t!("MapViewer.slime_search_mode"),
-            ))
+            .child(panel_field_label(colors, t!("MapViewer.slime_search_mode")))
             .child(
                 div()
                     .flex()
@@ -334,9 +331,10 @@ impl MapViewerWindowView {
                     t!("MapViewer.slime_pattern_isolation_hint"),
                 ))
             })
-            .when(dialog_state.mode == SlimeFarmSearchMode::Square3x3, |this| {
-                this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare")))
-            })
+            .when(
+                dialog_state.mode == SlimeFarmSearchMode::Square3x3,
+                |this| this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare"))),
+            )
             .child(status_badge(colors, summary))
             .when(!anchor_ready, |this| {
                 this.child(status_badge(
@@ -352,22 +350,15 @@ impl MapViewerWindowView {
                     ))
                 })
                 .when(scope.clipped_for_precision, |this| {
-                    this.child(status_badge(
-                        colors,
-                        t!("MapViewer.slime_scope_clipped"),
-                    ))
+                    this.child(status_badge(colors, t!("MapViewer.slime_scope_clipped")))
                 })
             });
 
         let cancel_dismiss = dialog_state.dismiss.clone();
-        let cancel_button = ghost_button(
-            colors,
-            "map-slime-advanced-cancel",
-            t!("common.cancel"),
-        )
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            cancel_dismiss.dismiss(cx);
-        });
+        let cancel_button = ghost_button(colors, "map-slime-advanced-cancel", t!("common.cancel"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cancel_dismiss.dismiss(cx);
+            });
 
         let mut confirm_button = primary_button(
             colors,
@@ -377,17 +368,14 @@ impl MapViewerWindowView {
         if anchor_ready {
             let confirm_view = cx.entity().downgrade();
             let confirm_dismiss = dialog_state.dismiss.clone();
-            confirm_button = confirm_button.on_mouse_down(
-                MouseButton::Left,
-                move |_, _, cx| {
-                    let started = confirm_view
-                        .update(cx, |this, cx| this.start_slime_farm_advanced_scan(cx))
-                        .unwrap_or(false);
-                    if started {
-                        confirm_dismiss.dismiss(cx);
-                    }
-                },
-            );
+            confirm_button = confirm_button.on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                let started = confirm_view
+                    .update(cx, |this, cx| this.start_slime_farm_advanced_scan(cx))
+                    .unwrap_or(false);
+                if started {
+                    confirm_dismiss.dismiss(cx);
+                }
+            });
         } else {
             confirm_button = confirm_button.opacity(0.45);
         }

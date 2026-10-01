@@ -12,6 +12,7 @@ use super::panels::*;
 use super::players::*;
 use super::prelude::*;
 use super::query_cache::*;
+use super::selection::{RightSelectionIntent, SelectionResizeHandle};
 use super::slime_scan_dialog::*;
 use super::tile_cache::*;
 use super::tile_occupancy::*;
@@ -21,6 +22,40 @@ use super::tile_state::*;
 use super::view::{MapLayerKind, map_render_layer_order, map_viewer_window_size_for_display};
 use super::viewport::*;
 use super::*;
+
+#[::core::prelude::v1::test]
+fn load_risk_queries_all_three_sources_without_enabling_other_markers() {
+    let mut overlays = OverlayOptions::default();
+    let initial = overlays.query_options();
+    overlays.load_risk = true;
+    let risk = overlays.query_options();
+    assert!(risk.include_entities && risk.include_block_entities && risk.include_pending_ticks);
+    assert!(!overlays.entities && !overlays.block_entities && !overlays.pending_ticks);
+    assert_ne!(initial, risk);
+    overlays.load_risk = false;
+    overlays.entities = true;
+    let restored = overlays.query_options();
+    assert!(restored.include_entities);
+    assert!(!restored.include_block_entities && !restored.include_pending_ticks);
+}
+
+#[::core::prelude::v1::test]
+fn successful_map_write_remains_completed_after_late_cancel_request() {
+    let cancel = CancelFlag::new();
+    cancel.cancel();
+    assert_eq!(
+        map_operation_status_for_result(&Ok::<(), String>(()), &cancel, "missing-task"),
+        "completed"
+    );
+    assert_eq!(
+        map_operation_status_for_result(
+            &Err::<(), String>(MAP_OPERATION_CANCELLED_MESSAGE.to_string()),
+            &cancel,
+            "missing-task"
+        ),
+        "cancelled"
+    );
+}
 
 fn context_menu_entry_labels(entries: &[ContextMenuEntry]) -> Vec<&str> {
     let mut labels = Vec::new();
@@ -1588,8 +1623,7 @@ fn slime_farm_scope_marks_precision_degraded_before_hard_cutoff() {
 
 #[::core::prelude::v1::test]
 fn slime_farm_player_scope_is_bounded_and_uses_floor_for_negative_coordinates() {
-    let bounds =
-        slime_farm_player_bounds([-0.5, 64.0, 15.9]).expect("finite player position");
+    let bounds = slime_farm_player_bounds([-0.5, 64.0, 15.9]).expect("finite player position");
 
     assert_eq!(bounds.dimension, Dimension::Overworld);
     assert_eq!(bounds.center(), (-1, 0));
@@ -1620,16 +1654,12 @@ fn slime_farm_advanced_scan_presets_are_bounded() {
         SlimeFarmAdvancedScanPreset::Comprehensive.query_chunk_count(),
         263_169
     );
-    assert_eq!(
-        SlimeFarmAdvancedScanPreset::Comprehensive.max_results(),
-        48
-    );
+    assert_eq!(SlimeFarmAdvancedScanPreset::Comprehensive.max_results(), 48);
 }
 
 #[::core::prelude::v1::test]
 fn slime_farm_advanced_scan_bounds_keep_exact_center() {
-    let bounds =
-        advanced_slime_scan_bounds((-17, 23), SlimeFarmAdvancedScanPreset::Regional);
+    let bounds = advanced_slime_scan_bounds((-17, 23), SlimeFarmAdvancedScanPreset::Regional);
 
     assert_eq!(bounds.dimension, Dimension::Overworld);
     assert_eq!(bounds.center(), (-17, 23));
@@ -2037,6 +2067,7 @@ fn map_info_scope_stays_viewport_paged_when_world_index_is_ready() {
         max_chunk_x: 1024,
         min_chunk_z: -1024,
         max_chunk_z: 1024,
+        chunk_count: 1,
     };
     let visible = SlimeChunkBounds {
         dimension: Dimension::Overworld,
@@ -2144,7 +2175,7 @@ fn entity_avatar_keys_accept_namespaced_identifiers() {
     assert_eq!(normalize_entity_avatar_key("  "), None);
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn entity_screen_cluster_key_is_invariant_to_viewport_translation() {
     let layout = RenderLayout::default();
     let source = MapViewport {
@@ -2162,7 +2193,7 @@ fn entity_screen_cluster_key_is_invariant_to_viewport_translation() {
     );
 }
 
-#[test]
+#[::core::prelude::v1::test]
 fn entity_screen_cluster_cells_remain_anchored_to_world_coordinates() {
     let layout = RenderLayout::default();
     let viewport = MapViewport {
@@ -2625,50 +2656,6 @@ fn indexed_tile_chunks_are_normalized_before_render() {
     let mut expected = vec![valid_a, valid_b];
     expected.sort_unstable();
     assert_eq!(render_positions, expected);
-}
-
-#[::core::prelude::v1::test]
-fn shared_tile_chunk_index_normalizes_cached_positions() {
-    let layout = web_relief_render_layout();
-    let valid_a = ChunkPos {
-        x: 8,
-        z: -8,
-        dimension: Dimension::Overworld,
-    };
-    let valid_b = ChunkPos {
-        x: 9,
-        z: -8,
-        dimension: Dimension::Overworld,
-    };
-    let mut cached_index = BTreeMap::new();
-    cached_index.insert(
-        (1, -1),
-        vec![
-            valid_b,
-            valid_a,
-            valid_b,
-            ChunkPos {
-                x: 0,
-                z: 0,
-                dimension: Dimension::Overworld,
-            },
-            ChunkPos {
-                x: 8,
-                z: -8,
-                dimension: Dimension::Nether,
-            },
-        ],
-    );
-
-    let normalized = shared_tile_chunk_index(Dimension::Overworld, layout, cached_index)
-        .expect("normalized tile index");
-
-    let mut expected = vec![valid_a, valid_b];
-    expected.sort_unstable();
-    assert_eq!(
-        normalized.get(&(1, -1)).map(|positions| positions.as_ref()),
-        Some(expected.as_slice())
-    );
 }
 
 #[::core::prelude::v1::test]
@@ -3439,46 +3426,11 @@ fn edit_refresh_tiles_are_queued_before_visible_tiles() {
     );
 }
 #[::core::prelude::v1::test]
-fn cached_manifest_marks_all_scanned_tiles_without_reprobing_empty_tiles() {
-    let requested_tiles = vec![(0, 0), (1, 0)];
-    let mut tile_chunk_index = BTreeMap::new();
-    tile_chunk_index.insert(
-        (0, 0),
-        TileChunkPositions::from(vec![ChunkPos {
-            x: 0,
-            z: 0,
-            dimension: Dimension::Overworld,
-        }]),
-    );
-
-    let completed = complete_cached_tile_chunk_index(&requested_tiles, tile_chunk_index);
-
-    assert_eq!(completed.len(), 2);
-    assert!(
-        completed
-            .get(&(0, 0))
-            .is_some_and(|chunks| !chunks.is_empty())
-    );
-    assert!(
-        completed
-            .get(&(1, 0))
-            .is_some_and(|chunks| chunks.is_empty())
-    );
-}
-#[::core::prelude::v1::test]
 fn overlay_query_waits_for_visible_tile_pipeline_but_not_idle_viewport() {
-    assert!(should_defer_overlay_query_for_visible_tiles(
-        true, false, false
-    ));
-    assert!(should_defer_overlay_query_for_visible_tiles(
-        false, true, false
-    ));
-    assert!(should_defer_overlay_query_for_visible_tiles(
-        false, false, true
-    ));
-    assert!(!should_defer_overlay_query_for_visible_tiles(
-        false, false, false
-    ));
+    assert!(should_defer_overlay_query_for_visible_tiles(true, false));
+    assert!(should_defer_overlay_query_for_visible_tiles(false, true));
+    assert!(should_defer_overlay_query_for_visible_tiles(true, true));
+    assert!(!should_defer_overlay_query_for_visible_tiles(false, false));
 }
 
 #[::core::prelude::v1::test]
@@ -4863,7 +4815,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
         source: source_anchor,
         chunks,
     };
-    let storage = Arc::new(bedrock_world::MemoryStorage::new());
+    let storage = Arc::new(::bedrock_world::MemoryStorage::new());
     let world = World::from_storage(
         "memory",
         storage.clone(),
@@ -4891,7 +4843,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
                 dimension: target_anchor.dimension,
             };
             assert_eq!(
-                bedrock_world::WorldStorage::get(
+                ::bedrock_world::WorldStorage::get(
                     storage.as_ref(),
                     &ChunkKey::new(committed_target, ChunkRecordTag::Version).encode(),
                 )
@@ -4919,7 +4871,7 @@ fn paste_672_chunks_reports_only_committed_batch_progress() {
         },
     ] {
         assert_eq!(
-            bedrock_world::WorldStorage::get(
+            ::bedrock_world::WorldStorage::get(
                 storage.as_ref(),
                 &ChunkKey::new(target, ChunkRecordTag::Version).encode(),
             )
@@ -4941,7 +4893,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
     let biome = Biome3d::new(
         vec![64; 256],
         vec![bedrock_world::BiomeStorage {
-            y: Some(-64),
+            y: Some(0),
             palette: vec![1, 42],
             indices: Some(biome_indices),
             counts: vec![4095, 1],
@@ -4967,7 +4919,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
             hardcoded_spawn_areas: Vec::new(),
         }],
     };
-    let storage = Arc::new(bedrock_world::MemoryStorage::new());
+    let storage = Arc::new(::bedrock_world::MemoryStorage::new());
     let world = World::from_storage(
         "memory",
         storage,
@@ -5034,7 +4986,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         .expect("transform and paste chunk");
 
         let subchunk = world
-            .subchunk(target, 0)
+            .subchunk(target, 0, ::bedrock_world::SubChunkDecodeMode::FullIndices)
             .expect("read target subchunk")
             .expect("target subchunk exists");
         assert_eq!(
@@ -5063,7 +5015,7 @@ fn transformed_paste_writes_game_chunk_records_for_all_transform_modes() {
         );
         assert_eq!(
             world
-                .biome_storage(target, -62)
+                .biome_storage(target, 2)
                 .expect("read transformed biome")
                 .and_then(|storage| storage.biome_id_at(target_x, 2, target_z)),
             Some(42)
@@ -5135,14 +5087,9 @@ fn pasted_chunk_record_survives_leveldb_reopen() {
         .expect("paste into temporary world");
     }
     {
-        let reopened = World::open(
-            &world_path,
-            bedrock_world::OpenOptions::default(),
-        )
-        .expect("reopen temporary world");
-        let target_chunk = reopened
-            .chunk(target)
-            .expect("read persisted target chunk");
+        let reopened = World::open(&world_path, bedrock_world::OpenOptions::default())
+            .expect("reopen temporary world");
+        let target_chunk = reopened.chunk(target).expect("read persisted target chunk");
         assert!(target_chunk.records.iter().any(|record| {
             record.key.tag == ChunkRecordTag::Version && record.value.as_ref() == b"\x2a"
         }));
@@ -5170,14 +5117,11 @@ fn real_world_chunk_paste_survives_temporary_leveldb_reopen() {
             dimension: Dimension::Overworld,
         })
         .find(|chunk| {
-            source_editor
-                .world()
-                .chunk(*chunk)
-                .is_ok_and(|data| {
-                    data.records
-                        .iter()
-                        .any(|record| record.key.tag == ChunkRecordTag::SubChunkPrefix)
-                })
+            source_editor.world().chunk(*chunk).is_ok_and(|data| {
+                data.records
+                    .iter()
+                    .any(|record| record.key.tag == ChunkRecordTag::SubChunkPrefix)
+            })
         })
         .expect("a real candidate chunk must contain subchunk data");
     let copied = copy_chunks_blocking(&source_editor, source, vec![source], None, |_| {})

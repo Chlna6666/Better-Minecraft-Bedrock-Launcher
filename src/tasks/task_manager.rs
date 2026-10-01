@@ -1052,7 +1052,11 @@ pub fn cancel_task(task_id: &str) {
 
         t.cancel_requested = true;
         t.paused = false;
-        t.status = Arc::<str>::from(if cooperative { "cancelling" } else { "cancelled" });
+        t.status = Arc::<str>::from(if cooperative {
+            "cancelling"
+        } else {
+            "cancelled"
+        });
         t.message = Some(Arc::<str>::from(if cooperative {
             "正在取消并清理资源"
         } else {

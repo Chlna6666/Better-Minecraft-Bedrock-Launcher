@@ -97,11 +97,7 @@ pub fn start_user_data_backup_task(
     let worker_task_id = task_id.clone();
     let blocking_task_id = task_id.clone();
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        crate::tasks::task_manager::reset_progress(
-            &worker_task_id,
-            None,
-            Some("backing_up_uwp"),
-        );
+        crate::tasks::task_manager::reset_progress(&worker_task_id, None, Some("backing_up_uwp"));
         crate::tasks::task_manager::set_task_message(
             &worker_task_id,
             Some("正在扫描并压缩 Minecraft UWP 用户数据".to_string()),
@@ -130,32 +126,16 @@ pub fn start_user_data_backup_task(
                 );
             }
             Ok(Err(error)) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
             }
             Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "error",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
             }
             Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
             }
             Err(error) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "error",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
             }
         }
     }) {

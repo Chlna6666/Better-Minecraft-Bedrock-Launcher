@@ -7,26 +7,27 @@ pub(super) use super::actions::{
 };
 pub(super) use super::canvas::{
     MapCanvasAction, MapCanvasSnapshot, MapCanvasView, ScreenPaintImage, TilePaintSnapshot,
-    TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot, screen_image_viewports_transformable,
-    take_map_tile_paint_resources_unavailable,
+    TilePaintSnapshotPatch, build_tile_paint_snapshot, patch_tile_paint_snapshot,
+    screen_image_viewports_transformable, take_map_tile_paint_resources_unavailable,
 };
 pub(super) use super::layout::{
-    CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_SECTION_GAP,
-    CHROME_SURFACE_ALPHA, CHROME_TAB_ICON_SIZE, CHROME_TOOLBAR_ICON_SIZE, IDE_LEFT_DOCK_WIDTH,
-    IDE_STATUS_BAR_HEIGHT, center_stage_rect_for_layout,
+    CHROME_ELEVATED_ALPHA, CHROME_HAIRLINE_ALPHA, CHROME_SECTION_GAP, CHROME_SURFACE_ALPHA,
+    CHROME_TAB_ICON_SIZE, CHROME_TOOLBAR_ICON_SIZE, IDE_LEFT_DOCK_WIDTH, IDE_STATUS_BAR_HEIGHT,
+    center_stage_rect_for_layout,
 };
 pub(super) use super::map_history::{
-    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual, MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus,
-    MapHistoryState, MapHistoryVisualFilter, MapHistoryVisualFilterKind, MapHistoryVisualization,
-    apply_redo_with_progress, apply_undo_with_progress, capture_before, capture_before_with_world_and_progress, complete_after, complete_after_with_world_and_progress, complete_failed,
-    create_restore_protection_point, history_dir_for_world, list_history,
+    MapHistoryApplyOutcome, MapHistoryApplyProgress, MapHistoryCaptureSpec, MapHistoryChunkVisual,
+    MapHistoryEntry, MapHistoryEntryKind, MapHistoryEntryStatus, MapHistoryState,
+    MapHistoryVisualFilter, MapHistoryVisualFilterKind, MapHistoryVisualization,
+    apply_redo_with_progress, apply_undo_with_progress, capture_before,
+    capture_before_with_world_and_progress, complete_after, complete_after_with_world_and_progress,
+    complete_failed, create_restore_protection_point, history_dir_for_world, list_history,
     load_history_visualization, restore_history_entry_with_progress,
 };
 pub(super) use super::menu_overlay::{MapMenuOverlaySnapshot, MapMenuOverlayView};
 pub(super) use super::model::ChunkTransferProgress;
 pub(super) use super::player_workspace::{
-    PlayerWorkspaceCenter, PlayerWorkspaceState,
-    player_workspace_subscriptions,
+    PlayerWorkspaceCenter, PlayerWorkspaceState, player_workspace_subscriptions,
 };
 pub(super) use super::preview_3d::{
     Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState, Preview3dMesh,
@@ -39,10 +40,9 @@ pub(super) use super::preview_3d::{
 };
 pub(super) use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 pub(super) use super::selection::{
-    ChunkSelection, ExistingSelectionTarget, RightSelectionDrag,
-    RightSelectionReleaseAction, SelectionPointerButton,
-    SelectionScreenBounds, chunk_from_block, existing_selection_target, right_selection_moved,
-    right_selection_release_action,
+    ChunkSelection, ExistingSelectionTarget, RightSelectionDrag, RightSelectionReleaseAction,
+    SelectionPointerButton, SelectionScreenBounds, chunk_from_block, existing_selection_target,
+    right_selection_moved, right_selection_release_action,
 };
 pub(super) use super::state::{
     BOTTOM_PANEL_MIN_HEIGHT, DbTreeNode, DbTreeNodeKind, DbTreeState, DockDrag, DockDragState,
@@ -53,10 +53,11 @@ pub(super) use super::state::{
 pub(super) use super::tool_stripe::{MapToolStripeSnapshot, MapToolStripeView};
 pub(super) use super::top_bar::{MapTopBarSnapshot, MapTopBarView};
 pub(super) use crate::core::minecraft::entity_avatar::load_generated_entity_avatars_rgba;
-pub(super) use crate::core::minecraft::map_info_cache::{
+pub(super) use crate::core::minecraft::map::viewer_cache::{
     MapInfoEntityCacheStatus, MapInfoOverlaySnapshot, invalidate_map_info_tiles_for_chunks,
     load_cached_map_info_tiles_blocking, load_map_info_tiles_blocking,
 };
+pub(super) use crate::core::minecraft::map::{MapEditInvalidation, MapWorldEditor};
 pub(super) use crate::tasks::task_manager::{self, TaskSnapshot};
 pub(super) use crate::ui::animation::request_layout_animation_frame_if;
 pub(super) use crate::ui::components::code_editor::{
@@ -87,38 +88,38 @@ pub(super) use crate::utils::file_picker::{
 pub(super) use super::bedrock_world_domains as bedrock_world;
 
 pub(super) use ::bedrock_world::{
-    block::{BlockPos, BlockEntity},
-    chunk::{ChunkKey, ChunkRecord, ChunkRecordTag, ChunkVersion},
-    entity::ActorDigestKey,
+    biome::{Biome3d, BiomeStorage, HeightMap2d},
+    block::BlockEntityRecord,
+    block::{BlockEntity, BlockPos},
+    chunk::{
+        ChunkKey, ChunkRecord, ChunkRecordTag, ChunkVersion, GlobalRecordKind, HardcodedSpawnArea,
+        HardcodedSpawnAreaKind,
+    },
+    entity::{ActorDigestKey, ActorRecord, ActorSource},
+    map_item::{MapItemId, SavedData},
     player::{PlayerData, PlayerId},
     query::{
         ChunkDetail, RegionOverlayQuery, RegionOverlayQueryOptions, SelectionStats,
         SlimeChunkBounds, SlimeFarmCandidate, SlimeFarmQueryMode, VillageOverlay,
-        VillageOverlayIndex, WriteGuard, delete_chunks, is_slime_chunk, block_tip, chunk_detail,
+        VillageOverlayIndex, WriteGuard, block_tip, chunk_detail, delete_chunks, is_slime_chunk,
         query_slime_farm_candidates_with_cancel, selection_stats,
     },
-    surface::CancelFlag,
+    scan::Global,
+    surface::{CancelFlag, WorldScanOptions},
     world::World,
 };
 pub(super) use bedrock_render::{
     AtlasRenderOptions, BlockBoundaryRenderOptions, BlockVolumeRenderOptions, ChunkBounds,
-    ChunkPos, ChunkRegion, DEFAULT_PALETTE_VERSION, DecodedTileImage, Dimension, ImageFormat,
-    MapRenderSession, MapRenderSessionConfig, NbtTag, PlannedTile, RENDERER_CACHE_VERSION,
-    RegionLayout, RenderBackend, RenderCachePolicy, RenderCancelFlag, RenderCpuPipelineOptions,
-    RenderDiagnostics, RenderExecutionProfile, RenderGpuBackend, RenderGpuFallbackPolicy,
-    RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout, RenderMemoryBudget,
-    RenderMode, RenderOptions, RenderPalette, RenderPipelineStats, RenderTaskControl,
-    RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority, ResolvedRenderBackend,
-    SurfaceRenderOptions, TerrainLightingOptions, TileCoord, TileOccupancyIndex,
-    DecodedTileEvent, TileOccupancyIndexRequest, TileOccupancyIndexSource, TilePixelFormat,
-    TileReadySource,
-    editor::{
-        ActorRecord, ActorSource, Biome3d, BlockEntityRecord, GlobalRecordKind,
-        HardcodedSpawnAreaKind, HeightMap2d, MapEditInvalidation, MapItemId, MapWorldEditor,
-        BiomeStorage, Global, HardcodedSpawnArea, SavedData,
-        WorldScanOptions,
-    },
-    load_or_build_tile_occupancy_index,
+    ChunkPos, ChunkRegion, DEFAULT_PALETTE_VERSION, DecodedTileEvent, DecodedTileImage, Dimension,
+    ImageFormat, MapRenderSession, MapRenderSessionConfig, NbtTag, PlannedTile,
+    RENDERER_CACHE_VERSION, RegionLayout, RenderBackend, RenderCachePolicy, RenderCancelFlag,
+    RenderCpuPipelineOptions, RenderDiagnostics, RenderExecutionProfile, RenderGpuBackend,
+    RenderGpuFallbackPolicy, RenderGpuOptions, RenderGpuPipelineLevel, RenderJob, RenderLayout,
+    RenderMemoryBudget, RenderMode, RenderOptions, RenderPalette, RenderPipelineStats,
+    RenderTaskControl, RenderThreadingOptions, RenderTileOutputOptions, RenderTilePriority,
+    ResolvedRenderBackend, SurfaceRenderOptions, TerrainGradientAlgorithm, TerrainLightingOptions,
+    TerrainShadingMode, TileCoord, TileOccupancyIndex, TileOccupancyIndexRequest,
+    TileOccupancyIndexSource, TilePixelFormat, TileReadySource, load_or_build_tile_occupancy_index,
 };
 pub(super) use bytes::Bytes;
 pub(super) use futures::channel::mpsc::{UnboundedSender, unbounded};

@@ -43,7 +43,7 @@ fn frosted_backdrop_base_with_overlay(background: Hsla, progress: f32) -> Div {
             div()
                 .absolute()
                 .inset_0()
-                .backdrop_blur(crate::ui::theme::glass_backdrop_blur_style().saturation(1.05)),
+                .background_blur(crate::ui::theme::glass_backdrop_blur_style().saturation(1.05)),
         )
         .child(div().absolute().inset_0().bg(overlay))
 }
@@ -445,14 +445,10 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             // Keep the caller-sampled modal on CPU layout because scale/opacity currently span a
             // mixed subtree. The targeted wrapper narrows continuous invalidation to this modal
             // instead of notifying the entire owning view every platform frame.
-            let mut element = dismissible_modal_layer(
-                content,
-                self.background,
-                sample.progress,
-                current_control,
-            )
-            .with_layout_animation_target(sample.animating)
-            .into_any_element();
+            let mut element =
+                dismissible_modal_layer(content, self.background, sample.progress, current_control)
+                    .with_layout_animation_target(sample.animating)
+                    .into_any_element();
             let layout_id = element.request_layout(window, cx);
 
             if state.take_close_completion(sample.close_completed) {

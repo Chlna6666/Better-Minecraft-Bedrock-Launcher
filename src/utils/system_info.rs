@@ -1,4 +1,7 @@
-#![expect(unsafe_code, reason = "system information queries native Windows CPU and memory structures")]
+#![expect(
+    unsafe_code,
+    reason = "system information queries native Windows CPU and memory structures"
+)]
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Globalization::{
@@ -28,7 +31,7 @@ pub fn get_system_language() -> String {
     // SAFETY: The fixed buffer is valid for the duration of the Win32 locale query.
     unsafe {
         let lang_id = GetUserDefaultUILanguage();
-        let mut buf = [0u16; 16];
+        let mut buf = [0u16; 85];
         let len = GetLocaleInfoW(lang_id as u32, LOCALE_SNAME, Some(&mut buf));
         if len > 0 {
             String::from_utf16_lossy(&buf[..(len as usize - 1)]).replace('_', "-")
@@ -133,61 +136,73 @@ pub fn get_cpu_architecture() -> String {
     std::env::consts::ARCH.to_string()
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(test)]
 mod tests {
-    use super::{normalize_unix_locale, parse_unix_locale_config, resolve_unix_language};
+    use super::*;
 
-    #[test]
-    fn neutral_overrides_fall_through_to_lang() {
-        assert_eq!(
-            resolve_unix_language(["C.UTF-8", "C.UTF-8", "zh_CN.UTF-8"]),
-            Some("zh-CN".to_string())
-        );
+    #[cfg(not(target_os = "windows"))]
+    mod unix {
+        use super::*;
+
+        #[test]
+        fn neutral_overrides_fall_through_to_lang() {
+            assert_eq!(
+                resolve_unix_language(["C.UTF-8", "C.UTF-8", "zh_CN.UTF-8"]),
+                Some("zh-CN".to_string())
+            );
+        }
+
+        #[test]
+        fn neutral_locale_does_not_resolve_to_a_language() {
+            assert_eq!(normalize_unix_locale("C.UTF-8"), None);
+            assert_eq!(normalize_unix_locale("POSIX"), None);
+        }
+
+        #[test]
+        fn linux_locale_is_normalized_to_i18n_code() {
+            assert_eq!(
+                normalize_unix_locale("zh_CN.UTF-8"),
+                Some("zh-CN".to_string())
+            );
+        }
+
+        #[test]
+        fn language_priority_list_uses_first_concrete_locale() {
+            assert_eq!(
+                normalize_unix_locale("C:zh_CN.UTF-8:en_US"),
+                Some("zh-CN".to_string())
+            );
+        }
+
+        #[test]
+        fn locale_modifier_is_removed() {
+            assert_eq!(
+                normalize_unix_locale("zh_TW@traditional"),
+                Some("zh-TW".to_string())
+            );
+        }
+
+        #[test]
+        fn fedora_locale_config_resolves_system_language() {
+            assert_eq!(
+                parse_unix_locale_config("LANG=\"zh_CN.UTF-8\"\n"),
+                Some("zh-CN".to_string())
+            );
+        }
+
+        #[test]
+        fn neutral_config_entry_falls_through_to_lang() {
+            assert_eq!(
+                parse_unix_locale_config("LC_MESSAGES=C.UTF-8\nLANG=zh_CN.UTF-8\n"),
+                Some("zh-CN".to_string())
+            );
+        }
     }
 
     #[test]
-    fn neutral_locale_does_not_resolve_to_a_language() {
-        assert_eq!(normalize_unix_locale("C.UTF-8"), None);
-        assert_eq!(normalize_unix_locale("POSIX"), None);
-    }
-
-    #[test]
-    fn linux_locale_is_normalized_to_i18n_code() {
-        assert_eq!(
-            normalize_unix_locale("zh_CN.UTF-8"),
-            Some("zh-CN".to_string())
-        );
-    }
-
-    #[test]
-    fn language_priority_list_uses_first_concrete_locale() {
-        assert_eq!(
-            normalize_unix_locale("C:zh_CN.UTF-8:en_US"),
-            Some("zh-CN".to_string())
-        );
-    }
-
-    #[test]
-    fn locale_modifier_is_removed() {
-        assert_eq!(
-            normalize_unix_locale("zh_TW@traditional"),
-            Some("zh-TW".to_string())
-        );
-    }
-
-    #[test]
-    fn fedora_locale_config_resolves_system_language() {
-        assert_eq!(
-            parse_unix_locale_config("LANG=\"zh_CN.UTF-8\"\n"),
-            Some("zh-CN".to_string())
-        );
-    }
-
-    #[test]
-    fn neutral_config_entry_falls_through_to_lang() {
-        assert_eq!(
-            parse_unix_locale_config("LC_MESSAGES=C.UTF-8\nLANG=zh_CN.UTF-8\n"),
-            Some("zh-CN".to_string())
-        );
+    fn test_get_system_language() {
+        let lang = get_system_language();
+        println!("DETECTED SYSTEM LANGUAGE: {}", lang);
+        assert!(!lang.is_empty());
     }
 }

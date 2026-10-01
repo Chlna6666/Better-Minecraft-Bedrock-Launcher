@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::animation::{
-    settled_animation, tab_content_animation_key, tab_toolbar_motion, tab_transition_direction,
+    settled_animation, tab_content_animation_key, tab_content_motion, tab_toolbar_motion,
+    tab_transition_direction,
 };
 
 pub struct ManagePageView {
@@ -12,6 +13,7 @@ pub struct ManagePageView {
     pub(super) asset_scroll_handle: ScrollHandle,
     pub(super) screenshot_scroll_handle: ScrollHandle,
     pub(super) server_scroll_handle: ScrollHandle,
+    pub(super) statistics_scroll_handle: ScrollHandle,
     pub(super) version_scroll_handle: ScrollHandle,
     pub(super) version_list_cache: VersionListRenderCache,
     pub(super) asset_list_cache: AssetListRenderCache,
@@ -85,11 +87,13 @@ impl ManagePageView {
                     }
                 }
             }),
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|this, cx| {
-                if this.active {
-                    cx.notify();
-                }
-            }),
+            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
+                |this, cx| {
+                    if this.active {
+                        cx.notify();
+                    }
+                },
+            ),
         ];
 
         Self {
@@ -101,6 +105,7 @@ impl ManagePageView {
             asset_scroll_handle: ScrollHandle::new(),
             screenshot_scroll_handle: ScrollHandle::new(),
             server_scroll_handle: ScrollHandle::new(),
+            statistics_scroll_handle: ScrollHandle::new(),
             version_scroll_handle: ScrollHandle::new(),
             version_list_cache: VersionListRenderCache::default(),
             asset_list_cache: AssetListRenderCache::default(),
@@ -238,8 +243,8 @@ impl ManagePageView {
             usize::MAX,
         );
         let no_versions = filtered_version_indices.is_empty();
-        let visible_version_indices = &filtered_version_indices
-            [virtual_list_plan.render_slice.start_index
+        let visible_version_indices =
+            &filtered_version_indices[virtual_list_plan.render_slice.start_index
                 ..virtual_list_plan
                     .render_slice
                     .end_index
@@ -893,13 +898,10 @@ impl ManagePageView {
                         );
                         toolbar
                             .with_animation(
-                                tab_content_animation_key(
-                                    "manage-tab-toolbar",
-                                    state.tab_anim_seq,
-                                ),
+                                tab_content_animation_key("manage-tab-toolbar", state.tab_anim_seq),
                                 if animating {
                                     tab_toolbar_motion().with_property(
-                                        AnimationProperty::translation(
+                                        AnimationProperty::clipped_translation(
                                             point(px(8.0 * direction), px(0.0)),
                                             Point::default(),
                                         ),
@@ -916,73 +918,96 @@ impl ManagePageView {
                             )
                             .into_any_element()
                     })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .child({
-                                let content = if state.version_config_loading {
-                                    empty_state(
+                    .child(div().flex_1().min_h(px(0.)).child({
+                        let content = if state.version_config_loading {
+                            empty_state(
+                                colors,
+                                "images/manage/empty.svg",
+                                "正在读取版本配置",
+                                "请稍候，BMCBL 正在准备当前实例的管理设置。",
+                            )
+                            .into_any_element()
+                        } else {
+                            match state.tab {
+                                ManageTab::Statistics => render_statistics_tab(
+                                    colors,
+                                    version,
+                                    state,
+                                    &self.statistics_scroll_handle,
+                                    now,
+                                    cx,
+                                ),
+                                ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
+                                    render_asset_list(
                                         colors,
-                                        "images/manage/empty.svg",
-                                        "正在读取版本配置",
-                                        "请稍候，BMCBL 正在准备当前实例的管理设置。",
+                                        version,
+                                        state,
+                                        filtered_assets,
+                                        &self.asset_scroll_handle,
+                                        window,
+                                        cx,
                                     )
-                                    .into_any_element()
-                                } else {
-                                    match state.tab {
-                                        ManageTab::Statistics => {
-                                            render_statistics_tab(colors, version, state, now, cx)
-                                        }
-                                        ManageTab::Mod
-                                        | ManageTab::ResourcePack
-                                        | ManageTab::Map => render_asset_list(
-                                            colors,
-                                            version,
-                                            state,
-                                            filtered_assets,
-                                            &self.asset_scroll_handle,
-                                            window,
-                                            cx,
-                                        ),
-                                        ManageTab::SkinPack => render_skin_pack_management(
-                                            colors,
-                                            version,
-                                            state,
-                                            filtered_assets,
-                                            &self.asset_scroll_handle,
-                                            window,
-                                            cx,
-                                        ),
-                                        ManageTab::Screenshot => render_screenshot_list(
-                                            colors,
-                                            &i18n,
-                                            version,
-                                            state,
-                                            filtered_screenshots,
-                                            &self.screenshot_scroll_handle,
-                                            window,
-                                            cx,
-                                        ),
-                                        ManageTab::Server => render_server_list(
-                                            colors,
-                                            version,
-                                            state,
-                                            filtered_servers,
-                                            &self.server_scroll_handle,
-                                            window,
-                                            cx,
-                                        ),
-                                    }
-                                };
+                                }
+                                ManageTab::SkinPack => render_skin_pack_management(
+                                    colors,
+                                    version,
+                                    state,
+                                    filtered_assets,
+                                    &self.asset_scroll_handle,
+                                    window,
+                                    cx,
+                                ),
+                                ManageTab::Screenshot => render_screenshot_list(
+                                    colors,
+                                    &i18n,
+                                    version,
+                                    state,
+                                    filtered_screenshots,
+                                    &self.screenshot_scroll_handle,
+                                    window,
+                                    cx,
+                                ),
+                                ManageTab::Server => render_server_list(
+                                    colors,
+                                    version,
+                                    state,
+                                    filtered_servers,
+                                    &self.server_scroll_handle,
+                                    window,
+                                    cx,
+                                ),
+                            }
+                        };
 
-                                content
-                            }),
-                    ),
+                        if state.tab_animation_active(now)
+                            && !crate::core::ui_prefs::reduced_motion()
+                        {
+                            div()
+                                .size_full()
+                                .min_w(px(0.))
+                                .min_h(px(0.))
+                                .child(content)
+                                .composite_layer()
+                                .with_animation(
+                                    tab_content_animation_key(
+                                        "manage-tab-content",
+                                        state.tab_anim_seq,
+                                    ),
+                                    tab_content_motion(
+                                        state.tab_anim_from.index(),
+                                        state.tab.index(),
+                                    ),
+                                    |content, _progress| content,
+                                )
+                                .into_any_element()
+                        } else {
+                            content
+                        }
+                    })),
             );
 
-        // Version/tab changes render at final geometry. The tab controls update independently;
-        // page-sized lists, images and editors never become animation cadence targets.
+        // Keep page-sized content at final geometry and move its text/images together as one
+        // retained subtree during the tab transition.
         main_panel.into_any_element()
     }
 }

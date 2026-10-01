@@ -245,11 +245,8 @@ pub(super) fn export_region_package_blocking(
     cancel: Option<&CancelFlag>,
     mut progress: impl FnMut(ChunkTransferProgress),
 ) -> Result<Vec<u8>, String> {
-    let world = World::open(
-        world_path,
-        bedrock_world::OpenOptions::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let world = World::open(world_path, bedrock_world::OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     let editor = MapWorldEditor::from_world(world);
     let copied_chunk = copy_chunks_blocking(
         &editor,

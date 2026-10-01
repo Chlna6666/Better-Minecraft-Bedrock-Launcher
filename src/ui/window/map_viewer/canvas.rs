@@ -5,7 +5,7 @@ use super::map_history::{
     MapHistoryVisualization,
 };
 use super::model::{
-    MapViewport, Marker, OverlayOptions, PastePreview, PastePreviewImage,
+    MapFrameGridPreview, MapViewport, Marker, OverlayOptions, PastePreview, PastePreviewImage,
     ProfessionalOverlayPaintCache, SlimeOverlayRunCache,
 };
 use super::paint::{draw_map_canvas, draw_professional_overlay_canvas};
@@ -18,9 +18,9 @@ use super::selection::{
 use super::state::MIN_CENTER_HEIGHT;
 use super::tile_state::{MapRenderRange, PaintTile};
 use super::viewport::{
-    TileBounds, region_render_range_for_viewport, ruler_blocks,
-    screen_x_for_block, screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order,
-    tile_paint_rect, tile_paint_sort_key, viewport_screen_for_block,
+    TileBounds, region_render_range_for_viewport, ruler_blocks, screen_x_for_block,
+    screen_y_for_block, tile_bounds_count, tile_coords_for_paint_order, tile_paint_rect,
+    tile_paint_sort_key, viewport_screen_for_block,
 };
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
@@ -95,6 +95,8 @@ pub(super) struct MapCanvasSnapshot {
     pub(super) slime_runs: Option<Arc<SlimeOverlayRunCache>>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,
+    pub(super) paste_controls_inset_top: f32,
+    pub(super) map_frame_preview: Option<MapFrameGridPreview>,
     pub(super) paste_preview_images: Arc<Vec<PastePreviewImage>>,
     pub(super) paste_preview_images_generation: u64,
     pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
@@ -387,11 +389,7 @@ impl MapCanvasView {
         }
     }
 
-    pub(super) fn set_hover_label(
-        &mut self,
-        hover_label: SharedString,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn set_hover_label(&mut self, hover_label: SharedString, cx: &mut Context<Self>) {
         self.hud_layer
             .update(cx, |view, cx| view.set_hover_label(hover_label, cx));
         self.hud_revision = self.hud_revision.saturating_add(1);
@@ -436,7 +434,8 @@ fn cached_absolute_layer<V: Render + 'static, R: std::hash::Hash>(
     frame_revision: R,
 ) -> CachedView {
     let cache_key = (layer.entity_id().as_u64(), frame_revision);
-    layer.clone()
+    layer
+        .clone()
         .cached_absolute_by(&cache_key)
         .reuse_on_window_refresh()
         .progressive()
@@ -514,6 +513,7 @@ struct OverlayLayerSnapshot {
     slime_runs: Option<Arc<SlimeOverlayRunCache>>,
     selection: Option<ChunkSelection>,
     paste_preview: Option<PastePreview>,
+    map_frame_preview: Option<MapFrameGridPreview>,
     paste_preview_images: Arc<Vec<PastePreviewImage>>,
     paste_preview_images_generation: u64,
     highlighted_slime_candidate: Option<SlimeFarmCandidate>,
@@ -539,6 +539,7 @@ impl OverlayLayerSnapshot {
             slime_runs: snapshot.slime_runs.clone(),
             selection: snapshot.selection,
             paste_preview: snapshot.paste_preview.clone(),
+            map_frame_preview: snapshot.map_frame_preview,
             paste_preview_images: snapshot.paste_preview_images.clone(),
             paste_preview_images_generation: snapshot.paste_preview_images_generation,
             highlighted_slime_candidate: snapshot.highlighted_slime_candidate.clone(),
@@ -560,6 +561,7 @@ impl OverlayLayerSnapshot {
             && self.overlays == other.overlays
             && self.selection == other.selection
             && self.paste_preview == other.paste_preview
+            && self.map_frame_preview == other.map_frame_preview
             && self.paste_preview_images_generation == other.paste_preview_images_generation
             && self.highlighted_slime_candidate == other.highlighted_slime_candidate
             && self.history_visualization_enabled == other.history_visualization_enabled
@@ -732,6 +734,7 @@ struct PasteControlsSnapshot {
     layout: RenderLayout,
     colors: ThemeColors,
     paste_preview: Option<PastePreview>,
+    inset_top: f32,
 }
 
 impl PasteControlsSnapshot {
@@ -741,6 +744,7 @@ impl PasteControlsSnapshot {
             layout: snapshot.layout,
             colors: snapshot.colors,
             paste_preview: snapshot.paste_preview.clone(),
+            inset_top: snapshot.paste_controls_inset_top,
         }
     }
 
@@ -749,6 +753,7 @@ impl PasteControlsSnapshot {
             && self.layout == other.layout
             && self.colors == other.colors
             && self.paste_preview == other.paste_preview
+            && self.inset_top == other.inset_top
     }
 }
 
@@ -973,7 +978,8 @@ fn render_paste_controls(
         .min(snapshot.viewport.width - controls_width - 8.0)
         .max(8.0);
     let controls_top_max = (snapshot.viewport.height - 50.0).max(12.0);
-    let controls_top = (rect.top() / px(1.0)).clamp(12.0, controls_top_max);
+    let controls_top =
+        (rect.top() / px(1.0)).clamp(snapshot.inset_top.min(controls_top_max), controls_top_max);
     let tools_height = 152.0_f32.min((snapshot.viewport.height - 16.0).max(96.0));
     let tools_top_max = (snapshot.viewport.height - tools_height - 8.0).max(8.0);
     let tools_top = if controls_top + 50.0 + tools_height > snapshot.viewport.height - 8.0 {
@@ -1286,7 +1292,10 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                         .iter()
                         .filter_map(|image| {
                             let image_bounds = screen_image_bounds(bounds, viewport, image)?;
-                            Some(ImagePaintRequest::new(image_bounds, image.image.as_ref()))
+                            Some(
+                                ImagePaintRequest::new(image_bounds, image.image.as_ref())
+                                    .with_sampling(ImageSampling::Nearest),
+                            )
                         })
                         .collect::<Vec<_>>();
                     let Some(render_range) = render_range else {
@@ -1322,7 +1331,10 @@ fn render_tile_layer(snapshot: &TileLayerSnapshot) -> Div {
                         let Some(image_bounds) = rect.to_bounds(bounds) else {
                             return None;
                         };
-                        Some(ImagePaintRequest::new(image_bounds, tile.image.as_ref()))
+                        Some(
+                            ImagePaintRequest::new(image_bounds, tile.image.as_ref())
+                                .with_sampling(ImageSampling::Nearest),
+                        )
                     });
                     paint_map_images(
                         window,
@@ -1408,6 +1420,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let slime_runs = snapshot.slime_runs.clone();
     let selection = snapshot.selection;
     let paste_preview = snapshot.paste_preview.clone();
+    let map_frame_preview = snapshot.map_frame_preview;
     let paste_preview_images = snapshot.paste_preview_images.clone();
     let highlighted_slime_candidate = snapshot.highlighted_slime_candidate.clone();
     let history_visualization = snapshot.history_visualization.clone();
@@ -1429,6 +1442,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
                     slime_runs.as_deref(),
                     selection,
                     paste_preview.as_ref(),
+                    map_frame_preview,
                     &paste_preview_images,
                     highlighted_slime_candidate.as_ref(),
                     colors,

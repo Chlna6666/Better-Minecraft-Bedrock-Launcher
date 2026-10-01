@@ -49,7 +49,7 @@ impl MapViewerWindowView {
                     );
                     if let Some(view) = detach_view.upgrade() {
                         view.update(cx, |this, cx| {
-                            this.open_detached_preview_3d(Some(detached_origin), cx)
+                            this.open_detached_preview_3d(Some(detached_origin), false, cx)
                         });
                     }
                     cx.new(|_| Preview3dDetachDrag)
@@ -82,7 +82,7 @@ impl MapViewerWindowView {
                         toolbar_button(colors, t!("MapViewer.separate_window")).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
-                                this.open_detached_preview_3d(None, cx)
+                                this.open_detached_preview_3d(None, false, cx)
                             }),
                         ),
                     )

@@ -129,13 +129,18 @@ impl MainWindowView {
                 }
 
                 if self.recent_plugin_page_key.as_ref() == Some(&key) {
-                    std::mem::swap(&mut self.plugin_page_view, &mut self.recent_plugin_page_view);
+                    std::mem::swap(
+                        &mut self.plugin_page_view,
+                        &mut self.recent_plugin_page_view,
+                    );
                     std::mem::swap(&mut self.plugin_page_key, &mut self.recent_plugin_page_key);
                     return;
                 }
 
-                let previous_plugin =
-                    self.plugin_page_key.take().zip(self.plugin_page_view.take());
+                let previous_plugin = self
+                    .plugin_page_key
+                    .take()
+                    .zip(self.plugin_page_view.take());
                 if let Some((previous_key, previous_view)) = previous_plugin {
                     let previous_target = RouteTarget::Plugin {
                         plugin_id: previous_key.0.clone(),
@@ -174,8 +179,8 @@ impl MainWindowView {
                     | this.ensure_update_download_listener(cx)
                     | this.sync_current_background_animation_policy(now, cx);
                 let update_state = cx.global::<UpdateState>();
-                let update_modal_needs_render = update_state.modal_pending_open
-                    || update_state.should_render_modal(now);
+                let update_modal_needs_render =
+                    update_state.modal_pending_open || update_state.should_render_modal(now);
                 if changed || update_modal_needs_render {
                     cx.notify();
                 }
@@ -542,8 +547,7 @@ impl MainWindowView {
 
         let plugin_is_resident = |key: &(String, String)| {
             Self::plugin_key_matches_target(key, active_target)
-                || recent_target
-                    .is_some_and(|recent| Self::plugin_key_matches_target(key, recent))
+                || recent_target.is_some_and(|recent| Self::plugin_key_matches_target(key, recent))
         };
         if self
             .plugin_page_key

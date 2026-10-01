@@ -146,7 +146,12 @@ impl MapViewerWindowView {
                 let entity = cx.entity();
                 move |cx| entity.update(cx, |this, cx| this.open_context_block_entities_editor(cx))
             }),
-            ContextMenuItem::new("编辑当前位置方块实体").on_click({
+            ContextMenuItem::new(if self.map_image_selecting_block() {
+                "选为地图写入目标"
+            } else {
+                "编辑当前位置方块实体"
+            })
+            .on_click({
                 let entity = cx.entity();
                 move |cx| entity.update(cx, |this, cx| this.open_context_block_entity_at_editor(cx))
             }),
@@ -706,6 +711,19 @@ impl MapViewerWindowView {
                                     entity.update(cx, |this, cx| {
                                         this.close_top_more();
                                         this.toggle_slime_overlay(cx);
+                                    })
+                                }
+                            }),
+                    ),
+                    ContextMenuEntry::item(
+                        ContextMenuItem::new(t!("MapViewer.load_risk"))
+                            .checked(self.overlay_options.load_risk)
+                            .on_click({
+                                let entity = cx.entity();
+                                move |cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.close_top_more();
+                                        this.toggle_load_risk_overlay(cx);
                                     })
                                 }
                             }),

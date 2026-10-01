@@ -306,9 +306,7 @@ pub(super) fn ensure_plugin_resources(
                 let text = manifest
                     .readme_path_for_locale(&locale)
                     .and_then(|path| std::fs::read_to_string(path).ok());
-                text.map(|text| {
-                    Arc::new(parse_markdown_document(&text))
-                })
+                text.map(|text| Arc::new(parse_markdown_document(&text)))
             })
             .await;
 
@@ -932,19 +930,15 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                     cx,
                                     plugin_id.clone(),
                                     !enabled,
-                                    move |cx, result| {
-                                        match result {
-                                            Ok(()) => {
-                                                toast::success(cx, success_message);
-                                            }
-                                            Err(error) => {
-                                                toast::error(
-                                                    cx,
-                                                    SharedString::from(format!(
-                                                        "操作失败: {error}"
-                                                    )),
-                                                );
-                                            }
+                                    move |cx, result| match result {
+                                        Ok(()) => {
+                                            toast::success(cx, success_message);
+                                        }
+                                        Err(error) => {
+                                            toast::error(
+                                                cx,
+                                                SharedString::from(format!("操作失败: {error}")),
+                                            );
                                         }
                                     },
                                 );
@@ -998,7 +992,10 @@ fn plugin_header_card(colors: &ThemeColors, _i18n: &I18n, status: &PluginStatus)
                                         reload_id.clone(),
                                     ) {
                                         Ok(()) => {
-                                            toast::success(cx, SharedString::from("插件重载已安排"));
+                                            toast::success(
+                                                cx,
+                                                SharedString::from("插件重载已安排"),
+                                            );
                                         }
                                         Err(error) => {
                                             toast::error(
@@ -1165,7 +1162,11 @@ fn plugin_readme_panel(
     div()
         .w_full()
         .p(px(2.))
-        .child(render_markdown_document(document.as_ref(), colors, model.is_dark))
+        .child(render_markdown_document(
+            document.as_ref(),
+            colors,
+            model.is_dark,
+        ))
         .into_any_element()
 }
 
@@ -1614,7 +1615,11 @@ fn raw_config_panel(colors: &ThemeColors, _i18n: &I18n, content: &str) -> AnyEle
         .into_any_element()
 }
 
-fn plugin_logs_panel(colors: &ThemeColors, _i18n: &I18n, model: &PluginSettingsModel) -> AnyElement {
+fn plugin_logs_panel(
+    colors: &ThemeColors,
+    _i18n: &I18n,
+    model: &PluginSettingsModel,
+) -> AnyElement {
     if model.logs.is_empty() {
         return empty_panel(colors, t!("PluginSettings.logs_empty"));
     }

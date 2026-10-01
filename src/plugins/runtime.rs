@@ -57,9 +57,8 @@ const STORAGE_KEY_MAX_BYTES: usize = 128;
 static ASYNC_HOST_REFRESH_NOTIFICATION: OnceLock<
     Mutex<Option<crate::plugins::watcher::PluginWatcherSender>>,
 > = OnceLock::new();
-static PLUGIN_PERSISTENCE_TX: OnceLock<
-    tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>,
-> = OnceLock::new();
+static PLUGIN_PERSISTENCE_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>> =
+    OnceLock::new();
 
 const PLUGIN_PERSISTENCE_COALESCE_DELAY: Duration = Duration::from_millis(20);
 
@@ -134,20 +133,14 @@ pub struct PluginInstance {
 
 #[derive(Clone)]
 enum PreparedPluginWasm {
-    Ready {
-        module: Module,
-        sha256: String,
-    },
+    Ready { module: Module, sha256: String },
     Error(Arc<str>),
 }
 
 impl std::fmt::Debug for PreparedPluginWasm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ready { sha256, .. } => f
-                .debug_struct("Ready")
-                .field("sha256", sha256)
-                .finish(),
+            Self::Ready { sha256, .. } => f.debug_struct("Ready").field("sha256", sha256).finish(),
             Self::Error(error) => f.debug_tuple("Error").field(error).finish(),
         }
     }
@@ -991,11 +984,8 @@ impl PluginRegistry {
     }
 
     pub fn reload_manifests(&mut self, manifests: Vec<PluginManifest>) -> Result<()> {
-        let prepared = prepare_plugin_manifests(
-            manifests,
-            &self.plugins_dir,
-            &self.package_cache_dir,
-        );
+        let prepared =
+            prepare_plugin_manifests(manifests, &self.plugins_dir, &self.package_cache_dir);
         self.reload_prepared_manifests(prepared)
     }
 
@@ -1105,12 +1095,8 @@ impl PluginRegistry {
         prepared_wasm: PreparedPluginWasm,
         prepared_resources: PreparedPluginResources,
     ) -> Result<PluginInstance> {
-        let mut execution = self.instantiate_plugin(
-            &manifest,
-            translations,
-            &prepared_wasm,
-            &prepared_resources,
-        )?;
+        let mut execution =
+            self.instantiate_plugin(&manifest, translations, &prepared_wasm, &prepared_resources)?;
 
         let started = Instant::now();
         let context = abi::PluginContext {
@@ -1222,12 +1208,7 @@ impl PluginRegistry {
         let translations = existing.translations.clone();
         let prepared_wasm = existing.prepared_wasm.clone();
         let prepared_resources = existing.prepared_resources.clone();
-        match self.load_manifest(
-            manifest,
-            translations,
-            prepared_wasm,
-            prepared_resources,
-        ) {
+        match self.load_manifest(manifest, translations, prepared_wasm, prepared_resources) {
             Ok(mut instance) => {
                 if let Some(previous) = self
                     .plugins
@@ -1357,8 +1338,7 @@ impl PluginRegistry {
         let module = if let Some(module) = self.module_cache.get(&wasm_hash) {
             module.clone()
         } else {
-            self.module_cache
-                .insert(wasm_hash, prepared_module.clone());
+            self.module_cache.insert(wasm_hash, prepared_module.clone());
             prepared_module
         };
 
@@ -2246,12 +2226,10 @@ fn schedule_plugin_persistence(
             message: error,
         })?;
         let _ = PLUGIN_PERSISTENCE_TX.set(sender);
-        PLUGIN_PERSISTENCE_TX
-            .get()
-            .ok_or_else(|| abi::HostError {
-                code: "persistence-schedule-failed".to_string(),
-                message: "plugin persistence queue initialization failed".to_string(),
-            })?
+        PLUGIN_PERSISTENCE_TX.get().ok_or_else(|| abi::HostError {
+            code: "persistence-schedule-failed".to_string(),
+            message: "plugin persistence queue initialization failed".to_string(),
+        })?
     };
 
     sender.send(operation).map_err(|error| abi::HostError {
@@ -2316,14 +2294,12 @@ fn persist_plugin_operation(operation: PluginPersistenceOp) -> Result<()> {
             key,
             value,
             ..
-        } => persist_storage_value(&storage_dir, &key, &value).map_err(|error| {
-            anyhow!("{}: {}", error.code, error.message)
-        }),
+        } => persist_storage_value(&storage_dir, &key, &value)
+            .map_err(|error| anyhow!("{}: {}", error.code, error.message)),
         PluginPersistenceOp::StorageDelete {
             storage_dir, key, ..
-        } => storage_delete(&storage_dir, &key).map_err(|error| {
-            anyhow!("{}: {}", error.code, error.message)
-        }),
+        } => storage_delete(&storage_dir, &key)
+            .map_err(|error| anyhow!("{}: {}", error.code, error.message)),
     }
 }
 
@@ -2589,12 +2565,7 @@ fn handle_host_request(
                     ),
                 });
             }
-            schedule_plugin_sidecar_start(
-                &state.manifest,
-                &state.sidecar_files,
-                &name,
-                args,
-            )?;
+            schedule_plugin_sidecar_start(&state.manifest, &state.sidecar_files, &name, args)?;
             Ok(abi::HostResponse::String(String::new()))
         }
         (code, abi::HostRequest::SessionGet { key }) if code == abi::HostOp::SessionGet.code() => {
@@ -2632,10 +2603,13 @@ fn handle_host_request(
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage set")?;
             validate_storage_key(&key)?;
-            let values = state.storage_values.as_ref().map_err(|error| abi::HostError {
-                code: "storage-state-unavailable".to_string(),
-                message: error.to_string(),
-            })?;
+            let values = state
+                .storage_values
+                .as_ref()
+                .map_err(|error| abi::HostError {
+                    code: "storage-state-unavailable".to_string(),
+                    message: error.to_string(),
+                })?;
             let quota_bytes = state.manifest.limits.max_storage_bytes;
             let next_used = storage_snapshot_next_used_bytes(values, &key, &value);
             if next_used > quota_bytes {
@@ -2664,10 +2638,13 @@ fn handle_host_request(
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
             validate_storage_key(&key)?;
-            let values = state.storage_values.as_ref().map_err(|error| abi::HostError {
-                code: "storage-state-unavailable".to_string(),
-                message: error.to_string(),
-            })?;
+            let values = state
+                .storage_values
+                .as_ref()
+                .map_err(|error| abi::HostError {
+                    code: "storage-state-unavailable".to_string(),
+                    message: error.to_string(),
+                })?;
             if !values.contains_key(&key) {
                 return Ok(abi::HostResponse::Unit);
             }
@@ -2693,7 +2670,11 @@ fn handle_host_request(
                 Ok(values) => Ok(abi::HostResponse::StringList(
                     values
                         .keys()
-                        .filter(|key| prefix.as_deref().is_none_or(|prefix| key.starts_with(prefix)))
+                        .filter(|key| {
+                            prefix
+                                .as_deref()
+                                .is_none_or(|prefix| key.starts_with(prefix))
+                        })
                         .cloned()
                         .collect(),
                 )),
@@ -2798,10 +2779,12 @@ fn schedule_plugin_sidecar_start(
     name: &str,
     args: Vec<String>,
 ) -> std::result::Result<(), abi::HostError> {
-    let executable = manifest.sidecar_path(name).map_err(|error| abi::HostError {
-        code: "sidecar-denied".to_string(),
-        message: error.to_string(),
-    })?;
+    let executable = manifest
+        .sidecar_path(name)
+        .map_err(|error| abi::HostError {
+            code: "sidecar-denied".to_string(),
+            message: error.to_string(),
+        })?;
     if !sidecar_files.contains(name) {
         return Err(abi::HostError {
             code: "sidecar-not-found".to_string(),
@@ -3447,10 +3430,12 @@ impl PluginResourceCache {
                 code: "capability-denied".to_string(),
                 message: error.to_string(),
             })?;
-        let resource_path = manifest.resource_path(path).map_err(|error| abi::HostError {
-            code: "resource-denied".to_string(),
-            message: error.to_string(),
-        })?;
+        let resource_path = manifest
+            .resource_path(path)
+            .map_err(|error| abi::HostError {
+                code: "resource-denied".to_string(),
+                message: error.to_string(),
+            })?;
         let key = ResourceCacheKey {
             plugin_id: plugin_id.to_string(),
             path: path.to_string(),
@@ -3460,13 +3445,11 @@ impl PluginResourceCache {
                 plugin_id: plugin_id.to_string(),
                 page_id: page_id.clone(),
             },
-            Some(RenderContext::Injection { slot, page }) => {
-                PluginInvalidationTarget::Injection {
-                    plugin_id: plugin_id.to_string(),
-                    slot: *slot,
-                    page: page.clone(),
-                }
-            }
+            Some(RenderContext::Injection { slot, page }) => PluginInvalidationTarget::Injection {
+                plugin_id: plugin_id.to_string(),
+                slot: *slot,
+                page: page.clone(),
+            },
             None => PluginInvalidationTarget::Plugin {
                 plugin_id: plugin_id.to_string(),
             },
@@ -3477,12 +3460,15 @@ impl PluginResourceCache {
             message: "plugin resource cache lock failed".to_string(),
         })?;
         let sender = state.sender.clone();
-        let entry = state.entries.entry(key.clone()).or_insert_with(|| ResourceCacheEntry {
-            bytes: None,
-            error: None,
-            loading: false,
-            subscribers: BTreeSet::new(),
-        });
+        let entry = state
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| ResourceCacheEntry {
+                bytes: None,
+                error: None,
+                loading: false,
+                subscribers: BTreeSet::new(),
+            });
         entry.subscribers.insert(subscriber);
 
         if let Some(bytes) = entry.bytes.as_ref() {
@@ -3543,12 +3529,15 @@ impl PluginResourceCache {
         };
         let mut invalidations = BTreeSet::new();
         for result in results {
-            let entry = state.entries.entry(result.key).or_insert_with(|| ResourceCacheEntry {
-                bytes: None,
-                error: None,
-                loading: false,
-                subscribers: BTreeSet::new(),
-            });
+            let entry = state
+                .entries
+                .entry(result.key)
+                .or_insert_with(|| ResourceCacheEntry {
+                    bytes: None,
+                    error: None,
+                    loading: false,
+                    subscribers: BTreeSet::new(),
+                });
             entry.loading = false;
             match result.result {
                 Ok(bytes) => {
@@ -3645,7 +3634,10 @@ fn spawn_resource_refresh(
     }
 }
 
-fn read_plugin_resource_path(path: &Path, max_bytes: usize) -> std::result::Result<Vec<u8>, String> {
+fn read_plugin_resource_path(
+    path: &Path,
+    max_bytes: usize,
+) -> std::result::Result<Vec<u8>, String> {
     let bytes = fs::read(path)
         .map_err(|error| format!("read plugin resource {} failed: {error}", path.display()))?;
     if bytes.len() > max_bytes {
@@ -4077,8 +4069,7 @@ fn prepare_plugin_manifests(
 
     for manifest in manifests {
         let enabled = !disabled_plugins.contains(&manifest.id);
-        if enabled
-            && let Err(error) = crate::plugins::manifest::commit_installed_package(&manifest)
+        if enabled && let Err(error) = crate::plugins::manifest::commit_installed_package(&manifest)
         {
             warn!(
                 plugin_id = manifest.id,
@@ -4110,8 +4101,8 @@ fn prepare_plugin_resources(
     let storage_dir = package_cache_dir
         .join("storage")
         .join(sanitize_storage_segment(&manifest.id));
-    let storage_values = load_storage_snapshot(&storage_dir)
-        .map_err(|error| Arc::<str>::from(error.message));
+    let storage_values =
+        load_storage_snapshot(&storage_dir).map_err(|error| Arc::<str>::from(error.message));
     let resource_values = prepare_plugin_resource_values(manifest);
     let sidecar_files = prepare_plugin_sidecar_files(manifest);
 
@@ -4200,8 +4191,7 @@ fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
         .and_then(|module| {
             validate_module_abi(&module)?;
             Ok(module)
-        })
-    {
+        }) {
         Ok(module) => module,
         Err(error) => {
             return PreparedPluginWasm::Error(Arc::<str>::from(
@@ -4453,7 +4443,10 @@ pub fn injection_registrations(
 }
 
 pub(crate) fn drain_async_host_refreshes(cx: &mut App) -> bool {
-    if !cx.global::<PluginRegistry>().has_finished_async_host_refreshes() {
+    if !cx
+        .global::<PluginRegistry>()
+        .has_finished_async_host_refreshes()
+    {
         return false;
     }
 
@@ -4519,12 +4512,7 @@ pub fn translate_plugin_resource_for_locale(
         .translate_plugin_resource_for_locale(plugin_id, locale, key)
 }
 
-pub fn save_plugin_config<F>(
-    cx: &mut App,
-    plugin_id: String,
-    content: String,
-    on_complete: F,
-)
+pub fn save_plugin_config<F>(cx: &mut App, plugin_id: String, content: String, on_complete: F)
 where
     F: FnOnce(&mut App, Result<()>) + 'static,
 {
@@ -4550,11 +4538,8 @@ where
                             .get_mut(&plugin_id)
                             .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
                         if let Some(runtime) = instance.runtime.as_ref() {
-                            runtime
-                                .borrow_mut()
-                                .host_state
-                                .borrow_mut()
-                                .config_text = Ok(content_for_state.clone());
+                            runtime.borrow_mut().host_state.borrow_mut().config_text =
+                                Ok(content_for_state.clone());
                         }
                         registry.render_cache.invalidate_plugin(&plugin_id);
                         Ok(registry.handle_event(HostEvent {
@@ -4580,22 +4565,24 @@ where
             on_complete(cx, result);
         })?;
 
-        tracing::debug!(plugin_id = plugin_id_for_io, "plugin config persistence task finished");
+        tracing::debug!(
+            plugin_id = plugin_id_for_io,
+            "plugin config persistence task finished"
+        );
         Ok::<(), anyhow::Error>(())
     })
     .detach();
 }
 
-pub fn set_plugin_enabled<F>(
-    cx: &mut App,
-    plugin_id: String,
-    enabled: bool,
-    on_complete: F,
-)
+pub fn set_plugin_enabled<F>(cx: &mut App, plugin_id: String, enabled: bool, on_complete: F)
 where
     F: FnOnce(&mut App, Result<()>) + 'static,
 {
-    if !cx.global::<PluginRegistry>().plugins.contains_key(&plugin_id) {
+    if !cx
+        .global::<PluginRegistry>()
+        .plugins
+        .contains_key(&plugin_id)
+    {
         on_complete(cx, Err(anyhow!("unknown plugin {plugin_id}")));
         return;
     }
@@ -4604,11 +4591,7 @@ where
     cx.spawn(async move |cx| {
         let plugin_id_for_io = plugin_id.clone();
         let persisted = crate::tasks::runtime::run_io_blocking(move || {
-            crate::plugins::state::set_plugin_enabled(
-                &plugins_dir,
-                &plugin_id_for_io,
-                enabled,
-            )
+            crate::plugins::state::set_plugin_enabled(&plugins_dir, &plugin_id_for_io, enabled)
         })
         .await;
 
@@ -4673,11 +4656,9 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
                 "error",
                 Some(crate::plugins::manifest::format_error_chain(&error)),
             ),
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     }) {
         Ok(workflow) => workflow,
@@ -4704,7 +4685,11 @@ pub fn start_uninstall_plugin_task(cx: &mut App, plugin_id: String) -> Result<St
 }
 
 pub fn reload_plugin(cx: &mut App, plugin_id: String) -> Result<()> {
-    if !cx.global::<PluginRegistry>().plugins.contains_key(&plugin_id) {
+    if !cx
+        .global::<PluginRegistry>()
+        .plugins
+        .contains_key(&plugin_id)
+    {
         return Err(anyhow!("unknown plugin {plugin_id}"));
     }
     reload_all(cx);
@@ -4869,11 +4854,9 @@ pub fn start_import_plugin_task(cx: &mut App, source_path: PathBuf) -> Result<St
                 "error",
                 Some(crate::plugins::manifest::format_error_chain(&error)),
             ),
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     }) {
         Ok(workflow) => workflow,
@@ -5254,7 +5237,10 @@ sidecar_dir = "bin"
         ]);
 
         assert_eq!(storage_snapshot_next_used_bytes(&values, "first", "123"), 5);
-        assert_eq!(storage_snapshot_next_used_bytes(&values, "third", "123"), 10);
+        assert_eq!(
+            storage_snapshot_next_used_bytes(&values, "third", "123"),
+            10
+        );
     }
 
     #[test]

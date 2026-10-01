@@ -115,93 +115,88 @@ pub(super) fn render_viewport_composite_stream(
     let failed_tiles = Arc::new(AtomicUsize::new(0));
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_decoded_tiles(
-            &planned_tiles,
-            render_options,
-            output_options,
-            {
-                let compositor = Arc::clone(&compositor);
-                let requested_tiles = requested_tiles.clone();
-                let failed_tiles = Arc::clone(&failed_tiles);
-                move |event| {
-                    if stream_cancel.is_cancelled() {
-                        return Err(bedrock_render::BedrockRenderError::Cancelled);
-                    }
-                    match event {
-                        DecodedTileEvent::Ready { planned, tile, .. } => {
-                            let coord = (planned.job.coord.x, planned.job.coord.z);
-                            let preview = {
-                                let mut compositor = compositor.lock().map_err(|_| {
-                                    bedrock_render::BedrockRenderError::Validation(
-                                        "视口合成状态锁已损坏".to_string(),
-                                    )
-                                })?;
-                                compositor
-                                    .blend_tile(coord, &tile)
-                                    .map_err(bedrock_render::BedrockRenderError::Validation)?
-                            };
-                            if let Some(preview) = preview {
-                                core::send_viewport_composite_event_or_cancel(
-                                    &event_sender,
-                                    &stream_cancel,
-                                    core::ViewportCompositeEvent::Tile { tile: preview },
-                                )?;
-                                std::thread::sleep(PROGRESSIVE_PREVIEW_PRESENT_INTERVAL);
-                            }
-                        }
-                        DecodedTileEvent::Empty { .. } => {}
-                        DecodedTileEvent::Failed { planned, error } => {
-                            failed_tiles.fetch_add(1, Ordering::Relaxed);
-                            tracing::debug!(
-                                tile = ?(planned.job.coord.x, planned.job.coord.z),
-                                %error,
-                                "map_viewer viewport_composite_tile_failed"
-                            );
-                        }
-                        DecodedTileEvent::Progress(_) => {}
-                        DecodedTileEvent::Complete {
-                            diagnostics,
-                            mut stats,
-                        } => {
-                            stats.planned_tiles = requested_tile_count;
-                            let (frame, rendered_tiles) = {
-                                let mut compositor = compositor.lock().map_err(|_| {
-                                    bedrock_render::BedrockRenderError::Validation(
-                                        "视口合成状态锁已损坏".to_string(),
-                                    )
-                                })?;
-                                let rendered_tiles = compositor.rendered_tiles();
-                                let frame = compositor
-                                    .finish_frame()
-                                    .map_err(bedrock_render::BedrockRenderError::Validation)?;
-                                (frame, rendered_tiles)
-                            };
-                            let failed = failed_tiles.load(Ordering::Relaxed);
-                            if failed > 0 {
-                                tracing::warn!(
-                                    failed_tiles = failed,
-                                    rendered_tiles,
-                                    "map_viewer viewport_composite_completed_with_partial_failures"
-                                );
-                            }
+        render_session.render_decoded_tiles(&planned_tiles, render_options, output_options, {
+            let compositor = Arc::clone(&compositor);
+            let requested_tiles = requested_tiles.clone();
+            let failed_tiles = Arc::clone(&failed_tiles);
+            move |event| {
+                if stream_cancel.is_cancelled() {
+                    return Err(bedrock_render::BedrockRenderError::Cancelled);
+                }
+                match event {
+                    DecodedTileEvent::Ready { planned, tile, .. } => {
+                        let coord = (planned.job.coord.x, planned.job.coord.z);
+                        let preview = {
+                            let mut compositor = compositor.lock().map_err(|_| {
+                                bedrock_render::BedrockRenderError::Validation(
+                                    "视口合成状态锁已损坏".to_string(),
+                                )
+                            })?;
+                            compositor
+                                .blend_tile(coord, &tile)
+                                .map_err(bedrock_render::BedrockRenderError::Validation)?
+                        };
+                        if let Some(preview) = preview {
                             core::send_viewport_composite_event_or_cancel(
                                 &event_sender,
                                 &stream_cancel,
-                                core::ViewportCompositeEvent::Complete {
-                                    frame,
-                                    requested_tiles: requested_tiles.clone(),
-                                    rendered_tiles,
-                                    failed_tiles: 0,
-                                    diagnostics,
-                                    stats,
-                                },
+                                core::ViewportCompositeEvent::Tile { tile: preview },
                             )?;
+                            std::thread::sleep(PROGRESSIVE_PREVIEW_PRESENT_INTERVAL);
                         }
                     }
-                    Ok(())
+                    DecodedTileEvent::Empty { .. } => {}
+                    DecodedTileEvent::Failed { planned, error } => {
+                        failed_tiles.fetch_add(1, Ordering::Relaxed);
+                        tracing::debug!(
+                            tile = ?(planned.job.coord.x, planned.job.coord.z),
+                            %error,
+                            "map_viewer viewport_composite_tile_failed"
+                        );
+                    }
+                    DecodedTileEvent::Progress(_) => {}
+                    DecodedTileEvent::Complete {
+                        diagnostics,
+                        mut stats,
+                    } => {
+                        stats.planned_tiles = requested_tile_count;
+                        let (frame, rendered_tiles) = {
+                            let mut compositor = compositor.lock().map_err(|_| {
+                                bedrock_render::BedrockRenderError::Validation(
+                                    "视口合成状态锁已损坏".to_string(),
+                                )
+                            })?;
+                            let rendered_tiles = compositor.rendered_tiles();
+                            let frame = compositor
+                                .finish_frame()
+                                .map_err(bedrock_render::BedrockRenderError::Validation)?;
+                            (frame, rendered_tiles)
+                        };
+                        let failed = failed_tiles.load(Ordering::Relaxed);
+                        if failed > 0 {
+                            tracing::warn!(
+                                failed_tiles = failed,
+                                rendered_tiles,
+                                "map_viewer viewport_composite_completed_with_partial_failures"
+                            );
+                        }
+                        core::send_viewport_composite_event_or_cancel(
+                            &event_sender,
+                            &stream_cancel,
+                            core::ViewportCompositeEvent::Complete {
+                                frame,
+                                requested_tiles: requested_tiles.clone(),
+                                rendered_tiles,
+                                failed_tiles: 0,
+                                diagnostics,
+                                stats,
+                            },
+                        )?;
+                    }
                 }
-            },
-        )
+                Ok(())
+            }
+        })
     }))
     .map_err(|_| "视口合成任务崩溃".to_string())?
     .map_err(|error| format!("视口合成失败: {error}"));

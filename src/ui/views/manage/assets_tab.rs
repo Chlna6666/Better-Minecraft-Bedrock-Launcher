@@ -781,8 +781,7 @@ pub(super) fn render_asset_list(
         let Some(asset) = state.assets.get(asset_index) else {
             continue;
         };
-        let animate_row =
-            animate_rows && virtual_list_plan.visible_slice.contains(virtual_index);
+        let animate_row = animate_rows && virtual_list_plan.visible_slice.contains(virtual_index);
         let visible_index =
             virtual_index.saturating_sub(virtual_list_plan.visible_slice.start_index);
         let row = div()
@@ -811,11 +810,12 @@ pub(super) fn render_asset_list(
                     asset.key.as_ref()
                 )),
                 if animate_row {
-                    tab_list_item_motion(animation_from, animation_to, visible_index)
-                        .with_property(AnimationProperty::translation(
+                    tab_list_item_motion(animation_from, animation_to, visible_index).with_property(
+                        AnimationProperty::clipped_translation(
                             point(px(12.0 * direction), px(0.0)),
                             Point::default(),
-                        ))
+                        ),
+                    )
                 } else {
                     settled_animation().with_property(AnimationProperty::translation(
                         Point::default(),
@@ -871,13 +871,12 @@ pub(super) fn render_asset_list(
         .child(rows);
 
     if let Some((from_index, to_index, sequence, scope, animating)) = stale_transition {
-        let direction =
-            crate::ui::animation::tab_transition_direction(from_index, to_index);
+        let direction = crate::ui::animation::tab_transition_direction(from_index, to_index);
         let stale = if animating {
             list.with_animation(
                 SharedString::from(format!("{scope}-{sequence}")),
                 tab_stale_content_motion(from_index, to_index).with_property(
-                    AnimationProperty::translation(
+                    AnimationProperty::clipped_translation(
                         Point::default(),
                         point(px(-4.0 * direction), px(0.0)),
                     ),

@@ -40,9 +40,7 @@ impl TabItem {
 fn tab_items_visually_equal(left: &[TabItem], right: &[TabItem]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
-            left.id == right.id
-                && left.label == right.label
-                && left.icon_path == right.icon_path
+            left.id == right.id && left.label == right.label && left.icon_path == right.icon_path
         })
 }
 
@@ -60,11 +58,7 @@ pub struct UnderlineTabs {
 }
 
 impl UnderlineTabs {
-    pub fn new(
-        id: impl Into<SharedString>,
-        colors: &ThemeColors,
-        items: Vec<TabItem>,
-    ) -> Self {
+    pub fn new(id: impl Into<SharedString>, colors: &ThemeColors, items: Vec<TabItem>) -> Self {
         Self {
             id: id.into(),
             items,
@@ -155,7 +149,7 @@ impl UnderlineTabsView {
 }
 
 impl Render for UnderlineTabsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.items.is_empty() {
             return div().into_any_element();
         }
@@ -182,26 +176,24 @@ impl Render for UnderlineTabsView {
                 .bg(colors.accent);
 
             indicator
-                .with_animation(
+                .with_visual_animation(
                     SharedString::from(format!(
                         "{}-shared-underline-presentation",
                         self.id.as_ref()
                     )),
                     if reduced_motion || self.from_index == active_index {
-                        settled_animation().with_property(AnimationProperty::translation(
+                        settled_animation().with_translation(
                             Point::default(),
                             Point::default(),
-                        ))
+                        )
                     } else {
-                        spring_motion(apple_spring(0.30, 0.82)).with_property(
-                            AnimationProperty::translation(
-                                point(px(offset_px), px(0.0)),
-                                Point::default(),
-                            ),
+                        spring_motion(apple_spring(0.30, 0.82)).with_translation(
+                            point(px(offset_px), px(0.0)),
+                            Point::default(),
                         )
                     },
-                    |indicator, _progress| indicator,
                 )
+                .expect("tab underline uses a visual translation track")
                 .into_any_element()
         });
 
@@ -231,17 +223,14 @@ impl Render for UnderlineTabsView {
                     let mut content = div().flex().items_center().gap(px(8.));
 
                     if let Some(icon_path) = icon_path {
-                        content = content.child(
-                            svg()
-                                .path(icon_path)
-                                .w(px(15.))
-                                .h(px(15.))
-                                .text_color(if active {
+                        content =
+                            content.child(svg().path(icon_path).w(px(15.)).h(px(15.)).text_color(
+                                if active {
                                     colors.accent
                                 } else {
                                     colors.text_secondary
-                                }),
-                        );
+                                },
+                            ));
                     }
 
                     let local_underline = (item_width.is_none() && active).then(|| {
@@ -294,9 +283,8 @@ impl Render for UnderlineTabsView {
                                     cx.notify();
                                 }
 
-                                // One authoritative selection update. Do not defer it and do not keep
-                                // an optimistic second tab state: the tab highlight, content and
-                                // ManagePageState must commit from the same input event.
+                                // Retarget the indicator at input time; the owner still commits
+                                // the selected tab and its content from this same event.
                                 cx.stop_propagation();
                                 (on_select)(window, cx);
                             }),
@@ -313,8 +301,7 @@ impl RenderOnce for UnderlineTabs {
             return div().into_any_element();
         }
 
-        let state_key =
-            ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
+        let state_key = ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
         let id = self.id;
         let items = self.items;
         let colors = self.colors;
@@ -330,21 +317,11 @@ impl RenderOnce for UnderlineTabs {
                     |view, _window| {
                         let view = if let Some(view) = view {
                             view.update(cx, |view, cx| {
-                                view.sync(
-                                    items,
-                                    colors,
-                                    gap,
-                                    item_width,
-                                    now,
-                                    reduced_motion,
-                                    cx,
-                                );
+                                view.sync(items, colors, gap, item_width, now, reduced_motion, cx);
                             });
                             view
                         } else {
-                            cx.new(|_| {
-                                UnderlineTabsView::new(id, items, colors, gap, item_width)
-                            })
+                            cx.new(|_| UnderlineTabsView::new(id, items, colors, gap, item_width))
                         };
                         (view.clone(), view)
                     },
@@ -468,7 +445,7 @@ impl AnimatedSegmentTabsView {
 }
 
 impl Render for AnimatedSegmentTabsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.items.is_empty() {
             return div().into_any_element();
         }
@@ -534,26 +511,21 @@ impl Render for AnimatedSegmentTabsView {
                 });
 
             indicator
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-indicator-presentation",
-                        self.id.as_ref()
-                    )),
+                .with_visual_animation(
+                    SharedString::from(format!("{}-indicator-presentation", self.id.as_ref())),
                     if reduced_motion || self.from_index == active_index {
-                        settled_animation().with_property(AnimationProperty::translation(
+                        settled_animation().with_translation(
                             Point::default(),
                             Point::default(),
-                        ))
+                        )
                     } else {
-                        spring_motion(apple_spring(0.30, 0.82)).with_property(
-                            AnimationProperty::translation(
-                                point(px(offset_px), px(0.0)),
-                                Point::default(),
-                            ),
+                        spring_motion(apple_spring(0.30, 0.82)).with_translation(
+                            point(px(offset_px), px(0.0)),
+                            Point::default(),
                         )
                     },
-                    |indicator, _progress| indicator,
                 )
+                .expect("tab indicator uses a visual translation track")
                 .into_any_element()
         } else {
             let offset = (self.from_index as f32 - active_index as f32) * segment_width;
@@ -580,18 +552,13 @@ impl Render for AnimatedSegmentTabsView {
                 });
 
             indicator
-                .with_animation(
-                    SharedString::from(format!(
-                        "{}-indicator-presentation",
-                        self.id.as_ref()
-                    )),
+                .with_visual_animation(
+                    SharedString::from(format!("{}-indicator-presentation", self.id.as_ref())),
                     if reduced_motion || self.from_index == active_index {
-                        settled_animation().with_property(
-                            AnimationProperty::relative_translation(
-                                Point::default(),
-                                Point::default(),
-                            ),
-                        )
+                        settled_animation().with_property(AnimationProperty::relative_translation(
+                            Point::default(),
+                            Point::default(),
+                        ))
                     } else {
                         spring_motion(apple_spring(0.30, 0.82)).with_property(
                             AnimationProperty::relative_translation(
@@ -600,8 +567,8 @@ impl Render for AnimatedSegmentTabsView {
                             ),
                         )
                     },
-                    |indicator, _progress| indicator,
                 )
+                .expect("tab indicator uses a visual translation track")
                 .into_any_element()
         };
 
@@ -635,21 +602,15 @@ impl Render for AnimatedSegmentTabsView {
                         let label = item.label.clone();
                         let icon_path = item.icon_path;
                         let on_select = item.on_select.clone();
-                        let mut content =
-                            div().flex().items_center().justify_center().gap(px(4.));
+                        let mut content = div().flex().items_center().justify_center().gap(px(4.));
 
                         if let Some(icon_path) = icon_path {
-                            content = content.child(
-                                svg()
-                                    .path(icon_path)
-                                    .w(px(12.))
-                                    .h(px(12.))
-                                    .text_color(if active {
-                                        active_text
-                                    } else {
-                                        inactive_text
-                                    }),
-                            );
+                            content =
+                                content.child(
+                                    svg().path(icon_path).w(px(12.)).h(px(12.)).text_color(
+                                        if active { active_text } else { inactive_text },
+                                    ),
+                                );
                         }
 
                         let mut tab = div()
@@ -687,8 +648,7 @@ impl Render for AnimatedSegmentTabsView {
                         tab.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _event, window, cx| {
-                                let reduced_motion =
-                                    crate::core::ui_prefs::reduced_motion();
+                                let reduced_motion = crate::core::ui_prefs::reduced_motion();
                                 if this.retarget(index, Instant::now(), reduced_motion) {
                                     cx.notify();
                                 }
@@ -709,8 +669,7 @@ impl RenderOnce for AnimatedSegmentTabs {
             return div().into_any_element();
         }
 
-        let state_key =
-            ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
+        let state_key = ElementId::Name(format!("{}-detached-tabs-view", self.id.as_ref()).into());
         let id = self.id;
         let items = self.items;
         let colors = self.colors;

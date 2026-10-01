@@ -406,6 +406,7 @@ impl MapViewerWindowView {
     pub(super) fn open_detached_preview_3d(
         &mut self,
         origin: Option<Point<Pixels>>,
+        preserve_panel: bool,
         cx: &mut Context<Self>,
     ) {
         let owner_id = cx.entity_id().as_u64();
@@ -416,9 +417,11 @@ impl MapViewerWindowView {
                 .update(cx, |_view, window, _cx| window.activate_window())
                 .is_ok()
             {
-                self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
-                self.ui_state.set_right_panel_open(false);
-                self.update_viewport_after_dock_change(cx);
+                if !preserve_panel {
+                    self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
+                    self.ui_state.set_right_panel_open(false);
+                    self.update_viewport_after_dock_change(cx);
+                }
                 cx.notify();
                 return;
             }
@@ -475,9 +478,11 @@ impl MapViewerWindowView {
                 // Do not call close_right_panel: that method releases the shared 3D
                 // state. The independent window and map view intentionally share one
                 // model/camera state, while only one of them is visible at a time.
-                self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
-                self.ui_state.set_right_panel_open(false);
-                self.update_viewport_after_dock_change(cx);
+                if !preserve_panel {
+                    self.ui_state.active_right_panel = MapViewerRightPanel::Nbt;
+                    self.ui_state.set_right_panel_open(false);
+                    self.update_viewport_after_dock_change(cx);
+                }
                 self.status = t!("MapViewer.preview_detached_opened");
                 cx.notify();
             }

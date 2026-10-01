@@ -1,5 +1,8 @@
 use super::editor::*;
+use super::generator_panel::GeneratorPanelState;
 use super::helpers::*;
+use super::image_generator_panel::ImageGeneratorPanelState;
+use super::map_image_panel::MapImagePanelState;
 use super::panels::*;
 use super::player_workspace::*;
 use super::players::*;
@@ -345,6 +348,7 @@ pub(super) struct Marker {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct OverlayOptions {
+    pub(super) load_risk: bool,
     pub(super) axis: bool,
     pub(super) dense_grid: bool,
     pub(super) ruler: bool,
@@ -360,6 +364,7 @@ pub(super) struct OverlayOptions {
 impl Default for OverlayOptions {
     fn default() -> Self {
         Self {
+            load_risk: false,
             axis: true,
             dense_grid: true,
             ruler: true,
@@ -1021,15 +1026,15 @@ pub(super) fn map_operation_status_for_result<T>(
     cancel: &CancelFlag,
     task_id: &str,
 ) -> &'static str {
-    if map_operation_cancelled(cancel, task_id)
+    if result.is_ok() {
+        "completed"
+    } else if map_operation_cancelled(cancel, task_id)
         || result
             .as_ref()
             .err()
             .is_some_and(|error| is_map_operation_cancelled_error(error))
     {
         "cancelled"
-    } else if result.is_ok() {
-        "completed"
     } else {
         "error"
     }
@@ -1132,6 +1137,14 @@ pub(super) struct PastePreviewImage {
     pub(super) height: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MapFrameGridPreview {
+    pub(super) min_block_x: i32,
+    pub(super) min_block_z: i32,
+    pub(super) columns: u32,
+    pub(super) rows: u32,
+}
+
 #[derive(Clone)]
 pub(super) struct CopiedChunkPreviewImage {
     pub(super) chunk: ChunkPos,
@@ -1199,6 +1212,8 @@ pub(super) struct ProfessionalQueryState {
     pub(super) last_chunk_transfer_progress: Option<ChunkTransferProgress>,
     pub(super) last_chunk_transfer_finished_at: Option<Instant>,
     pub(super) edit_loading: bool,
+    /// The current world mutation task; stays owned until its terminal snapshot arrives.
+    pub(super) active_write_task_id: Option<String>,
     pub(super) edit_generation: u64,
 }
 
@@ -1274,6 +1289,7 @@ impl PlayerQuickEdit {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ProfessionalOverlayPaintCache {
+    pub(super) chunk_loads: Vec<crate::core::minecraft::map::load_risk::ChunkLoad>,
     pub(super) entity_cache_summary: EntityCacheSummary,
     pub(super) hardcoded_spawn_rects: Vec<BlockOverlayRect>,
     pub(super) village_rects: Vec<ChunkOverlayRect>,
@@ -1288,6 +1304,7 @@ impl ProfessionalOverlayPaintCache {
         villages: &[VillageOverlay],
     ) -> Self {
         let mut cache = Self {
+            chunk_loads: crate::core::minecraft::map::load_risk::from_snapshot(snapshot),
             entity_cache_summary: EntityCacheSummary {
                 cached_tile_count: snapshot.cached_tile_count,
                 rebuilt_tile_count: snapshot.rebuilt_tile_count,
@@ -1361,6 +1378,7 @@ impl ProfessionalOverlayPaintCache {
     pub(super) fn from_query(query: &RegionOverlayQuery) -> Self {
         let mut pending_tick_chunks = BTreeMap::<(i32, i32), usize>::new();
         let mut cache = Self {
+            chunk_loads: crate::core::minecraft::map::load_risk::from_query(query),
             entity_cache_summary: EntityCacheSummary::default(),
             hardcoded_spawn_rects: query
                 .hardcoded_spawn_areas
@@ -1409,9 +1427,14 @@ impl ProfessionalOverlayPaintCache {
             });
         }
         for pending_tick in &query.pending_ticks {
+            let count =
+                crate::core::minecraft::map::load_risk::pending_tick_count(&pending_tick.tick);
+            if count == 0 {
+                continue;
+            }
             *pending_tick_chunks
                 .entry((pending_tick.chunk.x, pending_tick.chunk.z))
-                .or_default() += 1;
+                .or_default() += count as usize;
         }
         cache.pending_tick_chunk_markers = pending_tick_chunks
             .into_iter()
@@ -1741,6 +1764,8 @@ pub(super) struct MapCanvasSnapshotKey {
     pub(super) slime_runs_ptr: Option<usize>,
     pub(super) selection: Option<ChunkSelection>,
     pub(super) paste_preview: Option<PastePreview>,
+    pub(super) paste_controls_inset_top: f32,
+    pub(super) map_frame_preview: Option<MapFrameGridPreview>,
     pub(super) paste_preview_images_generation: u64,
     pub(super) highlighted_slime_candidate: Option<SlimeFarmCandidate>,
     pub(super) markers_generation: u64,
@@ -1785,6 +1810,9 @@ pub struct MapViewerWindowView {
     pub(super) player_item_catalog_loading: bool,
     pub(super) player_item_catalog_loaded: bool,
     pub(super) preview_3d: Preview3dState,
+    pub(super) generator: GeneratorPanelState,
+    pub(super) image_generator: ImageGeneratorPanelState,
+    pub(super) map_image: MapImagePanelState,
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,
     pub(super) toolbar_state: ToolbarState,

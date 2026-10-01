@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tracing::{info, warn};
 
@@ -53,17 +53,12 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
     let worker_operation_id = Arc::clone(&operation_id);
     let worker_child_task = Arc::clone(&active_child_task);
     let workflow = match crate::tasks::runtime::spawn_io(async move {
-        let outcome =
-            run_game_install(&request, &worker_operation_id, &worker_child_task).await;
+        let outcome = run_game_install(&request, &worker_operation_id, &worker_child_task).await;
         match outcome {
             Ok(local_path) => {
                 // A successful return means every child transaction crossed its commit point.
                 // A late cancellation must not rewrite a fully committed install as incomplete.
-                task_manager::finish_task(
-                    &worker_operation_id,
-                    "completed",
-                    Some(local_path),
-                );
+                task_manager::finish_task(&worker_operation_id, "completed", Some(local_path));
                 info!(
                     operation_id = %worker_operation_id,
                     "game install completed; invalidating local version catalog"
@@ -77,11 +72,7 @@ pub fn start_game_install(request: GameInstallRequest) -> Result<Arc<str>, Strin
                     "game install workflow failed"
                 );
                 if task_manager::is_cancelled(&worker_operation_id) {
-                    task_manager::finish_task(
-                        &worker_operation_id,
-                        "cancelled",
-                        Some(message),
-                    );
+                    task_manager::finish_task(&worker_operation_id, "cancelled", Some(message));
                 } else {
                     task_manager::finish_task(&worker_operation_id, "error", Some(message));
                 }

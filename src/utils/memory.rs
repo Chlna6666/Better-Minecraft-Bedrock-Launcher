@@ -2,7 +2,10 @@
 //! 内存管理工具模块
 //! 提供类似 MemReduct 的内存清理功能，以及 GPUI 资源管理
 
-#![expect(unsafe_code, reason = "allocator cleanup crosses the mimalloc native API boundary")]
+#![expect(
+    unsafe_code,
+    reason = "allocator cleanup crosses the mimalloc native API boundary"
+)]
 
 use tracing::debug;
 
@@ -182,5 +185,4 @@ mod tests {
         let stats = empty_working_set();
         assert!(stats.working_set_kb > 0);
     }
-
 }

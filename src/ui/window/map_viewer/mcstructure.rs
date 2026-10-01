@@ -1,5 +1,5 @@
 use super::model::{
-    CopiedChunkData, CopiedChunkPreviewImage, CopiedChunk, ImportedStructureData,
+    CopiedChunk, CopiedChunkData, CopiedChunkPreviewImage, ImportedStructureData,
     MAP_OPERATION_CANCELLED_MESSAGE, PasteRotation, PasteTransform,
 };
 use super::prelude::*;
@@ -57,11 +57,8 @@ pub(super) fn export_selection_mcstructure_blocking(
         total,
     });
 
-    let world = World::open(
-        world_path,
-        bedrock_world::OpenOptions::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let world = World::open(world_path, bedrock_world::OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     check_mcstructure_export_cancelled(cancel)?;
     let min_x = bounds.min_chunk_x.saturating_mul(16);
     let min_z = bounds.min_chunk_z.saturating_mul(16);
@@ -128,12 +125,20 @@ pub(super) fn read_mcstructure_as_copied_chunk(
 ) -> Result<McStructureImport, String> {
     let structure = bedrock_world::read_mcstructure_file(path)
         .map_err(|error| format!("读取 .mcstructure 失败（{}）：{}", path.display(), error))?;
+    structure_as_copied_chunk(Arc::new(structure), anchor_chunk, origin_y)
+}
+
+pub(super) fn structure_as_copied_chunk(
+    structure: Arc<bedrock_world::McStructureFile>,
+    anchor_chunk: ChunkPos,
+    origin_y: i32,
+) -> Result<McStructureImport, String> {
     let copied_chunk = structure_to_copied_chunk(&structure, anchor_chunk)?;
     let preview_images =
         super::import_preview::mcstructure_preview_images(&structure, anchor_chunk)?;
     let size = structure.size;
     let imported_structure = ImportedStructureData {
-        structure: Arc::new(structure),
+        structure,
         source_anchor: anchor_chunk,
         origin_y,
     };

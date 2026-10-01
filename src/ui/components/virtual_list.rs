@@ -61,12 +61,17 @@ pub fn compute_virtual_list_plan(
     let render_start = visible_start.saturating_sub(overscan);
     let render_end = visible_end.saturating_add(overscan).min(total_items);
 
-    let heavy_budget = visible_end
-        .saturating_sub(visible_start)
-        .max(1)
-        .min(max_heavy_items.max(1));
-    let heavy_start = visible_start;
-    let heavy_end = visible_start.saturating_add(heavy_budget).min(visible_end);
+    let visible_len = visible_end - visible_start;
+    let heavy_budget = (render_end - render_start).min(max_heavy_items.max(1));
+    let heavy_start = if heavy_budget > visible_len {
+        visible_start
+            .saturating_sub((heavy_budget - visible_len) / 2)
+            .min(render_end - heavy_budget)
+            .max(render_start)
+    } else {
+        visible_start
+    };
+    let heavy_end = heavy_start + heavy_budget;
 
     VirtualListPlan {
         render_slice: WindowedListSlice {
@@ -131,5 +136,15 @@ mod tests {
         assert_eq!(plan.heavy_slice.start_index, 10);
         assert_eq!(plan.heavy_slice.end_index, 13);
         assert_eq!(plan.heavy_slice.len(), 3);
+    }
+
+    #[::core::prelude::v1::test]
+    fn virtual_list_keeps_overscan_rows_heavy_within_budget() {
+        let plan = compute_virtual_list_plan(100, 68.0, px(-680.0), px(340.0), 8, 24);
+
+        assert_eq!(plan.render_slice.start_index, 2);
+        assert_eq!(plan.render_slice.end_index, 24);
+        assert_eq!(plan.heavy_slice.start_index, 2);
+        assert_eq!(plan.heavy_slice.end_index, 24);
     }
 }

@@ -504,7 +504,11 @@ fn render_issue_sections(
     sections.into_any_element()
 }
 
-fn render_logs_section(state: &LaunchPrereqState, colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
+fn render_logs_section(
+    state: &LaunchPrereqState,
+    colors: &ThemeColors,
+    _i18n: &I18n,
+) -> AnyElement {
     let logs = state.log_lines();
     div()
         .rounded(px(crate::ui::theme::tokens::radius::MD))

@@ -1,5 +1,8 @@
 #![cfg_attr(target_arch = "wasm32", no_std)]
-#![expect(unsafe_code, reason = "plugin ABI crosses host-call and guest-memory boundaries")]
+#![expect(
+    unsafe_code,
+    reason = "plugin ABI crosses host-call and guest-memory boundaries"
+)]
 
 extern crate alloc;
 
@@ -2590,7 +2593,10 @@ pub fn encode_plugin_result<T: serde::Serialize>(result: PluginResult<T>) -> u64
 ///
 /// When `len` is nonzero, `ptr` must point to `len` readable bytes in this plugin's current
 /// WebAssembly linear memory for the duration of this call.
-pub unsafe fn decode_request<T: serde::de::DeserializeOwned>(ptr: u32, len: u32) -> PluginResult<T> {
+pub unsafe fn decode_request<T: serde::de::DeserializeOwned>(
+    ptr: u32,
+    len: u32,
+) -> PluginResult<T> {
     let slice = if len == 0 {
         &[]
     } else {
@@ -2643,10 +2649,14 @@ pub extern "C" fn bmcbl_dealloc(ptr: u32, len: u32, _align: u32) {
 macro_rules! export_plugin {
     ($plugin:ty) => {
         #[cfg(target_arch = "wasm32")]
-        #[expect(unsafe_code, reason = "plugin entrypoint decodes host-provided guest memory")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_init(ptr: u32, len: u32) -> u64 {
-            let context = match unsafe { $crate::decode_request::<$crate::PluginContext>(ptr, len) } {
+            let context = match unsafe { $crate::decode_request::<$crate::PluginContext>(ptr, len) }
+            {
                 Ok(context) => context,
                 Err(error) => {
                     return $crate::encode_plugin_result::<Vec<$crate::Registration>>(Err(error))
@@ -2656,7 +2666,10 @@ macro_rules! export_plugin {
         }
 
         #[cfg(target_arch = "wasm32")]
-        #[expect(unsafe_code, reason = "plugin entrypoint decodes host-provided guest memory")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_handle_event(ptr: u32, len: u32) -> u64 {
             let event = match unsafe { $crate::decode_request::<$crate::HostEvent>(ptr, len) } {
@@ -2667,10 +2680,15 @@ macro_rules! export_plugin {
         }
 
         #[cfg(target_arch = "wasm32")]
-        #[expect(unsafe_code, reason = "plugin entrypoint decodes host-provided guest memory")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_render_page(ptr: u32, len: u32) -> u64 {
-            let request = match unsafe { $crate::decode_request::<$crate::PageRenderRequest>(ptr, len) } {
+            let request = match unsafe {
+                $crate::decode_request::<$crate::PageRenderRequest>(ptr, len)
+            } {
                 Ok(request) => request,
                 Err(error) => return $crate::encode_plugin_result::<$crate::ViewTree>(Err(error)),
             };
@@ -2678,10 +2696,15 @@ macro_rules! export_plugin {
         }
 
         #[cfg(target_arch = "wasm32")]
-        #[expect(unsafe_code, reason = "plugin entrypoint decodes host-provided guest memory")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_render_injection(ptr: u32, len: u32) -> u64 {
-            let request = match unsafe { $crate::decode_request::<$crate::InjectionRequest>(ptr, len) } {
+            let request = match unsafe {
+                $crate::decode_request::<$crate::InjectionRequest>(ptr, len)
+            } {
                 Ok(request) => request,
                 Err(error) => {
                     return $crate::encode_plugin_result::<Option<$crate::ViewTree>>(Err(error));
@@ -2691,10 +2714,14 @@ macro_rules! export_plugin {
         }
 
         #[cfg(target_arch = "wasm32")]
-        #[expect(unsafe_code, reason = "plugin entrypoint decodes host-provided guest memory")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_shutdown(ptr: u32, len: u32) -> u64 {
-            let reason = match unsafe { $crate::decode_request::<$crate::ShutdownReason>(ptr, len) } {
+            let reason = match unsafe { $crate::decode_request::<$crate::ShutdownReason>(ptr, len) }
+            {
                 Ok(reason) => reason,
                 Err(error) => return $crate::encode_plugin_result::<()>(Err(error)),
             };

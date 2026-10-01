@@ -4,8 +4,7 @@ use crate::core::minecraft::assets::{
 };
 use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::tasks::task_manager::{
-    create_task_with_details, finish_task, is_cancelled, register_task_abort_handle,
-    reset_progress,
+    create_task_with_details, finish_task, is_cancelled, register_task_abort_handle, reset_progress,
 };
 
 #[derive(Clone, Debug)]
@@ -36,16 +35,18 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
     let task_id = create_task_with_details(
         None,
         format!("安装 CurseForge · {}", request.project_name),
-        Some(format!("{} → {}", request.file_name, request.target.version_name)),
+        Some(format!(
+            "{} → {}",
+            request.file_name, request.target.version_name
+        )),
         "ready",
         None,
         true,
     );
     let worker_task_id = task_id.clone();
 
-    let abort_handle = match crate::tasks::runtime::spawn_download_task(
-        task_id.clone(),
-        async move {
+    let abort_handle =
+        match crate::tasks::runtime::spawn_download_task(task_id.clone(), async move {
             let result = run_install(&worker_task_id, request).await;
             match result {
                 Ok(result) => finish_task(
@@ -61,14 +62,13 @@ pub fn start_install(request: CurseForgeInstallRequest) -> Result<String, String
                 }
                 Err(error) => finish_task(&worker_task_id, "error", Some(error)),
             }
-        },
-    ) {
-        Ok(abort_handle) => abort_handle,
-        Err(error) => {
-            finish_task(&task_id, "error", Some(error.clone()));
-            return Err(error);
-        }
-    };
+        }) {
+            Ok(abort_handle) => abort_handle,
+            Err(error) => {
+                finish_task(&task_id, "error", Some(error.clone()));
+                return Err(error);
+            }
+        };
     register_task_abort_handle(task_id.clone(), abort_handle);
     Ok(task_id)
 }
@@ -113,8 +113,8 @@ async fn run_install(
     // Reinstall/update of the same manifest UUID is the normal CurseForge path. It should not
     // require a second modal confirmation. Other conflicts (for example a GDK user/shared
     // fallback decision) are not silently redirected.
-    let overwrite = conflict.has_conflict
-        && conflict.conflict_type.as_deref() == Some("uuid_match");
+    let overwrite =
+        conflict.has_conflict && conflict.conflict_type.as_deref() == Some("uuid_match");
     if conflict.has_conflict && !overwrite {
         return Err(if conflict.message.trim().is_empty() {
             "目标位置存在需要人工处理的冲突".to_string()

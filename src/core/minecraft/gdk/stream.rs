@@ -720,13 +720,11 @@ impl MsiXVDStream {
         let mut curr = std::mem::size_of::<XvcInfo>();
 
         for _ in 0..info.region_count {
-            self.xvc_regions
-                .push(read_struct_at(&buf, curr)?);
+            self.xvc_regions.push(read_struct_at(&buf, curr)?);
             curr += std::mem::size_of::<XvcRegionHeader>();
         }
         for _ in 0..info.update_segment_count {
-            self.xvc_update_segments
-                .push(read_struct_at(&buf, curr)?);
+            self.xvc_update_segments.push(read_struct_at(&buf, curr)?);
             curr += std::mem::size_of::<XvcUpdateSegment>();
         }
         Ok(())

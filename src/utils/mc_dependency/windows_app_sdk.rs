@@ -197,8 +197,8 @@ async fn download_windows_app_sdk_installer_if_needed(
 
     let mut last_error = None;
     for source in download_sources {
-        let candidates = crate::github::configured_download_urls(source.url)
-            .map_err(anyhow::Error::msg)?;
+        let candidates =
+            crate::github::configured_download_urls(source.url).map_err(anyhow::Error::msg)?;
         for candidate_url in candidates {
             let target_label = download_target_label(installer_name, *source);
             match download_file_with_progress(

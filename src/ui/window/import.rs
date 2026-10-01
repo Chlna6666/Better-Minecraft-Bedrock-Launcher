@@ -108,12 +108,7 @@ pub fn open_dropped_import_any(paths: &[PathBuf], window: &mut Window, cx: &mut 
         start_game_package_import(file_path, cx);
     }
     if !asset_paths.is_empty() {
-        open_import_overlay_batch(
-            asset_paths,
-            ImportWindowTarget::default(),
-            window,
-            cx,
-        );
+        open_import_overlay_batch(asset_paths, ImportWindowTarget::default(), window, cx);
     }
 }
 

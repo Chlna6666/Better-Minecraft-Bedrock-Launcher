@@ -1045,7 +1045,10 @@ fn render_footer(state: &OnboardingTourState, colors: &ThemeColors, _i18n: &I18n
         .child(next)
 }
 
-fn scene_header(scene: OnboardingScene, _i18n: &I18n) -> (&'static str, SharedString, SharedString) {
+fn scene_header(
+    scene: OnboardingScene,
+    _i18n: &I18n,
+) -> (&'static str, SharedString, SharedString) {
     match scene {
         OnboardingScene::Welcome => (
             lucide_gpui::icon!(route),

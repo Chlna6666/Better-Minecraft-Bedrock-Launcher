@@ -415,8 +415,7 @@ impl SettingsPageState {
         #[cfg(target_os = "linux")]
         {
             self.proton_gdk_runners_loaded = false;
-            self.proton_gdk_source =
-                SharedString::from(config.launcher.proton_gdk_source.clone());
+            self.proton_gdk_source = SharedString::from(config.launcher.proton_gdk_source.clone());
             self.proton_gdk_selected_runner =
                 SharedString::from(config.launcher.proton_gdk_runner.clone());
         }

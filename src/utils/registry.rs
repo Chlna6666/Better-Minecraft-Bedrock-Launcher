@@ -1,5 +1,8 @@
 #![cfg(target_os = "windows")]
-#![expect(unsafe_code, reason = "Windows registry access owns native key handles")]
+#![expect(
+    unsafe_code,
+    reason = "Windows registry access owns native key handles"
+)]
 // src-tauri/src/utils/registry.rs
 use std::env;
 use tracing::{debug, error, info, warn};

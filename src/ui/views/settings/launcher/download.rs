@@ -6,8 +6,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 
 use super::super::common::{
-    settings_card, settings_card_header, settings_sub_input_row,
-    snapshot_from_state, spawn_persist_settings,
+    settings_card, settings_card_header, settings_sub_input_row, snapshot_from_state,
+    spawn_persist_settings,
 };
 use super::super::rows::setting_dropdown_row;
 

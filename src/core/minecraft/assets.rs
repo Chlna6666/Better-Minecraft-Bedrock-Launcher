@@ -152,7 +152,9 @@ fn delete_assets_transactionally(
         }
     }
     if targets.is_empty() {
-        return Ok(DeleteAssetsOutcome::Completed("所选资源已不存在".to_string()));
+        return Ok(DeleteAssetsOutcome::Completed(
+            "所选资源已不存在".to_string(),
+        ));
     }
 
     let token = delete_task_token(task_id);
@@ -208,9 +210,7 @@ fn delete_assets_transactionally(
     )))
 }
 
-pub fn start_delete_game_assets_task(
-    payloads: Vec<DeleteAssetPayload>,
-) -> Result<String, String> {
+pub fn start_delete_game_assets_task(payloads: Vec<DeleteAssetPayload>) -> Result<String, String> {
     if payloads.is_empty() {
         return Err("没有选择要删除的资源".to_string());
     }
@@ -248,16 +248,12 @@ pub fn start_delete_game_assets_task(
                     Some(message),
                 );
             }
-            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Ok(Err(error)) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     })
     .map_err(|error| {
@@ -292,12 +288,7 @@ pub fn start_import_assets_task(
         request.file_paths.len()
     ));
     let task_id = crate::tasks::task_manager::create_task_with_details(
-        None,
-        title,
-        detail,
-        "queued",
-        None,
-        false,
+        None, title, detail, "queued", None, false,
     );
     crate::tasks::task_manager::register_task_cooperative_cancel(task_id.clone());
     let worker_task_id = task_id.clone();
@@ -538,13 +529,17 @@ pub(crate) fn start_import_inspection_task(
     let worker_task_id = task_id.clone();
 
     let spawn_result = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
-        use crate::tasks::task_manager as task_manager;
+        use crate::tasks::task_manager;
 
         let paths_for_metadata = file_paths.clone();
         let sizes = match crate::tasks::runtime::run_io_blocking(move || {
             paths_for_metadata
                 .iter()
-                .map(|path| std::fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0))
+                .map(|path| {
+                    std::fs::metadata(path)
+                        .map(|metadata| metadata.len())
+                        .unwrap_or(0)
+                })
                 .collect::<Vec<_>>()
         })
         .await
@@ -566,10 +561,7 @@ pub(crate) fn start_import_inspection_task(
             (total_bytes > 0).then_some(total_bytes),
             Some("inspecting_imports"),
         );
-        task_manager::append_task_log(
-            &worker_task_id,
-            format!("开始并发解析 {total} 个导入文件"),
-        );
+        task_manager::append_task_log(&worker_task_id, format!("开始并发解析 {total} 个导入文件"));
 
         let concurrency = crate::tasks::runtime::archive_inspection_parallelism()
             .min(total)
@@ -639,13 +631,7 @@ pub(crate) fn start_import_inspection_task(
                 );
             }
 
-            completed.push((
-                index,
-                ImportFileInspection {
-                    path,
-                    result,
-                },
-            ));
+            completed.push((index, ImportFileInspection { path, result }));
             task_manager::update_progress(
                 &worker_task_id,
                 size,
@@ -654,9 +640,7 @@ pub(crate) fn start_import_inspection_task(
             );
             task_manager::set_task_message(
                 &worker_task_id,
-                Some(format!(
-                    "已解析 {completed_files}/{total}，失败 {failed}"
-                )),
+                Some(format!("已解析 {completed_files}/{total}，失败 {failed}")),
             );
             task_manager::set_task_visualization(
                 &worker_task_id,
@@ -705,9 +689,7 @@ pub(crate) fn start_import_inspection_task(
 ///
 /// Results are single-consumer and removed from the bounded core-side store after this call.
 /// The corresponding finished TaskManager entry is removed as part of the handoff.
-pub(crate) fn take_import_inspection_result(
-    task_id: &str,
-) -> Option<Vec<ImportFileInspection>> {
+pub(crate) fn take_import_inspection_result(task_id: &str) -> Option<Vec<ImportFileInspection>> {
     let result = {
         let mut store = IMPORT_INSPECTION_RESULTS.lock().unwrap();
         store.order.retain(|existing| existing != task_id);

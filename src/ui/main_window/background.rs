@@ -166,7 +166,7 @@ impl AppBackgroundView {
             .bg(background_blur_overlay_color(blur));
 
         if background_uses_gpu_blur(blur) {
-            container.child(overlay.backdrop_blur(background_backdrop_blur_style(blur)))
+            container.child(overlay.background_blur(background_backdrop_blur_style(blur)))
         } else {
             container.child(overlay)
         }
@@ -315,11 +315,11 @@ impl Render for AppBackgroundView {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKGROUND_ANIMATION_INACTIVE_MAX_FPS,
-        BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS, BACKGROUND_BLUR_OVERLAY_MAX_ALPHA,
-        BACKGROUND_GPU_BACKDROP_BLUR_ENABLED, BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX,
-        animation_suppression_changed, background_animation_policy,
-        background_backdrop_blur_style, background_blur_overlay_color, background_uses_gpu_blur,
+        BACKGROUND_ANIMATION_INACTIVE_MAX_FPS, BACKGROUND_ANIMATION_PRESENTATION_CEILING_FPS,
+        BACKGROUND_BLUR_OVERLAY_MAX_ALPHA, BACKGROUND_GPU_BACKDROP_BLUR_ENABLED,
+        BACKGROUND_GPU_BLUR_DOWNSAMPLE_THRESHOLD_PX, animation_suppression_changed,
+        background_animation_policy, background_backdrop_blur_style, background_blur_overlay_color,
+        background_uses_gpu_blur,
     };
 
     #[test]

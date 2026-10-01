@@ -138,7 +138,11 @@ impl Locale {
             "ja-jp" => Some(Locale::JaJp),
             "ko-kr" => Some(Locale::KoKr),
             _ => {
-                if lower.starts_with("zh-tw") || lower.starts_with("zh-hk") {
+                if lower.starts_with("zh-tw")
+                    || lower.starts_with("zh-hk")
+                    || lower.starts_with("zh-mo")
+                    || lower.starts_with("zh-hant")
+                {
                     return Some(Locale::ZhTw);
                 }
                 if lower.starts_with("zh-") || lower == "zh" {

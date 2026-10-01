@@ -76,13 +76,7 @@ pub fn show_import_overlay_batch(
     }
 
     let view = cx.new(|cx| {
-        ImportWindowView::new_batch(
-            file_paths,
-            target,
-            ImportPresentation::Overlay,
-            window,
-            cx,
-        )
+        ImportWindowView::new_batch(file_paths, target, ImportPresentation::Overlay, window, cx)
     });
     let entry = ImportOverlayEntry {
         view,

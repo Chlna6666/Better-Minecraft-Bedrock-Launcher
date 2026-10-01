@@ -81,6 +81,9 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn set_dimension(&mut self, dimension: Dimension, cx: &mut Context<Self>) {
+        if self.map_write_busy() {
+            return;
+        }
         if self.dimension == dimension {
             return;
         }
@@ -328,6 +331,15 @@ impl MapViewerWindowView {
         if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
             self.clear_preview_3d_resources(false);
         }
+        if self.ui_state.active_right_panel == MapViewerRightPanel::MapImage {
+            self.release_map_image_preview();
+        }
+        if matches!(
+            self.ui_state.active_right_panel,
+            MapViewerRightPanel::Generator | MapViewerRightPanel::ImageGenerator
+        ) {
+            self.release_live_preview(self.ui_state.active_right_panel);
+        }
         self.ui_state.set_right_panel_open(false);
         self.update_viewport_after_dock_change(cx);
         cx.notify();
@@ -360,6 +372,10 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn show_right_preview_3d_panel(&mut self, cx: &mut Context<Self>) {
+        if self.import_workspace_active() {
+            self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
+            return;
+        }
         self.ui_state.active_right_panel = MapViewerRightPanel::Preview3d;
         self.ui_state.set_right_panel_open(true);
         self.update_viewport_after_dock_change(cx);
@@ -416,7 +432,7 @@ impl MapViewerWindowView {
                 return;
             }
         } else if self.ui_state.active_right_panel == MapViewerRightPanel::Player {
-            self.clear_player_workspace_context();
+            self.clear_player_workspace_context(cx);
             self.ui_state.set_right_panel_open(false);
         }
         self.update_viewport_after_dock_change(cx);
@@ -457,14 +473,63 @@ impl MapViewerWindowView {
         panel: MapViewerRightPanel,
         cx: &mut Context<Self>,
     ) {
+        if panel == MapViewerRightPanel::Preview3d && self.import_workspace_active() {
+            self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
+            return;
+        }
         if self.ui_state.right_panel_open && self.ui_state.active_right_panel == panel {
             self.close_right_panel(cx);
             return;
+        }
+        if self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+            && panel != MapViewerRightPanel::MapImage
+        {
+            self.release_map_image_preview();
+        }
+        if self.ui_state.active_right_panel != panel
+            && matches!(
+                self.ui_state.active_right_panel,
+                MapViewerRightPanel::Generator | MapViewerRightPanel::ImageGenerator
+            )
+        {
+            self.release_live_preview(self.ui_state.active_right_panel);
+            self.clear_live_structure_preview(cx);
+        }
+        if panel == MapViewerRightPanel::MapImage
+            && self.players.players.is_empty()
+            && !self.players.loading
+        {
+            self.refresh_players(cx);
         }
         match panel {
             MapViewerRightPanel::Nbt => self.open_right_nbt_panel(cx),
             MapViewerRightPanel::Player => self.open_right_player_panel(cx),
             MapViewerRightPanel::Preview3d => self.open_right_preview_3d_panel(cx),
+            MapViewerRightPanel::Generator
+            | MapViewerRightPanel::ImageGenerator
+            | MapViewerRightPanel::MapImage => {
+                if self.ui_state.active_right_panel == MapViewerRightPanel::Preview3d {
+                    self.clear_preview_3d_resources(false);
+                }
+                self.ui_state.active_right_panel = panel;
+                self.ui_state.import_workspace_mode = super::state::ImportWorkspaceMode::Preview;
+                self.ui_state.set_right_panel_open(true);
+                self.update_viewport_after_dock_change(cx);
+                if panel == MapViewerRightPanel::Generator
+                    && self.generator.preview_task_id.is_none()
+                {
+                    self.start_obj_live_preview(cx);
+                }
+                if panel == MapViewerRightPanel::ImageGenerator
+                    && self.image_generator.preview_task_id.is_none()
+                {
+                    self.start_image_live_preview(cx);
+                }
+                if panel == MapViewerRightPanel::MapImage {
+                    self.ensure_map_image_preview(cx);
+                }
+                cx.notify();
+            }
         }
     }
 
@@ -720,10 +785,23 @@ impl MapViewerWindowView {
             return;
         }
         let Some(mut drag) = self.drag else {
+            let old_chunk = (
+                self.hover_block_x.div_euclid(16),
+                self.hover_block_z.div_euclid(16),
+            );
             let hover_changed = self.update_hover_block(position);
             if hover_changed {
                 self.last_drag_canvas_snapshot_sync = None;
                 self.sync_canvas_hover_label(cx);
+                if self.overlay_options.load_risk
+                    && old_chunk
+                        != (
+                            self.hover_block_x.div_euclid(16),
+                            self.hover_block_z.div_euclid(16),
+                        )
+                {
+                    cx.notify();
+                }
             }
             return;
         };
@@ -1218,7 +1296,7 @@ impl MapViewerWindowView {
         chunk_from_block(block_x, block_z, self.dimension)
     }
 
-    fn center_paste_preview_in_view(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn center_paste_preview_in_view(&mut self, cx: &mut Context<Self>) {
         let Some((center_block_x, center_block_z)) = self.paste_preview_center_block() else {
             return;
         };
@@ -1262,7 +1340,18 @@ impl MapViewerWindowView {
                 .is_focused(window)
         });
 
-        self.editor_state.focus_handle(cx).is_focused(window) || map_input_focused
+        self.editor_state.focus_handle(cx).is_focused(window)
+            || self
+                .map_image
+                .player_search
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .player_workspace
+                .search
+                .focus_handle(cx)
+                .is_focused(window)
+            || map_input_focused
     }
 
     pub(super) fn rebuild_paste_preview_images(&mut self, cx: &mut Context<Self>) {
@@ -1369,7 +1458,7 @@ impl MapViewerWindowView {
         )
     }
 
-    fn set_paste_preview(
+    pub(super) fn set_paste_preview(
         &mut self,
         target_anchor: ChunkPos,
         transform: PasteTransform,
@@ -1523,6 +1612,15 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn confirm_paste_preview(&mut self, cx: &mut Context<Self>) {
+        if self.map_write_busy()
+            || self
+                .professional
+                .paste_preview
+                .as_ref()
+                .is_some_and(|preview| preview.is_writing())
+        {
+            return;
+        }
         self.snap_paste_preview_rotation(cx);
         let Some(preview) = self.professional.paste_preview.clone() else {
             return;
@@ -1556,6 +1654,9 @@ impl MapViewerWindowView {
             self.professional.paste_preview.is_some() || !self.paste_preview_images.is_empty();
         self.clear_paste_preview_state(cx);
         if changed {
+            if self.import_workspace_active() {
+                self.ui_state.import_workspace_mode = super::state::ImportWorkspaceMode::Preview;
+            }
             self.status = SharedString::from("已取消粘贴预览");
             let colors = self.theme_colors(cx);
             self.sync_canvas_snapshot(colors, cx);
@@ -1993,6 +2094,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -2306,6 +2408,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -2470,7 +2573,7 @@ impl MapViewerWindowView {
                 .find(|path| mcstructure::is_mcstructure_path(path))
                 .cloned()
             {
-                self.import_mcstructure_at(path, target, cx);
+                self.import_mcstructure_at(path, target, false, cx);
             } else {
                 self.status =
                     SharedString::from("拖拽文件不支持，请使用 .bmcblregion 或 .mcstructure");
@@ -2500,7 +2603,7 @@ impl MapViewerWindowView {
         if region_package::is_region_package_path(&path) {
             self.import_region_package_at(path, target, cx);
         } else if mcstructure::is_mcstructure_path(&path) {
-            self.import_mcstructure_at(path, target, cx);
+            self.import_mcstructure_at(path, target, false, cx);
         } else {
             self.status = SharedString::from("不支持的导入文件类型");
             toast::error(cx, self.status.clone());
@@ -2528,6 +2631,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -2594,6 +2698,8 @@ impl MapViewerWindowView {
                         this.professional.copied_chunk = Some(copied_chunk);
                         this.professional.imported_region_package = true;
                         this.professional.imported_structure = None;
+                        this.generator.preview_result_active = false;
+                        this.image_generator.preview_result_active = false;
                         this.professional.copied_chunk_preview_images = preview_images;
                         this.clear_paste_preview_state(cx);
                         this.invalidate_preview_3d_mesh();
@@ -2660,7 +2766,13 @@ impl MapViewerWindowView {
         .detach();
     }
 
-    fn import_mcstructure_at(&mut self, path: PathBuf, target: ChunkPos, cx: &mut Context<Self>) {
+    pub(super) fn import_mcstructure_at(
+        &mut self,
+        path: PathBuf,
+        target: ChunkPos,
+        open_3d_after_import: bool,
+        cx: &mut Context<Self>,
+    ) {
         let task_id = task_manager::create_task_with_details(
             None,
             "导入结构",
@@ -2675,6 +2787,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -2735,6 +2848,8 @@ impl MapViewerWindowView {
                         this.professional.copied_chunk = Some(import.copied_chunk);
                         this.professional.imported_region_package = false;
                         this.professional.imported_structure = Some(import.imported_structure);
+                        this.generator.preview_result_active = false;
+                        this.image_generator.preview_result_active = false;
                         this.professional.copied_chunk_preview_images = import.preview_images;
                         this.clear_paste_preview_state(cx);
                         this.invalidate_preview_3d_mesh();
@@ -2746,6 +2861,10 @@ impl MapViewerWindowView {
                             cx,
                         ) {
                             this.center_paste_preview_in_view(cx);
+                            if open_3d_after_import {
+                                this.show_right_preview_3d_panel(cx);
+                                this.refresh_import_preview_3d(cx);
+                            }
                             let message = SharedString::from(format!(
                                 "已导入结构 {}x{}x{}，生成 {} 个 chunk 预览，确认后写入",
                                 import.size.x, import.size.y, import.size.z, chunk_count
@@ -2828,6 +2947,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -3009,6 +3129,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -3221,6 +3342,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -3273,11 +3395,8 @@ impl MapViewerWindowView {
                 let cancel_for_task = cancel_for_background;
                 let result = (|| {
                     check_map_operation_cancelled(&cancel_for_task, &task_id_for_task)?;
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
+                        .map_err(|error| error.to_string())?;
                     let editor = MapWorldEditor::from_world(world);
                     let mut progress_sync = ChunkTransferTaskProgressSync::default();
                     let copied_chunk = copy_chunks_blocking(
@@ -3389,6 +3508,8 @@ impl MapViewerWindowView {
                                 this.professional.copied_chunk = Some(copied_chunk);
                                 this.professional.imported_region_package = false;
                                 this.professional.imported_structure = None;
+                                this.generator.preview_result_active = false;
+                                this.image_generator.preview_result_active = false;
                                 this.professional.copied_chunk_preview_images = preview_images;
                                 this.clear_paste_preview_state(cx);
                                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -3496,11 +3617,11 @@ impl MapViewerWindowView {
     pub(super) fn add_context_marker(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.context_menu {
             Arc::make_mut(self.markers.entry(self.dimension).or_default()).push(Marker {
-                    x: menu.block_x,
-                    z: menu.block_z,
-                    label: SharedString::from(format!("{}, {}", menu.block_x, menu.block_z)),
-                    player_id: None,
-                });
+                x: menu.block_x,
+                z: menu.block_z,
+                label: SharedString::from(format!("{}, {}", menu.block_x, menu.block_z)),
+                player_id: None,
+            });
             self.markers_generation = self.markers_generation.saturating_add(1);
             self.status = SharedString::from("已添加地图标记");
         }
@@ -3536,6 +3657,12 @@ impl MapViewerWindowView {
 
     pub(super) fn toggle_pending_tick_overlay(&mut self, cx: &mut Context<Self>) {
         self.overlay_options.pending_ticks = !self.overlay_options.pending_ticks;
+        self.refresh_professional_overlays(cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_load_risk_overlay(&mut self, cx: &mut Context<Self>) {
+        self.overlay_options.load_risk = !self.overlay_options.load_risk;
         self.refresh_professional_overlays(cx);
         cx.notify();
     }
@@ -3687,7 +3814,11 @@ impl MapViewerWindowView {
             y: self.y_layer,
             z: menu.block_z,
         };
-        self.load_edit_detail(EditTarget::BlockEntityAt { chunk, block }, cx);
+        if self.map_image_selecting_block() {
+            self.select_map_image_block(chunk, block, cx);
+        } else {
+            self.load_edit_detail(EditTarget::BlockEntityAt { chunk, block }, cx);
+        }
     }
 
     pub(super) fn open_context_actors_editor(&mut self, cx: &mut Context<Self>) {
@@ -4274,11 +4405,8 @@ fn build_chunk_image_export_blocking(
         completed: 0,
         total: chunk_count,
     });
-    let world = World::open(
-        &world_path,
-        bedrock_world::OpenOptions::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     let editor = MapWorldEditor::from_world(world);
     let copied_chunk =
         copy_chunks_blocking(&editor, source_anchor, chunks, cancel, |copy_progress| {

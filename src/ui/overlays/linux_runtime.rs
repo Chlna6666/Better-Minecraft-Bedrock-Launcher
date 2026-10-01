@@ -355,8 +355,13 @@ fn install_progress(
                         ))
                         .with_animation(
                             "linux-runtime-install-progress",
-                            repeating_linear_motion(Duration::from_millis(1200)),
-                            |bar, progress| bar.left(relative(-0.34 + progress * 1.40)),
+                            repeating_linear_motion(Duration::from_millis(1200)).with_property(
+                                AnimationProperty::relative_translation(
+                                    Point::default(),
+                                    point(1.40 / 0.34, 0.0),
+                                ),
+                            ),
+                            |bar, _| bar.left(relative(-0.34)),
                         ),
                 ),
         )

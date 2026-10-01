@@ -328,9 +328,9 @@ impl MapViewerWindowView {
             editor
         });
         let player_workspace = PlayerWorkspaceState::new(window, cx);
+        let map_image = super::map_image_panel::MapImagePanelState::new(window, cx);
         let player_item_catalog_root = PathBuf::from(init.version.path.as_ref());
-        let cached_player_item_catalog =
-            cached_item_catalog_snapshot(&player_item_catalog_root);
+        let cached_player_item_catalog = cached_item_catalog_snapshot(&player_item_catalog_root);
         let player_item_catalog_loaded = cached_player_item_catalog.is_some();
         let player_item_catalog =
             cached_player_item_catalog.unwrap_or_else(|| Arc::new(Vec::new()));
@@ -350,6 +350,15 @@ impl MapViewerWindowView {
         }));
         subscriptions.extend(map_input_subscriptions(&input_fields, cx));
         subscriptions.extend(player_workspace_subscriptions(&player_workspace, cx));
+        subscriptions.push(cx.subscribe(
+            &map_image.player_search,
+            |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.reset_map_player_search_scroll();
+                    cx.notify();
+                }
+            },
+        ));
         let top_bar_view = cx.new(|_cx| MapTopBarView::default());
         let tool_stripe_view = cx.new(|_cx| MapToolStripeView::default());
         let menu_overlay_view = cx.new(|_cx| MapMenuOverlayView::default());
@@ -421,6 +430,9 @@ impl MapViewerWindowView {
             player_item_catalog_loading: false,
             player_item_catalog_loaded,
             preview_3d: Preview3dState::default(),
+            generator: super::generator_panel::GeneratorPanelState::default(),
+            image_generator: super::image_generator_panel::ImageGeneratorPanelState::default(),
+            map_image,
             map_focus_handle,
             preview_3d_focus_handle: cx.focus_handle().tab_stop(true),
             toolbar_state: ToolbarState::default(),
@@ -730,8 +742,7 @@ impl MapViewerWindowView {
     ) {
         // Keep the previous Arc alive while retiring its screen images. This avoids building an
         // intermediate Vec<Arc<RenderImage>> on every snapshot replacement.
-        let previous =
-            std::mem::replace(&mut self.canvas_tile_snapshot, Arc::new(snapshot));
+        let previous = std::mem::replace(&mut self.canvas_tile_snapshot, Arc::new(snapshot));
         Self::drop_render_images(
             previous
                 .screen_images
@@ -1050,6 +1061,12 @@ impl MapViewerWindowView {
             slime_runs: self.professional.slime_overlay_runs.clone(),
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
+            paste_controls_inset_top: if self.import_workspace_active() {
+                68.0
+            } else {
+                12.0
+            },
+            map_frame_preview: self.map_frame_grid_preview(),
             paste_preview_images: self.paste_preview_images.clone(),
             paste_preview_images_generation: self.paste_preview_images_generation,
             highlighted_slime_candidate: self.professional.highlighted_slime_candidate.clone(),
@@ -1088,6 +1105,12 @@ impl MapViewerWindowView {
                 .map(|cache| Arc::as_ptr(cache) as usize),
             selection: self.professional.selection,
             paste_preview: self.professional.paste_preview.clone(),
+            paste_controls_inset_top: if self.import_workspace_active() {
+                68.0
+            } else {
+                12.0
+            },
+            map_frame_preview: self.map_frame_grid_preview(),
             paste_preview_images_generation: self.paste_preview_images_generation,
             highlighted_slime_candidate: self.professional.highlighted_slime_candidate.clone(),
             markers_generation: self.markers_generation,

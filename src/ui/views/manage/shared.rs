@@ -464,8 +464,7 @@ pub(super) fn watch_server_mutation_task(
                     state.servers_error = None;
                     state.server_motd = Arc::new(HashMap::new());
                     state.server_motd_loading = false;
-                    state.server_motd_request_id =
-                        state.server_motd_request_id.wrapping_add(1);
+                    state.server_motd_request_id = state.server_motd_request_id.wrapping_add(1);
                 });
 
                 match snapshot.status.as_ref() {

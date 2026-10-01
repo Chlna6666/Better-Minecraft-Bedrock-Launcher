@@ -12,7 +12,6 @@ pub mod key_patcher;
 pub mod launcher;
 pub mod local_package;
 pub mod map;
-pub mod map_info_cache;
 pub(crate) mod mod_loaders;
 pub mod mod_manager;
 #[cfg(target_os = "windows")]
@@ -34,3 +33,4 @@ pub mod uwp_migration;
 pub mod uwp_minimize_fix;
 #[cfg(target_os = "windows")]
 pub mod uwp_registration;
+pub mod worlds;

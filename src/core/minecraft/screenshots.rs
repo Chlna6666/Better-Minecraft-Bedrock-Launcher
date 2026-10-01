@@ -217,16 +217,12 @@ pub fn start_delete_screenshot_task(info: McScreenshotInfo) -> Result<String, St
                     Some(message),
                 );
             }
-            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Ok(Err(error)) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     })
     .map_err(|error| {

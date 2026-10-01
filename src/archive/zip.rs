@@ -495,9 +495,9 @@ fn task_path_token(task_id: &str) -> String {
 }
 
 fn transaction_sibling(destination: &Path, task_id: &str, role: &str) -> Result<PathBuf, String> {
-    let parent = destination.parent().ok_or_else(|| {
-        format!("解压目标没有父目录: {}", destination.display())
-    })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("解压目标没有父目录: {}", destination.display()))?;
     let name = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -517,8 +517,7 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
         fs::remove_dir_all(path)
             .map_err(|error| format!("删除目录失败: {} ({error})", path.display()))
     } else {
-        fs::remove_file(path)
-            .map_err(|error| format!("删除文件失败: {} ({error})", path.display()))
+        fs::remove_file(path).map_err(|error| format!("删除文件失败: {} ({error})", path.display()))
     }
 }
 
@@ -528,9 +527,9 @@ fn extract_zip_transactionally_blocking(
     force_replace: bool,
     task_id: &str,
 ) -> Result<bool, String> {
-    let parent = destination.parent().ok_or_else(|| {
-        format!("解压目标没有父目录: {}", destination.display())
-    })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| format!("解压目标没有父目录: {}", destination.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("创建解压父目录失败: {} ({error})", parent.display()))?;
 
@@ -566,9 +565,7 @@ fn extract_zip_transactionally_blocking(
             let cleanup = remove_path_if_exists(&staging);
             return match cleanup {
                 Ok(()) => Err(error),
-                Err(cleanup_error) => Err(format!(
-                    "{error}; 清理 staging 失败: {cleanup_error}"
-                )),
+                Err(cleanup_error) => Err(format!("{error}; 清理 staging 失败: {cleanup_error}")),
             };
         }
     }
@@ -616,9 +613,7 @@ fn extract_zip_transactionally_blocking(
     if let Err(error) = fs::rename(&staging, destination) {
         let rollback = if had_previous {
             fs::rename(&backup, destination).map_err(|restore_error| {
-                format!(
-                    "提交解压失败: {error}; 回滚旧目录也失败: {restore_error}"
-                )
+                format!("提交解压失败: {error}; 回滚旧目录也失败: {restore_error}")
             })
         } else {
             Ok(())
@@ -632,9 +627,7 @@ fn extract_zip_transactionally_blocking(
         ));
     }
 
-    if had_previous
-        && let Err(error) = remove_path_if_exists(&backup)
-    {
+    if had_previous && let Err(error) = remove_path_if_exists(&backup) {
         warn!(
             task_id,
             path = %backup.display(),

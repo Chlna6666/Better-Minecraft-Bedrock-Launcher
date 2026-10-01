@@ -84,12 +84,9 @@ pub(super) fn available_system_memory_bytes() -> u64 {
     AVAILABLE_SYSTEM_MEMORY_BYTES.load(std::sync::atomic::Ordering::Acquire)
 }
 
-pub(super) fn request_available_system_memory_refresh(
-    cx: &mut Context<MapViewerWindowView>,
-) {
+pub(super) fn request_available_system_memory_refresh(cx: &mut Context<MapViewerWindowView>) {
     let now_unix = system_memory_unix_now_seconds();
-    let last_refresh =
-        SYSTEM_MEMORY_LAST_REFRESH_UNIX.load(std::sync::atomic::Ordering::Acquire);
+    let last_refresh = SYSTEM_MEMORY_LAST_REFRESH_UNIX.load(std::sync::atomic::Ordering::Acquire);
     let cached = available_system_memory_bytes();
     if cached != 0 && now_unix.saturating_sub(last_refresh) < SYSTEM_MEMORY_CACHE_TTL.as_secs() {
         return;
@@ -112,8 +109,7 @@ pub(super) fn request_available_system_memory_refresh(
         let available_bytes = cx
             .background_spawn(async move { refresh_available_system_memory_bytes() })
             .await;
-        AVAILABLE_SYSTEM_MEMORY_BYTES
-            .store(available_bytes, std::sync::atomic::Ordering::Release);
+        AVAILABLE_SYSTEM_MEMORY_BYTES.store(available_bytes, std::sync::atomic::Ordering::Release);
         SYSTEM_MEMORY_LAST_REFRESH_UNIX.store(
             system_memory_unix_now_seconds(),
             std::sync::atomic::Ordering::Release,
@@ -487,7 +483,10 @@ pub(super) fn slime_farm_search_mode_buttons(
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [
-        (SlimeFarmSearchMode::Quad2x2, t!("MapViewer.slime_mode_quad")),
+        (
+            SlimeFarmSearchMode::Quad2x2,
+            t!("MapViewer.slime_mode_quad"),
+        ),
         (
             SlimeFarmSearchMode::Rectangle2x3,
             t!("MapViewer.slime_mode_rect_six"),
@@ -524,7 +523,10 @@ pub(super) fn slime_farm_scope_mode_buttons(
     cx: &mut Context<MapViewerWindowView>,
 ) -> Vec<AnyElement> {
     [
-        (SlimeFarmScopeMode::Auto, t!("MapViewer.slime_scope_mode_auto")),
+        (
+            SlimeFarmScopeMode::Auto,
+            t!("MapViewer.slime_scope_mode_auto"),
+        ),
         (
             SlimeFarmScopeMode::Viewport,
             t!("MapViewer.slime_scope_mode_viewport"),

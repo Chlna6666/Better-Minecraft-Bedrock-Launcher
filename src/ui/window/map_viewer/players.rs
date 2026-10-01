@@ -288,14 +288,9 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    let ids = world
-                        .players()
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
                         .map_err(|error| error.to_string())?;
+                    let ids = world.players().map_err(|error| error.to_string())?;
 
                     let mut rows = Vec::with_capacity(ids.len());
                     let mut marker_records = Vec::new();
@@ -418,8 +413,10 @@ impl MapViewerWindowView {
                         this.markers_generation = this.markers_generation.saturating_add(1);
                         this.last_synced_canvas_snapshot_key = None;
 
-                        let visible_marker_count =
-                            this.markers.get(&this.dimension).map_or(0, |markers| markers.len());
+                        let visible_marker_count = this
+                            .markers
+                            .get(&this.dimension)
+                            .map_or(0, |markers| markers.len());
                         this.status = SharedString::from(format!(
                             "玩家列表已加载 · {} 条记录 · 当前维度 {} 个地图标记",
                             this.players.players.len(),
@@ -479,11 +476,8 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
+                        .map_err(|error| error.to_string())?;
                     let data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
@@ -669,8 +663,7 @@ impl MapViewerWindowView {
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     apply_player_item_mutation(&mut data.nbt, &mutation)?;
-                    data = PlayerData::from_nbt(id.clone(), data.nbt)
-                        .map_err(|error| error.to_string())?;
+                    data.refresh_saved_items();
                     world
                         .save_player(&data)
                         .map_err(|error| error.to_string())?;
@@ -756,16 +749,15 @@ impl MapViewerWindowView {
                 .background_spawn(async move {
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = World::open(&world_path, options)
-                        .map_err(|error| error.to_string())?;
+                    let world =
+                        World::open(&world_path, options).map_err(|error| error.to_string())?;
                     let history_capture = capture_player_history(&world_path, &id, edit.label());
                     let mut data = world
                         .player(&id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "玩家记录不存在".to_string())?;
                     apply_player_quick_edit(&mut data.nbt, &edit, center_block, dimension)?;
-                    data = PlayerData::from_nbt(id.clone(), data.nbt)
-                        .map_err(|error| error.to_string())?;
+                    data.refresh_saved_items();
                     world
                         .save_player(&data)
                         .map_err(|error| error.to_string())?;
@@ -843,17 +835,17 @@ impl MapViewerWindowView {
                         .or_default(),
                 )
                 .push(Marker {
-                        x: position[0]
-                            .floor()
-                            .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
-                            as i32,
-                        z: position[2]
-                            .floor()
-                            .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
-                            as i32,
-                        label,
-                        player_id: Some(detail.id.clone()),
-                    });
+                    x: position[0]
+                        .floor()
+                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                        as i32,
+                    z: position[2]
+                        .floor()
+                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX))
+                        as i32,
+                    label,
+                    player_id: Some(detail.id.clone()),
+                });
             }
         }
         self.markers.retain(|_, values| !values.is_empty());
@@ -1347,12 +1339,7 @@ pub(super) fn apply_player_quick_edit(
         }
         PlayerQuickEdit::ClearInventory => {
             if let Some(NbtTag::List(items)) = root.get_mut("Inventory") {
-                for (index, item) in items.iter_mut().enumerate() {
-                    let slot = nbt_compound(item)
-                        .and_then(|compound| nbt_i32_any(compound.get("Slot")))
-                        .unwrap_or(index as i32);
-                    *item = empty_item_for_slot(slot);
-                }
+                items.clear();
             } else {
                 root.insert("Inventory".to_string(), NbtTag::List(Vec::new()));
             }
@@ -1719,7 +1706,9 @@ type PlayerItemCatalogSlot = Arc<OnceLock<Arc<Vec<PlayerItemTexture>>>>;
 fn player_item_catalog_slot(instance_root: &Path) -> PlayerItemCatalogSlot {
     static CACHE: OnceLock<Mutex<StdHashMap<PathBuf, PlayerItemCatalogSlot>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(StdHashMap::new()));
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     Arc::clone(
         cache
             .entry(instance_root.to_path_buf())
@@ -1727,7 +1716,9 @@ fn player_item_catalog_slot(instance_root: &Path) -> PlayerItemCatalogSlot {
     )
 }
 
-pub(super) fn cached_item_catalog_snapshot(instance_root: &Path) -> Option<Arc<Vec<PlayerItemTexture>>> {
+pub(super) fn cached_item_catalog_snapshot(
+    instance_root: &Path,
+) -> Option<Arc<Vec<PlayerItemTexture>>> {
     player_item_catalog_slot(instance_root).get().cloned()
 }
 

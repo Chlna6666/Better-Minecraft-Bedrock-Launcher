@@ -127,7 +127,6 @@ impl RenderState {
     }
 }
 
-
 fn popover_should_render(open: bool, progress: f32, dialog_animating: bool) -> bool {
     // Keep the popover mounted until the spring has fully settled. A damped close can
     // overshoot below zero before bouncing back; unmounting on that intermediate sample would
@@ -355,7 +354,7 @@ pub(in crate::ui::main_window) fn panel(
             .surface
             .opacity(if glass_effect_enabled { 0.92 } else { 1.0 }))
         .when(glass_effect_enabled, |material| {
-            material.backdrop_blur(glass_backdrop_blur_style())
+            material.background_blur(glass_backdrop_blur_style())
         })
         .border_1()
         .border_color(colors.border.opacity(0.65))

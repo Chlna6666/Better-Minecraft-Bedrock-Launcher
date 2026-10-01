@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::core::minecraft::map::McMapInfo;
 use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, get_game_root};
 use crate::core::minecraft::resource_packs::McPackInfo;
 use crate::core::minecraft::screenshots::McScreenshotInfo;
 use crate::core::minecraft::servers::ExternalServerEntry;
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
+use crate::core::minecraft::worlds::WorldSummary;
 use crate::core::version::settings::{VersionConfig, get_version_config_blocking};
 
 use super::runtime::{BlockingTaskOptions, run_blocking};
@@ -175,10 +175,10 @@ pub async fn load_skin_packs(
     .await
 }
 
-pub async fn load_maps(options: GamePathOptions) -> Result<Vec<McMapInfo>, String> {
-    run_blocking(BlockingTaskOptions::hidden("读取地图"), move || {
-        crate::core::minecraft::map::list_worlds_standard(&options)
-            .map_err(|error| format!("读取地图失败: {error:?}"))
+pub async fn load_worlds(options: GamePathOptions) -> Result<Vec<WorldSummary>, String> {
+    run_blocking(BlockingTaskOptions::hidden("读取存档"), move || {
+        crate::core::minecraft::worlds::list(&options)
+            .map_err(|error| format!("读取存档失败: {error:?}"))
     })
     .await
 }
@@ -253,7 +253,6 @@ fn load_mods_blocking(version_folder: &str) -> Result<Vec<ManagedModInfo>, Strin
     Ok(mods)
 }
 
-
 fn mod_directory(version_folder: &str, mod_id: &str) -> Result<PathBuf, String> {
     if version_folder.trim().is_empty()
         || mod_id.trim().is_empty()
@@ -311,10 +310,7 @@ fn sibling_transaction_path(path: &Path, task_id: &str, role: &str) -> Result<Pa
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("manifest.json");
-    Ok(parent.join(format!(
-        ".{name}.bmcb-{role}-{}",
-        task_path_token(task_id)
-    )))
+    Ok(parent.join(format!(".{name}.bmcb-{role}-{}", task_path_token(task_id))))
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), String> {
@@ -372,9 +368,7 @@ fn write_manifest_transactionally(
         let _ = remove_file_if_exists(&staging);
         return match restore_result {
             Ok(()) => Err(error),
-            Err(restore_error) => Err(format!(
-                "{error}；恢复旧 Manifest 失败: {restore_error}"
-            )),
+            Err(restore_error) => Err(format!("{error}；恢复旧 Manifest 失败: {restore_error}")),
         };
     }
 
@@ -433,26 +427,19 @@ where
             return;
         }
 
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            operation(blocking_task_id.as_str())
-        })
-        .await;
+        let result =
+            crate::tasks::runtime::run_io_blocking(move || operation(blocking_task_id.as_str()))
+                .await;
 
         match result {
-            Ok(Ok(message)) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "completed",
-                Some(message),
-            ),
+            Ok(Ok(message)) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "completed", Some(message))
+            }
             Ok(Err(error))
                 if crate::tasks::task_manager::is_cancelled(&worker_task_id)
                     && error.contains("已取消") =>
             {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
             }
             Ok(Err(error)) => {
                 crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
@@ -564,19 +551,24 @@ pub fn start_update_mod_settings(
     inject_delay_ms: Option<u64>,
 ) -> Result<String, String> {
     let detail = format!("{version_folder} · {mod_id}");
-    start_mod_mutation_task("更新 Mod 配置", detail, "updating_mod_manifest", move |task_id| {
-        let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
-        let content = fs::read_to_string(&manifest_path)
-            .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
-        let mut manifest: ModManifest = serde_json::from_str(&content)
-            .map_err(|error| format!("Manifest 解析失败: {error}"))?;
-        manifest.mod_type = mod_type.trim().to_string();
-        if let Some(inject_delay_ms) = inject_delay_ms {
-            manifest.inject_delay_ms = Some(inject_delay_ms);
-        }
-        write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
-        Ok("Mod 配置已更新".to_string())
-    })
+    start_mod_mutation_task(
+        "更新 Mod 配置",
+        detail,
+        "updating_mod_manifest",
+        move |task_id| {
+            let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+            let content = fs::read_to_string(&manifest_path)
+                .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
+            let mut manifest: ModManifest = serde_json::from_str(&content)
+                .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+            manifest.mod_type = mod_type.trim().to_string();
+            if let Some(inject_delay_ms) = inject_delay_ms {
+                manifest.inject_delay_ms = Some(inject_delay_ms);
+            }
+            write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
+            Ok("Mod 配置已更新".to_string())
+        },
+    )
 }
 
 pub fn start_set_mod_inject_delay(
@@ -585,18 +577,22 @@ pub fn start_set_mod_inject_delay(
     inject_delay_ms: u64,
 ) -> Result<String, String> {
     let detail = format!("{version_folder} · {mod_id}");
-    start_mod_mutation_task("更新 Mod 注入延迟", detail, "updating_mod_manifest", move |task_id| {
-        let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
-        let content = fs::read_to_string(&manifest_path)
-            .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
-        let mut manifest: ModManifest = serde_json::from_str(&content)
-            .map_err(|error| format!("Manifest 解析失败: {error}"))?;
-        manifest.inject_delay_ms = Some(inject_delay_ms);
-        write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
-        Ok("Mod 注入延迟已更新".to_string())
-    })
+    start_mod_mutation_task(
+        "更新 Mod 注入延迟",
+        detail,
+        "updating_mod_manifest",
+        move |task_id| {
+            let manifest_path = editable_manifest_path_blocking(&version_folder, &mod_id)?;
+            let content = fs::read_to_string(&manifest_path)
+                .map_err(|error| format!("读取 Manifest 失败: {error}"))?;
+            let mut manifest: ModManifest = serde_json::from_str(&content)
+                .map_err(|error| format!("Manifest 解析失败: {error}"))?;
+            manifest.inject_delay_ms = Some(inject_delay_ms);
+            write_manifest_transactionally(&manifest_path, &manifest, task_id)?;
+            Ok("Mod 注入延迟已更新".to_string())
+        },
+    )
 }
-
 
 fn rollback_staged_mod_directories(staged: &[(PathBuf, PathBuf)]) -> Result<(), String> {
     let mut errors = Vec::new();
@@ -605,17 +601,11 @@ fn rollback_staged_mod_directories(staged: &[(PathBuf, PathBuf)]) -> Result<(), 
             continue;
         }
         if original.exists() {
-            errors.push(format!(
-                "无法回滚 {}：原路径已重新出现",
-                original.display()
-            ));
+            errors.push(format!("无法回滚 {}：原路径已重新出现", original.display()));
             continue;
         }
         if let Err(error) = fs::rename(tombstone, original) {
-            errors.push(format!(
-                "恢复 {} 失败: {error}",
-                original.display()
-            ));
+            errors.push(format!("恢复 {} 失败: {error}", original.display()));
         }
     }
 

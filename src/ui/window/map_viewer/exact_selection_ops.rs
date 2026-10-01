@@ -43,11 +43,8 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        ::bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let world = World::open(&world_path, ::bedrock_world::OpenOptions::default())
+                        .map_err(|error| error.to_string())?;
                     exact_selection_stats(&world, &exact_selection, options)
                         .map_err(|error| error.to_string())
                 })

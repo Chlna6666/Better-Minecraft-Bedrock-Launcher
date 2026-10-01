@@ -5,13 +5,22 @@ mod editor;
 #[cfg(debug_assertions)]
 mod entity_debug_paint;
 mod exact_selection_ops;
+mod generator_height;
+mod generator_panel;
+mod generator_preview;
 mod helpers;
 mod history_panel;
+mod image_generator_panel;
+mod import_actions;
+mod import_panel;
 mod import_preview;
+mod import_workspace;
 mod interactions;
 mod layout;
 mod lifecycle;
+mod load_risk_panel;
 pub(crate) mod map_history;
+mod map_image_panel;
 mod mcstructure;
 mod menu_overlay;
 mod menus;
@@ -20,6 +29,7 @@ mod overlays;
 mod paint;
 mod panels;
 mod player_item_menu;
+mod player_map_preview;
 mod player_panel;
 mod player_workspace;
 mod players;
@@ -28,82 +38,44 @@ mod prelude;
 // Private current-domain import surface for large map-viewer compilation units. This does not expose
 // or restore removed bedrock-world crate-root APIs: every binding originates from a public 0.7 domain.
 pub(crate) mod bedrock_world_domains {
-    pub(crate) use ::bedrock_world::biome::{
-        Biome2d, Biome3d, BiomeStorage,
-    };
-    pub(crate) use ::bedrock_world::block::{
-        BlockState,
-        block_storage_index,
-    };
+    pub(crate) use ::bedrock_world::biome::{Biome2d, Biome3d, BiomeStorage};
+    pub(crate) use ::bedrock_world::block::{BlockState, block_storage_index};
     pub(crate) use ::bedrock_world::chunk::{
-        ChunkKey, ChunkVersion, LevelChunk, LegacyTerrain,
-        ChunkValue, SubChunk, SubChunkDecodeMode,
-        SubChunkFormat,
-    };
-    pub(crate) use ::bedrock_world::storage::{
-        BedrockDbKey, StorageBatch,
+        ChunkKey, ChunkValue, ChunkVersion, LegacyTerrain, LevelChunk, SubChunk,
+        SubChunkDecodeMode, SubChunkFormat,
     };
     pub(crate) use ::bedrock_world::editor::McStructureWritePhase;
     pub(crate) use ::bedrock_world::entity::ActorResolution;
     pub(crate) use ::bedrock_world::error::{BedrockWorldError, Result};
     pub(crate) use ::bedrock_world::item::ItemStack;
     pub(crate) use ::bedrock_world::level::*;
-    
+    pub(crate) use ::bedrock_world::storage::BedrockDbKey;
+
     pub(crate) use ::bedrock_world::nbt::{NbtTag, NbtWriter};
-    
+
     pub(crate) use ::bedrock_world::query::*;
-    pub(crate) use ::bedrock_world::surface::*;
     pub(crate) use ::bedrock_world::structure::{
-        McStructureFile, McStructurePaletteEntry, McStructurePlacement,
-        McStructureRotation, McStructureSize, read_mcstructure_file, write_mcstructure_file,
+        McStructureFile, McStructurePaletteEntry, McStructurePlacement, McStructureRotation,
+        McStructureSize, read_mcstructure_file, write_mcstructure_file,
     };
+    pub(crate) use ::bedrock_world::surface::*;
     pub(crate) use ::bedrock_world::world::*;
 
-    pub(crate) mod biome {
-        
-    }
-    pub(crate) mod block {
-        
-    }
-    pub(crate) mod chunk {
-        
-    }
-    pub(crate) mod storage {
-        
-    }
-    pub(crate) mod entity {
-        
-    }
-    pub(crate) mod error {
-        
-    }
-    pub(crate) mod item {
-        
-    }
-    pub(crate) mod level {
-        
-    }
-    pub(crate) mod map_item {
-        
-    }
-    pub(crate) mod nbt {
-        
-    }
-    pub(crate) mod player {
-        
-    }
-    pub(crate) mod query {
-        
-    }
-    pub(crate) mod structure {
-        
-    }
-    pub(crate) mod surface {
-        
-    }
-    pub(crate) mod world {
-        
-    }
+    pub(crate) mod biome {}
+    pub(crate) mod block {}
+    pub(crate) mod chunk {}
+    pub(crate) mod storage {}
+    pub(crate) mod entity {}
+    pub(crate) mod error {}
+    pub(crate) mod item {}
+    pub(crate) mod level {}
+    pub(crate) mod map_item {}
+    pub(crate) mod nbt {}
+    pub(crate) mod player {}
+    pub(crate) mod query {}
+    pub(crate) mod structure {}
+    pub(crate) mod surface {}
+    pub(crate) mod world {}
 }
 
 // The 3D preview and tile renderer are split by responsibility rather than by migration generation.

@@ -115,17 +115,11 @@ pub fn start_import(request: NativeModImportRequest) -> Result<String, String> {
                 Some(format!("已导入 {count} 个 Mod")),
             ),
             Err(error) if crate::tasks::task_manager::is_cancelled(&worker_task_id) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                )
+                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error))
             }
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     })
     .map_err(|error| {
@@ -274,19 +268,14 @@ async fn install(
         let _ = tokio::fs::remove_dir_all(&staging).await;
         return Err(format!("提交原生 Mod 安装失败：{error}"));
     }
-    if had_previous
-        && let Err(error) = tokio::fs::remove_dir_all(&backup).await
-    {
+    if had_previous && let Err(error) = tokio::fs::remove_dir_all(&backup).await {
         tracing::warn!(path = %backup.display(), %error, "failed to clean old native Mod backup");
     }
 
     Ok(target_dir.join(file_name))
 }
 
-async fn import_local_mods(
-    request: NativeModImportRequest,
-    task_id: &str,
-) -> Result<(), String> {
+async fn import_local_mods(request: NativeModImportRequest, task_id: &str) -> Result<(), String> {
     let mods_dir = crate::utils::file_ops::bmcbl_subdir("versions")
         .join(&request.version_folder)
         .join("mods");

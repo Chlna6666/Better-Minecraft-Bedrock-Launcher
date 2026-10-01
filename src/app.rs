@@ -43,10 +43,11 @@ impl AppBootstrap {
         config: &crate::config::config::Config,
         launch_mode: LaunchMode,
     ) -> Self {
-        let locale_code = match config.launcher.language.as_str() {
-            "auto" => crate::utils::system_info::get_system_language(),
-            "" => "en-US".to_string(),
-            other => other.replace('_', "-"),
+        let lang = config.launcher.language.trim();
+        let locale_code = if lang.eq_ignore_ascii_case("auto") || lang.is_empty() {
+            crate::utils::system_info::get_system_language()
+        } else {
+            lang.replace('_', "-")
         };
 
         let renderer_backend = renderer_backend_from_config(&config.launcher.renderer_backend);
@@ -239,16 +240,15 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     configure_platform_app_identity();
     let io_handle = crate::tasks::runtime::io_handle().map_err(anyhow::Error::msg)?;
 
-    let app = Application::with_renderer_options(gpui::RendererOptions {
+    let renderer_options = gpui::RendererOptions {
         backend: bootstrap.renderer_backend,
         adapter_name: bootstrap.gpu_adapter_name.clone(),
         power_preference: gpu_power_preference_for_adapter(bootstrap.gpu_adapter_name.as_deref()),
         ..gpui::RendererOptions::default()
-    })
-    .with_image_pipeline_config(image_pipeline_config())
-    .with_platform_default_font(application_default_font(&bootstrap))
-    .with_assets(crate::assets::asset_source::AppAssets);
-    app.run(move |cx| {
+    };
+    let image_pipeline = image_pipeline_config();
+    let default_font = application_default_font(&bootstrap);
+    let launch = move |cx: &mut App| {
         gpui_tokio::init_from_handle(cx, io_handle);
         configure_runtime(cx, &bootstrap.launch_mode);
         build_app_state(cx, &bootstrap);
@@ -290,7 +290,26 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         if bootstrap.launch_mode.is_main() {
             start_background_maintenance();
         }
-    });
+    };
+
+    #[cfg(windows)]
+    Application::run_separate(
+        renderer_options.clone(),
+        move || {
+            Application::with_renderer_options(renderer_options)
+                .with_image_pipeline_config(image_pipeline)
+                .with_platform_default_font(default_font)
+                .with_assets(crate::assets::asset_source::AppAssets)
+        },
+        launch,
+    )?;
+
+    #[cfg(not(windows))]
+    Application::with_renderer_options(renderer_options)
+        .with_image_pipeline_config(image_pipeline)
+        .with_platform_default_font(default_font)
+        .with_assets(crate::assets::asset_source::AppAssets)
+        .run(launch);
 
     Ok(())
 }

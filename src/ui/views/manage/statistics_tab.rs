@@ -77,7 +77,11 @@ impl RenderOnce for AnimatedStatValue {
         };
 
         value.with_animation(
-            SharedString::from(format!("{}-presentation-{}", self.id.as_ref(), self.sequence)),
+            SharedString::from(format!(
+                "{}-presentation-{}",
+                self.id.as_ref(),
+                self.sequence
+            )),
             motion,
             |value, _progress| value,
         )
@@ -88,16 +92,26 @@ pub(super) fn render_statistics_tab(
     colors: &ThemeColors,
     version: &ManagedVersionEntry,
     state: &ManagePageState,
+    scroll_handle: &ScrollHandle,
     now: Instant,
     cx: &mut Context<ManagePageView>,
 ) -> AnyElement {
     let i18n = cx.global::<I18n>();
     let info = &version.game_info;
     let days = recent_days(info, 14);
-    let max_sessions = days.iter().map(|day| day.sessions).max().unwrap_or(0).max(1);
-    let max_play_time = days.iter().map(|day| day.play_time).max().unwrap_or(0).max(1);
-    let animate =
-        state.tab_animation_active(now) && !crate::core::ui_prefs::reduced_motion();
+    let max_sessions = days
+        .iter()
+        .map(|day| day.sessions)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let max_play_time = days
+        .iter()
+        .map(|day| day.play_time)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let animate = state.tab_animation_active(now) && !crate::core::ui_prefs::reduced_motion();
     let play_time_id = SharedString::from(format!(
         "manage-stat-total-play-time-{}",
         version.folder.as_ref()
@@ -108,8 +122,13 @@ pub(super) fn render_statistics_tab(
     ));
 
     div()
-        .size_full()
+        .id("manage-statistics-scroll")
+        .w_full()
+        .h_full()
+        .min_h(px(0.))
+        .min_w(px(0.))
         .overflow_y_scrollbar()
+        .track_scroll(scroll_handle)
         .scrollbar_width(px(6.))
         .flex()
         .flex_col()
@@ -118,6 +137,7 @@ pub(super) fn render_statistics_tab(
             div()
                 .grid()
                 .grid_cols(3)
+                .flex_none()
                 .gap(px(10.))
                 .child(stat_card(
                     colors,
@@ -150,11 +170,7 @@ pub(super) fn render_statistics_tab(
                         colors,
                         info.last_play_time.map_or_else(
                             || t!("ManagePage.stats_never_launched"),
-                            |time| {
-                                SharedString::from(
-                                    time.format("%Y-%m-%d %H:%M").to_string(),
-                                )
-                            },
+                            |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
                         ),
                     ),
                 )),
@@ -258,6 +274,7 @@ fn chart_card(
     color: Hsla,
 ) -> Div {
     div()
+        .flex_none()
         .p(px(14.))
         .rounded(px(crate::ui::theme::tokens::radius::SM))
         .border_1()
@@ -288,67 +305,60 @@ fn chart_card(
                         .child(subtitle),
                 ),
         )
-        .child(
-            div()
-                .h(px(180.))
-                .flex()
-                .items_end()
-                .gap(px(6.))
-                .children(days.iter().enumerate().map(|(index, day)| {
-                    let current = value(day);
-                    let height = if current == 0 {
-                        2.0
-                    } else {
-                        10.0 + 130.0 * current as f32 / maximum as f32
-                    };
-                    let bar = div()
-                        .w_full()
-                        .max_w(px(30.))
-                        .h(px(height))
-                        .rounded_t(px(5.))
-                        .bg(Hsla { a: 0.72, ..color })
-                        .with_animation(
-                            SharedString::from(format!(
-                                "manage-stat-{animation_scope}-{animation_sequence}-{index}"
-                            )),
-                            if animate {
-                                stat_chart_bar_motion(index)
-                            } else {
-                                settled_animation().with_property(
-                                    AnimationProperty::vertical_reveal(
-                                        VerticalRevealEdge::Bottom,
-                                        1.0,
-                                        1.0,
-                                    ),
-                                )
-                            },
-                            |bar, _progress| bar,
-                        )
-                        .into_any_element();
+        .child(div().h(px(180.)).flex().items_end().gap(px(6.)).children(
+            days.iter().enumerate().map(|(index, day)| {
+                let current = value(day);
+                let height = if current == 0 {
+                    2.0
+                } else {
+                    10.0 + 130.0 * current as f32 / maximum as f32
+                };
+                let bar = div()
+                    .w_full()
+                    .max_w(px(30.))
+                    .h(px(height))
+                    .rounded_t(px(5.))
+                    .bg(Hsla { a: 0.72, ..color })
+                    .with_animation(
+                        SharedString::from(format!(
+                            "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                        )),
+                        if animate {
+                            stat_chart_bar_motion(index)
+                        } else {
+                            settled_animation().with_property(AnimationProperty::vertical_reveal(
+                                VerticalRevealEdge::Bottom,
+                                1.0,
+                                1.0,
+                            ))
+                        },
+                        |bar, _progress| bar,
+                    )
+                    .into_any_element();
 
-                    div()
-                        .flex_1()
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_end()
-                        .gap(px(5.))
-                        .child(
-                            div()
-                                .text_size(px(9.))
-                                .text_color(colors.text_secondary)
-                                .child(value_label(current)),
-                        )
-                        .child(bar)
-                        .child(
-                            div()
-                                .text_size(px(9.))
-                                .text_color(colors.text_secondary)
-                                .child(day.date.format("%m/%d").to_string()),
-                        )
-                })),
-        )
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(5.))
+                    .child(
+                        div()
+                            .text_size(px(9.))
+                            .text_color(colors.text_secondary)
+                            .child(value_label(current)),
+                    )
+                    .child(bar)
+                    .child(
+                        div()
+                            .text_size(px(9.))
+                            .text_color(colors.text_secondary)
+                            .child(day.date.format("%m/%d").to_string()),
+                    )
+            }),
+        ))
 }
 
 fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {

@@ -37,34 +37,36 @@ fn find_uwp_frame(title_substring: &str) -> Option<HWND> {
         hwnd: HWND,
     }
 
-    unsafe extern "system" fn enum_host(hwnd: HWND, lparam: LPARAM) -> BOOL { unsafe {
-        let data = &mut *(lparam.0 as *mut D);
-        if !IsWindowVisible(hwnd).as_bool() {
-            return TRUE;
-        }
-
-        if let Some(class_name) = get_class_name(hwnd) {
-            if class_name != "ApplicationFrameWindow" {
+    unsafe extern "system" fn enum_host(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let data = &mut *(lparam.0 as *mut D);
+            if !IsWindowVisible(hwnd).as_bool() {
                 return TRUE;
             }
-        } else {
-            return TRUE;
-        }
 
-        let len = GetWindowTextLengthW(hwnd);
-        if len > 0 {
-            let mut buf = vec![0u16; (len + 1) as usize];
-            if GetWindowTextW(hwnd, &mut buf) > 0 {
-                let title = String::from_utf16_lossy(&buf[..len as usize]);
-                if title.contains(data.title) {
-                    data.hwnd = hwnd;
-                    return FALSE;
+            if let Some(class_name) = get_class_name(hwnd) {
+                if class_name != "ApplicationFrameWindow" {
+                    return TRUE;
+                }
+            } else {
+                return TRUE;
+            }
+
+            let len = GetWindowTextLengthW(hwnd);
+            if len > 0 {
+                let mut buf = vec![0u16; (len + 1) as usize];
+                if GetWindowTextW(hwnd, &mut buf) > 0 {
+                    let title = String::from_utf16_lossy(&buf[..len as usize]);
+                    if title.contains(data.title) {
+                        data.hwnd = hwnd;
+                        return FALSE;
+                    }
                 }
             }
-        }
 
-        TRUE
-    }}
+            TRUE
+        }
+    }
 
     let mut data = D {
         title: title_substring,

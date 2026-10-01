@@ -1,4 +1,7 @@
-#![expect(unsafe_code, reason = "console logging configures native Windows output handles")]
+#![expect(
+    unsafe_code,
+    reason = "console logging configures native Windows output handles"
+)]
 
 use crate::utils::diagnostics;
 use crate::utils::file_ops;

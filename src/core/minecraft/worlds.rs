@@ -1,4 +1,4 @@
-// src-tauri/src/commands/map.rs
+//! Minecraft Bedrock world discovery and summary metadata.
 use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, game_target_dirs};
 use anyhow::Result;
 use bedrock_world::discover::{WorldDiscovery, discover_worlds};
@@ -12,10 +12,10 @@ use std::time::{Instant, SystemTime};
 use tracing::debug;
 use walkdir::WalkDir;
 
-const MAP_SIZE_SCAN_FILE_LIMIT: usize = 512;
+const WORLD_SIZE_SCAN_FILE_LIMIT: usize = 512;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct McMapInfo {
+pub(crate) struct WorldSummary {
     pub folder_name: String,
     pub folder_path: String,
     pub level_name: Option<String>, // 从 levelname.txt 读取
@@ -41,7 +41,7 @@ pub struct McMapInfo {
 // 3. 核心逻辑
 // ==================================================================================
 
-pub(crate) fn list_worlds_standard(options: &GamePathOptions) -> Result<Vec<McMapInfo>> {
+pub(crate) fn list(options: &GamePathOptions) -> Result<Vec<WorldSummary>> {
     let start = Instant::now();
     let world_dirs = game_target_dirs(options, GameTargetDir::MinecraftWorlds);
 
@@ -52,7 +52,7 @@ pub(crate) fn list_worlds_standard(options: &GamePathOptions) -> Result<Vec<McMa
 
     let discovery = WorldDiscovery {
         roots: world_dirs,
-        size_scan_file_limit: MAP_SIZE_SCAN_FILE_LIMIT,
+        size_scan_file_limit: WORLD_SIZE_SCAN_FILE_LIMIT,
     };
     let results = discover_worlds(&discovery)?
         .into_iter()
@@ -70,7 +70,7 @@ pub(crate) fn list_worlds_standard(options: &GamePathOptions) -> Result<Vec<McMa
                 None
             };
             let size_readable = world.size_bytes.map(bytes_to_human);
-            McMapInfo {
+            WorldSummary {
                 folder_name: world.folder_name,
                 folder_path: world.folder_path.to_string_lossy().to_string(),
                 level_name: world.level_name,
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn limited_size_scan_stops_before_large_world_walk() {
         let test_dir = std::env::temp_dir().join(format!(
-            "bmcbl-map-size-test-{}",
+            "bmcbl-world-size-test-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system time should be after unix epoch")

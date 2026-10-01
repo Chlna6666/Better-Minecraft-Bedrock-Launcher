@@ -2,9 +2,9 @@ use crate::ui::components::toast;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::settings::state::{ProtonGdkRunnerEntry, SettingsPageState};
-use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::sync::Arc;
 
 struct ProtonGdkRuntimeSnapshot {
     runners: Arc<[ProtonGdkRunnerEntry]>,
@@ -47,7 +47,9 @@ fn load_runtime_snapshot() -> ProtonGdkRuntimeSnapshot {
                 runner.identity_label(),
                 runner.login_capability()
             )),
-            release_tag: runner.release_tag().map(|tag| SharedString::from(tag.to_string())),
+            release_tag: runner
+                .release_tag()
+                .map(|tag| SharedString::from(tag.to_string())),
             asset_count: runner.bundle_asset_count(),
         })
         .collect::<Vec<_>>();
@@ -65,8 +67,7 @@ fn start_runner_snapshot(force: bool, cx: &mut App) {
         if !force && (state.proton_gdk_runners_loading || state.proton_gdk_runners_loaded) {
             return None;
         }
-        state.proton_gdk_runners_request_id =
-            state.proton_gdk_runners_request_id.wrapping_add(1);
+        state.proton_gdk_runners_request_id = state.proton_gdk_runners_request_id.wrapping_add(1);
         state.proton_gdk_runners_loading = true;
         if force {
             state.proton_gdk_runners_loaded = false;
@@ -121,9 +122,8 @@ pub(super) fn render(
     let runner_root = crate::utils::file_ops::runners_dir();
     let runners = state.proton_gdk_runners.clone();
     let selected_runner = state.proton_gdk_selected_runner.clone();
-    let source = crate::core::linux_runtime::ProtonGdkSource::from_config(
-        state.proton_gdk_source.as_ref(),
-    );
+    let source =
+        crate::core::linux_runtime::ProtonGdkSource::from_config(state.proton_gdk_source.as_ref());
     let is_ready = state.proton_gdk_is_ready;
     let has_runners = !runners.is_empty();
 

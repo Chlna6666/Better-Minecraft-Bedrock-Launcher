@@ -126,6 +126,45 @@ impl Render for MapToolStripeView {
                 }),
             ))
             .child(stripe_button(
+                "stripe-generator",
+                &colors,
+                lucide_gpui::icon!(blocks),
+                "转方块",
+                snapshot.right_panel_open
+                    && snapshot.active_right_panel == MapViewerRightPanel::Generator,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ToggleRightPanel(
+                        MapViewerRightPanel::Generator,
+                    ));
+                }),
+            ))
+            .child(stripe_button(
+                "stripe-image-generator",
+                &colors,
+                lucide_gpui::icon!(image),
+                "图片",
+                snapshot.right_panel_open
+                    && snapshot.active_right_panel == MapViewerRightPanel::ImageGenerator,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ToggleRightPanel(
+                        MapViewerRightPanel::ImageGenerator,
+                    ));
+                }),
+            ))
+            .child(stripe_button(
+                "stripe-map-image",
+                &colors,
+                lucide_gpui::icon!(map),
+                "地图物品",
+                snapshot.right_panel_open
+                    && snapshot.active_right_panel == MapViewerRightPanel::MapImage,
+                cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(MapViewerAction::ToggleRightPanel(
+                        MapViewerRightPanel::MapImage,
+                    ));
+                }),
+            ))
+            .child(stripe_button(
                 "stripe-nbt",
                 &colors,
                 lucide_gpui::icon!(file_text),

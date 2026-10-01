@@ -1,19 +1,17 @@
-use super::model::{CopiedChunkData, CopiedChunk};
+use super::model::{CopiedChunk, CopiedChunkData};
 use bedrock_block_model::{
-    BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, GeometryBone, GeometryCube,
-    ModelCuboid, ModelFamily, ModelPlane, ModelShape, ModelWarning,
-    block_export_material_name_for_block, block_export_material_name_for_face,
-    block_export_material_name_for_plane, block_face_for_normal,
-    detail_material_block_name_for_state, model_family_for_block_name,
-    model_family_has_detail_shape, model_shape_for_block_state,
+    BlockFace, BlockGeometry, BlockModelRepository, BlockStateQuery, ModelCuboid, ModelFamily,
+    ModelPlane, ModelShape, ModelWarning, block_export_material_name_for_block,
+    block_export_material_name_for_face, block_export_material_name_for_plane,
+    block_face_for_normal, detail_material_block_name_for_state, model_family_for_block_name,
+    model_family_has_detail_shape, model_shape_for_block_state, shape_from_geometry,
 };
 use bedrock_render::{ChunkPos, RenderPalette, RgbaColor};
 use bedrock_world::NbtTag;
 use bedrock_world::{
-    World, BiomeDataRequirement, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
-    ChunkLoadOptions, ChunkLoadPriority, BiomeStorage,
-    ChunkValue, SlimeChunkBounds, SubChunkDecodeMode, TerrainColumnBiome,
-    WorldPipelineOptions, WorldThreadingOptions,
+    BiomeDataRequirement, BiomeStorage, BlockState, CancelFlag, ChunkData, ChunkDataRequest,
+    ChunkLoadOptions, ChunkLoadPriority, ChunkValue, SlimeChunkBounds, SubChunkDecodeMode,
+    TerrainColumnBiome, World, WorldPipelineOptions, WorldThreadingOptions,
 };
 use gpui::{
     GpuMesh3d, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges, GpuMesh3dRange, GpuMesh3dShader,
@@ -808,11 +806,8 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = World::open(
-        world_path,
-        bedrock_world::OpenOptions::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let world = World::open(world_path, bedrock_world::OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
     let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
@@ -861,11 +856,8 @@ pub(super) fn load_preview_3d_mesh_blocking_incremental_with_block_models(
 ) -> Result<Preview3dMesh, String> {
     bounds.validate().map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
-    let world = World::open(
-        world_path,
-        bedrock_world::OpenOptions::default(),
-    )
-    .map_err(|error| error.to_string())?;
+    let world = World::open(world_path, bedrock_world::OpenOptions::default())
+        .map_err(|error| error.to_string())?;
     check_preview_3d_cancelled(cancel.as_ref())?;
     let (positions, truncated_chunk_count) = preview_3d_selection_chunk_positions(bounds);
     let chunk_total = positions.len();
@@ -927,7 +919,7 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
             version: entry.version,
         })
         .collect::<Vec<_>>();
-    let render_palette = RenderPalette::default();
+    let render_palette = structure_preview_palette();
     let blocks = structure
         .blocks()
         .map_err(|error| format!("结构方块索引无效：{error}"))?;
@@ -947,7 +939,7 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
             key,
             structure_palette_state(&palette, block.primary),
             structure_palette_state(&palette, block.secondary),
-            &render_palette,
+            render_palette,
             builder,
         )?;
     }
@@ -971,6 +963,11 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
 
     builder.rebuild_combined_mesh()?;
     Ok(builder.build_mesh())
+}
+
+fn structure_preview_palette() -> &'static RenderPalette {
+    static PALETTE: OnceLock<RenderPalette> = OnceLock::new();
+    PALETTE.get_or_init(RenderPalette::default)
 }
 
 pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
@@ -3372,11 +3369,7 @@ fn preview_3d_block_state_query(state: &BlockState) -> BlockStateQuery {
 }
 
 fn preview_3d_shape_from_block_geometry(geometry: &BlockGeometry) -> Option<Preview3dDetailShape> {
-    let mut shape = Preview3dDetailShape::default();
-    for bone in &geometry.bones {
-        preview_3d_push_bone_geometry(bone, &mut shape);
-    }
-    Some(shape).filter(|shape| !shape.is_empty())
+    shape_from_geometry(geometry).map(preview_3d_detail_shape_from_model_shape)
 }
 
 fn preview_3d_shape_from_named_geometry(
@@ -3431,263 +3424,9 @@ fn preview_3d_normalize_shulker_geometry_shape(shape: &mut Preview3dDetailShape)
     shape.planes.clear();
 }
 
-fn preview_3d_push_bone_geometry(bone: &GeometryBone, shape: &mut Preview3dDetailShape) {
-    for cube in &bone.cubes {
-        preview_3d_push_geometry_cube(bone, cube, shape);
-    }
-}
-
-fn preview_3d_push_geometry_cube(
-    bone: &GeometryBone,
-    cube: &GeometryCube,
-    shape: &mut Preview3dDetailShape,
-) {
-    let Some(origin) = cube.origin else {
-        return;
-    };
-    let Some(size) = cube.size else {
-        return;
-    };
-    let raw_min = preview_3d_geometry_point_to_block(origin);
-    let raw_max = preview_3d_geometry_point_to_block([
-        origin[0] + size[0],
-        origin[1] + size[1],
-        origin[2] + size[2],
-    ]);
-    let min = [
-        raw_min[0].min(raw_max[0]),
-        raw_min[1].min(raw_max[1]),
-        raw_min[2].min(raw_max[2]),
-    ];
-    let max = [
-        raw_min[0].max(raw_max[0]),
-        raw_min[1].max(raw_max[1]),
-        raw_min[2].max(raw_max[2]),
-    ];
-    let mut cuboid = Preview3dCuboid::new(min, max).with_material_slots(
-        preview_3d_geometry_material_slot(cube.material_instance.as_deref()),
-        preview_3d_geometry_face_material_slots(cube),
-    );
-    if let Some(face_uvs) = preview_3d_geometry_cube_face_uvs(cube, size) {
-        cuboid.face_uvs = face_uvs;
-    }
-    let rotation = cube.rotation.or(bone.rotation).unwrap_or([0.0, 0.0, 0.0]);
-    if preview_3d_rotation_is_zero(rotation) {
-        shape.cuboids.push(cuboid);
-        return;
-    }
-    let pivot = cube.pivot.or(bone.pivot).unwrap_or([0.0, 8.0, 0.0]);
-    shape.planes.extend(preview_3d_rotated_cuboid_planes(
-        cuboid,
-        preview_3d_geometry_point_to_block(pivot),
-        rotation,
-    ));
-}
-
-fn preview_3d_geometry_point_to_block(point: [f32; 3]) -> [f32; 3] {
-    [
-        (point[0] + 8.0) / 16.0,
-        point[1] / 16.0,
-        (point[2] + 8.0) / 16.0,
-    ]
-}
-
-fn preview_3d_rotation_is_zero(rotation: [f32; 3]) -> bool {
-    rotation.iter().all(|value| value.abs() < 0.001)
-}
-
-fn preview_3d_rotated_cuboid_planes(
-    cuboid: Preview3dCuboid,
-    pivot: [f32; 3],
-    rotation_degrees: [f32; 3],
-) -> Vec<Preview3dPlane> {
-    let [x0, y0, z0] = cuboid.min;
-    let [x1, y1, z1] = cuboid.max;
-    let points = [
-        [x0, y0, z0],
-        [x1, y0, z0],
-        [x1, y1, z0],
-        [x0, y1, z0],
-        [x0, y0, z1],
-        [x1, y0, z1],
-        [x1, y1, z1],
-        [x0, y1, z1],
-    ]
-    .map(|point| preview_3d_rotate_point(point, pivot, rotation_degrees));
-    let plane_indices = [
-        ([0, 1, 2, 3], [0, 0, -1]),
-        ([5, 4, 7, 6], [0, 0, 1]),
-        ([4, 0, 3, 7], [-1, 0, 0]),
-        ([1, 5, 6, 2], [1, 0, 0]),
-        ([3, 2, 6, 7], [0, 1, 0]),
-        ([4, 5, 1, 0], [0, -1, 0]),
-    ];
-    plane_indices
-        .into_iter()
-        .map(|(indices, normal)| Preview3dPlane {
-            corners: indices.map(|index| points[index]),
-            normal: preview_3d_rotated_axis_normal(normal, rotation_degrees),
-            material_slot: cuboid.material_slot_for_normal(normal),
-            uv: cuboid.face_uv_for_normal(normal),
-        })
-        .collect()
-}
-
-fn preview_3d_geometry_material_slot(slot: Option<&str>) -> Option<Preview3dMaterialSlot> {
-    slot.and_then(preview_3d_material_slot_from_value)
-}
-
-fn preview_3d_geometry_face_material_slots(
-    cube: &GeometryCube,
-) -> BTreeMap<BlockFace, Preview3dMaterialSlot> {
-    cube.face_material_instances
-        .iter()
-        .filter_map(|(face, slot)| {
-            preview_3d_material_slot_from_value(slot).map(|slot| (*face, slot))
-        })
-        .collect()
-}
-
-fn preview_3d_geometry_cube_face_uvs(
-    cube: &GeometryCube,
-    size: [f32; 3],
-) -> Option<BTreeMap<BlockFace, [[f32; 2]; 4]>> {
-    let uv = cube.uv.as_ref()?;
-    let raw = uv.raw.as_array()?;
-    let [u, v] = [raw.first()?.as_f64()? as f32, raw.get(1)?.as_f64()? as f32];
-    let width = size[0].abs();
-    let height = size[1].abs();
-    let depth = size[2].abs();
-    let texture_span = 64.0_f32;
-
-    let mut face_uvs = BTreeMap::new();
-    face_uvs.insert(
-        BlockFace::Up,
-        preview_3d_uv_pixels(texture_span, u + depth, v, u + depth + width, v + depth),
-    );
-    face_uvs.insert(
-        BlockFace::Down,
-        preview_3d_uv_pixels(
-            texture_span,
-            u + depth + width,
-            v,
-            u + depth + width + width,
-            v + depth,
-        ),
-    );
-    face_uvs.insert(
-        BlockFace::North,
-        preview_3d_uv_pixels(
-            texture_span,
-            u + depth,
-            v + depth,
-            u + depth + width,
-            v + depth + height,
-        ),
-    );
-    face_uvs.insert(
-        BlockFace::South,
-        preview_3d_uv_pixels(
-            texture_span,
-            u + depth + width + depth,
-            v + depth,
-            u + depth + width + depth + width,
-            v + depth + height,
-        ),
-    );
-    face_uvs.insert(
-        BlockFace::West,
-        preview_3d_uv_pixels(texture_span, u, v + depth, u + depth, v + depth + height),
-    );
-    face_uvs.insert(
-        BlockFace::East,
-        preview_3d_uv_pixels(
-            texture_span,
-            u + depth + width,
-            v + depth,
-            u + depth + width + depth,
-            v + depth + height,
-        ),
-    );
-    Some(face_uvs)
-}
-
-fn preview_3d_uv_pixels(texture_span: f32, u0: f32, v0: f32, u1: f32, v1: f32) -> [[f32; 2]; 4] {
-    preview_3d_rect_uv(
-        u0 / texture_span,
-        v0 / texture_span,
-        u1 / texture_span,
-        v1 / texture_span,
-    )
-}
-
 fn preview_3d_material_slot_from_value(value: &str) -> Option<Preview3dMaterialSlot> {
     let value = value.trim();
     (!value.is_empty()).then(|| Arc::from(value))
-}
-
-fn preview_3d_rotate_point(
-    point: [f32; 3],
-    pivot: [f32; 3],
-    rotation_degrees: [f32; 3],
-) -> [f32; 3] {
-    let mut point = vec3_sub(point, pivot);
-    for (axis, degrees) in rotation_degrees.into_iter().enumerate() {
-        point = preview_3d_rotate_point_axis(point, axis, degrees.to_radians());
-    }
-    vec3_add(point, pivot)
-}
-
-fn preview_3d_rotate_point_axis(point: [f32; 3], axis: usize, angle: f32) -> [f32; 3] {
-    if angle.abs() < 0.0001 {
-        return point;
-    }
-    let (sin, cos) = angle.sin_cos();
-    match axis {
-        0 => [
-            point[0],
-            point[1] * cos - point[2] * sin,
-            point[1] * sin + point[2] * cos,
-        ],
-        1 => [
-            point[0] * cos + point[2] * sin,
-            point[1],
-            -point[0] * sin + point[2] * cos,
-        ],
-        2 => [
-            point[0] * cos - point[1] * sin,
-            point[0] * sin + point[1] * cos,
-            point[2],
-        ],
-        _ => point,
-    }
-}
-
-fn preview_3d_rotated_axis_normal(normal: [i32; 3], rotation_degrees: [f32; 3]) -> [i32; 3] {
-    let rotated = preview_3d_rotate_point(
-        [normal[0] as f32, normal[1] as f32, normal[2] as f32],
-        [0.0, 0.0, 0.0],
-        rotation_degrees,
-    );
-    preview_3d_nearest_axis_normal(rotated)
-}
-
-fn preview_3d_nearest_axis_normal(normal: [f32; 3]) -> [i32; 3] {
-    let axis = (0..3)
-        .max_by(|left, right| {
-            normal[*left]
-                .abs()
-                .partial_cmp(&normal[*right].abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .unwrap_or(1);
-    let mut result = [0, 0, 0];
-    result[axis] = if normal[axis].is_sign_negative() {
-        -1
-    } else {
-        1
-    };
-    result
 }
 
 fn preview_3d_shape_is_full_cube(shape: &Preview3dDetailShape) -> bool {
@@ -4073,7 +3812,17 @@ fn preview_3d_face_colors_for_block(
         let side = preview_3d_color_for_named_block(palette, "minecraft:grass", biome, true);
         return Preview3dBlockFaceColors { up, down, side };
     }
-    Preview3dBlockFaceColors::uniform(preview_3d_color_for_block(palette, state, biome))
+    let color = preview_3d_color_for_block(palette, state, biome);
+    let side = palette.block_side_color(&state.name);
+    if side == palette.block_color(&state.name) {
+        return Preview3dBlockFaceColors::uniform(color);
+    }
+    let side = side.to_array().map(|channel| f32::from(channel) / 255.0);
+    Preview3dBlockFaceColors {
+        up: color,
+        down: color,
+        side,
+    }
 }
 
 fn preview_3d_color_for_named_block(
@@ -5155,9 +4904,13 @@ fn vec3_normalize(value: [f32; 3]) -> [f32; 3] {
 }
 
 fn shade_preview_color(mut color: [f32; 4], factor: f32) -> [f32; 4] {
-    color[0] = (color[0] * factor).clamp(0.0, 1.0);
-    color[1] = (color[1] * factor).clamp(0.0, 1.0);
-    color[2] = (color[2] * factor).clamp(0.0, 1.0);
+    // This custom shader presents encoded RGB directly to the non-sRGB surface.
+    // Keep its packed bytes encoded, but calculate face illumination in linear light.
+    let encoded = [0, 1, 2].map(|channel| (color[channel].clamp(0.0, 1.0) * 255.0).round() as u8);
+    let shaded = RgbaColor::new(encoded[0], encoded[1], encoded[2], 255).shade(factor);
+    color[..3].copy_from_slice(
+        &[shaded.red, shaded.green, shaded.blue].map(|channel| f32::from(channel) / 255.0),
+    );
     color
 }
 
@@ -5173,6 +4926,105 @@ fn preview_3d_block_face_from_direction(direction: Preview3dCardinalDirection) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::bedrock_world::editor::{BlockOffset, BlockPlacementPlan, PlacementBlock};
+    use bedrock_block_model::canonical_block_name_for_state;
+
+    #[test]
+    fn preview_face_lighting_preserves_linear_rgb_ratios_for_all_candidates() {
+        let decode = |encoded: f32| {
+            if encoded <= 0.04045 {
+                encoded / 12.92
+            } else {
+                ((encoded + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        for candidate in bedrock_voxel::default_block_candidates() {
+            for rgb in [candidate.top_color, candidate.side_color] {
+                let source = rgb.map(|channel| f32::from(channel) / 255.0);
+                for factor in [0.56, 0.72, 0.86, 1.0] {
+                    let result = shade_preview_color(source, factor);
+                    assert_eq!(source[3], result[3]);
+                    for channel in 0..3 {
+                        assert!(
+                            (decode(result[channel]) - decode(source[channel]) * factor).abs()
+                                < 0.009,
+                            "{} channel {channel}, factor {factor}",
+                            candidate.state.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn imported_structure_preview_uses_voxel_candidate_colors() {
+        for candidate in bedrock_voxel::default_block_candidates() {
+            let palette = structure_preview_palette();
+            assert_eq!(
+                palette.block_color(&candidate.state.name).to_array(),
+                candidate.top_color,
+                "top of {}",
+                candidate.state.name
+            );
+            assert_eq!(
+                palette.block_side_color(&candidate.state.name).to_array(),
+                candidate.side_color,
+                "side of {}",
+                candidate.state.name
+            );
+            if candidate.top_color[3] == 255 && candidate.side_color[3] == 255 {
+                let faces = preview_3d_face_colors_for_block(palette, &candidate.state, None);
+                assert_eq!(
+                    faces.up,
+                    candidate
+                        .top_color
+                        .map(|channel| f32::from(channel) / 255.0)
+                );
+                assert_eq!(
+                    faces.side,
+                    candidate
+                        .side_color
+                        .map(|channel| f32::from(channel) / 255.0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn imported_structure_builds_visible_block_mesh_at_selected_height() {
+        let blocks = [
+            (0, "minecraft:red_concrete"),
+            (1, "minecraft:blue_concrete"),
+        ]
+        .into_iter()
+        .map(|(x, name)| PlacementBlock {
+            offset: BlockOffset { x, y: 0, z: 0 },
+            state: BlockState {
+                name: name.to_owned(),
+                states: BTreeMap::new(),
+                version: None,
+            },
+        })
+        .collect();
+        let plan = BlockPlacementPlan::new(blocks).expect("plan");
+        let structure = ::bedrock_world::structure::McStructureFile::from_placement_plan(&plan)
+            .expect("structure");
+        let mesh = load_preview_3d_mesh_from_mcstructure_blocking(
+            &structure,
+            ChunkPos {
+                x: 0,
+                z: 0,
+                dimension: bedrock_render::Dimension::Overworld,
+            },
+            70,
+        )
+        .expect("mesh");
+        assert_eq!(mesh.solid_block_count, 2);
+        assert!(mesh.face_count > 0);
+        assert!(mesh.vertex_count() > 0);
+        assert_eq!(mesh.min_y, 70);
+    }
 
     fn test_material() -> Preview3dMaterialName {
         Arc::from("minecraft_test")
@@ -6125,7 +5977,7 @@ mod tests {
                 y: 0,
                 format: bedrock_world::SubChunkFormat::Paletted {
                     version: 8,
-                    storages: vec![bedrock_world::BlockPalette::with_unpacked_indices(
+                    storages: vec![::bedrock_world::BlockPalette::with_unpacked_indices(
                         vec![
                             test_block_state("minecraft:air"),
                             test_block_state("minecraft:sand"),
@@ -6193,7 +6045,7 @@ mod tests {
                 format: bedrock_world::SubChunkFormat::Paletted {
                     version: 9,
                     storages: vec![
-                        bedrock_world::BlockPalette::with_unpacked_indices(
+                        ::bedrock_world::BlockPalette::with_unpacked_indices(
                             vec![
                                 test_block_state("minecraft:air"),
                                 test_block_state("minecraft:water"),
@@ -6201,7 +6053,7 @@ mod tests {
                             water_indices,
                             Some(vec![4095, 1]),
                         ),
-                        bedrock_world::BlockPalette::with_unpacked_indices(
+                        ::bedrock_world::BlockPalette::with_unpacked_indices(
                             vec![
                                 test_block_state("minecraft:air"),
                                 test_block_state("minecraft:seagrass"),
@@ -6402,7 +6254,7 @@ mod tests {
     #[test]
     fn map_viewer_preview_3d_fence_and_wall_shapes_follow_connection_state() {
         let fence = test_block_state_with_tag("minecraft:oak_fence", "north", NbtTag::Byte(1));
-        let fence_shape = preview_3d_detail_shape_for_block(&fence)
+        let fence_shape = preview_3d_detail_shape_for_block(&fence, None)
             .unwrap_or_else(|| panic!("fence should have detail shape"));
         assert_eq!(fence_shape.cuboids.len(), 3);
         assert!(
@@ -6427,7 +6279,7 @@ mod tests {
             states: wall_states,
             version: None,
         };
-        let wall_shape = preview_3d_detail_shape_for_block(&wall)
+        let wall_shape = preview_3d_detail_shape_for_block(&wall, None)
             .unwrap_or_else(|| panic!("wall should have detail shape"));
         assert_eq!(wall_shape.cuboids.len(), 2);
         assert!(
@@ -6454,7 +6306,7 @@ mod tests {
             states: inner_states,
             version: None,
         };
-        let inner_shape = preview_3d_detail_shape_for_block(&inner)
+        let inner_shape = preview_3d_detail_shape_for_block(&inner, None)
             .unwrap_or_else(|| panic!("inner stairs should have detail shape"));
 
         let mut outer_states = BTreeMap::new();
@@ -6471,7 +6323,7 @@ mod tests {
             states: outer_states,
             version: None,
         };
-        let outer_shape = preview_3d_detail_shape_for_block(&outer)
+        let outer_shape = preview_3d_detail_shape_for_block(&outer, None)
             .unwrap_or_else(|| panic!("outer stairs should have detail shape"));
 
         assert_eq!(inner_shape.cuboids.len(), 3);
@@ -6486,9 +6338,11 @@ mod tests {
 
     #[test]
     fn map_viewer_preview_3d_shulker_box_shape_is_closed_shell_without_inner_head() {
-        let shape =
-            preview_3d_detail_shape_for_block(&test_block_state("minecraft:blue_shulker_box"))
-                .unwrap_or_else(|| panic!("shulker box should have detail shape"));
+        let shape = preview_3d_detail_shape_for_block(
+            &test_block_state("minecraft:blue_shulker_box"),
+            None,
+        )
+        .unwrap_or_else(|| panic!("shulker box should have detail shape"));
 
         assert_eq!(shape.cuboids.len(), 2);
         assert!(
@@ -6503,7 +6357,7 @@ mod tests {
     #[test]
     fn map_viewer_preview_3d_panes_iron_bars_and_plants_use_cutout_detail_shapes() {
         let iron_bars = test_block_state_with_tag("minecraft:iron_bars", "north", NbtTag::Byte(1));
-        let bars_shape = preview_3d_detail_shape_for_block(&iron_bars)
+        let bars_shape = preview_3d_detail_shape_for_block(&iron_bars, None)
             .unwrap_or_else(|| panic!("iron bars should have detail shape"));
         assert_eq!(bars_shape.cuboids.len(), 2);
         assert!(
@@ -6514,7 +6368,7 @@ mod tests {
         );
 
         let isolated_bars_shape =
-            preview_3d_detail_shape_for_block(&test_block_state("minecraft:iron_bars"))
+            preview_3d_detail_shape_for_block(&test_block_state("minecraft:iron_bars"), None)
                 .unwrap_or_else(|| panic!("isolated iron bars should have detail shape"));
         assert_eq!(isolated_bars_shape.cuboids.len(), 3);
         assert!(
@@ -6527,12 +6381,13 @@ mod tests {
                 == 2
         );
 
-        let plant_shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:poppy"))
-            .unwrap_or_else(|| panic!("plant should have detail shape"));
+        let plant_shape =
+            preview_3d_detail_shape_for_block(&test_block_state("minecraft:poppy"), None)
+                .unwrap_or_else(|| panic!("plant should have detail shape"));
         assert!(plant_shape.cuboids.is_empty());
         assert_eq!(plant_shape.planes.len(), 2);
 
-        let web_shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:web"))
+        let web_shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:web"), None)
             .unwrap_or_else(|| panic!("web should have detail shape"));
         assert!(web_shape.cuboids.is_empty());
         assert_eq!(web_shape.planes.len(), 2);
@@ -6551,7 +6406,7 @@ mod tests {
             states,
             version: None,
         };
-        let shape = preview_3d_detail_shape_for_block(&redstone)
+        let shape = preview_3d_detail_shape_for_block(&redstone, None)
             .unwrap_or_else(|| panic!("redstone wire should have detail shape"));
 
         assert!(shape.cuboids.is_empty());
@@ -6628,7 +6483,7 @@ mod tests {
 
     #[test]
     fn map_viewer_preview_3d_chest_faces_use_full_inventory_textures() {
-        let shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:chest"))
+        let shape = preview_3d_detail_shape_for_block(&test_block_state("minecraft:chest"), None)
             .unwrap_or_else(|| panic!("chest should have detail shape"));
         let body = shape
             .cuboids
@@ -6670,7 +6525,7 @@ mod tests {
             states: trapdoor_states,
             version: None,
         };
-        let trapdoor_shape = preview_3d_detail_shape_for_block(&trapdoor)
+        let trapdoor_shape = preview_3d_detail_shape_for_block(&trapdoor, None)
             .unwrap_or_else(|| panic!("trapdoor should have detail shape"));
         assert!(
             trapdoor_shape
@@ -6686,7 +6541,7 @@ mod tests {
             "minecraft:block_face",
             NbtTag::String("floor".to_string()),
         );
-        let torch_shape = preview_3d_detail_shape_for_block(&torch)
+        let torch_shape = preview_3d_detail_shape_for_block(&torch, None)
             .unwrap_or_else(|| panic!("torch should have detail shape"));
         assert!(torch_shape.cuboids[0].max[0] - torch_shape.cuboids[0].min[0] < 0.25);
         assert!(torch_shape.cuboids[0].max[1] <= 0.625);
@@ -6696,7 +6551,7 @@ mod tests {
             "portal_axis",
             NbtTag::String("x".to_string()),
         );
-        let portal_shape = preview_3d_detail_shape_for_block(&portal)
+        let portal_shape = preview_3d_detail_shape_for_block(&portal, None)
             .unwrap_or_else(|| panic!("portal should have detail shape"));
         assert!(portal_shape.cuboids[0].max[2] - portal_shape.cuboids[0].min[2] < 0.08);
     }

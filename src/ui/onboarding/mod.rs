@@ -104,10 +104,7 @@ fn restore_onboarding_after_persist_error(error: String, cx: &mut App) {
     });
 }
 
-fn finish_persisted_onboarding(
-    route: Option<crate::ui::navigation::AppRoute>,
-    cx: &mut App,
-) {
+fn finish_persisted_onboarding(route: Option<crate::ui::navigation::AppRoute>, cx: &mut App) {
     #[cfg(target_os = "windows")]
     cx.update_global(
         |state: &mut crate::ui::state::launch_prereq::LaunchPrereqState, _cx| {

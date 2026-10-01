@@ -1,4 +1,7 @@
-use super::model::MapViewerWindowView;
+use super::model::{
+    ChunkTransferTaskProgressSync, MapViewerWindowView, is_map_operation_cancelled_error,
+    sync_map_operation_task_progress, task_progress_units,
+};
 use super::panels::toolbar_button;
 use super::prelude::*;
 use super::tile_state::TilePriority;
@@ -132,7 +135,7 @@ impl MapViewerWindowView {
         self.apply_history_operation(
             "撤回修改",
             "撤回历史",
-            |world_path, progress| apply_undo_with_progress(&world_path, progress),
+            |world_path, cancel, progress| apply_undo_with_progress(&world_path, &cancel, progress),
             cx,
         );
     }
@@ -141,7 +144,7 @@ impl MapViewerWindowView {
         self.apply_history_operation(
             "重做修改",
             "重做历史",
-            |world_path, progress| apply_redo_with_progress(&world_path, progress),
+            |world_path, cancel, progress| apply_redo_with_progress(&world_path, &cancel, progress),
             cx,
         );
     }
@@ -161,7 +164,10 @@ impl MapViewerWindowView {
         self.apply_history_operation(
             "回档历史",
             "回档历史",
-            move |world_path, progress| {
+            move |world_path, cancel: CancelFlag, progress| {
+                if cancel.is_cancelled() {
+                    return Err("历史操作已取消".to_owned());
+                }
                 if !selected_chunks.is_empty() {
                     create_restore_protection_point(
                         &world_path,
@@ -169,7 +175,7 @@ impl MapViewerWindowView {
                         "回档前保护点",
                     )?;
                 }
-                restore_history_entry_with_progress(&world_path, &entry_id, progress)
+                restore_history_entry_with_progress(&world_path, &entry_id, &cancel, progress)
             },
             cx,
         );
@@ -546,6 +552,7 @@ impl MapViewerWindowView {
         phase: &'static str,
         operation: impl FnOnce(
             PathBuf,
+            CancelFlag,
             Box<dyn FnMut(MapHistoryApplyProgress) + Send>,
         ) -> Result<MapHistoryApplyOutcome, String>
         + Send
@@ -557,6 +564,20 @@ impl MapViewerWindowView {
             return;
         }
         self.history.applying = true;
+        let task_id = task_manager::create_task_with_details(
+            None,
+            label,
+            Some(self.asset.display_name.to_string()),
+            "历史操作",
+            Some(task_progress_units(1)),
+            false,
+        );
+        task_manager::register_task_cooperative_cancel(task_id.clone());
+        let cancel = CancelFlag::new();
+        task_manager::register_task_cancel_hook(task_id.clone(), {
+            let cancel = cancel.clone();
+            move || cancel.cancel()
+        });
         self.set_chunk_transfer_progress(ChunkTransferProgress {
             phase: SharedString::from(phase),
             completed: 0,
@@ -577,19 +598,34 @@ impl MapViewerWindowView {
             let completion_sender = event_sender.clone();
             let world_path_for_task = world_path.clone();
             let task = cx.background_spawn(async move {
+                let mut progress_sync = ChunkTransferTaskProgressSync::default();
+                let task_id_for_progress = task_id.clone();
                 let progress = Box::new(move |progress: MapHistoryApplyProgress| {
+                    let snapshot = ChunkTransferProgress {
+                        phase: progress.phase,
+                        completed: progress.completed,
+                        total: progress.total,
+                    };
+                    sync_map_operation_task_progress(
+                        &task_id_for_progress,
+                        &mut progress_sync,
+                        &snapshot,
+                        "历史操作",
+                    );
                     if progress_sender
-                        .unbounded_send(HistoryApplyEvent::Progress(ChunkTransferProgress {
-                            phase: progress.phase,
-                            completed: progress.completed,
-                            total: progress.total,
-                        }))
+                        .unbounded_send(HistoryApplyEvent::Progress(snapshot))
                         .is_err()
                     {
                         tracing::debug!("history operation progress receiver dropped");
                     }
                 });
-                let result = operation(world_path_for_task, progress);
+                let result = operation(world_path_for_task, cancel.clone(), progress);
+                let status = match &result {
+                    Ok(_) => "completed",
+                    Err(error) if is_map_operation_cancelled_error(error) => "cancelled",
+                    Err(_) => "error",
+                };
+                task_manager::finish_task(&task_id, status, result.as_ref().err().cloned());
                 if completion_sender
                     .unbounded_send(HistoryApplyEvent::Complete(result))
                     .is_err()

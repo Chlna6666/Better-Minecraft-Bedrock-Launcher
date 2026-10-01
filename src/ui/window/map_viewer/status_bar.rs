@@ -80,6 +80,9 @@ impl MapViewerWindowView {
                         this.task_snapshots
                             .retain(|_, snapshot| is_map_window_task_snapshot(snapshot.as_ref()));
                         for snapshot in snapshots {
+                            this.accept_map_image_task_snapshot(snapshot.as_ref());
+                            this.accept_map_install_task_snapshot(snapshot.as_ref(), cx);
+                            this.accept_structure_preview_task_snapshot(snapshot.as_ref(), cx);
                             this.task_snapshots.insert(snapshot.id.clone(), snapshot);
                         }
                         cx.notify();
@@ -324,18 +327,13 @@ impl MapViewerWindowView {
         let mut snapshots = self
             .task_snapshots
             .values()
-            .filter(|snapshot| {
-                matches!(
-                    snapshot.status.as_ref(),
-                    "running" | "paused" | "cancelling"
-                )
-            })
+            .filter(|snapshot| !snapshot.is_terminal())
             .cloned()
             .collect::<Vec<_>>();
         snapshots.sort_by(|left, right| {
             right
-                .sequence
-                .cmp(&left.sequence)
+                .started_at_unix
+                .cmp(&left.started_at_unix)
                 .then_with(|| right.last_update_unix.cmp(&left.last_update_unix))
                 .then_with(|| left.title.cmp(&right.title))
         });
@@ -366,9 +364,18 @@ impl MapViewerWindowView {
 }
 
 fn is_map_window_task_snapshot(snapshot: &TaskSnapshot) -> bool {
+    is_map_window_task_stage(snapshot.stage.as_ref())
+}
+
+fn is_map_window_task_stage(stage: &str) -> bool {
     matches!(
-        snapshot.stage.as_ref(),
-        "打开地图"
+        stage,
+        "map_paste"
+            | "map_write"
+            | "map_delete"
+            | "map_copy"
+            | "map_refresh"
+            | "打开地图"
             | "地图索引"
             | "探测瓦片"
             | "局部刷新"
@@ -378,7 +385,51 @@ fn is_map_window_task_snapshot(snapshot: &TaskSnapshot) -> bool {
             | "粘贴区块"
             | "删除区块"
             | "写入地图"
+            | "历史操作"
+            | "解析 OBJ"
+            | "读取源文件"
+            | "匹配方块"
+            | "保存预览结果"
+            | "缩放并分片地图"
+            | "逐张生成地图"
+            | "逐张合并预览"
+            | "生成地图记录"
+            | "写入地图包"
+            | "读取地图包"
+            | "检查目标与地图 ID"
+            | "创建撤销快照"
+            | "原子提交地图与物品"
+            | "保存撤销历史"
+            | "体素化三角形"
+            | "解码图片"
+            | "裁剪、缩放与方块匹配"
+            | "裁剪与分片地图"
+            | "写入 .mcstructure"
     )
+}
+
+#[cfg(test)]
+mod task_filter_tests {
+    use super::is_map_window_task_stage;
+
+    #[test]
+    fn keeps_all_generator_preview_stages_visible() {
+        for stage in [
+            "解码图片",
+            "缩放并分片地图",
+            "逐张生成地图",
+            "逐张合并预览",
+            "读取源文件",
+            "匹配方块",
+            "体素化三角形",
+            "保存预览结果",
+            "map_paste",
+            "map_refresh",
+            "map_delete",
+        ] {
+            assert!(is_map_window_task_stage(stage), "missing stage: {stage}");
+        }
+    }
 }
 
 fn local_progress_inline(

@@ -563,11 +563,7 @@ pub fn render_overlay(
         .into_any_element()
 }
 
-pub fn has_visible_overlay(
-    window: &Window,
-    now: Instant,
-    state: &DropdownOverlayState,
-) -> bool {
+pub fn has_visible_overlay(window: &Window, now: Instant, state: &DropdownOverlayState) -> bool {
     let owner_window_id = window.window_handle().window_id().as_u64();
     let Some(active) = state.active_for_window(owner_window_id) else {
         return false;
@@ -997,7 +993,7 @@ fn default_dropdown_trigger(
 mod tests {
     use super::*;
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn dropdown_height_matches_virtual_row_pitch() {
         assert_eq!(desired_dropdown_height(0.0), px(12.0));
         assert_eq!(desired_dropdown_height(1.0), px(50.0));

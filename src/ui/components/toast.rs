@@ -726,16 +726,8 @@ pub fn render_overlay_with_options(
 
     let mut lane = div().relative().w(px(TOAST_MAX_WIDTH_PX)).h_full();
     for (index, layout_item) in layout_items.into_iter().enumerate() {
-        let (
-            toast_id,
-            toast_width,
-            shell,
-            opacity,
-            enter_slide,
-            exit_slide,
-            item_animating,
-            _,
-        ) = layout_item;
+        let (toast_id, toast_width, shell, opacity, enter_slide, exit_slide, item_animating, _) =
+            layout_item;
         let offset = offsets[index];
         let mut toast = div()
             .id(SharedString::from(format!("toast-wrap-{}", toast_id.0)))
@@ -769,18 +761,14 @@ pub fn render_overlay_with_options(
             },
         };
 
-        let translation = toast_slide_translation(options.slide_direction, enter_slide + exit_slide);
+        let translation =
+            toast_slide_translation(options.slide_direction, enter_slide + exit_slide);
         let toast = toast
             .child(shell)
             .composite_layer()
             .with_stable_sampled_animation(
                 SharedString::from(format!("toast-motion-{}", toast_id.0)),
-                AnimationProperty::translation_opacity(
-                    Point::default(),
-                    translation,
-                    1.0,
-                    opacity,
-                ),
+                AnimationProperty::translation_opacity(Point::default(), translation, 1.0, opacity),
                 1.0,
                 item_animating,
             );
@@ -881,12 +869,7 @@ pub fn render_breadcrumb_overlay(
         .composite_layer()
         .with_stable_sampled_animation(
             SharedString::from(format!("toast-breadcrumb-motion-{}", item.id.0)),
-            AnimationProperty::translation_opacity(
-                Point::default(),
-                translation,
-                1.0,
-                opacity,
-            ),
+            AnimationProperty::translation_opacity(Point::default(), translation, 1.0, opacity),
             1.0,
             animating,
         )

@@ -85,18 +85,14 @@ impl DebugView {
                 Timer::after(DEBUG_REALTIME_REFRESH_INTERVAL).await;
                 let _ = handle.update(cx, |this, cx| {
                     let debug = cx.global::<DebugState>().clone();
-                    let previous_main = main_window_realtime_metric(
-                        &this.runtime,
-                        debug.main_window_id,
-                    );
+                    let previous_main =
+                        main_window_realtime_metric(&this.runtime, debug.main_window_id);
 
                     refresh_realtime_window_metrics(&mut this.runtime);
                     bind_window_roles(&mut this.runtime, &debug);
 
-                    let current_main = main_window_realtime_metric(
-                        &this.runtime,
-                        debug.main_window_id,
-                    );
+                    let current_main =
+                        main_window_realtime_metric(&this.runtime, debug.main_window_id);
                     let main_changed = previous_main != current_main;
 
                     // A debug-window redraw updates its own request/draw counters. Never use those
@@ -348,52 +344,53 @@ fn bind_window_roles(runtime: &mut DebugRuntimeSnapshot, debug: &DebugState) {
     runtime.debug_fps = 0.0;
     runtime.gpui_present_fps = 0.0;
 
-    let apply_window = |runtime: &mut DebugRuntimeSnapshot, window_id: Option<u64>, is_main: bool| {
-        let Some(window_id) = window_id else {
-            return;
-        };
-        let Some(window) = runtime
-            .gpui_window_metrics
-            .iter()
-            .find(|window| window.window_id == window_id)
-            .cloned()
-        else {
-            return;
-        };
+    let apply_window =
+        |runtime: &mut DebugRuntimeSnapshot, window_id: Option<u64>, is_main: bool| {
+            let Some(window_id) = window_id else {
+                return;
+            };
+            let Some(window) = runtime
+                .gpui_window_metrics
+                .iter()
+                .find(|window| window.window_id == window_id)
+                .cloned()
+            else {
+                return;
+            };
 
-        let fps = window.present_fps_milli as f32 / 1000.0;
-        let logical_width = window.logical_width_milli as f32 / 1000.0;
-        let logical_height = window.logical_height_milli as f32 / 1000.0;
-        let physical_width = window.physical_width_px as f32;
-        let physical_height = window.physical_height_px as f32;
-        let scale_factor = if window.scale_factor_milli > 0 {
-            window.scale_factor_milli as f32 / 1000.0
-        } else {
-            1.0
-        };
+            let fps = window.present_fps_milli as f32 / 1000.0;
+            let logical_width = window.logical_width_milli as f32 / 1000.0;
+            let logical_height = window.logical_height_milli as f32 / 1000.0;
+            let physical_width = window.physical_width_px as f32;
+            let physical_height = window.physical_height_px as f32;
+            let scale_factor = if window.scale_factor_milli > 0 {
+                window.scale_factor_milli as f32 / 1000.0
+            } else {
+                1.0
+            };
 
-        if is_main {
-            runtime.main_fps = fps;
-            runtime.main_frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
-            runtime.gpui_present_fps = fps;
-            if logical_width > 0.0 && logical_height > 0.0 {
-                runtime.main_window_width_px = logical_width;
-                runtime.main_window_height_px = logical_height;
-                runtime.main_window_physical_width_px = physical_width;
-                runtime.main_window_physical_height_px = physical_height;
-                runtime.main_window_scale_factor = scale_factor;
+            if is_main {
+                runtime.main_fps = fps;
+                runtime.main_frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
+                runtime.gpui_present_fps = fps;
+                if logical_width > 0.0 && logical_height > 0.0 {
+                    runtime.main_window_width_px = logical_width;
+                    runtime.main_window_height_px = logical_height;
+                    runtime.main_window_physical_width_px = physical_width;
+                    runtime.main_window_physical_height_px = physical_height;
+                    runtime.main_window_scale_factor = scale_factor;
+                }
+            } else {
+                runtime.debug_fps = fps;
+                if logical_width > 0.0 && logical_height > 0.0 {
+                    runtime.debug_window_width_px = logical_width;
+                    runtime.debug_window_height_px = logical_height;
+                    runtime.debug_window_physical_width_px = physical_width;
+                    runtime.debug_window_physical_height_px = physical_height;
+                    runtime.debug_window_scale_factor = scale_factor;
+                }
             }
-        } else {
-            runtime.debug_fps = fps;
-            if logical_width > 0.0 && logical_height > 0.0 {
-                runtime.debug_window_width_px = logical_width;
-                runtime.debug_window_height_px = logical_height;
-                runtime.debug_window_physical_width_px = physical_width;
-                runtime.debug_window_physical_height_px = physical_height;
-                runtime.debug_window_scale_factor = scale_factor;
-            }
-        }
-    };
+        };
 
     apply_window(runtime, debug.main_window_id, true);
     apply_window(runtime, debug.debug_window_id, false);
@@ -1520,7 +1517,8 @@ impl Render for DebugView {
                                             if runtime.debug_window_physical_height_px > 0.0 {
                                                 runtime.debug_window_physical_height_px
                                             } else {
-                                                displayed_debug_window_height * window.scale_factor()
+                                                displayed_debug_window_height
+                                                    * window.scale_factor()
                                             },
                                             if runtime.debug_window_scale_factor > 0.0 {
                                                 runtime.debug_window_scale_factor
@@ -3469,10 +3467,10 @@ impl Render for DebugView {
     }
 }
 
-
 #[cfg(test)]
 mod realtime_refresh_tests {
-    use super::{DebugRuntimeSnapshot, DebugWindowMetrics, main_window_realtime_metric};
+    use super::{DebugRuntimeSnapshot, main_window_realtime_metric};
+    use crate::ui::window::debug::state::DebugWindowMetrics;
 
     fn metrics(window_id: u64, draw_count: usize) -> DebugWindowMetrics {
         DebugWindowMetrics {

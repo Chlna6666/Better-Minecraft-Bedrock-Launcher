@@ -1963,19 +1963,6 @@ fn render_curseforge_results_list(
         ));
     }
 
-    let transition_animating = animate_cards
-        && !results_loading
-        && results_transition_at.is_some_and(|started_at| {
-            let visible_count = this.cached_page_card_props.len() as u64;
-            let total_duration_ms = CURSEFORGE_RESULT_CARD_ANIMATION_MS
-                + visible_count.saturating_sub(1) * CURSEFORGE_RESULT_CARD_STAGGER_MS;
-            (transition_now
-                .saturating_duration_since(started_at)
-                .as_millis() as u64)
-                < total_duration_ms.max(CURSEFORGE_RESULTS_TRANSITION_MS)
-        });
-    crate::ui::animation::request_layout_animation_frame_if(window, transition_animating);
-
     let content = list.child(
         div()
             .w_full()
@@ -2057,19 +2044,12 @@ fn render_curseforge_result_card(
     };
 
     let result_element_id = u64::try_from(props.mod_id).ok().unwrap_or_default();
-    let reveal_progress = if should_animate_curseforge_result_cards() {
-        transition_started_at.map_or(1.0, |started_at| {
-            let stagger_ms = visible_index as u64 * CURSEFORGE_RESULT_CARD_STAGGER_MS;
-            let elapsed_ms = now.saturating_duration_since(started_at).as_millis() as u64;
-            let local_elapsed_ms = elapsed_ms.saturating_sub(stagger_ms);
-            let linear = (local_elapsed_ms as f32 / CURSEFORGE_RESULT_CARD_ANIMATION_MS as f32)
-                .clamp(0.0, 1.0);
-            crate::ui::animation::ease_out_cubic(linear)
-        })
+    let reveal_animation = if should_animate_curseforge_result_cards() {
+        transition_started_at
+            .and_then(|started_at| curseforge_result_card_animation(started_at, now, visible_index))
     } else {
-        1.0
+        None
     };
-    let reveal_opacity = (0.25 + reveal_progress * 0.75).clamp(0.0, 1.0);
     let primary_tag = props.primary_tag_label.clone().map(|primary_tag_label| {
         div()
             .flex()
@@ -2089,7 +2069,7 @@ fn render_curseforge_result_card(
             )
     });
 
-    div()
+    let card = div()
         .id(("curseforge-result-card", result_element_id))
         .w_full()
         .min_w(px(0.))
@@ -2110,7 +2090,6 @@ fn render_curseforge_result_card(
                 modals::open_curseforge_mod_page(mod_id, cx);
             }
         })
-        .opacity(reveal_opacity)
         .px(px(12.))
         .py(px(9.))
         .flex()
@@ -2302,12 +2281,63 @@ fn render_curseforge_result_card(
                         .font_weight(FontWeight::MEDIUM)
                         .child(t!("common.install")),
                 ),
+        );
+
+    if let Some(animation) = reveal_animation {
+        card.with_visual_animation(
+            ("curseforge-result-card-motion", result_element_id),
+            animation,
         )
-        .with_sampled_animation(
-            AnimationProperty::translation(point(px(0.0), px(10.0)), Point::default()),
-            reveal_progress,
-        )
+        .expect("CurseForge card motion declares a presentation property")
         .into_any_element()
+    } else {
+        card.into_any_element()
+    }
+}
+
+fn curseforge_result_card_animation(
+    started_at: Instant,
+    now: Instant,
+    visible_index: usize,
+) -> Option<Animation> {
+    let elapsed_ms = now
+        .saturating_duration_since(started_at)
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    let stagger_ms = (visible_index as u64).saturating_mul(CURSEFORGE_RESULT_CARD_STAGGER_MS);
+    let local_elapsed_ms = elapsed_ms.saturating_sub(stagger_ms);
+    if local_elapsed_ms >= CURSEFORGE_RESULT_CARD_ANIMATION_MS {
+        return None;
+    }
+
+    let initial_progress = local_elapsed_ms as f32 / CURSEFORGE_RESULT_CARD_ANIMATION_MS as f32;
+    let initial_eased = crate::ui::animation::ease_out_cubic(initial_progress);
+    let remaining_easing_range = 1.0 - initial_eased;
+    if remaining_easing_range <= f32::EPSILON {
+        return None;
+    }
+
+    let remaining_duration =
+        Duration::from_millis(CURSEFORGE_RESULT_CARD_ANIMATION_MS.saturating_sub(local_elapsed_ms));
+    let remaining_delay = Duration::from_millis(stagger_ms.saturating_sub(elapsed_ms));
+    let initial_opacity = 0.25 + initial_eased * 0.75;
+    let initial_offset_y = 10.0 * (1.0 - initial_eased);
+    let animation = Animation::new(remaining_duration)
+        .delay(remaining_delay)
+        .fill_mode(FillMode::Both)
+        .with_easing(move |progress| {
+            let resumed_progress = initial_progress + progress * (1.0 - initial_progress);
+            ((crate::ui::animation::ease_out_cubic(resumed_progress) - initial_eased)
+                / remaining_easing_range)
+                .clamp(0.0, 1.0)
+        })
+        .with_property(AnimationProperty::translation_opacity(
+            point(px(0.0), px(initial_offset_y)),
+            Point::default(),
+            initial_opacity,
+            1.0,
+        ));
+    Some(animation)
 }
 
 fn render_curseforge_pager(window: &mut Window, cx: &mut App, colors: &ThemeColors) -> Div {
@@ -3234,17 +3264,19 @@ fn render_curseforge_install_modal(
                 .iter()
                 .find(|version| version.folder.as_ref() == selected.as_ref())
         });
-    let install_target = selected_version.map(|version| {
-        crate::core::curseforge::install::CurseForgeInstallTarget {
-            build_type: crate::ui::hooks::use_local_versions::version_build_type(version),
-            edition: crate::ui::hooks::use_local_versions::version_edition(version),
-            version_name: version.folder.to_string(),
-            enable_isolation:
-                crate::ui::hooks::use_local_versions::version_enable_isolation(version),
-            user_id: None,
-            allow_shared_fallback: false,
-        }
-    });
+    let install_target =
+        selected_version.map(
+            |version| crate::core::curseforge::install::CurseForgeInstallTarget {
+                build_type: crate::ui::hooks::use_local_versions::version_build_type(version),
+                edition: crate::ui::hooks::use_local_versions::version_edition(version),
+                version_name: version.folder.to_string(),
+                enable_isolation: crate::ui::hooks::use_local_versions::version_enable_isolation(
+                    version,
+                ),
+                user_id: None,
+                allow_shared_fallback: false,
+            },
+        );
 
     let can_install = selected_file.download_url.is_some()
         && install_target.is_some()
@@ -3296,9 +3328,12 @@ fn render_curseforge_install_modal(
                 return;
             };
             let (download_url, file_name) = cx.read_global(|state: &DownloadPageState, _cx| {
-                let file = state
-                    .curseforge_install_selected_file_id
-                    .and_then(|id| state.curseforge_install_files.iter().find(|file| file.id == id));
+                let file = state.curseforge_install_selected_file_id.and_then(|id| {
+                    state
+                        .curseforge_install_files
+                        .iter()
+                        .find(|file| file.id == id)
+                });
                 (
                     file.and_then(|file| file.download_url.clone())
                         .map(|url| url.to_string()),
@@ -3343,10 +3378,7 @@ fn render_curseforge_install_modal(
                     let _i18n = cx.global::<I18n>();
                     match snapshot.status.as_ref() {
                         "completed" => {
-                            crate::ui::components::toast::success(
-                                cx,
-                                t!("CurseForgeInstall.done"),
-                            );
+                            crate::ui::components::toast::success(cx, t!("CurseForgeInstall.done"));
                         }
                         "cancelled" => {
                             crate::ui::components::toast::push(

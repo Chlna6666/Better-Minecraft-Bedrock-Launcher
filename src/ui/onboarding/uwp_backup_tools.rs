@@ -199,8 +199,10 @@ fn start_export(window: &mut Window, cx: &mut App) {
         Ok(task_id) => task_id,
         Err(error) => {
             cx.update_global(|state: &mut UwpBackupToolsState, _cx| {
-                state.export_status =
-                    Some(crate::localized_text!("UwpBackup.export_task_failed", detail = error));
+                state.export_status = Some(crate::localized_text!(
+                    "UwpBackup.export_task_failed",
+                    detail = error
+                ));
             });
             return;
         }
@@ -274,10 +276,9 @@ fn open_directory_in_background(path: PathBuf, create_if_missing: bool, cx: &mut
                     Ok(Err(error)) => {
                         crate::localized_text!("UwpBackup.open_failed", detail = error)
                     }
-                    Err(error) => crate::localized_text!(
-                        "UwpBackup.open_failed",
-                        detail = error.to_string()
-                    ),
+                    Err(error) => {
+                        crate::localized_text!("UwpBackup.open_failed", detail = error.to_string())
+                    }
                 });
             });
         })?;

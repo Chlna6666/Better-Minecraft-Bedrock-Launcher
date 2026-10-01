@@ -205,8 +205,8 @@ fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(vanilla_resource_pack_overlay_version);
-        right_version
-            .cmp(&left_version)
+        left_version
+            .cmp(&right_version)
             .then_with(|| left.cmp(right))
     });
 
@@ -596,7 +596,7 @@ mod tests {
             .unwrap_or_else(|| panic!("missing newer versioned vanilla overlay root"));
         assert!(base_index < overlay_index);
         assert!(base_index < newer_overlay_index);
-        assert!(newer_overlay_index < overlay_index);
+        assert!(overlay_index < newer_overlay_index);
         assert!(
             !roots
                 .iter()

@@ -583,6 +583,7 @@ pub(super) fn draw_professional_overlay_canvas(
     slime_runs: Option<&SlimeOverlayRunCache>,
     selection: Option<ChunkSelection>,
     paste_preview: Option<&PastePreview>,
+    map_frame_preview: Option<MapFrameGridPreview>,
     paste_preview_images: &[PastePreviewImage],
     highlighted_slime_candidate: Option<&SlimeFarmCandidate>,
     colors: ThemeColors,
@@ -604,6 +605,35 @@ pub(super) fn draw_professional_overlay_canvas(
     }
 
     if let Some(overlay_paint) = overlay_paint {
+        if overlays.load_risk {
+            for chunk in &overlay_paint.chunk_loads {
+                let color = match chunk.level() {
+                    Some(crate::core::minecraft::map::load_risk::RiskLevel::Orange) => {
+                        rgb(0xf29b38)
+                    }
+                    Some(crate::core::minecraft::map::load_risk::RiskLevel::Red) => rgb(0xe64747),
+                    None => continue,
+                };
+                paint_chunk_rect(
+                    bounds,
+                    viewport,
+                    layout,
+                    chunk.chunk_x,
+                    chunk.chunk_z,
+                    chunk.chunk_x,
+                    chunk.chunk_z,
+                    Hsla {
+                        a: 0.28,
+                        ..color.into()
+                    },
+                    Some(Hsla {
+                        a: 0.85,
+                        ..color.into()
+                    }),
+                    window,
+                );
+            }
+        }
         if overlays.hardcoded_spawn_areas {
             for rect in &overlay_paint.hardcoded_spawn_rects {
                 paint_block_rect(
@@ -741,8 +771,70 @@ pub(super) fn draw_professional_overlay_canvas(
         }
     }
 
+    if let Some(preview) = map_frame_preview {
+        paint_frame_grid_preview(bounds, viewport, layout, preview, window);
+    }
+
     if let Some(candidate) = highlighted_slime_candidate {
         paint_slime_farm_candidate(bounds, viewport, layout, dimension, candidate, window);
+    }
+}
+
+fn paint_frame_grid_preview(
+    bounds: Bounds<Pixels>,
+    viewport: MapViewport,
+    layout: RenderLayout,
+    preview: MapFrameGridPreview,
+    window: &mut Window,
+) {
+    let max_block_x = preview.min_block_x.saturating_add(preview.columns as i32);
+    let max_block_z = preview.min_block_z.saturating_add(preview.rows as i32);
+    let color = rgb(0x4ade80).into();
+    paint_block_rect(
+        bounds,
+        viewport,
+        layout,
+        preview.min_block_x,
+        preview.min_block_z,
+        max_block_x,
+        max_block_z,
+        Hsla { a: 0.12, ..color },
+        Some(Hsla { a: 0.95, ..color }),
+        window,
+    );
+    let top = screen_y_for_block(bounds, viewport, layout, preview.min_block_z);
+    let bottom = screen_y_for_block(bounds, viewport, layout, max_block_z);
+    for column in 1..preview.columns {
+        let x = screen_x_for_block(
+            bounds,
+            viewport,
+            layout,
+            preview.min_block_x.saturating_add(column as i32),
+        );
+        window.paint_quad(fill(
+            Bounds::new(
+                point(px(x.floor()), px(top.floor())),
+                size(px(1.0), px((bottom - top).ceil())),
+            ),
+            Hsla { a: 0.75, ..color },
+        ));
+    }
+    let left = screen_x_for_block(bounds, viewport, layout, preview.min_block_x);
+    let right = screen_x_for_block(bounds, viewport, layout, max_block_x);
+    for row in 1..preview.rows {
+        let y = screen_y_for_block(
+            bounds,
+            viewport,
+            layout,
+            preview.min_block_z.saturating_add(row as i32),
+        );
+        window.paint_quad(fill(
+            Bounds::new(
+                point(px(left.floor()), px(y.floor())),
+                size(px((right - left).ceil()), px(1.0)),
+            ),
+            Hsla { a: 0.75, ..color },
+        ));
     }
 }
 
@@ -774,16 +866,7 @@ fn paint_slime_farm_candidate(
     };
     for chunk in &selected {
         paint_chunk_rect(
-            bounds,
-            viewport,
-            layout,
-            chunk.x,
-            chunk.z,
-            chunk.x,
-            chunk.z,
-            fill_color,
-            None,
-            window,
+            bounds, viewport, layout, chunk.x, chunk.z, chunk.x, chunk.z, fill_color, None, window,
         );
     }
 

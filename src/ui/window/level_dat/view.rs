@@ -48,8 +48,14 @@ impl LevelDatCodeWindowView {
         window.set_title(t!("LevelDat.title").as_ref());
         let validation = level_dat_editor::validate_document_json(init.initial_text.as_ref());
         let editor_dirty = init.initial_text != init.saved_text;
-        let line_count_text =
-            SharedString::from(init.initial_text.as_ref().lines().count().max(1).to_string());
+        let line_count_text = SharedString::from(
+            init.initial_text
+                .as_ref()
+                .lines()
+                .count()
+                .max(1)
+                .to_string(),
+        );
         let char_count_text = SharedString::from(init.initial_text.chars().count().to_string());
         let instance_name = SharedString::from(init.version.display_name().to_string());
         let document_version_text = SharedString::from(init.document_version.to_string());
@@ -343,7 +349,10 @@ impl Render for LevelDatCodeWindowView {
                                     ))
                                     .child(info_badge(
                                         &colors,
-                                        t!("LevelDat.version_header", version = &self.document_version_text),
+                                        t!(
+                                            "LevelDat.version_header",
+                                            version = &self.document_version_text
+                                        ),
                                     ))
                                     .child(info_badge(
                                         &colors,

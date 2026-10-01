@@ -499,7 +499,12 @@ pub fn render_markdown_item(
         MarkdownItem::CodeBlock { language, code } => div()
             .w_full()
             .py(px(4.))
-            .child(render_code_block(language.as_deref(), code, colors, is_dark))
+            .child(render_code_block(
+                language.as_deref(),
+                code,
+                colors,
+                is_dark,
+            ))
             .into_any_element(),
         MarkdownItem::Quote { spans } => div()
             .w_full()

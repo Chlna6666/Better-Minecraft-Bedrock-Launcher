@@ -296,8 +296,13 @@ fn curseforge_results_skeleton_block(
         })
         .with_animation(
             id,
-            repeating_linear_motion(Duration::from_millis(1250)),
-            |this, t| this.left(relative(START + (END - START) * t)),
+            repeating_linear_motion(Duration::from_millis(1250)).with_property(
+                AnimationProperty::relative_translation(
+                    Point::default(),
+                    point((END - START) / BAND_WIDTH, 0.0),
+                ),
+            ),
+            |this, _progress| this,
         );
 
     div()
@@ -445,6 +450,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
             .absolute()
             .top(px(0.))
             .bottom(px(0.))
+            .left(px(-180.0))
             .w(px(140.))
             .bg(Hsla {
                 a: 0.24,
@@ -452,8 +458,13 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
             })
             .with_animation(
                 "curseforge-skeleton-shimmer",
-                repeating_linear_motion(Duration::from_millis(1400)),
-                |this, t| this.left(px(-180.0 + t * 440.0)),
+                repeating_linear_motion(Duration::from_millis(1400)).with_property(
+                    AnimationProperty::relative_translation(
+                        Point::default(),
+                        point(440.0 / 140.0, 0.0),
+                    ),
+                ),
+                |this, _progress| this,
             )
             .into_any_element()
     };

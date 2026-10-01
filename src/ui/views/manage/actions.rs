@@ -217,6 +217,7 @@ impl ManagePageView {
             Some(previous_tab)
         });
         let Some(previous_tab) = previous_tab else {
+            cx.notify();
             return;
         };
 
@@ -228,10 +229,7 @@ impl ManagePageView {
         // every hidden list here: Screenshot/Server can be reused instantly after visiting another
         // tab, while asset tabs automatically reload only when their AssetsLoadSignature changes.
         match tab {
-            ManageTab::Mod
-            | ManageTab::ResourcePack
-            | ManageTab::SkinPack
-            | ManageTab::Map => {
+            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
                 self.asset_scroll_handle.set_offset(point(px(0.), px(0.)));
             }
             ManageTab::Screenshot => {
@@ -241,9 +239,12 @@ impl ManagePageView {
             ManageTab::Server => {
                 self.server_scroll_handle.set_offset(point(px(0.), px(0.)));
             }
-            ManageTab::Statistics => {}
+            ManageTab::Statistics => {
+                self.statistics_scroll_handle
+                    .set_offset(point(px(0.), px(0.)));
+            }
         }
-        // ManagePageState's signature observer owns the single redraw notification.
+        cx.notify();
     }
 
     pub(super) fn open_selected_version_folder(&mut self, cx: &mut Context<Self>) {

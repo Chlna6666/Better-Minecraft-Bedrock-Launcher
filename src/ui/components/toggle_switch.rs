@@ -96,20 +96,18 @@ impl ToggleSwitchView {
             });
         let accent = match self.phase {
             TogglePhase::Opening { .. } => accent
-                .with_animation(
+                .with_visual_animation(
                     "toggle-switch-accent",
-                    ease_out_cubic_motion(ANIMATION_DURATION)
-                        .with_property(AnimationProperty::opacity(0.0, 1.0)),
-                    |this, _progress| this,
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_opacity(0.0, 1.0),
                 )
+                .expect("toggle accent uses a visual opacity track")
                 .into_any_element(),
             TogglePhase::Closing { .. } => accent
-                .with_animation(
+                .with_visual_animation(
                     "toggle-switch-accent",
-                    ease_out_cubic_motion(ANIMATION_DURATION)
-                        .with_property(AnimationProperty::opacity(1.0, 0.0)),
-                    |this, _progress| this,
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_opacity(1.0, 0.0),
                 )
+                .expect("toggle accent uses a visual opacity track")
                 .into_any_element(),
             TogglePhase::Stable => accent
                 .opacity(if self.enabled { 1.0 } else { 0.0 })
@@ -130,28 +128,24 @@ impl ToggleSwitchView {
             .shadow(knob_shadow());
         let knob = match self.phase {
             TogglePhase::Opening { .. } => knob
-                .with_animation(
+                .with_visual_animation(
                     "toggle-switch-knob",
-                    ease_out_cubic_motion(ANIMATION_DURATION).with_property(
-                        AnimationProperty::translation(
-                            point(px(-KNOB_TRAVEL), px(0.0)),
-                            Point::default(),
-                        ),
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_translation(
+                        point(px(-KNOB_TRAVEL), px(0.0)),
+                        Point::default(),
                     ),
-                    |this, _progress| this,
                 )
+                .expect("toggle knob uses a visual translation track")
                 .into_any_element(),
             TogglePhase::Closing { .. } => knob
-                .with_animation(
+                .with_visual_animation(
                     "toggle-switch-knob",
-                    ease_out_cubic_motion(ANIMATION_DURATION).with_property(
-                        AnimationProperty::translation(
-                            point(px(KNOB_TRAVEL), px(0.0)),
-                            Point::default(),
-                        ),
+                    ease_out_cubic_motion(ANIMATION_DURATION).with_translation(
+                        point(px(KNOB_TRAVEL), px(0.0)),
+                        Point::default(),
                     ),
-                    |this, _progress| this,
                 )
+                .expect("toggle knob uses a visual translation track")
                 .into_any_element(),
             TogglePhase::Stable => knob.into_any_element(),
         };
@@ -293,20 +287,16 @@ mod tests {
     fn completed_closing_phase_settles_to_static_off_state() {
         let started_at = Instant::now();
         let mut view = test_view(true);
-        assert!(view.sync(
-            LightColors::colors(),
-            false,
-            Rc::new(|_| {}),
-            started_at,
-        ));
-        assert!(!view.settle_completed_phase(
-            started_at + ANIMATION_DURATION - Duration::from_millis(1)
-        ));
+        assert!(view.sync(LightColors::colors(), false, Rc::new(|_| {}), started_at,));
+        assert!(
+            !view
+                .settle_completed_phase(started_at + ANIMATION_DURATION - Duration::from_millis(1))
+        );
         assert!(matches!(view.phase, TogglePhase::Closing { .. }));
 
-        assert!(view.settle_completed_phase(
-            started_at + ANIMATION_DURATION + Duration::from_millis(1)
-        ));
+        assert!(
+            view.settle_completed_phase(started_at + ANIMATION_DURATION + Duration::from_millis(1))
+        );
         assert_eq!(view.phase, TogglePhase::Stable);
         assert!(!view.enabled);
         assert_eq!(view.phase_deadline(), None);

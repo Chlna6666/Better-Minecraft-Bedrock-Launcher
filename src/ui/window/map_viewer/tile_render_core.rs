@@ -308,130 +308,125 @@ pub(super) fn render_tile_batch_stream(
     };
 
     let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_session.render_decoded_tiles(
-            &planned_tiles,
-            render_options,
-            output_options,
-            {
-                let ready_batcher = Arc::clone(&ready_batcher);
-                let requested_tiles = requested_tiles.clone();
-                move |event| {
-                    if stream_cancel.is_cancelled() {
-                        return Err(bedrock_render::BedrockRenderError::Cancelled);
-                    }
-                    match event {
-                        DecodedTileEvent::Ready {
-                            planned,
-                            tile,
-                            source,
-                        } => {
-                            let coord = (planned.job.coord.x, planned.job.coord.z);
-                            let tile_width = tile.width;
-                            let tile_height = tile.height;
-                            let tile_pixel_format = tile.pixel_format;
-                            tracing::trace!(
-                                tile = ?coord,
-                                width = tile_width,
-                                height = tile_height,
-                                pixel_format = ?tile_pixel_format,
-                                ?source,
-                                "map_viewer tile_ready"
-                            );
-                            let (image, pixel_format, width, height, estimated_bytes) =
-                                match render_image_from_decoded_tile_parts(
-                                    tile_width,
-                                    tile_height,
-                                    tile_pixel_format,
-                                    tile.pixels,
-                                ) {
-                                    Ok(rendered) => rendered,
-                                    Err(error) => {
-                                        send_tile_event_or_cancel(
-                                            &event_sender,
-                                            &stream_cancel,
-                                            TileRenderEvent::Failed {
-                                                coord,
-                                                message: error.clone(),
-                                            },
-                                        )?;
-                                        return Err(
-                                            bedrock_render::BedrockRenderError::Validation(error),
-                                        );
-                                    }
-                                };
-                            let ready_tiles = {
-                                let mut ready_batcher = ready_batcher
-                                    .lock()
-                                    .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?;
-                                ready_batcher.push(ReadyTile {
-                                    coord,
-                                    tile: ViewerTile {
-                                        image,
-                                        pixel_format: Some(pixel_format),
-                                        width,
-                                        height,
-                                        estimated_bytes,
-                                        layout: planned.layout,
-                                    },
-                                    source,
-                                    chunk_positions: planned.chunk_positions.clone(),
-                                })
-                            };
-                            send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
-                        }
-                        DecodedTileEvent::Empty { planned } => {
-                            let coord = (planned.job.coord.x, planned.job.coord.z);
-                            tracing::trace!(tile = ?coord, "map_viewer tile_empty");
-                            send_tile_event_or_cancel(
-                                &event_sender,
-                                &stream_cancel,
-                                TileRenderEvent::Empty {
-                                    coord,
-                                    message: "tile has no renderable chunks".to_string(),
-                                },
-                            )?;
-                        }
-                        DecodedTileEvent::Failed { planned, error } => {
-                            tracing::warn!(
-                                tile = ?(planned.job.coord.x, planned.job.coord.z),
-                                %error,
-                                "map_viewer tile_stream_failed"
-                            );
-                            send_tile_event_or_cancel(
-                                &event_sender,
-                                &stream_cancel,
-                                TileRenderEvent::Failed {
-                                    coord: (planned.job.coord.x, planned.job.coord.z),
-                                    message: error,
-                                },
-                            )?;
-                        }
-                        DecodedTileEvent::Progress(_) => {}
-                        DecodedTileEvent::Complete {
-                            diagnostics,
-                            mut stats,
-                        } => {
-                            let ready_tiles = ready_batcher
-                                .lock()
-                                .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
-                                .flush();
-                            send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
-                            stats.planned_tiles = requested_tile_count;
-                            send_tile_event_or_cancel(
-                                &event_sender,
-                                &stream_cancel,
-                                TileRenderEvent::Complete {
-                                    requested_tiles: requested_tiles.clone(),
-                                    diagnostics,
-                                    stats,
-                                },
-                            )?;
-                        }
-                    }
-                    Ok(())
+        render_session.render_decoded_tiles(&planned_tiles, render_options, output_options, {
+            let ready_batcher = Arc::clone(&ready_batcher);
+            let requested_tiles = requested_tiles.clone();
+            move |event| {
+                if stream_cancel.is_cancelled() {
+                    return Err(bedrock_render::BedrockRenderError::Cancelled);
                 }
-            },
-        )
+                match event {
+                    DecodedTileEvent::Ready {
+                        planned,
+                        tile,
+                        source,
+                    } => {
+                        let coord = (planned.job.coord.x, planned.job.coord.z);
+                        let tile_width = tile.width;
+                        let tile_height = tile.height;
+                        let tile_pixel_format = tile.pixel_format;
+                        tracing::trace!(
+                            tile = ?coord,
+                            width = tile_width,
+                            height = tile_height,
+                            pixel_format = ?tile_pixel_format,
+                            ?source,
+                            "map_viewer tile_ready"
+                        );
+                        let (image, pixel_format, width, height, estimated_bytes) =
+                            match render_image_from_decoded_tile_parts(
+                                tile_width,
+                                tile_height,
+                                tile_pixel_format,
+                                tile.pixels,
+                            ) {
+                                Ok(rendered) => rendered,
+                                Err(error) => {
+                                    send_tile_event_or_cancel(
+                                        &event_sender,
+                                        &stream_cancel,
+                                        TileRenderEvent::Failed {
+                                            coord,
+                                            message: error.clone(),
+                                        },
+                                    )?;
+                                    return Err(bedrock_render::BedrockRenderError::Validation(
+                                        error,
+                                    ));
+                                }
+                            };
+                        let ready_tiles = {
+                            let mut ready_batcher = ready_batcher
+                                .lock()
+                                .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?;
+                            ready_batcher.push(ReadyTile {
+                                coord,
+                                tile: ViewerTile {
+                                    image,
+                                    pixel_format: Some(pixel_format),
+                                    width,
+                                    height,
+                                    estimated_bytes,
+                                    layout: planned.layout,
+                                },
+                                source,
+                                chunk_positions: planned.chunk_positions.clone(),
+                            })
+                        };
+                        send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
+                    }
+                    DecodedTileEvent::Empty { planned } => {
+                        let coord = (planned.job.coord.x, planned.job.coord.z);
+                        tracing::trace!(tile = ?coord, "map_viewer tile_empty");
+                        send_tile_event_or_cancel(
+                            &event_sender,
+                            &stream_cancel,
+                            TileRenderEvent::Empty {
+                                coord,
+                                message: "tile has no renderable chunks".to_string(),
+                            },
+                        )?;
+                    }
+                    DecodedTileEvent::Failed { planned, error } => {
+                        tracing::warn!(
+                            tile = ?(planned.job.coord.x, planned.job.coord.z),
+                            %error,
+                            "map_viewer tile_stream_failed"
+                        );
+                        send_tile_event_or_cancel(
+                            &event_sender,
+                            &stream_cancel,
+                            TileRenderEvent::Failed {
+                                coord: (planned.job.coord.x, planned.job.coord.z),
+                                message: error,
+                            },
+                        )?;
+                    }
+                    DecodedTileEvent::Progress(_) => {}
+                    DecodedTileEvent::Complete {
+                        diagnostics,
+                        mut stats,
+                    } => {
+                        let ready_tiles = ready_batcher
+                            .lock()
+                            .map_err(|_| render_io_error("渲染瓦片批处理状态锁已损坏"))?
+                            .flush();
+                        send_ready_tiles_or_cancel(&event_sender, &stream_cancel, ready_tiles)?;
+                        stats.planned_tiles = requested_tile_count;
+                        send_tile_event_or_cancel(
+                            &event_sender,
+                            &stream_cancel,
+                            TileRenderEvent::Complete {
+                                requested_tiles: requested_tiles.clone(),
+                                diagnostics,
+                                stats,
+                            },
+                        )?;
+                    }
+                }
+                Ok(())
+            }
+        })
     }))
     .map_err(|payload| format!("渲染瓦片任务崩溃: {}", panic_payload_message(payload)))?
     .map_err(|error| format!("渲染瓦片失败: {error}"));
@@ -789,6 +784,8 @@ pub(super) fn web_relief_surface_options() -> SurfaceRenderOptions {
     SurfaceRenderOptions {
         lighting: TerrainLightingOptions {
             enabled: true,
+            gradient_algorithm: TerrainGradientAlgorithm::Horn,
+            shading_mode: TerrainShadingMode::Directional,
             light_azimuth_degrees: 315.0,
             light_elevation_degrees: 40.0,
             normal_strength: 2.35,

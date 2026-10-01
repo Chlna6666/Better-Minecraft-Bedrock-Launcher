@@ -34,6 +34,29 @@ pub enum MapViewerRightPanel {
     Nbt,
     Player,
     Preview3d,
+    Generator,
+    ImageGenerator,
+    MapImage,
+}
+
+impl MapViewerRightPanel {
+    /// Whether this editor keeps its parameters beside the central import preview.
+    pub const fn is_import(self) -> bool {
+        matches!(
+            self,
+            Self::Generator | Self::ImageGenerator | Self::MapImage
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// Central workspace content while an import editor owns the right sidebar.
+pub enum ImportWorkspaceMode {
+    /// Inspect the generated blocks or map pixels without writing to the world.
+    #[default]
+    Preview,
+    /// Inspect the world canvas and choose or confirm the import destination.
+    Placement,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +83,8 @@ pub struct MapViewerUiState {
     pub active_left_panel: MapViewerLeftPanel,
     pub active_bottom_tab: MapViewerBottomTab,
     pub active_right_panel: MapViewerRightPanel,
+    /// Preview or world placement for the active import editor.
+    pub import_workspace_mode: ImportWorkspaceMode,
     pub top_more_open: bool,
     pub context_more_open: bool,
     pub context_paste_open: bool,
@@ -77,6 +102,7 @@ impl Default for MapViewerUiState {
             active_left_panel: MapViewerLeftPanel::Tools,
             active_bottom_tab: MapViewerBottomTab::ChunkTree,
             active_right_panel: MapViewerRightPanel::Nbt,
+            import_workspace_mode: ImportWorkspaceMode::Preview,
             top_more_open: false,
             context_more_open: false,
             context_paste_open: false,

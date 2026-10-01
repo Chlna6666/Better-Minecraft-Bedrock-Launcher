@@ -43,7 +43,9 @@ fn validate_version_folder_component(value: &str) -> Result<String, String> {
         || value == ".."
         || value.contains('/')
         || value.contains('\\')
-        || value.chars().any(|ch| matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        || value
+            .chars()
+            .any(|ch| matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
     {
         return Err("无效的版本目录名称".to_string());
     }
@@ -106,10 +108,9 @@ where
             return;
         }
 
-        let result = crate::tasks::runtime::run_io_blocking(move || {
-            operation(blocking_task_id.as_str())
-        })
-        .await;
+        let result =
+            crate::tasks::runtime::run_io_blocking(move || operation(blocking_task_id.as_str()))
+                .await;
 
         match result {
             Ok(Ok(VersionMutationOutcome::Completed(message))) => {
@@ -123,25 +124,13 @@ where
                 if crate::tasks::task_manager::is_cancelled(&worker_task_id)
                     && error.contains("已取消") =>
             {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "cancelled",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "cancelled", Some(error));
             }
             Ok(Err(error)) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "error",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
             }
             Err(error) => {
-                crate::tasks::task_manager::finish_task(
-                    &worker_task_id,
-                    "error",
-                    Some(error),
-                );
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error));
             }
         }
     })
@@ -194,51 +183,53 @@ pub fn start_delete_version_task(folder_name: String) -> Result<String, String> 
     let folder_name = validate_version_folder_component(&folder_name)?;
     let detail = folder_name.clone();
 
-    start_version_mutation_task("删除游戏版本", detail, "deleting_version", move |task_id| {
-        let versions_root = file_ops::bmcbl_subdir("versions");
-        let version_dir = versions_root.join(&folder_name);
-        if !version_dir.is_dir() {
-            return Err(format!("版本目录不存在: {}", version_dir.display()));
-        }
+    start_version_mutation_task(
+        "删除游戏版本",
+        detail,
+        "deleting_version",
+        move |task_id| {
+            let versions_root = file_ops::bmcbl_subdir("versions");
+            let version_dir = versions_root.join(&folder_name);
+            if !version_dir.is_dir() {
+                return Err(format!("版本目录不存在: {}", version_dir.display()));
+            }
 
-        ensure_version_task_active(task_id)?;
-        let tombstone = versions_root.join(format!(
-            ".{}.bmcb-delete-{}",
-            folder_name,
-            version_task_token(task_id)
-        ));
-        if tombstone.exists() {
-            return Err(format!("删除暂存目录已存在: {}", tombstone.display()));
-        }
+            ensure_version_task_active(task_id)?;
+            let tombstone = versions_root.join(format!(
+                ".{}.bmcb-delete-{}",
+                folder_name,
+                version_task_token(task_id)
+            ));
+            if tombstone.exists() {
+                return Err(format!("删除暂存目录已存在: {}", tombstone.display()));
+            }
 
-        let started_at = Instant::now();
-        fs::rename(&version_dir, &tombstone).map_err(|error| {
-            format!(
-                "提交版本删除失败: {} -> {} ({error})",
-                version_dir.display(),
-                tombstone.display()
-            )
-        })?;
+            let started_at = Instant::now();
+            fs::rename(&version_dir, &tombstone).map_err(|error| {
+                format!(
+                    "提交版本删除失败: {} -> {} ({error})",
+                    version_dir.display(),
+                    tombstone.display()
+                )
+            })?;
 
-        // Rename is the delete commit boundary. From this point cancellation cannot leave the
-        // canonical version half-present; finish tombstone cleanup before publishing terminal.
-        fs::remove_dir_all(&tombstone).with_context(|| {
-            format!("清理已删除版本暂存目录失败: {}", tombstone.display())
-        }).map_err(|error| error.to_string())?;
+            // Rename is the delete commit boundary. From this point cancellation cannot leave the
+            // canonical version half-present; finish tombstone cleanup before publishing terminal.
+            fs::remove_dir_all(&tombstone)
+                .with_context(|| format!("清理已删除版本暂存目录失败: {}", tombstone.display()))
+                .map_err(|error| error.to_string())?;
 
-        debug!(
-            folder = %folder_name,
-            elapsed = ?started_at.elapsed(),
-            "版本删除事务完成"
-        );
-        Ok(VersionMutationOutcome::Completed("版本已删除".to_string()))
-    })
+            debug!(
+                folder = %folder_name,
+                elapsed = ?started_at.elapsed(),
+                "版本删除事务完成"
+            );
+            Ok(VersionMutationOutcome::Completed("版本已删除".to_string()))
+        },
+    )
 }
 
-pub fn start_rename_version_task(
-    old_name: String,
-    new_name: String,
-) -> Result<String, String> {
+pub fn start_rename_version_task(old_name: String, new_name: String) -> Result<String, String> {
     let old_name = validate_version_folder_component(&old_name)?;
     let new_name = validate_version_folder_component(&new_name)?;
     if old_name == new_name {
@@ -246,30 +237,35 @@ pub fn start_rename_version_task(
     }
     let detail = format!("{old_name} → {new_name}");
 
-    start_version_mutation_task("重命名游戏版本", detail, "renaming_version", move |task_id| {
-        let versions_root = file_ops::bmcbl_subdir("versions");
-        let old_dir = versions_root.join(&old_name);
-        let new_dir = versions_root.join(&new_name);
-        if !old_dir.is_dir() {
-            return Err(format!("原版本目录不存在: {}", old_dir.display()));
-        }
-        if new_dir.exists() {
-            return Err(format!("已存在同名的游戏实例: {new_name}"));
-        }
+    start_version_mutation_task(
+        "重命名游戏版本",
+        detail,
+        "renaming_version",
+        move |task_id| {
+            let versions_root = file_ops::bmcbl_subdir("versions");
+            let old_dir = versions_root.join(&old_name);
+            let new_dir = versions_root.join(&new_name);
+            if !old_dir.is_dir() {
+                return Err(format!("原版本目录不存在: {}", old_dir.display()));
+            }
+            if new_dir.exists() {
+                return Err(format!("已存在同名的游戏实例: {new_name}"));
+            }
 
-        ensure_version_task_active(task_id)?;
-        fs::rename(&old_dir, &new_dir).map_err(|error| {
-            format!(
-                "重命名版本目录失败: {} -> {} ({error})",
-                old_dir.display(),
-                new_dir.display()
-            )
-        })?;
+            ensure_version_task_active(task_id)?;
+            fs::rename(&old_dir, &new_dir).map_err(|error| {
+                format!(
+                    "重命名版本目录失败: {} -> {} ({error})",
+                    old_dir.display(),
+                    new_dir.display()
+                )
+            })?;
 
-        // Directory rename is the atomic commit point. Late cancellation reports the committed
-        // result instead of attempting a second rename rollback.
-        Ok(VersionMutationOutcome::Completed(format!(
-            "版本已重命名为 {new_name}"
-        )))
-    })
+            // Directory rename is the atomic commit point. Late cancellation reports the committed
+            // result instead of attempting a second rename rollback.
+            Ok(VersionMutationOutcome::Completed(format!(
+                "版本已重命名为 {new_name}"
+            )))
+        },
+    )
 }

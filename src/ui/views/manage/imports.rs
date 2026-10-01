@@ -179,18 +179,19 @@ impl ManagePageView {
                 self.pending_mod_import_items.clear();
                 return;
             };
-            self.pending_mod_import_dialogs.push_back(ModTypeDialogState {
-                version: version.clone(),
-                target: ModTypeDialogTarget::ImportFile {
-                    path,
-                    display_name,
-                    current: index + 1,
-                    total,
-                },
-                selected_mod_type: SharedString::from("preload-native"),
-                delay_input,
-                pending: false,
-            });
+            self.pending_mod_import_dialogs
+                .push_back(ModTypeDialogState {
+                    version: version.clone(),
+                    target: ModTypeDialogTarget::ImportFile {
+                        path,
+                        display_name,
+                        current: index + 1,
+                        total,
+                    },
+                    selected_mod_type: SharedString::from("preload-native"),
+                    delay_input,
+                    pending: false,
+                });
         }
 
         self.mod_type_dialog = self.pending_mod_import_dialogs.pop_front();
@@ -237,7 +238,10 @@ impl ManagePageView {
         colors: &ThemeColors,
         cx: &App,
     ) -> Option<AnyElement> {
-        let preview = self.drop_hover.as_ref().filter(|preview| preview.target == target)?;
+        let preview = self
+            .drop_hover
+            .as_ref()
+            .filter(|preview| preview.target == target)?;
         let i18n = cx.global::<I18n>();
         let has_selected_version = cx
             .global::<ManagePageState>()
@@ -252,28 +256,35 @@ impl ManagePageView {
             ManageDropTarget::Assets(_) => false,
         };
         let accepted = preview.accepted_count > 0 && target_ready;
-        let accent = if accepted { colors.accent } else { colors.danger };
+        let accent = if accepted {
+            colors.accent
+        } else {
+            colors.danger
+        };
         let target_label = drop_target_label(target, i18n);
         let hint = if matches!(target, ManageDropTarget::Assets(_)) && !has_selected_version {
-            i18n
-                .lookup("Manage.select_import_version")
+            i18n.lookup("Manage.select_import_version")
                 .unwrap_or_else(|| SharedString::from("Select a target game version first"))
         } else {
             match target {
-            ManageDropTarget::Versions => i18n
-                .lookup("Manage.drop_preview_version_hint")
-                .unwrap_or_else(|| SharedString::from("Confirm version packages before installation")),
-            ManageDropTarget::Assets(ManageTab::Mod) => i18n
-                .lookup("Manage.drop_preview_mod_hint")
-                .unwrap_or_else(|| SharedString::from("Configure every Mod before import")),
-            ManageDropTarget::Assets(
-                ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
-            ) => i18n
-                .lookup("Manage.drop_preview_asset_hint")
-                .unwrap_or_else(|| SharedString::from("All packages will be parsed in one import preview")),
-            ManageDropTarget::Assets(_) => i18n
-                .lookup("Manage.drop_import_not_supported")
-                .unwrap_or_else(|| SharedString::from("This category does not support import")),
+                ManageDropTarget::Versions => i18n
+                    .lookup("Manage.drop_preview_version_hint")
+                    .unwrap_or_else(|| {
+                        SharedString::from("Confirm version packages before installation")
+                    }),
+                ManageDropTarget::Assets(ManageTab::Mod) => i18n
+                    .lookup("Manage.drop_preview_mod_hint")
+                    .unwrap_or_else(|| SharedString::from("Configure every Mod before import")),
+                ManageDropTarget::Assets(
+                    ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map,
+                ) => i18n
+                    .lookup("Manage.drop_preview_asset_hint")
+                    .unwrap_or_else(|| {
+                        SharedString::from("All packages will be parsed in one import preview")
+                    }),
+                ManageDropTarget::Assets(_) => i18n
+                    .lookup("Manage.drop_import_not_supported")
+                    .unwrap_or_else(|| SharedString::from("This category does not support import")),
             }
         };
         let count_text = t!(
@@ -467,8 +478,7 @@ fn drop_target_label(target: ManageDropTarget, i18n: &I18n) -> SharedString {
         ManageDropTarget::Assets(ManageTab::Screenshot) => "ManagePage.tabs.screenshots",
         ManageDropTarget::Assets(ManageTab::Server) => "ManagePage.tabs.servers",
     };
-    i18n
-        .lookup(key)
+    i18n.lookup(key)
         .unwrap_or_else(|| SharedString::from(key.to_string()))
 }
 

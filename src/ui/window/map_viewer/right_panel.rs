@@ -42,6 +42,11 @@ impl MapViewerWindowView {
                 MapViewerRightPanel::Preview3d => {
                     self.render_preview_3d_panel(colors, cx).into_any_element()
                 }
+                MapViewerRightPanel::Generator => self.render_generator_panel(colors, cx),
+                MapViewerRightPanel::ImageGenerator => {
+                    self.render_image_generator_panel(colors, cx)
+                }
+                MapViewerRightPanel::MapImage => self.render_map_image_panel(colors, cx),
             })
     }
 

@@ -135,16 +135,40 @@ impl MapViewerWindowView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(
-                        if self.player_workspace_active()
-                            && self.player_workspace.center != PlayerWorkspaceCenter::Map
-                        {
-                            self.render_player_center_workspace(colors, cx)
-                                .into_any_element()
-                        } else {
-                            self.canvas_view.clone().into_any_element()
-                        },
-                    ),
+                    .child(if self.import_workspace_active() {
+                        self.render_import_workspace(colors, cx).into_any_element()
+                    } else if self.player_workspace_active()
+                        && self.player_workspace.center != PlayerWorkspaceCenter::Map
+                    {
+                        self.render_player_center_workspace(colors, cx)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .w_full()
+                            .min_h(px(0.0))
+                            .min_w(px(0.0))
+                            .child(self.canvas_view.clone())
+                            .when(self.overlay_options.load_risk, |canvas| {
+                                canvas.child(self.render_load_risk_legend(colors, cx))
+                            })
+                            .into_any_element()
+                    })
+                    .when(self.ui_state.bottom_panel_open, |center| {
+                        center
+                            .child(
+                                split_handle(SplitPaneAxis::Vertical, colors.border).on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                        this.begin_bottom_panel_resize(event.position, cx)
+                                    }),
+                                ),
+                            )
+                            .child(self.render_bottom_dock(colors, cx))
+                    }),
             )
             .when(self.ui_state.right_panel_open, |this| {
                 this.child(
@@ -389,6 +413,19 @@ impl MapViewerWindowView {
                     .child(
                         mode_button(
                             colors,
+                            t!("MapViewer.load_risk"),
+                            self.overlay_options.load_risk,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.toggle_load_risk_overlay(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        mode_button(
+                            colors,
                             t!("MapViewer.player_overlay"),
                             self.overlay_options.players,
                         )
@@ -459,6 +496,9 @@ impl MapViewerWindowView {
                         ),
                     ),
             )
+            .when(self.overlay_options.load_risk, |panel| {
+                panel.child(self.render_load_risk_details(cx))
+            })
     }
 
     fn render_slime_analysis(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
@@ -550,9 +590,10 @@ impl MapViewerWindowView {
                     t!("MapViewer.slime_pattern_isolation_hint"),
                 ))
             })
-            .when(self.slime_farm_search_mode == SlimeFarmSearchMode::Square3x3, |this| {
-                this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare")))
-            })
+            .when(
+                self.slime_farm_search_mode == SlimeFarmSearchMode::Square3x3,
+                |this| this.child(status_badge(colors, t!("MapViewer.slime_3x3_rare"))),
+            )
             .when_some(scope, |this, scope| {
                 let scope_label = match scope.source {
                     SlimeFarmSearchScopeSource::Viewport => t!("MapViewer.slime_scope_viewport"),
@@ -582,10 +623,7 @@ impl MapViewerWindowView {
                         ))
                     })
                     .when(scope.clipped_for_precision, |this| {
-                        this.child(status_badge(
-                            colors,
-                            t!("MapViewer.slime_scope_clipped"),
-                        ))
+                        this.child(status_badge(colors, t!("MapViewer.slime_scope_clipped")))
                     })
             })
             .when(self.dimension != Dimension::Overworld, |this| {
@@ -664,9 +702,7 @@ impl MapViewerWindowView {
                     .child(
                         toolbar_button(colors, t!("MapViewer.selection_stats")).on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.exact_selection_stats(cx)
-                            }),
+                            cx.listener(|this, _event, _window, cx| this.exact_selection_stats(cx)),
                         ),
                     )
                     .child(

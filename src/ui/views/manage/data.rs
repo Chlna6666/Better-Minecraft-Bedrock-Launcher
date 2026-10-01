@@ -11,7 +11,6 @@ use crate::core::minecraft::assets::{
     start_delete_game_assets_task,
 };
 use crate::core::minecraft::import::{ImportCheckResult, PackagePreview};
-use crate::core::minecraft::map::McMapInfo;
 pub use crate::core::minecraft::nbt::LevelDatDocument;
 use crate::core::minecraft::nbt::{
     read_level_dat_document as read_level_dat_file_document,
@@ -20,6 +19,7 @@ use crate::core::minecraft::nbt::{
 use crate::core::minecraft::paths::GamePathOptions;
 use crate::core::minecraft::resource_packs::{Header, McPackInfo};
 use crate::core::minecraft::skin_packs::McSkinPackInfo;
+use crate::core::minecraft::worlds::WorldSummary;
 use crate::core::version::settings::{
     VANILLA_SKIN_PACK_REDIRECTION_SOURCE, VersionConfig, get_version_config, save_version_config,
 };
@@ -534,9 +534,9 @@ async fn load_map_assets(
         user_id: selected_gdk_user.map(ToString::to_string),
         allow_shared_fallback: false,
     };
-    let entries = manage_service::load_maps(options).await?;
+    let entries = manage_service::load_worlds(options).await?;
 
-    Ok(entries.into_iter().map(manage_asset_from_map).collect())
+    Ok(entries.into_iter().map(manage_asset_from_world).collect())
 }
 
 fn manage_asset_from_mod(managed_mod: ManagedModInfo) -> ManageAssetEntry {
@@ -707,46 +707,46 @@ fn skin_previews_from_pack(pack: &McSkinPackInfo) -> Option<Arc<[ManageSkinPrevi
     (!previews.is_empty()).then(|| Arc::from(previews.into_boxed_slice()))
 }
 
-fn manage_asset_from_map(map: McMapInfo) -> ManageAssetEntry {
-    let display_name = map
+fn manage_asset_from_world(world: WorldSummary) -> ManageAssetEntry {
+    let display_name = world
         .level_name
         .clone()
-        .unwrap_or_else(|| map.folder_name.clone());
+        .unwrap_or_else(|| world.folder_name.clone());
 
     let mut detail_parts = Vec::new();
-    if let Some(size) = map.size_readable.clone() {
+    if let Some(size) = world.size_readable.clone() {
         detail_parts.push(size);
     }
-    if let Some(modified) = map.modified.clone() {
+    if let Some(modified) = world.modified.clone() {
         detail_parts.push(format_date_label(&modified));
     }
     let detail = (!detail_parts.is_empty()).then(|| SharedString::from(detail_parts.join(" · ")));
 
     ManageAssetEntry {
-        key: SharedString::from(format!("map:{}", map.folder_name)),
-        folder_name: SharedString::from(map.folder_name.clone()),
+        key: SharedString::from(format!("map:{}", world.folder_name)),
+        folder_name: SharedString::from(world.folder_name.clone()),
         display_name: SharedString::from(display_name),
         detail,
         description: None,
-        file_path: SharedString::from(map.folder_path.clone()),
-        open_path: SharedString::from(map.folder_path.clone()),
-        icon_path: map.icon_path.map(SharedString::from),
-        modified_iso: map.modified.clone().map(SharedString::from),
-        modified_label: map
+        file_path: SharedString::from(world.folder_path.clone()),
+        open_path: SharedString::from(world.folder_path.clone()),
+        icon_path: world.icon_path.map(SharedString::from),
+        modified_iso: world.modified.clone().map(SharedString::from),
+        modified_label: world
             .modified
             .as_deref()
             .map(format_date_label)
             .map(SharedString::from),
-        size_bytes: map.size_bytes,
-        size_label: map.size_readable.map(SharedString::from),
-        source: map.source.map(SharedString::from),
-        edition: map.edition.map(SharedString::from),
-        gdk_user: map.gdk_user.map(SharedString::from),
+        size_bytes: world.size_bytes,
+        size_label: world.size_readable.map(SharedString::from),
+        source: world.source.map(SharedString::from),
+        edition: world.edition.map(SharedString::from),
+        gdk_user: world.gdk_user.map(SharedString::from),
         enabled: None,
         mod_type: None,
         inject_delay_ms: None,
-        resource_pack_count: map.resource_packs_count,
-        behavior_pack_count: map.behavior_packs_count,
+        resource_pack_count: world.resource_packs_count,
+        behavior_pack_count: world.behavior_packs_count,
         skin_count: None,
         first_skin_full_texture_path: None,
         first_skin_model_label: None,

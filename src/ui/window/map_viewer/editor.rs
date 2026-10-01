@@ -389,15 +389,9 @@ impl MapViewerWindowView {
     ) {
         self.invalidate_professional_overlay_for_viewport_change();
         let min_block_x = candidate.min_chunk_x.saturating_mul(16);
-        let max_block_x = candidate
-            .max_chunk_x
-            .saturating_add(1)
-            .saturating_mul(16);
+        let max_block_x = candidate.max_chunk_x.saturating_add(1).saturating_mul(16);
         let min_block_z = candidate.min_chunk_z.saturating_mul(16);
-        let max_block_z = candidate
-            .max_chunk_z
-            .saturating_add(1)
-            .saturating_mul(16);
+        let max_block_z = candidate.max_chunk_z.saturating_add(1).saturating_mul(16);
         self.viewport.center_on_block(
             i32::midpoint(min_block_x, max_block_x),
             i32::midpoint(min_block_z, max_block_z),
@@ -433,13 +427,10 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    let tip = block_tip(&world, block, dimension)
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
                         .map_err(|error| error.to_string())?;
+                    let tip =
+                        block_tip(&world, block, dimension).map_err(|error| error.to_string())?;
                     Ok::<_, String>(block_tip_detail(tip))
                 })
                 .await;
@@ -484,13 +475,9 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                    let detail = chunk_detail(&world, chunk)
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
                         .map_err(|error| error.to_string())?;
+                    let detail = chunk_detail(&world, chunk).map_err(|error| error.to_string())?;
                     Ok::<_, String>(chunk_detail_panel(detail))
                 })
                 .await;
@@ -537,11 +524,8 @@ impl MapViewerWindowView {
             let _query_permit = query_budget.acquire().await;
             let result = cx
                 .background_spawn(async move {
-                    let world = World::open(
-                        &world_path,
-                        bedrock_world::OpenOptions::default(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                    let world = World::open(&world_path, bedrock_world::OpenOptions::default())
+                        .map_err(|error| error.to_string())?;
                     let stats = selection_stats(&world, bounds, options)
                         .map_err(|error| error.to_string())?;
                     Ok::<_, String>((stats.clone(), selection_stats_panel(stats)))
@@ -594,6 +578,7 @@ impl MapViewerWindowView {
             false,
         );
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -797,11 +782,27 @@ impl MapViewerWindowView {
         .detach();
     }
 
+    pub(super) fn map_write_busy(&self) -> bool {
+        self.map_bundle_write_busy()
+            || self
+                .professional
+                .active_write_task_id
+                .as_deref()
+                .is_some_and(|id| {
+                    self.task_snapshots
+                        .get(id)
+                        .is_none_or(|task| !task.is_terminal())
+                })
+    }
+
     pub(super) fn run_quick_write_action(
         &mut self,
         action: QuickWriteAction,
         cx: &mut Context<Self>,
     ) {
+        if self.map_write_busy() {
+            return;
+        }
         let paste_progress_total = action
             .progress_seed()
             .filter(|(phase, _)| phase.starts_with("粘贴"))
@@ -850,7 +851,13 @@ impl MapViewerWindowView {
             task_total,
             false,
         );
+        self.professional.active_write_task_id = Some(task_id.clone());
+        if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+            self.task_snapshots
+                .insert(snapshot.id.clone(), Arc::new(snapshot));
+        }
         let cancel = CancelFlag::new();
+        task_manager::register_task_cooperative_cancel(task_id.clone());
         task_manager::register_task_cancel_hook(task_id.clone(), {
             let cancel = cancel.clone();
             move || cancel.cancel()
@@ -925,8 +932,8 @@ impl MapViewerWindowView {
                     };
                     let mut options = bedrock_world::OpenOptions::default();
                     options.read_only = false;
-                    let world = World::open(&world_path, options)
-                        .map_err(|error| error.to_string())?;
+                    let world =
+                        World::open(&world_path, options).map_err(|error| error.to_string())?;
                     let operation = format!("{} via BMCBL map_viewer", action_for_task.label());
                     let guard = WriteGuard::confirmed(world_path.clone(), operation);
                     let history_capture = capture_before_with_world_and_progress(
@@ -1015,11 +1022,22 @@ impl MapViewerWindowView {
             task.detach();
             while let Some(event) = event_receiver.next().await {
                 let is_complete = matches!(&event, QuickWriteEvent::Complete(_));
+                let deferred_completion_message = match &event {
+                    QuickWriteEvent::Complete(Ok((message, _)))
+                        if paste_progress_total.is_some() =>
+                    {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                };
                 let task_id_for_ui = task_id.clone();
                 let Some(view) = handle.upgrade() else {
+                    if let Some(message) = deferred_completion_message {
+                        task_manager::finish_task(&task_id, "completed", Some(message));
+                    }
                     return Ok(());
                 };
-                view.update(cx, move |this, cx| {
+                let update = view.update(cx, move |this, cx| {
                     if this.metadata_generation != generation {
                         if let QuickWriteEvent::Complete(Ok((message, _))) = &event
                             && paste_progress_total.is_some()
@@ -1114,7 +1132,13 @@ impl MapViewerWindowView {
                         },
                     }
                     cx.notify();
-                })?;
+                });
+                if let Err(error) = update {
+                    if let Some(message) = deferred_completion_message {
+                        task_manager::finish_task(&task_id, "completed", Some(message));
+                    }
+                    return Err(error.into());
+                }
                 if is_complete {
                     break;
                 }
@@ -1351,11 +1375,17 @@ pub(super) fn run_edit_action_blocking(
                     "player JSON is not valid NBT JSON: {error}"
                 ))
             })?;
-            let player = PlayerData::from_nbt(id, tag).map_err(|error| {
+            let replacement = PlayerData::from_nbt(id.clone(), tag).map_err(|error| {
                 bedrock_render::BedrockRenderError::Validation(format!(
                     "player NBT serialize failed: {error}"
                 ))
             })?;
+            let mut player = editor.world().player(&id)?.ok_or_else(|| {
+                bedrock_render::BedrockRenderError::Validation(
+                    "player record no longer exists".to_string(),
+                )
+            })?;
+            player.edit_nbt(|nbt| *nbt = replacement.nbt);
             editor.world().save_player(&player)?;
             Ok(MapEditInvalidation::metadata())
         }
@@ -1380,11 +1410,7 @@ pub(super) fn run_edit_action_blocking(
             editor.delete_block_entity_at(chunk, block)
         }
         (EditTarget::Actors(pos), EditAction::Delete) => {
-            let Some(uid) = editor
-                .actors(pos)?
-                .into_iter()
-                .find_map(|actor| actor.uid)
-            else {
+            let Some(uid) = editor.actors(pos)?.into_iter().find_map(|actor| actor.uid) else {
                 return Err(bedrock_render::BedrockRenderError::Validation(
                     "chunk has no modern actor UID to delete".to_string(),
                 ));
@@ -1408,9 +1434,7 @@ pub(super) fn run_edit_action_blocking(
             Ok(MapEditInvalidation::chunks(affected).with_metadata())
         }
         (EditTarget::Actor { chunk, unique_id }, EditAction::Delete) => {
-            editor
-                .world()
-                .delete_actor_by_unique_id(chunk, unique_id)?;
+            editor.world().delete_actor_by_unique_id(chunk, unique_id)?;
             Ok(MapEditInvalidation::chunk(chunk).with_metadata())
         }
         (EditTarget::HeightMap(pos), EditAction::Save) => {
@@ -1432,7 +1456,7 @@ pub(super) fn run_edit_action_blocking(
         }
         (EditTarget::SavedData(id), EditAction::Delete) => editor.delete_map_item(&id),
         (EditTarget::GlobalRecord(kind), EditAction::Delete) => editor.delete_global(kind),
-        (target, action) => Err(bedrock_render::BedrockRenderError::Validation(format!(
+        (target, action) => Err(bedrock_world::BedrockWorldError::Validation(format!(
             "{} does not support {} yet",
             target.operation_label(),
             edit_action_label(&action)
@@ -1697,7 +1721,7 @@ pub(super) fn map_item_editor_detail(
                     record.pixels.as_ref().map_or_else(
                         || "无".to_string(),
                         |pixels| {
-                            format!("{}x{} {}", pixels.width, pixels.height, pixels.colors.len())
+                            format!("{}x{} {}", pixels.width, pixels.height, pixels.rgba.len())
                         },
                     ),
                 ),
@@ -2056,7 +2080,7 @@ pub(super) fn map_item_json(record: &SavedData) -> serde_json::Value {
         "pixels": record.pixels.as_ref().map(|pixels| serde_json::json!({
             "width": pixels.width,
             "height": pixels.height,
-            "colors": pixels.colors.len(),
+            "colors": pixels.rgba.len(),
         })),
     })
 }

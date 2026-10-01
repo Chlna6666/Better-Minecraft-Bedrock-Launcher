@@ -112,7 +112,10 @@ fn remove_file_if_exists(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("清理服务器事务文件失败 {}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "清理服务器事务文件失败 {}: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -135,8 +138,8 @@ fn write_lines_to_file_transactionally(
     remove_file_if_exists(&backup)?;
 
     let content = serialize_external_server_lines(lines);
-    let mut staging_file = fs::File::create(&staging)
-        .map_err(|error| format!("创建服务器 staging 失败: {error}"))?;
+    let mut staging_file =
+        fs::File::create(&staging).map_err(|error| format!("创建服务器 staging 失败: {error}"))?;
     if let Err(error) = staging_file.write_all(content.as_bytes()) {
         let _ = remove_file_if_exists(&staging);
         return Err(format!("写入服务器 staging 失败: {error}"));
@@ -330,16 +333,12 @@ fn start_server_mutation_task(
                     Some(message),
                 );
             }
-            Ok(Err(error)) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
-            Err(error) => crate::tasks::task_manager::finish_task(
-                &worker_task_id,
-                "error",
-                Some(error),
-            ),
+            Ok(Err(error)) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
+            Err(error) => {
+                crate::tasks::task_manager::finish_task(&worker_task_id, "error", Some(error))
+            }
         }
     })
     .map_err(|error| {

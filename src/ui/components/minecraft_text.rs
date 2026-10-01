@@ -235,10 +235,7 @@ fn render_glyph_piece(code_point: u32, glyph_size: Pixels) -> AnyElement {
         .into_any_element()
 }
 
-fn build_inline_pieces(
-    parsed: &ParsedMinecraftText,
-    default_color: Hsla,
-) -> Vec<InlinePiece> {
+fn build_inline_pieces(parsed: &ParsedMinecraftText, default_color: Hsla) -> Vec<InlinePiece> {
     let mut pieces = Vec::new();
     for run in parsed.runs.iter() {
         let style = InlinePieceStyle {
@@ -723,7 +720,7 @@ mod tests {
         assert!(!first.has_animatable_obfuscated_ascii);
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn parsed_text_cache_is_independent_from_theme_color() {
         let first = cached_minecraft_formatted_text("§aTheme Stable");
         let second = cached_minecraft_formatted_text("§aTheme Stable");
@@ -740,7 +737,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[::core::prelude::v1::test]
     fn obfuscated_non_ascii_text_does_not_request_animation_work() {
         let parsed = parse_minecraft_formatted_text("§k中文🙂");
 

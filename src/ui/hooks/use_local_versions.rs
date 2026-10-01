@@ -226,7 +226,10 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
     });
     cx.spawn(async move |cx| {
         if let Err(error) = cache_task.await {
-            warn!(?error, "prefetched local-version isolation cache prime failed");
+            warn!(
+                ?error,
+                "prefetched local-version isolation cache prime failed"
+            );
             return Ok::<(), anyhow::Error>(());
         }
         cx.update_global(|state: &mut LocalVersionsState, _cx| {
@@ -463,7 +466,9 @@ fn prime_version_isolation_cache(versions: &[LaunchVersionEntry]) {
     }
 
     let cache = VERSION_ISOLATION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cache = next;
 }
 
@@ -472,7 +477,9 @@ pub fn version_enable_isolation(version: &LaunchVersionEntry) -> bool {
     let Some(cache) = VERSION_ISOLATION_CACHE.get() else {
         return false;
     };
-    let cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.get(&config_path).copied().unwrap_or(false)
 }
 

@@ -3,8 +3,7 @@ use std::time::Duration;
 
 use anyhow::Error;
 use gpui::{
-    App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, SharedString,
-    Subscription,
+    App, AppContext, AsyncApp, BorrowAppContext, ClipboardItem, Context, SharedString, Subscription,
 };
 use gpui_hooks::hooks::{UseRefHook, UseStateHook};
 use tracing::{debug, info, warn};
@@ -999,12 +998,7 @@ fn watch_launch_prereq_dependency_task(
                     error = %error,
                     "等待启动依赖 BMCBL 任务终态失败"
                 );
-                apply_launch_prereq_failure(
-                    context.request_id,
-                    error_key,
-                    &error.to_string(),
-                    cx,
-                );
+                apply_launch_prereq_failure(context.request_id, error_key, &error.to_string(), cx);
             }
         }
         Ok::<(), Error>(())

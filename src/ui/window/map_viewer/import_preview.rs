@@ -314,6 +314,9 @@ fn import_preview_color_for_state(state: ImportPreviewState<'_>) -> [u8; 4] {
             color
         }
         ImportPreviewBlockClass::Opaque => {
+            if let Some(color) = voxel_block_preview_color(state.name) {
+                return color;
+            }
             let mut color = palette
                 .surface_block_color(state.name, None, true)
                 .to_array();
@@ -322,6 +325,14 @@ fn import_preview_color_for_state(state: ImportPreviewState<'_>) -> [u8; 4] {
         }
         ImportPreviewBlockClass::Air | ImportPreviewBlockClass::SkipTransparent => [0, 0, 0, 0],
     }
+}
+
+fn voxel_block_preview_color(name: &str) -> Option<[u8; 4]> {
+    let candidates = bedrock_voxel::default_block_candidates();
+    let index = candidates
+        .binary_search_by(|candidate| candidate.state.name.as_str().cmp(name))
+        .ok()?;
+    Some(candidates.get(index)?.top_color)
 }
 
 fn import_preview_palette() -> &'static RenderPalette {
@@ -524,5 +535,19 @@ mod tests {
 
         assert_eq!(water[3], 232);
         assert_eq!(glass[3], 204);
+    }
+
+    #[::core::prelude::v1::test]
+    fn import_preview_uses_the_voxel_palette_for_supported_blocks() {
+        let candidate = bedrock_voxel::default_block_candidates()
+            .iter()
+            .find(|candidate| candidate.state.name == "minecraft:pale_oak_planks")
+            .expect("versioned voxel palette contains pale oak planks");
+        let preview = import_preview_color_for_state(ImportPreviewState {
+            name: "minecraft:pale_oak_planks",
+            block_class: ImportPreviewBlockClass::Opaque,
+        });
+
+        assert_eq!(preview, candidate.top_color);
     }
 }

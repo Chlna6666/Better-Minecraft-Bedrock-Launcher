@@ -101,11 +101,10 @@ const APP_VERSION_LABEL: &str = concat!("v", env!("BMCBL_BUILD_VERSION"));
 pub(super) struct NavRenderState {
     pub window_width: Pixels,
     pub visual_active_index: usize,
-    pub pill_left_steps: f32,
-    pub pill_right_steps: f32,
+    pub pill_from_index: usize,
+    pub pill_to_index: usize,
     pub labels_layout_factor: f32,
     pub labels_opacity_factor: f32,
-    pub nav_animating: bool,
 }
 
 pub(super) fn render_nav(
@@ -116,7 +115,6 @@ pub(super) fn render_nav(
     let window_width_px = state.window_width / px(1.);
     let labels_layout_factor = state.labels_layout_factor.clamp(0.0, 1.0);
     let labels_opacity_factor = state.labels_opacity_factor.clamp(0.0, 1.0);
-    let nav_animating = state.nav_animating;
 
     let link_padding_x = if window_width_px <= 1000.0 {
         px(10.)
@@ -135,20 +133,18 @@ pub(super) fn render_nav(
         .visual_active_index
         .min(navigation_length.saturating_sub(1));
     let step_width_px = (item_width + capsule_gap) / px(1.);
-    let maximum_offset_px = step_width_px * navigation_length.saturating_sub(1) as f32;
-    let overshoot_slack_px = step_width_px * 0.30;
-    let maximum_right_px = maximum_offset_px + item_width / px(1.);
-    let left_edge_px =
-        (step_width_px * state.pill_left_steps).clamp(-overshoot_slack_px, maximum_right_px);
-    let right_edge_px = (step_width_px * state.pill_right_steps + item_width / px(1.))
-        .clamp(0.0, maximum_right_px + overshoot_slack_px);
     let pill_inner_inset_px = 1.5;
-    let pill_offset = capsule_padding + px(left_edge_px.min(right_edge_px) + pill_inner_inset_px);
-    let pill_width = px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
+    let target_index = state.pill_to_index.min(navigation_length.saturating_sub(1));
+    let from_index = state
+        .pill_from_index
+        .min(navigation_length.saturating_sub(1));
+    let pill_offset =
+        capsule_padding + px(step_width_px * target_index as f32 + pill_inner_inset_px);
+    let pill_width = item_width - px(pill_inner_inset_px * 2.);
+    let edge_offset = px(step_width_px * (from_index as f32 - target_index as f32));
 
-    // Only this absolute child changes geometry while the pill springs are active. Keep the
-    // retained invalidation boundary here instead of wrapping the whole nav tree, so icons, labels
-    // and hit targets remain replayable across pill frames.
+    // Commit the final layout once. Both spring edges then advance on the presentation owner,
+    // preserving the fixed height/radius and leaving icons, labels, and hit targets static.
     let pill = div()
         .absolute()
         .left(pill_offset)
@@ -157,7 +153,15 @@ pub(super) fn render_nav(
         .h(item_height)
         .rounded(px(17.))
         .bg(colors.accent)
-        .with_layout_animation_target(nav_animating);
+        .with_animation_group(
+            "main-nav-pill",
+            AnimationGroup::horizontal_edges(
+                edge_offset,
+                px(0.),
+                crate::ui::animation::apple_spring(0.34, 0.60),
+                crate::ui::animation::apple_spring(0.42, 0.80),
+            ),
+        );
 
     let nav = div()
         .relative()
@@ -416,7 +420,7 @@ pub(super) fn render_shell(
             .surface
             .opacity(if glass_effect_enabled { 0.78 } else { 1.0 }))
         .when(glass_effect_enabled, |element| {
-            element.backdrop_blur(glass_backdrop_blur_style())
+            element.background_blur(glass_backdrop_blur_style())
         })
         .border_b_1()
         .border_color(colors.border.opacity(0.55))

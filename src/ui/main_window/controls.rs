@@ -508,7 +508,6 @@ impl MainWindowView {
                         if let Some(hex) = normalized {
                             ThemeState::set_accent_hex(&hex, cx);
                         }
-
                     }
                     InputEvent::Blur | InputEvent::PressEnter { .. } => {
                         let (

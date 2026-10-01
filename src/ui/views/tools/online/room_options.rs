@@ -68,15 +68,16 @@ fn render_advanced_panel(
             state.game_ports_input.as_ref(),
             t!("Online.open_ports_placeholder"),
         ))
+        .composite_layer()
         .with_animation(
             "online-room-advanced-panel",
-            spring_motion(spring_bouncy()),
-            |panel, progress| {
-                panel
-                    .opacity(progress.clamp(0.0, 1.0))
-                    .relative()
-                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-            },
+            spring_motion(spring_bouncy()).with_property(AnimationProperty::translation_opacity(
+                point(px(0.0), px(motion::ENTRANCE_OFFSET)),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
+            |panel, _progress| panel,
         )
 }
 

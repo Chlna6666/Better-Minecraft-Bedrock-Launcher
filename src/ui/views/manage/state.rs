@@ -296,22 +296,18 @@ impl ManagePageState {
     pub(super) fn tab_animation_active(&self, now: Instant) -> bool {
         self.tab_anim_seq != 0
             && self.tab_anim_from != self.tab
-            && self
-                .tab_anim_started_at
-                .is_some_and(|started_at| {
-                    now.saturating_duration_since(started_at) <= TAB_ANIMATION_WINDOW
-                })
+            && self.tab_anim_started_at.is_some_and(|started_at| {
+                now.saturating_duration_since(started_at) <= TAB_ANIMATION_WINDOW
+            })
     }
 
     pub(super) fn pack_subtype_animation_active(&self, now: Instant) -> bool {
         self.tab == ManageTab::ResourcePack
             && self.pack_subtype_anim_seq != 0
             && self.pack_subtype_anim_from != self.pack_subtype
-            && self
-                .pack_subtype_anim_started_at
-                .is_some_and(|started_at| {
-                    now.saturating_duration_since(started_at) <= PACK_SUBTYPE_ANIMATION_WINDOW
-                })
+            && self.pack_subtype_anim_started_at.is_some_and(|started_at| {
+                now.saturating_duration_since(started_at) <= PACK_SUBTYPE_ANIMATION_WINDOW
+            })
     }
 
     pub fn has_transient_requests(&self) -> bool {

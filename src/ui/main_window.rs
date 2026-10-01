@@ -122,11 +122,11 @@ where
         || Empty {}.into_any_element(),
         |view| {
             view.cached_by(
-                    StyleRefinement::default().size_full(),
-                    &(route_key, type_name::<T>()),
-                )
-                .progressive()
-                .into_any_element()
+                StyleRefinement::default().size_full(),
+                &(route_key, type_name::<T>()),
+            )
+            .progressive()
+            .into_any_element()
         },
     )
 }
@@ -275,11 +275,7 @@ impl MainWindowView {
         window.is_minimized()
     }
 
-    fn maybe_trim_working_set_on_minimize(
-        &mut self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn maybe_trim_working_set_on_minimize(&mut self, window: &Window, cx: &mut Context<Self>) {
         let is_minimized = Self::is_window_minimized(window);
         if is_minimized == self.was_window_minimized {
             return;
@@ -304,7 +300,12 @@ impl MainWindowView {
         &mut self,
         now: Instant,
         cx: &App,
-    ) -> (f32, Option<Hsla>, crate::ui::theme::colors::ThemeColors, bool) {
+    ) -> (
+        f32,
+        Option<Hsla>,
+        crate::ui::theme::colors::ThemeColors,
+        bool,
+    ) {
         let (theme_k, theme_accent, theme_animating) = {
             let theme = cx.global::<ThemeState>();
             (theme.factor(now), theme.accent, theme.is_animating(now))
@@ -348,7 +349,8 @@ impl MainWindowView {
         };
         let debug_enabled = cx.global::<DebugState>().enabled;
         let update_render_state = self.read_update_render_state(now, debug_enabled, cx);
-        let (theme_k, theme_accent, theme_colors, theme_animating) = self.theme_colors_for_render(now, cx);
+        let (theme_k, theme_accent, theme_colors, theme_animating) =
+            self.theme_colors_for_render(now, cx);
         let window_bounds = window.bounds();
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
@@ -463,17 +465,19 @@ impl MainWindowView {
         }
 
         let route_key = route_enter_animation_key(route);
-        // Preserve the stable v0.2.0 transition path for heterogeneous page subtrees. The spring
-        // remains unclamped so the physical overshoot is visible, while the cached page entity keeps
-        // expensive list/image work retained between animation samples.
-        let animated_page = div().size_full().child(page).with_animation(
-            route_key,
-            spring_motion(apple_spring(0.36, 0.74)),
-            move |page, progress| {
-                page.relative()
-                    .left(px(18.0 * transition_direction * (1.0 - progress)))
-            },
-        );
+        // Keep route geometry stable and move the submitted page scene as one retained subtree.
+        let animated_page = div()
+            .size_full()
+            .child(page)
+            .composite_layer()
+            .with_visual_animation(
+                route_key,
+                spring_motion(apple_spring(0.36, 0.74)).with_translation(
+                    point(px(18.0 * transition_direction), px(0.0)),
+                    Point::default(),
+                ),
+            )
+            .expect("route page uses a visual translation track");
 
         div()
             .absolute()
@@ -496,7 +500,8 @@ impl MainWindowView {
             .size_full()
             .bg(gpui::transparent_black())
             .child(
-                self.background_view.clone()
+                self.background_view
+                    .clone()
                     .cached_absolute_by(&"main-window-background")
                     .reuse_on_window_refresh()
                     .critical()
@@ -1066,16 +1071,18 @@ impl MainWindowView {
             let remote = remote_versions::load_or_fetch_versions(force_refresh).await?;
             let versions = remote
                 .into_iter()
-                .map(|v| crate::ui::views::download::state::DownloadRemoteVersion {
-                    version: SharedString::from(v.version),
-                    package_id: SharedString::from(v.package_id),
-                    version_type: v.version_type,
-                    build_type: SharedString::from(v.build_type),
-                    archival_status: v.archival_status,
-                    meta_present: v.meta_present,
-                    md5: v.md5.map(SharedString::from),
-                    is_gdk: v.is_gdk,
-                })
+                .map(
+                    |v| crate::ui::views::download::state::DownloadRemoteVersion {
+                        version: SharedString::from(v.version),
+                        package_id: SharedString::from(v.package_id),
+                        version_type: v.version_type,
+                        build_type: SharedString::from(v.build_type),
+                        archival_status: v.archival_status,
+                        meta_present: v.meta_present,
+                        md5: v.md5.map(SharedString::from),
+                        is_gdk: v.is_gdk,
+                    },
+                )
                 .collect::<Vec<_>>();
             Ok::<_, anyhow::Error>(versions)
         });
@@ -1173,15 +1180,17 @@ impl MainWindowView {
             let mut entries = categories
                 .map_err(anyhow::Error::msg)?
                 .into_iter()
-                .map(|c| crate::ui::views::download::state::CurseForgeCategoryEntry {
-                    id: c.id,
-                    name: SharedString::from(c.name),
-                    slug: SharedString::from(c.slug),
-                    icon_url: c.icon_url.map(SharedString::from),
-                    is_class: c.is_class.unwrap_or(false),
-                    class_id: c.class_id,
-                    parent_category_id: c.parent_category_id,
-                })
+                .map(
+                    |c| crate::ui::views::download::state::CurseForgeCategoryEntry {
+                        id: c.id,
+                        name: SharedString::from(c.name),
+                        slug: SharedString::from(c.slug),
+                        icon_url: c.icon_url.map(SharedString::from),
+                        is_class: c.is_class.unwrap_or(false),
+                        class_id: c.class_id,
+                        parent_category_id: c.parent_category_id,
+                    },
+                )
                 .collect::<Vec<_>>();
             entries.sort_by_key(|entry| entry.id);
             let version_entries = versions

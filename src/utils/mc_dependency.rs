@@ -1,5 +1,8 @@
 #![cfg(target_os = "windows")]
-#![expect(unsafe_code, reason = "Microsoft Store dependency checks call native installer APIs")]
+#![expect(
+    unsafe_code,
+    reason = "Microsoft Store dependency checks call native installer APIs"
+)]
 use std::cmp::Ordering;
 use std::env;
 use std::future::Future;
@@ -40,8 +43,7 @@ use crate::utils::developer_mode;
 mod windows_app_sdk;
 pub use windows_app_sdk::{
     WINDOWS_APP_SDK_RELEASES_URL, WindowsAppSdkInstallPlan, WindowsAppSdkInstallerSource,
-    install_windows_app_sdk_runtime,
-    plan_windows_app_sdk_install,
+    install_windows_app_sdk_runtime, plan_windows_app_sdk_install,
 };
 
 pub const GAMEINPUT_RELEASES_URL: &str = "https://github.com/microsoftconnect/GameInput/releases";
@@ -183,10 +185,7 @@ where
                         .as_ref()
                         .map(|target| format!("{stage_text} · {target}"))
                         .unwrap_or(stage_text);
-                    crate::tasks::task_manager::set_task_message(
-                        &progress_task_id,
-                        Some(message),
-                    );
+                    crate::tasks::task_manager::set_task_message(&progress_task_id, Some(message));
 
                     if target != last_target {
                         if let Some(target) = target.as_ref() {
@@ -219,11 +218,7 @@ where
 
     let worker_task_id = task_id.clone();
     if let Err(error) = crate::tasks::runtime::spawn_archive_task(task_id.clone(), async move {
-        crate::tasks::task_manager::reset_progress(
-            &worker_task_id,
-            Some(100),
-            Some(stage),
-        );
+        crate::tasks::task_manager::reset_progress(&worker_task_id, Some(100), Some(stage));
         let result = work(worker_sender).await;
         if crate::tasks::task_manager::is_cancelled(&worker_task_id) {
             return;
@@ -256,9 +251,7 @@ pub fn start_missing_uwp_dependencies_task(
         "安装 UWP 运行依赖",
         Some(format!("{count} 个缺失依赖")),
         "installing_uwp_dependencies",
-        move |sender| async move {
-            install_missing_uwp_dependencies(dependencies, Some(sender)).await
-        },
+        move |sender| async move { install_missing_uwp_dependencies(dependencies, Some(sender)).await },
     )
 }
 

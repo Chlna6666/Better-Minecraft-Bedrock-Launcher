@@ -1,7 +1,6 @@
 //! 此文件包含从 C# GdkDecode 库转换而来的所有数据结构。
 // 修复 v13: 修正 MsiXVDHeader 结构体，将 magic 和 sandbox_id 字段的类型从 [u8; N] 改为 [i8; N]，以正确匹配 C# 中的 char[] 类型。
 
-
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MsiXVDHeader {

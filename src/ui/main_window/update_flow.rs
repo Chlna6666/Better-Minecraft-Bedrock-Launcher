@@ -364,7 +364,6 @@ impl MainWindowView {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::download_snapshot_meaningfully_changed;

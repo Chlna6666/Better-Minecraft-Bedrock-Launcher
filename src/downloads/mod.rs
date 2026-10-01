@@ -1,9 +1,8 @@
 pub mod api;
 mod integrity;
 pub mod manager;
+mod md5;
 mod multi;
 mod progress_ranges;
 mod single;
-mod md5;
 pub mod wu_client;
-
