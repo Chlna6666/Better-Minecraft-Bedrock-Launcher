@@ -7,8 +7,8 @@ use std::{fmt, sync::Arc};
 /// An owning image-cache entry.
 ///
 /// Pending work is cancelled when the final cache/lease owner disappears. Completed images are
-/// stored in the shared asset ready state, and pending users are invalidated by exact window/view
-/// identity when the load finishes.
+/// stored in the shared asset ready state, and pending users are invalidated by their retained
+/// element paths within each view when the load finishes.
 pub struct ImageCacheItem(AssetLease<Result<Arc<RenderImage>, ImageCacheError>>);
 
 impl fmt::Debug for ImageCacheItem {
@@ -40,7 +40,10 @@ impl ImageCacheItem {
 
     /// Returns the completed image or subscribes the current view to exact retained invalidation.
     pub fn use_image(&self, window: &Window) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
-        self.0
-            .use_by(window.any_window_handle(), window.current_view())
+        self.0.use_by(
+            window.any_window_handle(),
+            window.current_view(),
+            window.current_retained_element_id(),
+        )
     }
 }

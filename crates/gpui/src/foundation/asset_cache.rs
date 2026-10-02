@@ -1,4 +1,6 @@
-use crate::{AnyWindowHandle, App, EntityId, SharedString, SharedUri, Task, WindowId};
+use crate::{
+    AnyWindowHandle, App, EntityId, GlobalElementId, SharedString, SharedUri, Task, WindowId,
+};
 use futures::{
     Future, FutureExt, TryFutureExt,
     future::{AbortHandle, Abortable, Aborted, Shared},
@@ -70,7 +72,7 @@ enum AssetLeaseState<T> {
 
 struct AssetLeaseWindowObservers {
     window: AnyWindowHandle,
-    views: FxHashSet<EntityId>,
+    targets: FxHashSet<(EntityId, Option<GlobalElementId>)>,
 }
 
 struct AssetLoadOwner {
@@ -98,8 +100,9 @@ impl AssetCompletion {
 ///
 /// The application cache and every returned lease are owners of the underlying load. Dropping the
 /// final owner cancels pending work. Completed values live in an explicit ready state rather than
-/// in the executor task. Views that use a pending lease are deduplicated per window and receive an
-/// exact retained-subtree invalidation when the value becomes ready.
+/// in the executor task. Elements that use a pending lease are deduplicated per window and receive
+/// a retained-subtree invalidation when the value becomes ready. Callers without a retained element
+/// identity fall back to view-level invalidation.
 pub struct AssetLease<T>
 where
     T: Clone + Send + 'static,
@@ -147,8 +150,13 @@ impl<T> AssetPin<T>
 where
     T: Clone + Send + 'static,
 {
-    pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
-        self.lease.use_by(window, view)
+    pub(crate) fn use_by(
+        &self,
+        window: AnyWindowHandle,
+        view: EntityId,
+        retained_id: Option<GlobalElementId>,
+    ) -> Option<T> {
+        self.lease.use_by(window, view, retained_id)
     }
 
     pub(crate) fn pin_count(&self) -> usize {
@@ -209,9 +217,9 @@ where
             };
             let _ = cx.update(move |cx| {
                 for observer in windows.into_values() {
-                    let views = observer.views;
+                    let targets = observer.targets;
                     let _ = observer.window.update(cx, move |_, window, _| {
-                        window.schedule_asset_ready_views(views);
+                        window.schedule_asset_ready_targets(targets);
                     });
                 }
             });
@@ -265,7 +273,12 @@ where
         Arc::ptr_eq(&self.owner, &other.owner)
     }
 
-    pub(crate) fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
+    pub(crate) fn use_by(
+        &self,
+        window: AnyWindowHandle,
+        view: EntityId,
+        retained_id: Option<GlobalElementId>,
+    ) -> Option<T> {
         let mut state = self.state.lock();
         match &mut *state {
             AssetLeaseState::Loading { observers } => {
@@ -273,10 +286,10 @@ where
                     .entry(window.window_id())
                     .or_insert_with(|| AssetLeaseWindowObservers {
                         window,
-                        views: FxHashSet::default(),
+                        targets: FxHashSet::default(),
                     })
-                    .views
-                    .insert(view);
+                    .targets
+                    .insert((view, retained_id));
                 None
             }
             AssetLeaseState::Ready { value, .. } => Some(value.clone()),

@@ -3,9 +3,11 @@ use super::state::PresentationState;
 use super::*;
 use crate::{
     Animation, AnimationDriver, AnimationExt, AnimationProperty, AnimationSequence, AnimationSpec,
-    Easing, PaintOperation, Primitive, RepeatMode, TestAppContext, TransitionProperty,
-    WindowOptions, performance_metrics_snapshot, point, px, size,
+    Easing, ElementId, GlobalElementId, InspectorElementId, PaintOperation, Primitive, RepeatMode,
+    TestAppContext, TransitionProperty, WindowOptions, performance_metrics_snapshot, point, px,
+    size,
 };
+use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 #[cfg(test)]
 #[derive(Default)]
@@ -1660,15 +1662,91 @@ impl Asset for TestUseAssetLoader {
 
 struct UseAssetView {
     source: u64,
-    loaded: bool,
+    load_asset: bool,
+    asset_ready: Rc<Cell<bool>>,
+    retained_target: Rc<RefCell<Option<GlobalElementId>>>,
 }
 
 impl Render for UseAssetView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.loaded = window
-            .use_asset::<TestUseAssetLoader>(&self.source, cx)
-            .is_some();
-        crate::div().child(if self.loaded { "loaded" } else { "loading" })
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .id("root")
+            .child(AssetUseElement {
+                source: self.source,
+                load_asset: self.load_asset,
+                asset_ready: self.asset_ready.clone(),
+                retained_target: self.retained_target.clone(),
+            })
+            .child(crate::div().id("asset-sibling").child("sibling"))
+    }
+}
+
+struct AssetUseElement {
+    source: u64,
+    load_asset: bool,
+    asset_ready: Rc<Cell<bool>>,
+    retained_target: Rc<RefCell<Option<GlobalElementId>>>,
+}
+
+impl IntoElement for AssetUseElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for AssetUseElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        Some("asset-target".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        *self.retained_target.borrow_mut() = window.current_retained_element_id();
+        if self.load_asset {
+            self.asset_ready.set(
+                window
+                    .use_asset::<TestUseAssetLoader>(&self.source, cx)
+                    .is_some(),
+            );
+        }
+        (window.request_layout(Style::default(), [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        _: &mut Self::PrepaintState,
+        _: &mut Window,
+        _: &mut App,
+    ) {
     }
 }
 
@@ -1676,7 +1754,9 @@ impl Render for UseAssetView {
 fn completed_asset_load_requests_dirty_frame(cx: &mut TestAppContext) {
     let (_view, cx) = cx.add_window_view(|_, _| UseAssetView {
         source: 1,
-        loaded: false,
+        load_asset: true,
+        asset_ready: Rc::default(),
+        retained_target: Rc::default(),
     });
     let (test_window, baseline) = cx.update(|window, _| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -1699,7 +1779,9 @@ fn completed_preloaded_asset_load_requests_dirty_frame(cx: &mut TestAppContext) 
     });
     let (_view, cx) = cx.add_window_view(|_, _| UseAssetView {
         source: 2,
-        loaded: false,
+        load_asset: true,
+        asset_ready: Rc::default(),
+        retained_target: Rc::default(),
     });
     let (test_window, baseline) = cx.update(|window, _| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -1713,6 +1795,70 @@ fn completed_preloaded_asset_load_requests_dirty_frame(cx: &mut TestAppContext) 
 
     drop(preload);
     assert!(test_window.requested_frame_count() > baseline);
+}
+
+#[gpui::test]
+fn completed_asset_load_invalidates_its_retained_subtree(cx: &mut TestAppContext) {
+    let retained_target = Rc::new(RefCell::new(None));
+    let asset_ready = Rc::new(Cell::new(false));
+    let test_asset_ready = asset_ready.clone();
+    let (view, cx) = cx.add_window_view({
+        let retained_target = retained_target.clone();
+        move |_, _| UseAssetView {
+            source: 42,
+            load_asset: false,
+            asset_ready: test_asset_ready,
+            retained_target,
+        }
+    });
+    cx.update(|window, _| window.invalidator.set_dirty(false));
+    view.update(cx, |view, cx| {
+        view.load_asset = true;
+        cx.notify();
+    });
+    cx.update(|window, app| {
+        window.draw(app).clear();
+    });
+    cx.update(|window, _| window.invalidator.set_dirty(false));
+    let view_id = view.entity_id();
+    let target = retained_target
+        .borrow()
+        .clone()
+        .expect("asset view records the retained image identity");
+    let mut sibling_path = target.0.to_vec();
+    *sibling_path
+        .last_mut()
+        .expect("retained target has an element path") = ElementId::from("asset-sibling");
+    let sibling = GlobalElementId::from_path(&sibling_path);
+    cx.background_executor
+        .advance_clock(Duration::from_millis(1));
+    cx.run_until_parked();
+
+    cx.update(|window, _| {
+        if !window.invalidator.active_targeted_replay() {
+            window.invalidator.set_dirty(false);
+        }
+    });
+    cx.update(|window, _| {
+        assert!(window.invalidator.active_targeted_replay());
+        assert!(
+            window
+                .invalidator
+                .retained_path_is_dirty_for_view_route(&target, &|owner| owner == view_id)
+        );
+        assert!(
+            !window
+                .invalidator
+                .retained_path_is_dirty_for_view_route(&sibling, &|owner| owner == view_id)
+        );
+        assert!(!window.invalidator.active_generic_view_is_dirty(view_id));
+    });
+    if !asset_ready.get() {
+        cx.update(|window, app| {
+            window.draw(app).clear();
+        });
+    }
+    assert!(asset_ready.get());
 }
 
 #[gpui::test]

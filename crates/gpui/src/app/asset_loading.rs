@@ -6,9 +6,9 @@ use std::{
 
 use crate::{
     AnyWindowHandle, Asset, AssetLease, AssetLocation, AssetRetentionPolicy,
-    CompressedImagePreload, CompressedImageSource, EntityId, ImageCacheError, ImageMemoryTrimLevel,
-    ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage, Size,
-    SizedImagePreload, Window, drop_image_asset_retained, hash,
+    CompressedImagePreload, CompressedImageSource, EntityId, GlobalElementId, ImageCacheError,
+    ImageMemoryTrimLevel, ImagePipelineConfig, ImageRenderRequest, ObjectFit, Pixels, RenderImage,
+    Size, SizedImagePreload, Window, drop_image_asset_retained, hash,
 };
 use anyhow::Result;
 
@@ -82,8 +82,13 @@ where
         self.lease
     }
 
-    fn use_by(&self, window: AnyWindowHandle, view: EntityId) -> Option<T> {
-        self.lease.use_by(window, view)
+    fn use_by(
+        &self,
+        window: AnyWindowHandle,
+        view: EntityId,
+        retained_id: Option<GlobalElementId>,
+    ) -> Option<T> {
+        self.lease.use_by(window, view, retained_id)
     }
 }
 
@@ -127,8 +132,10 @@ impl App {
         source: &A::Source,
         window: AnyWindowHandle,
         view: EntityId,
+        retained_id: Option<GlobalElementId>,
     ) -> Option<A::Output> {
-        self.asset_entry::<A>(source).use_by(window, view)
+        self.asset_entry::<A>(source)
+            .use_by(window, view, retained_id)
     }
 
     /// Trims idle image state without applying byte ceilings to active images.

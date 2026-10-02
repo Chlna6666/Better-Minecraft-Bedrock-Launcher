@@ -232,7 +232,8 @@ impl Window {
         result
     }
 
-    /// Returns the retained rendering identity of the element currently being prepainted/painted.
+    /// Returns the retained rendering identity of the element currently being laid out,
+    /// prepainted, or painted.
     pub(crate) fn current_retained_element_id(&self) -> Option<GlobalElementId> {
         (!self.retained_element_id_stack.is_empty())
             .then(|| GlobalElementId::from_path(&self.retained_element_id_stack))
