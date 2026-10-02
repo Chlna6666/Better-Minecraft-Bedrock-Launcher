@@ -572,6 +572,7 @@ impl Window {
             self.render_present_mode,
         );
         packet.window_id = self.handle.window_id().as_u64();
+        packet.set_frame_interval(self.frame_clock.interval());
         packet
     }
 

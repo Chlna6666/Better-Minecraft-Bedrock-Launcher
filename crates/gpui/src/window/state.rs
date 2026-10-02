@@ -648,6 +648,8 @@ pub struct Window {
     pub(super) touch_gestures: crate::gestures::TouchGestureRecognizer,
     pub(super) long_press_timer: Option<Task<()>>,
     pub(super) animation_time: Cell<Instant>,
+    pub(super) frame_clock: FrameClock,
+    pub(super) frame_clock_state: RefCell<FrameClockState>,
     pub(crate) refreshing: bool,
     pub(super) dirty_frame_scheduled: bool,
     pub(super) dirty_frame_throttle_pending: bool,

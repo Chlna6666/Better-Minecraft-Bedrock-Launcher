@@ -321,7 +321,12 @@ pub(crate) struct X11WindowStatePtr {
 impl X11WindowStatePtr {
     pub(super) fn refresh_background_effects(&self) {
         let mut state = self.state.borrow_mut();
-        match super::background::apply_background(&self.xcb, state.screen_id, self.x_window, state.background_appearance) {
+        match super::background::apply_background(
+            &self.xcb,
+            state.screen_id,
+            self.x_window,
+            state.background_appearance,
+        ) {
             Ok((capabilities, effective)) => {
                 state.background_capabilities = capabilities;
                 state.effective_background_appearance = effective;
@@ -329,9 +334,12 @@ impl X11WindowStatePtr {
             Err(error) => {
                 log::warn!("X11 native background request failed: {error:#}");
                 state.background_capabilities = crate::WindowBackgroundCapabilities::default();
-                state.effective_background_appearance = if state.background_appearance == WindowBackgroundAppearance::Opaque {
-                    WindowBackgroundAppearance::Opaque
-                } else { WindowBackgroundAppearance::Transparent };
+                state.effective_background_appearance =
+                    if state.background_appearance == WindowBackgroundAppearance::Opaque {
+                        WindowBackgroundAppearance::Opaque
+                    } else {
+                        WindowBackgroundAppearance::Transparent
+                    };
             }
         }
     }
@@ -1649,6 +1657,14 @@ impl PlatformWindow for X11Window {
 
     fn request_frame(&self, options: PlatformFrameRequest) {
         self.0.request_frame(options);
+    }
+
+    fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        self.0
+            .state
+            .borrow_mut()
+            .renderer
+            .set_frame_interval(interval);
     }
 
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {

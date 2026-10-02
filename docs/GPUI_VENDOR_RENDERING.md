@@ -183,8 +183,16 @@ presentation semantics are never inferred from UI commit semantics, and UI gener
 inferred from a presentation request.
 
 Frame requests are coalesced before platform wakeup. GPUI also arms a watchdog
-so a stalled platform frame callback can be recovered by running frame work
-directly.
+for a stalled callback; recovery reissues the same coalesced request through the
+window's platform frame source. Animation sampling and presentation therefore
+remain paced by that window's native frame callback instead of the watchdog
+timer. Its deadline follows the configured window cadence or recent native
+callback/presentation cadence and explicit inactive-redraw cadence. The first
+deadline allows two missed intervals; repeated misses back off to a two-second
+cap. Recovery pauses for completed frames whenever a window is hidden or
+minimized, and pauses inactive windows unless inactive rendering is enabled.
+It resumes when the window is visible, not minimized, and active or opted into
+inactive rendering.
 
 ## Frame Scheduling And Decisions
 

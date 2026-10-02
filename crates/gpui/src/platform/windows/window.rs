@@ -800,6 +800,12 @@ impl WindowsRenderer {
         }
     }
 
+    fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
+        match self {
+            Self::Nova(renderer) => renderer.set_frame_interval(interval),
+        }
+    }
+
     fn has_active_presentation_animations(&self) -> bool {
         match self {
             Self::Nova(renderer) => renderer.has_active_presentation_animations(),
@@ -1135,6 +1141,13 @@ pub(crate) struct Callbacks {
 }
 
 impl WindowsWindow {
+    pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        let mut renderer_state = self.0.renderer.borrow_mut();
+        if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
+            renderer.set_frame_interval(interval);
+        }
+    }
+
     pub(crate) fn new(
         event_loop: &ActiveEventLoop,
         handle: AnyWindowHandle,
@@ -1951,6 +1964,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
         self.0.state.borrow_mut().callbacks.request_frame = Some(sender);
+    }
+
+    fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        WindowsWindow::set_frame_interval(self, interval);
     }
 
     fn set_presentation_animation_completion_sender(

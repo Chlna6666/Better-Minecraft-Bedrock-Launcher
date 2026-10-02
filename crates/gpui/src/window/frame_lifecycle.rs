@@ -8,7 +8,11 @@ pub(super) use throttle::WindowFrameThrottle;
 
 const BACKGROUND_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_millis(42);
 const MINIMIZED_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_secs(1);
-const FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(100);
+const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+const MIN_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(1);
+const MAX_FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(2);
+const FRAME_WATCHDOG_MISSED_FRAME_COUNT: u32 = 2;
+const MAX_FRAME_WATCHDOG_BACKOFF_SHIFT: u32 = 5;
 const RECENT_INPUT_DIRTY_FRAME_GRACE: Duration = Duration::from_millis(500);
 #[cfg(test)]
 pub(super) const DIRTY_FRAME_BACKPRESSURE_BUDGET: Duration = Duration::from_millis(4);
@@ -26,6 +30,7 @@ pub(super) struct FrameWatchdog {
     pub(super) platform_generation: u64,
     pub(super) platform_pending: bool,
     pub(super) platform_request: PlatformFrameRequest,
+    pub(super) platform_recovery_attempts: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -482,10 +487,114 @@ impl Window {
             self.active_dirty_to_present_started_at
                 .or_else(|| self.invalidator.pending_dirty_started_at()),
         );
+
+        let Some(frame_interval) = self.frame_clock.interval() else {
+            let request = {
+                let mut state = self.frame_clock_state.borrow_mut();
+                state.cancel_timer();
+                state
+                    .pending_request
+                    .take()
+                    .map_or(options, |pending| pending.merge(options))
+            };
+            self.dispatch_platform_frame(request);
+            return;
+        };
+
+        let action = self.frame_clock_state.borrow_mut().queue_request(
+            options,
+            Instant::now(),
+            frame_interval,
+        );
+        match action {
+            FrameClockRequest::Coalesced => {}
+            FrameClockRequest::Dispatch(request) => self.dispatch_platform_frame(request),
+            FrameClockRequest::Wait {
+                generation,
+                deadline,
+            } => self.spawn_frame_clock_timer(generation, deadline),
+        }
+    }
+
+    fn dispatch_platform_frame(&self, options: PlatformFrameRequest) {
+        self.frame_clock_state.borrow_mut().platform_request_pending = true;
+        // Native compositor continuations do not return through the UI owner. Keep their
+        // autonomous cadence out of the GPUI watchdog, but watch presentation-only requests that
+        // still need a GPUI callback to submit a frame.
+        let native_presentation_active = options.is_presentation_only()
+            && !self
+                .animation_engine
+                .borrow()
+                .presentation_timelines()
+                .is_empty();
         self.platform_window.request_frame(options);
-        if !options.is_presentation_only() {
+        if !native_presentation_active {
             self.arm_platform_frame_watchdog(options);
         }
+    }
+
+    fn spawn_frame_clock_timer(&self, generation: u64, deadline: Instant) {
+        let delay = deadline.saturating_duration_since(Instant::now());
+        let mut cx = self.async_app.clone();
+        let executor = cx.foreground_executor().clone();
+        let handle = self.handle;
+        let task = executor.spawn(async move {
+            cx.background_executor().timer(delay).await;
+            let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, _cx| {
+                window.dispatch_frame_clock_timer(generation);
+            }));
+        });
+        self.frame_clock_state.borrow_mut().timer = Some(task);
+    }
+
+    fn dispatch_frame_clock_timer(&self, generation: u64) {
+        let request = {
+            let mut state = self.frame_clock_state.borrow_mut();
+            if state.timer_generation != generation || self.frame_clock.interval().is_none() {
+                return;
+            }
+            drop(state.timer.take());
+            state.pending_request.take()
+        };
+
+        if let Some(request) = request {
+            self.dispatch_platform_frame(request);
+        }
+    }
+
+    fn receive_platform_frame(
+        &self,
+        frame_request: PlatformFrameRequest,
+        frame_started_at: Instant,
+    ) -> Option<PlatformFrameRequest> {
+        let frame = self.frame_clock_state.borrow_mut().receive_frame(
+            frame_request,
+            frame_started_at,
+            self.frame_clock.interval(),
+        );
+        match frame {
+            ReceivedPlatformFrame::Ready(request) => Some(request),
+            ReceivedPlatformFrame::Wait {
+                generation,
+                deadline,
+            } => {
+                self.spawn_frame_clock_timer(generation, deadline);
+                None
+            }
+        }
+    }
+
+    fn retry_platform_frame(&self, options: PlatformFrameRequest) {
+        let request = {
+            let mut state = self.frame_clock_state.borrow_mut();
+            state.cancel_timer();
+            state.platform_request_pending = false;
+            state
+                .pending_request
+                .take()
+                .map_or(options, |pending| pending.merge(options))
+        };
+        self.dispatch_platform_frame(request);
     }
 
     fn arm_platform_frame_watchdog(&self, options: PlatformFrameRequest) {
@@ -501,34 +610,90 @@ impl Window {
         self.frame_watchdog.set(watchdog);
 
         let generation = watchdog.platform_generation;
+        let timeout = self.platform_frame_watchdog_timeout();
         let handle = self.handle;
         let mut cx = self.async_app.clone();
         let executor = cx.foreground_executor().clone();
         *self.platform_frame_watchdog_task.borrow_mut() = Some(executor.spawn(async move {
-            cx.background_executor().timer(FRAME_WATCHDOG_TIMEOUT).await;
+            cx.background_executor().timer(timeout).await;
             let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
                 window.recover_stalled_platform_frame(generation, cx);
             }));
         }));
     }
 
-    pub(super) fn recover_stalled_platform_frame(&mut self, generation: u64, cx: &mut App) {
+    fn platform_frame_watchdog_timeout(&self) -> Duration {
+        let now = Instant::now();
+        let configured_interval = self
+            .frame_clock
+            .interval()
+            .or_else(|| {
+                self.platform_window
+                    .display()
+                    .and_then(|display| display.refresh_interval())
+            })
+            .unwrap_or(DEFAULT_DISPLAY_FRAME_INTERVAL);
+        let observed_callback_interval = self
+            .frame_throttle
+            .platform_frame_interval_hint(now)
+            .unwrap_or(Duration::ZERO);
+        let observed_present_interval = self
+            .frame_throttle
+            .present_interval_hint(now)
+            .unwrap_or(Duration::ZERO);
+        let inactive_redraw_interval = if !self.active.get() && self.inactive_dirty_redraw_enabled {
+            self.inactive_dirty_frame_retry_interval
+                .unwrap_or(BACKGROUND_PROGRESSIVE_FRAME_RETRY)
+        } else {
+            Duration::ZERO
+        };
+        let watchdog = self.frame_watchdog.get();
+        let backoff_shift =
+            u32::from(watchdog.platform_recovery_attempts).min(MAX_FRAME_WATCHDOG_BACKOFF_SHIFT);
+        let missed_frame_count =
+            FRAME_WATCHDOG_MISSED_FRAME_COUNT.saturating_mul(1_u32 << backoff_shift);
+        // Allow two missed intervals at this window's effective cadence. In System mode the
+        // compositor may throttle an inactive but visible window below the display refresh rate;
+        // observed callback/presentation cadence and an explicit inactive redraw interval take
+        // precedence in that case. Repeated misses back off so an unavailable compositor callback
+        // cannot turn recovery into a high-frequency request loop.
+        configured_interval
+            .max(observed_callback_interval)
+            .max(observed_present_interval)
+            .max(inactive_redraw_interval)
+            .saturating_mul(missed_frame_count)
+            .clamp(MIN_FRAME_WATCHDOG_TIMEOUT, MAX_FRAME_WATCHDOG_TIMEOUT)
+    }
+
+    pub(super) fn recover_stalled_platform_frame(&mut self, generation: u64, _cx: &mut App) {
         let watchdog = self.frame_watchdog.get();
         if !watchdog.platform_pending || watchdog.platform_generation != generation {
             return;
         }
 
-        self.clear_platform_frame_watchdog();
         if !self.has_pending_platform_frame_work() {
+            self.clear_platform_frame_watchdog();
+            self.reset_platform_frame_watchdog_retries();
             return;
         }
 
         let frame_request = watchdog.platform_request;
-        if !self.active.get() && self.has_completed_rendered_frame {
+        let inactive_updates_enabled =
+            self.inactive_animation_engine_enabled || self.inactive_dirty_redraw_enabled;
+        if ((!self.active.get() && !inactive_updates_enabled)
+            || !self.visibility.is_visible()
+            || self.platform_window.is_minimized())
+            && self.has_completed_rendered_frame
+        {
+            self.clear_platform_frame_watchdog();
+            self.reset_platform_frame_watchdog_retries();
             log::debug!(
-                "gpui inactive platform frame waiting for compositor: window={} generation={} dirty={} refreshing={} scheduled={}",
+                "gpui inactive or non-visible platform frame waiting for compositor: window={} generation={} active={} visible={} minimized={} dirty={} refreshing={} scheduled={}",
                 self.handle.window_id().as_u64(),
                 generation,
+                self.active.get(),
+                self.visibility.is_visible(),
+                self.platform_window.is_minimized(),
                 self.invalidator.is_dirty(),
                 self.refreshing,
                 self.dirty_frame_scheduled
@@ -536,12 +701,19 @@ impl Window {
             return;
         }
 
-        self.record_frame_request_reason(FrameRequestReason::Recovery);
         self.platform_window.frame_request_timed_out(frame_request);
+        let mut watchdog = self.frame_watchdog.get();
+        watchdog.platform_recovery_attempts = watchdog.platform_recovery_attempts.saturating_add(1);
+        self.frame_watchdog.set(watchdog);
+        let watchdog_timeout = self.platform_frame_watchdog_timeout();
         log::warn!(
-            "gpui stalled platform frame recovery: window={} generation={} dirty={} refreshing={} scheduled={} ui_commit={} presentation={}",
+            "gpui stalled platform frame; retrying window frame request: window={} generation={} watchdog_timeout_us={} active={} visible={} minimized={} dirty={} refreshing={} scheduled={} ui_commit={} presentation={}",
             self.handle.window_id().as_u64(),
             generation,
+            watchdog_timeout.as_micros(),
+            self.active.get(),
+            self.visibility.is_visible(),
+            self.platform_window.is_minimized(),
             self.invalidator.is_dirty(),
             self.refreshing,
             self.dirty_frame_scheduled,
@@ -549,29 +721,34 @@ impl Window {
             frame_request.needs_presentation()
         );
 
-        // The platform callback is the stalled component, so recovery must run
-        // the frame work directly instead of requesting another platform frame.
-        if self.invalidator.is_dirty()
-            || self.needs_present.get()
-            || frame_request.needs_ui_commit()
-            || frame_request.needs_presentation()
-        {
-            self.run_platform_frame(frame_request, cx);
-        } else {
-            self.dirty_frame_scheduled = false;
-            self.refreshing = false;
-        }
+        // Keep the window's native frame source as the only cadence owner. Running the frame
+        // directly here would sample animations on the watchdog timer and could create a second
+        // presentation outside this window's VSync/request coalescing path.
+        self.clear_platform_frame_watchdog();
+        self.record_frame_request_reason(FrameRequestReason::Recovery);
+        self.retry_platform_frame(frame_request);
     }
 
-    pub(super) fn rearm_platform_frame_watchdog_on_activation(&mut self) {
+    pub(super) fn rearm_platform_frame_watchdog(&mut self) {
         let watchdog = self.frame_watchdog.get();
-        if self.active.get()
+        let inactive_updates_enabled =
+            self.inactive_animation_engine_enabled || self.inactive_dirty_redraw_enabled;
+        if self.visibility.is_visible()
+            && !self.platform_window.is_minimized()
+            && (self.active.get() || inactive_updates_enabled)
             && self.has_pending_platform_frame_work()
             && !watchdog.platform_pending
             && watchdog.platform_request.requires_frame()
         {
+            self.reset_platform_frame_watchdog_retries();
             self.arm_platform_frame_watchdog(watchdog.platform_request);
         }
+    }
+
+    fn reset_platform_frame_watchdog_retries(&self) {
+        let mut watchdog = self.frame_watchdog.get();
+        watchdog.platform_recovery_attempts = 0;
+        self.frame_watchdog.set(watchdog);
     }
 
     fn clear_platform_frame_watchdog(&mut self) {
@@ -591,7 +768,14 @@ impl Window {
 
     pub(super) fn run_platform_frame(&mut self, frame_request: PlatformFrameRequest, cx: &mut App) {
         self.clear_platform_frame_watchdog();
+        self.reset_platform_frame_watchdog_retries();
         let frame_started_at = Instant::now();
+        self.frame_throttle
+            .record_platform_frame_start(frame_started_at);
+        let Some(frame_request) = self.receive_platform_frame(frame_request, frame_started_at)
+        else {
+            return;
+        };
         self.animation_time.set(frame_started_at);
         self.frame_throttle.record_frame_start(frame_started_at);
         let frame_budget = self.frame_throttle.frame_budget();
@@ -611,6 +795,10 @@ impl Window {
         let presented_frame = ui_commit.presented_frame;
         let frame_completed_at = Instant::now();
         record_frame_decision(decision.drew_frame(), presented_frame, decision.skip_frame);
+        if presented_frame {
+            self.frame_throttle
+                .record_presented_frame(frame_completed_at);
+        }
         let window_id = self.handle.window_id().as_u64();
         if presented_frame {
             #[cfg(feature = "profiler")]

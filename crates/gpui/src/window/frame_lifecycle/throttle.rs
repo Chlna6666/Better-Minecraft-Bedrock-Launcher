@@ -7,6 +7,10 @@ const MIN_DYNAMIC_FRAME_BUDGET: Duration = Duration::from_millis(2);
 const DEFAULT_DISPLAY_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 const FRAME_GENERATION_WARNING_HEADROOM: f32 = 0.95;
 const FRAME_GENERATION_BUDGET_WARN_INTERVAL: Duration = Duration::from_secs(1);
+const MIN_PLATFORM_FRAME_INTERVAL: Duration = Duration::from_millis(1);
+const MAX_PLATFORM_FRAME_INTERVAL: Duration = Duration::from_secs(1);
+const PLATFORM_FRAME_INTERVAL_HINT_MAX_AGE: Duration = Duration::from_secs(2);
+const PRESENT_INTERVAL_HINT_MAX_AGE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(in crate::window) struct WindowFrameThrottle {
@@ -15,6 +19,10 @@ pub(in crate::window) struct WindowFrameThrottle {
     armed_retry_generation: Option<u64>,
     last_frame_started_at: Option<Instant>,
     estimated_frame_interval: Option<Duration>,
+    last_platform_frame_started_at: Option<Instant>,
+    observed_platform_frame_interval: Option<Duration>,
+    last_presented_frame_at: Option<Instant>,
+    observed_present_interval: Option<Duration>,
     last_generation_budget_warning_at: Option<Instant>,
 }
 
@@ -89,6 +97,57 @@ impl WindowFrameThrottle {
             }
         }
         self.last_frame_started_at = Some(now);
+    }
+
+    /// Records native frame-callback cadence independently from GPUI draw cadence.
+    ///
+    /// A compositor may throttle an inactive but visible window well below its display rate.
+    /// The watchdog uses this recent interval so it does not repeatedly re-request a frame before
+    /// that window's platform callback would normally arrive.
+    pub(super) fn record_platform_frame_start(&mut self, now: Instant) {
+        if let Some(previous) = self.last_platform_frame_started_at {
+            let interval = now.saturating_duration_since(previous);
+            if interval >= MIN_PLATFORM_FRAME_INTERVAL {
+                self.observed_platform_frame_interval =
+                    Some(interval.min(MAX_PLATFORM_FRAME_INTERVAL));
+            }
+        }
+        self.last_platform_frame_started_at = Some(now);
+    }
+
+    /// Returns the most recent platform callback interval while its sample is still useful.
+    pub(super) fn platform_frame_interval_hint(self, now: Instant) -> Option<Duration> {
+        let last_frame_started_at = self.last_platform_frame_started_at?;
+        if now.saturating_duration_since(last_frame_started_at)
+            > PLATFORM_FRAME_INTERVAL_HINT_MAX_AGE
+        {
+            return None;
+        }
+        self.observed_platform_frame_interval
+    }
+
+    /// Records the interval between frames submitted for presentation by this window.
+    pub(super) fn record_presented_frame(&mut self, now: Instant) {
+        if let Some(previous) = self.last_presented_frame_at {
+            let interval = now.saturating_duration_since(previous);
+            if interval >= MIN_PLATFORM_FRAME_INTERVAL {
+                let interval = interval.min(MAX_PLATFORM_FRAME_INTERVAL);
+                self.observed_present_interval = Some(match self.observed_present_interval {
+                    Some(current) if current > interval => average_duration(current, interval),
+                    _ => interval,
+                });
+            }
+        }
+        self.last_presented_frame_at = Some(now);
+    }
+
+    /// Returns the recent presentation interval while its sample is still useful.
+    pub(super) fn present_interval_hint(self, now: Instant) -> Option<Duration> {
+        let last_presented_frame_at = self.last_presented_frame_at?;
+        if now.saturating_duration_since(last_presented_frame_at) > PRESENT_INTERVAL_HINT_MAX_AGE {
+            return None;
+        }
+        self.observed_present_interval
     }
 
     pub(in crate::window) fn frame_budget(self) -> Duration {

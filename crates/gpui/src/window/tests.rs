@@ -3032,7 +3032,7 @@ fn deferred_dirty_frame_retry_does_not_self_rearm_while_still_deferred(cx: &mut 
 }
 
 #[gpui::test]
-fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppContext) {
+fn stalled_platform_frame_request_retries_through_platform_scheduler(cx: &mut TestAppContext) {
     let visual = cx.add_empty_window();
     visual.update(|window, cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -3057,15 +3057,16 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
 
         window.recover_stalled_platform_frame(stalled_generation, cx);
 
-        assert!(!window.refreshing);
-        assert!(!window.dirty_frame_scheduled);
-        assert!(!window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.borrow().is_none());
+        assert!(window.refreshing);
+        assert!(window.dirty_frame_scheduled);
+        assert!(window.invalidator.is_dirty());
+        assert!(window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.borrow().is_some());
         assert_eq!(
             window.frame_watchdog.get().platform_generation,
-            stalled_generation
+            stalled_generation + 1
         );
-        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        assert_eq!(test_window.requested_frame_count(), baseline + 2);
         assert_eq!(
             test_window.last_requested_frame(),
             Some(PlatformFrameRequest::ui_commit())
@@ -3074,7 +3075,7 @@ fn stalled_platform_frame_request_recovers_by_running_frame(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn stalled_animation_engine_frame_recovers_without_dirty_view(cx: &mut TestAppContext) {
+fn stalled_animation_engine_frame_retries_through_platform_scheduler(cx: &mut TestAppContext) {
     let visual = cx.add_empty_window();
     visual.update(|window, cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
@@ -3101,21 +3102,25 @@ fn stalled_animation_engine_frame_recovers_without_dirty_view(cx: &mut TestAppCo
 
         window.recover_stalled_platform_frame(stalled_generation, cx);
 
-        assert!(window.animation_engine_frame_driver.get().is_none());
-        assert_eq!(window.animation_engine.borrow().active_count(), 0);
-        assert!(!window.frame_watchdog.get().platform_pending);
-        assert!(window.platform_frame_watchdog_task.borrow().is_none());
-        assert_eq!(test_window.requested_frame_count(), baseline + 1);
+        assert_eq!(
+            window.animation_engine_frame_driver.get(),
+            Some(AnimationDriver::Paint)
+        );
+        assert_eq!(window.animation_engine.borrow().active_count(), 1);
+        assert!(window.frame_watchdog.get().platform_pending);
+        assert!(window.platform_frame_watchdog_task.borrow().is_some());
+        assert_eq!(test_window.requested_frame_count(), baseline + 2);
     });
 }
 
 #[gpui::test]
-fn stalled_inactive_platform_frame_waits_until_window_activation(cx: &mut TestAppContext) {
+fn stalled_hidden_platform_frame_waits_until_window_activation(cx: &mut TestAppContext) {
     let visual = cx.add_empty_window();
     visual.update(|window, cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
         let baseline = test_window.requested_frame_count();
         window.active.set(true);
+        window.visibility = WindowVisibility::Hidden;
         window.has_completed_rendered_frame = true;
         window.invalidator.set_dirty(true);
         window.refreshing = false;
@@ -3138,7 +3143,8 @@ fn stalled_inactive_platform_frame_waits_until_window_activation(cx: &mut TestAp
         assert_eq!(test_window.requested_frame_count(), baseline + 1);
 
         window.active.set(true);
-        window.rearm_platform_frame_watchdog_on_activation();
+        window.visibility = WindowVisibility::Visible;
+        window.rearm_platform_frame_watchdog();
 
         assert!(window.frame_watchdog.get().platform_pending);
         assert!(window.platform_frame_watchdog_task.borrow().is_some());

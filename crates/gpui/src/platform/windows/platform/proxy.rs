@@ -412,6 +412,16 @@ impl PlatformWindow for WindowsWindowProxy {
     fn request_frame(&self, request: PlatformFrameRequest) {
         self.action(WindowsWindowAction::RequestFrame(request));
     }
+    fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        self.send(WindowsNativeCommand::WindowCall {
+            window_id: self.id,
+            call: Box::new(move |window| {
+                if let Some(window) = window {
+                    window.set_frame_interval(interval);
+                }
+            }),
+        });
+    }
     fn frame_request_timed_out(&self, request: PlatformFrameRequest) {
         self.action(WindowsWindowAction::FrameRequestTimedOut(request));
     }

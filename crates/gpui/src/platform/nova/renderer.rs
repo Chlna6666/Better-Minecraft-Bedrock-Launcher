@@ -231,6 +231,9 @@ impl NovaRenderer {
         let started_at = Instant::now();
         let mut presentation_timing = None;
         let result = self.draw_frame(&mut packet, &mut presentation_timing);
+        if result.as_ref().is_ok_and(|submitted| *submitted) {
+            packet.record_presentation(Instant::now());
+        }
         self.active_presentation_packet = Some(packet);
         let elapsed = started_at.elapsed();
         crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
@@ -371,6 +374,9 @@ impl NovaRenderer {
                 &mut presentation_timing,
             )
         })();
+        if result.as_ref().is_ok_and(|submitted| *submitted) {
+            packet.record_presentation(Instant::now());
+        }
         self.active_presentation_packet = Some(packet);
         result
     }
@@ -388,11 +394,22 @@ impl NovaRenderer {
             self.active_presentation_packet = Some(packet);
             return Ok(None);
         }
+        if !packet.presentation_is_due(now) {
+            let continues = !packet.presentation_animation_timelines.is_empty();
+            self.active_presentation_packet = Some(packet);
+            return Ok(continues.then(|| ActivePresentationFrame {
+                continues,
+                completed_animations: SmallVec::new(),
+            }));
+        }
         self.pending_animation_completions
             .extend(packet.sample_animations(now));
         let continues = !packet.presentation_animation_timelines.is_empty();
         let mut presentation_timing = presentation_timing;
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
+        if draw_result.as_ref().is_ok_and(|submitted| *submitted) {
+            packet.record_presentation(Instant::now());
+        }
         self.active_presentation_packet = Some(packet);
         if !draw_result? {
             return Ok(None);
@@ -407,6 +424,12 @@ impl NovaRenderer {
         self.active_presentation_packet
             .as_ref()
             .is_some_and(PresentationPacket::has_pending_presentation)
+    }
+
+    pub(crate) fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
+        if let Some(packet) = self.active_presentation_packet.as_mut() {
+            packet.set_frame_interval(interval);
+        }
     }
 
     pub(crate) fn take_animation_completions(

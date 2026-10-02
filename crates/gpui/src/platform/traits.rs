@@ -216,7 +216,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         crate::WindowBackgroundCapabilities::default()
     }
     fn effective_background_appearance(&self) -> WindowBackgroundAppearance {
-        self.background_capabilities().resolve(self.background_appearance())
+        self.background_capabilities()
+            .resolve(self.background_appearance())
     }
     fn show(&self) {}
     fn hide_window(&self) {}
@@ -232,6 +233,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_fullscreen(&self) -> bool;
     fn request_frame(&self, _options: PlatformFrameRequest) {}
     fn frame_request_timed_out(&self, _options: PlatformFrameRequest) {}
+    /// Updates the cadence limit on an active renderer-owned animation packet.
+    fn set_frame_interval(&self, _interval: Option<Duration>) {}
     fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender);
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);

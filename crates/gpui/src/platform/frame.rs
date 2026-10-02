@@ -816,6 +816,8 @@ pub(crate) struct PresentationPacket {
     pub(crate) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
     pub(crate) force_full_backdrop_blur_refresh: bool,
+    frame_interval: Option<Duration>,
+    last_presented_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -900,7 +902,23 @@ impl PresentationPacket {
             backdrop_blur_damage_plan,
             partial_present_mode,
             force_full_backdrop_blur_refresh: false,
+            frame_interval: None,
+            last_presented_at: None,
         }
+    }
+
+    pub(crate) fn set_frame_interval(&mut self, frame_interval: Option<Duration>) {
+        self.frame_interval = frame_interval;
+    }
+
+    pub(crate) fn presentation_is_due(&self, now: Instant) -> bool {
+        self.frame_interval
+            .zip(self.last_presented_at)
+            .is_none_or(|(interval, last_presented_at)| now >= last_presented_at + interval)
+    }
+
+    pub(crate) fn record_presentation(&mut self, presented_at: Instant) {
+        self.last_presented_at = Some(presented_at);
     }
 
     /// Sample scene-owned visual timelines without consulting mutable UI state.

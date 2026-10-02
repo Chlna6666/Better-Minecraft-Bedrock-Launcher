@@ -251,6 +251,7 @@ impl Window {
         // A hidden window may have accumulated dirty state or retained animation work without a
         // platform frame. Visibility restoration is the authoritative point to re-arm that work.
         self.frame_throttle.clear_delay();
+        self.rearm_platform_frame_watchdog();
         if self.animation_engine_frame_driver.get().is_some()
             && (self.active.get() || self.inactive_animation_engine_enabled)
         {

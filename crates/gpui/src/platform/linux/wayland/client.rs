@@ -979,14 +979,26 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
         let mut state = client.borrow_mut();
 
         let backgrounds_changed = match &event {
-            wl_registry::Event::Global { name, interface, .. } => state.globals.background_effects.borrow_mut().global_added(registry, *name, interface, qh),
-            wl_registry::Event::GlobalRemove { name } => state.globals.background_effects.borrow_mut().global_removed(*name),
+            wl_registry::Event::Global {
+                name, interface, ..
+            } => state
+                .globals
+                .background_effects
+                .borrow_mut()
+                .global_added(registry, *name, interface, qh),
+            wl_registry::Event::GlobalRemove { name } => state
+                .globals
+                .background_effects
+                .borrow_mut()
+                .global_removed(*name),
             _ => false,
         };
         if backgrounds_changed {
             let windows = state.windows.values().cloned().collect::<Vec<_>>();
             drop(state);
-            for window in windows { window.refresh_background_effects(); }
+            for window in windows {
+                window.refresh_background_effects();
+            }
             return;
         }
 
@@ -1074,12 +1086,12 @@ delegate_noop!(WaylandClientStatePtr: ignore org_kde_kwin_blur::OrgKdeKwinBlur);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewporter::WpViewporter);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
 
-impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
+impl Dispatch<WlCallback, (ObjectId, u64)> for WaylandClientStatePtr {
     fn event(
         state: &mut WaylandClientStatePtr,
         _: &wl_callback::WlCallback,
         event: wl_callback::Event,
-        surface_id: &ObjectId,
+        (surface_id, generation): &(ObjectId, u64),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -1091,7 +1103,7 @@ impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
         drop(state);
 
         if let wl_callback::Event::Done { .. } = event {
-            window.frame();
+            window.frame(*generation);
         }
     }
 }

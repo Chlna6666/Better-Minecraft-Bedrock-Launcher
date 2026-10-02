@@ -66,6 +66,27 @@ sample of the current frame:
 These must not be converted to `animation_time()` merely to satisfy the visual
 clock rule.
 
+## Per-window frame pacing
+
+Each window has a [`FrameClock`](../src/window/frame_clock.rs) setting. `System` is the default
+and follows the platform cadence. `FixedFps` limits that window's asynchronous frame requests and
+renderer-owned animation samples to the requested maximum rate; VSync can lower the delivered
+rate. The deadline timer only re-enqueues a coalesced platform frame request. It never samples
+animations or renders. A platform callback that arrives before the window's next eligible time is
+merged with pending work and deferred, so all visible state is still sampled once from the actual
+`run_platform_frame` timestamp.
+
+The interval is per window. Changing it updates that window's active Nova presentation packet on
+the platform event loop and does not change other windows' pacing. The watchdog uses the configured
+interval when one is available and expands its timeout to match that window's recent native callback
+or presentation cadence when the compositor is delivering frames more slowly. An explicit inactive
+redraw interval also sets the minimum cadence for that window. The first deadline allows two missed
+intervals; repeated misses back off to a two-second cap so an unavailable compositor cannot create
+a high-frequency retry loop. Recovery remains a request retry; it never samples animation or renders
+from the timer. Watchdog recovery pauses for completed frames whenever a window is hidden or
+minimized, and pauses inactive windows unless they explicitly enable inactive redraw or animation.
+It resumes when the window is visible, not minimized, and active or opted into inactive updates.
+
 ## Forbidden mixed-frame sampling
 
 The following is a correctness bug:

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use super::FrameClock;
 use crate::{App, Bounds, DisplayId, Pixels, Point, SharedString, Size};
 
 /// Which part of the window to resize
@@ -178,6 +179,9 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// Per-window frame pacing. Defaults to the native system cadence.
+    pub frame_clock: FrameClock,
 }
 
 /// The variables that can be configured when creating a new window
@@ -310,6 +314,7 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            frame_clock: FrameClock::System,
         }
     }
 }
@@ -475,7 +480,10 @@ impl WindowBackgroundCapabilities {
         }
     }
 
-    pub(crate) fn resolve(self, requested: WindowBackgroundAppearance) -> WindowBackgroundAppearance {
+    pub(crate) fn resolve(
+        self,
+        requested: WindowBackgroundAppearance,
+    ) -> WindowBackgroundAppearance {
         if self.supports(requested) {
             requested
         } else if self.blurred {
@@ -494,7 +502,10 @@ mod background_tests {
     fn unsupported_materials_fall_back_without_changing_plain_backgrounds() {
         let none = WindowBackgroundCapabilities::default();
         assert_eq!(none.resolve(Appearance::Opaque), Appearance::Opaque);
-        assert_eq!(none.resolve(Appearance::Transparent), Appearance::Transparent);
+        assert_eq!(
+            none.resolve(Appearance::Transparent),
+            Appearance::Transparent
+        );
         for material in [Appearance::Blurred, Appearance::Mica, Appearance::MicaAlt] {
             assert!(!none.supports(material));
             assert_eq!(none.resolve(material), Appearance::Transparent);

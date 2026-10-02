@@ -1,5 +1,6 @@
 #[cfg(any(feature = "inspector", debug_assertions))]
 use crate::Inspector;
+use crate::diagnostics::performance_metrics::record_window_visibility;
 use crate::{
     Action, AnimatedFrame, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App,
     AppContext, Arena, Asset, AsyncApp, AsyncWindowContext, AtlasTile, AvailableSpace,
@@ -33,10 +34,8 @@ use crate::{
     record_inactive_present_skip, record_layout_cache_metrics, record_layout_frame_metrics,
     record_retained_frame_skip, record_scene_frame_metrics, record_skipped_pointer_frame,
     record_window_dirty_to_present, record_window_frame_disposition,
-    record_window_layout_recompute, record_window_runtime_state, rems,
-    size, transparent_black,
+    record_window_layout_recompute, record_window_runtime_state, rems, size, transparent_black,
 };
-use crate::diagnostics::performance_metrics::record_window_visibility;
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
 use derive_more::{Deref, DerefMut};
@@ -82,6 +81,7 @@ mod element_id;
 mod elements;
 mod focus;
 mod frame;
+mod frame_clock;
 mod frame_lifecycle;
 mod frame_scheduling;
 mod handle;
@@ -128,6 +128,8 @@ use frame::{
 pub(crate) use frame::{
     DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedElementRange, RetainedSceneSegment,
 };
+pub use frame_clock::FrameClock;
+use frame_clock::{FrameClockRequest, FrameClockState, ReceivedPlatformFrame};
 #[cfg(test)]
 use frame_lifecycle::FrameCompletion;
 use frame_lifecycle::{FrameWatchdog, WindowFrameThrottle};

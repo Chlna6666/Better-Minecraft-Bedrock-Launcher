@@ -28,8 +28,8 @@ use smithay_client_toolkit::{
 use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
 use wayland_client::{Proxy, protocol::wl_surface};
-use wayland_protocols::wp::viewporter::client::wp_viewport;
 use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
+use wayland_protocols::wp::viewporter::client::wp_viewport;
 use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
@@ -148,7 +148,8 @@ pub struct WaylandWindowState {
     window_controls: WindowControls,
     client_inset: Option<Pixels>,
     pending_frame_request: PlatformFrameRequest,
-    frame_callback_pending: bool,
+    frame_callback_pending: Option<u64>,
+    frame_callback_generation: u64,
     /// True while GPUI is synchronously servicing the compositor callback.
     ///
     /// Requests raised during this interval are latched and armed by completed_frame so the next
@@ -284,7 +285,8 @@ impl WaylandWindowState {
             window_controls: WindowControls::default(),
             client_inset: None,
             pending_frame_request: PlatformFrameRequest::default(),
-            frame_callback_pending: false,
+            frame_callback_pending: None,
+            frame_callback_generation: 0,
             frame_in_progress: false,
             client_frame,
             text_system,
@@ -578,6 +580,19 @@ impl WaylandWindow {
     }
 }
 
+fn arm_frame_callback(state: &mut WaylandWindowState) {
+    if state.frame_callback_pending.is_some() {
+        return;
+    }
+
+    let generation = state.frame_callback_generation.wrapping_add(1);
+    state.frame_callback_generation = generation;
+    state
+        .surface
+        .frame(&state.globals.qh, (state.surface.id(), generation));
+    state.frame_callback_pending = Some(generation);
+}
+
 impl WaylandWindowStatePtr {
     pub(super) fn refresh_background_effects(&self) {
         update_window(self.state.borrow_mut());
@@ -624,9 +639,8 @@ impl WaylandWindowStatePtr {
     fn finish_frame(&self) {
         let mut state = self.state.borrow_mut();
         state.frame_in_progress = false;
-        if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
-            state.surface.frame(&state.globals.qh, state.surface.id());
-            state.frame_callback_pending = true;
+        if state.pending_frame_request.requires_frame() {
+            arm_frame_callback(&mut state);
         }
         state.surface.commit();
     }
@@ -739,24 +753,27 @@ impl WaylandWindowStatePtr {
         let mut state = self.state.borrow_mut();
         state.pending_frame_request = state.pending_frame_request.merge(options);
         if !state.frame_in_progress
-            && !state.frame_callback_pending
+            && state.frame_callback_pending.is_none()
             && state.pending_frame_request.requires_frame()
         {
-            state.surface.frame(&state.globals.qh, state.surface.id());
+            arm_frame_callback(&mut state);
             state.surface.commit();
-            state.frame_callback_pending = true;
         }
     }
 
     pub fn clear_timed_out_frame_request(&self, _options: PlatformFrameRequest) {
         let mut state = self.state.borrow_mut();
         state.pending_frame_request = PlatformFrameRequest::default();
+        state.frame_callback_pending = None;
     }
 
-    pub fn frame(&self) {
+    pub fn frame(&self, generation: u64) {
         let callback_registered = self.callbacks.borrow().request_frame.is_some();
         let mut state = self.state.borrow_mut();
-        state.frame_callback_pending = false;
+        if state.frame_callback_pending != Some(generation) {
+            return;
+        }
+        state.frame_callback_pending = None;
         state.resize_throttle = false;
         if !state.pending_frame_request.requires_frame() || !callback_registered {
             state.frame_in_progress = false;
@@ -796,10 +813,9 @@ impl WaylandWindowStatePtr {
         let mut state = self.state.borrow_mut();
         if state.frame_in_progress {
             state.frame_in_progress = false;
-            if !state.frame_callback_pending && state.pending_frame_request.requires_frame() {
-                state.surface.frame(&state.globals.qh, state.surface.id());
+            if state.pending_frame_request.requires_frame() {
+                arm_frame_callback(&mut state);
                 state.surface.commit();
-                state.frame_callback_pending = true;
             }
         }
     }
@@ -1536,6 +1552,14 @@ impl PlatformWindow for WaylandWindow {
         self.0.request_frame(options);
     }
 
+    fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        self.0
+            .state
+            .borrow_mut()
+            .renderer
+            .set_frame_interval(interval);
+    }
+
     fn frame_request_timed_out(&self, options: PlatformFrameRequest) {
         self.0.clear_timed_out_frame_request(options);
     }
@@ -1544,7 +1568,7 @@ impl PlatformWindow for WaylandWindow {
         self.0.callbacks.borrow_mut().request_frame = Some(sender);
         let should_request_frame = {
             let state = self.0.state.borrow();
-            state.pending_frame_request.requires_frame() && !state.frame_callback_pending
+            state.pending_frame_request.requires_frame() && state.frame_callback_pending.is_none()
         };
         if should_request_frame {
             self.0.request_frame(PlatformFrameRequest::default());
@@ -1828,15 +1852,23 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
     if ext_blur {
         if state.background_effect.is_none() {
             if let Some(manager) = effects.manager.as_ref() {
-                state.background_effect = Some(manager.get_background_effect(&state.surface, &state.globals.qh, ()));
+                state.background_effect =
+                    Some(manager.get_background_effect(&state.surface, &state.globals.qh, ()));
             }
         }
         if let Some(effect) = state.background_effect.as_ref() {
             // A non-null region is required: null removes the effect. These bounds are in
             // surface-local logical coordinates, independent of buffer scale/fractional DPI.
-            let blur_region = state.globals.compositor.create_region(&state.globals.qh, ());
-            blur_region.add(0, 0, state.window_bounds.size.width.0.ceil().max(1.0) as i32,
-                state.window_bounds.size.height.0.ceil().max(1.0) as i32);
+            let blur_region = state
+                .globals
+                .compositor
+                .create_region(&state.globals.qh, ());
+            blur_region.add(
+                0,
+                0,
+                state.window_bounds.size.width.0.ceil().max(1.0) as i32,
+                state.window_bounds.size.height.0.ceil().max(1.0) as i32,
+            );
             effect.set_blur_region(Some(&blur_region));
             blur_region.destroy();
         }
@@ -1849,10 +1881,14 @@ fn update_window(mut state: RefMut<WaylandWindowState>) {
             if state.blur.is_none() {
                 state.blur = Some(manager.create(&state.surface, &state.globals.qh, ()));
             }
-            if let Some(blur) = state.blur.as_ref() { blur.commit(); }
+            if let Some(blur) = state.blur.as_ref() {
+                blur.commit();
+            }
         }
     } else if let Some(blur) = state.blur.take() {
-        if let Some(manager) = effects.kde_manager.as_ref() { manager.unset(&state.surface); }
+        if let Some(manager) = effects.kde_manager.as_ref() {
+            manager.unset(&state.surface);
+        }
         blur.release();
     }
     region.destroy();
