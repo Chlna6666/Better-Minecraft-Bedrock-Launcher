@@ -1939,10 +1939,10 @@ impl X11ClientState {
         &mut self,
         x_window: xproto::Window,
         refresh_rate: Duration,
-        next_frame_deadline: &Rc<Cell<Instant>>,
+        deadline_cell: &Rc<Cell<Instant>>,
     ) -> FrameRequestOutcome {
         let now = Instant::now();
-        let deadline = next_frame_deadline.get();
+        let deadline = deadline_cell.get();
         let Some(window_ref) = self.windows.get_mut(&x_window) else {
             return FrameRequestOutcome::Done;
         };
@@ -1953,7 +1953,7 @@ impl X11ClientState {
                 Some(RefreshState::PeriodicRefresh {
                     next_frame_deadline: current_deadline,
                     ..
-                }) if Rc::ptr_eq(current_deadline, next_frame_deadline)
+                }) if Rc::ptr_eq(current_deadline, deadline_cell)
             )
         {
             return FrameRequestOutcome::Done;
@@ -1975,7 +1975,7 @@ impl X11ClientState {
             return FrameRequestOutcome::Done;
         }
 
-        next_frame_deadline.set(next_frame_deadline(deadline, refresh_rate, now));
+        deadline_cell.set(next_frame_deadline(deadline, refresh_rate, now));
         FrameRequestOutcome::Refresh(window, frame_request)
     }
 
