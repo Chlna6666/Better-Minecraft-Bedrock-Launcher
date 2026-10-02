@@ -1544,9 +1544,11 @@ fn inactive_visible_dirty_frames_refresh_after_background_delay(cx: &mut TestApp
         let baseline = test_window.requested_frame_count();
         window.active.set(false);
         window.needs_present.set(false);
+        let last_input = Instant::now() - Duration::from_millis(100);
+        window.last_input_timestamp.set(last_input);
         window
-            .last_input_timestamp
-            .set(Instant::now() - Duration::from_secs(2));
+            .animation_time
+            .set(last_input + Duration::from_millis(50));
         window.invalidator.set_dirty(false);
         (test_window, baseline)
     });

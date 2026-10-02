@@ -6,7 +6,7 @@ mod throttle;
 use throttle::FrameActivity;
 pub(super) use throttle::WindowFrameThrottle;
 
-const BACKGROUND_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_millis(250);
+const BACKGROUND_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_millis(42);
 const MINIMIZED_PROGRESSIVE_FRAME_RETRY: Duration = Duration::from_secs(1);
 const FRAME_WATCHDOG_TIMEOUT: Duration = Duration::from_millis(100);
 const RECENT_INPUT_DIRTY_FRAME_GRACE: Duration = Duration::from_millis(500);
@@ -226,8 +226,7 @@ impl Window {
         // Only the first dirty frame after that input may cancel an inherited progressive throttle;
         // run_platform_frame refreshes animation_time immediately, so subsequent animation frames
         // return to the normal backpressure path instead of holding an input grace window open.
-        let fresh_input_edge = self.last_input_timestamp.get() > self.animation_time()
-            || self.recently_received_input(now);
+        let fresh_input_edge = self.last_input_timestamp.get() > self.animation_time();
         if fresh_input_edge
             && (self.dirty_frame_throttle_pending || self.frame_throttle.should_delay(now))
         {
@@ -311,15 +310,11 @@ impl Window {
     }
 
     pub(crate) fn should_defer_dirty_frame(&self) -> bool {
-        self.should_defer_dirty_frame_at(Instant::now())
-    }
-
-    fn should_defer_dirty_frame_at(&self, now: Instant) -> bool {
         self.invalidator.is_dirty()
             && !self.active.get()
             && (!self.inactive_dirty_redraw_enabled || !self.visibility.is_visible())
             && !self.needs_present.get()
-            && !self.recently_received_input(now)
+            && self.last_input_timestamp.get() <= self.animation_time()
             && self.next_frame_callbacks.borrow().is_empty()
             && self.rendered_frame.scene.len() != 0
     }
