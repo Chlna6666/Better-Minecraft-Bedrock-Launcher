@@ -6,7 +6,10 @@
 use std::cmp::Ordering;
 use std::env;
 use std::future::Future;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
@@ -27,6 +30,8 @@ use windows::Management::Deployment::{AddPackageOptions, PackageManager};
 use windows::Win32::System::ApplicationInstallationAndServicing::{
     INSTALLUILEVEL_NONE, MsiInstallProductW, MsiSetInternalUI,
 };
+#[cfg(windows)]
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 #[cfg(windows)]
 use windows::core::{HRESULT, HSTRING, PCWSTR};
 #[cfg(windows)]
@@ -317,7 +322,15 @@ pub fn is_installed_with_min(prefix: &str, min_version: Option<&str>) -> bool {
         return true;
     }
 
-    inspect_uwp_dependency(prefix, min_version).is_none()
+    let installed_packages = match read_installed_uwp_packages() {
+        Ok(packages) => packages,
+        Err(error) => {
+            warn!(package = prefix, error = ?error, "无法读取当前用户的 AppX 包");
+            return false;
+        }
+    };
+
+    inspect_uwp_dependency(prefix, min_version, &installed_packages).is_none()
 }
 
 enum InstalledUwpDependencyState {
@@ -326,68 +339,85 @@ enum InstalledUwpDependencyState {
 }
 
 #[cfg(windows)]
-fn read_installed_uwp_dependency_state(prefix: &str) -> InstalledUwpDependencyState {
-    let package_manager = match PackageManager::new() {
-        Ok(package_manager) => package_manager,
-        Err(error) => {
-            debug!("无法创建 PackageManager: {:?}", error);
-            return InstalledUwpDependencyState::NotInstalled;
-        }
-    };
+fn read_installed_uwp_packages() -> Result<Vec<(String, String)>> {
+    const POWERSHELL_QUERY: &str = r#"$ErrorActionPreference = 'Stop'; Get-AppxPackage | ForEach-Object { "{0}`t{1}" -f $_.Name, $_.Version }"#;
 
-    let mut found_package = false;
-    let mut highest_version: Option<String> = None;
-
-    if let Ok(packages) = package_manager.FindPackages() {
-        for package in packages {
-            let Ok(id) = package.Id() else {
-                continue;
-            };
-            let name = id
-                .Name()
-                .map(|value| value.to_string())
-                .unwrap_or_else(|_| String::new());
-            if !name.starts_with(prefix) {
-                continue;
-            }
-            found_package = true;
-            let installed_version = id
-                .Version()
-                .map(|version| {
-                    format!(
-                        "{}.{}.{}.{}",
-                        version.Major, version.Minor, version.Build, version.Revision
-                    )
-                })
-                .ok()
-                .or_else(|| extract_version(&name));
-            if let Some(installed_version) = installed_version {
-                let should_replace = highest_version
-                    .as_ref()
-                    .is_none_or(|current| compare_versions(&installed_version, current).is_gt());
-                if should_replace {
-                    highest_version = Some(installed_version);
-                }
-            }
-        }
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            POWERSHELL_QUERY,
+        ])
+        .creation_flags(CREATE_NO_WINDOW.0)
+        .output()
+        .context("启动 PowerShell 查询当前用户的 AppX 包失败")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Get-AppxPackage 返回退出代码 {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
 
-    if found_package {
-        InstalledUwpDependencyState::Installed {
-            version: highest_version,
-        }
-    } else {
-        InstalledUwpDependencyState::NotInstalled
-    }
+    Ok(parse_installed_uwp_packages(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 #[cfg(not(windows))]
-fn read_installed_uwp_dependency_state(_prefix: &str) -> InstalledUwpDependencyState {
-    InstalledUwpDependencyState::Installed { version: None }
+fn read_installed_uwp_packages() -> Result<Vec<(String, String)>> {
+    Ok(Vec::new())
 }
 
-fn inspect_uwp_dependency(name: &str, min_version: Option<&str>) -> Option<MissingUwpDependency> {
-    let installed_state = read_installed_uwp_dependency_state(name);
+fn parse_installed_uwp_packages(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (name, version) = line.split_once('\t')?;
+            let name = name.trim();
+            let version = version.trim();
+            if name.is_empty() || version.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), version.to_string()))
+        })
+        .collect()
+}
+
+fn read_uwp_dependency_state(
+    prefix: &str,
+    installed_packages: &[(String, String)],
+) -> InstalledUwpDependencyState {
+    let mut highest_version: Option<String> = None;
+    for (name, version) in installed_packages {
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let should_replace = highest_version
+            .as_ref()
+            .is_none_or(|current| compare_versions(version, current).is_gt());
+        if should_replace {
+            highest_version = Some(version.clone());
+        }
+    }
+
+    match highest_version {
+        Some(version) => InstalledUwpDependencyState::Installed {
+            version: Some(version),
+        },
+        None => InstalledUwpDependencyState::NotInstalled,
+    }
+}
+
+fn inspect_uwp_dependency(
+    name: &str,
+    min_version: Option<&str>,
+    installed_packages: &[(String, String)],
+) -> Option<MissingUwpDependency> {
+    let installed_state = read_uwp_dependency_state(name, installed_packages);
     let issue_kind = match (installed_state, min_version) {
         (InstalledUwpDependencyState::Installed { .. }, None) => return None,
         (InstalledUwpDependencyState::NotInstalled, None) => UwpDependencyIssueKind::Missing,
@@ -429,13 +459,28 @@ fn uwp_deps_list() -> &'static [(&'static str, Option<&'static str>)] {
     ]
 }
 
-#[cfg(windows)]
-pub fn compute_missing_uwp_dependencies() -> Vec<MissingUwpDependency> {
-    let missing = uwp_deps_list()
+fn collect_missing_uwp_dependencies(
+    installed_packages: Result<Vec<(String, String)>>,
+) -> Result<Vec<MissingUwpDependency>> {
+    let installed_packages = installed_packages?;
+    Ok(uwp_deps_list()
         .iter()
         .copied()
-        .filter_map(|(name, min_version)| inspect_uwp_dependency(name, min_version))
-        .collect::<Vec<_>>();
+        .filter_map(|(name, min_version)| {
+            inspect_uwp_dependency(name, min_version, &installed_packages)
+        })
+        .collect())
+}
+
+#[cfg(windows)]
+pub fn compute_missing_uwp_dependencies() -> Vec<MissingUwpDependency> {
+    let missing = match collect_missing_uwp_dependencies(read_installed_uwp_packages()) {
+        Ok(missing) => missing,
+        Err(error) => {
+            warn!(error = ?error, "读取当前用户的 AppX 包失败，跳过 UWP 依赖检查");
+            Vec::new()
+        }
+    };
     info!(
         missing_count = missing.len(),
         dependencies = ?missing
@@ -1019,4 +1064,52 @@ where
     }
 
     Err(anyhow!("等待条件超时"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_installed_appx_package_rows() {
+        let packages = parse_installed_uwp_packages(
+            "Microsoft.GamingServices\t38.117.18001.0\r\nMicrosoft.VCLibs.140.00\t14.0.33519.0\r\n",
+        );
+
+        assert_eq!(
+            packages,
+            [
+                (
+                    "Microsoft.GamingServices".to_string(),
+                    "38.117.18001.0".to_string()
+                ),
+                (
+                    "Microsoft.VCLibs.140.00".to_string(),
+                    "14.0.33519.0".to_string()
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_gaming_services_at_required_version_is_not_missing() {
+        let missing = collect_missing_uwp_dependencies(Ok(vec![(
+            "Microsoft.GamingServices".to_string(),
+            "38.117.18001.0".to_string(),
+        )]))
+        .expect("valid package snapshot");
+
+        assert!(
+            !missing
+                .iter()
+                .any(|dependency| dependency.name == "Microsoft.GamingServices")
+        );
+    }
+
+    #[test]
+    fn package_query_failure_is_not_treated_as_missing_packages() {
+        let result = collect_missing_uwp_dependencies(Err(anyhow!("package query failed")));
+
+        assert!(result.is_err());
+    }
 }
