@@ -106,6 +106,7 @@ thread_local! {
 #[derive(Clone)]
 struct WindowsUiBridge {
     event_loop: EventLoopProxy<WindowsUserEvent>,
+    native_owner_closing: Arc<AtomicBool>,
     displays: Vec<WindowsDisplay>,
     primary_display_id: Option<DisplayId>,
 }
@@ -262,6 +263,8 @@ pub(crate) struct WindowsPlatform {
 
 pub(crate) struct WindowsPlatformInner {
     state: RefCell<WindowsPlatformState>,
+    /// Stops window commands before shutdown starts draining queued UI callbacks.
+    native_owner_closing: Arc<AtomicBool>,
     // The below members will never change throughout the entire lifecycle of the app.
     main_receiver: flume::Receiver<Runnable>,
     main_thread_wakeup_pending: Arc<AtomicBool>,
@@ -428,6 +431,7 @@ impl WindowsPlatform {
             let state = native_for_launch.inner.state.borrow();
             let bridge = WindowsUiBridge {
                 event_loop,
+                native_owner_closing: native_for_launch.inner.native_owner_closing.clone(),
                 displays: state.displays.clone(),
                 primary_display_id: state.primary_display_id,
             };
@@ -457,6 +461,10 @@ impl WindowsPlatform {
                 }
             }
         }));
+        native
+            .inner
+            .native_owner_closing
+            .store(true, Ordering::Release);
         if shutdown.send(()).is_err() {
             log::debug!("GPUI UI owner was already stopped when native event loop exited");
         }
@@ -511,8 +519,20 @@ impl WindowsPlatform {
         let (main_sender, main_receiver) = flume::unbounded::<Runnable>();
         let main_thread_wakeup_pending = Arc::new(AtomicBool::new(false));
         let event_loop_proxy = Arc::new(Mutex::new(None));
+        let native_owner_closing = if ui_owner_mode {
+            UI_OWNER_BRIDGE.with(|bridge| {
+                bridge
+                    .borrow()
+                    .as_ref()
+                    .map(|bridge| bridge.native_owner_closing.clone())
+            })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         let inner = Rc::new(WindowsPlatformInner {
             state: RefCell::new(WindowsPlatformState::new()),
+            native_owner_closing,
             main_receiver,
             main_thread_wakeup_pending: main_thread_wakeup_pending.clone(),
         });
@@ -841,10 +861,15 @@ impl Platform for WindowsPlatform {
         ) {
             log::error!("failed to start GPUI Windows DWM frame pacing: {error}");
         }
-        let _ = event_loop.run_app(&mut application);
+        if let Err(error) = event_loop.run_app(&mut application) {
+            log::error!("Windows native event loop failed: {error}");
+        }
     }
 
     fn quit(&self) {
+        self.inner
+            .native_owner_closing
+            .store(true, Ordering::Release);
         if let Some(bridge) = &self.ui_bridge {
             let _ = bridge.event_loop.send_event(WindowsUserEvent::Quit);
             return;
@@ -1407,6 +1432,9 @@ impl WindowsApplication {
         self.windows.remove(&window_id);
         self.sync_active_window_handle();
         if self.windows.is_empty() {
+            self.inner
+                .native_owner_closing
+                .store(true, Ordering::Release);
             event_loop.exit();
         }
     }
@@ -1735,7 +1763,12 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                     apply_cursor_style_to_window(window.window(), style);
                 }
             }
-            WindowsUserEvent::Quit => event_loop.exit(),
+            WindowsUserEvent::Quit => {
+                self.inner
+                    .native_owner_closing
+                    .store(true, Ordering::Release);
+                event_loop.exit();
+            }
         }
         ACTIVE_CONTEXT.with(|storage| {
             *storage.borrow_mut() = None;
@@ -2117,6 +2150,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.inner
+            .native_owner_closing
+            .store(true, Ordering::Release);
         self.vsync_scheduler.shutdown();
         if !self.inner.handle_end_session() {
             log::warn!(
@@ -2490,6 +2526,30 @@ mod tests {
         assert!(!inner.run_foreground_tasks());
         assert!(task_ran.get());
         assert!(!inner.main_thread_wakeup_pending.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn windows_quit_marks_native_owner_closed_before_queued_ui_callbacks() {
+        use crate::platform::traits::Platform as _;
+
+        let platform = super::WindowsPlatform::new_headless();
+        let observed_closing = Rc::new(Cell::new(false));
+        let inner = platform.inner.clone();
+        platform
+            .foreground_executor
+            .spawn({
+                let observed_closing = observed_closing.clone();
+                let inner = inner.clone();
+                async move {
+                    observed_closing.set(inner.native_owner_closing.load(Ordering::Acquire));
+                }
+            })
+            .detach();
+
+        assert!(!inner.native_owner_closing.load(Ordering::Acquire));
+        platform.quit();
+        assert!(!inner.run_foreground_tasks());
+        assert!(observed_closing.get());
     }
 }
 

@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     time::Instant,
 };
 
@@ -85,10 +85,20 @@ impl WindowsWindowProxy {
     }
 
     fn send(&self, command: WindowsNativeCommand) -> bool {
+        let Some(platform) = self.platform.upgrade() else {
+            return false;
+        };
+        if platform.native_owner_closing.load(Ordering::Acquire) {
+            return false;
+        }
         if let Err(error) = self
             .event_loop
             .send_event(WindowsUserEvent::NativeCommand(command))
         {
+            if platform.native_owner_closing.load(Ordering::Acquire) {
+                return false;
+            }
+            platform.native_owner_closing.store(true, Ordering::Release);
             log::error!("failed to send Windows native owner command: {error:?}");
             return false;
         }
