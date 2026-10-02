@@ -6,8 +6,8 @@ use std::str::FromStr;
 use super::defaults::{
     default_appx_api, default_config_version, default_error_report_sentry_enabled,
     default_log_active_size_mb, default_log_archive_files, default_log_compression_level,
-    default_log_retention_days, default_log_total_size_mb, default_renderer_backend, default_true,
-    default_update_check_interval_minutes,
+    default_log_retention_days, default_log_total_size_mb, default_proton_gdk_source,
+    default_renderer_backend, default_true, default_update_check_interval_minutes,
 };
 pub use super::defaults::{
     default_background_blur, default_error_report_sentry_dsn, default_font_source,

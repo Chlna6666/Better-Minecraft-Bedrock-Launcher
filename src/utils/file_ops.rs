@@ -157,10 +157,10 @@ pub fn create_initial_directories() {
         native_mods_api_cache_dir(),
     ];
     #[cfg(target_os = "linux")]
-    let dirs = {
-        dirs.extend([state_dir(), runners_dir(), prefixes_dir()]);
-        dirs
-    };
+    let dirs = dirs
+        .into_iter()
+        .chain([state_dir(), runners_dir(), prefixes_dir()])
+        .collect::<Vec<_>>();
 
     for dir in dirs {
         if let Err(e) = fs::create_dir_all(&dir) {
