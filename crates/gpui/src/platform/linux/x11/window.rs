@@ -13,7 +13,7 @@ use crate::{
     PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PresentationPacket, PromptButton, PromptLevel, RendererOptions, ResizeEdge, ScaledPixels,
     Scene, SceneAnimationCompletion, Size, Tiling, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControlArea, WindowDecorations, WindowKind, WindowParams,
+    WindowBounds, WindowControlArea, WindowDecorations, WindowKind, WindowParams, WindowVisibility,
     X11ClientStatePtr, px, size,
 };
 

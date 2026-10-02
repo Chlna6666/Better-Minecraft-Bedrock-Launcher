@@ -47,7 +47,8 @@ use crate::{
     PlatformFrameRequest, PlatformFrameResult, PlatformInput, Point, PresentationPacket,
     PromptButton, PromptLevel, RendererOptions, ResizeEdge, SceneAnimationCompletion, Size, Tiling,
     WaylandClientStatePtr, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowControls, WindowDecorations, WindowParams, point, px, size,
+    WindowControlArea, WindowControls, WindowDecorations, WindowParams, WindowVisibility, point,
+    px, size,
 };
 use crate::{
     Capslock,
@@ -1489,7 +1490,7 @@ impl PlatformWindow for WaylandWindow {
         }
         state.background_appearance = background_appearance;
         update_window(state);
-        self.surface().commit();
+        self.0.surface().commit();
         self.0.request_frame(PlatformFrameRequest::ui_commit());
     }
 
@@ -1619,7 +1620,7 @@ impl PlatformWindow for WaylandWindow {
         match result {
             Ok(true) => {
                 for completion in completed_animations {
-                    self.invoke_presentation_animation_completed(completion);
+                    self.0.invoke_presentation_animation_completed(completion);
                 }
                 if has_active_presentation_animations {
                     self.0.request_frame(PlatformFrameRequest::presentation());
@@ -1658,7 +1659,7 @@ impl PlatformWindow for WaylandWindow {
         match result {
             Ok(true) => {
                 for completion in completed_animations {
-                    self.invoke_presentation_animation_completed(completion);
+                    self.0.invoke_presentation_animation_completed(completion);
                 }
                 if has_active_presentation_animations {
                     self.0.request_frame(PlatformFrameRequest::presentation());

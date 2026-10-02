@@ -81,9 +81,8 @@ impl BackgroundEffects {
             self.blur_supported = false;
             true
         } else if self.kde_manager_name == Some(name) {
-            if let Some(manager) = self.kde_manager.take() {
-                manager.release();
-            }
+            // The KWin blur manager protocol has no destructor request; dropping its proxy is enough.
+            drop(self.kde_manager.take());
             self.kde_manager_name = None;
             true
         } else {
