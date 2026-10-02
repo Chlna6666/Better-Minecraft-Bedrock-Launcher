@@ -432,6 +432,8 @@ impl PlatformWindow for WindowsWindowProxy {
     }
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         self.callbacks.borrow_mut().active = Some(callback);
+        let active = self.snapshot.borrow().active;
+        self.dispatch_event(WindowsNativeEvent::Active(active));
     }
     fn on_visibility_change(&self, callback: Box<dyn FnMut(WindowVisibility)>) {
         self.callbacks.borrow_mut().visibility = Some(callback);
