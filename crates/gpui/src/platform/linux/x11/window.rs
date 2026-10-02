@@ -4,6 +4,7 @@
 )]
 
 use anyhow::{Context as _, anyhow};
+use calloop::LoopHandle;
 use x11rb::connection::RequestConnection;
 
 use crate::platform::NovaRenderer;
@@ -45,7 +46,7 @@ use std::{
     time::Instant,
 };
 
-use super::{X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
+use super::{X11Client, X11Display, XINPUT_ALL_DEVICE_GROUPS, XINPUT_ALL_DEVICES};
 
 x11rb::atom_manager! {
     pub XcbAtoms: AtomsCookie {
@@ -312,6 +313,7 @@ impl X11WindowState {
 pub(crate) struct X11WindowStatePtr {
     pub state: Rc<RefCell<X11WindowState>>,
     pub(crate) callbacks: Rc<RefCell<Callbacks>>,
+    loop_handle: LoopHandle<'static, X11Client>,
     xcb: Rc<XCBConnection>,
     pub(crate) x_window: xproto::Window,
 }
@@ -335,11 +337,28 @@ impl X11WindowStatePtr {
     }
 
     pub fn request_frame(&self, frame_request: PlatformFrameRequest) {
-        let state = self.state.borrow();
-        let pending = state.pending_frame_request.get();
-        state
-            .pending_frame_request
-            .set(merge_frame_request(pending, frame_request));
+        let should_wake = {
+            let state = self.state.borrow();
+            let pending = state.pending_frame_request.get();
+            state
+                .pending_frame_request
+                .set(merge_frame_request(pending, frame_request));
+            pending == PlatformFrameRequest::default()
+        };
+
+        if should_wake {
+            self.wake_frame_loop();
+        }
+    }
+
+    pub fn has_pending_frame_request(&self) -> bool {
+        self.state.borrow().pending_frame_request.get() != PlatformFrameRequest::default()
+    }
+
+    pub fn wake_frame_loop(&self) {
+        let x_window = self.x_window;
+        self.loop_handle
+            .insert_idle(move |client| client.schedule_frame_request(x_window));
     }
 
     pub fn take_pending_frame_request(&self) -> PlatformFrameRequest {
@@ -865,6 +884,7 @@ impl X11Window {
     pub fn new(
         handle: AnyWindowHandle,
         client: X11ClientStatePtr,
+        loop_handle: LoopHandle<'static, X11Client>,
         executor: ForegroundExecutor,
         renderer_options: &RendererOptions,
         params: WindowParams,
@@ -894,6 +914,7 @@ impl X11Window {
                 parent_window,
             )?)),
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
+            loop_handle,
             xcb: xcb.clone(),
             x_window,
         };
@@ -1248,6 +1269,7 @@ impl X11WindowStatePtr {
     }
 
     pub fn set_active(&self, is_active: bool) {
+        self.state.borrow_mut().active = is_active;
         if let Some(ref mut fun) = self.callbacks.borrow_mut().active_status_change {
             fun(is_active);
         }

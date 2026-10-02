@@ -16,7 +16,7 @@ use http_client::Url;
 use log::Level;
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, HashSet},
     ops::Deref,
     path::PathBuf,
@@ -96,6 +96,14 @@ fn frame_request_after_expose(
     }
 }
 
+fn next_frame_deadline(deadline: Instant, refresh_rate: Duration, now: Instant) -> Instant {
+    let mut next_deadline = deadline + refresh_rate;
+    while next_deadline <= now {
+        next_deadline += refresh_rate;
+    }
+    next_deadline
+}
+
 fn insert_x11_foreground_task_idle(
     handle: &LoopHandle<'static, X11Client>,
     foreground_task_queue: Arc<ForegroundTaskQueue>,
@@ -146,7 +154,14 @@ enum RefreshState {
     PeriodicRefresh {
         refresh_rate: Duration,
         event_loop_token: RegistrationToken,
+        next_frame_deadline: Rc<Cell<Instant>>,
     },
+}
+
+enum FrameRequestOutcome {
+    Done,
+    WaitUntil(Instant),
+    Refresh(X11WindowStatePtr, PlatformFrameRequest),
 }
 
 #[derive(Debug)]
@@ -339,6 +354,10 @@ impl X11ClientStatePtr {
 pub(crate) struct X11Client(Rc<RefCell<X11ClientState>>);
 
 impl X11Client {
+    pub(crate) fn schedule_frame_request(&self, x_window: xproto::Window) {
+        self.0.borrow().schedule_frame_request(x_window);
+    }
+
     pub(crate) fn new(renderer_options: RendererOptions) -> anyhow::Result<Self> {
         let event_loop = EventLoop::try_new()?;
 
@@ -647,9 +666,15 @@ impl X11Client {
             }
 
             for window in windows_to_refresh.into_iter() {
-                let mut state = self.0.borrow_mut();
-                if let Some(window) = state.windows.get_mut(&window) {
-                    window.expose_event_received = true;
+                let window = {
+                    let mut state = self.0.borrow_mut();
+                    state.windows.get_mut(&window).map(|window_ref| {
+                        window_ref.expose_event_received = true;
+                        window_ref.window.clone()
+                    })
+                };
+                if let Some(window) = window {
+                    window.wake_frame_loop();
                 }
             }
 
@@ -779,21 +804,21 @@ impl X11Client {
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.is_mapped = false;
                 }
-                state.update_refresh_loop(event.window);
+                state.update_refresh_state(event.window);
             }
             Event::MapNotify(event) => {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.is_mapped = true;
                 }
-                state.update_refresh_loop(event.window);
+                state.update_refresh_state(event.window);
             }
             Event::VisibilityNotify(event) => {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
                     window_ref.last_visibility = event.state;
                 }
-                state.update_refresh_loop(event.window);
+                state.update_refresh_state(event.window);
             }
             Event::ClientMessage(event) => {
                 let window = self.window(event.window)?;
@@ -1494,6 +1519,7 @@ impl LinuxClient for X11Client {
         let window = X11Window::new(
             handle,
             X11ClientStatePtr(Rc::downgrade(&self.0)),
+            state.loop_handle.clone(),
             state.common.foreground_executor.clone(),
             &state.renderer_options,
             params,
@@ -1729,7 +1755,7 @@ impl X11ClientState {
         self.xim_handler = Some(xim_handler);
     }
 
-    fn update_refresh_loop(&mut self, x_window: xproto::Window) {
+    fn update_refresh_state(&mut self, x_window: xproto::Window) {
         let Some(window_ref) = self.windows.get_mut(&x_window) else {
             return;
         };
@@ -1746,19 +1772,23 @@ impl X11ClientState {
                 Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
                     event_loop_token,
+                    ..
                 }),
             ) => {
                 self.loop_handle.remove(event_loop_token);
                 window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
             }
             (true, Some(RefreshState::Hidden { refresh_rate })) => {
-                let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
+                let next_frame_deadline = Rc::new(Cell::new(Instant::now()));
+                let event_loop_token =
+                    self.start_refresh_loop(x_window, refresh_rate, next_frame_deadline.clone());
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
                     event_loop_token,
+                    next_frame_deadline,
                 });
             }
             (true, None) => {
@@ -1798,15 +1828,22 @@ impl X11ClientState {
                     }
                 };
 
-                let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
+                let next_frame_deadline = Rc::new(Cell::new(Instant::now()));
+                let event_loop_token =
+                    self.start_refresh_loop(x_window, refresh_rate, next_frame_deadline.clone());
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
                     refresh_rate,
                     event_loop_token,
+                    next_frame_deadline,
                 });
             }
+        }
+
+        if is_visible {
+            self.schedule_frame_request(x_window);
         }
     }
 
@@ -1815,41 +1852,131 @@ impl X11ClientState {
         &self,
         x_window: xproto::Window,
         refresh_rate: Duration,
+        next_frame_deadline: Rc<Cell<Instant>>,
     ) -> RegistrationToken {
         self.loop_handle
             .insert_source(calloop::timer::Timer::immediate(), {
                 move |mut instant, (), client| {
-                    let xcb_connection = {
+                    let (xcb_connection, exposed_window) = {
                         let mut state = client.0.borrow_mut();
                         let xcb_connection = state.xcb_connection.clone();
-                        if let Some(window) = state.windows.get_mut(&x_window) {
-                            let expose_event_received = window.expose_event_received;
-                            window.expose_event_received = false;
-                            let window = window.window.clone();
-                            drop(state);
-                            let pending_frame_request = window.take_pending_frame_request();
-                            if expose_event_received
-                                || pending_frame_request != PlatformFrameRequest::default()
-                            {
-                                window.refresh(frame_request_after_expose(
-                                    pending_frame_request,
-                                    expose_event_received,
-                                ));
-                            }
-                        }
-                        xcb_connection
+                        let exposed_window = state.windows.get_mut(&x_window).and_then(|window| {
+                            let expose_event_received =
+                                std::mem::take(&mut window.expose_event_received);
+                            expose_event_received.then(|| window.window.clone())
+                        });
+                        (xcb_connection, exposed_window)
                     };
-                    client.drain_x11_events(&xcb_connection).log_err();
 
-                    // Take into account that some frames have been skipped
                     let now = Instant::now();
                     while instant < now {
                         instant += refresh_rate;
                     }
+
+                    if let Some(window) = exposed_window {
+                        next_frame_deadline.set(instant);
+                        window.refresh(PlatformFrameRequest::presentation());
+                    }
+                    client.drain_x11_events(&xcb_connection).log_err();
                     calloop::timer::TimeoutAction::ToInstant(instant)
                 }
             })
             .expect("Failed to initialize window refresh timer")
+    }
+
+    fn schedule_frame_request(&self, x_window: xproto::Window) {
+        let Some(window_ref) = self.windows.get(&x_window) else {
+            return;
+        };
+        if !window_ref.is_mapped
+            || matches!(window_ref.last_visibility, Visibility::FULLY_OBSCURED)
+            || (!window_ref.expose_event_received && !window_ref.window.has_pending_frame_request())
+        {
+            return;
+        }
+
+        let Some(RefreshState::PeriodicRefresh {
+            refresh_rate,
+            next_frame_deadline,
+            ..
+        }) = window_ref.refresh_state.as_ref()
+        else {
+            return;
+        };
+        let refresh_rate = *refresh_rate;
+        let next_frame_deadline = next_frame_deadline.clone();
+        let delay = next_frame_deadline
+            .get()
+            .saturating_duration_since(Instant::now());
+
+        self.loop_handle
+            .insert_source(
+                calloop::timer::Timer::from_duration(delay),
+                move |_, _, client| {
+                    let outcome = {
+                        client.0.borrow_mut().frame_request_at_deadline(
+                            x_window,
+                            refresh_rate,
+                            &next_frame_deadline,
+                        )
+                    };
+                    match outcome {
+                        FrameRequestOutcome::Done => calloop::timer::TimeoutAction::Drop,
+                        FrameRequestOutcome::WaitUntil(deadline) => {
+                            calloop::timer::TimeoutAction::ToInstant(deadline)
+                        }
+                        FrameRequestOutcome::Refresh(window, frame_request) => {
+                            window.refresh(frame_request);
+                            calloop::timer::TimeoutAction::Drop
+                        }
+                    }
+                },
+            )
+            .expect("Failed to schedule X11 frame request");
+    }
+
+    fn frame_request_at_deadline(
+        &mut self,
+        x_window: xproto::Window,
+        refresh_rate: Duration,
+        next_frame_deadline: &Rc<Cell<Instant>>,
+    ) -> FrameRequestOutcome {
+        let now = Instant::now();
+        let deadline = next_frame_deadline.get();
+        let Some(window_ref) = self.windows.get_mut(&x_window) else {
+            return FrameRequestOutcome::Done;
+        };
+        if !window_ref.is_mapped
+            || matches!(window_ref.last_visibility, Visibility::FULLY_OBSCURED)
+            || !matches!(
+                window_ref.refresh_state.as_ref(),
+                Some(RefreshState::PeriodicRefresh {
+                    next_frame_deadline: current_deadline,
+                    ..
+                }) if Rc::ptr_eq(current_deadline, next_frame_deadline)
+            )
+        {
+            return FrameRequestOutcome::Done;
+        }
+
+        let expose_event_received = window_ref.expose_event_received;
+        let window = window_ref.window.clone();
+        if !expose_event_received && !window.has_pending_frame_request() {
+            return FrameRequestOutcome::Done;
+        }
+        if now < deadline {
+            return FrameRequestOutcome::WaitUntil(deadline);
+        }
+
+        window_ref.expose_event_received = false;
+        let frame_request =
+            frame_request_after_expose(window.take_pending_frame_request(), expose_event_received);
+        if frame_request == PlatformFrameRequest::default() {
+            return FrameRequestOutcome::Done;
+        }
+
+        next_frame_deadline.set(next_frame_deadline(deadline, refresh_rate, now));
+        FrameRequestOutcome::Refresh(window, frame_request)
     }
 
     fn cursor_icon(&mut self, style: CursorStyle) -> Option<xproto::Cursor> {
@@ -2550,5 +2677,17 @@ mod tests {
 
         assert!(options.needs_presentation());
         assert!(options.needs_ui_commit());
+    }
+
+    #[test]
+    fn frame_request_deadline_skips_missed_refresh_slots() {
+        let first_deadline = Instant::now();
+        let refresh_rate = Duration::from_millis(16);
+        let now = first_deadline + Duration::from_millis(45);
+
+        assert_eq!(
+            next_frame_deadline(first_deadline, refresh_rate, now),
+            first_deadline + Duration::from_millis(48)
+        );
     }
 }
