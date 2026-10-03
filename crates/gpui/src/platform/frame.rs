@@ -186,6 +186,14 @@ impl DirtyRegion {
         }
     }
 
+    /// Accumulates damage from a presentation packet that has not reached the surface yet.
+    pub(crate) fn merge_from(&mut self, previous: &Self) {
+        self.full |= previous.full;
+        for rect in &previous.rects {
+            self.push(rect.bounds);
+        }
+    }
+
     pub(crate) fn mark_full(&mut self, bounds: Bounds<ScaledPixels>) {
         self.full = true;
         self.rects.clear();
@@ -266,6 +274,39 @@ mod tests {
 
         assert_eq!(region.rect_count(), 1);
         assert_eq!(region.union_bounds(), Some(rect(0.0, 30.0)));
+    }
+
+    #[test]
+    fn merging_queued_packet_damage_preserves_both_scenes() {
+        let frame_time = Instant::now();
+        let mut previous_damage = DirtyRegion::empty();
+        previous_damage.push(rect(0.0, 10.0));
+        let mut latest_damage = DirtyRegion::empty();
+        latest_damage.push(rect(20.0, 10.0));
+        let previous = PresentationPacket::new(
+            Arc::new(Scene::default()),
+            [],
+            [],
+            frame_time,
+            1.0,
+            previous_damage,
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        );
+        let mut latest = PresentationPacket::new(
+            Arc::new(Scene::default()),
+            [],
+            [],
+            frame_time,
+            1.0,
+            latest_damage,
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        );
+
+        latest.merge_pending_damage_from(&previous);
+
+        assert_eq!(latest.dirty_region.union_bounds(), Some(rect(0.0, 30.0)));
     }
 
     #[test]
@@ -840,6 +881,14 @@ impl PresentationPacket {
         self.dirty_region = DirtyRegion::empty();
         self.backdrop_blur_damage_plan = BackdropBlurDamagePlan::default();
         self.force_full_backdrop_blur_refresh = false;
+    }
+
+    /// Preserves unsubmitted damage when a newer scene supersedes this packet in the owner queue.
+    pub(crate) fn merge_pending_damage_from(&mut self, previous: &Self) {
+        self.dirty_region.merge_from(&previous.dirty_region);
+        self.backdrop_blur_damage_plan
+            .merge_from(&previous.backdrop_blur_damage_plan);
+        self.force_full_backdrop_blur_refresh |= previous.force_full_backdrop_blur_refresh;
     }
 
     pub(crate) fn new(
