@@ -7,6 +7,7 @@ use crate::ui::animation::{
 pub struct ManagePageView {
     pub(super) _subscriptions: Vec<Subscription>,
     pub(super) active: bool,
+    pub(super) tab_body_view: Entity<ManageTabBodyView>,
     pub(super) asset_search_input: Option<Entity<InputState>>,
     pub(super) screenshot_search_input: Option<Entity<InputState>>,
     pub(super) server_search_input: Option<Entity<InputState>>,
@@ -34,7 +35,7 @@ pub struct ManagePageView {
     pub(super) last_assets_signature: Option<AssetsLoadSignature>,
     pub(super) last_screenshots_signature: Option<ScreenshotsLoadSignature>,
     pub(super) last_servers_signature: Option<ServersLoadSignature>,
-    pub(super) last_global_render_signature: ManageRenderSignature,
+    pub(super) last_global_render_signature: ManagePageRenderSignature,
 }
 
 impl ManagePageView {
@@ -44,10 +45,13 @@ impl ManagePageView {
         });
         let state = cx.global::<ManagePageState>();
         let initial_selected_instance_revision = state.selected_instance_revision();
-        let initial_render_signature = ManageRenderSignature::from_state(state);
+        let initial_render_signature = ManagePageRenderSignature::from_state(state);
+        let parent = cx.entity().downgrade();
+        let tab_body_view = cx.new(|cx| ManageTabBodyView::new(parent, cx));
         let subscriptions = vec![
             cx.observe_global::<ManagePageState>(|this, cx| {
-                let signature = ManageRenderSignature::from_state(cx.global::<ManagePageState>());
+                let signature =
+                    ManagePageRenderSignature::from_state(cx.global::<ManagePageState>());
                 if this.last_global_render_signature != signature {
                     this.last_global_render_signature = signature;
                     if this.active {
@@ -99,6 +103,7 @@ impl ManagePageView {
         Self {
             _subscriptions: subscriptions,
             active: false,
+            tab_body_view,
             asset_search_input: None,
             screenshot_search_input: None,
             server_search_input: None,
@@ -135,6 +140,8 @@ impl ManagePageView {
             return;
         }
         self.active = active;
+        self.tab_body_view
+            .update(cx, |view, cx| view.set_active(active, cx));
         if active {
             // Inactive residents absorb state/signature updates without waking the window. One
             // notification on reactivation is enough to render the latest state.
@@ -164,11 +171,7 @@ impl Render for ManagePageView {
         if !cx.has_active_drag() {
             self.drop_hover = None;
         }
-        self.ensure_asset_search_input(window, cx);
-        self.ensure_screenshot_search_input(window, cx);
-        self.ensure_server_search_input(window, cx);
-        self.sync_selected_version(cx);
-        self.sync_data_requests(cx);
+        self.prepare_render(window, cx);
 
         let now = window.animation_time();
         let theme = cx.global::<ThemeState>();
@@ -179,7 +182,7 @@ impl Render for ManagePageView {
             theme.accent,
         );
         let state = cx.global::<ManagePageState>().clone();
-        let page = self.render_page(window, &colors, &state, now, cx);
+        let page = self.render_page(&colors, &state, cx);
 
         div()
             .size_full()
@@ -189,12 +192,18 @@ impl Render for ManagePageView {
 }
 
 impl ManagePageView {
+    pub(super) fn prepare_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_asset_search_input(window, cx);
+        self.ensure_screenshot_search_input(window, cx);
+        self.ensure_server_search_input(window, cx);
+        self.sync_selected_version(cx);
+        self.sync_data_requests(cx);
+    }
+
     fn render_page(
         &mut self,
-        window: &mut Window,
         colors: &ThemeColors,
         state: &ManagePageState,
-        now: Instant,
         cx: &mut Context<Self>,
     ) -> Div {
         if is_level_dat_editor_route(cx) {
@@ -202,12 +211,12 @@ impl ManagePageView {
                 .size_full()
                 .min_w(px(0.))
                 .min_h(px(0.))
-                .child(self.render_main(window, colors, state, now, cx));
+                .child(self.render_main(colors, state, cx));
         }
 
         let page = crate::ui::components::page_shell::split_page(
             self.render_sidebar(colors, state, cx),
-            self.render_main(window, colors, state, now, cx),
+            self.render_main(colors, state, cx),
         )
         .relative();
         if let Some(target) = self.drop_hover.as_ref().map(|preview| preview.target) {
@@ -601,15 +610,12 @@ impl ManagePageView {
             )
     }
 
-    fn render_main(
+    pub(super) fn render_main(
         &mut self,
-        window: &mut Window,
         colors: &ThemeColors,
         state: &ManagePageState,
-        now: Instant,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let i18n = cx.global::<I18n>().clone();
         if is_level_dat_editor_route(cx) {
             return div()
                 .flex_1()
@@ -664,29 +670,6 @@ impl ManagePageView {
                 ))
                 .into_any_element();
         };
-
-        if is_asset_tab(state.tab) && self.asset_list_cache.refresh(state) {
-            self.asset_scroll_handle.set_offset(point(px(0.), px(0.)));
-        }
-        if state.tab == ManageTab::Screenshot && self.screenshot_list_cache.refresh(state) {
-            self.screenshot_scroll_handle
-                .set_offset(point(px(0.), px(0.)));
-        }
-        if state.tab == ManageTab::Server && self.server_list_cache.refresh(state) {
-            self.server_scroll_handle.set_offset(point(px(0.), px(0.)));
-        }
-        let filtered_assets = self.asset_list_cache.filtered_indices();
-        let filtered_screenshots = self.screenshot_list_cache.filtered_indices();
-        let filtered_servers = self.server_list_cache.filtered_indices();
-        let active_count = match state.tab {
-            ManageTab::Statistics => 0,
-            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
-                filtered_assets.len()
-            }
-            ManageTab::Screenshot => filtered_screenshots.len(),
-            ManageTab::Server => filtered_servers.len(),
-        };
-        let active_count_string = active_count.to_string();
 
         let drop_tab = state.tab;
         let main_panel = crate::ui::components::page_shell::split_content_panel(colors)
@@ -805,209 +788,214 @@ impl ManagePageView {
                     .pt(px(6.))
                     .child(render_tab_bar(colors, state, cx)),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .mt(px(8.))
-                    .rounded_b(px(12.))
-                    .overflow_hidden()
-                    .border_t_1()
-                    .border_color(Hsla {
-                        a: 0.10,
-                        ..colors.border
-                    })
-                    .bg(Hsla {
-                        a: 0.55,
-                        ..colors.surface
-                    })
-                    .p(px(14.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .child({
-                        let toolbar = div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(12.))
-                            .when(state.tab != ManageTab::Statistics, |this| {
-                                this.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(10.))
-                                        .when(state.tab == ManageTab::ResourcePack, |this| {
-                                            this.child(render_pack_subtype_switch(
-                                                colors, state, cx,
-                                            ))
-                                        })
-                                        .when(should_render_gdk_dropdown(state, version), |this| {
-                                            this.child(render_gdk_dropdown(colors, state, cx))
-                                        })
-                                        .child(
-                                            match state.tab {
-                                                ManageTab::Statistics => None,
-                                                ManageTab::Mod
-                                                | ManageTab::ResourcePack
-                                                | ManageTab::SkinPack
-                                                | ManageTab::Map => {
-                                                    self.asset_search_input.as_ref()
-                                                }
-                                                ManageTab::Screenshot => {
-                                                    self.screenshot_search_input.as_ref()
-                                                }
-                                                ManageTab::Server => {
-                                                    self.server_search_input.as_ref()
-                                                }
-                                            }
-                                            .map_or_else(
-                                                || div().w(px(144.)).h(px(32.)).into_any_element(),
-                                                |input| {
-                                                    div()
-                                                        .w(px(144.))
-                                                        .child(render_toolbar_search_input(
-                                                            input, colors,
-                                                        ))
-                                                        .into_any_element()
-                                                },
-                                            ),
-                                        )
-                                        .child(subtle_badge(
-                                            colors,
-                                            t!(
-                                                "ManagePage.active_count",
-                                                count = &active_count_string
-                                            ),
-                                        )),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .children(render_active_toolbar_actions(colors, state, cx)),
-                            );
-
-                        let animating = state.tab_animation_active(now)
-                            && !crate::core::ui_prefs::reduced_motion();
-                        let direction = tab_transition_direction(
-                            state.tab_anim_from.index(),
-                            state.tab.index(),
-                        );
-                        toolbar
-                            .with_animation(
-                                tab_content_animation_key("manage-tab-toolbar", state.tab_anim_seq),
-                                if animating {
-                                    tab_toolbar_motion().with_property(
-                                        AnimationProperty::clipped_translation(
-                                            point(px(8.0 * direction), px(0.0)),
-                                            Point::default(),
-                                        ),
-                                    )
-                                } else {
-                                    settled_animation().with_property(
-                                        AnimationProperty::translation(
-                                            Point::default(),
-                                            Point::default(),
-                                        ),
-                                    )
-                                },
-                                |toolbar, _progress| toolbar,
-                            )
-                            .into_any_element()
-                    })
-                    .child(div().flex_1().min_h(px(0.)).child({
-                        let content = if state.version_config_loading {
-                            empty_state(
-                                colors,
-                                "images/manage/empty.svg",
-                                "正在读取版本配置",
-                                "请稍候，BMCBL 正在准备当前实例的管理设置。",
-                            )
-                            .into_any_element()
-                        } else {
-                            match state.tab {
-                                ManageTab::Statistics => render_statistics_tab(
-                                    colors,
-                                    version,
-                                    state,
-                                    &self.statistics_scroll_handle,
-                                    now,
-                                    cx,
-                                ),
-                                ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => {
-                                    render_asset_list(
-                                        colors,
-                                        version,
-                                        state,
-                                        filtered_assets,
-                                        &self.asset_scroll_handle,
-                                        window,
-                                        cx,
-                                    )
-                                }
-                                ManageTab::SkinPack => render_skin_pack_management(
-                                    colors,
-                                    version,
-                                    state,
-                                    filtered_assets,
-                                    &self.asset_scroll_handle,
-                                    window,
-                                    cx,
-                                ),
-                                ManageTab::Screenshot => render_screenshot_list(
-                                    colors,
-                                    &i18n,
-                                    version,
-                                    state,
-                                    filtered_screenshots,
-                                    &self.screenshot_scroll_handle,
-                                    window,
-                                    cx,
-                                ),
-                                ManageTab::Server => render_server_list(
-                                    colors,
-                                    version,
-                                    state,
-                                    filtered_servers,
-                                    &self.server_scroll_handle,
-                                    window,
-                                    cx,
-                                ),
-                            }
-                        };
-
-                        if state.tab_animation_active(now)
-                            && !crate::core::ui_prefs::reduced_motion()
-                        {
-                            div()
-                                .size_full()
-                                .min_w(px(0.))
-                                .min_h(px(0.))
-                                .child(content)
-                                .composite_layer()
-                                .with_animation(
-                                    tab_content_animation_key(
-                                        "manage-tab-content",
-                                        state.tab_anim_seq,
-                                    ),
-                                    tab_content_motion(
-                                        state.tab_anim_from.index(),
-                                        state.tab.index(),
-                                    ),
-                                    |content, _progress| content,
-                                )
-                                .into_any_element()
-                        } else {
-                            content
-                        }
-                    })),
-            );
+            .child(self.tab_body_view.clone().into_any_element());
 
         // Keep page-sized content at final geometry and move its text/images together as one
         // retained subtree during the tab transition.
         main_panel.into_any_element()
+    }
+
+    pub(super) fn render_tab_body(
+        &mut self,
+        window: &mut Window,
+        colors: &ThemeColors,
+        state: &ManagePageState,
+        now: Instant,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(version) = self.selected_version(state) else {
+            return div().size_full().into_any_element();
+        };
+        let i18n = cx.global::<I18n>().clone();
+
+        if is_asset_tab(state.tab) && self.asset_list_cache.refresh(state) {
+            self.asset_scroll_handle.set_offset(point(px(0.), px(0.)));
+        }
+        if state.tab == ManageTab::Screenshot && self.screenshot_list_cache.refresh(state) {
+            self.screenshot_scroll_handle
+                .set_offset(point(px(0.), px(0.)));
+        }
+        if state.tab == ManageTab::Server && self.server_list_cache.refresh(state) {
+            self.server_scroll_handle.set_offset(point(px(0.), px(0.)));
+        }
+        let filtered_assets = self.asset_list_cache.filtered_indices();
+        let filtered_screenshots = self.screenshot_list_cache.filtered_indices();
+        let filtered_servers = self.server_list_cache.filtered_indices();
+        let active_count = match state.tab {
+            ManageTab::Statistics => 0,
+            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+                filtered_assets.len()
+            }
+            ManageTab::Screenshot => filtered_screenshots.len(),
+            ManageTab::Server => filtered_servers.len(),
+        };
+        let active_count_string = active_count.to_string();
+
+        let toolbar = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(12.))
+            .when(state.tab != ManageTab::Statistics, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .when(state.tab == ManageTab::ResourcePack, |this| {
+                            this.child(render_pack_subtype_switch(colors, state, cx))
+                        })
+                        .when(should_render_gdk_dropdown(state, version), |this| {
+                            this.child(render_gdk_dropdown(colors, state, cx))
+                        })
+                        .child(
+                            match state.tab {
+                                ManageTab::Statistics => None,
+                                ManageTab::Mod
+                                | ManageTab::ResourcePack
+                                | ManageTab::SkinPack
+                                | ManageTab::Map => self.asset_search_input.as_ref(),
+                                ManageTab::Screenshot => self.screenshot_search_input.as_ref(),
+                                ManageTab::Server => self.server_search_input.as_ref(),
+                            }
+                            .map_or_else(
+                                || div().w(px(144.)).h(px(32.)).into_any_element(),
+                                |input| {
+                                    div()
+                                        .w(px(144.))
+                                        .child(render_toolbar_search_input(input, colors))
+                                        .into_any_element()
+                                },
+                            ),
+                        )
+                        .child(subtle_badge(
+                            colors,
+                            t!("ManagePage.active_count", count = &active_count_string),
+                        )),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .children(render_active_toolbar_actions(colors, state, cx)),
+            );
+
+        let animating = state.tab_animation_active(now) && !crate::core::ui_prefs::reduced_motion();
+        let direction = tab_transition_direction(state.tab_anim_from.index(), state.tab.index());
+        let toolbar = toolbar.with_animation(
+            tab_content_animation_key("manage-tab-toolbar", state.tab_anim_seq),
+            if animating {
+                tab_toolbar_motion().with_property(AnimationProperty::clipped_translation(
+                    point(px(8.0 * direction), px(0.0)),
+                    Point::default(),
+                ))
+            } else {
+                settled_animation().with_property(AnimationProperty::translation(
+                    Point::default(),
+                    Point::default(),
+                ))
+            },
+            |toolbar, _progress| toolbar,
+        );
+
+        let content = if state.version_config_loading {
+            empty_state(
+                colors,
+                "images/manage/empty.svg",
+                "正在读取版本配置",
+                "请稍候，BMCBL 正在准备当前实例的管理设置。",
+            )
+            .into_any_element()
+        } else {
+            match state.tab {
+                ManageTab::Statistics => render_statistics_tab(
+                    colors,
+                    version,
+                    state,
+                    &self.statistics_scroll_handle,
+                    now,
+                    cx,
+                ),
+                ManageTab::Mod | ManageTab::ResourcePack | ManageTab::Map => render_asset_list(
+                    colors,
+                    version,
+                    state,
+                    filtered_assets,
+                    &self.asset_scroll_handle,
+                    window,
+                    cx,
+                ),
+                ManageTab::SkinPack => render_skin_pack_management(
+                    colors,
+                    version,
+                    state,
+                    filtered_assets,
+                    &self.asset_scroll_handle,
+                    window,
+                    cx,
+                ),
+                ManageTab::Screenshot => render_screenshot_list(
+                    colors,
+                    &i18n,
+                    version,
+                    state,
+                    filtered_screenshots,
+                    &self.screenshot_scroll_handle,
+                    window,
+                    cx,
+                ),
+                ManageTab::Server => render_server_list(
+                    colors,
+                    version,
+                    state,
+                    filtered_servers,
+                    &self.server_scroll_handle,
+                    window,
+                    cx,
+                ),
+            }
+        };
+
+        let content = if animating {
+            div()
+                .size_full()
+                .min_w(px(0.))
+                .min_h(px(0.))
+                .child(content)
+                .composite_layer()
+                .with_animation(
+                    tab_content_animation_key("manage-tab-content", state.tab_anim_seq),
+                    tab_content_motion(state.tab_anim_from.index(), state.tab.index()),
+                    |content, _progress| content,
+                )
+                .into_any_element()
+        } else {
+            content
+        };
+
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .mt(px(8.))
+            .rounded_b(px(12.))
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(Hsla {
+                a: 0.10,
+                ..colors.border
+            })
+            .bg(Hsla {
+                a: 0.55,
+                ..colors.surface
+            })
+            .p(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(toolbar)
+            .child(div().flex_1().min_h(px(0.)).child(content))
+            .into_any_element()
     }
 }

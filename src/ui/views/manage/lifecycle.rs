@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct ManageRenderSignature {
+pub(super) struct ManagePageRenderSignature {
     pub(super) tab: ManageTab,
     pub(super) versions_revision: u64,
     pub(super) loaded: bool,
@@ -11,48 +11,11 @@ pub(super) struct ManageRenderSignature {
     pub(super) versions_len: usize,
     pub(super) selected_folder: Option<SharedString>,
     pub(super) search_query: SharedString,
-    pub(super) asset_search_query: SharedString,
-    pub(super) pack_subtype: ManagePackSubtype,
-    pub(super) asset_sort_key: ManageAssetSortKey,
-    pub(super) asset_sort_desc: bool,
-    pub(super) selected_asset_count: usize,
     pub(super) version_config: ManageVersionConfig,
-    pub(super) version_config_loading: bool,
     pub(super) version_config_error: Option<SharedString>,
-    pub(super) version_config_request_id: u64,
-    pub(super) gdk_users_ptr: usize,
-    pub(super) gdk_users_len: usize,
-    pub(super) selected_gdk_user: Option<SharedString>,
-    pub(super) gdk_users_loading: bool,
-    pub(super) gdk_users_error: Option<SharedString>,
-    pub(super) gdk_users_request_id: u64,
-    pub(super) assets_ptr: usize,
-    pub(super) assets_len: usize,
-    pub(super) assets_loaded: bool,
-    pub(super) assets_loading: bool,
-    pub(super) assets_error: Option<SharedString>,
-    pub(super) assets_request_id: u64,
-    pub(super) screenshot_search_query: SharedString,
-    pub(super) screenshots_ptr: usize,
-    pub(super) screenshots_len: usize,
-    pub(super) screenshots_loaded: bool,
-    pub(super) screenshots_loading: bool,
-    pub(super) screenshots_error: Option<SharedString>,
-    pub(super) screenshots_request_id: u64,
-    pub(super) server_search_query: SharedString,
-    pub(super) servers_ptr: usize,
-    pub(super) servers_len: usize,
-    pub(super) servers_loaded: bool,
-    pub(super) servers_loading: bool,
-    pub(super) servers_error: Option<SharedString>,
-    pub(super) servers_request_id: u64,
-    pub(super) server_motd_ptr: usize,
-    pub(super) server_motd_len: usize,
-    pub(super) server_motd_loading: bool,
-    pub(super) server_motd_request_id: u64,
 }
 
-impl ManageRenderSignature {
+impl ManagePageRenderSignature {
     pub(super) fn from_state(state: &ManagePageState) -> Self {
         Self {
             tab: state.tab,
@@ -64,46 +27,179 @@ impl ManageRenderSignature {
             versions_len: state.versions.len(),
             selected_folder: state.selected_folder.clone(),
             search_query: state.search_query.clone(),
-            asset_search_query: state.asset_search_query.clone(),
-            pack_subtype: state.pack_subtype,
-            asset_sort_key: state.asset_sort_key,
-            asset_sort_desc: state.asset_sort_desc,
-            selected_asset_count: state.selected_asset_keys.len(),
+            version_config: state.version_config.clone(),
+            version_config_error: state.version_config_error.clone(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct ManageTabBodyRenderSignature {
+    pub(super) tab: ManageTab,
+    pub(super) selected_folder: Option<SharedString>,
+    pub(super) versions_revision: u64,
+    pub(super) version_config: ManageVersionConfig,
+    pub(super) version_config_loading: bool,
+    pub(super) version_config_error: Option<SharedString>,
+    pub(super) version_config_request_id: u64,
+    pub(super) tab_anim_started_at: Option<Instant>,
+    pub(super) pack_subtype_anim_started_at: Option<Instant>,
+    pub(super) gdk_users_ptr: usize,
+    pub(super) gdk_users_len: usize,
+    pub(super) selected_gdk_user: Option<SharedString>,
+    pub(super) gdk_users_loading: bool,
+    pub(super) gdk_users_error: Option<SharedString>,
+    pub(super) gdk_users_request_id: u64,
+    pub(super) data: ManageTabBodyDataSignature,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum ManageTabBodyDataSignature {
+    Statistics,
+    Assets {
+        search_query: SharedString,
+        pack_subtype: ManagePackSubtype,
+        pack_subtype_anim_seq: u64,
+        asset_sort_key: ManageAssetSortKey,
+        asset_sort_desc: bool,
+        selected_asset_keys: Vec<SharedString>,
+        assets_ptr: usize,
+        assets_len: usize,
+        assets_loaded: bool,
+        assets_loading: bool,
+        assets_error: Option<SharedString>,
+        assets_request_id: u64,
+    },
+    Screenshots {
+        search_query: SharedString,
+        screenshots_ptr: usize,
+        screenshots_len: usize,
+        screenshots_loaded: bool,
+        screenshots_loading: bool,
+        screenshots_error: Option<SharedString>,
+        screenshots_request_id: u64,
+    },
+    Servers {
+        search_query: SharedString,
+        servers_ptr: usize,
+        servers_len: usize,
+        servers_loaded: bool,
+        servers_loading: bool,
+        servers_error: Option<SharedString>,
+        servers_request_id: u64,
+        server_motd_ptr: usize,
+        server_motd_len: usize,
+        server_motd_loading: bool,
+        server_motd_request_id: u64,
+    },
+}
+
+impl ManageTabBodyRenderSignature {
+    pub(super) fn from_state(state: &ManagePageState) -> Self {
+        let data = match state.tab {
+            ManageTab::Statistics => ManageTabBodyDataSignature::Statistics,
+            ManageTab::Mod | ManageTab::ResourcePack | ManageTab::SkinPack | ManageTab::Map => {
+                ManageTabBodyDataSignature::Assets {
+                    search_query: state.asset_search_query.clone(),
+                    pack_subtype: state.pack_subtype,
+                    pack_subtype_anim_seq: state.pack_subtype_anim_seq,
+                    asset_sort_key: state.asset_sort_key,
+                    asset_sort_desc: state.asset_sort_desc,
+                    selected_asset_keys: state.selected_asset_keys.clone(),
+                    assets_ptr: state.assets.as_ptr() as usize,
+                    assets_len: state.assets.len(),
+                    assets_loaded: state.assets_loaded,
+                    assets_loading: state.assets_loading,
+                    assets_error: state.assets_error.clone(),
+                    assets_request_id: state.assets_request_id,
+                }
+            }
+            ManageTab::Screenshot => ManageTabBodyDataSignature::Screenshots {
+                search_query: state.screenshot_search_query.clone(),
+                screenshots_ptr: state.screenshots.as_ptr() as usize,
+                screenshots_len: state.screenshots.len(),
+                screenshots_loaded: state.screenshots_loaded,
+                screenshots_loading: state.screenshots_loading,
+                screenshots_error: state.screenshots_error.clone(),
+                screenshots_request_id: state.screenshots_request_id,
+            },
+            ManageTab::Server => ManageTabBodyDataSignature::Servers {
+                search_query: state.server_search_query.clone(),
+                servers_ptr: state.servers.as_ptr() as usize,
+                servers_len: state.servers.len(),
+                servers_loaded: state.servers_loaded,
+                servers_loading: state.servers_loading,
+                servers_error: state.servers_error.clone(),
+                servers_request_id: state.servers_request_id,
+                server_motd_ptr: Arc::as_ptr(&state.server_motd) as usize,
+                server_motd_len: state.server_motd.len(),
+                server_motd_loading: state.server_motd_loading,
+                server_motd_request_id: state.server_motd_request_id,
+            },
+        };
+
+        Self {
+            tab: state.tab,
+            selected_folder: state.selected_folder.clone(),
+            versions_revision: state.versions_revision,
             version_config: state.version_config.clone(),
             version_config_loading: state.version_config_loading,
             version_config_error: state.version_config_error.clone(),
             version_config_request_id: state.version_config_request_id,
+            tab_anim_started_at: state.tab_anim_started_at,
+            pack_subtype_anim_started_at: state.pack_subtype_anim_started_at,
             gdk_users_ptr: state.gdk_users.as_ptr() as usize,
             gdk_users_len: state.gdk_users.len(),
             selected_gdk_user: state.selected_gdk_user.clone(),
             gdk_users_loading: state.gdk_users_loading,
             gdk_users_error: state.gdk_users_error.clone(),
             gdk_users_request_id: state.gdk_users_request_id,
-            assets_ptr: state.assets.as_ptr() as usize,
-            assets_len: state.assets.len(),
-            assets_loaded: state.assets_loaded,
-            assets_loading: state.assets_loading,
-            assets_error: state.assets_error.clone(),
-            assets_request_id: state.assets_request_id,
-            screenshot_search_query: state.screenshot_search_query.clone(),
-            screenshots_ptr: state.screenshots.as_ptr() as usize,
-            screenshots_len: state.screenshots.len(),
-            screenshots_loaded: state.screenshots_loaded,
-            screenshots_loading: state.screenshots_loading,
-            screenshots_error: state.screenshots_error.clone(),
-            screenshots_request_id: state.screenshots_request_id,
-            server_search_query: state.server_search_query.clone(),
-            servers_ptr: state.servers.as_ptr() as usize,
-            servers_len: state.servers.len(),
-            servers_loaded: state.servers_loaded,
-            servers_loading: state.servers_loading,
-            servers_error: state.servers_error.clone(),
-            servers_request_id: state.servers_request_id,
-            server_motd_ptr: Arc::as_ptr(&state.server_motd) as usize,
-            server_motd_len: state.server_motd.len(),
-            server_motd_loading: state.server_motd_loading,
-            server_motd_request_id: state.server_motd_request_id,
+            data,
         }
+    }
+}
+
+#[cfg(test)]
+mod render_signature_tests {
+    use super::super::state::{ManagePageState, ManageTab};
+    use super::{ManagePageRenderSignature, ManageTabBodyRenderSignature};
+    use std::time::Instant;
+
+    #[test]
+    fn asset_updates_only_invalidate_the_tab_body() {
+        let mut state = ManagePageState::default();
+        state.tab = ManageTab::Mod;
+        let page_before = ManagePageRenderSignature::from_state(&state);
+        let body_before = ManageTabBodyRenderSignature::from_state(&state);
+
+        state.assets_loading = true;
+
+        assert!(page_before == ManagePageRenderSignature::from_state(&state));
+        assert!(body_before != ManageTabBodyRenderSignature::from_state(&state));
+    }
+
+    #[test]
+    fn inactive_tab_updates_do_not_invalidate_the_tab_body() {
+        let mut state = ManagePageState::default();
+        state.tab = ManageTab::Mod;
+        let body_before = ManageTabBodyRenderSignature::from_state(&state);
+
+        state.screenshots_loading = true;
+
+        assert!(body_before == ManageTabBodyRenderSignature::from_state(&state));
+    }
+
+    #[test]
+    fn animation_anchor_updates_invalidate_the_tab_body() {
+        let mut state = ManagePageState::default();
+        let body_before = ManageTabBodyRenderSignature::from_state(&state);
+
+        state.tab_anim_started_at = Some(Instant::now());
+        assert!(body_before != ManageTabBodyRenderSignature::from_state(&state));
+
+        let body_before = ManageTabBodyRenderSignature::from_state(&state);
+        state.pack_subtype_anim_started_at = Some(Instant::now());
+        assert!(body_before != ManageTabBodyRenderSignature::from_state(&state));
     }
 }
 

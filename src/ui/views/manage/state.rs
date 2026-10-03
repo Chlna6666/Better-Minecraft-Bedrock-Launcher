@@ -338,6 +338,43 @@ impl ManagePageState {
         self.servers_request_id = self.servers_request_id.wrapping_add(1);
         self.server_motd_request_id = self.server_motd_request_id.wrapping_add(1);
     }
+
+    pub fn has_releasable_route_state(&self) -> bool {
+        self.search_input.is_some()
+            || self.has_transient_requests()
+            || !self.selected_asset_keys.is_empty()
+            || self.selected_asset_keys.capacity() != 0
+            || !self.gdk_users.is_empty()
+            || self.gdk_users_error.is_some()
+            || self.assets_loaded
+            || !self.assets.is_empty()
+            || self.assets_error.is_some()
+            || self.screenshots_loaded
+            || !self.screenshots.is_empty()
+            || self.screenshots_error.is_some()
+            || self.servers_loaded
+            || !self.servers.is_empty()
+            || self.servers_error.is_some()
+            || !self.server_motd.is_empty()
+            || self.server_motd.capacity() != 0
+    }
+
+    pub fn release_route_state(&mut self) {
+        self.reset_transient_requests();
+        self.selected_asset_keys = Vec::new();
+        self.gdk_users = Arc::from([]);
+        self.gdk_users_error = None;
+        self.assets = Arc::from([]);
+        self.assets_loaded = false;
+        self.assets_error = None;
+        self.screenshots = Arc::from([]);
+        self.screenshots_loaded = false;
+        self.screenshots_error = None;
+        self.servers = Arc::from([]);
+        self.servers_loaded = false;
+        self.servers_error = None;
+        self.server_motd = Arc::new(HashMap::new());
+    }
 }
 
 impl Default for ManagePageState {
@@ -408,7 +445,11 @@ pub(super) struct ManagedInstanceRevision {
 mod tests {
     use gpui::SharedString;
 
-    use super::{ManageGdkUser, ManagePageState, ManageTab, preferred_gdk_user};
+    use super::{
+        ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePageState, ManageScreenshotEntry,
+        ManageTab, preferred_gdk_user,
+    };
+    use std::sync::Arc;
 
     #[test]
     fn reset_transient_requests_clears_loading_and_invalidates_results() {
@@ -438,6 +479,74 @@ mod tests {
         assert_eq!(state.screenshots_request_id, 41);
         assert_eq!(state.servers_request_id, 51);
         assert_eq!(state.server_motd_request_id, 61);
+    }
+
+    #[test]
+    fn release_route_state_drops_loaded_instance_snapshots() {
+        let mut state = ManagePageState::default();
+        let assets: Arc<[ManageAssetEntry]> = vec![ManageAssetEntry {
+            key: SharedString::from("asset"),
+            folder_name: SharedString::from("folder"),
+            display_name: SharedString::from("Asset"),
+            detail: None,
+            description: None,
+            file_path: SharedString::from("asset_path"),
+            open_path: SharedString::from("asset_path"),
+            icon_path: None,
+            modified_iso: None,
+            modified_label: None,
+            size_bytes: None,
+            size_label: None,
+            source: None,
+            edition: None,
+            gdk_user: None,
+            enabled: None,
+            mod_type: None,
+            inject_delay_ms: None,
+            resource_pack_count: None,
+            behavior_pack_count: None,
+            skin_count: None,
+            first_skin_full_texture_path: None,
+            first_skin_model_label: None,
+            skin_previews: None,
+            kind: ManageAssetKind::Mod,
+        }]
+        .into();
+        let assets_weak = Arc::downgrade(&assets);
+        state.assets = assets;
+        state.assets_loaded = true;
+        let screenshots: Arc<[ManageScreenshotEntry]> = vec![ManageScreenshotEntry {
+            key: SharedString::from("screenshot"),
+            image_path: SharedString::from("image"),
+            folder_path: SharedString::from("folder"),
+            file_name: SharedString::from("image.png"),
+            capture_time_iso: None,
+            capture_time_label: None,
+            modified_iso: None,
+            modified_label: None,
+            size_bytes: None,
+            size_label: None,
+            gdk_user: None,
+        }]
+        .into();
+        let screenshots_weak = Arc::downgrade(&screenshots);
+        state.screenshots = screenshots;
+        state.screenshots_loaded = true;
+        state.selected_folder = Some(SharedString::from("folder"));
+        state.loaded = true;
+
+        assert!(state.has_releasable_route_state());
+        state.release_route_state();
+
+        assert!(assets_weak.upgrade().is_none());
+        assert!(screenshots_weak.upgrade().is_none());
+        assert!(!state.assets_loaded);
+        assert!(!state.screenshots_loaded);
+        assert!(state.assets.is_empty());
+        assert!(state.screenshots.is_empty());
+        assert!(state.loaded);
+        assert_eq!(state.selected_folder.as_deref(), Some("folder"));
+        assert!(!state.has_releasable_route_state());
     }
 
     #[test]

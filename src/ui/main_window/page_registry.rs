@@ -369,7 +369,7 @@ impl MainWindowView {
             || !self.manage_controls_subscriptions.is_empty();
         let has_route_state = cx.read_global(
             |state: &crate::ui::views::manage::state::ManagePageState, _cx| {
-                state.search_input.is_some() || state.has_transient_requests()
+                state.has_releasable_route_state()
             },
         );
         if !has_page_resources && !has_route_state {
@@ -386,7 +386,7 @@ impl MainWindowView {
         cx.update_global(
             |state: &mut crate::ui::views::manage::state::ManagePageState, _cx| {
                 state.search_input = None;
-                state.reset_transient_requests();
+                state.release_route_state();
             },
         );
     }
