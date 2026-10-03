@@ -28,12 +28,16 @@ use std::{
 /// waiting for a byte-budget eviction pass.
 struct CompressedCache {
     entries: HashMap<u64, Weak<[u8]>>,
+    inserts_since_prune: usize,
 }
+
+const COMPRESSED_CACHE_PRUNE_INTERVAL: usize = 256;
 
 impl CompressedCache {
     fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            inserts_since_prune: 0,
         }
     }
 
@@ -47,10 +51,21 @@ impl CompressedCache {
 
     fn insert(&mut self, key: u64, bytes: &Arc<[u8]>) {
         self.entries.insert(key, Arc::downgrade(bytes));
+        self.inserts_since_prune = self.inserts_since_prune.saturating_add(1);
+        if self.inserts_since_prune >= COMPRESSED_CACHE_PRUNE_INTERVAL {
+            self.prune_dead();
+        }
     }
 
     fn prune_dead(&mut self) {
+        let previous_len = self.entries.len();
         self.entries.retain(|_, bytes| bytes.strong_count() != 0);
+        if self.entries.len() < previous_len
+            && self.entries.capacity() > self.entries.len().saturating_mul(2)
+        {
+            self.entries.shrink_to(self.entries.len());
+        }
+        self.inserts_since_prune = 0;
     }
 
     fn snapshot(&mut self) -> (usize, usize) {
@@ -486,5 +501,18 @@ mod tests {
 
         assert!(cache.get(1).is_none());
         assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn compressed_cache_prunes_dead_metadata_during_repeated_inserts() {
+        let mut cache = CompressedCache::new();
+
+        for key in 0..(COMPRESSED_CACHE_PRUNE_INTERVAL * 4 + 1) {
+            let bytes: Arc<[u8]> = Arc::from(vec![1_u8; 8]);
+            cache.insert(key as u64, &bytes);
+        }
+
+        assert!(cache.entries.len() <= COMPRESSED_CACHE_PRUNE_INTERVAL);
+        assert!(cache.entries.capacity() <= COMPRESSED_CACHE_PRUNE_INTERVAL * 2);
     }
 }
