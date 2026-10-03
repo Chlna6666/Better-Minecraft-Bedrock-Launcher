@@ -66,7 +66,7 @@ use crate::window::Decorations;
 use crate::*;
 
 mod proxy;
-use proxy::WindowsWindowProxy;
+use proxy::{SceneMailbox, WindowsWindowProxy};
 
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
 const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
@@ -143,6 +143,10 @@ pub(crate) enum WindowsNativeCommand {
         packet: PresentationPacket,
         reply: std::sync::mpsc::Sender<PlatformFrameResult>,
     },
+    CommitLatestScene {
+        window_id: winit::window::WindowId,
+        mailbox: Arc<parking_lot::Mutex<SceneMailbox>>,
+    },
     SetFrameRequestSender {
         window_id: winit::window::WindowId,
         sender: PlatformFrameRequestSender,
@@ -203,6 +207,7 @@ impl std::fmt::Debug for WindowsNativeCommand {
         formatter.write_str(match self {
             Self::CreateWindow { .. } => "CreateWindow",
             Self::CommitScene { .. } => "CommitScene",
+            Self::CommitLatestScene { .. } => "CommitLatestScene",
             Self::SetFrameRequestSender { .. } => "SetFrameRequestSender",
             Self::SetAnimationCompletionSender { .. } => "SetAnimationCompletionSender",
             Self::SetEventSender { .. } => "SetEventSender",
@@ -1514,6 +1519,18 @@ impl WindowsApplication {
                     .map_or(PlatformFrameResult::Deferred, |window| window.draw(packet));
                 if reply.send(result).is_err() {
                     log::warn!("Windows UI owner dropped native scene submission reply");
+                }
+            }
+            WindowsNativeCommand::CommitLatestScene { window_id, mailbox } => {
+                let Some(scene) = mailbox.lock().take() else {
+                    return;
+                };
+                if let Some(window) = self.windows.get(&window_id) {
+                    if scene.framebuffer_only {
+                        window.present_framebuffer_only(scene.packet);
+                    } else {
+                        window.draw(scene.packet);
+                    }
                 }
             }
             WindowsNativeCommand::SetFrameRequestSender { window_id, sender } => {

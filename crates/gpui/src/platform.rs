@@ -11,6 +11,8 @@ mod gpu;
 mod input_handler;
 mod interaction;
 mod keyboard;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+mod presentation_owner;
 mod traits;
 mod winit;
 
@@ -118,6 +120,8 @@ pub(crate) use mac::*;
     target_os = "freebsd"
 ))]
 pub(crate) use nova::*;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub(crate) use presentation_owner::OwnedNovaRenderer;
 pub use semantic_version::SemanticVersion;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) use test::*;

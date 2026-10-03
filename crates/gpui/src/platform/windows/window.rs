@@ -1073,6 +1073,35 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
+    pending_scene: RefCell<Option<PendingWindowsScene>>,
+}
+
+struct PendingWindowsScene {
+    packet: PresentationPacket,
+    framebuffer_only: bool,
+}
+
+fn defer_scene_until_native_frame(
+    window: &WindowsWindow,
+    mut packet: PresentationPacket,
+    framebuffer_only: bool,
+) -> PlatformFrameResult {
+    if window.0.presentation_state.get().first_frame_presented {
+        let mut pending = window.0.pending_scene.borrow_mut();
+        if let Some(previous) = pending.take() {
+            packet.merge_pending_damage_from(&previous.packet);
+        }
+        *pending = Some(PendingWindowsScene {
+            packet,
+            framebuffer_only,
+        });
+        drop(pending);
+        PlatformWindow::request_frame(window, PlatformFrameRequest::presentation());
+        PlatformFrameResult::Queued
+    } else {
+        PlatformWindow::request_frame(window, PlatformFrameRequest::ui_commit());
+        PlatformFrameResult::Deferred
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1308,6 +1337,7 @@ impl WindowsWindow {
             renderer_resize_retry_pending: Cell::new(false),
             fallback_corner_radius,
             winit_window: cell,
+            pending_scene: RefCell::new(None),
         }));
         if let Some(hwnd) = hwnd {
             register_native_window(hwnd, &window);
@@ -1992,6 +2022,25 @@ impl PlatformWindow for WindowsWindow {
             return Ok(None);
         }
 
+        // Release the pending slot before submission can re-enter its state queries.
+        let pending_scene = self.0.pending_scene.borrow_mut().take();
+        if let Some(scene) = pending_scene {
+            let result = if scene.framebuffer_only {
+                PlatformWindow::present_framebuffer_only(self, scene.packet)
+            } else {
+                PlatformWindow::draw(self, scene.packet)
+            };
+            return match result {
+                PlatformFrameResult::Submitted | PlatformFrameResult::Queued => {
+                    Ok(Some(crate::platform::frame::ActivePresentationFrame {
+                        continues: self.has_active_presentation_animations(),
+                        completed_animations: smallvec::SmallVec::new(),
+                    }))
+                }
+                PlatformFrameResult::Deferred => Ok(None),
+            };
+        }
+
         let mut renderer_state = self.0.renderer.borrow_mut();
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return Ok(None);
@@ -2000,6 +2049,9 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn has_active_presentation_animations(&self) -> bool {
+        if self.0.pending_scene.borrow().is_some() {
+            return true;
+        }
         let renderer_state = self.0.renderer.borrow();
         let WindowsRendererState::Ready(renderer) = &*renderer_state else {
             return false;
@@ -2052,16 +2104,24 @@ impl PlatformWindow for WindowsWindow {
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
-            return PlatformFrameResult::Deferred;
+            return defer_scene_until_native_frame(self, packet, false);
         }
+        let mut packet = Some(packet);
         let (draw_result, has_active_presentation_animations, completed_animations) = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                return PlatformFrameResult::Deferred;
+                drop(renderer_state);
+                return defer_scene_until_native_frame(
+                    self,
+                    packet
+                        .take()
+                        .expect("packet remains available before drawing"),
+                    false,
+                );
             };
             match renderer.can_present_without_wait() {
                 Ok(true) => {
-                    let result = renderer.draw(packet);
+                    let result = renderer.draw(packet.take().expect("packet remains available"));
                     let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
                     {
                         renderer.take_animation_completions()
@@ -2078,11 +2138,11 @@ impl PlatformWindow for WindowsWindow {
                 Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
+        if let Some(packet) = packet {
+            return defer_scene_until_native_frame(self, packet, false);
+        }
         let Some(draw_result) = draw_result else {
-            // The renderer has not accepted this scene. A presentation-only request can keep
-            // replaying its previous animated packet without delivering the latest UI commit.
-            self.request_frame(PlatformFrameRequest::ui_commit());
-            return PlatformFrameResult::Deferred;
+            unreachable!("a consumed packet must have a renderer draw result");
         };
         match draw_result {
             Ok(true) => {
@@ -2094,6 +2154,10 @@ impl PlatformWindow for WindowsWindow {
                     self.request_frame(PlatformFrameRequest::presentation());
                 }
                 PlatformFrameResult::Submitted
+            }
+            Ok(false) if self.0.presentation_state.get().first_frame_presented => {
+                self.request_frame(PlatformFrameRequest::presentation());
+                PlatformFrameResult::Queued
             }
             Ok(false) => {
                 self.request_frame(PlatformFrameRequest::ui_commit());
@@ -2109,16 +2173,25 @@ impl PlatformWindow for WindowsWindow {
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
         if !self.try_apply_queued_renderer_resize() {
-            return PlatformFrameResult::Deferred;
+            return defer_scene_until_native_frame(self, packet, true);
         }
+        let mut packet = Some(packet);
         let (present_result, has_active_presentation_animations, completed_animations) = {
             let mut renderer_state = self.0.renderer.borrow_mut();
             let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                return PlatformFrameResult::Deferred;
+                drop(renderer_state);
+                return defer_scene_until_native_frame(
+                    self,
+                    packet
+                        .take()
+                        .expect("packet remains available before presentation"),
+                    true,
+                );
             };
             match renderer.can_present_without_wait() {
                 Ok(true) => {
-                    let result = renderer.present_framebuffer_only(packet);
+                    let result = renderer
+                        .present_framebuffer_only(packet.take().expect("packet remains available"));
                     let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
                     {
                         renderer.take_animation_completions()
@@ -2135,9 +2208,11 @@ impl PlatformWindow for WindowsWindow {
                 Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
+        if let Some(packet) = packet {
+            return defer_scene_until_native_frame(self, packet, true);
+        }
         let Some(present_result) = present_result else {
-            self.request_frame(PlatformFrameRequest::ui_commit());
-            return PlatformFrameResult::Deferred;
+            unreachable!("a consumed packet must have a renderer presentation result");
         };
         match present_result {
             Ok(true) => {
@@ -2149,6 +2224,10 @@ impl PlatformWindow for WindowsWindow {
                     self.request_frame(PlatformFrameRequest::presentation());
                 }
                 PlatformFrameResult::Submitted
+            }
+            Ok(false) if self.0.presentation_state.get().first_frame_presented => {
+                self.request_frame(PlatformFrameRequest::presentation());
+                PlatformFrameResult::Queued
             }
             Ok(false) => {
                 self.request_frame(PlatformFrameRequest::ui_commit());

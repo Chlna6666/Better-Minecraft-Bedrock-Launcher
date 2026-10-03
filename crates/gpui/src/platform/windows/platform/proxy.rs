@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering},
     time::Instant,
@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
+use parking_lot::Mutex;
 use winit::{event_loop::EventLoopProxy, raw_window_handle as rwh, window::Window as WinitWindow};
 
 use super::{
@@ -21,6 +22,101 @@ use crate::{
     SceneAnimationCompletionSender, Size, WindowAppearance, WindowBackgroundAppearance,
     WindowBounds, WindowControlArea, WindowVisibility,
 };
+
+pub(crate) struct QueuedScene {
+    pub(crate) packet: crate::PresentationPacket,
+    pub(crate) framebuffer_only: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct SceneMailbox {
+    pending: Option<QueuedScene>,
+    wake_queued: bool,
+}
+
+impl SceneMailbox {
+    fn queue(&mut self, mut packet: crate::PresentationPacket, framebuffer_only: bool) -> bool {
+        if let Some(previous) = self.pending.take() {
+            packet.merge_pending_damage_from(&previous.packet);
+        }
+        self.pending = Some(QueuedScene {
+            packet,
+            framebuffer_only,
+        });
+        if self.wake_queued {
+            false
+        } else {
+            self.wake_queued = true;
+            true
+        }
+    }
+
+    pub(crate) fn take(&mut self) -> Option<QueuedScene> {
+        let pending = self.pending.take();
+        self.wake_queued = false;
+        pending
+    }
+
+    fn cancel(&mut self) {
+        self.pending = None;
+        self.wake_queued = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode, Point, ScaledPixels, Scene,
+        bounds, size,
+    };
+
+    fn packet(scene: Arc<Scene>, x: f32) -> crate::PresentationPacket {
+        let mut dirty_region = DirtyRegion::empty();
+        dirty_region.push(bounds(
+            Point {
+                x: ScaledPixels(x),
+                y: ScaledPixels(0.0),
+            },
+            size(ScaledPixels(10.0), ScaledPixels(10.0)),
+        ));
+        crate::PresentationPacket::new(
+            scene,
+            [],
+            [],
+            Instant::now(),
+            1.0,
+            dirty_region,
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        )
+    }
+
+    #[test]
+    fn mailbox_keeps_latest_scene_and_accumulates_unsubmitted_damage() {
+        let first_scene = Arc::new(Scene::default());
+        let latest_scene = Arc::new(Scene::default());
+        let mut mailbox = SceneMailbox::default();
+
+        assert!(mailbox.queue(packet(first_scene, 0.0), false));
+        assert!(!mailbox.queue(packet(latest_scene.clone(), 20.0), true));
+        let queued = mailbox.take().expect("mailbox contains the latest scene");
+
+        assert!(Arc::ptr_eq(&queued.packet.scene, &latest_scene));
+        assert!(queued.framebuffer_only);
+        assert_eq!(
+            queued.packet.dirty_region.union_bounds(),
+            Some(bounds(
+                Point {
+                    x: ScaledPixels(0.0),
+                    y: ScaledPixels(0.0),
+                },
+                size(ScaledPixels(30.0), ScaledPixels(10.0)),
+            )),
+        );
+        assert!(mailbox.queue(packet(Arc::new(Scene::default()), 40.0), false));
+    }
+}
 
 #[derive(Default)]
 struct Callbacks {
@@ -47,6 +143,8 @@ pub(super) struct WindowsWindowProxy {
     callbacks: Rc<RefCell<Callbacks>>,
     input_handler: Rc<RefCell<Option<PlatformInputHandler>>>,
     event_loop: EventLoopProxy<WindowsUserEvent>,
+    pending_scene: Arc<Mutex<SceneMailbox>>,
+    first_frame_presented: Rc<Cell<bool>>,
 }
 
 impl WindowsWindowProxy {
@@ -68,6 +166,8 @@ impl WindowsWindowProxy {
             callbacks: Rc::default(),
             input_handler: Rc::default(),
             event_loop,
+            pending_scene: Arc::default(),
+            first_frame_presented: Rc::new(Cell::new(false)),
         };
         proxy.send(WindowsNativeCommand::SetEventSender {
             window_id: proxy.id,
@@ -126,6 +226,24 @@ impl WindowsWindowProxy {
             return None;
         }
         receiver.recv().ok().flatten()
+    }
+
+    fn queue_scene(
+        &self,
+        packet: crate::PresentationPacket,
+        framebuffer_only: bool,
+    ) -> PlatformFrameResult {
+        let needs_wakeup = self.pending_scene.lock().queue(packet, framebuffer_only);
+        if needs_wakeup
+            && !self.send(WindowsNativeCommand::CommitLatestScene {
+                window_id: self.id,
+                mailbox: self.pending_scene.clone(),
+            })
+        {
+            self.pending_scene.lock().cancel();
+            return PlatformFrameResult::Deferred;
+        }
+        PlatformFrameResult::Queued
     }
 
     fn dispatch_event(&self, event: WindowsNativeEvent) {
@@ -470,6 +588,10 @@ impl PlatformWindow for WindowsWindowProxy {
         self.callbacks.borrow_mut().appearance = Some(callback);
     }
     fn draw(&self, packet: crate::PresentationPacket) -> PlatformFrameResult {
+        if self.first_frame_presented.get() {
+            return self.queue_scene(packet, false);
+        }
+
         let (reply, receiver) = std::sync::mpsc::channel();
         if !self.send(WindowsNativeCommand::CommitScene {
             window_id: self.id,
@@ -478,15 +600,28 @@ impl PlatformWindow for WindowsWindowProxy {
         }) {
             return PlatformFrameResult::Deferred;
         }
-        receiver.recv().unwrap_or(PlatformFrameResult::Deferred)
+        let result = receiver.recv().unwrap_or(PlatformFrameResult::Deferred);
+        if result == PlatformFrameResult::Submitted {
+            self.first_frame_presented.set(true);
+        }
+        result
     }
     fn present_framebuffer_only(
         &self,
         mut packet: crate::PresentationPacket,
     ) -> PlatformFrameResult {
+        if self.first_frame_presented.get() {
+            return self.queue_scene(packet, true);
+        }
+
         self.call(move |window| {
             packet.frame_time = Instant::now();
             window.present_framebuffer_only(packet)
+        })
+        .inspect(|result| {
+            if *result == PlatformFrameResult::Submitted {
+                self.first_frame_presented.set(true);
+            }
         })
         .unwrap_or(PlatformFrameResult::Deferred)
     }

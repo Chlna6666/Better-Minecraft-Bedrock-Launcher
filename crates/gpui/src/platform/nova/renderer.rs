@@ -226,6 +226,9 @@ impl NovaRenderer {
     }
 
     pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
+        if let Some(previous) = self.active_presentation_packet.as_ref() {
+            packet.merge_pending_damage_from(previous);
+        }
         self.pending_animation_completions
             .extend(packet.sample_animations(packet.frame_time));
         let started_at = Instant::now();
@@ -344,6 +347,9 @@ impl NovaRenderer {
         &mut self,
         mut packet: PresentationPacket,
     ) -> Result<bool> {
+        if let Some(previous) = self.active_presentation_packet.as_ref() {
+            packet.merge_pending_damage_from(previous);
+        }
         self.pending_animation_completions
             .extend(packet.sample_animations(packet.frame_time));
         let result = (|| {

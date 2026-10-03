@@ -106,7 +106,9 @@ UI / entity state                         retained presentation
 
 When a platform callback contains both a renderer-owned animation tick and dirty UI work, presentation runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
 
-Windows now has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene; the UI owner builds the next `PresentationPacket` and sends it through an ordered native command queue. Native presentation continues from the active scene while UI `Render` is blocked. Both Windows DX12 and Vulkan pass the 200 ms blocked-`Render` gate with distinct animation samples and no per-frame UI rendering. Linux Wayland/X11 retain the earlier single-thread callback path and still need the corresponding ownership split.
+Windows has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene. The first frame remains synchronous so native visibility waits for a submitted frame; later UI packets enter a latest-wins mailbox without waiting for native rendering. If DXGI backpressure or a pending resize defers a packet, the native owner retains it, carries forward unsubmitted scene and backdrop damage, and retries it on the next native frame. Native presentation continues from the active scene while UI `Render` is blocked. Both Windows DX12 and Vulkan pass the 200 ms blocked-`Render` gate with distinct animation samples and no per-frame UI rendering.
+
+Linux Wayland and X11 keep protocol objects, callbacks, and native surfaces on their platform thread. Each window moves its `NovaRenderer` into a dedicated presentation owner thread. The first frame remains synchronous; later scene packets and presentation ticks enter a coalescing owner queue. The queue keeps the latest scene while accumulating all unsubmitted damage, and the owner reports animation completions only after a successful submission. Resize, renderer queries, trim, and destruction are serialized with drawing on that owner; shutdown joins it before the platform destroys its surface. This isolates scene encoding and renderer submission from the UI and native protocol event loops without moving Wayland/X11 objects across threads.
 
 A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
 
@@ -131,7 +133,8 @@ flowchart TD
     "prepaint/layout" --> "paint"
     "paint" --> "Scene + PresentationPacket"
     "Scene + PresentationPacket" --> "platform_window.draw"
-    "platform_window.draw" --> "NovaRenderer::draw"
+    "platform_window.draw" --> "platform presentation mailbox or owner queue"
+    "platform presentation mailbox or owner queue" --> "NovaRenderer::draw on presentation owner"
     "NovaRenderer::draw" --> "FrameUpload::encode"
     "FrameUpload::encode" --> "GPU buffers and atlas upload"
     "GPU buffers and atlas upload" --> "GPU render steps"
@@ -314,9 +317,9 @@ After a successful draw, GPUI snapshots one lifetime-free presentation packet co
 
 The packet is moved across the Window/platform boundary. It does not borrow `Window`, `Frame`,
 or `PresentationState`. On Windows/Linux/FreeBSD the type is compile-time checked as
-`Send + Sync`, making a future renderer mailbox/thread an ownership change rather than another
-scene-format refactor. macOS is intentionally excluded from that cross-thread contract until
-CoreVideo surface attachments are separated from the generic Scene.
+`Send + Sync` and is used by the Windows scene mailbox and Linux presentation owner queue.
+macOS is intentionally excluded from that cross-thread contract until CoreVideo surface
+attachments are separated from the generic Scene.
 
 Dirty region behavior:
 
@@ -383,7 +386,7 @@ Major modules:
 
 ## nova-gfx Frame Path
 
-`NovaRenderer::draw(render_plan)` runs this sequence:
+`NovaRenderer::draw(render_plan)` runs this sequence on the platform presentation owner:
 
 1. Observe the render plan for metrics.
 2. Resolve full redraw or partial surface plan.

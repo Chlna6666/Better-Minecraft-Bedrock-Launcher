@@ -53,7 +53,8 @@ use crate::{
 use crate::{
     Capslock,
     platform::{
-        NovaRenderer, PlatformAtlas, PlatformInputHandler, PlatformTextSystem, PlatformWindow,
+        NovaRenderer, OwnedNovaRenderer, PlatformAtlas, PlatformInputHandler, PlatformTextSystem,
+        PlatformWindow,
         linux::wayland::{display::WaylandDisplay, serial::SerialKind},
     },
 };
@@ -127,7 +128,7 @@ pub struct WaylandWindowState {
     outputs: HashMap<ObjectId, Output>,
     display: Option<(ObjectId, Output)>,
     globals: Globals,
-    renderer: NovaRenderer,
+    renderer: OwnedNovaRenderer,
     bounds: Bounds<Pixels>,
     scale: f32,
     input_handler: Option<PlatformInputHandler>,
@@ -199,14 +200,15 @@ impl WaylandWindowState {
                 height: DevicePixels(options.bounds.size.height.0.max(1.0) as i32),
             };
             let transparent = options.window_background != WindowBackgroundAppearance::Opaque;
-            NovaRenderer::new(
+            let renderer = NovaRenderer::new(
                 &raw_window,
                 renderer_options.backend,
                 renderer_options,
                 crate::GpuSubmissionMode::Deferred,
                 drawable_size,
                 transparent,
-            )?
+            )?;
+            OwnedNovaRenderer::new(renderer)?
         };
         let title = options
             .titlebar
@@ -624,7 +626,7 @@ impl WaylandWindowStatePtr {
         if state.visibility != WindowVisibility::Visible {
             return Ok(None);
         }
-        state.renderer.present_active_frame(now, None)
+        state.renderer.present_active_frame(now)
     }
 
     fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
@@ -1565,7 +1567,12 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
-        self.0.callbacks.borrow_mut().request_frame = Some(sender);
+        self.0.callbacks.borrow_mut().request_frame = Some(sender.clone());
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_frame_request_sender(sender);
         let should_request_frame = {
             let state = self.0.state.borrow();
             state.pending_frame_request.requires_frame() && state.frame_callback_pending.is_none()
@@ -1579,6 +1586,11 @@ impl PlatformWindow for WaylandWindow {
         &self,
         sender: crate::platform::frame::SceneAnimationCompletionSender,
     ) {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_animation_completion_sender(sender.clone());
         self.0
             .callbacks
             .borrow_mut()
@@ -1625,81 +1637,19 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let (result, has_active_presentation_animations, completed_animations) = {
-            let mut state = self.borrow_mut();
-            let result = state.renderer.draw(packet);
-            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
-                state.renderer.take_animation_completions()
-            } else {
-                smallvec::SmallVec::new()
-            };
-            let has_active_presentation_animations =
-                state.renderer.has_active_presentation_animations();
-            (
-                result,
-                has_active_presentation_animations,
-                completed_animations,
-            )
-        };
-        match result {
-            Ok(true) => {
-                for completion in completed_animations {
-                    self.0.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.0.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) => {
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to draw Wayland frame: {error:#}");
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
+        let result = self.borrow_mut().renderer.draw(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
         }
+        result
     }
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let (result, has_active_presentation_animations, completed_animations) = {
-            let mut state = self.borrow_mut();
-            let result = state.renderer.present_framebuffer_only(packet);
-            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
-                state.renderer.take_animation_completions()
-            } else {
-                smallvec::SmallVec::new()
-            };
-            let has_active_presentation_animations =
-                state.renderer.has_active_presentation_animations();
-            (
-                result,
-                has_active_presentation_animations,
-                completed_animations,
-            )
-        };
-        match result {
-            Ok(true) => {
-                for completion in completed_animations {
-                    self.0.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.0.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) => {
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to present Wayland framebuffer: {error:#}");
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
+        let result = self.borrow_mut().renderer.present_framebuffer_only(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
         }
+        result
     }
 
     fn present_active_frame(
@@ -1809,7 +1759,7 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.borrow().renderer.gpu_specs().into()
+        self.borrow().renderer.gpu_specs().log_err().ok()
     }
 }
 

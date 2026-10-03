@@ -7,7 +7,7 @@ use anyhow::{Context as _, anyhow};
 use calloop::LoopHandle;
 use x11rb::connection::RequestConnection;
 
-use crate::platform::NovaRenderer;
+use crate::platform::{NovaRenderer, OwnedNovaRenderer};
 use crate::{
     AnyWindowHandle, Bounds, Decorations, DevicePixels, ForegroundExecutor, GpuSpecs,
     GpuiMemoryTrimLevel, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest,
@@ -282,7 +282,7 @@ pub struct X11WindowState {
     pub(crate) last_sync_counter: Option<sync::Int64>,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
-    renderer: NovaRenderer,
+    renderer: OwnedNovaRenderer,
     display: Rc<dyn PlatformDisplay>,
     input_handler: Option<PlatformInputHandler>,
     appearance: WindowAppearance,
@@ -385,7 +385,7 @@ impl X11WindowStatePtr {
         if state.hidden {
             return Ok(None);
         }
-        state.renderer.present_active_frame(now, None)
+        state.renderer.present_active_frame(now)
     }
 
     fn invoke_presentation_animation_completed(&self, completion: SceneAnimationCompletion) {
@@ -782,14 +782,15 @@ impl X11WindowState {
                     window_id: x_window,
                     visual_id: visual.id,
                 };
-                NovaRenderer::new(
+                let renderer = NovaRenderer::new(
                     &raw_window,
                     renderer_options.backend,
                     renderer_options,
                     crate::GpuSubmissionMode::Deferred,
                     query_render_extent(xcb, x_window)?,
                     transparent,
-                )?
+                )?;
+                OwnedNovaRenderer::new(renderer)?
             };
 
             let display = Rc::new(X11Display::new(xcb, scale_factor, x_screen_index)?);
@@ -1642,13 +1643,23 @@ impl PlatformWindow for X11Window {
     }
 
     fn set_frame_request_sender(&self, sender: crate::platform::frame::PlatformFrameRequestSender) {
-        self.0.callbacks.borrow_mut().request_frame = Some(sender);
+        self.0.callbacks.borrow_mut().request_frame = Some(sender.clone());
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_frame_request_sender(sender);
     }
 
     fn set_presentation_animation_completion_sender(
         &self,
         sender: crate::platform::frame::SceneAnimationCompletionSender,
     ) {
+        self.0
+            .state
+            .borrow()
+            .renderer
+            .set_animation_completion_sender(sender.clone());
         self.0
             .callbacks
             .borrow_mut()
@@ -1715,81 +1726,24 @@ impl PlatformWindow for X11Window {
     }
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let (result, has_active_presentation_animations, completed_animations) = {
-            let mut state = self.0.state.borrow_mut();
-            let result = state.renderer.draw(packet);
-            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
-                state.renderer.take_animation_completions()
-            } else {
-                smallvec::SmallVec::new()
-            };
-            let has_active_presentation_animations =
-                state.renderer.has_active_presentation_animations();
-            (
-                result,
-                has_active_presentation_animations,
-                completed_animations,
-            )
-        };
-        match result {
-            Ok(true) => {
-                for completion in completed_animations {
-                    self.0.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.0.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) => {
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to draw X11 frame: {error:#}");
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
+        let result = self.0.state.borrow_mut().renderer.draw(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
         }
+        result
     }
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        let (result, has_active_presentation_animations, completed_animations) = {
-            let mut state = self.0.state.borrow_mut();
-            let result = state.renderer.present_framebuffer_only(packet);
-            let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted) {
-                state.renderer.take_animation_completions()
-            } else {
-                smallvec::SmallVec::new()
-            };
-            let has_active_presentation_animations =
-                state.renderer.has_active_presentation_animations();
-            (
-                result,
-                has_active_presentation_animations,
-                completed_animations,
-            )
-        };
-        match result {
-            Ok(true) => {
-                for completion in completed_animations {
-                    self.0.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.0.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) => {
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to present X11 framebuffer: {error:#}");
-                self.0.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
+        let result = self
+            .0
+            .state
+            .borrow_mut()
+            .renderer
+            .present_framebuffer_only(packet);
+        if result == PlatformFrameResult::Deferred {
+            self.0.request_frame(PlatformFrameRequest::ui_commit());
         }
+        result
     }
 
     fn present_active_frame(
@@ -2003,6 +1957,6 @@ impl PlatformWindow for X11Window {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.0.state.borrow().renderer.gpu_specs().into()
+        self.0.state.borrow().renderer.gpu_specs().log_err().ok()
     }
 }
