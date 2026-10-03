@@ -238,49 +238,59 @@ impl Window {
             }
         }));
         platform_window.on_active_status_change(Box::new({
-            let mut cx = cx.to_async();
+            let cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
             move |active| {
-                let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
-                    window.active.set(active);
-                    if !active && window.trim_memory_on_hidden {
-                        // Trimming immediately would force a full redecode and atlas
-                        // re-upload on a quick refocus, so defer it until the window has
-                        // stayed inactive for a while.
-                        window.schedule_deactivation_memory_trim();
-                    }
-                    if active {
-                        window.deactivation_trim_task = None;
-                        window.last_inactive_animation_frame.set(None);
-                        window.inactive_animation_frame_pending.set(false);
-                        window.frame_throttle.clear_delay();
-                    }
-                    window.modifiers = window.platform_window.modifiers();
-                    window.capslock = window.platform_window.capslock();
-                    window
-                        .activation_observers
-                        .clone()
-                        .retain(&(), |callback| callback(window, cx));
+                let mut cx = cx.clone();
+                // Native active-state registration can synchronously report the current snapshot
+                // while App::open_window still holds App's mutable borrow. Defer the Window update
+                // until that borrow is released.
+                foreground_executor
+                    .spawn(async move {
+                        let _ = ignore_window_not_found(handle.update(&mut cx, |_, window, cx| {
+                            window.active.set(active);
+                            if !active && window.trim_memory_on_hidden {
+                                // Trimming immediately would force a full redecode and atlas
+                                // re-upload on a quick refocus, so defer it until the window has
+                                // stayed inactive for a while.
+                                window.schedule_deactivation_memory_trim();
+                            }
+                            if active {
+                                window.deactivation_trim_task = None;
+                                window.last_inactive_animation_frame.set(None);
+                                window.inactive_animation_frame_pending.set(false);
+                                window.frame_throttle.clear_delay();
+                            }
+                            window.modifiers = window.platform_window.modifiers();
+                            window.capslock = window.platform_window.capslock();
+                            window
+                                .activation_observers
+                                .clone()
+                                .retain(&(), |callback| callback(window, cx));
 
-                    let previous_scale_factor = window.scale_factor;
-                    let previous_viewport_size = window.viewport_size;
-                    let previous_display_id = window.display_id;
-                    window.content_bounds_changed(cx);
-                    let platform_geometry_changed = previous_scale_factor != window.scale_factor
-                        || previous_viewport_size != window.viewport_size
-                        || previous_display_id != window.display_id;
-                    if !platform_geometry_changed {
-                        // Window activation changes focus-event semantics but does not invalidate
-                        // application layout or scene content by itself. Produce a replay-only frame
-                        // so `window_active` and focus observers advance without forcing every
-                        // AnyView/retained element through MissRefresh.
-                        window.redraw_without_view_cache_refresh();
-                    }
-                    if active {
-                        window.rearm_platform_frame_watchdog();
-                    }
+                            let previous_scale_factor = window.scale_factor;
+                            let previous_viewport_size = window.viewport_size;
+                            let previous_display_id = window.display_id;
+                            window.content_bounds_changed(cx);
+                            let platform_geometry_changed = previous_scale_factor
+                                != window.scale_factor
+                                || previous_viewport_size != window.viewport_size
+                                || previous_display_id != window.display_id;
+                            if !platform_geometry_changed {
+                                // Window activation changes focus-event semantics but does not
+                                // invalidate application layout or scene content by itself. Produce
+                                // a replay-only frame so `window_active` and focus observers advance
+                                // without forcing every AnyView/retained element through MissRefresh.
+                                window.redraw_without_view_cache_refresh();
+                            }
+                            if active {
+                                window.rearm_platform_frame_watchdog();
+                            }
 
-                    WindowTabRegistry::update_last_active(cx, window.handle.id);
-                }));
+                            WindowTabRegistry::update_last_active(cx, window.handle.id);
+                        }));
+                    })
+                    .detach();
             }
         }));
         platform_window.on_hover_status_change(Box::new({

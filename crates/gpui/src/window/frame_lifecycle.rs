@@ -434,6 +434,16 @@ impl Window {
             return;
         }
         if self.refreshing {
+            // The retry may race with a platform frame that cannot draw this inactive window.
+            // Keep a future wake armed so that DeferredInactive completion cannot strand dirty
+            // work until the next input event.
+            self.arm_deferred_dirty_frame_retry();
+            log::trace!(
+                "gpui deferred dirty frame retry postponed while refreshing: window={} generation={} dirty={}",
+                self.handle.window_id().as_u64(),
+                generation,
+                self.invalidator.is_dirty()
+            );
             return;
         }
         if self.should_defer_dirty_frame() {

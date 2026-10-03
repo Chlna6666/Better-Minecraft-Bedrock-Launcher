@@ -1575,6 +1575,21 @@ fn inactive_visible_dirty_frames_refresh_after_background_delay(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn active_status_callback_defers_window_update_until_app_borrow_released(cx: &mut TestAppContext) {
+    let mut cx = cx.add_empty_window();
+    let test_window = cx.update(|window, _| window.platform_window.as_test().unwrap().clone());
+
+    cx.update(|window, _| {
+        window.active.set(false);
+        test_window.simulate_active_status_change(true);
+        assert!(!window.active.get());
+    });
+
+    cx.run_until_parked();
+    cx.update(|window, _| assert!(window.active.get()));
+}
+
+#[gpui::test]
 fn inactive_dirty_redraw_opt_in_bypasses_background_defer(cx: &mut TestAppContext) {
     let (_view, cx) = cx.add_window_view(|_, _| PaintedTestView);
     cx.update(|window, _| {
@@ -2989,6 +3004,59 @@ fn deferred_dirty_frame_retry_rechecks_until_frame_can_schedule(cx: &mut TestApp
     assert_eq!(
         test_window.last_requested_frame(),
         Some(PlatformFrameRequest::ui_commit())
+    );
+}
+
+#[gpui::test]
+fn deferred_dirty_frame_retry_rearms_while_a_frame_is_running(cx: &mut TestAppContext) {
+    let (_view, visual) = cx.add_window_view(|_, _| PaintedTestView);
+    let (test_window, baseline) = visual.update(|window, _cx| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        let baseline = test_window.requested_frame_count();
+        window.active.set(false);
+        window.needs_present.set(false);
+        window
+            .last_input_timestamp
+            .set(Instant::now() - Duration::from_secs(2));
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+        window.dirty_frame_throttle_pending = false;
+        window.dirty_frame_deferred_pending = false;
+        window.frame_watchdog.set(FrameWatchdog::default());
+        (test_window, baseline)
+    });
+
+    visual.update(|window, _cx| {
+        window.refresh();
+        assert!(window.test_dirty_frame_deferred_pending());
+        let first_retry_generation = window.frame_watchdog.get().generation;
+
+        window.refreshing = true;
+        window.retry_deferred_dirty_frame(first_retry_generation);
+
+        assert!(window.test_dirty_frame_deferred_pending());
+        assert!(window.frame_watchdog.get().pending);
+        let rearmed_generation = window.frame_watchdog.get().generation;
+        assert_ne!(rearmed_generation, first_retry_generation);
+
+        window.refreshing = false;
+        window.complete_frame(FrameCompletion::DeferredInactiveDirty);
+        assert!(window.invalidator.is_dirty());
+        assert!(window.test_dirty_frame_deferred_pending());
+        assert!(window.frame_watchdog.get().pending);
+
+        window.retry_deferred_dirty_frame(rearmed_generation);
+
+        assert!(!window.test_dirty_frame_deferred_pending());
+        assert!(!window.frame_watchdog.get().pending);
+        assert!(window.refreshing);
+    });
+
+    assert_eq!(test_window.requested_frame_count(), baseline + 1);
+    assert_eq!(
+        test_window.last_requested_frame(),
+        Some(PlatformFrameRequest::ui_commit_and_presentation())
     );
 }
 
