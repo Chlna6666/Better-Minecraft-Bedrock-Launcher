@@ -127,7 +127,7 @@ fn route_page_enter_motion(direction: f32) -> Animation {
             .fill_mode(FillMode::Both)
             .ease(Easing::OutCubic),
     )
-    .with_property(AnimationProperty::translation_opacity(
+    .with_property(AnimationProperty::clipped_translation_opacity(
         point(px(18.0 * direction), px(0.0)),
         Point::default(),
         0.94,
@@ -488,16 +488,16 @@ impl MainWindowView {
                 .into_any_element();
         }
 
-        // Route content keeps final layout geometry and only receives a short direction-aware
-        // presentation transform. Unlike the old route composite layer this does not capture the
-        // full page into a transient offscreen surface, so blur/image resources cannot disappear
-        // for one frame while the route changes.
+        // A route page is a heterogeneous subtree (text, images, SVGs, clips, blur-backed cards).
+        // Bind one retained composite transform to the page instead of applying Translation to
+        // every primitive independently. This keeps text/image/clip motion phase-locked while still
+        // avoiding the old extra explicit composite_layer wrapper.
         let animated_page = page
             .with_visual_animation(
                 route_enter_animation_key(route),
                 route_page_enter_motion(transition_direction),
             )
-            .expect("route page uses a renderer-owned translation/opacity track");
+            .expect("route page uses one retained subtree translation/opacity track");
 
         div()
             .absolute()

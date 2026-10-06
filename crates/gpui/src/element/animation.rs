@@ -364,6 +364,23 @@ impl AnimationProperty {
             capture_subtree: false,
         }
     }
+    /// Move and fade a complex clipped subtree as one retained visual object.
+    ///
+    /// Unlike [`Self::translation_opacity`], this captures the subtree once and applies the packed
+    /// translation/opacity sample to that composite. Text, SVGs, images, local clips and quads
+    /// therefore share exactly one transform and cannot drift relative to each other while the
+    /// animation is running.
+    pub fn clipped_translation_opacity(
+        from: Point<Pixels>,
+        to: Point<Pixels>,
+        from_opacity: f32,
+        to_opacity: f32,
+    ) -> Self {
+        Self {
+            capture_subtree: true,
+            ..Self::translation_opacity(from, to, from_opacity, to_opacity)
+        }
+    }
 
     /// Animate a vertical reveal from one fixed edge without changing child layout.
     ///
@@ -1979,6 +1996,28 @@ mod tests {
         assert_eq!(
             property.resolved_values(bounds, 2.0, 1.0),
             ([20.0, 10.0, 0.88, 1.0], [0.0, 0.0, 1.0, 1.0])
+        );
+        assert!(!property.capture_subtree);
+    }
+
+    #[test]
+    fn clipped_translation_opacity_keeps_one_subtree_transform() {
+        let property = AnimationProperty::clipped_translation_opacity(
+            Point::new(crate::px(-18.0), crate::px(0.0)),
+            Point::default(),
+            0.94,
+            1.0,
+        );
+        let bounds = Bounds::new(
+            Point::new(crate::px(10.0), crate::px(20.0)),
+            crate::size(crate::px(300.0), crate::px(180.0)),
+        );
+
+        assert_eq!(property.property, TransitionProperty::Translation);
+        assert!(property.capture_subtree);
+        assert_eq!(
+            property.resolved_values(bounds, 2.0, 1.0),
+            ([-36.0, 0.0, 0.94, 1.0], [0.0, 0.0, 1.0, 1.0])
         );
     }
 
