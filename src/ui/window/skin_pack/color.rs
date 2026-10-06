@@ -17,51 +17,26 @@ pub(super) fn sample_image_color(image: &DynamicImage, image_x: u32, image_y: u3
     rgba_to_color(image.get_pixel(x, y))
 }
 
-pub(super) fn shade_face_color(color: [f32; 4], face: Face) -> [f32; 4] {
-    let factor = shade_cuboid_face(face);
-    [
-        (color[0] * factor).min(1.0),
-        (color[1] * factor).min(1.0),
-        (color[2] * factor).min(1.0),
-        color[3],
-    ]
+/// Skin preview is intentionally flat/unlit: texture pixels must be displayed without any
+/// view-dependent or face-dependent darkening. Keeping this helper neutral also covers the
+/// CPU-baked geometry/layer paths that share the same color pipeline.
+pub(super) fn shade_face_color(color: [f32; 4], _face: Face) -> [f32; 4] {
+    color
 }
 
-/// Per-face shade factor for geometry that samples the skin atlas per fragment.
+/// Neutral face multiplier for texture-mapped cuboids.
 ///
-/// Texture-mapped cuboids cannot bake a color per face, so they carry this factor as a vertex
-/// color and let the shader multiply it into the sampled texel.
-pub(super) fn shade_cuboid_face(face: Face) -> f32 {
-    match face {
-        Face::Top => 1.08,
-        Face::Bottom => 0.64,
-        Face::Right | Face::Left => 0.78,
-        Face::Back => 0.70,
-        Face::Front => 1.0,
-    }
+/// The material already uses `ShadingModel::Unlit`; a non-1.0 vertex multiplier would reintroduce
+/// fake lighting even though the renderer itself is unlit.
+pub(super) fn shade_cuboid_face(_face: Face) -> f32 {
+    1.0
 }
 
-pub(super) fn shade_layer_edge_color(color: [f32; 4], normal: [f32; 3]) -> [f32; 4] {
-    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-    let normal_y = if length <= f32::EPSILON {
-        0.0
-    } else {
-        normal[1] / length
-    };
-    let factor = if normal_y > 0.45 {
-        0.94
-    } else if normal_y < -0.45 {
-        0.52
-    } else {
-        0.70
-    };
-
-    [
-        (color[0] * factor).min(1.0),
-        (color[1] * factor).min(1.0),
-        (color[2] * factor).min(1.0),
-        color[3],
-    ]
+/// Keep custom-geometry and extruded-layer texels at their authored color.
+///
+/// Normals remain available for geometry/raycast work, but they must not alter skin preview color.
+pub(super) fn shade_layer_edge_color(color: [f32; 4], _normal: [f32; 3]) -> [f32; 4] {
+    color
 }
 
 fn rgba_to_color(pixel: Rgba<u8>) -> [f32; 4] {
@@ -71,4 +46,34 @@ fn rgba_to_color(pixel: Rgba<u8>) -> [f32; 4] {
         f32::from(pixel[2]) / 255.0,
         f32::from(pixel[3]) / 255.0,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skin_preview_color_helpers_are_flat_unlit() {
+        let color = [0.25, 0.5, 0.75, 0.4];
+        for face in [
+            Face::Top,
+            Face::Bottom,
+            Face::Right,
+            Face::Front,
+            Face::Left,
+            Face::Back,
+        ] {
+            assert_eq!(shade_face_color(color, face), color);
+            assert_eq!(shade_cuboid_face(face), 1.0);
+        }
+
+        for normal in [
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ] {
+            assert_eq!(shade_layer_edge_color(color, normal), color);
+        }
+    }
 }

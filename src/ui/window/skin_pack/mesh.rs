@@ -176,8 +176,8 @@ pub(super) fn skin_preview_scene_view(
 
 /// Uploads the skin atlas as an sRGB texture.
 ///
-/// The albedo format performs sRGB decoding in the sampler, which matches the authored per-face
-/// shade factors the preview multiplies in.
+/// Skin previews use unlit materials and neutral vertex colors, so the sampled atlas remains at its
+/// authored color without synthetic face shading.
 fn skin_texture_asset(image: &DynamicImage) -> Result<Arc<TextureAsset>, String> {
     let (width, height) = image.dimensions();
     let rgba = image.to_rgba8();
