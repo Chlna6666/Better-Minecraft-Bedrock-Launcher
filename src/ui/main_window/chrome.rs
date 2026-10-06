@@ -143,9 +143,9 @@ pub(super) fn render_nav(
     let pill_width = item_width - px(pill_inner_inset_px * 2.);
     let edge_offset = px(step_width_px * (from_index as f32 - target_index as f32));
 
-    // Keep the selection pill rigid. Two independent edge springs made the capsule stretch across
-    // intermediate tabs and amplified retarget glitches. The compositor now owns only one
-    // translation track; layout, hit targets, width and radius remain final and stable.
+    // Keep the selection pill rigid while preserving the original Q 弹 feel. One underdamped
+    // translation spring may overshoot the target slightly, but width/radius/hit targets remain
+    // final and stable, so the old cross-tab stretch artifact cannot return.
     let pill = div()
         .absolute()
         .left(pill_offset)
@@ -159,7 +159,7 @@ pub(super) fn render_nav(
     } else {
         pill.with_visual_animation(
             "main-nav-pill",
-            Animation::spring(crate::ui::animation::spring_snappy()).with_translation(
+            Animation::spring(crate::ui::animation::spring_bouncy()).with_translation(
                 point(edge_offset, px(0.)),
                 Point::default(),
             ),
