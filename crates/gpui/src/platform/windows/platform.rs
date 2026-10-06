@@ -110,6 +110,7 @@ struct WindowsUiBridge {
     native_owner_closing: Arc<AtomicBool>,
     displays: Vec<WindowsDisplay>,
     primary_display_id: Option<DisplayId>,
+    renderer_backend: RendererBackend,
 }
 
 fn with_active_context<R>(
@@ -428,7 +429,7 @@ impl WindowsPlatform {
         renderer_options: RendererOptions,
         ui_main: impl FnOnce(flume::Receiver<()>) + Send + 'static,
     ) -> Result<()> {
-        let native = Rc::new(Self::new(renderer_options)?);
+        let native = Rc::new(Self::new_native_owner(renderer_options)?);
         let (shutdown, shutdown_receiver) = flume::bounded(1);
         let ui_thread = Rc::new(RefCell::new(None));
         let ui_thread_slot = ui_thread.clone();
@@ -445,6 +446,7 @@ impl WindowsPlatform {
                 native_owner_closing: native_for_launch.inner.native_owner_closing.clone(),
                 displays: state.displays.clone(),
                 primary_display_id: state.primary_display_id,
+                renderer_backend: native_for_launch.renderer_backend,
             };
             drop(state);
             let native_events = bridge.event_loop.clone();
@@ -609,36 +611,64 @@ impl WindowsPlatform {
         }
     }
 
+    fn new_native_owner(renderer_options: RendererOptions) -> Result<Self> {
+        Self::new_for_role(renderer_options, true)
+    }
+
     pub(crate) fn new(renderer_options: RendererOptions) -> Result<Self> {
+        Self::new_for_role(renderer_options, false)
+    }
+
+    fn new_for_role(
+        renderer_options: RendererOptions,
+        native_owner_only: bool,
+    ) -> Result<Self> {
         become_dpi_aware();
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
+
+        let ui_bridge = UI_OWNER_BRIDGE.with(|bridge| bridge.borrow().clone());
         let requested_renderer_backend = renderer_options.backend;
-        let renderer_backend = match requested_renderer_backend {
-            RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
-            RendererBackend::Auto
-            | RendererBackend::NovaVulkan
-            | RendererBackend::NovaDx12
-            | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
-        };
-        record_renderer_backend(renderer_backend);
-        if matches!(
-            requested_renderer_backend,
-            RendererBackend::Auto
+        let renderer_backend = if let Some(bridge) = &ui_bridge {
+            // The split native owner already resolved and validated the backend.
+            // Reuse it to avoid a second DXGI/Vulkan adapter enumeration on the UI owner.
+            bridge.renderer_backend
+        } else {
+            match requested_renderer_backend {
+                RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
+                RendererBackend::Auto
                 | RendererBackend::NovaVulkan
                 | RendererBackend::NovaDx12
-                | RendererBackend::NovaMetal
-        ) {
+                | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
+            }
+        };
+        record_renderer_backend(renderer_backend);
+        if ui_bridge.is_none()
+            && matches!(
+                requested_renderer_backend,
+                RendererBackend::Auto
+                    | RendererBackend::NovaVulkan
+                    | RendererBackend::NovaDx12
+                    | RendererBackend::NovaMetal
+            )
+        {
             log::info!(
                 "GPUI Windows resolved renderer backend: {}",
                 renderer_backend
             );
         }
-        let text_system = create_windows_text_system(renderer_backend.capabilities())?;
+
+        // The native owner hosts winit, DWM pacing and window creation only. The GPUI App and
+        // all text shaping live on the separate UI owner, so constructing DirectWrite here would
+        // create/register a second font loader and system font collection that is never used.
+        let text_system: Arc<dyn PlatformTextSystem> = if native_owner_only {
+            Arc::new(NoopTextSystem)
+        } else {
+            create_windows_text_system(renderer_backend.capabilities())?
+        };
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
-        let ui_bridge = UI_OWNER_BRIDGE.with(|bridge| bridge.borrow().clone());
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
             Self::new_common_parts(ui_bridge.is_some());
         if let Some(bridge) = &ui_bridge {
@@ -650,7 +680,9 @@ impl WindowsPlatform {
             });
         }
 
-        if startup_working_set_trim_enabled() {
+        // EmptyWorkingSet is process-wide. In split-owner mode schedule it only from the UI
+        // platform after the real App has been constructed, not once per platform object.
+        if !native_owner_only && startup_working_set_trim_enabled() {
             spawn_startup_working_set_trim_task();
         }
 
