@@ -9,6 +9,7 @@ pub(in crate::platform::nova) struct FrameResourceBuffers {
     pub(in crate::platform::nova) quad_buffer: BufferId,
     pub(in crate::platform::nova) shadow_buffer: BufferId,
     pub(in crate::platform::nova) path_rasterization_vertex_buffer: BufferId,
+    pub(in crate::platform::nova) path_rasterization_vertex_capacity: usize,
     pub(in crate::platform::nova) path_sprite_buffer: BufferId,
     pub(in crate::platform::nova) mono_sprite_buffer: BufferId,
     pub(in crate::platform::nova) poly_sprite_buffer: BufferId,
@@ -86,7 +87,7 @@ where
     })?;
     let path_rasterization_vertex_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} path rasterization vertices")),
-        size: (MAX_PATH_VERTICES * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
+        size: (INITIAL_PATH_VERTICES * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
@@ -138,6 +139,7 @@ where
         quad_buffer,
         shadow_buffer,
         path_rasterization_vertex_buffer,
+        path_rasterization_vertex_capacity: INITIAL_PATH_VERTICES,
         path_sprite_buffer,
         mono_sprite_buffer,
         poly_sprite_buffer,

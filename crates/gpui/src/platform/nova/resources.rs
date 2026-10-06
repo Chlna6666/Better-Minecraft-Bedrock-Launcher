@@ -14,3 +14,4 @@ pub(super) use create::{create_renderer_core, create_renderer_resources};
 pub(super) use depth::create_depth_texture;
 pub(super) use frame::FrameResources;
 pub(super) use renderer::{RendererCore, RendererResources};
+pub(in crate::platform::nova) use resource_sets::create_path_rasterization_resource_set;

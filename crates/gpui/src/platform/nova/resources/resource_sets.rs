@@ -11,6 +11,42 @@ pub(in crate::platform::nova) struct FrameResourceSets {
     pub(in crate::platform::nova) underline_resource_set: ResourceSetId,
 }
 
+pub(in crate::platform::nova) fn create_path_rasterization_resource_set<D>(
+    device: &mut D,
+    label: &str,
+    layout: ResourceSetLayoutId,
+    buffers: &FrameResourceBuffers,
+) -> Result<ResourceSetId>
+where
+    D: BackendResources,
+{
+    Ok(device.create_resource_set(&ResourceSetDescriptor {
+        label: Some(format!("{label} path rasterization resource set")),
+        layout,
+        bindings: vec![
+            ResourceBinding {
+                binding: 0,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: buffers.global_buffer,
+                    offset: 0,
+                    size: GLOBAL_UPLOAD_BYTES as u64,
+                    stride: None,
+                }),
+            },
+            ResourceBinding {
+                binding: 3,
+                resource: BindingResource::Buffer(BufferBinding {
+                    buffer: buffers.path_rasterization_vertex_buffer,
+                    offset: 0,
+                    size: (buffers.path_rasterization_vertex_capacity
+                        * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
+                    stride: Some(PACKED_PATH_RASTERIZATION_VERTEX_BYTES as u32),
+                }),
+            },
+        ],
+    })?)
+}
+
 pub(super) fn create_renderer_resource_sets<D>(
     device: &mut D,
     label: &str,
@@ -79,30 +115,12 @@ where
             animation_value_binding(),
         ],
     })?;
-    let path_rasterization_resource_set = device.create_resource_set(&ResourceSetDescriptor {
-        label: Some(format!("{label} path rasterization resource set")),
-        layout: layouts.path_rasterization_resource_set_layout,
-        bindings: vec![
-            ResourceBinding {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.global_buffer,
-                    offset: 0,
-                    size: GLOBAL_UPLOAD_BYTES as u64,
-                    stride: None,
-                }),
-            },
-            ResourceBinding {
-                binding: 3,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.path_rasterization_vertex_buffer,
-                    offset: 0,
-                    size: (MAX_PATH_VERTICES * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
-                    stride: Some(PACKED_PATH_RASTERIZATION_VERTEX_BYTES as u32),
-                }),
-            },
-        ],
-    })?;
+    let path_rasterization_resource_set = create_path_rasterization_resource_set(
+        device,
+        label,
+        layouts.path_rasterization_resource_set_layout,
+        buffers,
+    )?;
     let underline_resource_set = device.create_resource_set(&ResourceSetDescriptor {
         label: Some(format!("{label} underline resource set")),
         layout: layouts.underline_resource_set_layout,

@@ -108,6 +108,7 @@ pub(crate) struct NovaRenderer {
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_rasterization_resource_set: ResourceSetId,
+    path_rasterization_resource_set_layout: ResourceSetLayoutId,
     path_resource_set_layout: ResourceSetLayoutId,
     path_resource_set: ResourceSetId,
     mono_sprite_resource_set_layout: ResourceSetLayoutId,
@@ -148,6 +149,54 @@ pub(crate) struct NovaRenderer {
 struct PendingSubmission {
     submission: SubmissionId,
     frame_resource_index: usize,
+}
+
+fn create_grown_path_rasterization_resources<D>(
+    device: &mut D,
+    label: &str,
+    layout: ResourceSetLayoutId,
+    current_buffers: FrameResourceBuffers,
+    new_capacity: usize,
+) -> Result<(BufferId, ResourceSetId)>
+where
+    D: BackendResources,
+{
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} path rasterization vertices")),
+        size: (new_capacity * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
+        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?;
+    let mut next_buffers = current_buffers;
+    next_buffers.path_rasterization_vertex_buffer = buffer;
+    next_buffers.path_rasterization_vertex_capacity = new_capacity;
+    match create_path_rasterization_resource_set(device, label, layout, &next_buffers) {
+        Ok(resource_set) => Ok((buffer, resource_set)),
+        Err(error) => {
+            if let Err(destroy_error) = device.destroy_buffer(buffer) {
+                log::debug!(
+                    "failed to roll back {label} grown path buffer: {destroy_error}"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+fn retire_replaced_path_rasterization_resources<D>(
+    device: &mut D,
+    label: &str,
+    resource_set: ResourceSetId,
+    buffer: BufferId,
+) where
+    D: BackendResources,
+{
+    if let Err(error) = device.destroy_resource_set(resource_set) {
+        log::debug!("failed to retire {label} old path resource set: {error}");
+    }
+    if let Err(error) = device.destroy_buffer(buffer) {
+        log::debug!("failed to retire {label} old path buffer: {error}");
+    }
 }
 
 impl NovaRenderer {
@@ -532,6 +581,136 @@ impl NovaRenderer {
             target: self.depth_texture_view,
             depth_load_op: LoadOp::Clear(1.0),
         }
+    }
+
+    pub(super) fn ensure_path_rasterization_capacity(&mut self) -> Result<()> {
+        let required_bytes = self.frame_upload.path_rasterization_vertices.len();
+        if required_bytes == 0 {
+            return Ok(());
+        }
+        let required_vertices =
+            required_bytes.div_ceil(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+        if required_vertices > MAX_PATH_VERTICES {
+            anyhow::bail!(
+                "nova path vertex upload exceeds hard limit: required={} max={}",
+                required_vertices,
+                MAX_PATH_VERTICES
+            );
+        }
+
+        let index = self.current_frame_resource_index;
+        let current = self
+            .frame_resources
+            .get(index)
+            .copied()
+            .context("current nova frame resource slot is unavailable")?;
+        let current_capacity = current.buffers.path_rasterization_vertex_capacity;
+        if required_vertices <= current_capacity {
+            return Ok(());
+        }
+
+        let new_capacity = required_vertices
+            .next_power_of_two()
+            .max(current_capacity.saturating_mul(2))
+            .min(MAX_PATH_VERTICES);
+        let old_buffer = current.buffers.path_rasterization_vertex_buffer;
+        let old_resource_set = current.resource_sets.path_rasterization_resource_set;
+        let layout = self.path_rasterization_resource_set_layout;
+
+        let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => create_grown_path_rasterization_resources(
+                device,
+                "gpui nova dx12 grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => create_grown_path_rasterization_resources(
+                device,
+                "gpui nova metal grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => create_grown_path_rasterization_resources(
+                device,
+                "gpui nova vulkan grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                anyhow::bail!("nova backend is unavailable while growing path resources")
+            }
+        };
+
+        if let Some(resources) = self.frame_resources.get_mut(index) {
+            resources.buffers.path_rasterization_vertex_buffer = new_buffer;
+            resources.buffers.path_rasterization_vertex_capacity = new_capacity;
+            resources.resource_sets.path_rasterization_resource_set = new_resource_set;
+        }
+        self.path_rasterization_vertex_buffer = new_buffer;
+        self.path_rasterization_resource_set = new_resource_set;
+        self.retained_upload
+            .invalidate_path_rasterization_slot(index);
+
+        match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => retire_replaced_path_rasterization_resources(
+                device,
+                "gpui nova dx12",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => retire_replaced_path_rasterization_resources(
+                device,
+                "gpui nova metal",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => retire_replaced_path_rasterization_resources(
+                device,
+                "gpui nova vulkan",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {}
+        }
+
+        log::debug!(
+            "nova path buffer grew: slot={} vertices={} -> {}",
+            index,
+            current_capacity,
+            new_capacity
+        );
+        Ok(())
     }
 
     pub(super) fn activate_frame_resources(&mut self, index: usize) -> Result<()> {

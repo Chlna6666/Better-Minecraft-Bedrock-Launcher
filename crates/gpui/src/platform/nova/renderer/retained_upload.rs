@@ -406,6 +406,19 @@ impl RetainedUpload {
         self.key = None;
     }
 
+    pub(super) fn invalidate_path_rasterization_slot(&mut self, slot: usize) {
+        let Some(Some(signature)) = self.uploaded_slots.get_mut(slot) else {
+            return;
+        };
+        signature.path_rasterization_vertex = StaticStreamToken {
+            content: BufferContentToken {
+                byte_len: usize::MAX,
+                byte_hash: u64::MAX,
+            },
+            animation_topology: BufferContentToken::default(),
+        };
+    }
+
     pub(super) fn static_upload_mask(&self, slot: usize) -> StaticUploadMask {
         let Some(current) = self.static_signature else {
             return StaticUploadMask::all();
@@ -677,6 +690,29 @@ mod tests {
             QuadResidentLayout::default(),
         );
         assert!(!retained.needs_static_upload(0));
+    }
+
+    #[test]
+    fn replacing_path_buffer_invalidates_only_path_stream_for_slot() {
+        let mut retained = RetainedUpload::default();
+        let mut upload = FrameUpload::default();
+        upload.quads.extend_from_slice(b"quad");
+        upload.path_rasterization_vertices.extend_from_slice(b"path");
+        let (signature, _) = StaticUploadSignature::from_frame_upload(&upload);
+        retained.replace(
+            key(1),
+            FrameUploadSummary::default(),
+            2,
+            signature,
+            QuadResidentLayout::from_upload(&upload),
+        );
+        retained.mark_uploaded(0);
+        retained.invalidate_path_rasterization_slot(0);
+
+        let dirty = retained.static_upload_mask(0);
+        assert!(dirty.path_rasterization_vertex);
+        assert!(!dirty.quad);
+        assert_eq!(dirty.count(), 1);
     }
 
     #[test]

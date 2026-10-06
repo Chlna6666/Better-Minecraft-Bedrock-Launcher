@@ -232,6 +232,8 @@ impl NovaRenderer {
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
                         .path_rasterization_resource_set,
+                    path_rasterization_resource_set_layout: resources
+                        .path_rasterization_resource_set_layout,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
@@ -372,6 +374,8 @@ impl NovaRenderer {
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
                         .path_rasterization_resource_set,
+                    path_rasterization_resource_set_layout: resources
+                        .path_rasterization_resource_set_layout,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
@@ -536,6 +540,8 @@ impl NovaRenderer {
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
                         .path_rasterization_resource_set,
+                    path_rasterization_resource_set_layout: resources
+                        .path_rasterization_resource_set_layout,
                     path_resource_set_layout: resources.path_resource_set_layout,
                     path_resource_set: current_frame_resources.path_resource_set,
                     mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,

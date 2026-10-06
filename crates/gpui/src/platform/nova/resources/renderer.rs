@@ -20,6 +20,7 @@ pub(in crate::platform::nova) struct RendererResources {
     pub(in crate::platform::nova) depth_texture: TextureId,
     pub(in crate::platform::nova) depth_texture_view: TextureViewId,
     pub(in crate::platform::nova) frame_resources: Vec<FrameResources>,
+    pub(in crate::platform::nova) path_rasterization_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) path_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) mono_sprite_resource_set_layout: ResourceSetLayoutId,
     pub(in crate::platform::nova) poly_sprite_resource_set_layout: ResourceSetLayoutId,
