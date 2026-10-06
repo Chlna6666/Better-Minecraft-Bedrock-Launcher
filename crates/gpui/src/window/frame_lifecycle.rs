@@ -1185,16 +1185,10 @@ impl Window {
         let draw_was_degraded = self.draw_was_degraded;
         let warning_budget = self.frame_throttle.generation_warning_budget();
         let generation_budget_missed = generation_elapsed >= warning_budget;
-        if generation_elapsed >= self.frame_throttle.presentation_interval_hint() {
-            log::warn!(
-                "gpui element work probe every frame: window={} elapsed_us={} presentation_interval_us={} element_prepaint={} element_paint={}",
-                self.handle.window_id().as_u64(),
-                generation_elapsed.as_micros(),
-                self.frame_throttle.presentation_interval_hint().as_micros(),
-                self.last_generation_stats.element_prepaint,
-                self.last_generation_stats.element_paint
-            );
-        }
+        // Do not emit a WARN for every frame that merely exceeds one presentation interval.
+        // At high refresh rates that turns normal pointer/scroll redraws into synchronous log I/O
+        // and can itself create the stutter being measured. The detailed generation-budget warning
+        // below is already rate-limited and carries the same element timing breakdown.
         if generation_budget_missed
             && log::log_enabled!(log::Level::Warn)
             && self
