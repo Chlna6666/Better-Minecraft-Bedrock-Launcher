@@ -1573,7 +1573,9 @@ mod platform {
                 }
                 ShaderCode::DxBytecode(bytecode) => Dx12ShaderBytecode::Owned(bytecode.clone()),
                 ShaderCode::DxBytecodeStatic(bytecode) => Dx12ShaderBytecode::Static(*bytecode),
-                ShaderCode::Spirv(_) | ShaderCode::Msl(_) => {
+                ShaderCode::Spirv(_)
+                | ShaderCode::Msl(_)
+                | ShaderCode::MetallibStatic(_) => {
                     return Err(Error::Shader(
                         "DX12 shader module requires precompiled D3D bytecode".to_string(),
                     ));

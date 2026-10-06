@@ -1166,6 +1166,20 @@ impl ShaderBinary {
         }
     }
 
+    /// Creates a borrowed precompiled Metal library shader binary.
+    #[must_use]
+    pub fn metallib_static(
+        stage: ShaderStage,
+        entry_point: impl Into<String>,
+        library: &'static [u8],
+    ) -> Self {
+        Self {
+            stage,
+            entry_point: entry_point.into(),
+            code: ShaderCode::MetallibStatic(library),
+        }
+    }
+
     /// Returns SPIR-V words when this binary targets Vulkan.
     #[must_use]
     pub fn spirv_words(&self) -> Option<&[u32]> {
@@ -1174,7 +1188,8 @@ impl ShaderBinary {
             ShaderCode::Hlsl(_)
             | ShaderCode::DxBytecode(_)
             | ShaderCode::DxBytecodeStatic(_)
-            | ShaderCode::Msl(_) => None,
+            | ShaderCode::Msl(_)
+            | ShaderCode::MetallibStatic(_) => None,
         }
     }
 
@@ -1186,6 +1201,7 @@ impl ShaderBinary {
             ShaderCode::Hlsl(source) | ShaderCode::Msl(source) => source.is_empty(),
             ShaderCode::DxBytecode(bytecode) => bytecode.is_empty(),
             ShaderCode::DxBytecodeStatic(bytecode) => bytecode.is_empty(),
+            ShaderCode::MetallibStatic(library) => library.is_empty(),
         }
     }
 }
@@ -1203,6 +1219,8 @@ pub enum ShaderCode {
     DxBytecodeStatic(&'static [u8]),
     /// Metal Shading Language source.
     Msl(String),
+    /// Borrowed precompiled Metal library embedded in the executable.
+    MetallibStatic(&'static [u8]),
 }
 
 /// Backend shader code produced ahead of time by a build script.
@@ -1219,7 +1237,7 @@ pub enum ShaderCode {
 /// - [`Self::Hlsl`] for DX12 otherwise; the DX12 backend then compiles it when a
 ///   renderer is created, because that compiler only exists on Windows.
 /// - [`Self::SpirvBytes`] for Vulkan.
-/// - [`Self::Msl`] for Metal.
+/// - [`Self::Metallib`] for Metal production builds.
 #[derive(Clone, Copy, Debug)]
 pub enum EmbeddedShader {
     /// DX12 HLSL source, compiled by the backend when a renderer is created.
@@ -1228,8 +1246,10 @@ pub enum EmbeddedShader {
     DxBytecode(&'static [u8]),
     /// Vulkan SPIR-V words encoded as little-endian bytes.
     SpirvBytes(&'static [u8]),
-    /// Metal Shading Language source.
+    /// Metal Shading Language source for explicit runtime compilation tools.
     Msl(&'static str),
+    /// Precompiled Metal library produced by the offline Metal toolchain.
+    Metallib(&'static [u8]),
 }
 
 impl EmbeddedShader {
@@ -1255,6 +1275,7 @@ impl EmbeddedShader {
                 })?,
             ),
             Self::Msl(source) => ShaderBinary::msl(stage, entry_point, source.to_string()),
+            Self::Metallib(library) => ShaderBinary::metallib_static(stage, entry_point, library),
         })
     }
 }

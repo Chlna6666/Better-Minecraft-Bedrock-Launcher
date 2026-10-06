@@ -313,7 +313,7 @@ impl ShaderSet {
             let shader = prepared.shader;
             for (entry_point, stage) in &shader.entry_points {
                 let (extension, include_macro, constructor, payload) =
-                    self.compile_entry(backend, prepared, entry_point, *stage)?;
+                    self.compile_entry(out_dir, backend, prepared, entry_point, *stage)?;
 
                 let relative = format!(
                     "{ARTIFACT_DIR}/{}/{entry_point}.{extension}",
@@ -340,6 +340,7 @@ impl ShaderSet {
     /// Produces one artifact's payload and how the generated table embeds it.
     fn compile_entry(
         &self,
+        out_dir: &Path,
         backend: Backend,
         prepared: &PreparedShader<'_>,
         entry_point: &str,
@@ -378,7 +379,14 @@ impl ShaderSet {
             }
             Backend::Metal => {
                 let msl = translate_metal(&prepared.module, entry_point, stage, shader)?;
-                Ok(("metal", "include_str", "Msl", msl.into_bytes()))
+                let metallib = compile_msl_to_metallib(out_dir, entry_point, &msl).map_err(
+                    |message| Error::Compile {
+                        shader: shader.name.clone(),
+                        entry_point: entry_point.to_string(),
+                        message,
+                    },
+                )?;
+                Ok(("metallib", "include_bytes", "Metallib", metallib))
             }
         }
     }
@@ -432,7 +440,7 @@ impl Backend {
             }
             Self::Dx12 => "HLSL source explicitly allowed for runtime compilation",
             Self::Vulkan => "SPIR-V words generated at build time",
-            Self::Metal => "MSL source generated at build time",
+            Self::Metal => "precompiled metallib embedded at build time",
         }
     }
 }
@@ -538,6 +546,87 @@ fn translate_metal(
             message: "WGSL translation did not produce MSL source".to_string(),
         }),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn compile_msl_to_metallib(
+    out_dir: &Path,
+    entry_point: &str,
+    msl: &str,
+) -> Result<Vec<u8>, String> {
+    use std::process::Command;
+
+    let safe_entry = entry_point
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let build_dir = out_dir.join(ARTIFACT_DIR).join("metal-build");
+    fs::create_dir_all(&build_dir)
+        .map_err(|error| format!("failed to create Metal shader build directory: {error}"))?;
+
+    let source_path = build_dir.join(format!("{safe_entry}.metal"));
+    let air_path = build_dir.join(format!("{safe_entry}.air"));
+    let metallib_path = build_dir.join(format!("{safe_entry}.metallib"));
+    write_artifact(&source_path, msl.as_bytes()).map_err(|error| error.to_string())?;
+
+    let mut metal = Command::new("xcrun");
+    metal.args(["-sdk", "macosx", "metal", "-c"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&air_path);
+    if let Ok(deployment_target) = env::var("MACOSX_DEPLOYMENT_TARGET")
+        && !deployment_target.trim().is_empty()
+    {
+        metal.arg(format!("-mmacosx-version-min={}", deployment_target.trim()));
+    }
+    let output = metal
+        .output()
+        .map_err(|error| format!("failed to run xcrun metal: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "metal compilation failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let output = Command::new("xcrun")
+        .args(["-sdk", "macosx", "metallib"])
+        .arg(&air_path)
+        .arg("-o")
+        .arg(&metallib_path)
+        .output()
+        .map_err(|error| format!("failed to run xcrun metallib: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "metallib link failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let bytes = fs::read(&metallib_path)
+        .map_err(|error| format!("failed to read generated metallib: {error}"))?;
+    if bytes.is_empty() {
+        return Err("generated metallib is empty".to_string());
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn compile_msl_to_metallib(
+    _out_dir: &Path,
+    _entry_point: &str,
+    _msl: &str,
+) -> Result<Vec<u8>, String> {
+    Err(
+        "Metal production shaders require build-time metallib compilation on a macOS build host"
+            .to_string(),
+    )
 }
 
 fn translate_vulkan(

@@ -50,6 +50,7 @@ mod platform {
     use super::*;
     use crate::registry::ResourceRegistry;
     use core::ffi::c_void;
+    use dispatch2::DispatchData;
     use core::ptr::NonNull;
     use gfx_core::SwapchainId;
     use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
@@ -335,29 +336,32 @@ mod platform {
         /// Creates and validates a shader module.
         fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
             desc.validate()?;
-            let (source, library) = match &desc.binary.code {
+            let library = match &desc.binary.code {
+                ShaderCode::MetallibStatic(bytes) => {
+                    let data = DispatchData::from_static_bytes(*bytes);
+                    self.device
+                        .newLibraryWithData_error(&data)
+                        .map_err(|error| Error::Shader(nserror_message(&error)))?
+                }
                 ShaderCode::Msl(source) => {
                     let source_string = NSString::from_str(source);
                     let options = MTLCompileOptions::new();
-                    let library = self
-                        .device
+                    self.device
                         .newLibraryWithSource_options_error(&source_string, Some(&options))
-                        .map_err(|error| Error::Shader(nserror_message(&error)))?;
-                    (source.clone(), library)
+                        .map_err(|error| Error::Shader(nserror_message(&error)))?
                 }
                 ShaderCode::Hlsl(_)
                 | ShaderCode::DxBytecode(_)
                 | ShaderCode::DxBytecodeStatic(_)
                 | ShaderCode::Spirv(_) => {
                     return Err(Error::Shader(
-                        "Metal shader module requires MSL source".to_string(),
+                        "Metal shader module requires precompiled metallib or MSL source".to_string(),
                     ));
                 }
             };
             Ok(self.shader_modules.insert(MetalShaderModule {
                 stage: desc.binary.stage,
                 entry_point: desc.binary.entry_point.clone(),
-                source,
                 library,
             }))
         }
@@ -1024,7 +1028,6 @@ mod platform {
     struct MetalShaderModule {
         stage: ShaderStage,
         entry_point: String,
-        source: String,
         library: Retained<ProtocolObject<dyn MTLLibrary>>,
     }
 

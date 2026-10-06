@@ -3887,6 +3887,7 @@ dependencies = [
 name = "gfx-metal"
 version = "0.1.0"
 dependencies = [
+ "dispatch2",
  "gfx-core",
  "gfx-memory",
  "objc2 0.6.3",
