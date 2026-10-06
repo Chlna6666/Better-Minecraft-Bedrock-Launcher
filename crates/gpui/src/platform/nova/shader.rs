@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_SOLID_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -7,6 +8,7 @@ pub(super) const NOVA_SOLID_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/solid_quad.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_MONO_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -16,7 +18,7 @@ pub(super) const NOVA_MONO_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/mono_sprite.wgsl"),
 );
 
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 #[allow(dead_code)]
 pub(super) const NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE: &str = concat!(
     "enable dual_source_blending;\n",
@@ -28,7 +30,7 @@ pub(super) const NOVA_SUBPIXEL_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/subpixel_sprite.wgsl"),
 );
 
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 #[allow(dead_code)]
 pub(super) const NOVA_SUBPIXEL_GRAYSCALE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -39,6 +41,7 @@ pub(super) const NOVA_SUBPIXEL_GRAYSCALE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/subpixel_sprite_grayscale.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -48,6 +51,7 @@ pub(super) const NOVA_QUAD_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/quad.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -56,6 +60,7 @@ pub(super) const NOVA_SHADOW_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/shadow.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_PATH_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -63,12 +68,14 @@ pub(super) const NOVA_PATH_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/path.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_UNDERLINE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
     include_str!("shaders/underline.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_POLY_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -77,12 +84,14 @@ pub(super) const NOVA_POLY_SPRITE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/poly_sprite.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_SURFACE_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
     include_str!("shaders/surface.wgsl"),
 );
 
+#[cfg(test)]
 #[allow(dead_code)]
 pub(super) const NOVA_BACKDROP_BLUR_SHADER_SOURCE: &str = concat!(
     include_str!("shaders/core.wgsl"),
@@ -126,67 +135,103 @@ type ShaderCacheEntry = std::result::Result<ShaderBinaries, Arc<str>>;
 
 fn cached_nova_shader_binaries(
     cache: &'static std::sync::OnceLock<ShaderCacheEntry>,
-    compile: fn(
-        &str,
-        ShaderStage,
-        &str,
-    ) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError>,
+    resolve: fn(&str) -> Option<gfx_core::EmbeddedShader>,
 ) -> Result<ShaderBinaries> {
     match cache.get_or_init(|| {
-        compile_nova_shader_binaries(compile).map_err(|error| format!("{error:#}").into())
+        generated_nova_shader_binaries(resolve).map_err(|error| format!("{error:#}").into())
     }) {
         Ok(binaries) => Ok(binaries.clone()),
         Err(error) => Err(anyhow::anyhow!(error.to_string())),
     }
 }
 
-/// Converts one build-generated artifact into the backend binary a renderer uploads.
-///
-/// `src` is accepted and ignored so this can stand in for a WGSL translation
-/// closure: production shaders are translated by `build.rs`, not at startup.
+/// Resolves one build-generated artifact into the backend binary uploaded to the device.
 fn generated_shader_binary(
-    generated: Option<gfx_core::EmbeddedShader>,
+    resolve: fn(&str) -> Option<gfx_core::EmbeddedShader>,
     stage: ShaderStage,
     entry_point: &str,
-) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
-    let generated = generated
-        .ok_or_else(|| gfx_shader::ShaderError::MissingArtifact(entry_point.to_string()))?;
-
-    // `EmbeddedShader::to_binary` only fails on a malformed SPIR-V payload, so the
-    // SPIR-V error variant is the accurate mapping here.
+) -> Result<gfx_core::ShaderBinary> {
+    let generated = resolve(entry_point).ok_or_else(|| {
+        anyhow::anyhow!("missing build-generated Nova shader artifact {entry_point}")
+    })?;
     generated
         .to_binary(stage, entry_point)
-        .map_err(|error| gfx_shader::ShaderError::Spirv(error.to_string()))
+        .with_context(|| format!("decoding build-generated Nova shader {entry_point}"))
 }
 
-#[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-fn resolve_generated_dx12(
-    _source: &str,
-    stage: ShaderStage,
-    entry_point: &str,
-) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
-    generated_shader_binary(nova_dx12_shader(entry_point), stage, entry_point)
-}
-
-#[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-fn resolve_generated_metal(
-    _source: &str,
-    stage: ShaderStage,
-    entry_point: &str,
-) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
-    generated_shader_binary(nova_metal_shader(entry_point), stage, entry_point)
-}
-
-#[cfg(all(
-    feature = "nova-gfx-vulkan",
-    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-))]
-fn resolve_generated_vulkan(
-    _source: &str,
-    stage: ShaderStage,
-    entry_point: &str,
-) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
-    generated_shader_binary(nova_vulkan_shader(entry_point), stage, entry_point)
+/// Builds the fixed Nova shader table without carrying WGSL source through production startup.
+fn generated_nova_shader_binaries(
+    resolve: fn(&str) -> Option<gfx_core::EmbeddedShader>,
+) -> Result<ShaderBinaries> {
+    Ok(ShaderBinaries {
+        solid_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_solid_quad")?,
+        solid_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_solid_quad")?,
+        quad_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_quad")?,
+        quad_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_quad")?,
+        shadow_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_shadow")?,
+        shadow_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_shadow")?,
+        path_rasterization_vertex: generated_shader_binary(
+            resolve,
+            ShaderStage::Vertex,
+            "vs_path_rasterization",
+        )?,
+        path_rasterization_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_path_rasterization",
+        )?,
+        path_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_path")?,
+        path_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_path")?,
+        mono_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_mono_sprite")?,
+        mono_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_mono_sprite")?,
+        #[cfg(target_os = "windows")]
+        subpixel_vertex: generated_shader_binary(
+            resolve,
+            ShaderStage::Vertex,
+            "vs_subpixel_sprite",
+        )?,
+        #[cfg(target_os = "windows")]
+        subpixel_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_subpixel_sprite",
+        )?,
+        #[cfg(target_os = "windows")]
+        subpixel_grayscale_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_subpixel_sprite_grayscale",
+        )?,
+        poly_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_poly_sprite")?,
+        poly_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_poly_sprite")?,
+        underline_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_underline")?,
+        underline_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_underline")?,
+        backdrop_blur_pass_vertex: generated_shader_binary(
+            resolve,
+            ShaderStage::Vertex,
+            "vs_backdrop_blur_pass",
+        )?,
+        backdrop_blur_downsample_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_backdrop_blur_downsample",
+        )?,
+        backdrop_blur_upsample_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_backdrop_blur_upsample",
+        )?,
+        backdrop_blur_vertex: generated_shader_binary(
+            resolve,
+            ShaderStage::Vertex,
+            "vs_backdrop_blur",
+        )?,
+        backdrop_blur_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_backdrop_blur",
+        )?,
+    })
 }
 
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
@@ -194,7 +239,7 @@ pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_dx12)?;
+    let binaries = cached_nova_shader_binaries(&CACHE, nova_dx12_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova DX12 shader artifacts: {NOVA_DX12_SHADER_ARTIFACT_KIND}");
     });
@@ -206,7 +251,7 @@ pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_metal)?;
+    let binaries = cached_nova_shader_binaries(&CACHE, nova_metal_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova Metal shader artifacts: {NOVA_METAL_SHADER_ARTIFACT_KIND}");
     });
@@ -221,13 +266,12 @@ pub(super) fn cached_nova_vulkan_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
     static REPORTED: std::sync::Once = std::sync::Once::new();
 
-    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_vulkan)?;
+    let binaries = cached_nova_shader_binaries(&CACHE, nova_vulkan_shader)?;
     REPORTED.call_once(|| {
         log::info!("nova Vulkan shader artifacts: {NOVA_VULKAN_SHADER_ARTIFACT_KIND}");
     });
     Ok(binaries)
 }
-
 pub(super) struct BlendPipelineDescriptor<'a> {
     pub(super) label: &'a str,
     pub(super) suffix: &'a str,
@@ -263,6 +307,7 @@ pub(super) struct BlendPipelineDescriptor<'a> {
     pub(super) backdrop_blur_fragment: gfx_core::ShaderModuleId,
 }
 
+#[cfg(test)]
 pub(super) fn compile_nova_shader_binaries(
     mut compile: impl FnMut(
         &str,

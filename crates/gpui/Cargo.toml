@@ -559,6 +559,9 @@ features = [
 [dependencies.waker-fn]
 version = "1.2.0"
 
+[dev-dependencies.gfx-shader]
+path = "../nova-gfx/gfx-shader"
+
 [dev-dependencies.backtrace]
 version = "0.3"
 
@@ -625,9 +628,6 @@ optional = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-core]
 path = "../nova-gfx/gfx-core"
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-shader]
-path = "../nova-gfx/gfx-shader"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.gfx-vulkan]
 path = "../nova-gfx/gfx-vulkan"
@@ -777,9 +777,6 @@ path = "../nova-gfx/gfx-core"
 path = "../nova-gfx/gfx-metal"
 optional = true
 
-[target.'cfg(target_os = "macos")'.dependencies.gfx-shader]
-path = "../nova-gfx/gfx-shader"
-
 [target.'cfg(target_os = "macos")'.dependencies.log]
 version = "0.4.16"
 features = [
@@ -828,9 +825,6 @@ path = "../nova-gfx/gfx-core"
 [target.'cfg(target_os = "windows")'.dependencies.gfx-dx12]
 path = "../nova-gfx/gfx-dx12"
 optional = true
-
-[target.'cfg(target_os = "windows")'.dependencies.gfx-shader]
-path = "../nova-gfx/gfx-shader"
 
 [target.'cfg(target_os = "windows")'.dependencies.gfx-vulkan]
 path = "../nova-gfx/gfx-vulkan"

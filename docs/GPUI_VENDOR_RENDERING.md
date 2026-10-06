@@ -387,7 +387,7 @@ Major modules:
 | `resources/core.rs` | Cache of the renderer core shared by windows that agree on device and color format. |
 | `device.rs` | Device keys and the registry that shares one backend device between windows. |
 | `shader_artifacts.rs` | Build-generated shader artifact table included from `OUT_DIR`. |
-| `shader.rs`, `shaders/*.wgsl` | Shader module lookup and WGSL shader sources. |
+| `shader.rs`, `shaders/*.wgsl` | Generated artifact lookup; WGSL source constants are compiled only for shader regression tests. |
 | `atlas.rs`, `atlas_resources.rs` | Sprite atlas management and GPU atlas synchronization. |
 | `swapchain.rs`, `surface.rs`, `surface_plan.rs` | Surface and swapchain handling. |
 | `diagnostics.rs`, `upload_metrics.rs` | Renderer diagnostics and upload metrics. |
@@ -414,7 +414,10 @@ than an HLSL fallback. The production `gfx-dx12` dependency also leaves its
 `shader-compiler` feature disabled, so an accidentally supplied HLSL module is
 rejected instead of calling FXC during renderer creation. Only explicit shader
 tools/examples opt into that feature. A missing generated artifact remains an
-error rather than a silent runtime translation path.
+error rather than a silent runtime translation path. Production shader lookup now
+constructs `ShaderBinaries` directly from the generated artifact table; the old
+source-plus-compiler callback and WGSL source constants are test-only, so release
+startup does not carry the WGSL translator path through Nova initialization.
 
 ### Shared Device And Compiled Pipelines
 
