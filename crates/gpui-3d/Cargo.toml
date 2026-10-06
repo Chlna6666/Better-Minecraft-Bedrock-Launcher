@@ -1,0 +1,59 @@
+[package]
+name = "gpui-3d"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+description = "Scene, mesh, camera, material, and query primitives for GPUI 3D extensions"
+
+[lib]
+name = "gpui_3d"
+path = "src/lib.rs"
+
+[features]
+default = []
+nova-gfx-dx12 = ["gpui/nova-gfx-dx12"]
+nova-gfx-vulkan = ["gpui/nova-gfx-vulkan"]
+nova-gfx-metal = ["gpui/nova-gfx-metal"]
+native = ["nova-gfx-dx12", "nova-gfx-vulkan"]
+
+[dependencies]
+anyhow = "1.0.100"
+bevy_mikktspace = "0.16.1"
+gfx-core = { path = "../nova-gfx/gfx-core" }
+gpui = { path = "../gpui", default-features = false }
+thiserror = "2.0.17"
+
+# Compiles `scene_view.wgsl` into embedded backend artifacts, so creating a scene view
+# never runs the WGSL frontend or the Direct3D compiler.
+[build-dependencies.gfx-shader-build]
+path = "../nova-gfx/gfx-shader-build"
+
+[[bench]]
+name = "raycast"
+harness = false
+
+[[bench]]
+name = "scene"
+harness = false
+
+[[example]]
+name = "scene_view"
+required-features = ["native"]
+
+[dev-dependencies]
+criterion = "0.5"
+# Only the shader translation test needs to drive the WGSL frontend directly now that
+# production shaders come from build-generated artifacts.
+gfx-shader = { path = "../nova-gfx/gfx-shader" }
+
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
