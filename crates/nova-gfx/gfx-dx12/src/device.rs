@@ -158,8 +158,10 @@ mod platform {
             Foundation::{CloseHandle, HANDLE, HWND, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT},
             System::Threading::{CreateEventW, WaitForSingleObject},
         },
-        core::{BOOL, Error as WindowsError, Interface, PCSTR, PCWSTR},
+        core::{BOOL, Error as WindowsError, Interface, PCWSTR},
     };
+    #[cfg(feature = "shader-compiler")]
+    use windows::core::PCSTR;
     use windows_numerics::Matrix3x2;
 
     const BACK_BUFFER_COUNT: u32 = 3;

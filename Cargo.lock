@@ -3937,6 +3937,7 @@ dependencies = [
  "criterion",
  "gfx-core",
  "gfx-memory",
+ "log",
  "raw-window-handle",
  "thiserror 2.0.18",
 ]
