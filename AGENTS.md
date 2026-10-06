@@ -18,6 +18,7 @@ UI 使用仓库内维护的 GPUI 与 nova-gfx 渲染路径；业务逻辑应保�
 - [`docs/AI.md`](docs/AI.md)：GPUI、日志、异步、资源和验证约定。
 - [`docs/GPUI_ANIMATION_CONVENTIONS.md`](docs/GPUI_ANIMATION_CONVENTIONS.md)：动画帧时钟、retained animation、text geometry、Nova animation binding 与 invalidation 硬约束。
 - [`docs/GPUI_VENDOR_RENDERING.md`](docs/GPUI_VENDOR_RENDERING.md)：GPUI/Nova 渲染管线与 frame lifecycle。
+- [`docs/GPUI_3D.md`](docs/GPUI_3D.md)：独立 3D 场景、材质、viewport 和 GPU 资源边界。
 - [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md)：当前计划以及实体图标/脚本流水线。
 - [`docs/COMMIT_CONVENTIONS.md`](docs/COMMIT_CONVENTIONS.md)：提交信息和 Cocogitto hook。
 
@@ -43,6 +44,7 @@ UI 使用仓库内维护的 GPUI 与 nova-gfx 渲染路径；业务逻辑应保�
 | `src/plugins` | 插件 manifest、运行时、事件、watcher、UI DSL、插件窗口与受限 sidecar 桥接 | GPUI 框架对 BMCBL 业务的依赖 |
 | `src/i18n`、`src/assets`、`src/utils` | 本地化实现、嵌入资源辅助和通用工具 | 具体页面编排或跨层业务聚合 |
 | `crates/gpui` | 通用 GPUI 框架、窗口、输入、布局、渲染和并发原语 | BMCBL routes、assets、默认背景、下载服务和窗口策略 |
+| `crates/gpui-3d` | 通用 3D mesh、scene、camera、material、query 和 GPUI viewport | BMCBL 页面、Minecraft 领域数据和预览策略 |
 
 修改 `crates/gpui`、`src/app.rs` 或 `src/ui` 顶层前，必须阅读
 `docs/ARCHITECTURE_BOUNDARIES.md`；修改后台运行时、任务、下载、归档、长期 core
