@@ -288,10 +288,7 @@ impl ShaderSet {
         }
 
         let table_path = out_dir.join("shaders_bytes.rs");
-        fs::write(&table_path, generated).map_err(|error| Error::Write {
-            path: table_path,
-            source: error,
-        })
+        write_artifact(&table_path, generated.as_bytes())
     }
 
     fn emit_backend(
@@ -660,6 +657,14 @@ fn write_artifact(path: &Path, payload: &[u8]) -> Result<(), Error> {
             source: error,
         })?;
     }
+
+    // Build scripts may execute even when the translated payload is byte-for-byte identical.
+    // Preserve the existing file timestamp in that case so downstream include_bytes!/include!
+    // consumers are not needlessly rebuilt by Cargo/rustc.
+    if fs::read(path).is_ok_and(|existing| existing == payload) {
+        return Ok(());
+    }
+
     fs::write(path, payload).map_err(|error| Error::Write {
         path: path.to_path_buf(),
         source: error,
