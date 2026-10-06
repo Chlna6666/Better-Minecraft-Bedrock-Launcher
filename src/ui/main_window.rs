@@ -13,6 +13,7 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
 use crate::utils::updater::ReleaseSummary;
+use gpui::AnimationExt as _;
 use gpui::*;
 use std::any::type_name;
 use std::path::PathBuf;
@@ -96,6 +97,44 @@ pub(crate) fn preload_startup_background_target_from_values(
         .unwrap_or(0)
 }
 
+fn route_enter_animation_key(route: &RouteTarget) -> SharedString {
+    match route {
+        RouteTarget::Builtin(builtin) => SharedString::from(match builtin {
+            AppRoute::Home => "main-route-page-enter:/",
+            AppRoute::Download => "main-route-page-enter:/download",
+            AppRoute::Manage => "main-route-page-enter:/list",
+            AppRoute::Tools => "main-route-page-enter:/tools/online",
+            AppRoute::Tasks => "main-route-page-enter:/tasks",
+            AppRoute::Settings => "main-route-page-enter:/settings",
+        }),
+        RouteTarget::Plugin { .. } => {
+            SharedString::from(format!("main-route-page-enter:{}", route.pathname()))
+        }
+    }
+}
+
+fn route_transition_direction(from_index: Option<usize>, to_index: usize) -> f32 {
+    match from_index {
+        Some(from_index) if to_index > from_index => 1.0,
+        Some(from_index) if to_index < from_index => -1.0,
+        _ => 0.0,
+    }
+}
+
+fn route_page_enter_motion(direction: f32) -> Animation {
+    Animation::from_spec(
+        AnimationSpec::new(Duration::from_millis(220))
+            .fill_mode(FillMode::Both)
+            .ease(Easing::OutCubic),
+    )
+    .with_property(AnimationProperty::translation_opacity(
+        point(px(18.0 * direction), px(0.0)),
+        Point::default(),
+        0.94,
+        1.0,
+    ))
+}
+
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
 where
     T: Render + 'static,
@@ -151,6 +190,7 @@ struct MainWindowRenderModel {
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     dropdown_visible: bool,
+    route_transition_direction: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -372,6 +412,12 @@ impl MainWindowView {
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             crate::ui::components::dropdown::has_visible_overlay(window, now, dropdown_state)
         };
+        let route_transition_direction = route_transition_direction(
+            self.recent_page_target
+                .as_ref()
+                .map(|previous| previous.visual_index(cx)),
+            route.visual_index(cx),
+        );
         MainWindowRenderModel {
             now,
             route,
@@ -399,10 +445,11 @@ impl MainWindowView {
             toast_visible,
             toast_breadcrumb_visible,
             dropdown_visible,
+            route_transition_direction,
         }
     }
 
-    fn render_active_page(&self, route: &RouteTarget) -> AnyElement {
+    fn render_active_page(&self, route: &RouteTarget, transition_direction: f32) -> AnyElement {
         let page = match route {
             RouteTarget::Builtin(AppRoute::Home) => {
                 optional_page_view_element(AppRoute::Home.pathname(), self.home_page_view.clone())
@@ -431,15 +478,32 @@ impl MainWindowView {
             }
         };
 
-        // Route changes are structural UI commits, not presentation-only motion. Keeping the
-        // complete page inside a transient compositor layer can expose a background-only frame
-        // while the new layer/blur resources are rebound. Submit the active retained page directly;
-        // local controls keep their own narrow compositor animations.
+        let page = div().size_full().child(page);
+        if crate::core::ui_prefs::reduced_motion() || transition_direction == 0.0 {
+            return div()
+                .absolute()
+                .inset_0()
+                .size_full()
+                .child(page)
+                .into_any_element();
+        }
+
+        // Route content keeps final layout geometry and only receives a short direction-aware
+        // presentation transform. Unlike the old route composite layer this does not capture the
+        // full page into a transient offscreen surface, so blur/image resources cannot disappear
+        // for one frame while the route changes.
+        let animated_page = page
+            .with_visual_animation(
+                route_enter_animation_key(route),
+                route_page_enter_motion(transition_direction),
+            )
+            .expect("route page uses a renderer-owned translation/opacity track");
+
         div()
             .absolute()
             .inset_0()
             .size_full()
-            .child(page)
+            .child(animated_page)
             .into_any_element()
     }
     fn compose_root(
@@ -1712,7 +1776,7 @@ impl Render for MainWindowView {
             cx.notify();
         }
 
-        let page = self.render_active_page(&model.route);
+        let page = self.render_active_page(&model.route, model.route_transition_direction);
         let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self
             .compose_easter_egg(root, &model, window, cx)
@@ -1793,12 +1857,22 @@ impl Render for MainWindowView {
 
 #[cfg(test)]
 mod tests {
-    use super::background_animation_suppressed;
+    use super::{background_animation_suppressed, route_transition_direction};
     use crate::ui::navigation::{AppRoute, RouteTarget};
 
     #[test]
     fn c4_easter_egg_logic() {
         super::easter_egg::verify_easter_egg_logic();
+    }
+
+    #[test]
+    fn route_transition_follows_navigation_order() {
+        assert_eq!(route_transition_direction(Some(0), 5), 1.0);
+        assert_eq!(route_transition_direction(Some(5), 0), -1.0);
+        assert_eq!(route_transition_direction(Some(2), 3), 1.0);
+        assert_eq!(route_transition_direction(Some(3), 2), -1.0);
+        assert_eq!(route_transition_direction(Some(3), 3), 0.0);
+        assert_eq!(route_transition_direction(None, 3), 0.0);
     }
 
     #[test]
