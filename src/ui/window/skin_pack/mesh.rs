@@ -585,7 +585,7 @@ fn build_skin_mesh(vertices: Vec<SkinVertex>, indices: Vec<u32>) -> Result<Mesh,
             position: vec3(vertex.position),
             normal: normal.normalized().unwrap_or(Vec3::Y),
             uv: Vec2::ZERO,
-            color: vertex.color,
+            color: skin_vertex_color_to_linear(vertex.color),
         })
         .collect::<Vec<_>>();
     let mesh = Mesh::new(vertices, indices).map_err(|error| error.to_string())?;
@@ -597,6 +597,26 @@ fn build_skin_mesh(vertices: Vec<SkinVertex>, indices: Vec<u32>) -> Result<Mesh,
     } else {
         mesh.with_edge_masks(edge_masks)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// Converts CPU-baked skin texels from the PNG's sRGB encoding into the linear vertex-color
+/// space required by gpui-3d. Alpha is coverage, not a color channel, so it stays unmodified.
+fn skin_vertex_color_to_linear(color: [f32; 4]) -> [f32; 4] {
+    [
+        srgb_channel_to_linear(color[0]),
+        srgb_channel_to_linear(color[1]),
+        srgb_channel_to_linear(color[2]),
+        color[3],
+    ]
+}
+
+fn srgb_channel_to_linear(channel: f32) -> f32 {
+    let channel = channel.clamp(0.0, 1.0);
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
     }
 }
 

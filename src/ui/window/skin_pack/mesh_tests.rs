@@ -267,6 +267,35 @@ fn prepared_skin_preview_geometry_stays_small() {
 }
 
 #[test]
+fn baked_skin_mesh_converts_srgb_vertex_colors_to_linear() {
+    let color = [0.5, 0.25, 1.0, 0.4];
+    let vertices = vec![
+        SkinVertex {
+            position: [0.0, 0.0, 0.0],
+            color,
+            edge_mask: 0,
+        },
+        SkinVertex {
+            position: [1.0, 0.0, 0.0],
+            color,
+            edge_mask: 0,
+        },
+        SkinVertex {
+            position: [0.0, 1.0, 0.0],
+            color,
+            edge_mask: 0,
+        },
+    ];
+    let mesh = build_skin_mesh(vertices, vec![0, 1, 2]).expect("baked skin mesh should build");
+    let converted = mesh.vertices()[0].color;
+
+    assert!((converted[0] - 0.21404114).abs() < 1.0e-5);
+    assert!((converted[1] - 0.05087609).abs() < 1.0e-5);
+    assert!((converted[2] - 1.0).abs() < 1.0e-6);
+    assert!((converted[3] - 0.4).abs() < 1.0e-6);
+}
+
+#[test]
 fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
     let mesh = Arc::new(
         Mesh::new(

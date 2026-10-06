@@ -23,6 +23,20 @@ const SKIN_PREVIEW_STAGE_MAX_HEIGHT: f32 = 360.0;
 const SKIN_PREVIEW_MIN_ZOOM: f32 = 0.72;
 const SKIN_PREVIEW_MAX_ZOOM: f32 = 1.65;
 const SKIN_PREVIEW_DEFAULT_ZOOM: f32 = 1.0;
+const SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE: f32 = 1.10;
+const SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT: f32 = 4.0;
+
+fn skin_preview_wheel_zoom_factor(delta_y: f32, line_height: f32) -> f32 {
+    if !delta_y.is_finite() || !line_height.is_finite() {
+        return 1.0;
+    }
+    let line_height = line_height.abs().max(1.0);
+    let lines = (delta_y / line_height).clamp(
+        -SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT,
+        SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT,
+    );
+    SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE.powf(lines)
+}
 
 #[derive(Clone)]
 pub struct SkinPreviewWindowSkin {
@@ -378,10 +392,14 @@ impl SkinPreviewWindowView {
                             cx.stop_propagation();
                         }),
                     )
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
-                        let delta = event.delta.pixel_delta(px(48.0));
-                        if delta.y != Pixels::ZERO {
-                            let factor = if delta.y > px(0.0) { 1.12 } else { 0.90 };
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        let line_height = window.line_height();
+                        let delta_y = event.delta.pixel_delta(line_height).y / px(1.0);
+                        let factor = skin_preview_wheel_zoom_factor(
+                            delta_y,
+                            line_height / px(1.0),
+                        );
+                        if (factor - 1.0).abs() > f32::EPSILON {
                             this.zoom_preview_by(factor, cx);
                         }
                         cx.stop_propagation();
@@ -641,4 +659,28 @@ fn centered_status(colors: &ThemeColors, label: SharedString) -> AnyElement {
         .text_color(colors.text_secondary)
         .child(label)
         .into_any_element()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wheel_zoom_tracks_fractional_scroll_delta() {
+        let one_line = skin_preview_wheel_zoom_factor(16.0, 16.0);
+        let quarter_line = skin_preview_wheel_zoom_factor(4.0, 16.0);
+        let reverse_line = skin_preview_wheel_zoom_factor(-16.0, 16.0);
+
+        assert!((one_line - SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE).abs() < 1.0e-6);
+        assert!(quarter_line > 1.0 && quarter_line < one_line);
+        assert!((reverse_line - one_line.recip()).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn wheel_zoom_clamps_single_event_spikes() {
+        let clamped = skin_preview_wheel_zoom_factor(10_000.0, 16.0);
+        let expected = SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE.powf(SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT);
+        assert!((clamped - expected).abs() < 1.0e-6);
+    }
 }
