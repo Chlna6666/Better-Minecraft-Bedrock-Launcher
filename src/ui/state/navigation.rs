@@ -1,20 +1,21 @@
-use crate::ui::animation::{SpringValue, spring_bouncy};
+use crate::ui::animation::{SpringValue, apple_spring};
 use gpui::Global;
 use std::time::Instant;
 
-const PILL_SETTLE_DISTANCE: f32 = 0.006;
+const PILL_EDGE_SETTLE_DISTANCE: f32 = 0.006;
 
 /// 顶栏导航状态。
 ///
-/// 胶囊位置由一条可中断 Q 弹 spring 驱动。实际可见动画由 Nova presentation owner
-/// 持有固定尺寸的 translation track；这里的 CPU mirror 只负责 retarget 连续性、
-/// settled 判定和离散导航状态，不再用双边缘弹簧改变胶囊宽度。
+/// 胶囊左右边缘由两条可中断弹簧驱动：前沿响应更快、后沿带一点拖尾，移动时形成
+/// 类似流体的拉伸/回收，而不是整个固定矩形做刚体平移。动画只改变 pill 自身 geometry，
+/// 周围 icon、label 与 hit target 保持静态 retained。
 pub struct NavState {
     pub active_index: usize,
     pub pending_route_index: Option<usize>,
     pub pill_from_index: usize,
     pub pill_to_index: usize,
-    pill_motion: SpringValue,
+    pill_fast: SpringValue,
+    pill_slow: SpringValue,
     pill_last_direction: f32,
     pub labels_target_visible: bool,
 }
@@ -28,7 +29,8 @@ impl Default for NavState {
             pending_route_index: None,
             pill_from_index: 0,
             pill_to_index: 0,
-            pill_motion: SpringValue::new(0.0).with_spring(spring_bouncy()),
+            pill_fast: SpringValue::new(0.0).with_spring(apple_spring(0.34, 0.60)),
+            pill_slow: SpringValue::new(0.0).with_spring(apple_spring(0.42, 0.80)),
             pill_last_direction: 1.0,
             labels_target_visible: true,
         }
@@ -48,13 +50,14 @@ impl NavState {
             return;
         }
         let target = to_index as f32;
-        let current = self.pill_motion.value(now);
+        let current = self.pill_fast.value(now);
         if (target - current).abs() > f32::EPSILON {
             self.pill_last_direction = (target - current).signum();
         }
         self.pill_from_index = self.visual_active_index();
         self.pill_to_index = to_index;
-        self.pill_motion.retarget(target, now);
+        self.pill_fast.retarget(target, now);
+        self.pill_slow.retarget(target, now);
         self.pending_route_index = Some(to_index);
     }
 
@@ -63,7 +66,8 @@ impl NavState {
         self.pending_route_index = None;
         self.pill_from_index = index;
         self.pill_to_index = index;
-        self.pill_motion.snap_to(index as f32);
+        self.pill_fast.snap_to(index as f32);
+        self.pill_slow.snap_to(index as f32);
     }
 
     pub fn confirm_route(&mut self, index: usize) {
@@ -80,18 +84,22 @@ impl NavState {
     }
 
     pub(crate) fn pill_render_state(&self, now: Instant) -> ((f32, f32), bool) {
-        let motion = self.pill_motion.sample(now);
+        let fast = self.pill_fast.sample(now);
+        let slow = self.pill_slow.sample(now);
         let target = self.pill_to_index as f32;
-        if motion.done || (motion.value - target).abs() <= PILL_SETTLE_DISTANCE {
+        let settled = (fast.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE
+            && (slow.value - target).abs() <= PILL_EDGE_SETTLE_DISTANCE;
+        if settled {
             return ((target, target), false);
         }
 
-        // Keep the compatibility edge API degenerate: the visible pill no longer stretches.
-        // Overshoot comes from translation itself, so width/radius stay invariant.
-        ((motion.value, motion.value), true)
+        (
+            (fast.value.min(slow.value), fast.value.max(slow.value)),
+            !fast.done || !slow.done,
+        )
     }
 
-    /// 胶囊当前位置，以 tab 序号为单位。两个值保持相同，避免重新引入宽度拉伸。
+    /// 胶囊左右边缘位置（以 tab 序号为单位）；允许短暂拉伸和轻微过冲形成流体感。
     pub fn pill_edges(&self, now: Instant) -> (f32, f32) {
         self.pill_render_state(now).0
     }
@@ -99,20 +107,6 @@ impl NavState {
     pub fn pill_direction(&self) -> f32 {
         self.pill_last_direction
     }
-
-    /// Returns the discrete compositor endpoints for the current pill transition.
-    ///
-    /// Once the CPU mirror spring has settled, both endpoints collapse to the target. This keeps
-    /// unrelated later renders from reconstructing a completed one-shot animation from stale route
-    /// indices.
-    pub fn pill_animation_indices(&self, now: Instant) -> (usize, usize) {
-        if self.is_animating(now) {
-            (self.pill_from_index, self.pill_to_index)
-        } else {
-            (self.pill_to_index, self.pill_to_index)
-        }
-    }
-
 
     pub fn set_labels_target(&mut self, visible: bool, _now: Instant) {
         self.labels_target_visible = visible;
@@ -153,21 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn pill_translation_overshoots_without_stretch_and_settles() {
+    fn pill_edges_stretch_like_fluid_and_settle() {
         let now = Instant::now();
         let mut nav = NavState::default();
 
         nav.start_pill_animation(4, now);
         assert!(nav.pill_direction() > 0.0);
 
-        let mut peak = 0.0f32;
-        for step in 1..=80 {
-            let sample_at = now + Duration::from_millis(step * 10);
-            let (left, right) = nav.pill_edges(sample_at);
-            assert!((left - right).abs() < f32::EPSILON, "固定宽度胶囊不应拉伸");
-            peak = peak.max(left);
-        }
-        assert!(peak > 4.01, "Q 弹 translation 应轻微越过目标位置");
+        let early = now + Duration::from_millis(90);
+        let (left, right) = nav.pill_edges(early);
+        assert!(right > left, "前后沿不同步时胶囊应产生流体拉伸");
+        assert!(right < 4.6, "边缘不应飞出合理范围");
 
         let settled = now + Duration::from_secs(5);
         let (left, right) = nav.pill_edges(settled);
@@ -185,8 +175,12 @@ mod tests {
         let settling_time = (1..=500)
             .map(|step| now + Duration::from_millis(step * 10))
             .find(|sample_time| {
-                let motion = nav.pill_motion.sample(*sample_time);
-                !motion.done && (motion.value - 4.0).abs() <= PILL_SETTLE_DISTANCE
+                let fast = nav.pill_fast.sample(*sample_time);
+                let slow = nav.pill_slow.sample(*sample_time);
+                !fast.done
+                    && !slow.done
+                    && (fast.value - 4.0).abs() <= PILL_EDGE_SETTLE_DISTANCE
+                    && (slow.value - 4.0).abs() <= PILL_EDGE_SETTLE_DISTANCE
             })
             .expect("弹簧应在完成前进入亚像素收敛区间");
 
@@ -209,19 +203,6 @@ mod tests {
         assert!((after_left - before_left).abs() < 1e-3);
         assert!((after_right - before_right).abs() < 1e-3);
         assert!(nav.pill_direction() < 0.0);
-    }
-
-    #[test]
-    fn settled_pill_animation_collapses_compositor_endpoints() {
-        let now = Instant::now();
-        let mut nav = NavState::default();
-        nav.start_pill_animation(4, now);
-
-        assert_eq!(nav.pill_animation_indices(now), (0, 4));
-        assert_eq!(
-            nav.pill_animation_indices(now + Duration::from_secs(5)),
-            (4, 4),
-        );
     }
 
     #[test]

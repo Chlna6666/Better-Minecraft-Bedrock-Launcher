@@ -101,8 +101,9 @@ const APP_VERSION_LABEL: &str = concat!("v", env!("BMCBL_BUILD_VERSION"));
 pub(super) struct NavRenderState {
     pub window_width: Pixels,
     pub visual_active_index: usize,
-    pub pill_from_index: usize,
-    pub pill_to_index: usize,
+    pub pill_left_steps: f32,
+    pub pill_right_steps: f32,
+    pub nav_animating: bool,
     pub labels_layout_factor: f32,
     pub labels_opacity_factor: f32,
 }
@@ -133,19 +134,22 @@ pub(super) fn render_nav(
         .visual_active_index
         .min(navigation_length.saturating_sub(1));
     let step_width_px = (item_width + capsule_gap) / px(1.);
+    let maximum_offset_px = step_width_px * navigation_length.saturating_sub(1) as f32;
+    let overshoot_slack_px = step_width_px * 0.30;
+    let maximum_right_px = maximum_offset_px + item_width / px(1.);
+    let left_edge_px =
+        (step_width_px * state.pill_left_steps).clamp(-overshoot_slack_px, maximum_right_px);
+    let right_edge_px = (step_width_px * state.pill_right_steps + item_width / px(1.))
+        .clamp(0.0, maximum_right_px + overshoot_slack_px);
     let pill_inner_inset_px = 1.5;
-    let target_index = state.pill_to_index.min(navigation_length.saturating_sub(1));
-    let from_index = state
-        .pill_from_index
-        .min(navigation_length.saturating_sub(1));
-    let pill_offset =
-        capsule_padding + px(step_width_px * target_index as f32 + pill_inner_inset_px);
-    let pill_width = item_width - px(pill_inner_inset_px * 2.);
-    let edge_offset = px(step_width_px * (from_index as f32 - target_index as f32));
+    let pill_offset = capsule_padding + px(left_edge_px.min(right_edge_px) + pill_inner_inset_px);
+    let pill_width =
+        px(((right_edge_px - left_edge_px).abs() - pill_inner_inset_px * 2.).max(0.));
 
-    // Keep the selection pill rigid while preserving the original Q 弹 feel. One underdamped
-    // translation spring may overshoot the target slightly, but width/radius/hit targets remain
-    // final and stable, so the old cross-tab stretch artifact cannot return.
+    // This is the original liquid selection motion: the leading and trailing edges follow two
+    // interruptible springs, so the pill stretches while travelling and then recoils into the
+    // target. Keep the animation target on this absolute child only; nav labels/icons never join
+    // the per-frame layout invalidation.
     let pill = div()
         .absolute()
         .left(pill_offset)
@@ -153,20 +157,8 @@ pub(super) fn render_nav(
         .w(pill_width)
         .h(item_height)
         .rounded(px(17.))
-        .bg(colors.accent);
-    let pill = if from_index == target_index {
-        pill.into_any_element()
-    } else {
-        pill.with_visual_animation(
-            "main-nav-pill",
-            Animation::spring(crate::ui::animation::spring_bouncy()).with_translation(
-                point(edge_offset, px(0.)),
-                Point::default(),
-            ),
-        )
-        .expect("main nav pill uses a compositor translation")
-        .into_any_element()
-    };
+        .bg(colors.accent)
+        .with_layout_animation_target(state.nav_animating);
 
     let nav = div()
         .relative()
