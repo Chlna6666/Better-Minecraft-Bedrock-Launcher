@@ -11,3 +11,8 @@ encoder 和 DXGI swapchain。在非 Windows 目标上，它仍然实现 core tra
 
 `raw-window-handle` 只在本后端 crate 中用于原生 surface 创建。`gfx-core`
 不依赖它。
+
+
+## Shader 编译
+
+生产路径应传入预编译的 `ShaderCode::DxBytecode`。默认不会启用运行时 HLSL/FXC 编译；只有显式开启 `shader-compiler` feature 才会连同 FXC binding 一起启用，主要用于 shader 工具与示例，不用于应用启动路径。

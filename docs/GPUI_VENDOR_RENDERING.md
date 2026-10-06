@@ -419,6 +419,8 @@ constructs `ShaderBinaries` directly from the generated artifact table; the old
 source-plus-compiler callback and WGSL source constants are test-only, so release
 startup does not carry the WGSL translator path through Nova initialization.
 
+`gfx-shader-build` parses and validates each WGSL bundle once, then reuses the validated Naga module for every entry point and enabled backend. On a Windows build host it invokes the minimal FXC binding directly rather than depending on the complete `gfx-dx12` runtime crate. This keeps device, swapchain, allocator, and presentation code out of the shader build-script dependency graph.
+
 ### Shared Device And Compiled Pipelines
 
 Windows of one process render through one backend device and one set of compiled

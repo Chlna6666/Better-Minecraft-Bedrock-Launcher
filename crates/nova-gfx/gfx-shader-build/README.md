@@ -4,7 +4,10 @@ Build-time WGSL compilation and embedding for
 [`nova-gfx`](../README.md) backends. Add it as a **build dependency** and call it
 from `build.rs`; the crate translates every declared entry point for the backends
 the build enables, compiles DX12 shaders to Direct3D bytecode when the build host
-can run the Direct3D compiler, and writes a generated table the crate embeds.
+can run the Direct3D compiler, and writes a generated table the crate embeds. WGSL is
+parsed/validated once per declared bundle and reused across all entry points and
+backend translations. The build helper calls FXC directly instead of depending on
+the full `gfx-dx12` runtime backend.
 
 The point is that no shader compiler runs while an application starts: the
 renderer receives ready-to-use `gfx_core::EmbeddedShader` values.
@@ -54,12 +57,9 @@ calling crate's Cargo features and valid for the target platform:
 | `NOVA_GFX_METAL` | macos | MSL source |
 
 Direct3D bytecode is generated only when the build host runs Windows, because
-`D3DCompile` ships with Windows. The default policy keeps the generic tool usable
-for experiments by embedding HLSL on a non-Windows host, but that fallback requires
-an explicitly compiler-enabled DX12 runtime.
-
-Production applications should set `Dx12ArtifactPolicy::RequireBytecode`. Under
-that policy a Windows target built on a host that cannot run `D3DCompile` fails at
+`D3DCompile` ships with Windows. `Dx12ArtifactPolicy::RequireBytecode` is the default. A shader tool that deliberately
+accepts runtime compilation must explicitly select `AllowRuntimeCompilation`, and its
+DX12 runtime must enable `gfx-dx12/shader-compiler`. Under the strict default policy a Windows target built on a host that cannot run `D3DCompile` fails at
 build time instead of silently moving shader compilation back into application
 startup. BMCBL GPUI and gpui-3d shader sets use this strict policy.
 

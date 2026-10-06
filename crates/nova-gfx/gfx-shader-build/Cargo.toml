@@ -22,6 +22,8 @@ pedantic = "warn"
 
 [dependencies]
 gfx-core = { version = "0.1.0", path = "../gfx-core" }
-gfx-dx12 = { version = "0.1.0", path = "../gfx-dx12", features = ["shader-compiler"] }
 gfx-shader = { version = "0.1.0", path = "../gfx-shader" }
 thiserror = "2.0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc"] }

@@ -11,3 +11,8 @@ cross-platform crates to compile their non-target paths.
 
 `raw-window-handle` is used only in this backend crate for native surface
 creation. `gfx-core` does not depend on it.
+
+
+## Shader compilation
+
+Production callers should provide precompiled `ShaderCode::DxBytecode`. Runtime HLSL/FXC compilation is disabled by default; the `shader-compiler` feature explicitly enables the FXC binding and is intended for shader tools and examples rather than application startup.
