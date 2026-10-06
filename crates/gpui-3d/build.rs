@@ -3,10 +3,13 @@
 //! The renderer resolves its shader modules from this generated table, so creating a
 //! scene view never runs the WGSL frontend or the Direct3D compiler.
 
-use gfx_shader_build::{BackendSelection, MslVersion, Shader, ShaderSet, ShaderStage};
+use gfx_shader_build::{
+    BackendSelection, Dx12ArtifactPolicy, MslVersion, Shader, ShaderSet, ShaderStage,
+};
 
 fn main() {
     let shaders = ShaderSet::new("scene_view")
+        .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         // The host application decides which backend renders, and this crate's own
         // features only forward to `gpui`, so artifacts are generated for every backend
         // the platform supports rather than only for requested features.

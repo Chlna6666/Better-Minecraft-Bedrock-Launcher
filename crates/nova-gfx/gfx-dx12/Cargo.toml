@@ -14,6 +14,12 @@ include = ["src/**", "tests/**", "benches/**", "Cargo.toml", "README.md", "READM
 [lib]
 path = "src/gfx_dx12.rs"
 
+[features]
+default = []
+# Intended for build tools, shader experiments, and explicit examples only.
+# Production renderers should supply precompiled DX bytecode.
+shader-compiler = []
+
 [lints.rust]
 unsafe_code = "warn"
 

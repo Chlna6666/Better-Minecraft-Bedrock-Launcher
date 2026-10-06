@@ -63,9 +63,10 @@ mod platform {
     };
     use log::log;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+    #[cfg(feature = "shader-compiler")]
+    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
     use windows::{
         Win32::Graphics::{
-            Direct3D::Fxc::D3DCompile,
             Direct3D::{
                 D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY,
                 D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
@@ -1536,22 +1537,36 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`Error`] when validation or HLSL compilation fails.
+        /// Returns [`Error`] when validation fails or when production code supplies
+        /// HLSL without opting into the build/tool-only `shader-compiler` feature.
         fn create_shader_module(
             &mut self,
             desc: &ShaderModuleDescriptor,
         ) -> Result<ShaderModuleId> {
             desc.validate()?;
             let bytecode = match &desc.binary.code {
-                ShaderCode::Hlsl(source) => compile_hlsl_to_dx_bytecode(
-                    source,
-                    &desc.binary.entry_point,
-                    desc.binary.stage,
-                )?,
+                ShaderCode::Hlsl(source) => {
+                    #[cfg(feature = "shader-compiler")]
+                    {
+                        compile_hlsl_to_dx_bytecode(
+                            source,
+                            &desc.binary.entry_point,
+                            desc.binary.stage,
+                        )?
+                    }
+                    #[cfg(not(feature = "shader-compiler"))]
+                    {
+                        let _ = source;
+                        return Err(Error::Shader(
+                            "DX12 runtime HLSL compilation is disabled; provide precompiled D3D bytecode or explicitly enable gfx-dx12/shader-compiler for a build tool or shader experiment"
+                                .to_string(),
+                        ));
+                    }
+                }
                 ShaderCode::DxBytecode(bytecode) => bytecode.clone(),
                 ShaderCode::Spirv(_) | ShaderCode::Msl(_) => {
                     return Err(Error::Shader(
-                        "DX12 shader module requires HLSL or D3D bytecode".to_string(),
+                        "DX12 shader module requires precompiled D3D bytecode".to_string(),
                     ));
                 }
             };
@@ -4726,6 +4741,7 @@ mod platform {
     ///
     /// Returns [`Error::InvalidInput`] when `entry_point` contains a NUL byte,
     /// and [`Error::Shader`] when `D3DCompile` rejects the source.
+    #[cfg(feature = "shader-compiler")]
     pub fn compile_hlsl_to_dx_bytecode(
         source: &str,
         entry_point: &str,

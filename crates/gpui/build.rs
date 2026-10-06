@@ -3,7 +3,7 @@
 
 // TODO: deprecate "runtime-shaders" and "macos-blade".
 
-use gfx_shader_build::{Shader, ShaderSet, ShaderStage};
+use gfx_shader_build::{Dx12ArtifactPolicy, Shader, ShaderSet, ShaderStage};
 use std::env;
 
 fn main() {
@@ -526,6 +526,7 @@ const NOVA_SUBPIXEL_COMMON_WGSL: &str = "./src/platform/nova/shaders/subpixel_sp
 /// binds them and they require dual-source blending.
 fn generate_nova_shader_bytes() {
     let shaders = ShaderSet::new("nova")
+        .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
         .shader(
             Shader::new("solid_quad")
                 .wgsl_file(NOVA_CORE_WGSL)

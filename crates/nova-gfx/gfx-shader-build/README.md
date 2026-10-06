@@ -13,10 +13,12 @@ renderer receives ready-to-use `gfx_core::EmbeddedShader` values.
 
 ```rust
 // build.rs
-use gfx_shader_build::{Shader, ShaderSet, ShaderStage};
+use gfx_shader_build::{Dx12ArtifactPolicy, Shader, ShaderSet, ShaderStage};
 
 fn main() {
-    let shaders = ShaderSet::new("viewer").shader(
+    let shaders = ShaderSet::new("viewer")
+    .dx12_artifact_policy(Dx12ArtifactPolicy::RequireBytecode)
+    .shader(
         Shader::new("scene_view")
             .wgsl_file("src/scene_view.wgsl")
             .entry("vs_main", ShaderStage::Vertex)
@@ -52,11 +54,14 @@ calling crate's Cargo features and valid for the target platform:
 | `NOVA_GFX_METAL` | macos | MSL source |
 
 Direct3D bytecode is generated only when the build host runs Windows, because
-`D3DCompile` ships with Windows. A non-Windows host building a Windows target gets
-HLSL instead, which the DX12 backend then compiles when a renderer is created.
-That fallback is expected when cross-compiling: the build prints a Cargo warning
-describing the consequence, and the application log reports which mode a binary
-actually uses through the generated `*_SHADER_ARTIFACT_KIND` constant.
+`D3DCompile` ships with Windows. The default policy keeps the generic tool usable
+for experiments by embedding HLSL on a non-Windows host, but that fallback requires
+an explicitly compiler-enabled DX12 runtime.
+
+Production applications should set `Dx12ArtifactPolicy::RequireBytecode`. Under
+that policy a Windows target built on a host that cannot run `D3DCompile` fails at
+build time instead of silently moving shader compilation back into application
+startup. BMCBL GPUI and gpui-3d shader sets use this strict policy.
 
 ## License
 

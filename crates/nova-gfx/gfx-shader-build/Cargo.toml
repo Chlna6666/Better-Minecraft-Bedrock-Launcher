@@ -22,6 +22,6 @@ pedantic = "warn"
 
 [dependencies]
 gfx-core = { version = "0.1.0", path = "../gfx-core" }
-gfx-dx12 = { version = "0.1.0", path = "../gfx-dx12" }
+gfx-dx12 = { version = "0.1.0", path = "../gfx-dx12", features = ["shader-compiler"] }
 gfx-shader = { version = "0.1.0", path = "../gfx-shader" }
 thiserror = "2.0.17"

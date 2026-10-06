@@ -19,7 +19,7 @@ pedantic = "warn"
 
 [dependencies]
 gfx-core = { path = "../../gfx-core" }
-gfx-dx12 = { path = "../../gfx-dx12" }
+gfx-dx12 = { path = "../../gfx-dx12", features = ["shader-compiler"] }
 gfx-shader = { path = "../../gfx-shader" }
 raw-window-handle = "0.6"
 sysinfo = "0.39.0"

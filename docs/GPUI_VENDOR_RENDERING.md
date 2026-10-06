@@ -405,9 +405,16 @@ pipeline.
 `gfx_core::EmbeddedShader` is the runtime side. Each generated table exposes
 `{name}_{backend}_shader(entry_point) -> Option<EmbeddedShader>`, and
 `EmbeddedShader::to_binary(stage, entry_point)` returns the compiled bytes for
-the running backend. Windows builds therefore embed D3D bytecode instead of
-calling FXC at launch; a missing artifact surfaces as
-`ShaderError::MissingArtifact` rather than a silent fallback.
+the running backend.
+
+BMCBL GPUI and gpui-3d sets use `Dx12ArtifactPolicy::RequireBytecode`: Windows
+artifacts must complete WGSL -> HLSL -> DXBC during the build. Cross-building a
+Windows target on a host that cannot run `D3DCompile` is a hard build error rather
+than an HLSL fallback. The production `gfx-dx12` dependency also leaves its
+`shader-compiler` feature disabled, so an accidentally supplied HLSL module is
+rejected instead of calling FXC during renderer creation. Only explicit shader
+tools/examples opt into that feature. A missing generated artifact remains an
+error rather than a silent runtime translation path.
 
 ### Shared Device And Compiled Pipelines
 

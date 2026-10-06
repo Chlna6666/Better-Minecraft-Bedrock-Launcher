@@ -61,6 +61,15 @@ pub enum BackendSelection {
     Platform,
 }
 
+/// Policy for DX12 artifacts when the build host cannot run the Direct3D compiler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Dx12ArtifactPolicy {
+    /// Embed translated HLSL and let an explicitly compiler-enabled DX12 runtime compile it.
+    AllowRuntimeCompilation,
+    /// Require build-time DXBC. A Windows target built on a host without `D3DCompile` fails.
+    RequireBytecode,
+}
+
 /// One WGSL shader and the entry points compiled from it.
 ///
 /// A shader is composed from an optional prelude followed by one or more WGSL
@@ -191,6 +200,7 @@ pub struct ShaderSet {
     name: String,
     shaders: Vec<Shader>,
     backend_selection: BackendSelection,
+    dx12_artifact_policy: Dx12ArtifactPolicy,
 }
 
 impl ShaderSet {
@@ -201,6 +211,7 @@ impl ShaderSet {
             name: name.into(),
             shaders: Vec::new(),
             backend_selection: BackendSelection::Features,
+            dx12_artifact_policy: Dx12ArtifactPolicy::AllowRuntimeCompilation,
         }
     }
 
@@ -209,6 +220,15 @@ impl ShaderSet {
     /// Defaults to [`BackendSelection::Features`].
     pub fn backend_selection(mut self, selection: BackendSelection) -> Self {
         self.backend_selection = selection;
+        self
+    }
+
+    /// Chooses whether a Windows/DX12 target may fall back to runtime HLSL compilation.
+    ///
+    /// Production applications should select [`Dx12ArtifactPolicy::RequireBytecode`] so
+    /// cross-compilation cannot silently reintroduce `D3DCompile` into startup.
+    pub fn dx12_artifact_policy(mut self, policy: Dx12ArtifactPolicy) -> Self {
+        self.dx12_artifact_policy = policy;
         self
     }
 
@@ -328,7 +348,19 @@ impl ShaderSet {
                 let hlsl = translate(source, entry_point, stage, shader)?;
                 match compile_hlsl_to_dxbc(&hlsl, entry_point, stage) {
                     Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode)),
-                    None => Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes())),
+                    None => match self.dx12_artifact_policy {
+                        Dx12ArtifactPolicy::AllowRuntimeCompilation => {
+                            println!(
+                                "cargo::warning=DX12 shader `{}` entry point `{entry_point}` is embedded as HLSL because the build host cannot run D3DCompile; renderer startup requires an explicitly compiler-enabled DX12 backend",
+                                shader.name
+                            );
+                            Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes()))
+                        }
+                        Dx12ArtifactPolicy::RequireBytecode => Err(Error::Dx12BytecodeRequired {
+                            shader: shader.name.clone(),
+                            entry_point: entry_point.to_string(),
+                        }),
+                    },
                 }
             }
             Backend::Vulkan => {
@@ -578,6 +610,14 @@ pub enum Error {
         entry_point: String,
         /// Translator diagnostic.
         message: String,
+    },
+    /// A strict DX12 shader set could not be compiled to bytecode on this build host.
+    #[error("DX12 shader `{shader}` entry point `{entry_point}` requires build-time D3D bytecode, but this build host cannot run D3DCompile; build the Windows artifact on a Windows host or explicitly allow runtime compilation for a non-production tool")]
+    Dx12BytecodeRequired {
+        /// Shader declaration name.
+        shader: String,
+        /// Entry point that could not be precompiled.
+        entry_point: String,
     },
     /// A generated file could not be written.
     #[error("failed to write generated shader output {path}: {source}")]
