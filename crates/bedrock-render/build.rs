@@ -41,6 +41,101 @@ fn main() {
     write_variant_colors(&mut output, &block_value);
 
     fs::write(out_dir.join("builtin_palette_tables.rs"), output).expect("write palette tables");
+    build_dx11_copy_shader(&manifest_dir, &out_dir);
+}
+
+fn build_dx11_copy_shader(manifest_dir: &std::path::Path, out_dir: &std::path::Path) {
+    if env::var_os("CARGO_FEATURE_GPU_DX11").is_none()
+        || env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("windows")
+    {
+        return;
+    }
+
+    let shader_path = manifest_dir.join("src/renderer/dx11_copy.hlsl");
+    println!("cargo:rerun-if-changed={}", shader_path.display());
+    let source = fs::read(&shader_path).expect("read DX11 copy shader");
+
+    #[cfg(windows)]
+    {
+        let bytecode = compile_dx11_copy_shader(&source).unwrap_or_else(|error| {
+            panic!("build-time DX11 copy shader compilation failed: {error}")
+        });
+        fs::write(out_dir.join("bedrock_render_dx11_copy.dxbc"), bytecode)
+            .expect("write DX11 copy shader bytecode");
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = source;
+        panic!(
+            "bedrock-render gpu-dx11 requires build-time DXBC; build the Windows target on a Windows host instead of falling back to runtime FXC"
+        );
+    }
+}
+
+#[cfg(windows)]
+fn compile_dx11_copy_shader(source: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::Graphics::Direct3D::Fxc::{
+        D3DCOMPILE_ENABLE_STRICTNESS, D3DCompile,
+    };
+    use windows::core::PCSTR;
+
+    let entry = b"main\0";
+    let target = b"cs_5_0\0";
+    let source_name = b"bedrock-render-dx11-copy.hlsl\0";
+    let mut bytecode = None;
+    let mut errors = None;
+
+    // SAFETY: all byte slices and output pointers remain valid for the duration of the call.
+    let result = unsafe {
+        D3DCompile(
+            source.as_ptr().cast(),
+            source.len(),
+            PCSTR(source_name.as_ptr()),
+            None,
+            None,
+            PCSTR(entry.as_ptr()),
+            PCSTR(target.as_ptr()),
+            D3DCOMPILE_ENABLE_STRICTNESS,
+            0,
+            &raw mut bytecode,
+            Some(&raw mut errors),
+        )
+    };
+    if let Err(error) = result {
+        let diagnostics = errors
+            .as_ref()
+            .map(d3d_blob_message)
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| error.to_string());
+        return Err(diagnostics);
+    }
+
+    let bytecode = bytecode
+        .ok_or_else(|| "D3DCompile succeeded without returning compute shader bytecode".to_string())?;
+    // SAFETY: D3DCompile returned an immutable live blob for the duration of this copy.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            bytecode.GetBufferPointer().cast::<u8>(),
+            bytecode.GetBufferSize(),
+        )
+    };
+    if bytes.len() < 4 || &bytes[..4] != b"DXBC" {
+        return Err("D3DCompile returned a payload without a DXBC container header".to_string());
+    }
+    Ok(bytes.to_vec())
+}
+
+#[cfg(windows)]
+fn d3d_blob_message(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
+    // SAFETY: the blob owns this byte range for its lifetime.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
+    };
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches(char::from(0))
+        .trim()
+        .to_string()
 }
 
 fn write_block_colors(output: &mut String, root: &Value) {

@@ -14,14 +14,13 @@ mod imp {
     use super::*;
     use std::sync::Arc;
 
-    #[cfg(feature = "gpu-dx11")]
+    #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
     #[allow(unsafe_code)]
     mod dx11 {
         use super::*;
-        use std::sync::{Mutex, OnceLock};
+        use std::sync::Mutex;
         use std::time::Instant;
         use windows::Win32::Foundation::HMODULE;
-        use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_ENABLE_STRICTNESS, D3DCompile};
         use windows::Win32::Graphics::Direct3D::{
             D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0, D3D11_SRV_DIMENSION_BUFFER,
         };
@@ -37,23 +36,10 @@ mod imp {
         };
         use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_UNKNOWN;
         use windows::Win32::Graphics::Dxgi::{DXGI_ADAPTER_DESC, IDXGIAdapter, IDXGIDevice};
-        use windows::core::{Interface as _, PCSTR};
+        use windows::core::Interface as _;
 
-        const COPY_SHADER: &[u8] = br#"
-RWStructuredBuffer<uint> output_pixels : register(u0);
-StructuredBuffer<uint> input_pixels : register(t0);
-
-[numthreads(256, 1, 1)]
-void main(uint3 id : SV_DispatchThreadID) {
-    uint count;
-    uint stride;
-    output_pixels.GetDimensions(count, stride);
-    if (id.x >= count) {
-        return;
-    }
-    output_pixels[id.x] = input_pixels[id.x];
-}
-"#;
+        const COPY_SHADER_BYTECODE: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/bedrock_render_dx11_copy.dxbc"));
 
         pub struct Dx11RenderContext {
             device: ID3D11Device,
@@ -94,10 +80,10 @@ void main(uint3 id : SV_DispatchThreadID) {
                 })?;
                 let adapter_name =
                     dx11_adapter_name(&device).unwrap_or_else(|| "Direct3D 11".to_string());
-                let shader_bytecode = copy_shader_bytecode()?;
+                let shader_bytecode = COPY_SHADER_BYTECODE;
                 let mut shader = None;
-                // SAFETY: shader bytecode slice comes from a live ID3DBlob, and the
-                // output pointer is valid.
+                // SAFETY: shader bytecode is a build-generated static DXBC payload and the
+                // output pointer is valid for the call.
                 unsafe { device.CreateComputeShader(shader_bytecode, None, Some(&mut shader)) }
                     .map_err(|error| {
                         BedrockRenderError::Validation(format!(
@@ -409,75 +395,10 @@ void main(uint3 id : SV_DispatchThreadID) {
             })
         }
 
-        fn compile_copy_shader() -> Result<windows::Win32::Graphics::Direct3D::ID3DBlob> {
-            let mut shader = None;
-            let mut errors = None;
-            let entry = b"main\0";
-            let target = b"cs_5_0\0";
-            let source_name = b"bedrock-render-dx11-copy.hlsl\0";
-            // SAFETY: pointers reference static byte strings for the duration of the
-            // call; output blob pointers are valid and initialized by D3DCompile.
-            let result = unsafe {
-                D3DCompile(
-                    COPY_SHADER.as_ptr().cast(),
-                    COPY_SHADER.len(),
-                    PCSTR(source_name.as_ptr()),
-                    None,
-                    None,
-                    PCSTR(entry.as_ptr()),
-                    PCSTR(target.as_ptr()),
-                    D3DCOMPILE_ENABLE_STRICTNESS,
-                    0,
-                    &mut shader,
-                    Some(&mut errors),
-                )
-            };
-            if let Err(error) = result {
-                let message = errors
-                    .as_ref()
-                    .map(|blob| unsafe {
-                        // SAFETY: compiler error blob is valid UTF-8-ish bytes owned
-                        // by the blob; lossy conversion handles non-UTF8 diagnostics.
-                        let bytes = std::slice::from_raw_parts(
-                            blob.GetBufferPointer().cast::<u8>(),
-                            blob.GetBufferSize(),
-                        );
-                        String::from_utf8_lossy(bytes).into_owned()
-                    })
-                    .unwrap_or_else(|| error.to_string());
-                return Err(BedrockRenderError::Validation(format!(
-                    "DX11 shader compile failed: {message}"
-                )));
-            }
-            shader.ok_or_else(|| {
-                BedrockRenderError::Validation("DX11 shader compiler returned no blob".to_string())
-            })
-        }
-
-        /// Returns the DX11 copy shader bytecode, compiling it at most once per process.
-        ///
-        /// `D3DCompile` is the only shader compiler on this path and it ships with Windows
-        /// rather than being linked in, so it is a genuine runtime dependency. Every map
-        /// render session used to compile this one trivial copy shader again; the bytecode
-        /// depends only on the shader source and target, so it is cached process-wide and
-        /// reused across devices and sessions.
-        fn copy_shader_bytecode() -> Result<&'static [u8]> {
-            static BYTECODE: OnceLock<std::result::Result<Vec<u8>, String>> = OnceLock::new();
-
-            match BYTECODE.get_or_init(|| {
-                let blob = compile_copy_shader().map_err(|error| error.to_string())?;
-                // SAFETY: the blob is live for this call, and its buffer is read-only.
-                let bytecode = unsafe {
-                    std::slice::from_raw_parts(
-                        blob.GetBufferPointer().cast::<u8>(),
-                        blob.GetBufferSize(),
-                    )
-                };
-                Ok(bytecode.to_vec())
-            }) {
-                Ok(bytecode) => Ok(bytecode.as_slice()),
-                Err(message) => Err(BedrockRenderError::Validation(message.clone())),
-            }
+        #[cfg(test)]
+        #[test]
+        fn embedded_copy_shader_is_dxbc() {
+            assert!(COPY_SHADER_BYTECODE.starts_with(b"DXBC"));
         }
     }
 
@@ -716,7 +637,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
 
     pub struct GpuRenderContext {
-        #[cfg(feature = "gpu-dx11")]
+        #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
         dx11: Option<Arc<dx11::Dx11RenderContext>>,
         #[cfg(feature = "gpu-vulkan")]
         vulkan: Option<Arc<wgpu_vk::WgpuVulkanContext>>,
@@ -725,7 +646,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     impl Clone for GpuRenderContext {
         fn clone(&self) -> Self {
             Self {
-                #[cfg(feature = "gpu-dx11")]
+                #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
                 dx11: self.dx11.clone(),
                 #[cfg(feature = "gpu-vulkan")]
                 vulkan: self.vulkan.clone(),
@@ -736,7 +657,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     impl GpuRenderContext {
         pub fn new(backend: RenderGpuBackend) -> Result<Self> {
             let mut last_error = None;
-            #[cfg(feature = "gpu-dx11")]
+            #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
             let dx11 = if matches!(backend, RenderGpuBackend::Auto | RenderGpuBackend::Dx11) {
                 match dx11::Dx11RenderContext::new() {
                     Ok(context) => Some(Arc::new(context)),
@@ -748,7 +669,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             } else {
                 None
             };
-            #[cfg(not(feature = "gpu-dx11"))]
+            #[cfg(not(all(feature = "gpu-dx11", target_os = "windows")))]
             let _dx11 = ();
 
             #[cfg(feature = "gpu-vulkan")]
@@ -768,7 +689,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             #[cfg(not(feature = "gpu-vulkan"))]
             let _vulkan = ();
 
-            #[cfg(feature = "gpu-dx11")]
+            #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
             if dx11.is_some() {
                 log::info!(
                     target: "bedrock_render::gpu",
@@ -788,7 +709,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                     "GPU render context selected requested_backend={backend:?} actual_backend=vulkan"
                 );
                 return Ok(Self {
-                    #[cfg(feature = "gpu-dx11")]
+                    #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
                     dx11,
                     vulkan,
                 });
@@ -817,13 +738,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             }
             let result = match backend {
                 RenderGpuBackend::Auto | RenderGpuBackend::Dx11 => {
-                    #[cfg(feature = "gpu-dx11")]
+                    #[cfg(all(feature = "gpu-dx11", target_os = "windows"))]
                     if let Some(dx11) = &self.dx11 {
                         dx11.process_rgba(rgba, backend)
                     } else {
                         try_vulkan(self, rgba, backend)
                     }
-                    #[cfg(not(feature = "gpu-dx11"))]
+                    #[cfg(not(all(feature = "gpu-dx11", target_os = "windows")))]
                     {
                         try_vulkan(self, rgba, backend)
                     }

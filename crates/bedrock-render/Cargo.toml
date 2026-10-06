@@ -26,6 +26,7 @@ include = [
     "docs/images/*.png",
     "examples/**/*.rs",
     "src/**/*.rs",
+    "src/**/*.hlsl",
     "tests/**/*.rs",
 ]
 
@@ -59,12 +60,15 @@ sysinfo = "0.39.0"
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"], optional = true }
 wgpu = { version = "29.0.3", default-features = false, optional = true }
-windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
+windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = "0.13.3"
 
 [build-dependencies]
 serde_json = { version = "1.0", features = ["preserve_order"] }
+
+[target.'cfg(windows)'.build-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc"] }
 
 [dev-dependencies]
 bedrock-leveldb = { path = "../bedrock-leveldb" }
