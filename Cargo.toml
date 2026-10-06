@@ -33,6 +33,7 @@ zstd = "0.14.0"
 mimalloc = { version = "0.1.52", features = ["extended"] }
 libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 gpui = { path = "crates/gpui", default-features = false, features = ["mimalloc-collect", "nova-gfx"] }
+gpui-3d = { path = "crates/gpui-3d" }
 gpui_tokio = { path = "crates/gpui_tokio" }
 gpui-router = { version = "0.5.0", default-features = false, features = ["gpui"] }
 gpui_hooks = { path = "crates/gpui-hooks" }
@@ -136,6 +137,7 @@ members = [
     "crates/egpui-build",
     "crates/egpui-manifest",
     "crates/gpui",
+    "crates/gpui-3d",
     "crates/gpui-macros",
     "crates/gpui_tokio",
     "crates/bmcbl-plugin-api",
@@ -145,6 +147,7 @@ members = [
     "crates/nova-gfx/gfx-core",
     "crates/nova-gfx/gfx-memory",
     "crates/nova-gfx/gfx-shader",
+    "crates/nova-gfx/gfx-shader-build",
     "crates/nova-gfx/gfx-dx12",
     "crates/nova-gfx/gfx-metal",
     "crates/nova-gfx/gfx-opengl",
