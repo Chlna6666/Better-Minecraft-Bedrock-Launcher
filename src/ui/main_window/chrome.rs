@@ -143,8 +143,9 @@ pub(super) fn render_nav(
     let pill_width = item_width - px(pill_inner_inset_px * 2.);
     let edge_offset = px(step_width_px * (from_index as f32 - target_index as f32));
 
-    // Commit the final layout once. Both spring edges then advance on the presentation owner,
-    // preserving the fixed height/radius and leaving icons, labels, and hit targets static.
+    // Keep the selection pill rigid. Two independent edge springs made the capsule stretch across
+    // intermediate tabs and amplified retarget glitches. The compositor now owns only one
+    // translation track; layout, hit targets, width and radius remain final and stable.
     let pill = div()
         .absolute()
         .left(pill_offset)
@@ -152,16 +153,20 @@ pub(super) fn render_nav(
         .w(pill_width)
         .h(item_height)
         .rounded(px(17.))
-        .bg(colors.accent)
-        .with_animation_group(
+        .bg(colors.accent);
+    let pill = if from_index == target_index {
+        pill.into_any_element()
+    } else {
+        pill.with_visual_animation(
             "main-nav-pill",
-            AnimationGroup::horizontal_edges(
-                edge_offset,
-                px(0.),
-                crate::ui::animation::apple_spring(0.34, 0.60),
-                crate::ui::animation::apple_spring(0.42, 0.80),
+            Animation::spring(crate::ui::animation::spring_snappy()).with_translation(
+                point(edge_offset, px(0.)),
+                Point::default(),
             ),
-        );
+        )
+        .expect("main nav pill uses a compositor translation")
+        .into_any_element()
+    };
 
     let nav = div()
         .relative()

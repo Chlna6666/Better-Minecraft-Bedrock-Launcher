@@ -24,10 +24,9 @@ impl NovaRenderDiagnostics {
     }
 
     pub(super) fn should_warn_slow_frame(&mut self, elapsed_ms: u128) -> bool {
-        // TEMP measurement: log every frame's phase breakdown.
-        let _ = elapsed_ms;
-        return true;
-        #[allow(unreachable_code)]
+        // Detailed frame diagnostics are explicit opt-in. In normal builds only genuinely slow
+        // frames may emit a warning, and those warnings are rate-limited so pointer/scroll redraws
+        // never turn the renderer hot path into synchronous log I/O.
         if self.enabled || elapsed_ms < DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS {
             return false;
         }
@@ -67,5 +66,53 @@ pub(super) fn nova_power_preference(renderer_options: &RendererOptions) -> Power
     match renderer_options.power_preference {
         crate::GpuPowerPreference::AutoLowPower => PowerPreference::LowPower,
         crate::GpuPowerPreference::HighPerformance => PowerPreference::HighPerformance,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostics(enabled: bool) -> NovaRenderDiagnostics {
+        NovaRenderDiagnostics {
+            enabled,
+            warned_unsupported: false,
+            last_slow_frame_warning_at: None,
+        }
+    }
+
+    #[test]
+    fn normal_fast_frames_do_not_emit_slow_frame_warnings() {
+        let mut diagnostics = diagnostics(false);
+        assert!(!diagnostics.should_warn_slow_frame(0));
+        assert!(!diagnostics.should_warn_slow_frame(
+            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS - 1,
+        ));
+    }
+
+    #[test]
+    fn slow_frame_warnings_are_rate_limited() {
+        let mut diagnostics = diagnostics(false);
+        assert!(diagnostics.should_warn_slow_frame(
+            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS,
+        ));
+        assert!(!diagnostics.should_warn_slow_frame(
+            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
+        ));
+
+        diagnostics.last_slow_frame_warning_at =
+            Some(Instant::now() - DEFAULT_SLOW_FRAME_WARN_INTERVAL);
+        assert!(diagnostics.should_warn_slow_frame(
+            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
+        ));
+    }
+
+    #[test]
+    fn explicit_diagnostics_mode_owns_per_frame_details_without_slow_warn_spam() {
+        let mut diagnostics = diagnostics(true);
+        assert!(diagnostics.should_log_frame_details());
+        assert!(!diagnostics.should_warn_slow_frame(
+            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
+        ));
     }
 }

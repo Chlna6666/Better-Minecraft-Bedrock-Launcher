@@ -1,6 +1,5 @@
 use crate::core::minecraft::remote_versions;
 use crate::plugins::events::InjectionSlot;
-use crate::ui::animation::{apple_spring, spring_motion};
 use crate::ui::components::color_picker::normalize_hex_color;
 use crate::ui::components::icon::themed_icon;
 use crate::ui::components::input::{InputEvent, InputState};
@@ -14,7 +13,6 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::{DarkColors, LightColors, lerp_theme_colors};
 use crate::utils::updater::ReleaseSummary;
-use gpui::AnimationExt as _;
 use gpui::*;
 use std::any::type_name;
 use std::path::PathBuf;
@@ -98,22 +96,6 @@ pub(crate) fn preload_startup_background_target_from_values(
         .unwrap_or(0)
 }
 
-fn route_enter_animation_key(route: &RouteTarget) -> SharedString {
-    match route {
-        RouteTarget::Builtin(builtin) => SharedString::from(match builtin {
-            AppRoute::Home => "main-route-page-enter:/",
-            AppRoute::Download => "main-route-page-enter:/download",
-            AppRoute::Manage => "main-route-page-enter:/list",
-            AppRoute::Tools => "main-route-page-enter:/tools/online",
-            AppRoute::Tasks => "main-route-page-enter:/tasks",
-            AppRoute::Settings => "main-route-page-enter:/settings",
-        }),
-        RouteTarget::Plugin { .. } => {
-            SharedString::from(format!("main-route-page-enter:{}", route.pathname()))
-        }
-    }
-}
-
 fn optional_page_view_element<T>(route_key: &str, view: Option<Entity<T>>) -> AnyElement
 where
     T: Render + 'static,
@@ -169,7 +151,6 @@ struct MainWindowRenderModel {
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     dropdown_visible: bool,
-    route_transition_direction: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -391,10 +372,6 @@ impl MainWindowView {
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             crate::ui::components::dropdown::has_visible_overlay(window, now, dropdown_state)
         };
-        let route_transition_direction = cx
-            .global::<crate::ui::state::navigation::NavState>()
-            .pill_direction();
-
         MainWindowRenderModel {
             now,
             route,
@@ -422,11 +399,10 @@ impl MainWindowView {
             toast_visible,
             toast_breadcrumb_visible,
             dropdown_visible,
-            route_transition_direction,
         }
     }
 
-    fn render_active_page(&self, route: &RouteTarget, transition_direction: f32) -> AnyElement {
+    fn render_active_page(&self, route: &RouteTarget) -> AnyElement {
         let page = match route {
             RouteTarget::Builtin(AppRoute::Home) => {
                 optional_page_view_element(AppRoute::Home.pathname(), self.home_page_view.clone())
@@ -455,38 +431,17 @@ impl MainWindowView {
             }
         };
 
-        if crate::core::ui_prefs::reduced_motion() {
-            return div()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .child(page)
-                .into_any_element();
-        }
-
-        let route_key = route_enter_animation_key(route);
-        // Keep route geometry stable and move the submitted page scene as one retained subtree.
-        let animated_page = div()
-            .size_full()
-            .child(page)
-            .composite_layer()
-            .with_visual_animation(
-                route_key,
-                spring_motion(apple_spring(0.36, 0.74)).with_translation(
-                    point(px(18.0 * transition_direction), px(0.0)),
-                    Point::default(),
-                ),
-            )
-            .expect("route page uses a visual translation track");
-
+        // Route changes are structural UI commits, not presentation-only motion. Keeping the
+        // complete page inside a transient compositor layer can expose a background-only frame
+        // while the new layer/blur resources are rebound. Submit the active retained page directly;
+        // local controls keep their own narrow compositor animations.
         div()
             .absolute()
             .inset_0()
             .size_full()
-            .child(animated_page)
+            .child(page)
             .into_any_element()
     }
-
     fn compose_root(
         &mut self,
         model: &MainWindowRenderModel,
@@ -1757,7 +1712,7 @@ impl Render for MainWindowView {
             cx.notify();
         }
 
-        let page = self.render_active_page(&model.route, model.route_transition_direction);
+        let page = self.render_active_page(&model.route);
         let (root, mut auth_blocked) = self.compose_root(&model, page, window, cx);
         let root = self
             .compose_easter_egg(root, &model, window, cx)

@@ -107,6 +107,20 @@ impl NavState {
         self.pill_last_direction
     }
 
+    /// Returns the discrete compositor endpoints for the current pill transition.
+    ///
+    /// Once the CPU mirror spring has settled, both endpoints collapse to the target. This keeps
+    /// unrelated later renders from reconstructing a completed one-shot animation from stale route
+    /// indices.
+    pub fn pill_animation_indices(&self, now: Instant) -> (usize, usize) {
+        if self.is_animating(now) {
+            (self.pill_from_index, self.pill_to_index)
+        } else {
+            (self.pill_to_index, self.pill_to_index)
+        }
+    }
+
+
     pub fn set_labels_target(&mut self, visible: bool, _now: Instant) {
         self.labels_target_visible = visible;
     }
@@ -202,6 +216,19 @@ mod tests {
         assert!((after_left - before_left).abs() < 1e-3);
         assert!((after_right - before_right).abs() < 1e-3);
         assert!(nav.pill_direction() < 0.0);
+    }
+
+    #[test]
+    fn settled_pill_animation_collapses_compositor_endpoints() {
+        let now = Instant::now();
+        let mut nav = NavState::default();
+        nav.start_pill_animation(4, now);
+
+        assert_eq!(nav.pill_animation_indices(now), (0, 4));
+        assert_eq!(
+            nav.pill_animation_indices(now + Duration::from_secs(5)),
+            (4, 4),
+        );
     }
 
     #[test]

@@ -263,11 +263,12 @@ impl Render for NavChromeView {
             window.request_animation_frame();
         }
         let nav = cx.global::<NavState>();
+        let (pill_from_index, pill_to_index) = nav.pill_animation_indices(now);
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
-            pill_from_index: nav.pill_from_index,
-            pill_to_index: nav.pill_to_index,
+            pill_from_index,
+            pill_to_index,
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
         };
