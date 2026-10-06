@@ -1,7 +1,7 @@
-use gfx_core::{BackendCapabilities, BackendKind, DeviceDesc};
+use gfx_core::{BackendCapabilities, BackendKind, DeviceDescriptor};
 
 fn main() {
-    let descriptor = DeviceDesc::default();
+    let descriptor = DeviceDescriptor::default();
     let capabilities = BackendCapabilities {
         surface: true,
         cpu_visible_memory: true,

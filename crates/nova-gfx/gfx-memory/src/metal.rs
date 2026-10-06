@@ -108,7 +108,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when allocator creation fails.
+    /// Returns [`gfx_core::Error`] when allocator creation fails.
     pub fn new_metal(desc: MetalMemoryAllocatorDesc) -> Result<Self> {
         Ok(Self::Metal(MetalMemoryAllocator::new(desc)?))
     }
@@ -117,7 +117,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when validation or allocation fails.
+    /// Returns [`gfx_core::Error`] when validation or allocation fails.
     pub fn allocate_metal_buffer(
         &mut self,
         name: &str,
@@ -127,11 +127,11 @@ impl MemoryAllocator {
         match self {
             Self::Metal(allocator) => allocator.allocate_buffer(name, length, location),
             #[cfg(feature = "vulkan")]
-            Self::Vulkan(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Vulkan(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Metal allocator".to_string(),
             )),
             #[cfg(feature = "dx12")]
-            Self::Dx12(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Dx12(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Metal allocator".to_string(),
             )),
         }
@@ -141,7 +141,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when validation or allocation fails.
+    /// Returns [`gfx_core::Error`] when validation or allocation fails.
     pub fn allocate_metal_texture(
         &mut self,
         name: &str,
@@ -150,11 +150,11 @@ impl MemoryAllocator {
         match self {
             Self::Metal(allocator) => allocator.allocate_texture(name, desc),
             #[cfg(feature = "vulkan")]
-            Self::Vulkan(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Vulkan(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Metal allocator".to_string(),
             )),
             #[cfg(feature = "dx12")]
-            Self::Dx12(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Dx12(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Metal allocator".to_string(),
             )),
         }

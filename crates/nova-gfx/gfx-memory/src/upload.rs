@@ -1,4 +1,4 @@
-use gfx_core::{GfxError, Result};
+use gfx_core::{Error, Result};
 
 use crate::common::align_to;
 
@@ -28,15 +28,15 @@ impl UploadRingAllocatorDesc {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when page size or alignment is invalid.
+    /// Returns [`Error::InvalidInput`] when page size or alignment is invalid.
     pub fn validate(self) -> Result<Self> {
         if self.page_size == 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "upload page size must be greater than zero".to_string(),
             ));
         }
         if !self.alignment.is_power_of_two() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "upload alignment must be a power of two".to_string(),
             ));
         }
@@ -92,7 +92,7 @@ impl UploadRingAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when the descriptor is invalid.
+    /// Returns [`Error::InvalidInput`] when the descriptor is invalid.
     pub fn new(desc: UploadRingAllocatorDesc) -> Result<Self> {
         Ok(Self {
             desc: desc.validate()?,
@@ -104,10 +104,10 @@ impl UploadRingAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when `size` is zero.
+    /// Returns [`Error::InvalidInput`] when `size` is zero.
     pub fn allocate(&mut self, size: u64) -> Result<UploadAllocation> {
         if size == 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "upload allocation size must be greater than zero".to_string(),
             ));
         }
@@ -154,7 +154,7 @@ impl UploadRingAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] before changing allocator state when any size is zero or
+    /// Returns [`Error::InvalidInput`] before changing allocator state when any size is zero or
     /// its aligned size overflows.
     pub fn allocate_batch(&mut self, sizes: &[u64]) -> Result<Vec<UploadAllocation>> {
         if sizes.is_empty() {
@@ -164,7 +164,7 @@ impl UploadRingAllocator {
         let mut aligned_sizes = Vec::with_capacity(sizes.len());
         for &size in sizes {
             if size == 0 {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "upload allocation size must be greater than zero".to_string(),
                 ));
             }
@@ -200,7 +200,7 @@ impl UploadRingAllocator {
                     offset
                         .checked_add(aligned_sizes[item_index])
                         .ok_or_else(|| {
-                            GfxError::InvalidInput("upload batch offset overflow".to_string())
+                            Error::InvalidInput("upload batch offset overflow".to_string())
                         })?;
                 allocations.push(UploadAllocation {
                     page_index: group.page_index,
@@ -469,7 +469,7 @@ mod tests {
             .allocate_batch(&[128, 0])
             .expect_err("zero-sized batch item should fail");
 
-        assert!(matches!(error, GfxError::InvalidInput(_)));
+        assert!(matches!(error, Error::InvalidInput(_)));
         assert_eq!(ring.stats(), UploadStats::default());
     }
 
@@ -502,7 +502,7 @@ mod tests {
             .allocate_batch(&[128, u64::MAX])
             .expect_err("alignment overflow should fail");
 
-        assert!(matches!(error, GfxError::InvalidInput(_)));
+        assert!(matches!(error, Error::InvalidInput(_)));
         assert_eq!(ring.stats(), before);
     }
 

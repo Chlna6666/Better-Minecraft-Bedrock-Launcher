@@ -1,6 +1,6 @@
 use std::ptr::NonNull;
 
-use gfx_core::{GfxError, Result};
+use gfx_core::{Error, Result};
 
 use crate::common::MemoryStats;
 
@@ -118,7 +118,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the allocator rejects the free operation.
+    /// Returns [`Error`] when the allocator rejects the free operation.
     pub fn free(&mut self, allocation: MemoryAllocation) -> Result<()> {
         match (self, allocation) {
             #[cfg(feature = "vulkan")]
@@ -134,7 +134,7 @@ impl MemoryAllocator {
                 allocator.free(allocation)
             }
             #[allow(unreachable_patterns)]
-            _ => Err(GfxError::InvalidInput(
+            _ => Err(Error::InvalidInput(
                 "allocation does not belong to allocator backend".to_string(),
             )),
         }

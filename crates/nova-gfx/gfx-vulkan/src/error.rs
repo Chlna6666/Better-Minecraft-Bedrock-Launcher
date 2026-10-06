@@ -1,5 +1,5 @@
 use ash::vk;
-use gfx_core::GfxError;
+use gfx_core::Error;
 use thiserror::Error;
 
 /// Vulkan-specific error.
@@ -22,7 +22,7 @@ impl From<vk::Result> for VulkanError {
     }
 }
 
-impl From<VulkanError> for GfxError {
+impl From<VulkanError> for Error {
     fn from(error: VulkanError) -> Self {
         match error {
             VulkanError::Loader(message) | VulkanError::Unavailable(message) => {

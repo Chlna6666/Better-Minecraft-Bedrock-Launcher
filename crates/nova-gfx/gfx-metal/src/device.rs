@@ -2,7 +2,7 @@
 //!
 //! This crate implements the `gfx-core` device traits for Metal on Apple
 //! targets. Non-Apple builds expose a minimal stub that returns
-//! `GfxError::Unavailable`.
+//! `Error::Unavailable`.
 //!
 //! Chinese documentation is available in `README.zh-CN.md` in the crate source
 //! package.
@@ -31,18 +31,18 @@
 
 use crate::error::MetalError;
 use gfx_core::{
-    AddressMode, BackendKind, BeginRenderPassDesc, BlendMode, BufferDesc, BufferId, BufferUsage,
-    ClearColor, CommandEncoderDesc, CommandEncoderId, DeviceDesc, DrawDesc, DrawStepDesc,
-    FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
-    GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-    GfxSurfaceDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    PipelineLayoutDesc, PipelineLayoutId, PrimitiveTopology, RenderPassDepthAttachment,
-    RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
-    RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource, ResourceSetDesc,
-    ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, Result, SamplerDesc,
-    SamplerId, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, SubmissionId,
-    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc,
-    TextureDimension, TextureId, TextureUsage, TextureViewDesc, TextureViewId, TextureWriteDesc,
+    AddressMode, BackendKind, BeginRenderPassDescriptor, BlendMode, BufferDescriptor, BufferId, BufferUsage,
+    ClearColor, CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DrawDescriptor, DrawStepDescriptor,
+    FilterMode, Format, Backend, CommandDevice, DiagnosticsDevice, Error,
+    PipelineDevice, PresentationDevice, ResourceDevice, SubmissionDevice,
+    SurfaceDevice, ThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+    PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology, RenderPassDepthAttachment,
+    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
+    RenderStepList, RenderStepRef, RenderTarget, BindingResource, ResourceSetDescriptor,
+    ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
+    SamplerId, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, SubmissionId,
+    SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureDescriptor,
+    TextureDimension, TextureId, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
 };
 
 #[cfg(target_vendor = "apple")]
@@ -97,12 +97,12 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] if Metal initialization fails.
-        pub fn new(_desc: &DeviceDesc) -> Result<Self> {
+        /// Returns [`Error`] if Metal initialization fails.
+        pub fn new(_desc: &DeviceDescriptor) -> Result<Self> {
             let device = objc2_metal::MTLCreateSystemDefaultDevice()
-                .ok_or_else(|| GfxError::Unavailable("no compatible Metal device".to_string()))?;
+                .ok_or_else(|| Error::Unavailable("no compatible Metal device".to_string()))?;
             let command_queue = device.newCommandQueue().ok_or_else(|| {
-                GfxError::Unavailable("failed to create Metal command queue".to_string())
+                Error::Unavailable("failed to create Metal command queue".to_string())
             })?;
             Ok(Self {
                 device,
@@ -128,21 +128,21 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when native handles are invalid.
-        fn create_surface<W>(&mut self, window: &W, desc: &SurfaceDesc) -> Result<SurfaceId>
+        /// Returns [`Error`] when native handles are invalid.
+        fn create_surface<W>(&mut self, window: &W, desc: &SurfaceDescriptor) -> Result<SurfaceId>
         where
             W: HasDisplayHandle + HasWindowHandle + ?Sized,
         {
             let _display = window
                 .display_handle()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let window = window
                 .window_handle()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let ns_view = match window.as_raw() {
                 RawWindowHandle::AppKit(handle) => handle.ns_view,
                 other => {
-                    return Err(GfxError::InvalidInput(format!(
+                    return Err(Error::InvalidInput(format!(
                         "Metal surface requires RawWindowHandle::AppKit, got {other:?}"
                     )));
                 }
@@ -197,15 +197,15 @@ mod platform {
         }
 
         /// Creates a buffer record.
-        fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+        fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             desc.validate()?;
             let length = usize::try_from(desc.size).map_err(|error| {
-                GfxError::InvalidInput(format!("buffer size overflow: {error}"))
+                Error::InvalidInput(format!("buffer size overflow: {error}"))
             })?;
             let resource = self
                 .device
                 .newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
-                .ok_or_else(|| GfxError::Backend("failed to create Metal buffer".to_string()))?;
+                .ok_or_else(|| Error::Backend("failed to create Metal buffer".to_string()))?;
             Ok(self.buffers.insert(MetalBuffer {
                 desc: desc.clone(),
                 resource: Some(resource),
@@ -221,17 +221,17 @@ mod platform {
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
             let buffer = self.buffers.get_mut(buffer)?;
             let storage = buffer.data.as_mut().ok_or_else(|| {
-                GfxError::Unavailable(
+                Error::Unavailable(
                     "Metal GPU-only staging upload is not enabled in this build".to_string(),
                 )
             })?;
             let offset = usize::try_from(offset)
-                .map_err(|error| GfxError::InvalidInput(format!("offset overflow: {error}")))?;
+                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
             let end = offset
                 .checked_add(data.len())
-                .ok_or_else(|| GfxError::InvalidInput("buffer write range overflow".to_string()))?;
+                .ok_or_else(|| Error::InvalidInput("buffer write range overflow".to_string()))?;
             let target = storage.get_mut(offset..end).ok_or_else(|| {
-                GfxError::InvalidInput("buffer write range is out of bounds".to_string())
+                Error::InvalidInput("buffer write range is out of bounds".to_string())
             })?;
             target.copy_from_slice(data);
             if let Some(resource) = &buffer.resource {
@@ -246,10 +246,10 @@ mod platform {
         }
 
         /// Creates a 2D texture record.
-        fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+        fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             desc.validate()?;
             if desc.dimension != TextureDimension::D2 {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "only 2D textures are supported".to_string(),
                 ));
             }
@@ -260,14 +260,14 @@ mod platform {
         }
 
         /// Writes data into a texture.
-        fn write_texture(&mut self, _desc: TextureWriteDesc, _data: &[u8]) -> Result<()> {
-            Err(GfxError::Unavailable(
+        fn write_texture(&mut self, _desc: TextureWriteDescriptor, _data: &[u8]) -> Result<()> {
+            Err(Error::Unavailable(
                 "Metal texture upload is not enabled in this build".to_string(),
             ))
         }
 
         /// Creates a texture view record.
-        fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
+        fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             let _texture = self.textures.get(desc.texture)?;
             Ok(self.texture_views.insert(MetalTextureView {
                 texture: desc.texture,
@@ -276,7 +276,7 @@ mod platform {
         }
 
         /// Creates a sampler record.
-        fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
             Ok(self.samplers.insert(MetalSampler {
                 mag_filter: desc.mag_filter,
                 min_filter: desc.min_filter,
@@ -287,7 +287,7 @@ mod platform {
 
         fn create_resource_set_layout(
             &mut self,
-            desc: &ResourceSetLayoutDesc,
+            desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             desc.validate()?;
             Ok(self
@@ -297,7 +297,7 @@ mod platform {
 
         fn create_pipeline_layout(
             &mut self,
-            desc: &PipelineLayoutDesc,
+            desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             desc.validate()?;
             for layout in &desc.resource_set_layouts {
@@ -308,19 +308,19 @@ mod platform {
             }))
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             let layout = self.resource_set_layouts.get(desc.layout)?.desc.clone();
             desc.validate_against(&layout)?;
             let mut bindings = Vec::with_capacity(desc.bindings.len());
             for binding in &desc.bindings {
                 match binding.resource {
-                    ResourceBindingResource::Buffer(buffer_binding) => {
+                    BindingResource::Buffer(buffer_binding) => {
                         let _ = self.buffers.get(buffer_binding.buffer)?;
                     }
-                    ResourceBindingResource::Texture(texture_binding) => {
+                    BindingResource::Texture(texture_binding) => {
                         let _ = self.texture_views.get(texture_binding.texture_view)?;
                     }
-                    ResourceBindingResource::Sampler(sampler_binding) => {
+                    BindingResource::Sampler(sampler_binding) => {
                         let _ = self.samplers.get(sampler_binding.sampler)?;
                     }
                 }
@@ -333,7 +333,7 @@ mod platform {
         }
 
         /// Creates and validates a shader module.
-        fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
             desc.validate()?;
             let (source, library) = match &desc.binary.code {
                 ShaderCode::Msl(source) => {
@@ -342,11 +342,11 @@ mod platform {
                     let library = self
                         .device
                         .newLibraryWithSource_options_error(&source_string, Some(&options))
-                        .map_err(|error| GfxError::Shader(nserror_message(&error)))?;
+                        .map_err(|error| Error::Shader(nserror_message(&error)))?;
                     (source.clone(), library)
                 }
                 ShaderCode::Hlsl(_) | ShaderCode::DxBytecode(_) | ShaderCode::Spirv(_) => {
-                    return Err(GfxError::Shader(
+                    return Err(Error::Shader(
                         "Metal shader module requires MSL source".to_string(),
                     ));
                 }
@@ -360,7 +360,7 @@ mod platform {
         }
 
         /// Creates a render pass record.
-        fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             Ok(self.render_passes.insert(MetalRenderPass {
                 color_format: desc.color_attachment.format,
             }))
@@ -369,25 +369,25 @@ mod platform {
         /// Creates a graphics render pipeline record.
         fn create_render_pipeline(
             &mut self,
-            desc: &RenderPipelineDesc,
+            desc: &RenderPipelineDescriptor,
             _viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             desc.validate()?;
             let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
             let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
             if vertex_shader.stage != ShaderStage::Vertex {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "vertex shader module must use ShaderStage::Vertex".to_string(),
                 ));
             }
             if fragment_shader.stage != ShaderStage::Fragment {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "fragment shader module must use ShaderStage::Fragment".to_string(),
                 ));
             }
             let render_pass = self.render_passes.get(desc.render_pass)?;
             if render_pass.color_format != desc.color_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "pipeline color_format must match render pass color attachment".to_string(),
                 ));
             }
@@ -409,17 +409,17 @@ mod platform {
 
         fn create_command_encoder(
             &mut self,
-            _desc: &CommandEncoderDesc,
+            _desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             Ok(self
                 .command_encoders
                 .insert(MetalCommandEncoder { in_flight: false }))
         }
 
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: &DrawDesc) -> Result<()> {
+        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: &DrawDescriptor) -> Result<()> {
             let _encoder = self.command_encoders.get(encoder)?;
             let RenderTarget::Swapchain { swapchain, .. } = draw.pass.target else {
-                return Err(GfxError::Unavailable(
+                return Err(Error::Unavailable(
                     "Metal offscreen render target is not implemented yet".to_string(),
                 ));
             };
@@ -442,7 +442,7 @@ mod platform {
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: gfx_core::ClearColor,
         ) -> Result<()> {
             self.draw_internal(
@@ -472,10 +472,10 @@ mod platform {
             &mut self,
             _texture_view: TextureViewId,
             _render_pass: RenderPassId,
-            _steps: &[DrawStepDesc],
+            _steps: &[DrawStepDescriptor],
             _color_load_op: gfx_core::LoadOp<gfx_core::ClearColor>,
         ) -> Result<()> {
-            Err(GfxError::Unavailable(
+            Err(Error::Unavailable(
                 "Metal offscreen render target is not implemented yet".to_string(),
             ))
         }
@@ -488,7 +488,7 @@ mod platform {
             clear_color: gfx_core::ClearColor,
         ) -> Result<()> {
             if steps.is_empty() {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "Metal draw step list must not be empty".to_string(),
                 ));
             }
@@ -501,7 +501,7 @@ mod platform {
 
             objc2::rc::autoreleasepool(|_| -> Result<()> {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
-                    GfxError::Backend("CAMetalLayer did not provide a drawable".to_string())
+                    Error::Backend("CAMetalLayer did not provide a drawable".to_string())
                 })?;
                 let texture = drawable.texture();
                 let descriptor = MTLRenderPassDescriptor::renderPassDescriptor();
@@ -519,12 +519,12 @@ mod platform {
                 });
 
                 let command_buffer = self.command_queue.commandBuffer().ok_or_else(|| {
-                    GfxError::Backend("failed to create Metal command buffer".to_string())
+                    Error::Backend("failed to create Metal command buffer".to_string())
                 })?;
                 let encoder = command_buffer
                     .renderCommandEncoderWithDescriptor(&descriptor)
                     .ok_or_else(|| {
-                        GfxError::Backend("failed to create Metal render encoder".to_string())
+                        Error::Backend("failed to create Metal render encoder".to_string())
                     })?;
                 encode_draw_steps(&encoder, &render_steps, swapchain.config);
                 encoder.endEncoding();
@@ -543,7 +543,7 @@ mod platform {
         ) -> Result<PreparedMetalRenderStep> {
             let pipeline = self.render_pipelines.get(step.pipeline())?.clone();
             if render_pass.color_format != pipeline.color_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "render pass and pipeline color formats do not match".to_string(),
                 ));
             }
@@ -570,12 +570,12 @@ mod platform {
                         step.index_count,
                     )?;
                     let resource = buffer.resource.clone().ok_or_else(|| {
-                        GfxError::Backend("Metal index buffer has no native resource".to_string())
+                        Error::Backend("Metal index buffer has no native resource".to_string())
                     })?;
                     let first_index_offset = u64::from(step.first_index)
                         .checked_mul(index_format_size(step.index_buffer.format))
                         .ok_or_else(|| {
-                            GfxError::InvalidInput(
+                            Error::InvalidInput(
                                 "Metal index buffer first index offset overflow".to_string(),
                             )
                         })?;
@@ -584,7 +584,7 @@ mod platform {
                         .offset
                         .checked_add(first_index_offset)
                         .ok_or_else(|| {
-                            GfxError::InvalidInput(
+                            Error::InvalidInput(
                                 "Metal index buffer byte offset overflow".to_string(),
                             )
                         })?;
@@ -611,10 +611,10 @@ mod platform {
             let swapchain = self.swapchains.get(swapchain)?;
             objc2::rc::autoreleasepool(|_| -> Result<()> {
                 let drawable = swapchain.layer.nextDrawable().ok_or_else(|| {
-                    GfxError::Backend("CAMetalLayer did not provide a drawable".to_string())
+                    Error::Backend("CAMetalLayer did not provide a drawable".to_string())
                 })?;
                 let command_buffer = self.command_queue.commandBuffer().ok_or_else(|| {
-                    GfxError::Backend("failed to create Metal command buffer".to_string())
+                    Error::Backend("failed to create Metal command buffer".to_string())
                 })?;
                 command_buffer.presentDrawable(drawable.as_ref());
                 command_buffer.commit();
@@ -714,17 +714,17 @@ mod platform {
         }
     }
 
-    impl GfxBackend for MetalDevice {
+    impl Backend for MetalDevice {
         const BACKEND_KIND: BackendKind = BackendKind::Metal;
     }
 
-    impl GfxSurfaceDevice for MetalDevice {
+    impl SurfaceDevice for MetalDevice {
         type SurfaceTarget = dyn MetalSurfaceTarget;
 
         fn create_surface(
             &mut self,
             target: &Self::SurfaceTarget,
-            desc: &SurfaceDesc,
+            desc: &SurfaceDescriptor,
         ) -> Result<SurfaceId> {
             Self::create_surface(self, target, desc)
         }
@@ -746,8 +746,8 @@ mod platform {
         }
     }
 
-    impl GfxResourceDevice for MetalDevice {
-        fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+    impl ResourceDevice for MetalDevice {
+        fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             Self::create_buffer(self, desc)
         }
 
@@ -755,30 +755,30 @@ mod platform {
             Self::write_buffer(self, buffer, offset, data)
         }
 
-        fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+        fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             Self::create_texture(self, desc)
         }
 
-        fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
+        fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
             Self::write_texture(self, desc, data)
         }
 
-        fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
+        fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             Self::create_texture_view(self, desc)
         }
 
-        fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
             Self::create_sampler(self, desc)
         }
 
         fn create_resource_set_layout(
             &mut self,
-            desc: &ResourceSetLayoutDesc,
+            desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             Self::create_resource_set_layout(self, desc)
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             Self::create_resource_set(self, desc)
         }
 
@@ -807,25 +807,25 @@ mod platform {
         }
     }
 
-    impl GfxPipelineDevice for MetalDevice {
+    impl PipelineDevice for MetalDevice {
         fn create_pipeline_layout(
             &mut self,
-            desc: &PipelineLayoutDesc,
+            desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             Self::create_pipeline_layout(self, desc)
         }
 
-        fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
             Self::create_shader_module(self, desc)
         }
 
-        fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             Self::create_render_pass(self, desc)
         }
 
         fn create_render_pipeline(
             &mut self,
-            desc: &RenderPipelineDesc,
+            desc: &RenderPipelineDescriptor,
             viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             Self::create_render_pipeline(self, desc, viewport_extent)
@@ -848,15 +848,15 @@ mod platform {
         }
     }
 
-    impl GfxCommandDevice for MetalDevice {
+    impl CommandDevice for MetalDevice {
         fn create_command_encoder(
             &mut self,
-            desc: &CommandEncoderDesc,
+            desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             Self::create_command_encoder(self, desc)
         }
 
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDesc) -> Result<()> {
+        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDescriptor) -> Result<()> {
             Self::record_draw_desc(self, encoder, &draw)
         }
 
@@ -869,10 +869,10 @@ mod platform {
         }
     }
 
-    impl GfxSubmissionDevice for MetalDevice {
-        fn async_capabilities(&self) -> gfx_core::GfxAsyncCapabilities {
-            gfx_core::GfxAsyncCapabilities {
-                threading_mode: GfxThreadingMode::OwnerThreadOnly,
+    impl SubmissionDevice for MetalDevice {
+        fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
+            gfx_core::AsyncCapabilities {
+                threading_mode: ThreadingMode::OwnerThreadOnly,
                 async_submission: false,
                 async_wait: false,
                 async_presentation: false,
@@ -889,7 +889,7 @@ mod platform {
             if submission.raw() == 0 {
                 Ok(SubmissionStatus::Complete)
             } else {
-                Err(GfxError::InvalidInput(format!(
+                Err(Error::InvalidInput(format!(
                     "unknown Metal submission {}",
                     submission.raw()
                 )))
@@ -899,20 +899,20 @@ mod platform {
         fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
             match self.poll_submission(submission)? {
                 SubmissionStatus::Complete => Ok(()),
-                SubmissionStatus::Pending => Err(GfxError::Unavailable(
+                SubmissionStatus::Pending => Err(Error::Unavailable(
                     "Metal deferred wait is not implemented yet".to_string(),
                 )),
-                SubmissionStatus::Failed(error) => Err(GfxError::Backend(error)),
+                SubmissionStatus::Failed(error) => Err(Error::Backend(error)),
             }
         }
     }
 
-    impl GfxPresentationDevice for MetalDevice {
+    impl PresentationDevice for MetalDevice {
         fn draw_steps_and_present(
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<()> {
             Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
@@ -922,7 +922,7 @@ mod platform {
             &mut self,
             texture_view: TextureViewId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
@@ -947,7 +947,7 @@ mod platform {
             _color_load_op: LoadOp<ClearColor>,
             _depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
-            Err(GfxError::Unavailable(
+            Err(Error::Unavailable(
                 "Metal offscreen render target is not implemented yet".to_string(),
             ))
         }
@@ -961,14 +961,14 @@ mod platform {
             _depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             Self::render_steps_and_present(self, swapchain, render_pass, steps, clear_color)?;
             Ok(SubmissionId::from_parts(0, 0))
         }
     }
 
-    impl GfxDiagnosticsDevice for MetalDevice {
+    impl DiagnosticsDevice for MetalDevice {
         fn resource_stats(&self) -> ResourceStats {
             Self::resource_stats(self)
         }
@@ -976,14 +976,14 @@ mod platform {
 
     #[derive(Clone)]
     struct MetalBuffer {
-        desc: BufferDesc,
+        desc: BufferDescriptor,
         resource: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
         data: Option<Vec<u8>>,
     }
 
     #[derive(Clone)]
     struct MetalTexture {
-        desc: TextureDesc,
+        desc: TextureDescriptor,
         resource: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     }
 
@@ -1003,7 +1003,7 @@ mod platform {
 
     #[derive(Clone)]
     struct MetalResourceSetLayout {
-        desc: ResourceSetLayoutDesc,
+        desc: ResourceSetLayoutDescriptor,
     }
 
     #[derive(Clone)]
@@ -1066,7 +1066,7 @@ mod platform {
         // pointer for the borrowed handle lifetime. The backend stores it only for this surface.
         let ns_view = unsafe {
             Retained::retain(surface.ns_view.as_ptr().cast::<NSView>()).ok_or_else(|| {
-                GfxError::InvalidInput("AppKit ns_view is not retainable".to_string())
+                Error::InvalidInput("AppKit ns_view is not retainable".to_string())
             })?
         };
         // SAFETY: AppKit layer access is performed on the thread that owns the NSView.
@@ -1118,7 +1118,7 @@ mod platform {
 
     fn create_pipeline_state(
         device: &ProtocolObject<dyn MTLDevice>,
-        desc: &RenderPipelineDesc,
+        desc: &RenderPipelineDescriptor,
         vertex_shader: &MetalShaderModule,
         fragment_shader: &MetalShaderModule,
         color_format: Format,
@@ -1129,7 +1129,7 @@ mod platform {
             .library
             .newFunctionWithName(&vertex_entry)
             .ok_or_else(|| {
-                GfxError::Shader(format!(
+                Error::Shader(format!(
                     "Metal vertex entry point '{}' was not found",
                     desc.vertex_entry_point
                 ))
@@ -1138,7 +1138,7 @@ mod platform {
             .library
             .newFunctionWithName(&fragment_entry)
             .ok_or_else(|| {
-                GfxError::Shader(format!(
+                Error::Shader(format!(
                     "Metal fragment entry point '{}' was not found",
                     desc.fragment_entry_point
                 ))
@@ -1188,7 +1188,7 @@ mod platform {
         }
         device
             .newRenderPipelineStateWithDescriptor_error(&pipeline_desc)
-            .map_err(|error| GfxError::Shader(nserror_message(&error)))
+            .map_err(|error| Error::Shader(nserror_message(&error)))
     }
 
     struct PreparedMetalRenderStep {
@@ -1299,29 +1299,29 @@ mod platform {
         index_count: u32,
     ) -> Result<()> {
         if !usage.contains(BufferUsage::INDEX) {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer must include INDEX usage".to_string(),
             ));
         }
         let stride = index_format_size(binding.format);
         if binding.offset % stride != 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer offset must be aligned to the index format size".to_string(),
             ));
         }
         let first_index_byte = u64::from(first_index).checked_mul(stride).ok_or_else(|| {
-            GfxError::InvalidInput("first index byte offset overflow".to_string())
+            Error::InvalidInput("first index byte offset overflow".to_string())
         })?;
         let index_bytes = u64::from(index_count)
             .checked_mul(stride)
-            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
         let byte_end = binding
             .offset
             .checked_add(first_index_byte)
             .and_then(|start| start.checked_add(index_bytes))
-            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
         if byte_end > buffer_size {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer range is out of bounds".to_string(),
             ));
         }
@@ -1399,7 +1399,7 @@ mod platform {
         fn registry_rejects_stale_handle() {
             let mut registry = ResourceRegistry::new("buffer");
             let id: BufferId = registry.insert(MetalBuffer {
-                desc: BufferDesc {
+                desc: BufferDescriptor {
                     label: None,
                     size: 1,
                     usage: BufferUsage::VERTEX,
@@ -1423,15 +1423,15 @@ mod platform {
 #[cfg(not(target_vendor = "apple"))]
 mod platform {
     use gfx_core::{
-        BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId,
-        DeviceDesc, DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice,
-        GfxError, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-        GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDepthAttachment,
-        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
-        ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
-        Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
-        SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc,
-        TextureId, TextureViewDesc, TextureViewId, TextureWriteDesc,
+        BackendKind, BufferDescriptor, BufferId, ClearColor, CommandEncoderDescriptor, CommandEncoderId,
+        DeviceDescriptor, DrawDescriptor, DrawStepDescriptor, Backend, CommandDevice, DiagnosticsDevice,
+        Error, PipelineDevice, PresentationDevice, ResourceDevice, SubmissionDevice,
+        SurfaceDevice, LoadOp, PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDepthAttachment,
+        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
+        ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats,
+        Result, SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
+        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureDescriptor,
+        TextureId, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
     };
 
     /// Stub Metal device for non-Apple targets.
@@ -1442,31 +1442,31 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Always returns [`GfxError::Unavailable`] on non-Apple targets.
-        pub fn new(_desc: &DeviceDesc) -> Result<Self> {
-            Err(GfxError::Unavailable(
+        /// Always returns [`Error::Unavailable`] on non-Apple targets.
+        pub fn new(_desc: &DeviceDescriptor) -> Result<Self> {
+            Err(Error::Unavailable(
                 "Metal backend is only available on Apple targets".to_string(),
             ))
         }
     }
 
     fn unavailable<T>() -> Result<T> {
-        Err(GfxError::Unavailable(
+        Err(Error::Unavailable(
             "Metal backend is only available on Apple targets".to_string(),
         ))
     }
 
-    impl GfxBackend for MetalDevice {
+    impl Backend for MetalDevice {
         const BACKEND_KIND: BackendKind = BackendKind::Metal;
     }
 
-    impl GfxSurfaceDevice for MetalDevice {
+    impl SurfaceDevice for MetalDevice {
         type SurfaceTarget = ();
 
         fn create_surface(
             &mut self,
             _target: &Self::SurfaceTarget,
-            _desc: &SurfaceDesc,
+            _desc: &SurfaceDescriptor,
         ) -> Result<SurfaceId> {
             unavailable()
         }
@@ -1488,8 +1488,8 @@ mod platform {
         }
     }
 
-    impl GfxResourceDevice for MetalDevice {
-        fn create_buffer(&mut self, _desc: &BufferDesc) -> Result<BufferId> {
+    impl ResourceDevice for MetalDevice {
+        fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
             unavailable()
         }
 
@@ -1497,30 +1497,30 @@ mod platform {
             unavailable()
         }
 
-        fn create_texture(&mut self, _desc: &TextureDesc) -> Result<TextureId> {
+        fn create_texture(&mut self, _desc: &TextureDescriptor) -> Result<TextureId> {
             unavailable()
         }
 
-        fn write_texture(&mut self, _desc: TextureWriteDesc, _data: &[u8]) -> Result<()> {
+        fn write_texture(&mut self, _desc: TextureWriteDescriptor, _data: &[u8]) -> Result<()> {
             unavailable()
         }
 
-        fn create_texture_view(&mut self, _desc: &TextureViewDesc) -> Result<TextureViewId> {
+        fn create_texture_view(&mut self, _desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             unavailable()
         }
 
-        fn create_sampler(&mut self, _desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, _desc: &SamplerDescriptor) -> Result<SamplerId> {
             unavailable()
         }
 
         fn create_resource_set_layout(
             &mut self,
-            _desc: &ResourceSetLayoutDesc,
+            _desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             unavailable()
         }
 
-        fn create_resource_set(&mut self, _desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             unavailable()
         }
 
@@ -1549,25 +1549,25 @@ mod platform {
         }
     }
 
-    impl GfxPipelineDevice for MetalDevice {
+    impl PipelineDevice for MetalDevice {
         fn create_pipeline_layout(
             &mut self,
-            _desc: &PipelineLayoutDesc,
+            _desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             unavailable()
         }
 
-        fn create_shader_module(&mut self, _desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        fn create_shader_module(&mut self, _desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
             unavailable()
         }
 
-        fn create_render_pass(&mut self, _desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, _desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             unavailable()
         }
 
         fn create_render_pipeline(
             &mut self,
-            _desc: &RenderPipelineDesc,
+            _desc: &RenderPipelineDescriptor,
             _viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             unavailable()
@@ -1590,15 +1590,15 @@ mod platform {
         }
     }
 
-    impl GfxCommandDevice for MetalDevice {
+    impl CommandDevice for MetalDevice {
         fn create_command_encoder(
             &mut self,
-            _desc: &CommandEncoderDesc,
+            _desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             unavailable()
         }
 
-        fn record_draw_desc(&mut self, _encoder: CommandEncoderId, _draw: DrawDesc) -> Result<()> {
+        fn record_draw_desc(&mut self, _encoder: CommandEncoderId, _draw: DrawDescriptor) -> Result<()> {
             unavailable()
         }
 
@@ -1611,7 +1611,7 @@ mod platform {
         }
     }
 
-    impl GfxSubmissionDevice for MetalDevice {
+    impl SubmissionDevice for MetalDevice {
         fn submit_deferred(&mut self, _encoder: CommandEncoderId) -> Result<SubmissionId> {
             unavailable()
         }
@@ -1625,12 +1625,12 @@ mod platform {
         }
     }
 
-    impl GfxPresentationDevice for MetalDevice {
+    impl PresentationDevice for MetalDevice {
         fn draw_steps_and_present(
             &mut self,
             _swapchain: SwapchainId,
             _render_pass: RenderPassId,
-            _steps: &[DrawStepDesc],
+            _steps: &[DrawStepDescriptor],
             _clear_color: ClearColor,
         ) -> Result<()> {
             unavailable()
@@ -1640,7 +1640,7 @@ mod platform {
             &mut self,
             _texture_view: TextureViewId,
             _render_pass: RenderPassId,
-            _steps: &[DrawStepDesc],
+            _steps: &[DrawStepDescriptor],
             _color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             unavailable()
@@ -1677,13 +1677,13 @@ mod platform {
             _depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             unavailable()
         }
     }
 
-    impl GfxDiagnosticsDevice for MetalDevice {
+    impl DiagnosticsDevice for MetalDevice {
         fn resource_stats(&self) -> ResourceStats {
             ResourceStats::default()
         }

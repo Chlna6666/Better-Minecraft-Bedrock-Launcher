@@ -23,22 +23,23 @@ use crate::error::VulkanError;
 use crate::registry::ResourceRegistry;
 use ash::{Entry, Instance, khr, vk};
 use gfx_core::{
-    AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BeginRenderPassDesc, BlendMode,
-    BufferDesc, BufferId, BufferUsage, ClearColor, ColorAttachmentDesc, CommandEncoderDesc,
-    CommandEncoderId, CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, DrawTriangleDesc,
-    FilterMode, Format, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice, GfxError,
-    GfxMemoryTrimLevel, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, GfxThreadingMode,
-    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, PipelineLayoutDesc, PipelineLayoutId,
-    PowerPreference, PresentMode, PresentationFrame, PresentationTimings, PrimitiveTopology,
-    RenderPassDepthAttachment, RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId,
-    RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget, ResourceBindingResource,
-    ResourceBindingType, ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc,
-    ResourceSetLayoutId, ResourceStats, Result, SamplerDesc, SamplerId, ScissorRect, ShaderBinary,
-    ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages, SubmissionId,
-    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, TextureDataLayout, TextureDesc,
-    TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureUsage,
-    TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc, VertexFormat,
+    AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BeginRenderPassDescriptor,
+    BlendMode, BufferDescriptor, BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor,
+    CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
+    DeviceDescriptor, DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor,
+    DrawTriangleDescriptor, Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
+    MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
+    PowerPreference, PresentMode, PresentationDevice, PresentationFrame, PresentationTimings,
+    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId,
+    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
+    RenderStepRef, RenderTarget, BindingResource, ResourceBindingType, ResourceDevice,
+    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
+    ResourceStats, Result, SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode,
+    ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice,
+    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureReadback,
+    TextureRenderStepList, TextureTransferDevice, TextureUsage, TextureViewDescriptor,
+    TextureViewId, TextureWrite, TextureWriteDescriptor, ThreadingMode, VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
@@ -69,7 +70,7 @@ pub struct BaselineMetrics {
 ///
 /// # Errors
 ///
-/// Returns [`GfxError`] if the Vulkan loader, instance creation, or physical
+/// Returns [`Error`] if the Vulkan loader, instance creation, or physical
 /// device enumeration fails.
 pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
     let entry = load_entry()?;
@@ -109,6 +110,7 @@ pub struct VulkanDevice {
     surface_loader: khr::surface::Instance,
     physical_device: vk::PhysicalDevice,
     adapter_name: String,
+    max_sampler_anisotropy: f32,
     device: Arc<ash::Device>,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
@@ -148,8 +150,8 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] if Vulkan initialization fails.
-    pub fn new(desc: &DeviceDesc) -> Result<Self> {
+    /// Returns [`Error`] if Vulkan initialization fails.
+    pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
         let entry = load_entry()?;
         let instance = create_instance(&entry, &desc.application_name)?;
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
@@ -169,8 +171,18 @@ impl VulkanDevice {
                 period_ns: f64::from(adapter_properties.limits.timestamp_period),
                 valid_bits: properties.timestamp_valid_bits,
             });
-        let (device, graphics_queue, present_queue, incremental_presentation) =
-            create_device(&instance, physical_device, queue_families)?;
+        let (
+            device,
+            graphics_queue,
+            present_queue,
+            incremental_presentation,
+            supports_sampler_anisotropy,
+        ) = create_device(&instance, physical_device, queue_families)?;
+        let max_sampler_anisotropy = if supports_sampler_anisotropy {
+            adapter_properties.limits.max_sampler_anisotropy.max(1.0)
+        } else {
+            1.0
+        };
         let device = Arc::new(device);
         let swapchain_loader = khr::swapchain::Device::new(&instance, &device);
         let allocator = MemoryAllocator::new_vulkan(VulkanMemoryAllocatorDesc {
@@ -191,6 +203,7 @@ impl VulkanDevice {
             surface_loader,
             physical_device,
             adapter_name,
+            max_sampler_anisotropy,
             device,
             graphics_queue,
             present_queue,
@@ -236,18 +249,18 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when surface creation or present queue selection fails.
-    fn create_surface<W>(&mut self, window: &W, _desc: &SurfaceDesc) -> Result<SurfaceId>
+    /// Returns [`Error`] when surface creation or present queue selection fails.
+    fn create_surface<W>(&mut self, window: &W, _desc: &SurfaceDescriptor) -> Result<SurfaceId>
     where
         W: HasDisplayHandle + HasWindowHandle + ?Sized,
     {
         let display_handle = window
             .display_handle()
-            .map_err(|error| GfxError::Backend(error.to_string()))?
+            .map_err(|error| Error::Backend(error.to_string()))?
             .as_raw();
         let window_handle = window
             .window_handle()
-            .map_err(|error| GfxError::Backend(error.to_string()))?
+            .map_err(|error| Error::Backend(error.to_string()))?
             .as_raw();
         // SAFETY: The raw display and window handles come from a live native window
         // borrowed for this call. The created VkSurfaceKHR is owned by this device and
@@ -261,7 +274,7 @@ impl VulkanDevice {
                 None,
             )
         }
-        .map_err(|error| GfxError::Backend(error.to_string()))?;
+        .map_err(|error| Error::Backend(error.to_string()))?;
         // SAFETY: Surface, physical device, and queue family index are valid for this instance.
         let graphics_queue_supports_present = unsafe {
             self.surface_loader.get_physical_device_surface_support(
@@ -287,7 +300,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when swapchain resources cannot be created.
+    /// Returns [`Error`] when swapchain resources cannot be created.
     pub fn configure_surface(
         &mut self,
         surface: SurfaceId,
@@ -304,7 +317,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the surface handle is invalid, capabilities cannot be
+    /// Returns [`Error`] when the surface handle is invalid, capabilities cannot be
     /// queried, or no compatible alpha mode is supported.
     pub fn resolve_surface_alpha_mode(
         &self,
@@ -325,7 +338,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when swapchain resources cannot be created.
+    /// Returns [`Error`] when swapchain resources cannot be created.
     fn create_swapchain(
         &mut self,
         surface_id: SurfaceId,
@@ -345,7 +358,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when a swapchain handle is invalid.
+    /// Returns [`Error`] when a swapchain handle is invalid.
     pub fn has_pending_gpu_work(&self) -> Result<bool> {
         let mut pending = false;
         self.submissions.for_each_live(|submission| {
@@ -366,7 +379,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the existing swapchain is invalid or recreation fails.
+    /// Returns [`Error`] when the existing swapchain is invalid or recreation fails.
     pub fn resize_swapchain(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
@@ -394,7 +407,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the existing swapchain is invalid or recreation fails.
+    /// Returns [`Error`] when the existing swapchain is invalid or recreation fails.
     pub fn reconfigure_swapchain(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
@@ -416,8 +429,8 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation or Vulkan allocation fails.
-    fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+    /// Returns [`Error`] when validation or Vulkan allocation fails.
+    fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         desc.validate()?;
         let create_info = vk::BufferCreateInfo::default()
             .size(desc.size)
@@ -451,7 +464,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid or upload fails.
+    /// Returns [`Error`] when the handle is invalid or upload fails.
     fn write_buffer(&mut self, buffer_id: BufferId, offset: u64, data: &[u8]) -> Result<()> {
         let memory_location = self.buffers.get(buffer_id)?.desc.memory_location;
         if memory_location == MemoryLocation::CpuToGpu {
@@ -459,14 +472,14 @@ impl VulkanDevice {
             let mapped = buffer
                 .allocation
                 .mapped_slice_mut()
-                .ok_or_else(|| GfxError::Backend("buffer memory is not CPU visible".to_string()))?;
+                .ok_or_else(|| Error::Backend("buffer memory is not CPU visible".to_string()))?;
             let offset = usize::try_from(offset)
-                .map_err(|error| GfxError::InvalidInput(format!("offset overflow: {error}")))?;
+                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
             let end = offset
                 .checked_add(data.len())
-                .ok_or_else(|| GfxError::InvalidInput("buffer write range overflow".to_string()))?;
+                .ok_or_else(|| Error::InvalidInput("buffer write range overflow".to_string()))?;
             let target = mapped.get_mut(offset..end).ok_or_else(|| {
-                GfxError::InvalidInput("buffer write range is out of bounds".to_string())
+                Error::InvalidInput("buffer write range is out of bounds".to_string())
             })?;
             target.copy_from_slice(data);
             return Ok(());
@@ -490,11 +503,11 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation or Vulkan allocation fails.
-    fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+    /// Returns [`Error`] when validation or Vulkan allocation fails.
+    fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
         if desc.dimension != TextureDimension::D2 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "only 2D textures are supported in phase 1".to_string(),
             ));
         }
@@ -506,7 +519,7 @@ impl VulkanDevice {
                 height: desc.size.height(),
                 depth: 1,
             })
-            .mip_levels(1)
+            .mip_levels(desc.mip_level_count)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
@@ -542,12 +555,12 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when upload fails.
-    fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
-        let (image, old_layout) = {
+    /// Returns [`Error`] when upload fails.
+    fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
+        let (image, old_layout, mip_level_count) = {
             let texture = self.textures.get(desc.texture)?;
             desc.validate_against(&texture.desc, data.len())?;
-            (texture.image, texture.layout)
+            (texture.image, texture.layout, texture.desc.mip_level_count)
         };
         validate_texture_staging_layout(desc)?;
         let upload = self.write_upload_data(data)?;
@@ -557,6 +570,8 @@ impl VulkanDevice {
             staging_buffer,
             image,
             old_layout,
+            desc.mip_level,
+            mip_level_count,
             texture_staging_layout(upload, desc)?,
             desc.origin,
             desc.size,
@@ -574,16 +589,17 @@ impl VulkanDevice {
         let mut plans = Vec::with_capacity(writes.size_hint().0);
         for write in writes {
             let descriptor = write.descriptor;
-            let (image, old_layout) = {
+            let (image, old_layout, mip_level_count) = {
                 let texture = self.textures.get(descriptor.texture)?;
                 descriptor.validate_against(&texture.desc, write.data.len())?;
-                (texture.image, texture.layout)
+                (texture.image, texture.layout, texture.desc.mip_level_count)
             };
             validate_texture_staging_layout(descriptor)?;
             plans.push(VulkanTextureWritePlan {
                 write,
                 image,
                 old_layout,
+                mip_level_count,
             });
         }
         if plans.is_empty() {
@@ -592,9 +608,8 @@ impl VulkanDevice {
         let upload_sizes = plans
             .iter()
             .map(|plan| {
-                u64::try_from(plan.write.data.len()).map_err(|error| {
-                    GfxError::InvalidInput(format!("upload size overflow: {error}"))
-                })
+                u64::try_from(plan.write.data.len())
+                    .map_err(|error| Error::InvalidInput(format!("upload size overflow: {error}")))
             })
             .collect::<Result<Vec<_>>>()?;
         let allocations = self.upload_ring.allocate_batch(&upload_sizes)?;
@@ -609,7 +624,9 @@ impl VulkanDevice {
                 source: staging_buffer,
                 image: plan.image,
                 old_layout: plan.old_layout,
+                mip_level_count: plan.mip_level_count,
                 layout,
+                mip_level: descriptor.mip_level,
                 origin: descriptor.origin,
                 size: descriptor.size,
             });
@@ -627,7 +644,7 @@ impl VulkanDevice {
         let (image, desc, layout) = {
             let texture = self.textures.get(texture_id)?;
             if !texture.desc.usage.contains(TextureUsage::COPY_SRC) {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "texture readback requires COPY_SRC usage".to_string(),
                 ));
             }
@@ -637,11 +654,11 @@ impl VulkanDevice {
             .size
             .width()
             .checked_mul(desc.format.bytes_per_pixel())
-            .ok_or_else(|| GfxError::InvalidInput("texture row size overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("texture row size overflow".to_string()))?;
         let byte_len = u64::from(bytes_per_row)
             .checked_mul(u64::from(desc.size.height()))
-            .ok_or_else(|| GfxError::InvalidInput("texture readback size overflow".to_string()))?;
-        let readback_desc = BufferDesc {
+            .ok_or_else(|| Error::InvalidInput("texture readback size overflow".to_string()))?;
+        let readback_desc = BufferDescriptor {
             label: Some("nova-gfx Vulkan texture readback".to_string()),
             size: byte_len,
             usage: BufferUsage::COPY_DST,
@@ -655,14 +672,14 @@ impl VulkanDevice {
             return Err(error);
         }
         let byte_len = usize::try_from(byte_len).map_err(|error| {
-            GfxError::InvalidInput(format!("texture readback length overflow: {error}"))
+            Error::InvalidInput(format!("texture readback length overflow: {error}"))
         })?;
         let bytes = readback
             .allocation
             .mapped_slice()
             .and_then(|mapped| mapped.get(..byte_len))
             .map(<[u8]>::to_vec)
-            .ok_or_else(|| GfxError::Backend("texture readback memory is not mapped".to_string()));
+            .ok_or_else(|| Error::Backend("texture readback memory is not mapped".to_string()));
         let release = self.destroy_buffer_now(readback);
         let bytes = bytes?;
         release?;
@@ -686,9 +703,7 @@ impl VulkanDevice {
         let command_buffer = allocate_command_buffers(&self.device, command_pool, 1)?
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                GfxError::Backend("failed to allocate readback command buffer".into())
-            })?;
+            .ok_or_else(|| Error::Backend("failed to allocate readback command buffer".into()))?;
         begin_one_time_commands(&self.device, command_buffer)?;
         transition_image_layout(
             &self.device,
@@ -740,14 +755,25 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the texture is invalid or view creation fails.
-    fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
-        let image = self.textures.get(desc.texture)?.image;
-        let view = create_image_view(
+    /// Returns [`Error`] when the texture is invalid or view creation fails.
+    fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
+        let texture = self.textures.get(desc.texture)?;
+        desc.validate_against(&texture.desc)?;
+        if (texture.desc.usage.contains(TextureUsage::COLOR_ATTACHMENT)
+            || texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT))
+            && (desc.base_mip_level != 0 || desc.mip_level_count != 1)
+        {
+            return Err(Error::InvalidInput(
+                "Vulkan attachment views require mip level zero only".to_string(),
+            ));
+        }
+        let view = create_image_view_range(
             &self.device,
-            image,
+            texture.image,
             format_to_vk(desc.format),
             image_aspect_for_format(desc.format),
+            desc.base_mip_level,
+            desc.mip_level_count,
         )?;
         Ok(self.texture_views.insert(VulkanTextureView {
             view,
@@ -759,15 +785,9 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when Vulkan sampler creation fails.
-    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
-        let create_info = vk::SamplerCreateInfo::default()
-            .mag_filter(filter_to_vk(desc.mag_filter))
-            .min_filter(filter_to_vk(desc.min_filter))
-            .address_mode_u(address_mode_to_vk(desc.address_mode_u))
-            .address_mode_v(address_mode_to_vk(desc.address_mode_v))
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .max_lod(1.0);
+    /// Returns [`Error`] when Vulkan sampler creation fails.
+    fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
+        let create_info = sampler_create_info(desc, self.max_sampler_anisotropy);
         // SAFETY: Device is valid and sampler create info is self-contained.
         let sampler =
             unsafe { self.device.create_sampler(&create_info, None) }.map_err(VulkanError::from)?;
@@ -778,10 +798,10 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation or Vulkan descriptor set layout creation fails.
+    /// Returns [`Error`] when validation or Vulkan descriptor set layout creation fails.
     fn create_resource_set_layout(
         &mut self,
-        desc: &ResourceSetLayoutDesc,
+        desc: &ResourceSetLayoutDescriptor,
     ) -> Result<ResourceSetLayoutId> {
         desc.validate()?;
         let bindings = desc
@@ -809,8 +829,11 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when any layout handle is invalid or Vulkan creation fails.
-    fn create_pipeline_layout(&mut self, desc: &PipelineLayoutDesc) -> Result<PipelineLayoutId> {
+    /// Returns [`Error`] when any layout handle is invalid or Vulkan creation fails.
+    fn create_pipeline_layout(
+        &mut self,
+        desc: &PipelineLayoutDescriptor,
+    ) -> Result<PipelineLayoutId> {
         desc.validate()?;
         let layouts = desc
             .resource_set_layouts
@@ -832,12 +855,12 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation, handles, or descriptor writes fail.
+    /// Returns [`Error`] when validation, handles, or descriptor writes fail.
     #[expect(
         clippy::too_many_lines,
         reason = "resource set creation keeps descriptor writes together for backend validation"
     )]
-    fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
         let layout_desc = self.resource_set_layouts.get(desc.layout)?.desc.clone();
         desc.validate_against(&layout_desc)?;
         let layout = self.resource_set_layouts.get(desc.layout)?.layout;
@@ -850,14 +873,14 @@ impl VulkanDevice {
             .map_err(VulkanError::from)?
             .into_iter()
             .next()
-            .ok_or_else(|| GfxError::Backend("failed to allocate descriptor set".to_string()))?;
+            .ok_or_else(|| Error::Backend("failed to allocate descriptor set".to_string()))?;
 
         let mut buffer_infos = Vec::new();
         let mut image_infos = Vec::new();
         let mut pending_writes = Vec::new();
         for binding in &desc.bindings {
             match binding.resource {
-                ResourceBindingResource::Buffer(buffer_binding) => {
+                BindingResource::Buffer(buffer_binding) => {
                     let buffer = self.buffers.get(buffer_binding.buffer)?;
                     buffer_binding.validate_against(buffer.desc.size)?;
                     let binding_type = layout_desc
@@ -866,7 +889,7 @@ impl VulkanDevice {
                         .find(|entry| entry.binding == binding.binding)
                         .map(|entry| resource_binding_type_to_vk(entry.binding_type))
                         .ok_or_else(|| {
-                            GfxError::InvalidInput(format!(
+                            Error::InvalidInput(format!(
                                 "resource set layout is missing binding {}",
                                 binding.binding
                             ))
@@ -883,7 +906,7 @@ impl VulkanDevice {
                         info_index: buffer_infos.len() - 1,
                     });
                 }
-                ResourceBindingResource::Texture(texture_binding) => {
+                BindingResource::Texture(texture_binding) => {
                     let view = self.texture_views.get(texture_binding.texture_view)?;
                     image_infos.push(
                         vk::DescriptorImageInfo::default()
@@ -896,7 +919,7 @@ impl VulkanDevice {
                         info_index: image_infos.len() - 1,
                     });
                 }
-                ResourceBindingResource::Sampler(sampler_binding) => {
+                BindingResource::Sampler(sampler_binding) => {
                     let sampler = self.samplers.get(sampler_binding.sampler)?;
                     image_infos.push(vk::DescriptorImageInfo::default().sampler(sampler.sampler));
                     pending_writes.push(PendingDescriptorWrite::Image {
@@ -916,7 +939,7 @@ impl VulkanDevice {
                     info_index,
                 } => {
                     let buffer_info = buffer_infos.get(info_index).ok_or_else(|| {
-                        GfxError::Backend("descriptor buffer info index is invalid".to_string())
+                        Error::Backend("descriptor buffer info index is invalid".to_string())
                     })?;
                     Ok(vk::WriteDescriptorSet::default()
                         .dst_set(descriptor_set)
@@ -930,7 +953,7 @@ impl VulkanDevice {
                     info_index,
                 } => {
                     let image_info = image_infos.get(info_index).ok_or_else(|| {
-                        GfxError::Backend("descriptor image info index is invalid".to_string())
+                        Error::Backend("descriptor image info index is invalid".to_string())
                     })?;
                     Ok(vk::WriteDescriptorSet::default()
                         .dst_set(descriptor_set)
@@ -954,11 +977,11 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation or Vulkan module creation fails.
-    fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+    /// Returns [`Error`] when validation or Vulkan module creation fails.
+    fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
         desc.validate()?;
         let ShaderCode::Spirv(spirv) = &desc.binary.code else {
-            return Err(GfxError::Shader(
+            return Err(Error::Shader(
                 "Vulkan shader module requires SPIR-V code".to_string(),
             ));
         };
@@ -977,8 +1000,8 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when Vulkan render pass creation fails.
-    fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+    /// Returns [`Error`] when Vulkan render pass creation fails.
+    fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
         let depth_format = desc
             .depth_attachment
             .as_ref()
@@ -1040,16 +1063,16 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when validation or Vulkan pipeline creation fails.
+    /// Returns [`Error`] when validation or Vulkan pipeline creation fails.
     fn create_render_pipeline(
         &mut self,
-        desc: &RenderPipelineDesc,
+        desc: &RenderPipelineDescriptor,
         _viewport_extent: gfx_core::Extent2d,
     ) -> Result<RenderPipelineId> {
         desc.validate()?;
         let render_pass_record = self.render_passes.get(desc.render_pass)?;
         if desc.depth_state.is_some() && render_pass_record.depth_format.is_none() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "Vulkan depth pipeline requires a render pass depth attachment".to_string(),
             ));
         }
@@ -1057,12 +1080,12 @@ impl VulkanDevice {
         let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
         let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
         if vertex_shader.stage != ShaderStage::Vertex {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "vertex shader module must use ShaderStage::Vertex".to_string(),
             ));
         }
         if fragment_shader.stage != ShaderStage::Fragment {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "fragment shader module must use ShaderStage::Fragment".to_string(),
             ));
         }
@@ -1094,8 +1117,11 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when command pool or command buffer allocation fails.
-    fn create_command_encoder(&mut self, _desc: &CommandEncoderDesc) -> Result<CommandEncoderId> {
+    /// Returns [`Error`] when command pool or command buffer allocation fails.
+    fn create_command_encoder(
+        &mut self,
+        _desc: &CommandEncoderDescriptor,
+    ) -> Result<CommandEncoderId> {
         self.create_command_encoder_with_buffer_count(1)
     }
 
@@ -1104,10 +1130,10 @@ impl VulkanDevice {
         buffer_count: usize,
     ) -> Result<CommandEncoderId> {
         let buffer_count = u32::try_from(buffer_count).map_err(|error| {
-            GfxError::InvalidInput(format!("command buffer count overflow: {error}"))
+            Error::InvalidInput(format!("command buffer count overflow: {error}"))
         })?;
         if buffer_count == 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "command encoder must allocate at least one command buffer".to_string(),
             ));
         }
@@ -1134,12 +1160,16 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when command recording or any handle lookup fails.
-    fn record_draw_desc(&mut self, encoder_id: CommandEncoderId, draw: &DrawDesc) -> Result<()> {
+    /// Returns [`Error`] when command recording or any handle lookup fails.
+    fn record_draw_desc(
+        &mut self,
+        encoder_id: CommandEncoderId,
+        draw: &DrawDescriptor,
+    ) -> Result<()> {
         self.record_draw_steps_desc(
             encoder_id,
             draw.pass,
-            &[DrawStepDesc {
+            &[DrawStepDescriptor {
                 pipeline: draw.pipeline,
                 resource_sets: draw.resource_sets.clone(),
                 vertex_count: draw.vertex_count,
@@ -1155,12 +1185,12 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when command recording or any handle lookup fails.
+    /// Returns [`Error`] when command recording or any handle lookup fails.
     fn record_draw_steps_desc(
         &mut self,
         encoder_id: CommandEncoderId,
-        pass: BeginRenderPassDesc,
-        steps: &[DrawStepDesc],
+        pass: BeginRenderPassDescriptor,
+        steps: &[DrawStepDescriptor],
     ) -> Result<()> {
         self.record_render_step_list_desc(
             encoder_id,
@@ -1173,7 +1203,7 @@ impl VulkanDevice {
     fn record_render_step_list_desc(
         &mut self,
         encoder_id: CommandEncoderId,
-        pass: BeginRenderPassDesc,
+        pass: BeginRenderPassDescriptor,
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
@@ -1183,9 +1213,7 @@ impl VulkanDevice {
             .command_buffers
             .first()
             .copied()
-            .ok_or_else(|| {
-                GfxError::Backend("command encoder has no command buffer".to_string())
-            })?;
+            .ok_or_else(|| Error::Backend("command encoder has no command buffer".to_string()))?;
         self.record_render_step_list_desc_into(
             encoder_id,
             command_buffer,
@@ -1199,7 +1227,7 @@ impl VulkanDevice {
         &mut self,
         encoder_id: CommandEncoderId,
         command_buffer: vk::CommandBuffer,
-        pass: BeginRenderPassDesc,
+        pass: BeginRenderPassDescriptor,
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
@@ -1222,14 +1250,14 @@ impl VulkanDevice {
                     render_pass_record.present_render_pass(color_load, depth_load)?;
                 let swapchain_record = self.swapchains.get(swapchain)?;
                 let image_index = usize::try_from(image_index).map_err(|error| {
-                    GfxError::InvalidInput(format!("image index overflow: {error}"))
+                    Error::InvalidInput(format!("image index overflow: {error}"))
                 })?;
                 let image_view =
                     *swapchain_record
                         .image_views
                         .get(image_index)
                         .ok_or_else(|| {
-                            GfxError::InvalidInput("swapchain image index out of range".to_string())
+                            Error::InvalidInput("swapchain image index out of range".to_string())
                         })?;
                 let framebuffer = if let Some((depth_view, _)) = depth_view {
                     let framebuffer = create_framebuffer(
@@ -1246,7 +1274,7 @@ impl VulkanDevice {
                         .framebuffers
                         .get(image_index)
                         .ok_or_else(|| {
-                            GfxError::InvalidInput("swapchain image index out of range".to_string())
+                            Error::InvalidInput("swapchain image index out of range".to_string())
                         })?
                 };
                 (framebuffer, swapchain_record.extent, native_render_pass)
@@ -1362,26 +1390,26 @@ impl VulkanDevice {
     ) -> Result<Option<(vk::ImageView, LoadOp<f32>)>> {
         let Some(depth_attachment) = depth_attachment else {
             if render_pass.depth_format.is_some() {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "Vulkan render pass expects a depth attachment".to_string(),
                 ));
             }
             return Ok(None);
         };
         let Some(depth_format) = render_pass.depth_format else {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "Vulkan depth attachment was provided for a color-only render pass".to_string(),
             ));
         };
         let texture_view = self.texture_views.get(depth_attachment.target)?;
         let texture = self.textures.get(texture_view.texture)?;
         if texture.desc.format != depth_format {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "Vulkan depth attachment format does not match render pass".to_string(),
             ));
         }
         if !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "Vulkan depth attachment texture must include DEPTH_ATTACHMENT usage".to_string(),
             ));
         }
@@ -1392,7 +1420,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when submission fails.
+    /// Returns [`Error`] when submission fails.
     fn submit(&mut self, encoder_id: CommandEncoderId) -> Result<()> {
         let command_buffer = self.command_encoders.get(encoder_id)?.command_buffers[0];
         self.submit_command_buffer(command_buffer, &[], &[], vk::Fence::null())?;
@@ -1405,12 +1433,12 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when acquire, record, submit, or present fails.
+    /// Returns [`Error`] when acquire, record, submit, or present fails.
     fn draw_steps_and_present(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
         render_pass_id: RenderPassId,
-        steps: &[DrawStepDesc],
+        steps: &[DrawStepDescriptor],
         clear_color: ClearColor,
     ) -> Result<()> {
         self.render_step_list_and_present(
@@ -1524,12 +1552,12 @@ impl VulkanDevice {
             ..PresentationTimings::default()
         };
         let encoder_create_started = Instant::now();
-        let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+        let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
         timings.command_encoder_create = encoder_create_started.elapsed();
         let command_record_started = Instant::now();
         let record_result = self.record_render_step_list_desc(
             encoder,
-            BeginRenderPassDesc {
+            BeginRenderPassDescriptor {
                 render_pass: render_pass_id,
                 target: RenderTarget::Swapchain {
                     swapchain: swapchain_id,
@@ -1600,12 +1628,12 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when command recording, submission, or handle lookup fails.
+    /// Returns [`Error`] when command recording, submission, or handle lookup fails.
     fn draw_steps_to_texture(
         &mut self,
         texture_view: TextureViewId,
         render_pass_id: RenderPassId,
-        steps: &[DrawStepDesc],
+        steps: &[DrawStepDescriptor],
         color_load_op: LoadOp<ClearColor>,
     ) -> Result<()> {
         self.render_step_list_to_texture(
@@ -1659,7 +1687,7 @@ impl VulkanDevice {
             let result = self.record_render_step_list_desc_into(
                 encoder,
                 command_buffer,
-                BeginRenderPassDesc {
+                BeginRenderPassDescriptor {
                     render_pass: pass.render_pass,
                     target: RenderTarget::TextureView(pass.texture_view),
                     color_load_op: pass.color_load_op,
@@ -1753,21 +1781,21 @@ impl VulkanDevice {
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
     ) -> Result<Option<VulkanPresentFrame>> {
-        let (swapchain, frame_index, image_available, render_finished, fence) = {
+        let (swapchain, frame_index, image_available, fence) = {
             let swapchain = self.swapchains.get(swapchain_id)?;
             let frame_index = swapchain.frame_index;
             (
                 swapchain.swapchain,
                 frame_index,
                 swapchain.image_available_semaphores[frame_index],
-                swapchain.render_finished_semaphores[frame_index],
                 swapchain.in_flight_fences[frame_index],
             )
         };
         // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
         let fence_wait_started = Instant::now();
-        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
-            .map_err(VulkanError::from)?;
+        if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+            return Ok(None);
+        }
         let acquire_fence_wait = fence_wait_started.elapsed();
         self.submissions
             .remove_where(|submission| submission.fence == fence);
@@ -1776,7 +1804,7 @@ impl VulkanDevice {
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
-                u64::MAX,
+                0,
                 image_available,
                 vk::Fence::null(),
             )
@@ -1784,12 +1812,22 @@ impl VulkanDevice {
         let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
             Ok((image_index, false)) => image_index,
+            // No image was acquired and the semaphore is unchanged. Keep this frame slot for
+            // the next native presentation request; only submission resets its fence.
+            Err(vk::Result::NOT_READY) => return Ok(None),
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
-                return Err(GfxError::SurfaceOutdated);
+                return Err(Error::SurfaceOutdated);
             }
             Err(error) => return Err(VulkanError::from(error).into()),
         };
+        // Reacquiring this image and waiting on image_available in the submit orders the
+        // next signal after presentation has consumed this image's previous wait semaphore.
+        // A graphics frame fence alone does not establish that presentation dependency.
+        let render_finished = self
+            .swapchains
+            .get(swapchain_id)?
+            .render_finished_semaphores[image_index as usize];
         Ok(Some(VulkanPresentFrame {
             image_index,
             frame_index,
@@ -1823,7 +1861,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when presentation fails.
+    /// Returns [`Error`] when presentation fails.
     fn present(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
@@ -1862,7 +1900,7 @@ impl VulkanDevice {
             Ok(false) => Ok(()),
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
-                Err(GfxError::SurfaceOutdated)
+                Err(Error::SurfaceOutdated)
             }
             Err(error) => Err(VulkanError::from(error).into()),
         }
@@ -1884,12 +1922,10 @@ impl VulkanDevice {
     }
 
     fn damage_to_present_rect(damage: ScissorRect) -> Result<vk::RectLayerKHR> {
-        let x = i32::try_from(damage.x).map_err(|error| {
-            GfxError::InvalidInput(format!("present damage x overflow: {error}"))
-        })?;
-        let y = i32::try_from(damage.y).map_err(|error| {
-            GfxError::InvalidInput(format!("present damage y overflow: {error}"))
-        })?;
+        let x = i32::try_from(damage.x)
+            .map_err(|error| Error::InvalidInput(format!("present damage x overflow: {error}")))?;
+        let y = i32::try_from(damage.y)
+            .map_err(|error| Error::InvalidInput(format!("present damage y overflow: {error}")))?;
         Ok(vk::RectLayerKHR::default()
             .offset(vk::Offset2D { x, y })
             .extent(vk::Extent2D {
@@ -1903,7 +1939,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid or memory free fails.
+    /// Returns [`Error`] when the handle is invalid or memory free fails.
     fn destroy_buffer(&mut self, buffer_id: BufferId) -> Result<()> {
         let buffer = self.buffers.take(buffer_id)?;
         let fence = self.signal_cleanup_fence()?;
@@ -1917,7 +1953,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_texture(&mut self, texture_id: TextureId) -> Result<()> {
         let texture = self.textures.take(texture_id)?;
         let fence = self.signal_cleanup_fence()?;
@@ -1931,7 +1967,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_texture_view(&mut self, view_id: TextureViewId) -> Result<()> {
         self.wait_for_pending_work()?;
         let view = self.texture_views.take(view_id)?;
@@ -1943,7 +1979,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_sampler(&mut self, sampler_id: SamplerId) -> Result<()> {
         self.wait_for_pending_work()?;
         let sampler = self.samplers.take(sampler_id)?;
@@ -1955,7 +1991,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_resource_set_layout(&mut self, layout_id: ResourceSetLayoutId) -> Result<()> {
         self.wait_for_pending_work()?;
         let layout = self.resource_set_layouts.take(layout_id)?;
@@ -1967,7 +2003,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_resource_set(&mut self, set_id: ResourceSetId) -> Result<()> {
         self.wait_for_pending_work()?;
         let set = self.resource_sets.take(set_id)?;
@@ -1979,7 +2015,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_pipeline_layout(&mut self, layout_id: PipelineLayoutId) -> Result<()> {
         self.wait_for_pending_work()?;
         let layout = self.pipeline_layouts.take(layout_id)?;
@@ -1991,7 +2027,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_shader_module(&mut self, shader_id: ShaderModuleId) -> Result<()> {
         self.wait_for_pending_work()?;
         let shader = self.shader_modules.take(shader_id)?;
@@ -2003,7 +2039,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_render_pass(&mut self, render_pass_id: RenderPassId) -> Result<()> {
         self.wait_for_pending_work()?;
         let render_pass = self.render_passes.take(render_pass_id)?;
@@ -2015,7 +2051,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_render_pipeline(&mut self, pipeline_id: RenderPipelineId) -> Result<()> {
         self.wait_for_pending_work()?;
         let pipeline = self.render_pipelines.take(pipeline_id)?;
@@ -2027,7 +2063,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_command_encoder(&mut self, encoder_id: CommandEncoderId) -> Result<()> {
         self.wait_for_pending_work()?;
         let encoder = self.command_encoders.take(encoder_id)?;
@@ -2039,7 +2075,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_swapchain(&mut self, swapchain_id: gfx_core::SwapchainId) -> Result<()> {
         // SAFETY: Device is valid and waiting before swapchain resource destruction is valid.
         unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
@@ -2052,7 +2088,7 @@ impl VulkanDevice {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid.
     fn destroy_surface(&mut self, surface_id: SurfaceId) -> Result<()> {
         let surface = self.surfaces.take(surface_id)?;
         self.destroy_surface_now(surface);
@@ -2183,7 +2219,7 @@ impl VulkanDevice {
             })
             .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
-            create_sync_objects(&self.device)?;
+            create_sync_objects(&self.device, images.len())?;
         Ok(VulkanSwapchain {
             surface,
             swapchain,
@@ -2291,14 +2327,14 @@ impl VulkanDevice {
     }
 
     /// Releases completed staging/upload caches without touching live Vulkan resources.
-    pub fn trim_memory(&mut self, level: GfxMemoryTrimLevel) -> Result<()> {
-        if matches!(level, GfxMemoryTrimLevel::Light) {
+    pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
+        if matches!(level, MemoryTrimLevel::Light) {
             self.poll_cleanup();
             return Ok(());
         }
 
         self.wait_for_pending_work()?;
-        let target_idle_pages = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+        let target_idle_pages = if matches!(level, MemoryTrimLevel::Moderate) {
             1
         } else {
             0
@@ -2314,13 +2350,13 @@ impl VulkanDevice {
         }
         self.trim_upload_pages(retained_page_count)?;
 
-        let retained_upload_commands = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+        let retained_upload_commands = if matches!(level, MemoryTrimLevel::Moderate) {
             1
         } else {
             0
         };
         self.trim_upload_command_pool(retained_upload_commands);
-        if matches!(level, GfxMemoryTrimLevel::Aggressive) {
+        if matches!(level, MemoryTrimLevel::Aggressive) {
             self.upload_pages.shrink_to_fit();
             self.upload_command_pool.shrink_to_fit();
         }
@@ -2357,7 +2393,7 @@ impl VulkanDevice {
 
     fn write_upload_data(&mut self, data: &[u8]) -> Result<UploadAllocation> {
         let size = u64::try_from(data.len())
-            .map_err(|error| GfxError::InvalidInput(format!("upload size overflow: {error}")))?;
+            .map_err(|error| Error::InvalidInput(format!("upload size overflow: {error}")))?;
         let allocation = self.upload_ring.allocate(size)?;
         self.stage_upload_data(data, allocation)
     }
@@ -2372,26 +2408,28 @@ impl VulkanDevice {
             .upload_pages
             .get_mut(allocation.page_index)
             .and_then(Option::as_mut)
-            .ok_or_else(|| GfxError::Backend("missing Vulkan upload page".to_string()))?;
-        let mapped = page.allocation.mapped_slice_mut().ok_or_else(|| {
-            GfxError::Backend("upload page memory is not CPU visible".to_string())
-        })?;
+            .ok_or_else(|| Error::Backend("missing Vulkan upload page".to_string()))?;
+        let mapped = page
+            .allocation
+            .mapped_slice_mut()
+            .ok_or_else(|| Error::Backend("upload page memory is not CPU visible".to_string()))?;
         let offset = usize::try_from(allocation.offset)
-            .map_err(|error| GfxError::InvalidInput(format!("upload offset overflow: {error}")))?;
+            .map_err(|error| Error::InvalidInput(format!("upload offset overflow: {error}")))?;
         let end = offset
             .checked_add(data.len())
-            .ok_or_else(|| GfxError::InvalidInput("upload range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("upload range overflow".to_string()))?;
         let target = mapped.get_mut(offset..end).ok_or_else(|| {
-            GfxError::InvalidInput("upload range is out of upload page bounds".to_string())
+            Error::InvalidInput("upload range is out of upload page bounds".to_string())
         })?;
         target.copy_from_slice(data);
         Ok(allocation)
     }
 
     fn ensure_upload_page(&mut self, page_index: usize) -> Result<()> {
-        let size = self.upload_ring.page_size(page_index).ok_or_else(|| {
-            GfxError::Backend(format!("upload ring page {page_index} has no size"))
-        })?;
+        let size = self
+            .upload_ring
+            .page_size(page_index)
+            .ok_or_else(|| Error::Backend(format!("upload ring page {page_index} has no size")))?;
         while self.upload_pages.len() <= page_index {
             self.upload_pages.push(None);
         }
@@ -2403,7 +2441,7 @@ impl VulkanDevice {
         if let Some(page) = self.upload_pages[page_index].take() {
             self.destroy_buffer_now(page)?;
         }
-        let desc = BufferDesc {
+        let desc = BufferDescriptor {
             label: Some(format!("nova-gfx vulkan upload page {page_index}")),
             size,
             usage: BufferUsage::COPY_SRC,
@@ -2419,10 +2457,10 @@ impl VulkanDevice {
             .get(page_index)
             .and_then(Option::as_ref)
             .map(|page| page.buffer)
-            .ok_or_else(|| GfxError::Backend(format!("missing Vulkan upload page {page_index}")))
+            .ok_or_else(|| Error::Backend(format!("missing Vulkan upload page {page_index}")))
     }
 
-    fn create_buffer_unregistered(&mut self, desc: &BufferDesc) -> Result<VulkanBuffer> {
+    fn create_buffer_unregistered(&mut self, desc: &BufferDescriptor) -> Result<VulkanBuffer> {
         desc.validate()?;
         let create_info = vk::BufferCreateInfo::default()
             .size(desc.size)
@@ -2464,7 +2502,7 @@ impl VulkanDevice {
         let command_buffer = allocate_command_buffers(&self.device, command_pool, 1)?
             .into_iter()
             .next()
-            .ok_or_else(|| GfxError::Backend("failed to allocate command buffer".to_string()))?;
+            .ok_or_else(|| Error::Backend("failed to allocate command buffer".to_string()))?;
         begin_one_time_commands(&self.device, command_buffer)?;
         let region = vk::BufferCopy::default()
             .src_offset(source_offset)
@@ -2489,6 +2527,8 @@ impl VulkanDevice {
         source: vk::Buffer,
         image: vk::Image,
         old_layout: vk::ImageLayout,
+        mip_level: u32,
+        mip_level_count: u32,
         layout: TextureDataLayout,
         origin: gfx_core::Origin2d,
         size: gfx_core::Extent2d,
@@ -2498,7 +2538,9 @@ impl VulkanDevice {
             source,
             image,
             old_layout,
+            mip_level_count,
             layout,
+            mip_level,
             origin,
             size,
         }])
@@ -2575,22 +2617,24 @@ impl VulkanDevice {
         command_buffer: vk::CommandBuffer,
         group: &VulkanTextureUploadGroup<'_>,
     ) -> Result<()> {
-        transition_image_layout(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             group.image,
             group.old_layout,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            group.mip_level_count,
         );
         for upload in &group.uploads {
             self.record_buffer_to_texture_copy(command_buffer, upload)?;
         }
-        transition_image_layout(
+        transition_image_layout_levels(
             &self.device,
             command_buffer,
             group.image,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            group.mip_level_count,
         );
         Ok(())
     }
@@ -2607,16 +2651,16 @@ impl VulkanDevice {
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
+                    .mip_level(upload.mip_level)
                     .base_array_layer(0)
                     .layer_count(1),
             )
             .image_offset(vk::Offset3D {
                 x: i32::try_from(upload.origin.x).map_err(|error| {
-                    GfxError::InvalidInput(format!("texture upload origin x overflow: {error}"))
+                    Error::InvalidInput(format!("texture upload origin x overflow: {error}"))
                 })?,
                 y: i32::try_from(upload.origin.y).map_err(|error| {
-                    GfxError::InvalidInput(format!("texture upload origin y overflow: {error}"))
+                    Error::InvalidInput(format!("texture upload origin y overflow: {error}"))
                 })?,
                 z: 0,
             })
@@ -2831,17 +2875,17 @@ impl VulkanDevice {
     }
 }
 
-impl GfxBackend for VulkanDevice {
+impl Backend for VulkanDevice {
     const BACKEND_KIND: BackendKind = BackendKind::Vulkan;
 }
 
-impl GfxSurfaceDevice for VulkanDevice {
+impl SurfaceDevice for VulkanDevice {
     type SurfaceTarget = dyn VulkanSurfaceTarget;
 
     fn create_surface(
         &mut self,
         target: &Self::SurfaceTarget,
-        desc: &SurfaceDesc,
+        desc: &SurfaceDescriptor,
     ) -> Result<SurfaceId> {
         Self::create_surface(self, target, desc)
     }
@@ -2863,8 +2907,8 @@ impl GfxSurfaceDevice for VulkanDevice {
     }
 }
 
-impl GfxResourceDevice for VulkanDevice {
-    fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+impl ResourceDevice for VulkanDevice {
+    fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         Self::create_buffer(self, desc)
     }
 
@@ -2872,11 +2916,11 @@ impl GfxResourceDevice for VulkanDevice {
         Self::write_buffer(self, buffer, offset, data)
     }
 
-    fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+    fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         Self::create_texture(self, desc)
     }
 
-    fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
+    fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
         Self::write_texture(self, desc, data)
     }
 
@@ -2887,22 +2931,22 @@ impl GfxResourceDevice for VulkanDevice {
         Self::write_texture_batch(self, writes)
     }
 
-    fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
+    fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
         Self::create_texture_view(self, desc)
     }
 
-    fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
+    fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
         Self::create_sampler(self, desc)
     }
 
     fn create_resource_set_layout(
         &mut self,
-        desc: &ResourceSetLayoutDesc,
+        desc: &ResourceSetLayoutDescriptor,
     ) -> Result<ResourceSetLayoutId> {
         Self::create_resource_set_layout(self, desc)
     }
 
-    fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+    fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
         Self::create_resource_set(self, desc)
     }
 
@@ -2931,22 +2975,25 @@ impl GfxResourceDevice for VulkanDevice {
     }
 }
 
-impl GfxPipelineDevice for VulkanDevice {
-    fn create_pipeline_layout(&mut self, desc: &PipelineLayoutDesc) -> Result<PipelineLayoutId> {
+impl PipelineDevice for VulkanDevice {
+    fn create_pipeline_layout(
+        &mut self,
+        desc: &PipelineLayoutDescriptor,
+    ) -> Result<PipelineLayoutId> {
         Self::create_pipeline_layout(self, desc)
     }
 
-    fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+    fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
         Self::create_shader_module(self, desc)
     }
 
-    fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+    fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
         Self::create_render_pass(self, desc)
     }
 
     fn create_render_pipeline(
         &mut self,
-        desc: &RenderPipelineDesc,
+        desc: &RenderPipelineDescriptor,
         viewport_extent: gfx_core::Extent2d,
     ) -> Result<RenderPipelineId> {
         Self::create_render_pipeline(self, desc, viewport_extent)
@@ -2969,12 +3016,15 @@ impl GfxPipelineDevice for VulkanDevice {
     }
 }
 
-impl GfxCommandDevice for VulkanDevice {
-    fn create_command_encoder(&mut self, desc: &CommandEncoderDesc) -> Result<CommandEncoderId> {
+impl CommandDevice for VulkanDevice {
+    fn create_command_encoder(
+        &mut self,
+        desc: &CommandEncoderDescriptor,
+    ) -> Result<CommandEncoderId> {
         Self::create_command_encoder(self, desc)
     }
 
-    fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDesc) -> Result<()> {
+    fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDescriptor) -> Result<()> {
         Self::record_draw_desc(self, encoder, &draw)
     }
 
@@ -2987,10 +3037,10 @@ impl GfxCommandDevice for VulkanDevice {
     }
 }
 
-impl GfxSubmissionDevice for VulkanDevice {
-    fn async_capabilities(&self) -> gfx_core::GfxAsyncCapabilities {
-        gfx_core::GfxAsyncCapabilities {
-            threading_mode: GfxThreadingMode::MultiThreadDeviceProxy,
+impl SubmissionDevice for VulkanDevice {
+    fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
+        gfx_core::AsyncCapabilities {
+            threading_mode: ThreadingMode::MultiThreadDeviceProxy,
             async_submission: true,
             async_wait: true,
             async_presentation: true,
@@ -3011,7 +3061,7 @@ impl GfxSubmissionDevice for VulkanDevice {
     }
 }
 
-impl GfxPresentationDevice for VulkanDevice {
+impl PresentationDevice for VulkanDevice {
     fn supports_partial_presentation(&self, _swapchain: gfx_core::SwapchainId) -> bool {
         // The renderer submits a complete frame, but Vulkan swapchain images rotate between
         // presents. Without per-image damage accumulation, VK_KHR_incremental_present can leave
@@ -3024,7 +3074,7 @@ impl GfxPresentationDevice for VulkanDevice {
         &mut self,
         swapchain: gfx_core::SwapchainId,
         render_pass: RenderPassId,
-        steps: &[DrawStepDesc],
+        steps: &[DrawStepDescriptor],
         clear_color: ClearColor,
     ) -> Result<()> {
         Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
@@ -3034,7 +3084,7 @@ impl GfxPresentationDevice for VulkanDevice {
         &mut self,
         texture_view: TextureViewId,
         render_pass: RenderPassId,
-        steps: &[DrawStepDesc],
+        steps: &[DrawStepDescriptor],
         color_load_op: LoadOp<ClearColor>,
     ) -> Result<()> {
         Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
@@ -3044,11 +3094,11 @@ impl GfxPresentationDevice for VulkanDevice {
         &mut self,
         swapchain: gfx_core::SwapchainId,
         render_pass: RenderPassId,
-        steps: &[DrawStepDesc],
+        steps: &[DrawStepDescriptor],
         clear_color: ClearColor,
     ) -> Result<SubmissionId>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         Self::render_step_list_and_present_deferred(
             self,
@@ -3168,7 +3218,7 @@ impl GfxPresentationDevice for VulkanDevice {
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<SubmissionId>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         Self::render_step_list_and_present_deferred(
             self,
@@ -3189,7 +3239,7 @@ impl GfxPresentationDevice for VulkanDevice {
         depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<SubmissionId>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         Self::render_step_list_and_present_deferred(
             self,
@@ -3211,7 +3261,7 @@ impl GfxPresentationDevice for VulkanDevice {
         damage: Option<ScissorRect>,
     ) -> Result<SubmissionId>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         Self::render_step_list_and_present_deferred_with_damage(
             self,
@@ -3234,7 +3284,7 @@ impl GfxPresentationDevice for VulkanDevice {
         damage: Option<ScissorRect>,
     ) -> Result<Option<PresentationFrame>>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         Self::render_step_list_and_present_tracked(
             self,
@@ -3248,13 +3298,13 @@ impl GfxPresentationDevice for VulkanDevice {
     }
 }
 
-impl GfxDiagnosticsDevice for VulkanDevice {
+impl DiagnosticsDevice for VulkanDevice {
     fn resource_stats(&self) -> ResourceStats {
         Self::resource_stats(self)
     }
 }
 
-impl GfxTextureTransferDevice for VulkanDevice {
+impl TextureTransferDevice for VulkanDevice {
     fn texture_transfer_timestamps_supported(&self) -> bool {
         self.timestamp_clock.is_some()
     }
@@ -3372,46 +3422,46 @@ impl VulkanTriangle {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] if Vulkan initialization or resource creation fails.
+    /// Returns [`Error`] if Vulkan initialization or resource creation fails.
     pub fn new<W>(window: &W, config: &VulkanTriangleConfig) -> Result<Self>
     where
         W: HasDisplayHandle + HasWindowHandle,
     {
         if config.vertex_shader.stage != ShaderStage::Vertex {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "vertex_shader must use ShaderStage::Vertex".to_string(),
             ));
         }
         if config.fragment_shader.stage != ShaderStage::Fragment {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "fragment_shader must use ShaderStage::Fragment".to_string(),
             ));
         }
 
         let metrics_started_at = Instant::now();
-        let mut device = VulkanDevice::new(&DeviceDesc {
+        let mut device = VulkanDevice::new(&DeviceDescriptor {
             application_name: config.application_name.clone(),
-            ..DeviceDesc::default()
+            ..DeviceDescriptor::default()
         })?;
-        let surface = device.create_surface(window, &SurfaceDesc { label: None })?;
+        let surface = device.create_surface(window, &SurfaceDescriptor { label: None })?;
         let swapchain = device.create_swapchain(surface, config.surface_config)?;
-        let vertex_shader = device.create_shader_module(&ShaderModuleDesc {
+        let vertex_shader = device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("triangle vertex shader".to_string()),
             binary: config.vertex_shader.clone(),
         })?;
-        let fragment_shader = device.create_shader_module(&ShaderModuleDesc {
+        let fragment_shader = device.create_shader_module(&ShaderModuleDescriptor {
             label: Some("triangle fragment shader".to_string()),
             binary: config.fragment_shader.clone(),
         })?;
-        let render_pass = device.create_render_pass(&RenderPassDesc {
+        let render_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("triangle render pass".to_string()),
-            color_attachment: ColorAttachmentDesc {
+            color_attachment: ColorAttachmentDescriptor {
                 format: config.surface_config.format,
             },
             depth_attachment: None,
         })?;
         let pipeline = device.create_render_pipeline(
-            &RenderPipelineDesc {
+            &RenderPipelineDescriptor {
                 label: Some("triangle pipeline".to_string()),
                 vertex_shader,
                 vertex_entry_point: config.vertex_shader.entry_point.clone(),
@@ -3452,7 +3502,7 @@ impl VulkanTriangle {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] if surface recreation fails.
+    /// Returns [`Error`] if surface recreation fails.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         self.device.resize_swapchain(self.swapchain, width, height)
     }
@@ -3461,8 +3511,8 @@ impl VulkanTriangle {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] when acquire, submit, or present fails.
-    pub fn draw_triangle(&mut self, draw: DrawTriangleDesc) -> Result<()> {
+    /// Returns [`Error`] when acquire, submit, or present fails.
+    pub fn draw_triangle(&mut self, draw: DrawTriangleDescriptor) -> Result<()> {
         self.device.draw_and_present(
             self.swapchain,
             self.render_pass,
@@ -3503,13 +3553,13 @@ struct SwapchainSupport {
 struct VulkanBuffer {
     buffer: vk::Buffer,
     allocation: MemoryAllocation,
-    desc: BufferDesc,
+    desc: BufferDescriptor,
 }
 
 struct VulkanTexture {
     image: vk::Image,
     allocation: MemoryAllocation,
-    desc: TextureDesc,
+    desc: TextureDescriptor,
     layout: vk::ImageLayout,
 }
 
@@ -3518,7 +3568,9 @@ struct VulkanTextureUpload {
     source: vk::Buffer,
     image: vk::Image,
     old_layout: vk::ImageLayout,
+    mip_level_count: u32,
     layout: TextureDataLayout,
+    mip_level: u32,
     origin: gfx_core::Origin2d,
     size: gfx_core::Extent2d,
 }
@@ -3527,12 +3579,14 @@ struct VulkanTextureWritePlan<'a> {
     write: gfx_core::TextureWrite<'a>,
     image: vk::Image,
     old_layout: vk::ImageLayout,
+    mip_level_count: u32,
 }
 
 struct VulkanTextureUploadGroup<'a> {
     texture: TextureId,
     image: vk::Image,
     old_layout: vk::ImageLayout,
+    mip_level_count: u32,
     uploads: Vec<&'a VulkanTextureUpload>,
 }
 
@@ -3553,6 +3607,7 @@ fn texture_upload_groups(uploads: &[VulkanTextureUpload]) -> Vec<VulkanTextureUp
                 texture: upload.texture,
                 image: upload.image,
                 old_layout: upload.old_layout,
+                mip_level_count: upload.mip_level_count,
                 uploads: vec![upload],
             });
         }
@@ -3562,27 +3617,27 @@ fn texture_upload_groups(uploads: &[VulkanTextureUpload]) -> Vec<VulkanTextureUp
 
 fn texture_staging_layout(
     allocation: UploadAllocation,
-    descriptor: TextureWriteDesc,
+    descriptor: TextureWriteDescriptor,
 ) -> Result<TextureDataLayout> {
     TextureDataLayout::new(
         allocation
             .offset
             .checked_add(descriptor.layout.offset)
-            .ok_or_else(|| GfxError::InvalidInput("texture upload offset overflow".to_string()))?,
+            .ok_or_else(|| Error::InvalidInput("texture upload offset overflow".to_string()))?,
         descriptor.layout.bytes_per_row.get(),
         descriptor.layout.rows_per_image.get(),
     )
 }
 
-fn validate_texture_staging_layout(descriptor: TextureWriteDesc) -> Result<()> {
+fn validate_texture_staging_layout(descriptor: TextureWriteDescriptor) -> Result<()> {
     const TEXEL_BYTES: u64 = 4;
     if descriptor.layout.offset % TEXEL_BYTES != 0 {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "Vulkan texture upload offset must be a multiple of 4 bytes".to_string(),
         ));
     }
     if u64::from(descriptor.layout.bytes_per_row.get()) % TEXEL_BYTES != 0 {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "Vulkan texture upload bytes_per_row must be a multiple of 4 bytes".to_string(),
         ));
     }
@@ -3603,7 +3658,7 @@ struct VulkanSampler {
 #[derive(Clone)]
 struct VulkanResourceSetLayout {
     layout: vk::DescriptorSetLayout,
-    desc: ResourceSetLayoutDesc,
+    desc: ResourceSetLayoutDescriptor,
 }
 
 #[derive(Clone, Copy)]
@@ -3643,13 +3698,13 @@ impl VulkanRenderPass {
             (false, false) => Ok(self.pipeline_render_pass),
             (true, false) => Ok(self.offscreen_load_render_pass),
             (false, true) => self.offscreen_depth_load_render_pass.ok_or_else(|| {
-                GfxError::InvalidInput(
+                Error::InvalidInput(
                     "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
                         .to_string(),
                 )
             }),
             (true, true) => self.offscreen_load_depth_load_render_pass.ok_or_else(|| {
-                GfxError::InvalidInput(
+                Error::InvalidInput(
                     "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
                         .to_string(),
                 )
@@ -3659,13 +3714,13 @@ impl VulkanRenderPass {
 
     fn present_render_pass(self, color_load: bool, depth_load: bool) -> Result<vk::RenderPass> {
         if color_load {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "Vulkan swapchain render passes require color LoadOp::Clear".to_string(),
             ));
         }
         if depth_load {
             self.present_depth_load_render_pass.ok_or_else(|| {
-                GfxError::InvalidInput(
+                Error::InvalidInput(
                     "Vulkan depth LoadOp::Load requires a render pass with a depth attachment"
                         .to_string(),
                 )
@@ -3795,7 +3850,7 @@ struct VulkanSwapchain {
     internal_render_pass: vk::RenderPass,
     framebuffers: Vec<vk::Framebuffer>,
     image_available_semaphores: [vk::Semaphore; FRAMES_IN_FLIGHT],
-    render_finished_semaphores: [vk::Semaphore; FRAMES_IN_FLIGHT],
+    render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: [vk::Fence; FRAMES_IN_FLIGHT],
     frame_index: usize,
     config: SurfaceConfig,
@@ -3844,7 +3899,7 @@ fn vulkan_memory(allocation: &MemoryAllocation) -> Result<(vk::DeviceMemory, u64
     // SAFETY: The caller immediately binds this allocation to the resource that produced
     // the memory requirements used for the allocation.
     unsafe { allocation.vulkan_memory() }
-        .ok_or_else(|| GfxError::Backend("allocation is not a Vulkan allocation".to_string()))
+        .ok_or_else(|| Error::Backend("allocation is not a Vulkan allocation".to_string()))
 }
 
 fn load_entry() -> Result<Entry> {
@@ -3853,10 +3908,10 @@ fn load_entry() -> Result<Entry> {
 }
 
 fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
-    let app_name = CString::new(application_name)
-        .map_err(|error| GfxError::InvalidInput(error.to_string()))?;
+    let app_name =
+        CString::new(application_name).map_err(|error| Error::InvalidInput(error.to_string()))?;
     let engine_name =
-        CString::new("nova-gfx").map_err(|error| GfxError::InvalidInput(error.to_string()))?;
+        CString::new("nova-gfx").map_err(|error| Error::InvalidInput(error.to_string()))?;
     let app_info = vk::ApplicationInfo::default()
         .application_name(&app_name)
         .application_version(vk::make_api_version(0, 0, 1, 0))
@@ -3891,7 +3946,7 @@ fn instance_extension_names() -> Vec<*const i8> {
 
 fn pick_physical_device_without_surface(
     instance: &Instance,
-    desc: &DeviceDesc,
+    desc: &DeviceDescriptor,
 ) -> Result<vk::PhysicalDevice> {
     // SAFETY: Instance is valid.
     let devices = unsafe { instance.enumerate_physical_devices() }.map_err(VulkanError::from)?;
@@ -3987,7 +4042,7 @@ fn queue_family_indices_without_surface(
         })
         .ok_or_else(|| VulkanError::Unavailable("no graphics queue family".to_string()))?;
     let graphics = u32::try_from(graphics)
-        .map_err(|error| GfxError::Backend(format!("queue family index overflow: {error}")))?;
+        .map_err(|error| Error::Backend(format!("queue family index overflow: {error}")))?;
     Ok(QueueFamilyIndices {
         graphics,
         present: graphics,
@@ -3998,7 +4053,7 @@ fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
-) -> Result<(ash::Device, vk::Queue, vk::Queue, bool)> {
+) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool)> {
     let priorities = [1.0_f32];
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
@@ -4026,12 +4081,14 @@ fn create_device(
     if incremental_presentation {
         device_extensions.push(khr::incremental_present::NAME.as_ptr());
     }
+    let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
     let mut enabled_features = vk::PhysicalDeviceFeatures::default();
+    let supports_sampler_anisotropy = supported_features.sampler_anisotropy == vk::TRUE;
+    enabled_features.sampler_anisotropy = supported_features.sampler_anisotropy;
     #[cfg(target_os = "windows")]
     {
         // Windows Nova has a single strict text contract: RGB subpixel composition requires
         // independent destination attenuation for R/G/B, which Vulkan exposes through dualSrcBlend.
-        let supported_features = unsafe { instance.get_physical_device_features(physical_device) };
         if supported_features.dual_src_blend != vk::TRUE {
             return Err(VulkanError::Unavailable(
                 "Windows Nova Vulkan requires dualSrcBlend for RGB subpixel text".to_string(),
@@ -4056,6 +4113,7 @@ fn create_device(
         graphics_queue,
         present_queue,
         incremental_presentation,
+        supports_sampler_anisotropy,
     ))
 }
 
@@ -4144,7 +4202,7 @@ fn choose_composite_alpha_mode(
         .copied()
         .find(|candidate| supported.contains(composite_alpha_to_vulkan(*candidate)))
         .ok_or_else(|| {
-            GfxError::Unavailable(format!(
+            Error::Unavailable(format!(
                 "Vulkan surface does not support requested composite alpha mode {preferred:?}; supported flags: {supported:?}"
             ))
         })
@@ -4186,10 +4244,21 @@ fn create_image_view(
     format: vk::Format,
     aspect_mask: vk::ImageAspectFlags,
 ) -> Result<vk::ImageView> {
+    create_image_view_range(device, image, format, aspect_mask, 0, 1)
+}
+
+fn create_image_view_range(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspect_mask: vk::ImageAspectFlags,
+    base_mip_level: u32,
+    mip_level_count: u32,
+) -> Result<vk::ImageView> {
     let subresource_range = vk::ImageSubresourceRange::default()
         .aspect_mask(aspect_mask)
-        .base_mip_level(0)
-        .level_count(1)
+        .base_mip_level(base_mip_level)
+        .level_count(mip_level_count)
         .base_array_layer(0)
         .layer_count(1);
     let create_info = vk::ImageViewCreateInfo::default()
@@ -4329,7 +4398,7 @@ struct GraphicsPipelineBuild<'a> {
     vertex_entry_point: &'a str,
     fragment_shader: &'a VulkanShaderModule,
     fragment_entry_point: &'a str,
-    desc: &'a RenderPipelineDesc,
+    desc: &'a RenderPipelineDescriptor,
 }
 
 #[expect(
@@ -4344,9 +4413,9 @@ fn create_graphics_pipeline(
         &build.fragment_shader.entry_point,
     );
     let vertex_entry = CString::new(build.vertex_entry_point)
-        .map_err(|error| GfxError::InvalidInput(error.to_string()))?;
+        .map_err(|error| Error::InvalidInput(error.to_string()))?;
     let fragment_entry = CString::new(build.fragment_entry_point)
-        .map_err(|error| GfxError::InvalidInput(error.to_string()))?;
+        .map_err(|error| Error::InvalidInput(error.to_string()))?;
     let shader_stages = [
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
@@ -4464,11 +4533,13 @@ fn create_graphics_pipeline(
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
         .attachments(&color_blend_attachments);
-    let depth_enabled = build.desc.depth_state.is_some();
+    let depth_state = build.desc.depth_state;
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
-        .depth_test_enable(depth_enabled)
-        .depth_write_enable(depth_enabled)
-        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_test_enable(depth_state.is_some())
+        .depth_write_enable(depth_state.is_some_and(|state| state.write_enabled))
+        .depth_compare_op(depth_state.map_or(vk::CompareOp::ALWAYS, |state| {
+            depth_compare_function(state.compare)
+        }))
         .depth_bounds_test_enable(false)
         .stencil_test_enable(false);
     let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
@@ -4492,6 +4563,19 @@ fn create_graphics_pipeline(
     }
     .map_err(|(_, error)| VulkanError::from(error))?[0];
     Ok((build.pipeline_layout, pipeline))
+}
+
+fn depth_compare_function(compare: CompareFunction) -> vk::CompareOp {
+    match compare {
+        CompareFunction::Never => vk::CompareOp::NEVER,
+        CompareFunction::Less => vk::CompareOp::LESS,
+        CompareFunction::Equal => vk::CompareOp::EQUAL,
+        CompareFunction::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+        CompareFunction::Greater => vk::CompareOp::GREATER,
+        CompareFunction::NotEqual => vk::CompareOp::NOT_EQUAL,
+        CompareFunction::GreaterEqual => vk::CompareOp::GREATER_OR_EQUAL,
+        CompareFunction::Always => vk::CompareOp::ALWAYS,
+    }
 }
 
 fn create_framebuffer(
@@ -4542,7 +4626,7 @@ fn create_upload_commands(
     let Some(command_buffer) = command_buffers.into_iter().next() else {
         // SAFETY: The pool was created immediately above and owns no submitted work.
         unsafe { device.destroy_command_pool(command_pool, None) };
-        return Err(GfxError::Backend(
+        return Err(Error::Backend(
             "failed to allocate Vulkan upload command buffer".to_string(),
         ));
     };
@@ -4606,13 +4690,14 @@ fn create_fence(device: &ash::Device, signaled: bool) -> Result<vk::Fence> {
 
 fn create_sync_objects(
     device: &ash::Device,
+    image_count: usize,
 ) -> Result<(
     [vk::Semaphore; FRAMES_IN_FLIGHT],
-    [vk::Semaphore; FRAMES_IN_FLIGHT],
+    Vec<vk::Semaphore>,
     [vk::Fence; FRAMES_IN_FLIGHT],
 )> {
     let mut image_available_semaphores = [vk::Semaphore::null(); FRAMES_IN_FLIGHT];
-    let mut render_finished_semaphores = [vk::Semaphore::null(); FRAMES_IN_FLIGHT];
+    let mut render_finished_semaphores = Vec::with_capacity(image_count);
     let mut in_flight_fences = [vk::Fence::null(); FRAMES_IN_FLIGHT];
     let semaphore_info = vk::SemaphoreCreateInfo::default();
     for index in 0..FRAMES_IN_FLIGHT {
@@ -4620,10 +4705,14 @@ fn create_sync_objects(
         image_available_semaphores[index] =
             unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?;
         // SAFETY: Device is valid and creation info is well-formed.
-        render_finished_semaphores[index] =
-            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?;
-        // SAFETY: Device is valid and creation info is well-formed.
         in_flight_fences[index] = create_fence(device, true)?;
+    }
+    for _ in 0..image_count {
+        // SAFETY: Device is valid and creation info is well-formed. Each swapchain image
+        // owns its present-wait semaphore independently of the graphics frame slots.
+        render_finished_semaphores.push(
+            unsafe { device.create_semaphore(&semaphore_info, None) }.map_err(VulkanError::from)?,
+        );
     }
     Ok((
         image_available_semaphores,
@@ -4685,29 +4774,29 @@ fn validate_index_buffer_range(
     index_count: u32,
 ) -> Result<()> {
     if !usage.contains(BufferUsage::INDEX) {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "index buffer must include INDEX usage".to_string(),
         ));
     }
     let stride = index_format_size(binding.format);
     if binding.offset % stride != 0 {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "index buffer offset must be aligned to the index format size".to_string(),
         ));
     }
     let first_index_byte = u64::from(first_index)
         .checked_mul(stride)
-        .ok_or_else(|| GfxError::InvalidInput("first index byte offset overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("first index byte offset overflow".to_string()))?;
     let index_bytes = u64::from(index_count)
         .checked_mul(stride)
-        .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
     let byte_end = binding
         .offset
         .checked_add(first_index_byte)
         .and_then(|start| start.checked_add(index_bytes))
-        .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+        .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
     if byte_end > buffer_size {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "index buffer range is out of bounds".to_string(),
         ));
     }
@@ -4902,9 +4991,9 @@ fn vk_rect_for_scissor(scissor: gfx_core::ScissorRect, extent: vk::Extent2D) -> 
     Ok(vk::Rect2D {
         offset: vk::Offset2D {
             x: i32::try_from(x)
-                .map_err(|error| GfxError::InvalidInput(format!("scissor x overflow: {error}")))?,
+                .map_err(|error| Error::InvalidInput(format!("scissor x overflow: {error}")))?,
             y: i32::try_from(y)
-                .map_err(|error| GfxError::InvalidInput(format!("scissor y overflow: {error}")))?,
+                .map_err(|error| Error::InvalidInput(format!("scissor y overflow: {error}")))?,
         },
         extent: vk::Extent2D {
             width: right.saturating_sub(x),
@@ -4966,6 +5055,17 @@ fn transition_image_layout(
     image: vk::Image,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
+) {
+    transition_image_layout_levels(device, command_buffer, image, old_layout, new_layout, 1);
+}
+
+fn transition_image_layout_levels(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    mip_level_count: u32,
 ) {
     let color_attachment_access =
         vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
@@ -5054,7 +5154,7 @@ fn transition_image_layout(
             vk::ImageSubresourceRange::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
                 .base_mip_level(0)
-                .level_count(1)
+                .level_count(mip_level_count)
                 .base_array_layer(0)
                 .layer_count(1),
         );
@@ -5149,6 +5249,29 @@ fn filter_to_vk(filter: FilterMode) -> vk::Filter {
     }
 }
 
+fn sampler_create_info(
+    desc: &SamplerDescriptor,
+    max_anisotropy: f32,
+) -> vk::SamplerCreateInfo<'static> {
+    let mut create_info = vk::SamplerCreateInfo::default()
+        .mag_filter(filter_to_vk(desc.mag_filter))
+        .min_filter(filter_to_vk(desc.min_filter))
+        .address_mode_u(address_mode_to_vk(desc.address_mode_u))
+        .address_mode_v(address_mode_to_vk(desc.address_mode_v))
+        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .mipmap_mode(match desc.mipmap_filter {
+            FilterMode::Nearest => vk::SamplerMipmapMode::NEAREST,
+            FilterMode::Linear => vk::SamplerMipmapMode::LINEAR,
+        })
+        .max_lod(f32::MAX);
+    if desc.anisotropic && max_anisotropy > 1.0 {
+        create_info = create_info
+            .anisotropy_enable(true)
+            .max_anisotropy(max_anisotropy);
+    }
+    create_info
+}
+
 fn address_mode_to_vk(mode: AddressMode) -> vk::SamplerAddressMode {
     match mode {
         AddressMode::ClampToEdge => vk::SamplerAddressMode::CLAMP_TO_EDGE,
@@ -5200,6 +5323,56 @@ enum PendingDescriptorWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn depth_comparison_maps_to_vulkan_operations() {
+        let comparisons = [
+            (CompareFunction::Never, vk::CompareOp::NEVER),
+            (CompareFunction::Less, vk::CompareOp::LESS),
+            (CompareFunction::Equal, vk::CompareOp::EQUAL),
+            (CompareFunction::LessEqual, vk::CompareOp::LESS_OR_EQUAL),
+            (CompareFunction::Greater, vk::CompareOp::GREATER),
+            (CompareFunction::NotEqual, vk::CompareOp::NOT_EQUAL),
+            (
+                CompareFunction::GreaterEqual,
+                vk::CompareOp::GREATER_OR_EQUAL,
+            ),
+            (CompareFunction::Always, vk::CompareOp::ALWAYS),
+        ];
+
+        for (comparison, expected) in comparisons {
+            assert_eq!(depth_compare_function(comparison), expected);
+        }
+    }
+
+    #[test]
+    fn anisotropic_sampler_uses_device_limit() {
+        let desc = SamplerDescriptor {
+            anisotropic: true,
+            ..SamplerDescriptor::default()
+        };
+        let info = sampler_create_info(&desc, 16.0);
+
+        assert_eq!(info.anisotropy_enable, vk::TRUE);
+        assert_eq!(info.max_anisotropy, 16.0);
+    }
+
+    #[test]
+    fn unsupported_anisotropy_keeps_configured_filter_modes() {
+        let desc = SamplerDescriptor {
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Linear,
+            anisotropic: true,
+            ..SamplerDescriptor::default()
+        };
+        let info = sampler_create_info(&desc, 1.0);
+
+        assert_eq!(info.anisotropy_enable, vk::FALSE);
+        assert_eq!(info.mag_filter, vk::Filter::LINEAR);
+        assert_eq!(info.min_filter, vk::Filter::NEAREST);
+        assert_eq!(info.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
+    }
 
     #[test]
     fn present_mode_falls_back_to_fifo_when_missing() {
@@ -5423,8 +5596,9 @@ mod tests {
 
     #[test]
     fn texture_staging_layout_preserves_source_offset() {
-        let descriptor = TextureWriteDesc {
+        let descriptor = TextureWriteDescriptor {
             texture: TextureId::from_parts(0, 0),
+            mip_level: 0,
             layout: TextureDataLayout::new(12, 16, 2).expect("layout should be valid"),
             origin: gfx_core::Origin2d::ZERO,
             size: gfx_core::Extent2d::new(4, 2).expect("extent should be valid"),
@@ -5446,8 +5620,9 @@ mod tests {
 
     #[test]
     fn texture_staging_layout_rejects_partial_texel_stride() {
-        let descriptor = TextureWriteDesc {
+        let descriptor = TextureWriteDescriptor {
             texture: TextureId::from_parts(0, 0),
+            mip_level: 0,
             layout: TextureDataLayout::new(4, 10, 2).expect("layout should be valid"),
             origin: gfx_core::Origin2d::ZERO,
             size: gfx_core::Extent2d::new(2, 2).expect("extent should be valid"),
@@ -5456,13 +5631,14 @@ mod tests {
         let error = validate_texture_staging_layout(descriptor)
             .expect_err("partial texel stride should be rejected");
 
-        assert!(matches!(error, GfxError::InvalidInput(_)));
+        assert!(matches!(error, Error::InvalidInput(_)));
     }
 
     #[test]
     fn texture_staging_layout_rejects_partial_texel_offset() {
-        let descriptor = TextureWriteDesc {
+        let descriptor = TextureWriteDescriptor {
             texture: TextureId::from_parts(0, 0),
+            mip_level: 0,
             layout: TextureDataLayout::new(2, 8, 2).expect("layout should be valid"),
             origin: gfx_core::Origin2d::ZERO,
             size: gfx_core::Extent2d::new(2, 2).expect("extent should be valid"),
@@ -5471,7 +5647,7 @@ mod tests {
         let error = validate_texture_staging_layout(descriptor)
             .expect_err("partial texel offset should be rejected");
 
-        assert!(matches!(error, GfxError::InvalidInput(_)));
+        assert!(matches!(error, Error::InvalidInput(_)));
     }
 
     #[test]

@@ -11,11 +11,11 @@ fn main() {
 #[cfg(target_vendor = "apple")]
 mod apple_example {
     use gfx_core::{
-        BufferBinding, BufferDesc, BufferUsage, DeviceDesc, Format, GfxPipelineDevice,
-        GfxResourceDevice, MemoryLocation, PipelineLayoutDesc, ResourceBinding,
-        ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetLayoutDesc,
-        ResourceSetLayoutEntry, SamplerBinding, SamplerDesc, ShaderStage, ShaderStages,
-        TextureBinding, TextureDesc, TextureDimension, TextureUsage, TextureViewDesc,
+        BufferBinding, BufferDescriptor, BufferUsage, DeviceDescriptor, Format, PipelineDevice,
+        ResourceDevice, MemoryLocation, PipelineLayoutDescriptor, ResourceBinding,
+        BindingResource, ResourceBindingType, ResourceSetDescriptor, ResourceSetLayoutDescriptor,
+        ResourceSetLayoutEntry, SamplerBinding, SamplerDescriptor, ShaderStage, ShaderStages,
+        TextureBinding, TextureDescriptor, TextureDimension, TextureUsage, TextureViewDescriptor,
     };
     use gfx_metal::MetalDevice;
     use gfx_shader::compile_wgsl_to_msl;
@@ -54,13 +54,13 @@ fn fs_main() -> @location(0) vec4<f32> {
 ";
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-        let mut device = MetalDevice::new(&DeviceDesc {
+        let mut device = MetalDevice::new(&DeviceDescriptor {
             application_name: "nova-gfx atlas smoke metal".to_string(),
-            ..DeviceDesc::default()
+            ..DeviceDescriptor::default()
         })?;
         let _vertex_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Vertex, "vs_main")?;
         let _fragment_shader = compile_wgsl_to_msl(ATLAS_WGSL, ShaderStage::Fragment, "fs_main")?;
-        let layout = device.create_resource_set_layout(&ResourceSetLayoutDesc {
+        let layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
             label: Some("atlas metal resource set layout".to_string()),
             entries: vec![
                 ResourceSetLayoutEntry {
@@ -80,37 +80,40 @@ fn fs_main() -> @location(0) vec4<f32> {
                 },
             ],
         })?;
-        let _pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDesc {
+        let _pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("atlas metal pipeline layout".to_string()),
             resource_set_layouts: vec![layout],
         })?;
-        let uniform = device.create_buffer(&BufferDesc {
+        let uniform = device.create_buffer(&BufferDescriptor {
             label: Some("atlas metal uniform".to_string()),
             size: 16,
             usage: BufferUsage::UNIFORM,
             memory_location: MemoryLocation::CpuToGpu,
         })?;
-        let texture = device.create_texture(&TextureDesc {
+        let texture = device.create_texture(&TextureDescriptor {
             label: Some("atlas metal texture".to_string()),
             size: gfx_core::Extent2d::new(1, 1)?,
+            mip_level_count: 1,
             format: Format::Rgba8Unorm,
             usage: TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
             dimension: TextureDimension::D2,
         })?;
-        let texture_view = device.create_texture_view(&TextureViewDesc {
+        let texture_view = device.create_texture_view(&TextureViewDescriptor {
             label: Some("atlas metal texture view".to_string()),
             texture,
+            base_mip_level: 0,
+            mip_level_count: 1,
             format: Format::Rgba8Unorm,
         })?;
-        let sampler = device.create_sampler(&SamplerDesc::default())?;
-        let _resource_set = device.create_resource_set(&ResourceSetDesc {
+        let sampler = device.create_sampler(&SamplerDescriptor::default())?;
+        let _resource_set = device.create_resource_set(&ResourceSetDescriptor {
             label: Some("atlas metal resource set".to_string()),
             layout,
             bindings: vec![
                 ResourceBinding {
                     binding: 0,
-                    resource: ResourceBindingResource::Buffer(BufferBinding {
+                    resource: BindingResource::Buffer(BufferBinding {
                         buffer: uniform,
                         offset: 0,
                         size: 16,
@@ -119,11 +122,11 @@ fn fs_main() -> @location(0) vec4<f32> {
                 },
                 ResourceBinding {
                     binding: 1,
-                    resource: ResourceBindingResource::Texture(TextureBinding { texture_view }),
+                    resource: BindingResource::Texture(TextureBinding { texture_view }),
                 },
                 ResourceBinding {
                     binding: 2,
-                    resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
+                    resource: BindingResource::Sampler(SamplerBinding { sampler }),
                 },
             ],
         })?;

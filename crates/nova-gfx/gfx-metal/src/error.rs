@@ -1,4 +1,4 @@
-use gfx_core::GfxError;
+use gfx_core::Error;
 use thiserror::Error;
 
 /// Metal-specific error.
@@ -12,7 +12,7 @@ pub enum MetalError {
     Backend(String),
 }
 
-impl From<MetalError> for GfxError {
+impl From<MetalError> for Error {
     fn from(error: MetalError) -> Self {
         match error {
             MetalError::Unavailable(message) => Self::Unavailable(message),

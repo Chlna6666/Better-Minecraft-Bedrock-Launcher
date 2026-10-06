@@ -2,7 +2,7 @@
 //!
 //! This crate implements the `gfx-core` device traits for Direct3D 12 on
 //! Windows. Non-Windows builds expose a minimal stub that returns
-//! `GfxError::Unavailable`.
+//! `Error::Unavailable`.
 //!
 //! Chinese documentation is available in `README.zh-CN.md` in the crate source
 //! package.
@@ -21,38 +21,42 @@
         reason = "backend skeleton stores native resource slots before the full present path is wired"
     )
 )]
-use gfx_core::{GfxError, Result};
+use gfx_core::{Error, Result};
+
+#[cfg(windows)]
+mod frame_pacing;
 
 #[cfg(windows)]
 mod platform {
     use std::{
-        cell::Cell,
         ptr::{self, NonNull},
         str,
         sync::Arc,
         time::{Duration, Instant},
     };
 
-    use super::{GfxError, Result};
+    use super::frame_pacing::FrameLatencyWait;
+    use super::{Error, Result};
     use crate::error::Dx12Error;
     use crate::registry::ResourceRegistry;
     use gfx_core::{
-        AdapterInfo, AddressMode, BackendCapabilities, BackendKind, BlendMode, BufferBinding,
-        BufferDesc, BufferId, BufferUsage, ClearColor, CommandEncoderDesc, CommandEncoderId,
-        CompositeAlphaMode, DeviceDesc, DrawDesc, DrawStepDesc, FilterMode, Format, GfxBackend,
-        GfxCommandDevice, GfxDiagnosticsDevice, GfxMemoryTrimLevel, GfxPipelineDevice,
-        GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice, GfxSurfaceDevice,
-        GfxTextureTransferDevice, GfxThreadingMode, IndexBufferBinding, IndexFormat, LoadOp,
-        MemoryLocation, PipelineLayoutDesc, PipelineLayoutId, PowerPreference, PresentMode,
-        PrimitiveTopology, RenderPassDepthAttachment, RenderPassDesc, RenderPassId,
-        RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef,
-        RenderTarget, ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
-        ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc, SamplerId,
-        ScissorRect, ShaderCode, ShaderModuleDesc, ShaderModuleId, ShaderStage, ShaderStages,
-        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId,
-        TextureDesc, TextureDimension, TextureId, TextureReadback, TextureRenderStepList,
-        TextureUsage, TextureViewDesc, TextureViewId, TextureWrite, TextureWriteDesc,
-        resource_set_list,
+        AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindingResource,
+        BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUsage, ClearColor,
+        CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction,
+        CompositeAlphaMode, DepthState, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor,
+        DrawStepDescriptor, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
+        MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor,
+        PipelineLayoutId, PowerPreference, PresentMode, PresentationDevice, PrimitiveTopology,
+        RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
+        ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
+        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, SamplerDescriptor,
+        SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage,
+        ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
+        SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor,
+        TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
+        TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+        ThreadingMode, resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -73,20 +77,28 @@ mod platform {
                 D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_SRC1_COLOR, D3D12_BLEND_ZERO,
                 D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL,
                 D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
-                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC,
-                D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPARISON_FUNC, D3D12_COMPARISON_FUNC_ALWAYS,
+                D3D12_COMPARISON_FUNC_EQUAL, D3D12_COMPARISON_FUNC_GREATER,
+                D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_LESS,
+                D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_COMPARISON_FUNC_NEVER,
+                D3D12_COMPARISON_FUNC_NOT_EQUAL, D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
                 D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_DEPTH_BIAS,
                 D3D12_DEFAULT_DEPTH_BIAS_CLAMP, D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
-                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DESCRIPTOR_HEAP_DESC,
-                D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-                D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
-                D3D12_DESCRIPTOR_RANGE, D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-                D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-                D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
-                D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_GPU_DESCRIPTOR_HANDLE,
-                D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES,
-                D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_DEPTH_WRITE_MASK_ZERO,
+                D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+                D3D12_DESCRIPTOR_HEAP_TYPE_DSV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
+                D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+                D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_FENCE_FLAG_NONE, D3D12_FILL_MODE_SOLID,
+                D3D12_FILTER_ANISOTROPIC, D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT,
+                D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR,
+                D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+                D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT, D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR,
+                D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+                D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD,
                 D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
                 D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_MESSAGE,
                 D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
@@ -148,7 +160,8 @@ mod platform {
     use windows_numerics::Matrix3x2;
 
     const BACK_BUFFER_COUNT: u32 = 3;
-    const DX12_MAX_FRAME_LATENCY: u32 = 1;
+    // Keep rendering overlapped with presentation while bounding the queue below buffer count.
+    const DX12_MAX_FRAME_LATENCY: u32 = 2;
     const DX12_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
@@ -212,8 +225,8 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] if Direct3D 12 initialization fails.
-        pub fn new(desc: &DeviceDesc) -> Result<Self> {
+        /// Returns [`Error`] if Direct3D 12 initialization fails.
+        pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
             enable_debug_layer_if_requested();
             let factory = create_factory()?;
             let allow_tearing = factory_supports_tearing(&factory);
@@ -300,21 +313,21 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when native handles are invalid.
-        fn create_surface<W>(&mut self, window: &W, desc: &SurfaceDesc) -> Result<SurfaceId>
+        /// Returns [`Error`] when native handles are invalid.
+        fn create_surface<W>(&mut self, window: &W, desc: &SurfaceDescriptor) -> Result<SurfaceId>
         where
             W: HasDisplayHandle + HasWindowHandle + ?Sized,
         {
             let _display = window
                 .display_handle()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let window = window
                 .window_handle()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let hwnd = match window.as_raw() {
                 RawWindowHandle::Win32(handle) => HWND(handle.hwnd.get() as *mut _),
                 other => {
-                    return Err(GfxError::InvalidInput(format!(
+                    return Err(Error::InvalidInput(format!(
                         "DX12 surface requires RawWindowHandle::Win32, got {other:?}"
                     )));
                 }
@@ -329,7 +342,7 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when swapchain creation fails.
+        /// Returns [`Error`] when swapchain creation fails.
         pub fn configure_surface(
             &mut self,
             surface: SurfaceId,
@@ -343,7 +356,7 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the surface handle is invalid.
+        /// Returns [`Error`] when the surface handle is invalid.
         fn create_swapchain(
             &mut self,
             surface: SurfaceId,
@@ -433,7 +446,7 @@ mod platform {
             };
             let swapchain: IDXGISwapChain3 = swapchain1
                 .cast()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let frame_latency_waitable = if creation_flags
                 & (DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32)
                 != 0
@@ -467,7 +480,7 @@ mod platform {
                 frame_index: 0,
                 creation_flags,
                 frame_latency_waitable,
-                frame_latency_ready: Cell::new(false),
+                frame_pacing: FrameLatencyWait::default(),
                 partial_presentation,
                 pending_damage: vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize],
             };
@@ -489,12 +502,12 @@ mod platform {
                     Option::<&IDXGIOutput>::None,
                 )
             }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
             if let Some(composition) = retained_composition {
                 // SAFETY: The retained visual/device still own the live HWND attachment. The old
                 // swapchain remains alive until this replacement is committed and registered.
                 unsafe { composition.visual.SetContent(&swapchain) }
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 Self::commit_composition(&composition)?;
                 return Ok((swapchain, Some(composition)));
             }
@@ -502,24 +515,24 @@ mod platform {
             // avoids treating ID3D12Device as the IDXGIDevice required for DComp-owned surfaces.
             let composition_device: IDCompositionDesktopDevice =
                 unsafe { DCompositionCreateDevice2(None::<&windows::core::IUnknown>) }.map_err(
-                    |error| GfxError::Backend(format!("DCompositionCreateDevice2 failed: {error}")),
+                    |error| Error::Backend(format!("DCompositionCreateDevice2 failed: {error}")),
                 )?;
             // SAFETY: The HWND belongs to the surface and remains live while the swapchain exists.
             let composition_target = unsafe { composition_device.CreateTargetForHwnd(hwnd, true) }
                 .map_err(|error| {
-                    GfxError::Backend(format!(
+                    Error::Backend(format!(
                         "IDCompositionDesktopDevice::CreateTargetForHwnd failed: {error}"
                     ))
                 })?;
             // SAFETY: The composition device is valid and owns the visual it creates.
             let composition_visual =
                 unsafe { composition_device.CreateVisual() }.map_err(|error| {
-                    GfxError::Backend(format!("IDCompositionDevice::CreateVisual failed: {error}"))
+                    Error::Backend(format!("IDCompositionDevice::CreateVisual failed: {error}"))
                 })?;
             // SAFETY: The composition device is valid and owns the transform it creates.
             let composition_transform: IDCompositionMatrixTransform =
                 unsafe { composition_device.CreateMatrixTransform() }.map_err(|error| {
-                    GfxError::Backend(format!(
+                    Error::Backend(format!(
                         "IDCompositionDevice::CreateMatrixTransform failed: {error}"
                     ))
                 })?;
@@ -537,23 +550,23 @@ mod platform {
                 // default so the visual can never compose with a collapsed transform.
                 composition_transform
                     .SetMatrix(&raw const identity)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 composition_visual
                     .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 composition_visual
                     .SetTransform(&composition_transform)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 composition_visual.SetContent(&swapchain).map_err(|error| {
-                    GfxError::Backend(format!("IDCompositionVisual::SetContent failed: {error}"))
+                    Error::Backend(format!("IDCompositionVisual::SetContent failed: {error}"))
                 })?;
                 composition_target
                     .SetRoot(&composition_visual)
                     .map_err(|error| {
-                        GfxError::Backend(format!("IDCompositionTarget::SetRoot failed: {error}"))
+                        Error::Backend(format!("IDCompositionTarget::SetRoot failed: {error}"))
                     })?;
                 composition_device.Commit().map_err(|error| {
-                    GfxError::Backend(format!("IDCompositionDevice::Commit failed: {error}"))
+                    Error::Backend(format!("IDCompositionDevice::Commit failed: {error}"))
                 })?;
             }
             Ok((
@@ -570,7 +583,7 @@ mod platform {
         fn commit_composition(composition: &Dx12Composition) -> Result<()> {
             // SAFETY: The composition device remains alive through Dx12Composition.
             unsafe { composition._device.Commit() }
-                .map_err(|error| GfxError::Backend(error.to_string()))
+                .map_err(|error| Error::Backend(error.to_string()))
         }
 
         fn build_hwnd_swapchain(
@@ -616,14 +629,14 @@ mod platform {
                     Option::<&IDXGIOutput>::None,
                 )
             }
-            .map_err(|error| GfxError::Backend(error.to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))
         }
 
         /// Recreates an existing swapchain.
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the swapchain handle is invalid.
+        /// Returns [`Error`] when the swapchain handle is invalid.
         pub fn resize_swapchain(
             &mut self,
             swapchain: SwapchainId,
@@ -642,7 +655,7 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the swapchain handle is invalid or recreation fails.
+        /// Returns [`Error`] when the swapchain handle is invalid or recreation fails.
         pub fn reconfigure_swapchain(
             &mut self,
             swapchain: SwapchainId,
@@ -655,7 +668,7 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the swapchain handle is invalid or recreation fails.
+        /// Returns [`Error`] when the swapchain handle is invalid or recreation fails.
         pub fn recreate_swapchain(
             &mut self,
             swapchain: SwapchainId,
@@ -670,6 +683,7 @@ mod platform {
             swapchain: SwapchainId,
             config: SurfaceConfig,
         ) -> Result<()> {
+            self.swapchains.get_mut(swapchain)?.frame_pacing.reset();
             self.wait_for_pending_work()?;
             let (surface, hwnd, composition) = {
                 let swapchain_record = self.swapchains.get(swapchain)?;
@@ -691,11 +705,14 @@ mod platform {
             swapchain: SwapchainId,
             config: SurfaceConfig,
         ) -> Result<()> {
+            // ResizeBuffers retains this waitable object. Preserve any consumed
+            // readiness credit while cancelling notifications for the old size.
+            self.swapchains.get_mut(swapchain)?.frame_pacing.cancel();
             self.wait_for_pending_work()?;
             let device = self.device.clone();
             let previous_config = self.swapchains.get(swapchain)?.config;
             if previous_config.alpha_mode != config.alpha_mode {
-                return Err(GfxError::InvalidInput(format!(
+                return Err(Error::InvalidInput(format!(
                     "DX12 swapchain alpha mode cannot be changed after swapchain creation; \
                      destroy and recreate the swapchain instead: old={:?} new={:?}",
                     previous_config.alpha_mode, config.alpha_mode
@@ -720,11 +737,11 @@ mod platform {
             } {
                 swapchain.config = previous_config;
                 Self::rebuild_render_targets(&device, swapchain).map_err(|rollback_error| {
-                    GfxError::Backend(format!(
+                    Error::Backend(format!(
                         "DX12 ResizeBuffers failed: {error}; rebuilding previous render targets failed: {rollback_error}"
                     ))
                 })?;
-                return Err(GfxError::Backend(error.to_string()));
+                return Err(Error::Backend(error.to_string()));
             }
 
             if let Err(error) = Self::rebuild_render_targets(&device, swapchain) {
@@ -741,12 +758,12 @@ mod platform {
                     )
                 };
                 if let Err(rollback_error) = rollback {
-                    return Err(GfxError::Backend(format!(
+                    return Err(Error::Backend(format!(
                         "DX12 render target rebuild failed after ResizeBuffers: {error}; rollback ResizeBuffers failed: {rollback_error}"
                     )));
                 }
                 Self::rebuild_render_targets(&device, swapchain).map_err(|rollback_error| {
-                    GfxError::Backend(format!(
+                    Error::Backend(format!(
                         "DX12 render target rebuild failed after ResizeBuffers: {error}; rollback render target rebuild failed: {rollback_error}"
                     ))
                 })?;
@@ -772,13 +789,14 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when validation fails.
-        fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+        /// Returns [`Error`] when validation fails.
+        fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             desc.validate()?;
             let resource = create_buffer_resource(&self.device, desc)?;
             Ok(self.buffers.insert(Dx12Buffer {
                 desc: desc.clone(),
                 resource: Some(resource),
+                state: initial_buffer_state(desc),
             }))
         }
 
@@ -786,31 +804,63 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the handle or write range is invalid.
+        /// Returns [`Error`] when the handle or write range is invalid, or when the buffer lives
+        /// in memory the CPU cannot fill.
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
-            let buffer = self.buffers.get_mut(buffer)?;
-            if buffer.desc.memory_location != MemoryLocation::CpuToGpu {
-                return Err(GfxError::Unavailable(
-                    "DX12 GPU-only staging upload is not enabled in this build".to_string(),
-                ));
-            }
             let offset = usize::try_from(offset)
-                .map_err(|error| GfxError::InvalidInput(format!("offset overflow: {error}")))?;
-            let end = offset
-                .checked_add(data.len())
-                .ok_or_else(|| GfxError::InvalidInput("buffer write range overflow".to_string()))?;
-            let size = usize::try_from(buffer.desc.size).map_err(|error| {
-                GfxError::InvalidInput(format!("buffer size overflow: {error}"))
-            })?;
-            if end > size {
-                return Err(GfxError::InvalidInput(
-                    "buffer write range is out of bounds".to_string(),
-                ));
+                .map_err(|error| Error::InvalidInput(format!("offset overflow: {error}")))?;
+            let (resource, state, memory_location) = {
+                let buffer = self.buffers.get(buffer)?;
+                let end = offset.checked_add(data.len()).ok_or_else(|| {
+                    Error::InvalidInput("buffer write range overflow".to_string())
+                })?;
+                let size = usize::try_from(buffer.desc.size).map_err(|error| {
+                    Error::InvalidInput(format!("buffer size overflow: {error}"))
+                })?;
+                if end > size {
+                    return Err(Error::InvalidInput(
+                        "buffer write range is out of bounds".to_string(),
+                    ));
+                }
+                let resource = buffer.resource.clone().ok_or_else(|| {
+                    Error::Backend("DX12 buffer has no native resource".to_string())
+                })?;
+                (resource, buffer.state, buffer.desc.memory_location)
+            };
+            match memory_location {
+                MemoryLocation::CpuToGpu => upload_to_mapped_buffer(&resource, offset, data)?,
+                MemoryLocation::GpuToCpu => {
+                    return Err(Error::Unavailable(
+                        "DX12 readback buffers are written by the GPU, not the CPU".to_string(),
+                    ));
+                }
+                MemoryLocation::GpuOnly => {
+                    let length = u64::try_from(data.len()).map_err(|error| {
+                        Error::InvalidInput(format!("buffer write length overflow: {error}"))
+                    })?;
+                    let staging_desc = BufferDescriptor {
+                        label: Some("nova-gfx DX12 buffer staging".to_string()),
+                        size: length,
+                        usage: BufferUsage::COPY_SRC,
+                        memory_location: MemoryLocation::CpuToGpu,
+                    };
+                    let staging = create_buffer_resource(&self.device, &staging_desc)?;
+                    upload_to_mapped_buffer(&staging, 0, data)?;
+                    self.copy_buffer_region(BufferRegionCopy {
+                        source: &staging,
+                        source_state: D3D12_RESOURCE_STATE_GENERIC_READ,
+                        source_offset: 0,
+                        destination: &resource,
+                        destination_state: state,
+                        destination_final_state: D3D12_RESOURCE_STATE_GENERIC_READ,
+                        destination_offset: u64::try_from(offset).map_err(|error| {
+                            Error::InvalidInput(format!("buffer write offset overflow: {error}"))
+                        })?,
+                        len: length,
+                    })?;
+                }
             }
-            let resource = buffer.resource.as_ref().ok_or_else(|| {
-                GfxError::Backend("DX12 buffer has no native resource".to_string())
-            })?;
-            upload_to_mapped_buffer(resource, offset, data)?;
+            self.buffers.get_mut(buffer)?.state = D3D12_RESOURCE_STATE_GENERIC_READ;
             Ok(())
         }
 
@@ -818,11 +868,11 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when validation fails.
-        fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+        /// Returns [`Error`] when validation fails.
+        fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             desc.validate()?;
             if desc.dimension != TextureDimension::D2 {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "only 2D textures are supported".to_string(),
                 ));
             }
@@ -838,8 +888,8 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when upload resources or command recording fail.
-        fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
+        /// Returns [`Error`] when upload resources or command recording fail.
+        fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
             let copy = self.prepare_texture_copy(desc, data)?;
             let fence_value = self.upload_textures_2d(std::slice::from_ref(&copy))?;
             self.upload_ring.retire_used_pages(fence_value);
@@ -882,12 +932,12 @@ mod platform {
             let (resource, desc, state) = {
                 let texture = self.textures.get(texture_id)?;
                 if !texture.desc.usage.contains(TextureUsage::COPY_SRC) {
-                    return Err(GfxError::InvalidInput(
+                    return Err(Error::InvalidInput(
                         "texture readback requires COPY_SRC usage".to_string(),
                     ));
                 }
                 let resource = texture.resource.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 texture has no native resource".to_string())
+                    Error::Backend("DX12 texture has no native resource".to_string())
                 })?;
                 (resource, texture.desc.clone(), texture.state)
             };
@@ -895,13 +945,13 @@ mod platform {
                 .size
                 .width()
                 .checked_mul(desc.format.bytes_per_pixel())
-                .ok_or_else(|| GfxError::InvalidInput("texture row size overflow".to_string()))?;
+                .ok_or_else(|| Error::InvalidInput("texture row size overflow".to_string()))?;
             let row_pitch =
                 align_to_u32(u64::from(bytes_per_row), DX12_TEXTURE_DATA_PITCH_ALIGNMENT)?;
             let buffer_size = u64::from(row_pitch)
                 .checked_mul(u64::from(desc.size.height()))
-                .ok_or_else(|| GfxError::InvalidInput("texture readback size overflow".into()))?;
-            let readback_desc = BufferDesc {
+                .ok_or_else(|| Error::InvalidInput("texture readback size overflow".into()))?;
+            let readback_desc = BufferDescriptor {
                 label: Some("nova-gfx DX12 texture readback".to_string()),
                 size: buffer_size,
                 usage: BufferUsage::COPY_DST,
@@ -911,20 +961,20 @@ mod platform {
             self.copy_texture_to_readback(&resource, state, &desc, &readback, row_pitch)?;
 
             let buffer_size = usize::try_from(buffer_size).map_err(|error| {
-                GfxError::InvalidInput(format!("texture readback size overflow: {error}"))
+                Error::InvalidInput(format!("texture readback size overflow: {error}"))
             })?;
             let row_bytes = usize::try_from(bytes_per_row).map_err(|error| {
-                GfxError::InvalidInput(format!("texture row size overflow: {error}"))
+                Error::InvalidInput(format!("texture row size overflow: {error}"))
             })?;
             let row_pitch = usize::try_from(row_pitch).map_err(|error| {
-                GfxError::InvalidInput(format!("texture row pitch overflow: {error}"))
+                Error::InvalidInput(format!("texture row pitch overflow: {error}"))
             })?;
             let height = usize::try_from(desc.size.height()).map_err(|error| {
-                GfxError::InvalidInput(format!("texture height overflow: {error}"))
+                Error::InvalidInput(format!("texture height overflow: {error}"))
             })?;
             let tight_len = row_bytes
                 .checked_mul(height)
-                .ok_or_else(|| GfxError::InvalidInput("texture readback length overflow".into()))?;
+                .ok_or_else(|| Error::InvalidInput("texture readback length overflow".into()))?;
             let mut mapped = ptr::null_mut();
             let read_range = D3D12_RANGE {
                 Begin: 0,
@@ -932,12 +982,12 @@ mod platform {
             };
             // SAFETY: The resource is a readback-heap buffer and the range covers its allocation.
             unsafe { readback.Map(0, Some(&raw const read_range), Some(&raw mut mapped)) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let Some(mapped) = NonNull::new(mapped.cast::<u8>()) else {
                 let written_range = D3D12_RANGE { Begin: 0, End: 0 };
                 // SAFETY: Map succeeded above and must be balanced before returning.
                 unsafe { readback.Unmap(0, Some(&raw const written_range)) };
-                return Err(GfxError::Backend(
+                return Err(Error::Backend(
                     "DX12 readback mapping returned a null pointer".to_string(),
                 ));
             };
@@ -964,7 +1014,7 @@ mod platform {
             &mut self,
             texture: &ID3D12Resource,
             old_state: D3D12_RESOURCE_STATES,
-            desc: &TextureDesc,
+            desc: &TextureDescriptor,
             readback: &ID3D12Resource,
             row_pitch: u32,
         ) -> Result<()> {
@@ -1025,11 +1075,81 @@ mod platform {
                 );
             }
             // SAFETY: The command list is open and ready to close.
-            unsafe { command_list.Close() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             let executable: ID3D12CommandList = command_list
                 .cast()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
+            // SAFETY: The command list is closed and belongs to this queue's device.
+            unsafe { self.graphics_queue.ExecuteCommandLists(&[Some(executable)]) };
+            self.wait_for_gpu()
+        }
+
+        /// Copies a byte range between two buffers and leaves the destination readable.
+        ///
+        /// Staging uploads use this to move CPU-written data into device-local memory. The
+        /// destination is transitioned through `COPY_DEST` and left in `GENERIC_READ`, which
+        /// covers vertex, index, constant, shader-resource, and copy-source use.
+        fn copy_buffer_region(&mut self, copy: BufferRegionCopy<'_>) -> Result<()> {
+            let BufferRegionCopy {
+                source,
+                source_state,
+                source_offset,
+                destination,
+                destination_state,
+                destination_final_state,
+                destination_offset,
+                len,
+            } = copy;
+            let allocator = create_command_allocator(&self.device)?;
+            let command_list = create_command_list(&self.device, &allocator)?;
+            if source_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                record_transition_barrier(
+                    &command_list,
+                    source,
+                    source_state,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                );
+            }
+            if destination_state != D3D12_RESOURCE_STATE_COPY_DEST {
+                record_transition_barrier(
+                    &command_list,
+                    destination,
+                    destination_state,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                );
+            }
+            // SAFETY: Both resources are live, in copy-compatible states, and the caller
+            // validated that the copied range fits inside the destination buffer.
+            unsafe {
+                command_list.CopyBufferRegion(
+                    destination,
+                    destination_offset,
+                    source,
+                    source_offset,
+                    len,
+                );
+            }
+            if source_state != D3D12_RESOURCE_STATE_COPY_SOURCE {
+                record_transition_barrier(
+                    &command_list,
+                    source,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    source_state,
+                );
+            }
+            if destination_state != destination_final_state {
+                record_transition_barrier(
+                    &command_list,
+                    destination,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    destination_final_state,
+                );
+            }
+            // SAFETY: The command list is open and ready to close.
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
+            let executable: ID3D12CommandList = command_list
+                .cast()
+                .map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: The command list is closed and belongs to this queue's device.
             unsafe { self.graphics_queue.ExecuteCommandLists(&[Some(executable)]) };
             self.wait_for_gpu()
@@ -1037,7 +1157,7 @@ mod platform {
 
         fn prepare_texture_copy(
             &mut self,
-            desc: TextureWriteDesc,
+            desc: TextureWriteDescriptor,
             data: &[u8],
         ) -> Result<Dx12TextureCopyOwned> {
             let plan = self.prepare_texture_copy_plan(TextureWrite {
@@ -1055,9 +1175,10 @@ mod platform {
             let desc = write.descriptor;
             let texture = self.textures.get(desc.texture)?;
             desc.validate_against(&texture.desc, write.data.len())?;
-            let texture_resource = texture.resource.clone().ok_or_else(|| {
-                GfxError::Backend("DX12 texture has no native resource".to_string())
-            })?;
+            let texture_resource = texture
+                .resource
+                .clone()
+                .ok_or_else(|| Error::Backend("DX12 texture has no native resource".to_string()))?;
             let format = texture.desc.format;
             let upload_layout = texture_upload_layout(desc, format, write.data.len())?;
             Ok(Dx12TextureCopyPlan {
@@ -1094,15 +1215,25 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the texture handle is invalid.
-        fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
-            let (usage, resource) = {
+        /// Returns [`Error`] when the texture handle is invalid.
+        fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
+            let (texture_desc, resource) = {
                 let texture = self.textures.get(desc.texture)?;
                 let resource = texture.resource.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 texture has no native resource".to_string())
+                    Error::Backend("DX12 texture has no native resource".to_string())
                 })?;
-                (texture.desc.usage, resource)
+                (texture.desc.clone(), resource)
             };
+            desc.validate_against(&texture_desc)?;
+            let usage = texture_desc.usage;
+            if (usage.contains(TextureUsage::COLOR_ATTACHMENT)
+                || usage.contains(TextureUsage::DEPTH_ATTACHMENT))
+                && (desc.base_mip_level != 0 || desc.mip_level_count != 1)
+            {
+                return Err(Error::InvalidInput(
+                    "DX12 attachment views require mip level zero only".to_string(),
+                ));
+            }
 
             let rtv_slot = if usage.contains(TextureUsage::COLOR_ATTACHMENT) {
                 let slot = self.rtv_heap.allocate()?;
@@ -1139,6 +1270,8 @@ mod platform {
             Ok(self.texture_views.insert(Dx12TextureView {
                 texture: desc.texture,
                 format: desc.format,
+                base_mip_level: desc.base_mip_level,
+                mip_level_count: desc.mip_level_count,
                 rtv_slot,
                 dsv_slot,
             }))
@@ -1147,12 +1280,14 @@ mod platform {
         /// Creates a sampler record.
         #[expect(
             clippy::unnecessary_wraps,
-            reason = "inherent helper mirrors the fallible GfxResourceDevice trait method"
+            reason = "inherent helper mirrors the fallible ResourceDevice trait method"
         )]
-        fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
             Ok(self.samplers.insert(Dx12Sampler {
                 mag_filter: desc.mag_filter,
                 min_filter: desc.min_filter,
+                mipmap_filter: desc.mipmap_filter,
+                anisotropic: desc.anisotropic,
                 address_mode_u: desc.address_mode_u,
                 address_mode_v: desc.address_mode_v,
             }))
@@ -1161,7 +1296,7 @@ mod platform {
         /// Creates a resource set layout.
         fn create_resource_set_layout(
             &mut self,
-            desc: &ResourceSetLayoutDesc,
+            desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             desc.validate()?;
             Ok(self
@@ -1172,7 +1307,7 @@ mod platform {
         /// Creates a pipeline layout backed by a D3D12 root signature.
         fn create_pipeline_layout(
             &mut self,
-            desc: &PipelineLayoutDesc,
+            desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             desc.validate()?;
             let layouts = desc
@@ -1195,7 +1330,7 @@ mod platform {
             clippy::too_many_lines,
             reason = "D3D12 descriptor writes stay together at the resource set FFI boundary"
         )]
-        fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             let layout = self.resource_set_layouts.get(desc.layout)?.desc.clone();
             desc.validate_against(&layout)?;
             let mut resource_tables = Vec::new();
@@ -1203,7 +1338,7 @@ mod platform {
 
             for binding in &desc.bindings {
                 match binding.resource {
-                    ResourceBindingResource::Buffer(buffer_binding) => {
+                    BindingResource::Buffer(buffer_binding) => {
                         let buffer = self.buffers.get(buffer_binding.buffer)?;
                         buffer_binding.validate_against(buffer.desc.size)?;
                         let entry = layout
@@ -1211,13 +1346,13 @@ mod platform {
                             .iter()
                             .find(|entry| entry.binding == binding.binding)
                             .ok_or_else(|| {
-                                GfxError::InvalidInput(format!(
+                                Error::InvalidInput(format!(
                                     "resource set layout is missing binding {}",
                                     binding.binding
                                 ))
                             })?;
                         let resource = buffer.resource.as_ref().ok_or_else(|| {
-                            GfxError::Backend("DX12 buffer has no native resource".to_string())
+                            Error::Backend("DX12 buffer has no native resource".to_string())
                         })?;
                         match entry.binding_type {
                             ResourceBindingType::UniformBuffer => {
@@ -1227,7 +1362,7 @@ mod platform {
                                 validate_storage_buffer_binding(buffer_binding)?;
                             }
                             ResourceBindingType::SampledTexture | ResourceBindingType::Sampler => {
-                                return Err(GfxError::InvalidInput(format!(
+                                return Err(Error::InvalidInput(format!(
                                     "unexpected buffer binding type {:?}",
                                     entry.binding_type
                                 )));
@@ -1256,7 +1391,7 @@ mod platform {
                                 let byte_size = buffer_binding.size;
                                 let num_elements =
                                     u32::try_from(byte_size / 4).map_err(|error| {
-                                        GfxError::InvalidInput(format!(
+                                        Error::InvalidInput(format!(
                                             "raw storage buffer element count overflow: {error}"
                                         ))
                                     })?;
@@ -1297,11 +1432,11 @@ mod platform {
                             descriptor_index: slot.index,
                         });
                     }
-                    ResourceBindingResource::Texture(texture_binding) => {
+                    BindingResource::Texture(texture_binding) => {
                         let view = self.texture_views.get(texture_binding.texture_view)?;
                         let texture = self.textures.get(view.texture)?;
                         let resource = texture.resource.as_ref().ok_or_else(|| {
-                            GfxError::Backend("DX12 texture has no native resource".to_string())
+                            Error::Backend("DX12 texture has no native resource".to_string())
                         })?;
                         let slot = self.resource_heap.allocate()?;
                         let srv_desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
@@ -1310,8 +1445,8 @@ mod platform {
                             Shader4ComponentMapping: windows::Win32::Graphics::Direct3D12::D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
                             Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
                                 Texture2D: windows::Win32::Graphics::Direct3D12::D3D12_TEX2D_SRV {
-                                    MostDetailedMip: 0,
-                                    MipLevels: 1,
+                                    MostDetailedMip: view.base_mip_level,
+                                    MipLevels: view.mip_level_count,
                                     PlaneSlice: 0,
                                     ResourceMinLODClamp: 0.0,
                                 },
@@ -1331,7 +1466,7 @@ mod platform {
                             descriptor_index: slot.index,
                         });
                     }
-                    ResourceBindingResource::Sampler(sampler_binding) => {
+                    BindingResource::Sampler(sampler_binding) => {
                         let sampler = self.samplers.get(sampler_binding.sampler)?;
                         let slot = self.sampler_heap.allocate()?;
                         let sampler_desc = sampler_desc_to_dx12(*sampler);
@@ -1365,7 +1500,7 @@ mod platform {
                             NumElements: layout_sampler_index_count(&layout)?,
                             StructureByteStride: u32::try_from(std::mem::size_of::<u32>())
                                 .map_err(|error| {
-                                    GfxError::InvalidInput(format!(
+                                    Error::InvalidInput(format!(
                                         "sampler index stride overflow: {error}"
                                     ))
                                 })?,
@@ -1401,8 +1536,11 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when validation or HLSL compilation fails.
-        fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        /// Returns [`Error`] when validation or HLSL compilation fails.
+        fn create_shader_module(
+            &mut self,
+            desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             desc.validate()?;
             let bytecode = match &desc.binary.code {
                 ShaderCode::Hlsl(source) => compile_hlsl_to_dx_bytecode(
@@ -1412,7 +1550,7 @@ mod platform {
                 )?,
                 ShaderCode::DxBytecode(bytecode) => bytecode.clone(),
                 ShaderCode::Spirv(_) | ShaderCode::Msl(_) => {
-                    return Err(GfxError::Shader(
+                    return Err(Error::Shader(
                         "DX12 shader module requires HLSL or D3D bytecode".to_string(),
                     ));
                 }
@@ -1427,9 +1565,9 @@ mod platform {
         /// Creates a render pass record.
         #[expect(
             clippy::unnecessary_wraps,
-            reason = "inherent helper mirrors the fallible GfxPipelineDevice trait method"
+            reason = "inherent helper mirrors the fallible PipelineDevice trait method"
         )]
-        fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             Ok(self.render_passes.insert(Dx12RenderPass {
                 color_format: desc.color_attachment.format,
                 depth_format: desc
@@ -1443,28 +1581,28 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when validation or shader handles fail.
+        /// Returns [`Error`] when validation or shader handles fail.
         fn create_render_pipeline(
             &mut self,
-            desc: &RenderPipelineDesc,
+            desc: &RenderPipelineDescriptor,
             _viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             desc.validate()?;
             let vertex_shader = self.shader_modules.get(desc.vertex_shader)?;
             let fragment_shader = self.shader_modules.get(desc.fragment_shader)?;
             if vertex_shader.stage != ShaderStage::Vertex {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "vertex shader module must use ShaderStage::Vertex".to_string(),
                 ));
             }
             if fragment_shader.stage != ShaderStage::Fragment {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "fragment shader module must use ShaderStage::Fragment".to_string(),
                 ));
             }
             let render_pass = self.render_passes.get(desc.render_pass)?;
             if desc.depth_state.is_some() && render_pass.depth_format.is_none() {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 depth pipeline requires a render pass depth attachment".to_string(),
                 ));
             }
@@ -1491,7 +1629,7 @@ mod platform {
                 desc.color_format,
                 desc.blend_mode,
                 render_pass.depth_format,
-                desc.depth_state.is_some(),
+                desc.depth_state,
             )?;
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
                 color_format: desc.color_format,
@@ -1507,13 +1645,12 @@ mod platform {
         /// Creates a command encoder record.
         fn create_command_encoder(
             &mut self,
-            _desc: &CommandEncoderDesc,
+            _desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             let allocator = create_command_allocator(&self.device)?;
             let command_list = create_command_list(&self.device, &allocator)?;
             // SAFETY: Newly created command lists start open; close it so frame recording can reset it.
-            unsafe { command_list.Close() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 allocator: Some(allocator),
                 command_list: Some(command_list),
@@ -1522,10 +1659,14 @@ mod platform {
         }
 
         /// Records a draw call with optional resource sets.
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: &DrawDesc) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            encoder: CommandEncoderId,
+            draw: &DrawDescriptor,
+        ) -> Result<()> {
             let _encoder = self.command_encoders.get(encoder)?;
             let RenderTarget::Swapchain { swapchain, .. } = draw.pass.target else {
-                return Err(GfxError::Unavailable(
+                return Err(Error::Unavailable(
                     "DX12 offscreen render target is not implemented yet".to_string(),
                 ));
             };
@@ -1542,7 +1683,7 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the encoder is invalid.
+        /// Returns [`Error`] when the encoder is invalid.
         fn submit(&mut self, encoder: CommandEncoderId) -> Result<()> {
             let fence_value = self.submit_without_wait(encoder)?;
             self.wait_for_fence_value(fence_value)?;
@@ -1556,12 +1697,12 @@ mod platform {
             let command_list = {
                 let encoder = self.command_encoders.get(encoder)?;
                 encoder.command_list.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?
             };
             let command_list: ID3D12CommandList = command_list
                 .cast()
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: Command list is closed and ready to execute on this queue.
             self.command_encoders.get_mut(encoder)?.submitted = true;
             unsafe {
@@ -1628,11 +1769,11 @@ mod platform {
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<()> {
             self.prepare_swapchain_damage(swapchain, None)?;
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
             let result = self
                 .record_resource_steps_frame(encoder, swapchain, render_pass, steps, clear_color)
                 .and_then(|()| self.submit(encoder));
@@ -1701,7 +1842,7 @@ mod platform {
             damage: Option<ScissorRect>,
         ) -> Result<()> {
             let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
             let result = self
                 .record_render_step_list_frame(
                     encoder,
@@ -1721,15 +1862,15 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Returns [`GfxError`] when the texture view is not renderable or command recording fails.
+        /// Returns [`Error`] when the texture view is not renderable or command recording fails.
         fn draw_steps_to_texture(
             &mut self,
             texture_view: TextureViewId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
             let result = self
                 .record_resource_steps_texture(
                     encoder,
@@ -1812,12 +1953,12 @@ mod platform {
                 }
             }
 
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
             let result = passes[0]
                 .steps
                 .first()
                 .ok_or_else(|| {
-                    GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
+                    Error::InvalidInput("DX12 draw step list must not be empty".to_string())
                 })
                 .and_then(|first_step| self.begin_texture_command_encoder(encoder, first_step))
                 .and_then(|()| {
@@ -1856,10 +1997,10 @@ mod platform {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
                 let allocator = encoder.allocator.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no allocator".to_string())
+                    Error::Backend("DX12 command encoder has no allocator".to_string())
                 })?;
                 let command_list = encoder.command_list.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
                 (allocator, command_list)
             };
@@ -1869,14 +2010,14 @@ mod platform {
                 .pipeline_state
                 .clone()
                 .ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                    Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
 
             // SAFETY: This new allocator is not referenced by an in-flight command list.
-            unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: The command list is closed and reset with this encoder's live allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             Ok(())
         }
 
@@ -1887,10 +2028,10 @@ mod platform {
                 .command_list
                 .as_ref()
                 .ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
             // SAFETY: The batch command list is open and has finished recording all passes.
-            unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))
         }
 
         fn render_steps_and_present_deferred(
@@ -1936,19 +2077,44 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
             damage: Option<ScissorRect>,
         ) -> Result<SubmissionId> {
+            self.render_step_list_and_present_deferred_timed(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
+            )
+            .map(|(submission, _)| submission)
+        }
+
+        fn render_step_list_and_present_deferred_timed(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<(SubmissionId, gfx_core::PresentationTimings)> {
             let render_damage = self.prepare_swapchain_damage(swapchain, damage)?;
-            let encoder = self.create_command_encoder(&CommandEncoderDesc { label: None })?;
-            let result = self
-                .record_render_step_list_frame(
-                    encoder,
-                    swapchain,
-                    render_pass,
-                    steps,
-                    clear_color,
-                    depth_attachment,
-                    render_damage,
-                )
-                .and_then(|()| Self::submit_deferred(self, encoder));
+            let encoder_started = Instant::now();
+            let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
+            let command_encoder_create = encoder_started.elapsed();
+            let record_started = Instant::now();
+            let result = self.record_render_step_list_frame(
+                encoder,
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                render_damage,
+            );
+            let command_record = record_started.elapsed();
+            let submit_started = Instant::now();
+            let result = result.and_then(|()| Self::submit_deferred(self, encoder));
+            let queue_submit = submit_started.elapsed();
             let submission = match result {
                 Ok(submission) => submission,
                 Err(error) => {
@@ -1957,8 +2123,18 @@ mod platform {
                     return Err(error);
                 }
             };
+            let present_started = Instant::now();
             self.present_with_damage(swapchain, 0, render_damage)?;
-            Ok(submission)
+            Ok((
+                submission,
+                gfx_core::PresentationTimings {
+                    command_encoder_create,
+                    command_record,
+                    queue_submit,
+                    queue_present: present_started.elapsed(),
+                    ..Default::default()
+                },
+            ))
         }
 
         fn submit_temporary_command_encoder_deferred(
@@ -2034,23 +2210,7 @@ mod platform {
             let Some(handle) = record.frame_latency_waitable else {
                 return Ok(true);
             };
-            if record.frame_latency_ready.get() {
-                return Ok(true);
-            }
-
-            // SAFETY: The handle is a live waitable object owned by this swapchain record. The
-            // zero-timeout wait consumes its signal, so retain readiness until Present succeeds.
-            let result = unsafe { WaitForSingleObject(handle, 0) };
-            if result == WAIT_OBJECT_0 {
-                record.frame_latency_ready.set(true);
-                Ok(true)
-            } else if result == WAIT_TIMEOUT {
-                Ok(false)
-            } else {
-                Err(GfxError::Backend(format!(
-                    "DX12 frame-latency readiness query failed: {result:?}"
-                )))
-            }
+            record.frame_pacing.ready(handle)
         }
 
         fn present(&mut self, swapchain: SwapchainId, _image_index: u32) -> Result<()> {
@@ -2082,7 +2242,7 @@ mod platform {
                     let swapchain1: IDXGISwapChain1 = swapchain
                         .swapchain
                         .cast()
-                        .map_err(|error| GfxError::Backend(error.to_string()))?;
+                        .map_err(|error| Error::Backend(error.to_string()))?;
                     // SAFETY: The swapchain and damage rectangle remain valid for the call.
                     unsafe { swapchain1.Present1(sync_interval, flags, &raw const parameters) }
                 } else {
@@ -2096,18 +2256,16 @@ mod platform {
                 .map_err(|error| self.backend_error_with_device_reason("DXGI Present", &error))?;
             {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
-                swapchain.frame_latency_ready.set(false);
+                swapchain.frame_pacing.consume_ready();
                 let presented_frame_index =
                     usize::try_from(swapchain.frame_index).map_err(|error| {
-                        GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+                        Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
                     })?;
                 let pending_damage = swapchain
                     .pending_damage
                     .get_mut(presented_frame_index)
                     .ok_or_else(|| {
-                        GfxError::Backend(
-                            "DX12 swapchain damage index is out of bounds".to_string(),
-                        )
+                        Error::Backend("DX12 swapchain damage index is out of bounds".to_string())
                     })?;
                 *pending_damage = Dx12BackBufferDamage::Clean;
             }
@@ -2130,10 +2288,10 @@ mod platform {
                 pending_damage.accumulate(damage);
             }
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
-                GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+                Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
             let pending_damage = swapchain.pending_damage.get(frame_index).ok_or_else(|| {
-                GfxError::Backend("DX12 swapchain damage index is out of bounds".to_string())
+                Error::Backend("DX12 swapchain damage index is out of bounds".to_string())
             })?;
             Ok(pending_damage.present_damage())
         }
@@ -2141,16 +2299,16 @@ mod platform {
         fn damage_to_dxgi_rect(damage: ScissorRect) -> Result<RECT> {
             Ok(RECT {
                 left: i32::try_from(damage.x).map_err(|error| {
-                    GfxError::InvalidInput(format!("damage left overflow: {error}"))
+                    Error::InvalidInput(format!("damage left overflow: {error}"))
                 })?,
                 top: i32::try_from(damage.y).map_err(|error| {
-                    GfxError::InvalidInput(format!("damage top overflow: {error}"))
+                    Error::InvalidInput(format!("damage top overflow: {error}"))
                 })?,
                 right: i32::try_from(damage.x.saturating_add(damage.width)).map_err(|error| {
-                    GfxError::InvalidInput(format!("damage right overflow: {error}"))
+                    Error::InvalidInput(format!("damage right overflow: {error}"))
                 })?,
                 bottom: i32::try_from(damage.y.saturating_add(damage.height)).map_err(|error| {
-                    GfxError::InvalidInput(format!("damage bottom overflow: {error}"))
+                    Error::InvalidInput(format!("damage bottom overflow: {error}"))
                 })?,
             })
         }
@@ -2235,7 +2393,8 @@ mod platform {
         /// frame may still be executing; the backbuffers are released through
         /// the deferred queue instead of stalling the device.
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
-            let swapchain = self.swapchains.take(swapchain)?;
+            let mut swapchain = self.swapchains.take(swapchain)?;
+            swapchain.frame_pacing.reset();
             self.defer_release(DeferredDx12Release::Swapchain(swapchain));
             Ok(())
         }
@@ -2295,14 +2454,14 @@ mod platform {
         }
 
         /// Releases completed upload/staging caches without touching live GPU resources.
-        pub fn trim_memory(&mut self, level: GfxMemoryTrimLevel) -> Result<()> {
-            if matches!(level, GfxMemoryTrimLevel::Light) {
+        pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
+            if matches!(level, MemoryTrimLevel::Light) {
                 self.poll_cleanup();
                 return Ok(());
             }
 
             self.wait_for_pending_work()?;
-            let target_idle_pages = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+            let target_idle_pages = if matches!(level, MemoryTrimLevel::Moderate) {
                 1
             } else {
                 0
@@ -2319,13 +2478,13 @@ mod platform {
             }
             self.trim_upload_pages(retained_page_count);
 
-            let retained_upload_commands = if matches!(level, GfxMemoryTrimLevel::Moderate) {
+            let retained_upload_commands = if matches!(level, MemoryTrimLevel::Moderate) {
                 1
             } else {
                 0
             };
             self.upload_command_pool.truncate(retained_upload_commands);
-            if matches!(level, GfxMemoryTrimLevel::Aggressive) {
+            if matches!(level, MemoryTrimLevel::Aggressive) {
                 self.upload_pages.shrink_to_fit();
                 self.upload_command_pool.shrink_to_fit();
                 self.deferred_command_encoders.shrink_to_fit();
@@ -2361,15 +2520,7 @@ mod platform {
                 DeferredDx12Release::ResourceSet(resource_set) => {
                     self.release_resource_set_descriptors(&resource_set);
                 }
-                DeferredDx12Release::Swapchain(swapchain) => {
-                    if let Some(handle) = swapchain.frame_latency_waitable {
-                        // SAFETY: The handle was returned by GetFrameLatencyWaitableObject
-                        // and is owned exclusively by this swapchain record.
-                        unsafe {
-                            let _ = CloseHandle(handle);
-                        }
-                    }
-                }
+                DeferredDx12Release::Swapchain(swapchain) => drop(swapchain),
                 DeferredDx12Release::Buffer(_)
                 | DeferredDx12Release::Texture(_)
                 | DeferredDx12Release::CommandEncoder(_) => {}
@@ -2422,33 +2573,30 @@ mod platform {
                 .upload_pages
                 .get(allocation.page_index)
                 .and_then(Option::as_ref)
-                .ok_or_else(|| GfxError::Backend("missing DX12 upload page".to_string()))?;
-            let offset = usize::try_from(allocation.offset).map_err(|error| {
-                GfxError::InvalidInput(format!("upload offset overflow: {error}"))
-            })?;
+                .ok_or_else(|| Error::Backend("missing DX12 upload page".to_string()))?;
+            let offset = usize::try_from(allocation.offset)
+                .map_err(|error| Error::InvalidInput(format!("upload offset overflow: {error}")))?;
             for row in 0..layout.height {
                 let source_start = layout
                     .source_offset
                     .checked_add(row.checked_mul(layout.source_row_pitch).ok_or_else(|| {
-                        GfxError::InvalidInput("source texture row offset overflow".to_string())
+                        Error::InvalidInput("source texture row offset overflow".to_string())
                     })?)
                     .ok_or_else(|| {
-                        GfxError::InvalidInput("source texture row offset overflow".to_string())
+                        Error::InvalidInput("source texture row offset overflow".to_string())
                     })?;
                 let source_end = source_start.checked_add(layout.row_bytes).ok_or_else(|| {
-                    GfxError::InvalidInput("source texture row range overflow".to_string())
+                    Error::InvalidInput("source texture row range overflow".to_string())
                 })?;
                 let destination_start = offset
                     .checked_add(row.checked_mul(layout.row_pitch_usize).ok_or_else(|| {
-                        GfxError::InvalidInput(
-                            "destination texture row offset overflow".to_string(),
-                        )
+                        Error::InvalidInput("destination texture row offset overflow".to_string())
                     })?)
                     .ok_or_else(|| {
-                        GfxError::InvalidInput("destination texture row range overflow".to_string())
+                        Error::InvalidInput("destination texture row range overflow".to_string())
                     })?;
                 let source = data.get(source_start..source_end).ok_or_else(|| {
-                    GfxError::InvalidInput("texture upload data is smaller than layout".to_string())
+                    Error::InvalidInput("texture upload data is smaller than layout".to_string())
                 })?;
                 // SAFETY: The page remains mapped for its lifetime and the destination range is
                 // inside the suballocation returned by the upload ring.
@@ -2468,7 +2616,7 @@ mod platform {
 
         fn ensure_upload_page(&mut self, page_index: usize) -> Result<()> {
             let size = self.upload_ring.page_size(page_index).ok_or_else(|| {
-                GfxError::Backend(format!("upload ring page {page_index} has no size"))
+                Error::Backend(format!("upload ring page {page_index} has no size"))
             })?;
             while self.upload_pages.len() <= page_index {
                 self.upload_pages.push(None);
@@ -2479,7 +2627,7 @@ mod platform {
                 }
             }
             self.upload_pages[page_index] = None;
-            let desc = BufferDesc {
+            let desc = BufferDescriptor {
                 label: Some(format!("nova-gfx dx12 upload page {page_index}")),
                 size,
                 usage: gfx_core::BufferUsage::COPY_SRC,
@@ -2495,7 +2643,7 @@ mod platform {
                 .get(page_index)
                 .and_then(Option::as_ref)
                 .map(|page| page.resource.clone())
-                .ok_or_else(|| GfxError::Backend(format!("missing DX12 upload page {page_index}")))
+                .ok_or_else(|| Error::Backend(format!("missing DX12 upload page {page_index}")))
         }
 
         #[expect(
@@ -2513,10 +2661,10 @@ mod platform {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
                 let allocator = encoder.allocator.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no allocator".to_string())
+                    Error::Backend("DX12 command encoder has no allocator".to_string())
                 })?;
                 let command_list = encoder.command_list.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
                 (allocator, command_list)
             };
@@ -2525,10 +2673,10 @@ mod platform {
             let (pipeline_state, root_signature, pipeline_color_format, blend_mode) = {
                 let pipeline = self.render_pipelines.get(pipeline_id)?;
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                    Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
                 let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native root signature".to_string())
+                    Error::Backend("DX12 pipeline has no native root signature".to_string())
                 })?;
                 (
                     pipeline_state,
@@ -2538,20 +2686,20 @@ mod platform {
                 )
             };
             if render_pass.color_format != pipeline_color_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "render pass and pipeline color formats differ".to_string(),
                 ));
             }
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
-                GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+                Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
             let render_target = swapchain.render_targets.get(frame_index).ok_or_else(|| {
-                GfxError::Backend("DX12 swapchain frame index is out of bounds".to_string())
+                Error::Backend("DX12 swapchain frame index is out of bounds".to_string())
             })?;
             let rtv_heap = swapchain
                 .rtv_heap
                 .as_ref()
-                .ok_or_else(|| GfxError::Backend("DX12 swapchain has no RTV heap".to_string()))?;
+                .ok_or_else(|| Error::Backend("DX12 swapchain has no RTV heap".to_string()))?;
             // SAFETY: RTV heap exists while render targets are live.
             let heap_start = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
             let rtv_handle = descriptor_handle_at(
@@ -2560,10 +2708,10 @@ mod platform {
                 swapchain.frame_index,
             )?;
             // SAFETY: Command allocator belongs to this device and is not in use after wait_for_gpu.
-            unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             record_transition_barrier(
                 &command_list,
                 render_target,
@@ -2586,10 +2734,10 @@ mod platform {
                 left: 0,
                 top: 0,
                 right: i32::try_from(swapchain.config.size.width()).map_err(|error| {
-                    GfxError::InvalidInput(format!("swapchain width overflow: {error}"))
+                    Error::InvalidInput(format!("swapchain width overflow: {error}"))
                 })?,
                 bottom: i32::try_from(swapchain.config.size.height()).map_err(|error| {
-                    GfxError::InvalidInput(format!("swapchain height overflow: {error}"))
+                    Error::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
             let clear = [
@@ -2616,8 +2764,7 @@ mod platform {
                 D3D12_RESOURCE_STATE_PRESENT,
             );
             // SAFETY: Command list is open and can be closed after recording.
-            unsafe { command_list.Close() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             let _ = blend_mode;
             Ok(())
         }
@@ -2640,7 +2787,7 @@ mod platform {
                 encoder_id,
                 swapchain_id,
                 render_pass_id,
-                &[DrawStepDesc {
+                &[DrawStepDescriptor {
                     pipeline: pipeline_id,
                     resource_sets: resource_set_list(resource_sets.iter().copied()),
                     vertex_count,
@@ -2658,7 +2805,7 @@ mod platform {
             encoder_id: CommandEncoderId,
             swapchain_id: SwapchainId,
             render_pass_id: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<()> {
             self.record_render_step_list_frame(
@@ -2709,10 +2856,10 @@ mod platform {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
                 let allocator = encoder.allocator.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no allocator".to_string())
+                    Error::Backend("DX12 command encoder has no allocator".to_string())
                 })?;
                 let command_list = encoder.command_list.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
                 (allocator, command_list)
             };
@@ -2721,15 +2868,15 @@ mod platform {
             let depth_handle =
                 self.depth_stencil_view_for_attachment(render_pass, depth_attachment)?;
             let first_step = steps.first().ok_or_else(|| {
-                GfxError::InvalidInput("DX12 draw step list must not be empty".to_string())
+                Error::InvalidInput("DX12 draw step list must not be empty".to_string())
             })?;
             let (pipeline_state, root_signature, pipeline_color_format, primitive_topology) = {
                 let pipeline = self.render_pipelines.get(first_step.pipeline())?;
                 let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                    Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                 })?;
                 let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 pipeline has no native root signature".to_string())
+                    Error::Backend("DX12 pipeline has no native root signature".to_string())
                 })?;
                 (
                     pipeline_state,
@@ -2739,20 +2886,20 @@ mod platform {
                 )
             };
             if render_pass.color_format != pipeline_color_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "render pass and pipeline color formats differ".to_string(),
                 ));
             }
             let frame_index = usize::try_from(swapchain.frame_index).map_err(|error| {
-                GfxError::InvalidInput(format!("swapchain frame index overflow: {error}"))
+                Error::InvalidInput(format!("swapchain frame index overflow: {error}"))
             })?;
             let render_target = swapchain.render_targets.get(frame_index).ok_or_else(|| {
-                GfxError::Backend("DX12 swapchain frame index is out of bounds".to_string())
+                Error::Backend("DX12 swapchain frame index is out of bounds".to_string())
             })?;
             let rtv_heap = swapchain
                 .rtv_heap
                 .as_ref()
-                .ok_or_else(|| GfxError::Backend("DX12 swapchain has no RTV heap".to_string()))?;
+                .ok_or_else(|| Error::Backend("DX12 swapchain has no RTV heap".to_string()))?;
             // SAFETY: RTV heap exists while render targets are live.
             let heap_start = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
             let rtv_handle = descriptor_handle_at(
@@ -2761,10 +2908,10 @@ mod platform {
                 swapchain.frame_index,
             )?;
             // SAFETY: Command allocator belongs to this device and is not in use after wait_for_gpu.
-            unsafe { allocator.Reset() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: Command list belongs to this device and is reset with a valid allocator/PSO.
             unsafe { command_list.Reset(&allocator, &pipeline_state) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             record_transition_barrier(
                 &command_list,
                 render_target,
@@ -2787,10 +2934,10 @@ mod platform {
                 left: 0,
                 top: 0,
                 right: i32::try_from(swapchain.config.size.width()).map_err(|error| {
-                    GfxError::InvalidInput(format!("swapchain width overflow: {error}"))
+                    Error::InvalidInput(format!("swapchain width overflow: {error}"))
                 })?,
                 bottom: i32::try_from(swapchain.config.size.height()).map_err(|error| {
-                    GfxError::InvalidInput(format!("swapchain height overflow: {error}"))
+                    Error::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
             let clear_rects = frame_damage
@@ -2873,13 +3020,13 @@ mod platform {
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
                     let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
-                        GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                        Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
                     let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
-                        GfxError::Backend("DX12 pipeline has no native root signature".to_string())
+                        Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
                     if render_pass.color_format != pipeline.color_format {
-                        return Err(GfxError::InvalidInput(
+                        return Err(Error::InvalidInput(
                             "render pass and pipeline color formats differ".to_string(),
                         ));
                     }
@@ -2914,8 +3061,7 @@ mod platform {
                 D3D12_RESOURCE_STATE_PRESENT,
             );
             // SAFETY: Command list is open and can be closed after recording.
-            unsafe { command_list.Close() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
             Ok(())
         }
 
@@ -2924,7 +3070,7 @@ mod platform {
             encoder_id: CommandEncoderId,
             texture_view_id: TextureViewId,
             render_pass_id: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             self.record_render_step_list_texture(
@@ -2970,7 +3116,7 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
             if steps.is_empty() {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 draw step list must not be empty".to_string(),
                 ));
             }
@@ -2980,7 +3126,7 @@ mod platform {
                 .command_list
                 .clone()
                 .ok_or_else(|| {
-                    GfxError::Backend("DX12 command encoder has no command list".to_string())
+                    Error::Backend("DX12 command encoder has no command list".to_string())
                 })?;
             let texture_view = *self.texture_views.get(texture_view_id)?;
             let render_pass = self.render_passes.get(render_pass_id)?;
@@ -2989,17 +3135,17 @@ mod platform {
             let (texture_resource, texture_state, texture_desc) = {
                 let texture = self.textures.get(texture_view.texture)?;
                 let resource = texture.resource.clone().ok_or_else(|| {
-                    GfxError::Backend("DX12 texture has no native resource".to_string())
+                    Error::Backend("DX12 texture has no native resource".to_string())
                 })?;
                 (resource, texture.state, texture.desc.clone())
             };
             if !texture_desc.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 offscreen target texture must include COLOR_ATTACHMENT usage".to_string(),
                 ));
             }
             if texture_view.format != render_pass.color_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "texture view and render pass color formats differ".to_string(),
                 ));
             }
@@ -3007,7 +3153,7 @@ mod platform {
                 .rtv_slot
                 .map(|slot| slot.cpu_handle)
                 .ok_or_else(|| {
-                    GfxError::Backend("DX12 color texture view has no RTV handle".to_string())
+                    Error::Backend("DX12 color texture view has no RTV handle".to_string())
                 })?;
 
             if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
@@ -3034,10 +3180,10 @@ mod platform {
                 left: 0,
                 top: 0,
                 right: i32::try_from(texture_desc.size.width()).map_err(|error| {
-                    GfxError::InvalidInput(format!("texture width overflow: {error}"))
+                    Error::InvalidInput(format!("texture width overflow: {error}"))
                 })?,
                 bottom: i32::try_from(texture_desc.size.height()).map_err(|error| {
-                    GfxError::InvalidInput(format!("texture height overflow: {error}"))
+                    Error::InvalidInput(format!("texture height overflow: {error}"))
                 })?,
             };
             let rtv_handle_pointer = &raw const rtv_handle;
@@ -3090,13 +3236,13 @@ mod platform {
                 ) = {
                     let pipeline = self.render_pipelines.get(step.pipeline())?;
                     let pipeline_state = pipeline.pipeline_state.clone().ok_or_else(|| {
-                        GfxError::Backend("DX12 pipeline has no native pipeline state".to_string())
+                        Error::Backend("DX12 pipeline has no native pipeline state".to_string())
                     })?;
                     let root_signature = pipeline.root_signature.clone().ok_or_else(|| {
-                        GfxError::Backend("DX12 pipeline has no native root signature".to_string())
+                        Error::Backend("DX12 pipeline has no native root signature".to_string())
                     })?;
                     if render_pass.color_format != pipeline.color_format {
-                        return Err(GfxError::InvalidInput(
+                        return Err(Error::InvalidInput(
                             "render pass and pipeline color formats differ".to_string(),
                         ));
                     }
@@ -3141,26 +3287,26 @@ mod platform {
         ) -> Result<Option<(D3D12_CPU_DESCRIPTOR_HANDLE, LoadOp<f32>)>> {
             let Some(depth_attachment) = depth_attachment else {
                 if render_pass.depth_format.is_some() {
-                    return Err(GfxError::InvalidInput(
+                    return Err(Error::InvalidInput(
                         "DX12 render pass expects a depth attachment".to_string(),
                     ));
                 }
                 return Ok(None);
             };
             let Some(depth_format) = render_pass.depth_format else {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 depth attachment was provided for a color-only render pass".to_string(),
                 ));
             };
             let texture_view = self.texture_views.get(depth_attachment.target)?;
             if texture_view.format != depth_format {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 depth attachment format does not match render pass".to_string(),
                 ));
             }
             let texture = self.textures.get(texture_view.texture)?;
             if !texture.desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "DX12 depth attachment texture must include DEPTH_ATTACHMENT usage".to_string(),
                 ));
             }
@@ -3168,7 +3314,7 @@ mod platform {
                 .dsv_slot
                 .map(|slot| slot.cpu_handle)
                 .ok_or_else(|| {
-                    GfxError::Backend("DX12 depth texture view has no DSV handle".to_string())
+                    Error::Backend("DX12 depth texture view has no DSV handle".to_string())
                 })?;
             Ok(Some((dsv_handle, depth_attachment.depth_load_op)))
         }
@@ -3246,26 +3392,24 @@ mod platform {
                 index_count,
             )?;
             let resource = buffer.resource.as_ref().ok_or_else(|| {
-                GfxError::Backend("DX12 index buffer has no native resource".to_string())
+                Error::Backend("DX12 index buffer has no native resource".to_string())
             })?;
             let size_in_bytes = buffer
                 .desc
                 .size
                 .checked_sub(binding.offset)
                 .ok_or_else(|| {
-                    GfxError::InvalidInput("index buffer offset is out of bounds".to_string())
+                    Error::InvalidInput("index buffer offset is out of bounds".to_string())
                 })
                 .and_then(|size| {
                     u32::try_from(size).map_err(|error| {
-                        GfxError::InvalidInput(format!("index buffer view size overflow: {error}"))
+                        Error::InvalidInput(format!("index buffer view size overflow: {error}"))
                     })
                 })?;
             // SAFETY: Resource is a live D3D12 buffer created by this backend.
             let address = unsafe { resource.GetGPUVirtualAddress() }
                 .checked_add(binding.offset)
-                .ok_or_else(|| {
-                    GfxError::InvalidInput("index buffer address overflow".to_string())
-                })?;
+                .ok_or_else(|| Error::InvalidInput("index buffer address overflow".to_string()))?;
             Ok(D3D12_INDEX_BUFFER_VIEW {
                 BufferLocation: address,
                 SizeInBytes: size_in_bytes,
@@ -3327,7 +3471,7 @@ mod platform {
             // SAFETY: Fence is valid.
             let completed = unsafe { self.fence.GetCompletedValue() };
             if completed == u64::MAX {
-                return Err(GfxError::Backend(format!(
+                return Err(Error::Backend(format!(
                     "{operation} reported device removal; device_removed_reason={}",
                     self.device_removed_reason()
                 )));
@@ -3385,7 +3529,7 @@ mod platform {
                     }
                     continue;
                 }
-                return Err(GfxError::Backend(format!(
+                return Err(Error::Backend(format!(
                     "WaitForSingleObject failed while waiting for DX12 fence {fence_value}: \
                      {wait_result:?}"
                 )));
@@ -3416,12 +3560,8 @@ mod platform {
             Ok(fence_value)
         }
 
-        fn backend_error_with_device_reason(
-            &self,
-            operation: &str,
-            error: &WindowsError,
-        ) -> GfxError {
-            GfxError::Backend(format!(
+        fn backend_error_with_device_reason(&self, operation: &str, error: &WindowsError) -> Error {
+            Error::Backend(format!(
                 "{operation} failed: {error}; device_removed_reason={}",
                 self.device_removed_reason()
             ))
@@ -3439,14 +3579,14 @@ mod platform {
     fn create_factory() -> Result<IDXGIFactory4> {
         // SAFETY: Output interface is initialized by DXGI when the call succeeds.
         unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS::default()) }
-            .map_err(|error| GfxError::Backend(error.to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))
     }
 
     /// Enumerates Direct3D 12 adapters visible through DXGI.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError`] if the DXGI factory cannot be created or adapter
+    /// Returns [`Error`] if the DXGI factory cannot be created or adapter
     /// descriptors cannot be read.
     pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
         let factory = create_factory()?;
@@ -3457,13 +3597,13 @@ mod platform {
             let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
                 Ok(adapter) => adapter,
                 Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
-                Err(error) => return Err(GfxError::Backend(error.to_string())),
+                Err(error) => return Err(Error::Backend(error.to_string())),
             };
             adapter_index += 1;
 
             // SAFETY: Adapter is valid and DXGI initializes the descriptor.
-            let desc = unsafe { adapter.GetDesc1() }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+            let desc =
+                unsafe { adapter.GetDesc1() }.map_err(|error| Error::Backend(error.to_string()))?;
             let name = String::from_utf16_lossy(&desc.Description)
                 .trim_end_matches('\0')
                 .to_string();
@@ -3488,7 +3628,7 @@ mod platform {
         software: bool,
     }
 
-    fn pick_adapter(factory: &IDXGIFactory4, desc: &DeviceDesc) -> Result<IDXGIAdapter1> {
+    fn pick_adapter(factory: &IDXGIFactory4, desc: &DeviceDescriptor) -> Result<IDXGIAdapter1> {
         if let Some(requested_name) = desc.adapter_name.as_deref() {
             let requested_name = requested_name.trim();
             if !requested_name.is_empty() {
@@ -3551,7 +3691,7 @@ mod platform {
             } {
                 Ok(adapter) => adapter,
                 Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => return Ok(None),
-                Err(error) => return Err(GfxError::Backend(error.to_string())),
+                Err(error) => return Err(Error::Backend(error.to_string())),
             };
             adapter_index += 1;
             if !adapter_description(&adapter)?.software {
@@ -3570,7 +3710,7 @@ mod platform {
             let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
                 Ok(adapter) => adapter,
                 Err(error) if error.code() == DXGI_ERROR_NOT_FOUND => break,
-                Err(error) => return Err(GfxError::Backend(error.to_string())),
+                Err(error) => return Err(Error::Backend(error.to_string())),
             };
             adapter_index += 1;
             let description = adapter_description(&adapter)?;
@@ -3582,7 +3722,7 @@ mod platform {
     fn adapter_description(adapter: &IDXGIAdapter1) -> Result<Dx12AdapterDescription> {
         // SAFETY: Adapter is live and DXGI initializes the returned descriptor.
         let description =
-            unsafe { adapter.GetDesc1() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+            unsafe { adapter.GetDesc1() }.map_err(|error| Error::Backend(error.to_string()))?;
         Ok(Dx12AdapterDescription {
             name: String::from_utf16_lossy(&description.Description)
                 .trim_end_matches('\0')
@@ -3608,8 +3748,8 @@ mod platform {
         let mut device = None;
         // SAFETY: Adapter is a valid DXGI adapter and output interface is initialized on success.
         unsafe { D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, &raw mut device) }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
-        device.ok_or_else(|| GfxError::Backend("D3D12CreateDevice returned no device".to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))?;
+        device.ok_or_else(|| Error::Backend("D3D12CreateDevice returned no device".to_string()))
     }
 
     fn create_command_queue(
@@ -3623,7 +3763,7 @@ mod platform {
         };
         // SAFETY: Device is valid and queue descriptor is self-contained.
         unsafe { device.CreateCommandQueue(&raw const desc) }
-            .map_err(|error| GfxError::Backend(error.to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))
     }
 
     fn create_fence(
@@ -3631,13 +3771,13 @@ mod platform {
     ) -> Result<ID3D12Fence> {
         // SAFETY: Device is valid and output interface is initialized on success.
         unsafe { device.CreateFence::<ID3D12Fence>(0, D3D12_FENCE_FLAG_NONE) }
-            .map_err(|error| GfxError::Backend(error.to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))
     }
 
     fn create_command_allocator(device: &ID3D12Device) -> Result<ID3D12CommandAllocator> {
         // SAFETY: Device is valid and allocator type is direct.
         unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }
-            .map_err(|error| GfxError::Backend(error.to_string()))
+            .map_err(|error| Error::Backend(error.to_string()))
     }
 
     fn create_command_list(
@@ -3653,7 +3793,7 @@ mod platform {
                 Option::<&ID3D12PipelineState>::None,
             )
         }
-        .map_err(|error| GfxError::Backend(error.to_string()))
+        .map_err(|error| Error::Backend(error.to_string()))
     }
 
     fn create_empty_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
@@ -3678,7 +3818,7 @@ mod platform {
         } {
             Ok(()) => {
                 let blob = root_signature_blob.ok_or_else(|| {
-                    GfxError::Backend("D3D12SerializeRootSignature returned no blob".to_string())
+                    Error::Backend("D3D12SerializeRootSignature returned no blob".to_string())
                 })?;
                 // SAFETY: Blob pointer and size are valid for the duration of this read-only view.
                 let bytes = unsafe {
@@ -3689,13 +3829,13 @@ mod platform {
                 };
                 // SAFETY: Serialized root signature bytes are produced by D3D12 itself.
                 unsafe { device.CreateRootSignature(0, bytes) }
-                    .map_err(|error| GfxError::Backend(error.to_string()))
+                    .map_err(|error| Error::Backend(error.to_string()))
             }
             Err(error) => {
                 let message = error_blob
                     .as_ref()
                     .map_or_else(|| error.to_string(), blob_message);
-                Err(GfxError::Backend(message))
+                Err(Error::Backend(message))
             }
         }
     }
@@ -3712,7 +3852,7 @@ mod platform {
         color_format: Format,
         blend_mode: BlendMode,
         depth_format: Option<Format>,
-        depth_enabled: bool,
+        depth_state: Option<DepthState>,
     ) -> Result<ID3D12PipelineState> {
         let blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: false.into(),
@@ -3740,16 +3880,19 @@ mod platform {
         desc.BlendState = blend_desc;
         desc.SampleMask = u32::MAX;
         desc.RasterizerState = rasterizer_desc;
-        desc.DepthStencilState = if depth_enabled {
-            D3D12_DEPTH_STENCIL_DESC {
-                DepthEnable: true.into(),
-                DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ALL,
-                DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
-                ..Default::default()
-            }
-        } else {
-            D3D12_DEPTH_STENCIL_DESC::default()
-        };
+        desc.DepthStencilState =
+            depth_state.map_or_else(D3D12_DEPTH_STENCIL_DESC::default, |depth_state| {
+                D3D12_DEPTH_STENCIL_DESC {
+                    DepthEnable: true.into(),
+                    DepthWriteMask: if depth_state.write_enabled {
+                        D3D12_DEPTH_WRITE_MASK_ALL
+                    } else {
+                        D3D12_DEPTH_WRITE_MASK_ZERO
+                    },
+                    DepthFunc: depth_compare_function(depth_state.compare),
+                    ..Default::default()
+                }
+            });
         desc.InputLayout = D3D12_INPUT_LAYOUT_DESC {
             pInputElementDescs: ptr::null(),
             NumElements: 0,
@@ -3780,10 +3923,23 @@ mod platform {
             } else {
                 format!("; debug_messages={messages}")
             };
-            GfxError::Backend(format!(
+            Error::Backend(format!(
                 "ID3D12Device::CreateGraphicsPipelineState failed: {error}{suffix}"
             ))
         })
+    }
+
+    fn depth_compare_function(compare: CompareFunction) -> D3D12_COMPARISON_FUNC {
+        match compare {
+            CompareFunction::Never => D3D12_COMPARISON_FUNC_NEVER,
+            CompareFunction::Less => D3D12_COMPARISON_FUNC_LESS,
+            CompareFunction::Equal => D3D12_COMPARISON_FUNC_EQUAL,
+            CompareFunction::LessEqual => D3D12_COMPARISON_FUNC_LESS_EQUAL,
+            CompareFunction::Greater => D3D12_COMPARISON_FUNC_GREATER,
+            CompareFunction::NotEqual => D3D12_COMPARISON_FUNC_NOT_EQUAL,
+            CompareFunction::GreaterEqual => D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+            CompareFunction::Always => D3D12_COMPARISON_FUNC_ALWAYS,
+        }
     }
 
     fn shader_bytecode(bytecode: &[u8]) -> D3D12_SHADER_BYTECODE {
@@ -3866,14 +4022,13 @@ mod platform {
             .min(extent.height());
         Ok(windows::Win32::Foundation::RECT {
             left: i32::try_from(x)
-                .map_err(|error| GfxError::InvalidInput(format!("scissor x overflow: {error}")))?,
+                .map_err(|error| Error::InvalidInput(format!("scissor x overflow: {error}")))?,
             top: i32::try_from(y)
-                .map_err(|error| GfxError::InvalidInput(format!("scissor y overflow: {error}")))?,
-            right: i32::try_from(right).map_err(|error| {
-                GfxError::InvalidInput(format!("scissor right overflow: {error}"))
-            })?,
+                .map_err(|error| Error::InvalidInput(format!("scissor y overflow: {error}")))?,
+            right: i32::try_from(right)
+                .map_err(|error| Error::InvalidInput(format!("scissor right overflow: {error}")))?,
             bottom: i32::try_from(bottom).map_err(|error| {
-                GfxError::InvalidInput(format!("scissor bottom overflow: {error}"))
+                Error::InvalidInput(format!("scissor bottom overflow: {error}"))
             })?,
         })
     }
@@ -3926,7 +4081,7 @@ mod platform {
         // SAFETY: Device is valid and descriptor heap desc is self-contained.
         let rtv_heap: ID3D12DescriptorHeap =
             unsafe { device.CreateDescriptorHeap(&raw const heap_desc) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
         // SAFETY: Device is valid and returns a static descriptor size for RTV heaps.
         let descriptor_size =
             unsafe { device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) };
@@ -3936,7 +4091,7 @@ mod platform {
         for index in 0..BACK_BUFFER_COUNT {
             // SAFETY: Backbuffer index is within BufferCount.
             let resource: ID3D12Resource = unsafe { swapchain.swapchain.GetBuffer(index) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let handle = descriptor_handle_at(heap_start, descriptor_size, index)?;
             // SAFETY: Resource is a swapchain backbuffer and handle points into the RTV heap.
             unsafe {
@@ -3959,11 +4114,12 @@ mod platform {
         index: u32,
     ) -> Result<D3D12_CPU_DESCRIPTOR_HANDLE> {
         let offset = usize::try_from(u64::from(increment) * u64::from(index)).map_err(|error| {
-            GfxError::InvalidInput(format!("descriptor handle offset overflow: {error}"))
+            Error::InvalidInput(format!("descriptor handle offset overflow: {error}"))
         })?;
-        let ptr = start.ptr.checked_add(offset).ok_or_else(|| {
-            GfxError::InvalidInput("descriptor handle offset overflow".to_string())
-        })?;
+        let ptr = start
+            .ptr
+            .checked_add(offset)
+            .ok_or_else(|| Error::InvalidInput("descriptor handle offset overflow".to_string()))?;
         Ok(D3D12_CPU_DESCRIPTOR_HANDLE { ptr })
     }
 
@@ -4047,22 +4203,22 @@ mod platform {
         fn new() -> Result<Self> {
             // SAFETY: Requesting an unnamed manual-reset event with initial non-signaled state.
             let handle = unsafe { CreateEventW(None, false, false, PCWSTR::null()) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             Ok(Self(handle))
         }
     }
 
-    impl GfxBackend for Dx12Device {
+    impl Backend for Dx12Device {
         const BACKEND_KIND: BackendKind = BackendKind::Dx12;
     }
 
-    impl GfxSurfaceDevice for Dx12Device {
+    impl SurfaceDevice for Dx12Device {
         type SurfaceTarget = dyn Dx12SurfaceTarget;
 
         fn create_surface(
             &mut self,
             target: &Self::SurfaceTarget,
-            desc: &SurfaceDesc,
+            desc: &SurfaceDescriptor,
         ) -> Result<SurfaceId> {
             Self::create_surface(self, target, desc)
         }
@@ -4084,8 +4240,8 @@ mod platform {
         }
     }
 
-    impl GfxResourceDevice for Dx12Device {
-        fn create_buffer(&mut self, desc: &BufferDesc) -> Result<BufferId> {
+    impl ResourceDevice for Dx12Device {
+        fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             Self::create_buffer(self, desc)
         }
 
@@ -4093,11 +4249,11 @@ mod platform {
             Self::write_buffer(self, buffer, offset, data)
         }
 
-        fn create_texture(&mut self, desc: &TextureDesc) -> Result<TextureId> {
+        fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
             Self::create_texture(self, desc)
         }
 
-        fn write_texture(&mut self, desc: TextureWriteDesc, data: &[u8]) -> Result<()> {
+        fn write_texture(&mut self, desc: TextureWriteDescriptor, data: &[u8]) -> Result<()> {
             Self::write_texture(self, desc, data)
         }
 
@@ -4108,22 +4264,22 @@ mod platform {
             Self::write_texture_batch(self, writes)
         }
 
-        fn create_texture_view(&mut self, desc: &TextureViewDesc) -> Result<TextureViewId> {
+        fn create_texture_view(&mut self, desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             Self::create_texture_view(self, desc)
         }
 
-        fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, desc: &SamplerDescriptor) -> Result<SamplerId> {
             Self::create_sampler(self, desc)
         }
 
         fn create_resource_set_layout(
             &mut self,
-            desc: &ResourceSetLayoutDesc,
+            desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             Self::create_resource_set_layout(self, desc)
         }
 
-        fn create_resource_set(&mut self, desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             Self::create_resource_set(self, desc)
         }
 
@@ -4152,25 +4308,28 @@ mod platform {
         }
     }
 
-    impl GfxPipelineDevice for Dx12Device {
+    impl PipelineDevice for Dx12Device {
         fn create_pipeline_layout(
             &mut self,
-            desc: &PipelineLayoutDesc,
+            desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             Self::create_pipeline_layout(self, desc)
         }
 
-        fn create_shader_module(&mut self, desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        fn create_shader_module(
+            &mut self,
+            desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             Self::create_shader_module(self, desc)
         }
 
-        fn create_render_pass(&mut self, desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             Self::create_render_pass(self, desc)
         }
 
         fn create_render_pipeline(
             &mut self,
-            desc: &RenderPipelineDesc,
+            desc: &RenderPipelineDescriptor,
             viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             Self::create_render_pipeline(self, desc, viewport_extent)
@@ -4193,15 +4352,19 @@ mod platform {
         }
     }
 
-    impl GfxCommandDevice for Dx12Device {
+    impl CommandDevice for Dx12Device {
         fn create_command_encoder(
             &mut self,
-            desc: &CommandEncoderDesc,
+            desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             Self::create_command_encoder(self, desc)
         }
 
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDesc) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            encoder: CommandEncoderId,
+            draw: DrawDescriptor,
+        ) -> Result<()> {
             Self::record_draw_desc(self, encoder, &draw)
         }
 
@@ -4214,10 +4377,10 @@ mod platform {
         }
     }
 
-    impl GfxSubmissionDevice for Dx12Device {
-        fn async_capabilities(&self) -> gfx_core::GfxAsyncCapabilities {
-            gfx_core::GfxAsyncCapabilities {
-                threading_mode: GfxThreadingMode::MultiThreadDeviceProxy,
+    impl SubmissionDevice for Dx12Device {
+        fn async_capabilities(&self) -> gfx_core::AsyncCapabilities {
+            gfx_core::AsyncCapabilities {
+                threading_mode: ThreadingMode::MultiThreadDeviceProxy,
                 async_submission: true,
                 async_wait: true,
                 async_presentation: true,
@@ -4238,7 +4401,43 @@ mod platform {
         }
     }
 
-    impl GfxPresentationDevice for Dx12Device {
+    impl PresentationDevice for Dx12Device {
+        fn render_step_list_and_present_deferred_with_damage_measured(
+            &mut self,
+            swapchain: SwapchainId,
+            render_pass: RenderPassId,
+            steps: RenderStepList<'_>,
+            clear_color: ClearColor,
+            depth_attachment: Option<RenderPassDepthAttachment>,
+            damage: Option<ScissorRect>,
+        ) -> Result<Option<gfx_core::PresentationFrame>> {
+            let (submission, timings) = self.render_step_list_and_present_deferred_timed(
+                swapchain,
+                render_pass,
+                steps,
+                clear_color,
+                depth_attachment,
+                damage,
+            )?;
+            Ok(Some(gfx_core::PresentationFrame {
+                submission: Some(submission),
+                timings: Some(timings),
+            }))
+        }
+
+        fn arm_swapchain_frame_ready(
+            &mut self,
+            swapchain: SwapchainId,
+            callback: Box<dyn FnOnce() + Send + 'static>,
+        ) -> Result<bool> {
+            let record = self.swapchains.get_mut(swapchain)?;
+            let Some(handle) = record.frame_latency_waitable else {
+                return Ok(false);
+            };
+            record.frame_pacing.arm(handle, callback)?;
+            Ok(true)
+        }
+
         fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
             self.swapchains
                 .get(swapchain)
@@ -4269,11 +4468,11 @@ mod platform {
                 composition
                     .transform
                     .SetMatrix(&raw const matrix)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 composition
                     .visual
                     .SetTransform(&composition.transform)
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 Self::commit_composition(composition)?;
             }
             Ok(())
@@ -4283,7 +4482,7 @@ mod platform {
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<()> {
             Self::draw_steps_and_present(self, swapchain, render_pass, steps, clear_color)
@@ -4293,7 +4492,7 @@ mod platform {
             &mut self,
             texture_view: TextureViewId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             Self::draw_steps_to_texture(self, texture_view, render_pass, steps, color_load_op)
@@ -4303,11 +4502,11 @@ mod platform {
             &mut self,
             swapchain: SwapchainId,
             render_pass: RenderPassId,
-            steps: &[DrawStepDesc],
+            steps: &[DrawStepDescriptor],
             clear_color: ClearColor,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             Self::render_step_list_and_present_deferred(
                 self,
@@ -4427,7 +4626,7 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             Self::render_step_list_and_present_deferred(
                 self,
@@ -4448,7 +4647,7 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             Self::render_step_list_and_present_deferred(
                 self,
@@ -4470,7 +4669,7 @@ mod platform {
             damage: Option<ScissorRect>,
         ) -> Result<SubmissionId>
         where
-            Self: GfxSubmissionDevice,
+            Self: SubmissionDevice,
         {
             Self::render_step_list_and_present_deferred_with_damage(
                 self,
@@ -4484,13 +4683,13 @@ mod platform {
         }
     }
 
-    impl GfxDiagnosticsDevice for Dx12Device {
+    impl DiagnosticsDevice for Dx12Device {
         fn resource_stats(&self) -> ResourceStats {
             Self::resource_stats(self)
         }
     }
 
-    impl GfxTextureTransferDevice for Dx12Device {
+    impl TextureTransferDevice for Dx12Device {
         fn texture_transfer_timestamps_supported(&self) -> bool {
             self.timestamp_frequency.is_some()
         }
@@ -4515,7 +4714,19 @@ mod platform {
         }
     }
 
-    fn compile_hlsl_to_dx_bytecode(
+    /// Compiles HLSL source to Direct3D shader bytecode for one entry point.
+    ///
+    /// The returned bytes are a `vs_5_1`/`ps_5_1` DXBC blob: they are tied to the
+    /// shader stage and entry point that produced them, but not to a device, a
+    /// swapchain, or a process. A caller may therefore compile once and reuse the
+    /// blob for any number of devices, windows, or runs, which is how build
+    /// scripts embed precompiled DX12 shaders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when `entry_point` contains a NUL byte,
+    /// and [`Error::Shader`] when `D3DCompile` rejects the source.
+    pub fn compile_hlsl_to_dx_bytecode(
         source: &str,
         entry_point: &str,
         stage: ShaderStage,
@@ -4525,7 +4736,7 @@ mod platform {
             ShaderStage::Fragment => b"ps_5_1\0",
         };
         let entry_point = std::ffi::CString::new(entry_point)
-            .map_err(|error| GfxError::InvalidInput(error.to_string()))?;
+            .map_err(|error| Error::InvalidInput(error.to_string()))?;
         let mut bytecode = None;
         let mut errors = None;
         // SAFETY: Source, entry point, and target pointers remain valid for the call duration.
@@ -4544,9 +4755,9 @@ mod platform {
                 Some(&raw mut errors),
             )
         }
-        .map_err(|error| GfxError::Shader(error.to_string()))?;
+        .map_err(|error| Error::Shader(error.to_string()))?;
         let bytecode = bytecode.ok_or_else(|| {
-            GfxError::Shader("D3DCompile did not return shader bytecode".to_string())
+            Error::Shader("D3DCompile did not return shader bytecode".to_string())
         })?;
         // SAFETY: D3DCompile returned a valid blob; the pointer and size are read-only here.
         let bytes = unsafe {
@@ -4560,7 +4771,7 @@ mod platform {
 
     fn create_root_signature(
         device: &ID3D12Device,
-        layouts: &[ResourceSetLayoutDesc],
+        layouts: &[ResourceSetLayoutDescriptor],
     ) -> Result<ID3D12RootSignature> {
         let mut ranges = Vec::new();
         for (group_index, layout) in layouts.iter().enumerate() {
@@ -4641,20 +4852,20 @@ mod platform {
 
     fn sampler_index_buffer_register(group_index: usize) -> Result<u32> {
         u32::try_from(group_index).map_err(|error| {
-            GfxError::InvalidInput(format!("resource set group index overflow: {error}"))
+            Error::InvalidInput(format!("resource set group index overflow: {error}"))
         })
     }
 
-    fn draw_step_constants_root_index(layouts: &[ResourceSetLayoutDesc]) -> Result<u32> {
+    fn draw_step_constants_root_index(layouts: &[ResourceSetLayoutDescriptor]) -> Result<u32> {
         let mut root_index = 0_u32;
         for layout in layouts {
             for entry in &layout.entries {
                 root_index = root_index.checked_add(1).ok_or_else(|| {
-                    GfxError::InvalidInput("root parameter index overflow".to_string())
+                    Error::InvalidInput("root parameter index overflow".to_string())
                 })?;
                 if entry.binding_type == ResourceBindingType::Sampler {
                     root_index = root_index.checked_add(1).ok_or_else(|| {
-                        GfxError::InvalidInput("root parameter index overflow".to_string())
+                        Error::InvalidInput("root parameter index overflow".to_string())
                     })?;
                 }
             }
@@ -4682,7 +4893,7 @@ mod platform {
     ) -> Result<ID3D12RootSignature> {
         let root_signature_desc = D3D12_ROOT_SIGNATURE_DESC {
             NumParameters: u32::try_from(parameters.len()).map_err(|error| {
-                GfxError::InvalidInput(format!("root parameter count overflow: {error}"))
+                Error::InvalidInput(format!("root parameter count overflow: {error}"))
             })?,
             pParameters: parameters.as_ptr(),
             NumStaticSamplers: 0,
@@ -4702,7 +4913,7 @@ mod platform {
         } {
             Ok(()) => {
                 let blob = root_signature_blob.ok_or_else(|| {
-                    GfxError::Backend("D3D12SerializeRootSignature returned no blob".to_string())
+                    Error::Backend("D3D12SerializeRootSignature returned no blob".to_string())
                 })?;
                 // SAFETY: Blob pointer and size are valid for the duration of this read-only view.
                 let bytes = unsafe {
@@ -4713,14 +4924,14 @@ mod platform {
                 };
                 // SAFETY: Serialized root signature bytes are produced by D3D12 itself.
                 unsafe { device.CreateRootSignature(0, bytes) }.map_err(|error| {
-                    GfxError::Backend(format!("ID3D12Device::CreateRootSignature failed: {error}"))
+                    Error::Backend(format!("ID3D12Device::CreateRootSignature failed: {error}"))
                 })
             }
             Err(error) => {
                 let message = error_blob
                     .as_ref()
                     .map_or_else(|| error.to_string(), blob_message);
-                Err(GfxError::Backend(format!(
+                Err(Error::Backend(format!(
                     "D3D12SerializeRootSignature failed: {message}"
                 )))
             }
@@ -4814,7 +5025,10 @@ mod platform {
         ))
     }
 
-    fn create_buffer_resource(device: &ID3D12Device, desc: &BufferDesc) -> Result<ID3D12Resource> {
+    fn create_buffer_resource(
+        device: &ID3D12Device,
+        desc: &BufferDescriptor,
+    ) -> Result<ID3D12Resource> {
         let heap_type = match desc.memory_location {
             MemoryLocation::CpuToGpu => D3D12_HEAP_TYPE_UPLOAD,
             MemoryLocation::GpuToCpu => D3D12_HEAP_TYPE_READBACK,
@@ -4839,10 +5053,7 @@ mod platform {
             Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
             Flags: D3D12_RESOURCE_FLAG_NONE,
         };
-        let initial_state = match desc.memory_location {
-            MemoryLocation::CpuToGpu => D3D12_RESOURCE_STATE_GENERIC_READ,
-            MemoryLocation::GpuToCpu | MemoryLocation::GpuOnly => D3D12_RESOURCE_STATE_COPY_DEST,
-        };
+        let initial_state = initial_buffer_state(desc);
         let mut resource = None;
         // SAFETY: Device, heap properties, and resource desc are valid for committed resource creation.
         unsafe {
@@ -4855,15 +5066,14 @@ mod platform {
                 &raw mut resource,
             )
         }
-        .map_err(|error| GfxError::Backend(error.to_string()))?;
-        resource.ok_or_else(|| {
-            GfxError::Backend("CreateCommittedResource returned no buffer".to_string())
-        })
+        .map_err(|error| Error::Backend(error.to_string()))?;
+        resource
+            .ok_or_else(|| Error::Backend("CreateCommittedResource returned no buffer".to_string()))
     }
 
     fn create_texture_resource(
         device: &ID3D12Device,
-        desc: &TextureDesc,
+        desc: &TextureDescriptor,
     ) -> Result<ID3D12Resource> {
         let heap_properties = D3D12_HEAP_PROPERTIES {
             Type: D3D12_HEAP_TYPE_DEFAULT,
@@ -4882,7 +5092,9 @@ mod platform {
             Width: u64::from(desc.size.width()),
             Height: desc.size.height(),
             DepthOrArraySize: 1,
-            MipLevels: 1,
+            MipLevels: u16::try_from(desc.mip_level_count).map_err(|error| {
+                Error::InvalidInput(format!("texture mip level count overflow: {error}"))
+            })?,
             Format: format_to_dxgi(desc.format),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
@@ -4903,18 +5115,46 @@ mod platform {
                 &raw mut resource,
             )
         }
-        .map_err(|error| GfxError::Backend(error.to_string()))?;
+        .map_err(|error| Error::Backend(error.to_string()))?;
         resource.ok_or_else(|| {
-            GfxError::Backend("CreateCommittedResource returned no texture".to_string())
+            Error::Backend("CreateCommittedResource returned no texture".to_string())
         })
     }
 
-    fn initial_texture_state(desc: &TextureDesc) -> D3D12_RESOURCE_STATES {
+    /// Resource state a buffer starts in for its memory placement.
+    ///
+    /// Upload-heap buffers are CPU writable and readable by the GPU immediately. Buffers that
+    /// live in device-local or readback memory start as a copy destination, because the only way
+    /// to fill them is a copy from an upload page.
+    fn initial_buffer_state(desc: &BufferDescriptor) -> D3D12_RESOURCE_STATES {
+        match desc.memory_location {
+            MemoryLocation::CpuToGpu => D3D12_RESOURCE_STATE_GENERIC_READ,
+            MemoryLocation::GpuToCpu | MemoryLocation::GpuOnly => D3D12_RESOURCE_STATE_COPY_DEST,
+        }
+    }
+
+    fn initial_texture_state(desc: &TextureDescriptor) -> D3D12_RESOURCE_STATES {
         if desc.usage.contains(TextureUsage::DEPTH_ATTACHMENT) {
             D3D12_RESOURCE_STATE_DEPTH_WRITE
         } else {
             D3D12_RESOURCE_STATE_COPY_DEST
         }
+    }
+
+    /// One buffer-to-buffer copy performed through a temporary command list.
+    struct BufferRegionCopy<'a> {
+        source: &'a ID3D12Resource,
+        source_state: D3D12_RESOURCE_STATES,
+        source_offset: u64,
+        destination: &'a ID3D12Resource,
+        destination_state: D3D12_RESOURCE_STATES,
+        /// State the destination is left in.
+        ///
+        /// Readback-heap buffers must stay a copy destination: D3D12 rejects an explicit
+        /// transition away from `COPY_DEST` for them.
+        destination_final_state: D3D12_RESOURCE_STATES,
+        destination_offset: u64,
+        len: u64,
     }
 
     fn upload_to_mapped_buffer(
@@ -4925,7 +5165,7 @@ mod platform {
         let mut mapped = ptr::null_mut();
         // SAFETY: Resource is an upload heap buffer and the mapped range is written immediately.
         unsafe { resource.Map(0, None, Some(&raw mut mapped)) }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
         // SAFETY: Mapped pointer is valid for the buffer allocation and offset/range was checked by caller.
         unsafe {
             ptr::copy_nonoverlapping(data.as_ptr(), mapped.cast::<u8>().add(offset), data.len());
@@ -4952,7 +5192,7 @@ mod platform {
                 // SAFETY: Pooled objects only re-enter circulation after their
                 // previous submission's fence completed, so Reset is safe here.
                 unsafe { commands.allocator.Reset() }
-                    .map_err(|error| GfxError::Backend(error.to_string()))?;
+                    .map_err(|error| Error::Backend(error.to_string()))?;
                 // SAFETY: The pooled command list was closed after its previous
                 // submission; Reset reopens it against the reset allocator.
                 unsafe {
@@ -4960,7 +5200,7 @@ mod platform {
                         .graphics_command_list
                         .Reset(&commands.allocator, None)
                 }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
                 commands
             }
             None => create_dx12_upload_commands(device, timestamps_enabled)?,
@@ -4986,11 +5226,11 @@ mod platform {
             }
         }
         // SAFETY: Command list was opened by create_command_list and is ready to close.
-        unsafe { command_list.Close() }.map_err(|error| GfxError::Backend(error.to_string()))?;
+        unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
         let executable: ID3D12CommandList = commands
             .graphics_command_list
             .cast()
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
         // SAFETY: Command list is closed and ready to execute.
         unsafe {
             queue.ExecuteCommandLists(&[Some(executable.clone())]);
@@ -5040,7 +5280,7 @@ mod platform {
                 pResource: core::mem::ManuallyDrop::new(Some(copy.texture.clone())),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
                 Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: 0,
+                    SubresourceIndex: copy.desc.mip_level,
                 },
             };
             // SAFETY: Command list is open and copy locations reference live resources.
@@ -5087,11 +5327,11 @@ mod platform {
             let mut heap = None;
             // SAFETY: The descriptor and output slot are valid and the device is live.
             unsafe { device.CreateQueryHeap(&raw const query_desc, &raw mut heap) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let heap = heap.ok_or_else(|| {
-                GfxError::Backend("DX12 timestamp query heap creation returned null".to_string())
+                Error::Backend("DX12 timestamp query heap creation returned null".to_string())
             })?;
-            let readback_desc = BufferDesc {
+            let readback_desc = BufferDescriptor {
                 label: Some("nova-gfx DX12 upload timestamps".to_string()),
                 size: 16,
                 usage: BufferUsage::COPY_DST,
@@ -5114,12 +5354,12 @@ mod platform {
         let read_range = D3D12_RANGE { Begin: 0, End: 16 };
         // SAFETY: The resource is a readback buffer containing two resolved u64 timestamps.
         unsafe { readback.Map(0, Some(&raw const read_range), Some(&raw mut mapped)) }
-            .map_err(|error| GfxError::Backend(error.to_string()))?;
+            .map_err(|error| Error::Backend(error.to_string()))?;
         let Some(mapped) = NonNull::new(mapped.cast::<u64>()) else {
             let written_range = D3D12_RANGE { Begin: 0, End: 0 };
             // SAFETY: Map succeeded above and must be balanced before returning.
             unsafe { readback.Unmap(0, Some(&raw const written_range)) };
-            return Err(GfxError::Backend(
+            return Err(Error::Backend(
                 "DX12 timestamp mapping returned a null pointer".to_string(),
             ));
         };
@@ -5161,12 +5401,12 @@ mod platform {
 
     fn validate_dx12_texture_copy(upload_offset: u64, row_pitch: u32) -> Result<()> {
         if upload_offset % DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT != 0 {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "DX12 texture upload offset {upload_offset} is not aligned to {DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT} bytes"
             )));
         }
         if u64::from(row_pitch) % DX12_TEXTURE_DATA_PITCH_ALIGNMENT != 0 {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "DX12 texture upload row pitch {row_pitch} is not aligned to {DX12_TEXTURE_DATA_PITCH_ALIGNMENT} bytes"
             )));
         }
@@ -5179,13 +5419,13 @@ mod platform {
 
     fn align_to_u32(value: u64, alignment: u64) -> Result<u32> {
         u32::try_from(align_to(value, alignment))
-            .map_err(|error| GfxError::InvalidInput(format!("aligned size overflow: {error}")))
+            .map_err(|error| Error::InvalidInput(format!("aligned size overflow: {error}")))
     }
 
     fn validate_uniform_buffer_binding(binding: BufferBinding, buffer_size: u64) -> Result<()> {
         const CONSTANT_BUFFER_ALIGNMENT: u64 = 256;
         if binding.offset % CONSTANT_BUFFER_ALIGNMENT != 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "DX12 constant buffer offset must be aligned to 256 bytes".to_string(),
             ));
         }
@@ -5200,10 +5440,10 @@ mod platform {
             "constant buffer resource",
         )?;
         let end = binding.offset.checked_add(aligned_size).ok_or_else(|| {
-            GfxError::InvalidInput("DX12 constant buffer binding range overflow".to_string())
+            Error::InvalidInput("DX12 constant buffer binding range overflow".to_string())
         })?;
         if end > physical_buffer_size {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "DX12 constant buffer aligned range {}..{} exceeds physical buffer size {}",
                 binding.offset, end, physical_buffer_size
             )));
@@ -5216,12 +5456,12 @@ mod platform {
             .checked_add(alignment.saturating_sub(1))
             .map(|value| value / alignment)
             .and_then(|value| value.checked_mul(alignment))
-            .ok_or_else(|| GfxError::InvalidInput(format!("DX12 {label} alignment overflow")))
+            .ok_or_else(|| Error::InvalidInput(format!("DX12 {label} alignment overflow")))
     }
 
     fn validate_storage_buffer_binding(binding: BufferBinding) -> Result<()> {
         if binding.offset % 4 != 0 || binding.size % 4 != 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "DX12 storage buffer offset and size must align to 4 bytes".to_string(),
             ));
         }
@@ -5232,22 +5472,22 @@ mod platform {
         width
             .checked_mul(format_bytes_per_pixel(format))
             .and_then(|value| usize::try_from(value).ok())
-            .ok_or_else(|| GfxError::InvalidInput("texture upload row size overflow".to_string()))
+            .ok_or_else(|| Error::InvalidInput("texture upload row size overflow".to_string()))
     }
 
     fn texture_upload_layout(
-        desc: TextureWriteDesc,
+        desc: TextureWriteDescriptor,
         format: Format,
         data_len: usize,
     ) -> Result<Dx12TextureUploadLayout> {
         let source_row_pitch = usize::try_from(desc.layout.bytes_per_row.get())
-            .map_err(|error| GfxError::InvalidInput(format!("row pitch overflow: {error}")))?;
+            .map_err(|error| Error::InvalidInput(format!("row pitch overflow: {error}")))?;
         let source_offset = usize::try_from(desc.layout.offset).map_err(|error| {
-            GfxError::InvalidInput(format!("texture upload offset overflow: {error}"))
+            Error::InvalidInput(format!("texture upload offset overflow: {error}"))
         })?;
         let row_bytes = texture_upload_row_bytes(desc.size.width(), format)?;
         if source_row_pitch < row_bytes {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "texture upload bytes_per_row ({source_row_pitch}) is smaller than row data ({row_bytes})"
             )));
         }
@@ -5255,21 +5495,20 @@ mod platform {
             u64::from(desc.layout.bytes_per_row.get()),
             DX12_TEXTURE_DATA_PITCH_ALIGNMENT,
         )?;
-        let row_pitch_usize = usize::try_from(row_pitch).map_err(|error| {
-            GfxError::InvalidInput(format!("aligned row pitch overflow: {error}"))
-        })?;
+        let row_pitch_usize = usize::try_from(row_pitch)
+            .map_err(|error| Error::InvalidInput(format!("aligned row pitch overflow: {error}")))?;
         let height = usize::try_from(desc.size.height())
-            .map_err(|error| GfxError::InvalidInput(format!("height overflow: {error}")))?;
+            .map_err(|error| Error::InvalidInput(format!("height overflow: {error}")))?;
         let required_len =
             required_texture_upload_len(source_offset, source_row_pitch, row_bytes, height)?;
         if data_len < required_len {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "texture upload data is smaller than layout: required {required_len} bytes, got {data_len}"
             )));
         }
         let upload_size = u64::from(row_pitch)
             .checked_mul(u64::from(desc.size.height()))
-            .ok_or_else(|| GfxError::InvalidInput("texture upload size overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("texture upload size overflow".to_string()))?;
         Ok(Dx12TextureUploadLayout {
             source_row_pitch,
             source_offset,
@@ -5306,33 +5545,31 @@ mod platform {
                     .saturating_sub(1)
                     .checked_mul(source_row_pitch)
                     .ok_or_else(|| {
-                        GfxError::InvalidInput("texture upload required size overflow".to_string())
+                        Error::InvalidInput("texture upload required size overflow".to_string())
                     })?,
             )
             .and_then(|value| value.checked_add(row_bytes))
-            .ok_or_else(|| {
-                GfxError::InvalidInput("texture upload required size overflow".to_string())
-            })
+            .ok_or_else(|| Error::InvalidInput("texture upload required size overflow".to_string()))
     }
 
     fn create_sampler_index_buffer(
         device: &ID3D12Device,
         sampler_tables: &[Dx12DescriptorTable],
-        layout: &ResourceSetLayoutDesc,
+        layout: &ResourceSetLayoutDescriptor,
     ) -> Result<ID3D12Resource> {
         let count = layout_sampler_index_count(layout)?;
         let mut indices = vec![
             0u32;
             usize::try_from(count).map_err(|error| {
-                GfxError::InvalidInput(format!("sampler index count overflow: {error}"))
+                Error::InvalidInput(format!("sampler index count overflow: {error}"))
             })?
         ];
         for table in sampler_tables {
             let index = usize::try_from(table.binding).map_err(|error| {
-                GfxError::InvalidInput(format!("sampler binding index overflow: {error}"))
+                Error::InvalidInput(format!("sampler binding index overflow: {error}"))
             })?;
             let slot = indices.get_mut(index).ok_or_else(|| {
-                GfxError::InvalidInput(format!(
+                Error::InvalidInput(format!(
                     "sampler binding {} is out of sampler index range",
                     table.binding
                 ))
@@ -5343,10 +5580,10 @@ mod platform {
         for index in indices {
             bytes.extend_from_slice(&index.to_ne_bytes());
         }
-        let buffer_desc = BufferDesc {
+        let buffer_desc = BufferDescriptor {
             label: Some("nova-gfx dx12 sampler index buffer".to_string()),
             size: u64::try_from(bytes.len()).map_err(|error| {
-                GfxError::InvalidInput(format!("sampler index buffer size overflow: {error}"))
+                Error::InvalidInput(format!("sampler index buffer size overflow: {error}"))
             })?,
             usage: gfx_core::BufferUsage::COPY_SRC,
             memory_location: MemoryLocation::CpuToGpu,
@@ -5356,33 +5593,60 @@ mod platform {
         Ok(buffer)
     }
 
-    fn layout_sampler_index_count(layout: &ResourceSetLayoutDesc) -> Result<u32> {
+    fn layout_sampler_index_count(layout: &ResourceSetLayoutDescriptor) -> Result<u32> {
         let max_binding = layout
             .entries
             .iter()
             .filter(|entry| entry.binding_type == ResourceBindingType::Sampler)
             .map(|entry| entry.binding)
             .max()
-            .ok_or_else(|| GfxError::InvalidInput("resource set has no samplers".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("resource set has no samplers".to_string()))?;
         max_binding
             .checked_add(1)
-            .ok_or_else(|| GfxError::InvalidInput("sampler binding count overflow".to_string()))
+            .ok_or_else(|| Error::InvalidInput("sampler binding count overflow".to_string()))
     }
 
     fn sampler_desc_to_dx12(sampler: Dx12Sampler) -> D3D12_SAMPLER_DESC {
         D3D12_SAMPLER_DESC {
-            Filter: if sampler.mag_filter == FilterMode::Linear
-                || sampler.min_filter == FilterMode::Linear
-            {
-                D3D12_FILTER_MIN_MAG_MIP_LINEAR
+            Filter: if sampler.anisotropic {
+                D3D12_FILTER_ANISOTROPIC
             } else {
-                D3D12_FILTER_MIN_MAG_MIP_POINT
+                match (
+                    sampler.min_filter,
+                    sampler.mag_filter,
+                    sampler.mipmap_filter,
+                ) {
+                    (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Nearest) => {
+                        D3D12_FILTER_MIN_MAG_MIP_POINT
+                    }
+                    (FilterMode::Nearest, FilterMode::Nearest, FilterMode::Linear) => {
+                        D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR
+                    }
+                    (FilterMode::Nearest, FilterMode::Linear, FilterMode::Nearest) => {
+                        D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT
+                    }
+                    (FilterMode::Nearest, FilterMode::Linear, FilterMode::Linear) => {
+                        D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR
+                    }
+                    (FilterMode::Linear, FilterMode::Nearest, FilterMode::Nearest) => {
+                        D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT
+                    }
+                    (FilterMode::Linear, FilterMode::Nearest, FilterMode::Linear) => {
+                        D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR
+                    }
+                    (FilterMode::Linear, FilterMode::Linear, FilterMode::Nearest) => {
+                        D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT
+                    }
+                    (FilterMode::Linear, FilterMode::Linear, FilterMode::Linear) => {
+                        D3D12_FILTER_MIN_MAG_MIP_LINEAR
+                    }
+                }
             },
             AddressU: address_mode_to_dx12(sampler.address_mode_u),
             AddressV: address_mode_to_dx12(sampler.address_mode_v),
             AddressW: address_mode_to_dx12(AddressMode::ClampToEdge),
             MipLODBias: 0.0,
-            MaxAnisotropy: 1,
+            MaxAnisotropy: if sampler.anisotropic { 16 } else { 1 },
             ComparisonFunc: D3D12_COMPARISON_FUNC::default(),
             BorderColor: [0.0; 4],
             MinLOD: 0.0,
@@ -5405,7 +5669,7 @@ mod platform {
 
     fn validate_resource_set_layout_count(expected: usize, actual: usize) -> Result<()> {
         if expected != actual {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "DX12 pipeline expects {expected} resource sets, got {actual}"
             )));
         }
@@ -5418,7 +5682,7 @@ mod platform {
         actual: ResourceSetLayoutId,
     ) -> Result<()> {
         if expected != actual {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "DX12 resource set {set_index} layout does not match pipeline layout"
             )));
         }
@@ -5449,7 +5713,7 @@ mod platform {
                             .iter()
                             .find(|table| table.binding == entry.binding)
                             .ok_or_else(|| {
-                                GfxError::InvalidInput(format!(
+                                Error::InvalidInput(format!(
                                     "DX12 resource set is missing binding {}",
                                     entry.binding
                                 ))
@@ -5467,7 +5731,7 @@ mod platform {
                             .iter()
                             .find(|table| table.binding == entry.binding)
                             .ok_or_else(|| {
-                                GfxError::InvalidInput(format!(
+                                Error::InvalidInput(format!(
                                     "DX12 resource set is missing sampler binding {}",
                                     entry.binding
                                 ))
@@ -5479,7 +5743,7 @@ mod platform {
                         }
                         root_index += 1;
                         let index_table = set.sampler_index_table.as_ref().ok_or_else(|| {
-                            GfxError::InvalidInput(
+                            Error::InvalidInput(
                                 "DX12 resource set is missing sampler index table".to_string(),
                             )
                         })?;
@@ -5544,7 +5808,7 @@ mod platform {
 
     fn indexed_draw_offsets(base_vertex: i32, first_instance: u32) -> Result<IndexedDrawOffsets> {
         let shader_first_vertex = u32::try_from(base_vertex).map_err(|error| {
-            GfxError::InvalidInput(format!(
+            Error::InvalidInput(format!(
                 "negative DX12 indexed draw base vertex is unsupported by HLSL vertex_index constants: {error}"
             ))
         })?;
@@ -5564,29 +5828,29 @@ mod platform {
         index_count: u32,
     ) -> Result<()> {
         if !usage.contains(BufferUsage::INDEX) {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer must include INDEX usage".to_string(),
             ));
         }
         let stride = index_format_size(binding.format);
         if binding.offset % stride != 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer offset must be aligned to the index format size".to_string(),
             ));
         }
-        let first_index_byte = u64::from(first_index).checked_mul(stride).ok_or_else(|| {
-            GfxError::InvalidInput("first index byte offset overflow".to_string())
-        })?;
+        let first_index_byte = u64::from(first_index)
+            .checked_mul(stride)
+            .ok_or_else(|| Error::InvalidInput("first index byte offset overflow".to_string()))?;
         let index_bytes = u64::from(index_count)
             .checked_mul(stride)
-            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
         let byte_end = binding
             .offset
             .checked_add(first_index_byte)
             .and_then(|start| start.checked_add(index_bytes))
-            .ok_or_else(|| GfxError::InvalidInput("index buffer range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
         if byte_end > buffer_size {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "index buffer range is out of bounds".to_string(),
             ));
         }
@@ -5628,13 +5892,15 @@ mod platform {
 
     #[derive(Clone)]
     struct Dx12Buffer {
-        desc: BufferDesc,
+        desc: BufferDescriptor,
         resource: Option<ID3D12Resource>,
+        /// Current resource state, tracked so staging copies can transition the buffer correctly.
+        state: D3D12_RESOURCE_STATES,
     }
 
     #[derive(Clone)]
     struct Dx12Texture {
-        desc: TextureDesc,
+        desc: TextureDescriptor,
         resource: Option<ID3D12Resource>,
         state: D3D12_RESOURCE_STATES,
     }
@@ -5651,12 +5917,12 @@ mod platform {
             // SAFETY: This is an upload-heap buffer. D3D12 permits persistent mapping, and
             // `Drop` balances the call after submissions using the page have retired.
             unsafe { resource.Map(0, None, Some(&raw mut mapped)) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             let Some(mapped) = NonNull::new(mapped.cast::<u8>()) else {
                 // SAFETY: `Map` succeeded above, so balance it before returning the invalid
                 // pointer reported by the driver.
                 unsafe { resource.Unmap(0, None) };
-                return Err(GfxError::Backend(
+                return Err(Error::Backend(
                     "DX12 upload page mapping returned a null pointer".to_string(),
                 ));
             };
@@ -5704,7 +5970,7 @@ mod platform {
         upload: ID3D12Resource,
         texture: ID3D12Resource,
         old_state: D3D12_RESOURCE_STATES,
-        desc: TextureWriteDesc,
+        desc: TextureWriteDescriptor,
         format: Format,
         upload_offset: u64,
         row_pitch: u32,
@@ -5740,6 +6006,8 @@ mod platform {
     struct Dx12TextureView {
         texture: TextureId,
         format: Format,
+        base_mip_level: u32,
+        mip_level_count: u32,
         rtv_slot: Option<DescriptorSlot>,
         dsv_slot: Option<DescriptorSlot>,
     }
@@ -5748,13 +6016,15 @@ mod platform {
     struct Dx12Sampler {
         mag_filter: FilterMode,
         min_filter: FilterMode,
+        mipmap_filter: FilterMode,
+        anisotropic: bool,
         address_mode_u: AddressMode,
         address_mode_v: AddressMode,
     }
 
     #[derive(Clone)]
     struct Dx12ResourceSetLayout {
-        desc: ResourceSetLayoutDesc,
+        desc: ResourceSetLayoutDescriptor,
     }
 
     #[derive(Clone)]
@@ -5814,7 +6084,7 @@ mod platform {
             };
             // SAFETY: Descriptor heap desc is self-contained and device is valid.
             let heap = unsafe { device.CreateDescriptorHeap(&raw const desc) }
-                .map_err(|error| GfxError::Backend(error.to_string()))?;
+                .map_err(|error| Error::Backend(error.to_string()))?;
             // SAFETY: Device is valid and returns a static descriptor size for this heap type.
             let increment = unsafe { device.GetDescriptorHandleIncrementSize(heap_type) };
             Ok(Self {
@@ -5831,7 +6101,7 @@ mod platform {
                 index
             } else {
                 if self.next >= self.capacity {
-                    return Err(GfxError::Unavailable(
+                    return Err(Error::Unavailable(
                         "DX12 descriptor heap capacity exhausted".to_string(),
                     ));
                 }
@@ -5845,24 +6115,24 @@ mod platform {
             let gpu_start = unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() };
             let byte_offset = usize::try_from(u64::from(self.increment) * u64::from(index))
                 .map_err(|error| {
-                    GfxError::InvalidInput(format!("descriptor offset overflow: {error}"))
+                    Error::InvalidInput(format!("descriptor offset overflow: {error}"))
                 })?;
             Ok(DescriptorSlot {
                 cpu_handle: D3D12_CPU_DESCRIPTOR_HANDLE {
                     ptr: cpu_start.ptr.checked_add(byte_offset).ok_or_else(|| {
-                        GfxError::InvalidInput("descriptor CPU handle overflow".to_string())
+                        Error::InvalidInput("descriptor CPU handle overflow".to_string())
                     })?,
                 },
                 gpu_handle: D3D12_GPU_DESCRIPTOR_HANDLE {
                     ptr: gpu_start
                         .ptr
                         .checked_add(u64::try_from(byte_offset).map_err(|error| {
-                            GfxError::InvalidInput(format!(
+                            Error::InvalidInput(format!(
                                 "descriptor GPU handle offset overflow: {error}"
                             ))
                         })?)
                         .ok_or_else(|| {
-                            GfxError::InvalidInput("descriptor GPU handle overflow".to_string())
+                            Error::InvalidInput("descriptor GPU handle overflow".to_string())
                         })?,
                 },
                 index,
@@ -5967,7 +6237,6 @@ mod platform {
         }
     }
 
-    #[derive(Clone)]
     struct Dx12Swapchain {
         surface: SurfaceId,
         config: SurfaceConfig,
@@ -5982,17 +6251,83 @@ mod platform {
         /// Frame-latency waitable object; closed when the swapchain retires.
         frame_latency_waitable: Option<HANDLE>,
         /// Readiness consumed by the wait, retained until a successful Present.
-        frame_latency_ready: Cell<bool>,
+        frame_pacing: FrameLatencyWait,
         /// Flip-sequential swapchains can preserve pixels outside native dirty rectangles.
         partial_presentation: bool,
         /// Damage accumulated since each rotating back buffer was last current.
         pending_damage: Vec<Dx12BackBufferDamage>,
     }
 
+    impl Drop for Dx12Swapchain {
+        fn drop(&mut self) {
+            // Stop/drain the native wait before releasing the DXGI swapchain or
+            // handle, including live registry records dropped with the device.
+            self.frame_pacing.reset();
+            if let Some(handle) = self.frame_latency_waitable.take() {
+                // SAFETY: This record uniquely owns the DXGI-returned handle;
+                // no wait or callback can still access it after reset.
+                if let Err(error) = unsafe { CloseHandle(handle) } {
+                    log::warn!("DX12 frame-latency handle cleanup failed: {error}");
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         use gfx_core::{BufferUsage, ResourceSetLayoutEntry};
+
+        #[test]
+        fn depth_comparison_maps_to_d3d12_functions() {
+            let comparisons = [
+                (CompareFunction::Never, D3D12_COMPARISON_FUNC_NEVER),
+                (CompareFunction::Less, D3D12_COMPARISON_FUNC_LESS),
+                (CompareFunction::Equal, D3D12_COMPARISON_FUNC_EQUAL),
+                (CompareFunction::LessEqual, D3D12_COMPARISON_FUNC_LESS_EQUAL),
+                (CompareFunction::Greater, D3D12_COMPARISON_FUNC_GREATER),
+                (CompareFunction::NotEqual, D3D12_COMPARISON_FUNC_NOT_EQUAL),
+                (
+                    CompareFunction::GreaterEqual,
+                    D3D12_COMPARISON_FUNC_GREATER_EQUAL,
+                ),
+                (CompareFunction::Always, D3D12_COMPARISON_FUNC_ALWAYS),
+            ];
+
+            for (comparison, expected) in comparisons {
+                assert_eq!(depth_compare_function(comparison), expected);
+            }
+        }
+
+        #[test]
+        fn anisotropic_sampler_uses_dx12_filter_and_limit() {
+            let desc = sampler_desc_to_dx12(Dx12Sampler {
+                mag_filter: FilterMode::Linear,
+                min_filter: FilterMode::Linear,
+                mipmap_filter: FilterMode::Linear,
+                anisotropic: true,
+                address_mode_u: AddressMode::ClampToEdge,
+                address_mode_v: AddressMode::ClampToEdge,
+            });
+
+            assert_eq!(desc.Filter, D3D12_FILTER_ANISOTROPIC);
+            assert_eq!(desc.MaxAnisotropy, 16);
+        }
+
+        #[test]
+        fn regular_sampler_keeps_configured_dx12_filters() {
+            let desc = sampler_desc_to_dx12(Dx12Sampler {
+                mag_filter: FilterMode::Linear,
+                min_filter: FilterMode::Linear,
+                mipmap_filter: FilterMode::Linear,
+                anisotropic: false,
+                address_mode_u: AddressMode::ClampToEdge,
+                address_mode_v: AddressMode::ClampToEdge,
+            });
+
+            assert_eq!(desc.Filter, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+            assert_eq!(desc.MaxAnisotropy, 1);
+        }
 
         #[test]
         fn maps_bgra_format_to_dxgi() {
@@ -6069,13 +6404,14 @@ mod platform {
         fn registry_rejects_stale_handle() {
             let mut registry = ResourceRegistry::new("buffer");
             let id: BufferId = registry.insert(Dx12Buffer {
-                desc: BufferDesc {
+                desc: BufferDescriptor {
                     label: None,
                     size: 1,
                     usage: BufferUsage::VERTEX,
                     memory_location: MemoryLocation::CpuToGpu,
                 },
                 resource: None,
+                state: D3D12_RESOURCE_STATE_GENERIC_READ,
             });
 
             let _removed = registry.take(id).expect("handle should be live");
@@ -6085,6 +6421,82 @@ mod platform {
                 Err(error) => error,
             };
             assert!(error.to_string().contains("stale or invalid buffer handle"));
+        }
+
+        #[test]
+        fn gpu_only_buffer_staging_write_round_trips() {
+            let mut device = match Dx12Device::new(&DeviceDescriptor::default()) {
+                Ok(device) => device,
+                Err(Error::Unavailable(reason)) => {
+                    eprintln!("NOVA_GFX_SKIP=dx12 unavailable: {reason}");
+                    return;
+                }
+                Err(error) => panic!("DX12 initialization failed: {error}"),
+            };
+            let bytes: Vec<u8> = (0..4096u32).map(|value| (value % 251) as u8).collect();
+            let size = u64::try_from(bytes.len()).expect("fixture size fits in u64");
+            let gpu_buffer = device
+                .create_buffer(&BufferDescriptor {
+                    label: Some("DX12 gpu-only staging contract".to_string()),
+                    size,
+                    usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST | BufferUsage::VERTEX,
+                    memory_location: MemoryLocation::GpuOnly,
+                })
+                .expect("device-local buffer creation should succeed");
+            device
+                .write_buffer(gpu_buffer, 0, &bytes)
+                .expect("staging write into device-local memory should succeed");
+
+            let readback = device
+                .create_buffer(&BufferDescriptor {
+                    label: Some("DX12 buffer readback".to_string()),
+                    size,
+                    usage: BufferUsage::COPY_DST,
+                    memory_location: MemoryLocation::GpuToCpu,
+                })
+                .expect("readback buffer creation should succeed");
+            let source = device
+                .buffers
+                .get(gpu_buffer)
+                .expect("device-local handle should be live")
+                .resource
+                .clone()
+                .expect("device-local buffer should have a native resource");
+            let destination = device
+                .buffers
+                .get(readback)
+                .expect("readback handle should be live")
+                .resource
+                .clone()
+                .expect("readback buffer should have a native resource");
+            device
+                .copy_buffer_region(BufferRegionCopy {
+                    source: &source,
+                    source_state: D3D12_RESOURCE_STATE_GENERIC_READ,
+                    source_offset: 0,
+                    destination: &destination,
+                    destination_state: D3D12_RESOURCE_STATE_COPY_DEST,
+                    destination_final_state: D3D12_RESOURCE_STATE_COPY_DEST,
+                    destination_offset: 0,
+                    len: size,
+                })
+                .expect("buffer readback copy should succeed");
+
+            let mut mapped = ptr::null_mut();
+            let read_range = D3D12_RANGE {
+                Begin: 0,
+                End: bytes.len(),
+            };
+            // SAFETY: The resource is a readback-heap buffer and the range covers the allocation.
+            unsafe { destination.Map(0, Some(&raw const read_range), Some(&raw mut mapped)) }
+                .expect("readback mapping should succeed");
+            let mapped = NonNull::new(mapped.cast::<u8>()).expect("mapping should not be null");
+            // SAFETY: The mapped range covers the number of bytes that were copied.
+            let observed = unsafe { std::slice::from_raw_parts(mapped.as_ptr(), bytes.len()) };
+            assert_eq!(observed, bytes.as_slice());
+            let written_range = D3D12_RANGE { Begin: 0, End: 0 };
+            // SAFETY: This map was used for reading only and is balanced exactly once.
+            unsafe { destination.Unmap(0, Some(&raw const written_range)) };
         }
 
         #[test]
@@ -6107,7 +6519,7 @@ mod platform {
         #[test]
         fn draw_step_constants_root_index_follows_resource_tables() {
             let layouts = [
-                ResourceSetLayoutDesc {
+                ResourceSetLayoutDescriptor {
                     label: None,
                     entries: vec![
                         ResourceSetLayoutEntry {
@@ -6122,7 +6534,7 @@ mod platform {
                         },
                     ],
                 },
-                ResourceSetLayoutDesc {
+                ResourceSetLayoutDescriptor {
                     label: None,
                     entries: vec![ResourceSetLayoutEntry {
                         binding: 2,
@@ -6293,15 +6705,16 @@ mod platform {
 mod platform {
     use super::*;
     use gfx_core::{
-        AdapterInfo, BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc,
-        CommandEncoderId, DeviceDesc, DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice,
-        GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-        GfxSubmissionDevice, GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId,
-        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, ResourceSetDesc,
-        ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats, SamplerDesc,
-        SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId, SubmissionStatus, SurfaceConfig,
-        SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId, TextureViewDesc,
-        TextureViewId, TextureWriteDesc,
+        AdapterInfo, Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
+        CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
+        DrawDescriptor, DrawStepDescriptor, LoadOp, PipelineDevice, PipelineLayoutDescriptor,
+        PipelineLayoutId, PresentationDevice, RenderPassDescriptor, RenderPassId,
+        RenderPipelineDescriptor, RenderPipelineId, ResourceDevice, ResourceSetDescriptor,
+        ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats,
+        SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice,
+        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+        SwapchainId, TextureDescriptor, TextureId, TextureViewDescriptor, TextureViewId,
+        TextureWriteDescriptor,
     };
 
     /// Stub Direct3D 12 device for non-Windows targets.
@@ -6312,9 +6725,9 @@ mod platform {
         ///
         /// # Errors
         ///
-        /// Always returns [`GfxError::Unavailable`] on non-Windows targets.
-        pub fn new(_desc: &DeviceDesc) -> Result<Self> {
-            Err(GfxError::Unavailable(
+        /// Always returns [`Error::Unavailable`] on non-Windows targets.
+        pub fn new(_desc: &DeviceDescriptor) -> Result<Self> {
+            Err(Error::Unavailable(
                 "Direct3D 12 backend is only available on Windows".to_string(),
             ))
         }
@@ -6330,22 +6743,22 @@ mod platform {
     }
 
     fn unavailable<T>() -> Result<T> {
-        Err(GfxError::Unavailable(
+        Err(Error::Unavailable(
             "Direct3D 12 backend is only available on Windows".to_string(),
         ))
     }
 
-    impl GfxBackend for Dx12Device {
+    impl Backend for Dx12Device {
         const BACKEND_KIND: BackendKind = BackendKind::Dx12;
     }
 
-    impl GfxSurfaceDevice for Dx12Device {
+    impl SurfaceDevice for Dx12Device {
         type SurfaceTarget = ();
 
         fn create_surface(
             &mut self,
             _target: &Self::SurfaceTarget,
-            _desc: &SurfaceDesc,
+            _desc: &SurfaceDescriptor,
         ) -> Result<SurfaceId> {
             unavailable()
         }
@@ -6367,8 +6780,8 @@ mod platform {
         }
     }
 
-    impl GfxResourceDevice for Dx12Device {
-        fn create_buffer(&mut self, _desc: &BufferDesc) -> Result<BufferId> {
+    impl ResourceDevice for Dx12Device {
+        fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
             unavailable()
         }
 
@@ -6376,30 +6789,30 @@ mod platform {
             unavailable()
         }
 
-        fn create_texture(&mut self, _desc: &TextureDesc) -> Result<TextureId> {
+        fn create_texture(&mut self, _desc: &TextureDescriptor) -> Result<TextureId> {
             unavailable()
         }
 
-        fn write_texture(&mut self, _desc: TextureWriteDesc, _data: &[u8]) -> Result<()> {
+        fn write_texture(&mut self, _desc: TextureWriteDescriptor, _data: &[u8]) -> Result<()> {
             unavailable()
         }
 
-        fn create_texture_view(&mut self, _desc: &TextureViewDesc) -> Result<TextureViewId> {
+        fn create_texture_view(&mut self, _desc: &TextureViewDescriptor) -> Result<TextureViewId> {
             unavailable()
         }
 
-        fn create_sampler(&mut self, _desc: &SamplerDesc) -> Result<SamplerId> {
+        fn create_sampler(&mut self, _desc: &SamplerDescriptor) -> Result<SamplerId> {
             unavailable()
         }
 
         fn create_resource_set_layout(
             &mut self,
-            _desc: &ResourceSetLayoutDesc,
+            _desc: &ResourceSetLayoutDescriptor,
         ) -> Result<ResourceSetLayoutId> {
             unavailable()
         }
 
-        fn create_resource_set(&mut self, _desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+        fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
             unavailable()
         }
 
@@ -6428,25 +6841,28 @@ mod platform {
         }
     }
 
-    impl GfxPipelineDevice for Dx12Device {
+    impl PipelineDevice for Dx12Device {
         fn create_pipeline_layout(
             &mut self,
-            _desc: &PipelineLayoutDesc,
+            _desc: &PipelineLayoutDescriptor,
         ) -> Result<PipelineLayoutId> {
             unavailable()
         }
 
-        fn create_shader_module(&mut self, _desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+        fn create_shader_module(
+            &mut self,
+            _desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             unavailable()
         }
 
-        fn create_render_pass(&mut self, _desc: &RenderPassDesc) -> Result<RenderPassId> {
+        fn create_render_pass(&mut self, _desc: &RenderPassDescriptor) -> Result<RenderPassId> {
             unavailable()
         }
 
         fn create_render_pipeline(
             &mut self,
-            _desc: &RenderPipelineDesc,
+            _desc: &RenderPipelineDescriptor,
             _viewport_extent: gfx_core::Extent2d,
         ) -> Result<RenderPipelineId> {
             unavailable()
@@ -6469,15 +6885,19 @@ mod platform {
         }
     }
 
-    impl GfxCommandDevice for Dx12Device {
+    impl CommandDevice for Dx12Device {
         fn create_command_encoder(
             &mut self,
-            _desc: &CommandEncoderDesc,
+            _desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
             unavailable()
         }
 
-        fn record_draw_desc(&mut self, _encoder: CommandEncoderId, _draw: DrawDesc) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            _encoder: CommandEncoderId,
+            _draw: DrawDescriptor,
+        ) -> Result<()> {
             unavailable()
         }
 
@@ -6490,7 +6910,7 @@ mod platform {
         }
     }
 
-    impl GfxSubmissionDevice for Dx12Device {
+    impl SubmissionDevice for Dx12Device {
         fn submit_deferred(&mut self, _encoder: CommandEncoderId) -> Result<SubmissionId> {
             unavailable()
         }
@@ -6504,12 +6924,12 @@ mod platform {
         }
     }
 
-    impl GfxPresentationDevice for Dx12Device {
+    impl PresentationDevice for Dx12Device {
         fn draw_steps_and_present(
             &mut self,
             _swapchain: SwapchainId,
             _render_pass: RenderPassId,
-            _steps: &[DrawStepDesc],
+            _steps: &[DrawStepDescriptor],
             _clear_color: ClearColor,
         ) -> Result<()> {
             unavailable()
@@ -6519,14 +6939,14 @@ mod platform {
             &mut self,
             _texture_view: TextureViewId,
             _render_pass: RenderPassId,
-            _steps: &[DrawStepDesc],
+            _steps: &[DrawStepDescriptor],
             _color_load_op: LoadOp<ClearColor>,
         ) -> Result<()> {
             unavailable()
         }
     }
 
-    impl GfxDiagnosticsDevice for Dx12Device {
+    impl DiagnosticsDevice for Dx12Device {
         fn resource_stats(&self) -> ResourceStats {
             ResourceStats::default()
         }

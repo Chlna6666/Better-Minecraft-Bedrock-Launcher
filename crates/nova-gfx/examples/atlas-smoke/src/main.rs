@@ -21,15 +21,15 @@ mod windows_example {
     use std::{num::NonZeroIsize, time::Instant};
 
     use gfx_core::{
-        BlendMode, BufferBinding, BufferDesc, BufferUsage, ClearColor, ColorAttachmentDesc,
-        DeviceDesc, Format, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-        GfxSurfaceDevice, MemoryLocation, Origin2d, PipelineLayoutDesc, PresentMode,
-        RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, ResourceBinding,
-        ResourceBindingResource, ResourceBindingType, ResourceSetDesc, ResourceSetId,
-        ResourceSetLayoutDesc, ResourceSetLayoutEntry, SamplerBinding, SamplerDesc,
-        ShaderModuleDesc, ShaderStage, ShaderStages, SurfaceConfig, SurfaceDesc, SurfaceId,
-        TextureBinding, TextureDataLayout, TextureDesc, TextureDimension, TextureUsage,
-        TextureViewDesc, TextureWriteDesc,
+        BlendMode, BufferBinding, BufferDescriptor, BufferUsage, ClearColor, ColorAttachmentDescriptor,
+        DeviceDescriptor, Format, PipelineDevice, PresentationDevice, ResourceDevice,
+        SurfaceDevice, MemoryLocation, Origin2d, PipelineLayoutDescriptor, PresentMode,
+        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, ResourceBinding,
+        BindingResource, ResourceBindingType, ResourceSetDescriptor, ResourceSetId,
+        ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, SamplerBinding, SamplerDescriptor,
+        ShaderModuleDescriptor, ShaderStage, ShaderStages, SurfaceConfig, SurfaceDescriptor, SurfaceId,
+        TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureUsage,
+        TextureViewDescriptor, TextureWriteDescriptor,
     };
     use gfx_shader::compile_wgsl_to_spirv;
     use gfx_vulkan::{BaselineMetrics, VulkanDevice};
@@ -233,46 +233,47 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             fragment_shader: gfx_core::ShaderBinary,
         ) -> Result<Self, Box<dyn std::error::Error>> {
             let metrics_started_at = Instant::now();
-            let mut device = VulkanDevice::new(&DeviceDesc {
+            let mut device = VulkanDevice::new(&DeviceDescriptor {
                 application_name: "nova-gfx atlas smoke".to_string(),
-                ..DeviceDesc::default()
+                ..DeviceDescriptor::default()
             })?;
-            let surface = device.create_surface(window, &SurfaceDesc { label: None })?;
+            let surface = device.create_surface(window, &SurfaceDescriptor { label: None })?;
             let current_size = WindowSize {
                 width: surface_config.size.width(),
                 height: surface_config.size.height(),
             };
             let swapchain = device.create_swapchain(surface, surface_config)?;
-            let vertex_shader = device.create_shader_module(&ShaderModuleDesc {
+            let vertex_shader = device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("atlas vertex shader".to_string()),
                 binary: vertex_shader,
             })?;
-            let fragment_shader = device.create_shader_module(&ShaderModuleDesc {
+            let fragment_shader = device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("atlas fragment shader".to_string()),
                 binary: fragment_shader,
             })?;
-            let render_pass = device.create_render_pass(&RenderPassDesc {
+            let render_pass = device.create_render_pass(&RenderPassDescriptor {
                 label: Some("atlas render pass".to_string()),
-                color_attachment: ColorAttachmentDesc {
+                color_attachment: ColorAttachmentDescriptor {
                     format: surface_config.format,
                 },
                 depth_attachment: None,
             })?;
             let layout = device.create_resource_set_layout(&atlas_layout_desc())?;
-            let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDesc {
+            let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
                 label: Some("atlas pipeline layout".to_string()),
                 resource_set_layouts: vec![layout],
             })?;
-            let uniform = device.create_buffer(&BufferDesc {
+            let uniform = device.create_buffer(&BufferDescriptor {
                 label: Some("atlas uniform".to_string()),
                 size: 16,
                 usage: BufferUsage::UNIFORM,
                 memory_location: MemoryLocation::CpuToGpu,
             })?;
             device.write_buffer(uniform, 0, &uniform_bytes())?;
-            let texture = device.create_texture(&TextureDesc {
+            let texture = device.create_texture(&TextureDescriptor {
                 label: Some("atlas texture".to_string()),
                 size: gfx_core::Extent2d::new(ATLAS_SIZE, ATLAS_SIZE)?,
+                mip_level_count: 1,
                 format: Format::Rgba8Unorm,
                 usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
                 memory_location: MemoryLocation::GpuOnly,
@@ -280,27 +281,30 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             })?;
             let atlas = atlas_pixels();
             device.write_texture(
-                TextureWriteDesc {
+                TextureWriteDescriptor {
                     texture,
+                    mip_level: 0,
                     layout: TextureDataLayout::new(0, ATLAS_SIZE * 4, ATLAS_SIZE)?,
                     origin: Origin2d::ZERO,
                     size: gfx_core::Extent2d::new(ATLAS_SIZE, ATLAS_SIZE)?,
                 },
                 &atlas,
             )?;
-            let texture_view = device.create_texture_view(&TextureViewDesc {
+            let texture_view = device.create_texture_view(&TextureViewDescriptor {
                 label: Some("atlas texture view".to_string()),
                 texture,
+                base_mip_level: 0,
+                mip_level_count: 1,
                 format: Format::Rgba8Unorm,
             })?;
-            let sampler = device.create_sampler(&SamplerDesc::default())?;
-            let resource_set = device.create_resource_set(&ResourceSetDesc {
+            let sampler = device.create_sampler(&SamplerDescriptor::default())?;
+            let resource_set = device.create_resource_set(&ResourceSetDescriptor {
                 label: Some("atlas resource set".to_string()),
                 layout,
                 bindings: vec![
                     ResourceBinding {
                         binding: 0,
-                        resource: ResourceBindingResource::Buffer(BufferBinding {
+                        resource: BindingResource::Buffer(BufferBinding {
                             buffer: uniform,
                             offset: 0,
                             size: 16,
@@ -309,16 +313,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
                     },
                     ResourceBinding {
                         binding: 1,
-                        resource: ResourceBindingResource::Texture(TextureBinding { texture_view }),
+                        resource: BindingResource::Texture(TextureBinding { texture_view }),
                     },
                     ResourceBinding {
                         binding: 2,
-                        resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
+                        resource: BindingResource::Sampler(SamplerBinding { sampler }),
                     },
                 ],
             })?;
             let pipeline = device.create_render_pipeline(
-                &RenderPipelineDesc {
+                &RenderPipelineDescriptor {
                     label: Some("atlas pipeline".to_string()),
                     vertex_shader,
                     vertex_entry_point: "vs_main".to_string(),
@@ -384,8 +388,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
     }
 
-    fn atlas_layout_desc() -> ResourceSetLayoutDesc {
-        ResourceSetLayoutDesc {
+    fn atlas_layout_desc() -> ResourceSetLayoutDescriptor {
+        ResourceSetLayoutDescriptor {
             label: Some("atlas resource set layout".to_string()),
             entries: vec![
                 ResourceSetLayoutEntry {

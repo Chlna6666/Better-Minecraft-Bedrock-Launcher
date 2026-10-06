@@ -124,7 +124,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when allocator creation fails.
+    /// Returns [`gfx_core::Error`] when allocator creation fails.
     pub fn new_vulkan(desc: VulkanMemoryAllocatorDesc) -> Result<Self> {
         Ok(Self::Vulkan(VulkanMemoryAllocator::new(desc)?))
     }
@@ -133,7 +133,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when validation or allocation fails.
+    /// Returns [`gfx_core::Error`] when validation or allocation fails.
     pub fn allocate_vulkan_buffer(
         &mut self,
         name: &str,
@@ -146,11 +146,11 @@ impl MemoryAllocator {
                 allocator.allocate_buffer(name, requirements, location, buffer)
             }
             #[cfg(feature = "dx12")]
-            Self::Dx12(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Dx12(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Vulkan allocator".to_string(),
             )),
             #[cfg(feature = "metal")]
-            Self::Metal(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Metal(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Vulkan allocator".to_string(),
             )),
         }
@@ -160,7 +160,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when validation or allocation fails.
+    /// Returns [`gfx_core::Error`] when validation or allocation fails.
     pub fn allocate_vulkan_image(
         &mut self,
         name: &str,
@@ -173,11 +173,11 @@ impl MemoryAllocator {
                 allocator.allocate_image(name, requirements, location, image)
             }
             #[cfg(feature = "dx12")]
-            Self::Dx12(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Dx12(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Vulkan allocator".to_string(),
             )),
             #[cfg(feature = "metal")]
-            Self::Metal(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Metal(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Vulkan allocator".to_string(),
             )),
         }

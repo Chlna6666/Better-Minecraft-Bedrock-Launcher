@@ -30,7 +30,7 @@ gfx-memory = { version = "0.1", default-features = false, features = ["vulkan"] 
 - `dx12` enables `windows` and `gpu-allocator/d3d12`.
 - `metal` enables `objc2`, `objc2-metal`, and `gpu-allocator/metal`.
 
-Non-target constructors return `GfxError::Unavailable` when the platform cannot
+Non-target constructors return `Error::Unavailable` when the platform cannot
 support the requested backend.
 
 ## Lifetime Rules

@@ -17,6 +17,27 @@ use thiserror::Error;
 /// Result type used by shader compilation.
 pub type Result<T> = std::result::Result<T, ShaderError>;
 
+/// Target version for generated Metal Shading Language.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MslVersion {
+    /// Metal Shading Language 1.0.
+    V1_0,
+    /// Metal Shading Language 1.1.
+    V1_1,
+    /// Metal Shading Language 1.2, including the `instance_id` attribute.
+    V1_2,
+}
+
+impl MslVersion {
+    const fn language_version(self) -> (u8, u8) {
+        match self {
+            Self::V1_0 => (1, 0),
+            Self::V1_1 => (1, 1),
+            Self::V1_2 => (1, 2),
+        }
+    }
+}
+
 /// Shader parse, validation, and translation errors.
 #[derive(Debug, Error)]
 pub enum ShaderError {
@@ -32,6 +53,13 @@ pub enum ShaderError {
     /// HLSL generation failed.
     #[error("HLSL generation failed: {0}")]
     Hlsl(String),
+    /// No build-generated backend artifact exists for the requested entry point.
+    ///
+    /// A renderer resolves production shaders from the artifacts `build.rs` embeds,
+    /// so this error means the build script and the renderer disagree about the
+    /// shader set rather than that the shader source is invalid.
+    #[error("no build-generated shader artifact for entry point `{0}`")]
+    MissingArtifact(String),
     /// MSL generation failed.
     #[error("MSL generation failed: {0}")]
     Msl(String),
@@ -115,7 +143,27 @@ impl WgslModule {
     ///
     /// Returns [`ShaderError::Msl`] when the entry point or translation fails.
     pub fn compile_msl(&self, stage: ShaderStage, entry_point: &str) -> Result<ShaderBinary> {
-        let options = msl::Options::default();
+        self.compile_msl_with_version(stage, entry_point, MslVersion::V1_0)
+    }
+
+    /// Compiles one entry point to Metal Shading Language at an explicit language version.
+    ///
+    /// Use a newer target only when the renderer requires a language feature absent from MSL 1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShaderError::Msl`] when the entry point or translation is unsupported by the
+    /// selected MSL version.
+    pub fn compile_msl_with_version(
+        &self,
+        stage: ShaderStage,
+        entry_point: &str,
+        version: MslVersion,
+    ) -> Result<ShaderBinary> {
+        let options = msl::Options {
+            lang_version: version.language_version(),
+            ..msl::Options::default()
+        };
         let pipeline_options = msl::PipelineOptions {
             entry_point: Some((shader_stage_to_naga(stage), entry_point.to_string())),
             ..msl::PipelineOptions::default()
@@ -186,6 +234,20 @@ pub fn compile_wgsl_to_msl(
     entry_point: &str,
 ) -> Result<ShaderBinary> {
     WgslModule::parse(source)?.compile_msl(stage, entry_point)
+}
+
+/// Parses and compiles one WGSL entry point to MSL at an explicit language version.
+///
+/// # Errors
+///
+/// Returns [`ShaderError`] when parsing, validation, or translation fails for the selected version.
+pub fn compile_wgsl_to_msl_with_version(
+    source: &str,
+    stage: ShaderStage,
+    entry_point: &str,
+    version: MslVersion,
+) -> Result<ShaderBinary> {
+    WgslModule::parse(source)?.compile_msl_with_version(stage, entry_point, version)
 }
 
 /// Parses and compiles one WGSL entry point to backend-specific code.
@@ -481,6 +543,31 @@ mod tests {
         assert!(
             source.contains("_NagaConstants.first_instance"),
             "unexpected HLSL output:\n{source}"
+        );
+    }
+
+    #[test]
+    fn msl_12_supports_instance_index() {
+        let source = r"
+            @vertex
+            fn vs_main(@builtin(instance_index) instance_index: u32) -> @builtin(position) vec4<f32> {
+                return vec4<f32>(f32(instance_index), 0.0, 0.0, 1.0);
+            }
+        ";
+        let binary = compile_wgsl_to_msl_with_version(
+            source,
+            ShaderStage::Vertex,
+            "vs_main",
+            MslVersion::V1_2,
+        )
+        .expect("MSL 1.2 should support instance_index");
+        let gfx_core::ShaderCode::Msl(source) = binary.code else {
+            panic!("expected MSL shader code");
+        };
+
+        assert!(
+            source.contains("instance_id"),
+            "unexpected MSL output:\n{source}"
         );
     }
 }

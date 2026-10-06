@@ -1,4 +1,4 @@
-use gfx_core::GfxError;
+use gfx_core::Error;
 use thiserror::Error;
 
 /// Direct3D 12-specific error.
@@ -12,7 +12,7 @@ pub enum Dx12Error {
     Backend(String),
 }
 
-impl From<Dx12Error> for GfxError {
+impl From<Dx12Error> for Error {
     fn from(error: Dx12Error) -> Self {
         match error {
             Dx12Error::Unavailable(message) => Self::Unavailable(message),

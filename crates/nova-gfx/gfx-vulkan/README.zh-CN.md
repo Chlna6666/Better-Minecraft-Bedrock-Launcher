@@ -14,14 +14,14 @@ pipeline 和 command encoder 状态。它只在后端内部使用 `raw-window-ha
 调用 trait 方法。
 
 ```rust
-use gfx_core::{ClearColor, DrawStepDesc, GfxPresentationDevice, RenderPassId, SwapchainId};
+use gfx_core::{ClearColor, DrawStepDescriptor, PresentationDevice, RenderPassId, SwapchainId};
 use gfx_vulkan::VulkanDevice;
 
 fn present(
     device: &mut VulkanDevice,
     swapchain: SwapchainId,
     render_pass: RenderPassId,
-    steps: &[DrawStepDesc],
+    steps: &[DrawStepDescriptor],
     clear: ClearColor,
 ) -> gfx_core::Result<()> {
     device.draw_steps_and_present(swapchain, render_pass, steps, clear)

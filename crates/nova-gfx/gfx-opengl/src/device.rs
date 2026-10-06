@@ -1,13 +1,14 @@
 use gfx_core::{
-    BackendKind, BufferDesc, BufferId, ClearColor, CommandEncoderDesc, CommandEncoderId,
-    DeviceDesc, DrawDesc, DrawStepDesc, GfxBackend, GfxCommandDevice, GfxDiagnosticsDevice,
-    GfxError, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice, GfxSubmissionDevice,
-    GfxSurfaceDevice, LoadOp, PipelineLayoutDesc, PipelineLayoutId, RenderPassDepthAttachment,
-    RenderPassDesc, RenderPassId, RenderPipelineDesc, RenderPipelineId, RenderStepDescriptor,
-    ResourceSetDesc, ResourceSetId, ResourceSetLayoutDesc, ResourceSetLayoutId, ResourceStats,
-    Result, SamplerDesc, SamplerId, ShaderModuleDesc, ShaderModuleId, SubmissionId,
-    SubmissionStatus, SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId, TextureDesc, TextureId,
-    TextureViewDesc, TextureViewId, TextureWriteDesc,
+    Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
+    CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
+    DrawDescriptor, DrawStepDescriptor, Error, LoadOp, PipelineDevice, PipelineLayoutDescriptor,
+    PipelineLayoutId, PresentationDevice, RenderPassDepthAttachment, RenderPassDescriptor,
+    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, ResourceDevice,
+    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
+    ResourceStats, Result, SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId,
+    SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor,
+    SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor, TextureId, TextureViewDescriptor,
+    TextureViewId, TextureWriteDescriptor,
 };
 
 /// Stub OpenGL device.
@@ -18,29 +19,29 @@ impl OpenGlDevice {
     ///
     /// # Errors
     ///
-    /// Always returns [`GfxError::Unavailable`].
-    pub fn new(_desc: &DeviceDesc) -> Result<Self> {
+    /// Always returns [`Error::Unavailable`].
+    pub fn new(_desc: &DeviceDescriptor) -> Result<Self> {
         unavailable()
     }
 }
 
 fn unavailable<T>() -> Result<T> {
-    Err(GfxError::Unavailable(
+    Err(Error::Unavailable(
         "OpenGL backend is not implemented yet".to_string(),
     ))
 }
 
-impl GfxBackend for OpenGlDevice {
+impl Backend for OpenGlDevice {
     const BACKEND_KIND: BackendKind = BackendKind::OpenGl;
 }
 
-impl GfxSurfaceDevice for OpenGlDevice {
+impl SurfaceDevice for OpenGlDevice {
     type SurfaceTarget = ();
 
     fn create_surface(
         &mut self,
         _target: &Self::SurfaceTarget,
-        _desc: &SurfaceDesc,
+        _desc: &SurfaceDescriptor,
     ) -> Result<SurfaceId> {
         unavailable()
     }
@@ -62,8 +63,8 @@ impl GfxSurfaceDevice for OpenGlDevice {
     }
 }
 
-impl GfxResourceDevice for OpenGlDevice {
-    fn create_buffer(&mut self, _desc: &BufferDesc) -> Result<BufferId> {
+impl ResourceDevice for OpenGlDevice {
+    fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
         unavailable()
     }
 
@@ -71,30 +72,30 @@ impl GfxResourceDevice for OpenGlDevice {
         unavailable()
     }
 
-    fn create_texture(&mut self, _desc: &TextureDesc) -> Result<TextureId> {
+    fn create_texture(&mut self, _desc: &TextureDescriptor) -> Result<TextureId> {
         unavailable()
     }
 
-    fn write_texture(&mut self, _desc: TextureWriteDesc, _data: &[u8]) -> Result<()> {
+    fn write_texture(&mut self, _desc: TextureWriteDescriptor, _data: &[u8]) -> Result<()> {
         unavailable()
     }
 
-    fn create_texture_view(&mut self, _desc: &TextureViewDesc) -> Result<TextureViewId> {
+    fn create_texture_view(&mut self, _desc: &TextureViewDescriptor) -> Result<TextureViewId> {
         unavailable()
     }
 
-    fn create_sampler(&mut self, _desc: &SamplerDesc) -> Result<SamplerId> {
+    fn create_sampler(&mut self, _desc: &SamplerDescriptor) -> Result<SamplerId> {
         unavailable()
     }
 
     fn create_resource_set_layout(
         &mut self,
-        _desc: &ResourceSetLayoutDesc,
+        _desc: &ResourceSetLayoutDescriptor,
     ) -> Result<ResourceSetLayoutId> {
         unavailable()
     }
 
-    fn create_resource_set(&mut self, _desc: &ResourceSetDesc) -> Result<ResourceSetId> {
+    fn create_resource_set(&mut self, _desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
         unavailable()
     }
 
@@ -123,22 +124,25 @@ impl GfxResourceDevice for OpenGlDevice {
     }
 }
 
-impl GfxPipelineDevice for OpenGlDevice {
-    fn create_pipeline_layout(&mut self, _desc: &PipelineLayoutDesc) -> Result<PipelineLayoutId> {
+impl PipelineDevice for OpenGlDevice {
+    fn create_pipeline_layout(
+        &mut self,
+        _desc: &PipelineLayoutDescriptor,
+    ) -> Result<PipelineLayoutId> {
         unavailable()
     }
 
-    fn create_shader_module(&mut self, _desc: &ShaderModuleDesc) -> Result<ShaderModuleId> {
+    fn create_shader_module(&mut self, _desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
         unavailable()
     }
 
-    fn create_render_pass(&mut self, _desc: &RenderPassDesc) -> Result<RenderPassId> {
+    fn create_render_pass(&mut self, _desc: &RenderPassDescriptor) -> Result<RenderPassId> {
         unavailable()
     }
 
     fn create_render_pipeline(
         &mut self,
-        _desc: &RenderPipelineDesc,
+        _desc: &RenderPipelineDescriptor,
         _viewport_extent: gfx_core::Extent2d,
     ) -> Result<RenderPipelineId> {
         unavailable()
@@ -161,12 +165,19 @@ impl GfxPipelineDevice for OpenGlDevice {
     }
 }
 
-impl GfxCommandDevice for OpenGlDevice {
-    fn create_command_encoder(&mut self, _desc: &CommandEncoderDesc) -> Result<CommandEncoderId> {
+impl CommandDevice for OpenGlDevice {
+    fn create_command_encoder(
+        &mut self,
+        _desc: &CommandEncoderDescriptor,
+    ) -> Result<CommandEncoderId> {
         unavailable()
     }
 
-    fn record_draw_desc(&mut self, _encoder: CommandEncoderId, _draw: DrawDesc) -> Result<()> {
+    fn record_draw_desc(
+        &mut self,
+        _encoder: CommandEncoderId,
+        _draw: DrawDescriptor,
+    ) -> Result<()> {
         unavailable()
     }
 
@@ -179,7 +190,7 @@ impl GfxCommandDevice for OpenGlDevice {
     }
 }
 
-impl GfxSubmissionDevice for OpenGlDevice {
+impl SubmissionDevice for OpenGlDevice {
     fn submit_deferred(&mut self, _encoder: CommandEncoderId) -> Result<SubmissionId> {
         unavailable()
     }
@@ -193,12 +204,12 @@ impl GfxSubmissionDevice for OpenGlDevice {
     }
 }
 
-impl GfxPresentationDevice for OpenGlDevice {
+impl PresentationDevice for OpenGlDevice {
     fn draw_steps_and_present(
         &mut self,
         _swapchain: SwapchainId,
         _render_pass: RenderPassId,
-        _steps: &[DrawStepDesc],
+        _steps: &[DrawStepDescriptor],
         _clear_color: ClearColor,
     ) -> Result<()> {
         unavailable()
@@ -208,7 +219,7 @@ impl GfxPresentationDevice for OpenGlDevice {
         &mut self,
         _texture_view: TextureViewId,
         _render_pass: RenderPassId,
-        _steps: &[DrawStepDesc],
+        _steps: &[DrawStepDescriptor],
         _color_load_op: LoadOp<ClearColor>,
     ) -> Result<()> {
         unavailable()
@@ -245,13 +256,13 @@ impl GfxPresentationDevice for OpenGlDevice {
         _depth_attachment: Option<RenderPassDepthAttachment>,
     ) -> Result<SubmissionId>
     where
-        Self: GfxSubmissionDevice,
+        Self: SubmissionDevice,
     {
         unavailable()
     }
 }
 
-impl GfxDiagnosticsDevice for OpenGlDevice {
+impl DiagnosticsDevice for OpenGlDevice {
     fn resource_stats(&self) -> ResourceStats {
         ResourceStats::default()
     }

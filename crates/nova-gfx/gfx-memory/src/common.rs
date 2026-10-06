@@ -1,4 +1,4 @@
-use gfx_core::{GfxError, MemoryLocation, Result};
+use gfx_core::{Error, MemoryLocation, Result};
 use thiserror::Error;
 
 /// Memory-specific error.
@@ -12,7 +12,7 @@ pub enum MemoryError {
     Allocator(#[from] gpu_allocator::AllocationError),
 }
 
-impl From<MemoryError> for GfxError {
+impl From<MemoryError> for Error {
     fn from(error: MemoryError) -> Self {
         match error {
             MemoryError::InvalidInput(message) => Self::InvalidInput(message),
@@ -39,7 +39,7 @@ impl MemoryAllocationDesc {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when size is zero or alignment is invalid.
+    /// Returns [`Error::InvalidInput`] when size is zero or alignment is invalid.
     pub fn validate(&self) -> Result<()> {
         if self.size == 0 {
             return Err(MemoryError::InvalidInput(
@@ -132,14 +132,14 @@ pub(crate) fn untrack_allocation(stats: &mut MemoryStats, size: u64) {
 
 pub(crate) fn align_to(value: u64, alignment: u64) -> Result<u64> {
     if alignment == 0 || !alignment.is_power_of_two() {
-        return Err(GfxError::InvalidInput(
+        return Err(Error::InvalidInput(
             "alignment must be a non-zero power of two".to_string(),
         ));
     }
     value
         .checked_add(alignment - 1)
         .map(|value| value & !(alignment - 1))
-        .ok_or_else(|| GfxError::InvalidInput("aligned size overflow".to_string()))
+        .ok_or_else(|| Error::InvalidInput("aligned size overflow".to_string()))
 }
 
 #[cfg(test)]

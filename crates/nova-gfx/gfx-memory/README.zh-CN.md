@@ -27,7 +27,7 @@ gfx-memory = { version = "0.1", default-features = false, features = ["vulkan"] 
 - `dx12` 启用 `windows` 和 `gpu-allocator/d3d12`。
 - `metal` 启用 `objc2`、`objc2-metal` 和 `gpu-allocator/metal`。
 
-平台不支持所请求后端时，非目标平台构造函数返回 `GfxError::Unavailable`。
+平台不支持所请求后端时，非目标平台构造函数返回 `Error::Unavailable`。
 
 ## 生命周期规则
 

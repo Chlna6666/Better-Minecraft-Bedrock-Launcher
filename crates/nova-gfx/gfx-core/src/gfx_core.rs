@@ -14,11 +14,11 @@
 //! # Examples
 //!
 //! ```no_run
-//! use gfx_core::{BufferDesc, BufferId, GfxResourceDevice, Result};
+//! use gfx_core::{BufferDescriptor, BufferId, ResourceDevice, Result};
 //!
-//! fn create_buffer<D>(device: &mut D, desc: &BufferDesc) -> Result<BufferId>
+//! fn create_buffer<D>(device: &mut D, desc: &BufferDescriptor) -> Result<BufferId>
 //! where
-//!     D: GfxResourceDevice,
+//!     D: ResourceDevice,
 //! {
 //!     device.create_buffer(desc)
 //! }
@@ -40,24 +40,23 @@ use smallvec::SmallVec;
 use thiserror::Error;
 
 pub use backend::{
-    BackendDiagnostics, BackendPipelines, BackendPresentationCompat, BackendQueue,
-    BackendResources, BackendSurface, GfxAsyncCommandDevice, GfxAsyncDevice,
-    GfxAsyncDiagnosticsDevice, GfxAsyncPipelineDevice, GfxAsyncPresentationDevice,
-    GfxAsyncResourceDevice, GfxAsyncSurfaceDevice, GfxBackend, GfxCommandDevice, GfxDevice,
-    GfxDiagnosticsDevice, GfxPipelineDevice, GfxPresentationDevice, GfxResourceDevice,
-    GfxSubmissionDevice, GfxSurfaceDevice, GfxTextureTransferDevice, PresentationFrame,
-    PresentationTimings, SharedGfxDevice,
+    AsyncCommandDevice, AsyncDevice, AsyncDiagnosticsDevice, AsyncPipelineDevice,
+    AsyncPresentationDevice, AsyncResourceDevice, AsyncSurfaceDevice, Backend, BackendDiagnostics,
+    BackendPipelines, BackendPresentationCompat, BackendQueue, BackendResources, BackendSurface,
+    CommandDevice, Device, DiagnosticsDevice, ExtensionDevice, PipelineDevice, PresentationDevice,
+    PresentationFrame, PresentationTimings, ResourceDevice, SharedDevice, SubmissionDevice,
+    SurfaceDevice, TextureTransferDevice,
 };
 
 /// Convenience result type used by nova-gfx crates.
-pub type Result<T> = std::result::Result<T, GfxError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Runtime-neutral boxed future returned by nova-gfx async interfaces.
-pub type GfxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 /// Error type for backend-neutral validation and backend-provided failures.
 #[derive(Debug, Error)]
-pub enum GfxError {
+pub enum Error {
     /// A required graphics capability or resource was not available.
     #[error("graphics resource is unavailable: {0}")]
     Unavailable(String),
@@ -267,7 +266,7 @@ impl SubmissionStatus {
 
 /// Threading support exposed by a backend or device wrapper.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum GfxThreadingMode {
+pub enum ThreadingMode {
     /// Calls must be made on the owning thread.
     #[default]
     OwnerThreadOnly,
@@ -283,9 +282,9 @@ pub enum GfxThreadingMode {
     clippy::struct_excessive_bools,
     reason = "backend capabilities are independent feature flags exposed as a stable public API"
 )]
-pub struct GfxAsyncCapabilities {
+pub struct AsyncCapabilities {
     /// How the device can be accessed from multiple threads.
-    pub threading_mode: GfxThreadingMode,
+    pub threading_mode: ThreadingMode,
     /// Device can return submission handles without blocking for completion.
     pub async_submission: bool,
     /// Device can wait for submission completion asynchronously.
@@ -296,10 +295,10 @@ pub struct GfxAsyncCapabilities {
     pub partial_presentation: bool,
 }
 
-impl Default for GfxAsyncCapabilities {
+impl Default for AsyncCapabilities {
     fn default() -> Self {
         Self {
-            threading_mode: GfxThreadingMode::OwnerThreadOnly,
+            threading_mode: ThreadingMode::OwnerThreadOnly,
             async_submission: false,
             async_wait: false,
             async_presentation: false,
@@ -322,13 +321,12 @@ impl Extent2d {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when either dimension is zero.
+    /// Returns [`Error::InvalidInput`] when either dimension is zero.
     pub fn new(width: u32, height: u32) -> Result<Self> {
         let width = NonZeroU32::new(width)
-            .ok_or_else(|| GfxError::InvalidInput("width must be greater than zero".to_string()))?;
-        let height = NonZeroU32::new(height).ok_or_else(|| {
-            GfxError::InvalidInput("height must be greater than zero".to_string())
-        })?;
+            .ok_or_else(|| Error::InvalidInput("width must be greater than zero".to_string()))?;
+        let height = NonZeroU32::new(height)
+            .ok_or_else(|| Error::InvalidInput("height must be greater than zero".to_string()))?;
         Ok(Self { width, height })
     }
 
@@ -389,7 +387,7 @@ pub struct BackendCapabilities {
 }
 
 /// Preferred GPU power class when a backend can choose between adapters.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum PowerPreference {
     /// Prefer integrated or low-power adapters.
     #[default]
@@ -400,7 +398,7 @@ pub enum PowerPreference {
 
 /// Logical device creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeviceDesc {
+pub struct DeviceDescriptor {
     /// Application name reported to backends.
     pub application_name: String,
     /// Optional adapter name requested by the platform layer.
@@ -409,7 +407,7 @@ pub struct DeviceDesc {
     pub power_preference: PowerPreference,
 }
 
-impl Default for DeviceDesc {
+impl Default for DeviceDescriptor {
     fn default() -> Self {
         Self {
             application_name: "nova-gfx".to_string(),
@@ -418,11 +416,6 @@ impl Default for DeviceDesc {
         }
     }
 }
-
-/// Compatibility alias for the pre-namespaced async capabilities name.
-pub type BackendAsyncCapabilities = GfxAsyncCapabilities;
-/// Compatibility alias for the device creation descriptor name.
-pub type DeviceDescriptor = DeviceDesc;
 
 /// Backend adapter information.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,7 +443,7 @@ pub enum QueueKind {
 
 /// Queue descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QueueDesc {
+pub struct QueueDescriptor {
     /// Queue role.
     pub kind: QueueKind,
     /// Backend queue family index.
@@ -522,7 +515,7 @@ pub enum CompositeAlphaMode {
 
 /// Native surface descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SurfaceDesc {
+pub struct SurfaceDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
 }
@@ -545,7 +538,7 @@ impl SurfaceConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when width or height is zero.
+    /// Returns [`Error::InvalidInput`] when width or height is zero.
     pub fn new(width: u32, height: u32, format: Format) -> Result<Self> {
         Ok(Self {
             size: Extent2d::new(width, height)?,
@@ -555,33 +548,6 @@ impl SurfaceConfig {
         })
     }
 }
-
-/// Compatibility alias for the swapchain descriptor name.
-pub type SwapchainDesc = SurfaceConfig;
-/// Compatibility alias for the surface descriptor name.
-pub type SurfaceDescriptor = SurfaceDesc;
-/// Compatibility alias for the buffer descriptor name.
-pub type BufferDescriptor = BufferDesc;
-/// Compatibility alias for the texture descriptor name.
-pub type TextureDescriptor = TextureDesc;
-/// Compatibility alias for the texture view descriptor name.
-pub type TextureViewDescriptor = TextureViewDesc;
-/// Compatibility alias for the sampler descriptor name.
-pub type SamplerDescriptor = SamplerDesc;
-/// Compatibility alias for the shader module descriptor name.
-pub type ShaderModuleDescriptor = ShaderModuleDesc;
-/// Compatibility alias for the resource set layout descriptor name.
-pub type ResourceSetLayoutDescriptor = ResourceSetLayoutDesc;
-/// Compatibility alias for the resource set descriptor name.
-pub type ResourceSetDescriptor = ResourceSetDesc;
-/// Compatibility alias for the pipeline layout descriptor name.
-pub type PipelineLayoutResourceDescriptor = PipelineLayoutDesc;
-/// Compatibility alias for the color attachment descriptor name.
-pub type ColorAttachmentDescriptor = ColorAttachmentDesc;
-/// Compatibility alias for the non-indexed draw step descriptor name.
-pub type DrawStepDescriptor = DrawStepDesc;
-/// Compatibility alias for the texture write descriptor name.
-pub type TextureWriteDescriptor = TextureWriteDesc;
 
 bitflags! {
     /// Buffer usage flags.
@@ -646,20 +612,20 @@ impl BufferBinding {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when the range is empty, overflows, or
+    /// Returns [`Error::InvalidInput`] when the range is empty, overflows, or
     /// exceeds the target buffer size.
     pub fn validate_against(self, buffer_size: u64) -> Result<()> {
         if self.size == 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "buffer binding size must be non-zero".to_string(),
             ));
         }
         let end = self
             .offset
             .checked_add(self.size)
-            .ok_or_else(|| GfxError::InvalidInput("buffer binding range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("buffer binding range overflow".to_string()))?;
         if end > buffer_size {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "buffer binding range {}..{} exceeds buffer size {}",
                 self.offset, end, buffer_size
             )));
@@ -688,12 +654,12 @@ pub struct ResourceBinding {
     /// Binding slot.
     pub binding: u32,
     /// Resource payload.
-    pub resource: ResourceBindingResource,
+    pub resource: BindingResource,
 }
 
 /// A resource binding payload.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResourceBindingResource {
+pub enum BindingResource {
     /// Uniform buffer binding.
     Buffer(BufferBinding),
     /// Sampled texture binding.
@@ -718,14 +684,14 @@ pub enum ResourceBindingType {
 impl ResourceBindingType {
     /// Returns the expected payload type for this binding.
     #[must_use]
-    pub const fn matches(self, binding: &ResourceBindingResource) -> bool {
+    pub const fn matches(self, binding: &BindingResource) -> bool {
         matches!(
             (self, binding),
             (
                 Self::UniformBuffer | Self::StorageBuffer,
-                ResourceBindingResource::Buffer(_)
-            ) | (Self::SampledTexture, ResourceBindingResource::Texture(_))
-                | (Self::Sampler, ResourceBindingResource::Sampler(_))
+                BindingResource::Buffer(_)
+            ) | (Self::SampledTexture, BindingResource::Texture(_))
+                | (Self::Sampler, BindingResource::Sampler(_))
         )
     }
 }
@@ -743,36 +709,36 @@ pub struct ResourceSetLayoutEntry {
 
 /// Resource set layout descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceSetLayoutDesc {
+pub struct ResourceSetLayoutDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Layout entries.
     pub entries: Vec<ResourceSetLayoutEntry>,
 }
 
-impl ResourceSetLayoutDesc {
+impl ResourceSetLayoutDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when the layout is empty or contains
+    /// Returns [`Error::InvalidInput`] when the layout is empty or contains
     /// duplicate bindings.
     pub fn validate(&self) -> Result<()> {
         if self.entries.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "resource set layout must contain at least one entry".to_string(),
             ));
         }
         let mut bindings = std::collections::BTreeSet::new();
         for entry in &self.entries {
             if entry.stages.is_empty() {
-                return Err(GfxError::InvalidInput(
+                return Err(Error::InvalidInput(
                     "resource set layout entry must be visible to at least one shader stage"
                         .to_string(),
                 ));
             }
             if !bindings.insert(entry.binding) {
-                return Err(GfxError::InvalidInput(format!(
+                return Err(Error::InvalidInput(format!(
                     "duplicate resource binding slot {}",
                     entry.binding
                 )));
@@ -784,7 +750,7 @@ impl ResourceSetLayoutDesc {
 
 /// Resource set descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResourceSetDesc {
+pub struct ResourceSetDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Layout this resource set conforms to.
@@ -793,16 +759,16 @@ pub struct ResourceSetDesc {
     pub bindings: Vec<ResourceBinding>,
 }
 
-impl ResourceSetDesc {
+impl ResourceSetDescriptor {
     /// Validates the descriptor against a layout.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when a binding is missing or invalid.
-    pub fn validate_against(&self, layout: &ResourceSetLayoutDesc) -> Result<()> {
+    /// Returns [`Error::InvalidInput`] when a binding is missing or invalid.
+    pub fn validate_against(&self, layout: &ResourceSetLayoutDescriptor) -> Result<()> {
         layout.validate()?;
         if self.bindings.len() != layout.entries.len() {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "resource set binding count {} does not match layout entry count {}",
                 self.bindings.len(),
                 layout.entries.len()
@@ -814,7 +780,7 @@ impl ResourceSetDesc {
                 .insert(binding.binding, binding.resource)
                 .is_some()
             {
-                return Err(GfxError::InvalidInput(format!(
+                return Err(Error::InvalidInput(format!(
                     "duplicate resource binding slot {}",
                     binding.binding
                 )));
@@ -822,13 +788,13 @@ impl ResourceSetDesc {
         }
         for entry in &layout.entries {
             let Some(binding) = bindings_by_slot.get(&entry.binding) else {
-                return Err(GfxError::InvalidInput(format!(
+                return Err(Error::InvalidInput(format!(
                     "missing resource binding slot {}",
                     entry.binding
                 )));
             };
             if !entry.binding_type.matches(binding) {
-                return Err(GfxError::InvalidInput(format!(
+                return Err(Error::InvalidInput(format!(
                     "binding {} has incompatible resource type",
                     entry.binding
                 )));
@@ -840,22 +806,22 @@ impl ResourceSetDesc {
 
 /// Pipeline layout descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PipelineLayoutDesc {
+pub struct PipelineLayoutDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Resource set layouts used by this pipeline.
     pub resource_set_layouts: Vec<ResourceSetLayoutId>,
 }
 
-impl PipelineLayoutDesc {
+impl PipelineLayoutDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when the layout is empty.
+    /// Returns [`Error::InvalidInput`] when the layout is empty.
     pub fn validate(&self) -> Result<()> {
         if self.resource_set_layouts.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "pipeline layout must contain at least one resource set layout".to_string(),
             ));
         }
@@ -876,7 +842,7 @@ pub enum MemoryLocation {
 
 /// Buffer creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BufferDesc {
+pub struct BufferDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Size in bytes.
@@ -887,20 +853,20 @@ pub struct BufferDesc {
     pub memory_location: MemoryLocation,
 }
 
-impl BufferDesc {
+impl BufferDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when size is zero or no usage is set.
+    /// Returns [`Error::InvalidInput`] when size is zero or no usage is set.
     pub fn validate(&self) -> Result<()> {
         if self.size == 0 {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "buffer size must be greater than zero".to_string(),
             ));
         }
         if self.usage.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "buffer usage must not be empty".to_string(),
             ));
         }
@@ -917,11 +883,13 @@ pub enum TextureDimension {
 
 /// Texture creation descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TextureDesc {
+pub struct TextureDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Width and height.
     pub size: Extent2d,
+    /// Number of mip levels, including level zero.
+    pub mip_level_count: u32,
     /// Texture format.
     pub format: Format,
     /// Texture usage.
@@ -932,31 +900,90 @@ pub struct TextureDesc {
     pub dimension: TextureDimension,
 }
 
-impl TextureDesc {
+impl TextureDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when no usage is set.
+    /// Returns [`Error::InvalidInput`] when no usage is set or the mip count exceeds the
+    /// dimensions' complete mip chain.
     pub fn validate(&self) -> Result<()> {
         if self.usage.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "texture usage must not be empty".to_string(),
             ));
         }
+        let largest_dimension = self.size.width().max(self.size.height());
+        let max_mip_level_count = u32::BITS - largest_dimension.leading_zeros();
+        if self.mip_level_count == 0 || self.mip_level_count > max_mip_level_count {
+            return Err(Error::InvalidInput(format!(
+                "texture mip level count {} is outside 1..={max_mip_level_count}",
+                self.mip_level_count
+            )));
+        }
         Ok(())
+    }
+
+    /// Returns the extent of a mip level.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the descriptor is invalid or `mip_level` is out
+    /// of range.
+    pub fn mip_extent(&self, mip_level: u32) -> Result<Extent2d> {
+        self.validate()?;
+        if mip_level >= self.mip_level_count {
+            return Err(Error::InvalidInput(format!(
+                "texture mip level {mip_level} exceeds level count {}",
+                self.mip_level_count
+            )));
+        }
+        Extent2d::new(
+            (self.size.width() >> mip_level).max(1),
+            (self.size.height() >> mip_level).max(1),
+        )
     }
 }
 
 /// Texture view descriptor.
+///
+/// Sampled views may cover any non-empty mip range. Current backend attachment views select only
+/// mip level zero.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TextureViewDesc {
+pub struct TextureViewDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Source texture.
     pub texture: TextureId,
+    /// First mip level in the view.
+    pub base_mip_level: u32,
+    /// Number of mip levels in the view.
+    pub mip_level_count: u32,
     /// View format.
     pub format: Format,
+}
+
+impl TextureViewDescriptor {
+    /// Validates this view against its texture descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] when the texture descriptor is invalid or the view range
+    /// is empty or exceeds the texture's mip range.
+    pub fn validate_against(&self, texture: &TextureDescriptor) -> Result<()> {
+        texture.validate()?;
+        let end = self
+            .base_mip_level
+            .checked_add(self.mip_level_count)
+            .ok_or_else(|| Error::InvalidInput("texture view mip range overflow".to_string()))?;
+        if self.mip_level_count == 0 || end > texture.mip_level_count {
+            return Err(Error::InvalidInput(format!(
+                "texture view mip range {}..{end} exceeds texture level count {}",
+                self.base_mip_level, texture.mip_level_count
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Texture data layout for uploads.
@@ -975,13 +1002,13 @@ impl TextureDataLayout {
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when row values are zero.
+    /// Returns [`Error::InvalidInput`] when row values are zero.
     pub fn new(offset: u64, bytes_per_row: u32, rows_per_image: u32) -> Result<Self> {
         let bytes_per_row = NonZeroU32::new(bytes_per_row).ok_or_else(|| {
-            GfxError::InvalidInput("bytes_per_row must be greater than zero".to_string())
+            Error::InvalidInput("bytes_per_row must be greater than zero".to_string())
         })?;
         let rows_per_image = NonZeroU32::new(rows_per_image).ok_or_else(|| {
-            GfxError::InvalidInput("rows_per_image must be greater than zero".to_string())
+            Error::InvalidInput("rows_per_image must be greater than zero".to_string())
         })?;
         Ok(Self {
             offset,
@@ -1013,25 +1040,31 @@ pub enum AddressMode {
 
 /// Sampler descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SamplerDesc {
+pub struct SamplerDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Magnification filter.
     pub mag_filter: FilterMode,
     /// Minification filter.
     pub min_filter: FilterMode,
+    /// Filter between mip levels.
+    pub mipmap_filter: FilterMode,
+    /// Request anisotropic filtering when supported; otherwise use the configured filter modes.
+    pub anisotropic: bool,
     /// U address mode.
     pub address_mode_u: AddressMode,
     /// V address mode.
     pub address_mode_v: AddressMode,
 }
 
-impl Default for SamplerDesc {
+impl Default for SamplerDescriptor {
     fn default() -> Self {
         Self {
             label: None,
             mag_filter: FilterMode::Nearest,
             min_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropic: false,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
         }
@@ -1145,26 +1178,94 @@ pub enum ShaderCode {
     Msl(String),
 }
 
+/// Backend shader code produced ahead of time by a build script.
+///
+/// A build script translates WGSL and, when the build host can run the platform
+/// shader compiler, compiles it all the way to backend bytecode. Embedding the
+/// result lets a renderer create shader modules without running a shader compiler
+/// while the application starts.
+///
+/// The variant a build emits depends on the target backend and on whether the
+/// build host was able to precompile:
+///
+/// - [`Self::DxBytecode`] for DX12 when the Direct3D compiler ran at build time.
+/// - [`Self::Hlsl`] for DX12 otherwise; the DX12 backend then compiles it when a
+///   renderer is created, because that compiler only exists on Windows.
+/// - [`Self::SpirvBytes`] for Vulkan.
+/// - [`Self::Msl`] for Metal.
+#[derive(Clone, Copy, Debug)]
+pub enum EmbeddedShader {
+    /// DX12 HLSL source, compiled by the backend when a renderer is created.
+    Hlsl(&'static str),
+    /// DX12 bytecode already compiled by `D3DCompile` at build time.
+    DxBytecode(&'static [u8]),
+    /// Vulkan SPIR-V words encoded as little-endian bytes.
+    SpirvBytes(&'static [u8]),
+    /// Metal Shading Language source.
+    Msl(&'static str),
+}
+
+impl EmbeddedShader {
+    /// Builds the [`ShaderBinary`] this embedded artifact describes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Shader`] when an encoded SPIR-V payload is not a whole
+    /// number of 32-bit words.
+    pub fn to_binary(self, stage: ShaderStage, entry_point: &str) -> Result<ShaderBinary> {
+        Ok(match self {
+            Self::Hlsl(source) => ShaderBinary::hlsl(stage, entry_point, source.to_string()),
+            Self::DxBytecode(bytecode) => {
+                ShaderBinary::dx_bytecode(stage, entry_point, bytecode.to_vec())
+            }
+            Self::SpirvBytes(bytes) => ShaderBinary::spirv(
+                stage,
+                entry_point,
+                decode_spirv_words(bytes).ok_or_else(|| {
+                    Error::Shader(format!(
+                        "embedded SPIR-V for `{entry_point}` is not a whole number of words"
+                    ))
+                })?,
+            ),
+            Self::Msl(source) => ShaderBinary::msl(stage, entry_point, source.to_string()),
+        })
+    }
+}
+
+/// Decodes little-endian SPIR-V bytes into words, or `None` when the payload is
+/// not word aligned.
+fn decode_spirv_words(bytes: &[u8]) -> Option<Vec<u32>> {
+    let word_size = core::mem::size_of::<u32>();
+    if bytes.len() % word_size != 0 {
+        return None;
+    }
+
+    Some(
+        bytes
+            .chunks_exact(word_size)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect(),
+    )
+}
+
 /// Shader module descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ShaderModuleDesc {
+pub struct ShaderModuleDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Compiled shader data.
     pub binary: ShaderBinary,
 }
 
-impl ShaderModuleDesc {
+impl ShaderModuleDescriptor {
     /// Validates the descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::Shader`] when the shader code payload is empty.
+    /// Returns [`Error::Shader`] when the shader code payload is empty.
     pub fn validate(&self) -> Result<()> {
         if self.binary.is_empty() {
-            return Err(GfxError::Shader(
-                "shader code must not be empty".to_string(),
-            ));
+            return Err(Error::Shader("shader code must not be empty".to_string()));
         }
         Ok(())
     }
@@ -1195,7 +1296,7 @@ impl VertexFormat {
 
 /// Single vertex attribute description.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct VertexAttributeDesc {
+pub struct VertexAttributeDescriptor {
     /// Shader location.
     pub location: u32,
     /// Byte offset within the vertex.
@@ -1206,11 +1307,11 @@ pub struct VertexAttributeDesc {
 
 /// Vertex buffer layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VertexBufferLayoutDesc {
+pub struct VertexBufferLayoutDescriptor {
     /// Vertex stride in bytes.
     pub stride: u32,
     /// Attributes in the vertex.
-    pub attributes: Vec<VertexAttributeDesc>,
+    pub attributes: Vec<VertexAttributeDescriptor>,
 }
 
 /// Color blend mode.
@@ -1242,7 +1343,7 @@ pub enum PrimitiveTopology {
 
 /// Color attachment descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ColorAttachmentDesc {
+pub struct ColorAttachmentDescriptor {
     /// Attachment format.
     pub format: Format,
 }
@@ -1256,25 +1357,58 @@ pub struct DepthAttachmentDescriptor {
 
 /// Render pass descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RenderPassDesc {
+pub struct RenderPassDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Color attachment.
-    pub color_attachment: ColorAttachmentDesc,
+    pub color_attachment: ColorAttachmentDescriptor,
     /// Optional depth attachment.
     pub depth_attachment: Option<DepthAttachmentDescriptor>,
 }
 
-/// Compatibility alias for the render pass descriptor name.
-pub type RenderPassCompatibilityDescriptor = RenderPassDesc;
-
-/// Optional depth state for a render pipeline compatibility descriptor.
+/// Depth comparison used by a graphics pipeline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DepthState;
+pub enum CompareFunction {
+    /// Never pass the depth test.
+    Never,
+    /// Pass when the incoming depth is less than the stored depth.
+    Less,
+    /// Pass when the incoming depth equals the stored depth.
+    Equal,
+    /// Pass when the incoming depth is less than or equal to the stored depth.
+    #[default]
+    LessEqual,
+    /// Pass when the incoming depth is greater than the stored depth.
+    Greater,
+    /// Pass when the incoming depth differs from the stored depth.
+    NotEqual,
+    /// Pass when the incoming depth is greater than or equal to the stored depth.
+    GreaterEqual,
+    /// Always pass the depth test.
+    Always,
+}
+
+/// Depth test and write behavior for a render pipeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DepthState {
+    /// Comparison applied to fragment depth.
+    pub compare: CompareFunction,
+    /// Whether passing fragments update the depth attachment.
+    pub write_enabled: bool,
+}
+
+impl Default for DepthState {
+    fn default() -> Self {
+        Self {
+            compare: CompareFunction::default(),
+            write_enabled: true,
+        }
+    }
+}
 
 /// Render pipeline descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RenderPipelineDesc {
+pub struct RenderPipelineDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
     /// Vertex shader module.
@@ -1286,7 +1420,7 @@ pub struct RenderPipelineDesc {
     /// Fragment entry point.
     pub fragment_entry_point: String,
     /// Vertex layouts.
-    pub vertex_buffers: Vec<VertexBufferLayoutDesc>,
+    pub vertex_buffers: Vec<VertexBufferLayoutDescriptor>,
     /// Render pass.
     pub render_pass: RenderPassId,
     /// Optional pipeline layout.
@@ -1301,23 +1435,20 @@ pub struct RenderPipelineDesc {
     pub depth_state: Option<DepthState>,
 }
 
-/// Compatibility alias for the render pipeline descriptor name.
-pub type RenderPipelineDescriptor = RenderPipelineDesc;
-
-impl RenderPipelineDesc {
+impl RenderPipelineDescriptor {
     /// Validates a render pipeline descriptor.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when an entry point is empty.
+    /// Returns [`Error::InvalidInput`] when an entry point is empty.
     pub fn validate(&self) -> Result<()> {
         if self.vertex_entry_point.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "vertex_entry_point must not be empty".to_string(),
             ));
         }
         if self.fragment_entry_point.is_empty() {
-            return Err(GfxError::InvalidInput(
+            return Err(Error::InvalidInput(
                 "fragment_entry_point must not be empty".to_string(),
             ));
         }
@@ -1360,21 +1491,21 @@ impl Default for ClearColor {
 
 /// Per-frame render instructions for the compatibility triangle path.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DrawTriangleDesc {
+pub struct DrawTriangleDescriptor {
     /// Clear color.
     pub clear_color: ClearColor,
 }
 
 /// Command encoder descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommandEncoderDesc {
+pub struct CommandEncoderDescriptor {
     /// Debug label.
     pub label: ResourceLabel,
 }
 
 /// Render pass begin descriptor.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BeginRenderPassDesc {
+pub struct BeginRenderPassDescriptor {
     /// Render pass.
     pub render_pass: RenderPassId,
     /// Color target.
@@ -1399,9 +1530,9 @@ pub enum RenderTarget {
 
 /// Draw call descriptor.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DrawDesc {
+pub struct DrawDescriptor {
     /// Render pass begin parameters.
-    pub pass: BeginRenderPassDesc,
+    pub pass: BeginRenderPassDescriptor,
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
     /// Resource sets bound before drawing.
@@ -1441,7 +1572,7 @@ pub fn resource_set_list_empty() -> ResourceSetList {
 
 /// One draw step inside a render pass.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DrawStepDesc {
+pub struct DrawStepDescriptor {
     /// Render pipeline.
     pub pipeline: RenderPipelineId,
     /// Resource sets bound before drawing.
@@ -1505,7 +1636,7 @@ pub struct DrawIndexedStepDescriptor {
 #[derive(Clone, Debug, PartialEq)]
 pub enum RenderStepDescriptor {
     /// Non-indexed draw.
-    Draw(DrawStepDesc),
+    Draw(DrawStepDescriptor),
     /// Indexed draw.
     DrawIndexed(DrawIndexedStepDescriptor),
 }
@@ -1514,7 +1645,7 @@ pub enum RenderStepDescriptor {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RenderStepRef<'a> {
     /// Non-indexed draw.
-    Draw(&'a DrawStepDesc),
+    Draw(&'a DrawStepDescriptor),
     /// Indexed draw.
     DrawIndexed(&'a DrawIndexedStepDescriptor),
 }
@@ -1548,8 +1679,8 @@ impl<'a> RenderStepRef<'a> {
     }
 }
 
-impl<'a> From<&'a DrawStepDesc> for RenderStepRef<'a> {
-    fn from(step: &'a DrawStepDesc) -> Self {
+impl<'a> From<&'a DrawStepDescriptor> for RenderStepRef<'a> {
+    fn from(step: &'a DrawStepDescriptor) -> Self {
         Self::Draw(step)
     }
 }
@@ -1567,7 +1698,7 @@ impl<'a> From<&'a RenderStepDescriptor> for RenderStepRef<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RenderStepList<'a> {
     /// Non-indexed draw descriptors.
-    Draw(&'a [DrawStepDesc]),
+    Draw(&'a [DrawStepDescriptor]),
     /// Full render-step descriptors.
     Render(&'a [RenderStepDescriptor]),
 }
@@ -1575,7 +1706,7 @@ pub enum RenderStepList<'a> {
 impl<'a> RenderStepList<'a> {
     /// Creates a borrowed list from legacy draw steps.
     #[must_use]
-    pub const fn from_draw_steps(steps: &'a [DrawStepDesc]) -> Self {
+    pub const fn from_draw_steps(steps: &'a [DrawStepDescriptor]) -> Self {
         Self::Draw(steps)
     }
 
@@ -1617,7 +1748,7 @@ impl<'a> RenderStepList<'a> {
 #[derive(Clone, Debug)]
 pub enum RenderStepListIter<'a> {
     /// Non-indexed draw descriptor iterator.
-    Draw(std::slice::Iter<'a, DrawStepDesc>),
+    Draw(std::slice::Iter<'a, DrawStepDescriptor>),
     /// Full render-step descriptor iterator.
     Render(std::slice::Iter<'a, RenderStepDescriptor>),
 }
@@ -1665,7 +1796,7 @@ impl ScissorRect {
 
 /// Buffer write descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BufferWriteDesc {
+pub struct BufferWriteDescriptor {
     /// Target buffer.
     pub buffer: BufferId,
     /// Destination byte offset.
@@ -1674,9 +1805,11 @@ pub struct BufferWriteDesc {
 
 /// Texture write descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TextureWriteDesc {
+pub struct TextureWriteDescriptor {
     /// Target texture.
     pub texture: TextureId,
+    /// Destination mip level.
+    pub mip_level: u32,
     /// Data layout.
     pub layout: TextureDataLayout,
     /// Target origin.
@@ -1685,70 +1818,72 @@ pub struct TextureWriteDesc {
     pub size: Extent2d,
 }
 
-impl TextureWriteDesc {
+impl TextureWriteDescriptor {
     /// Validates this write against a texture descriptor and source byte length.
     ///
     /// # Errors
     ///
-    /// Returns [`GfxError::InvalidInput`] when the write rectangle exceeds the
-    /// texture bounds or the source layout cannot cover the requested rows.
-    pub fn validate_against(&self, texture: &TextureDesc, data_len: usize) -> Result<()> {
+    /// Returns [`Error::InvalidInput`] when the mip level or write rectangle exceeds the
+    /// texture bounds, or the source layout cannot cover the requested rows.
+    pub fn validate_against(&self, texture: &TextureDescriptor, data_len: usize) -> Result<()> {
         texture.validate()?;
+        let mip_extent = texture.mip_extent(self.mip_level)?;
         let end_x = self
             .origin
             .x
             .checked_add(self.size.width())
-            .ok_or_else(|| GfxError::InvalidInput("texture write x range overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("texture write x range overflow".to_string()))?;
         let end_y = self
             .origin
             .y
             .checked_add(self.size.height())
-            .ok_or_else(|| GfxError::InvalidInput("texture write y range overflow".to_string()))?;
-        if end_x > texture.size.width() || end_y > texture.size.height() {
-            return Err(GfxError::InvalidInput(format!(
-                "texture write rectangle {}x{} at {},{} exceeds texture bounds {}x{}",
+            .ok_or_else(|| Error::InvalidInput("texture write y range overflow".to_string()))?;
+        if end_x > mip_extent.width() || end_y > mip_extent.height() {
+            return Err(Error::InvalidInput(format!(
+                "texture write rectangle {}x{} at {},{} exceeds mip {} bounds {}x{}",
                 self.size.width(),
                 self.size.height(),
                 self.origin.x,
                 self.origin.y,
-                texture.size.width(),
-                texture.size.height()
+                self.mip_level,
+                mip_extent.width(),
+                mip_extent.height()
             )));
         }
         let row_bytes = self
             .size
             .width()
             .checked_mul(texture.format.bytes_per_pixel())
-            .ok_or_else(|| GfxError::InvalidInput("texture write row size overflow".to_string()))?;
+            .ok_or_else(|| Error::InvalidInput("texture write row size overflow".to_string()))?;
         let bytes_per_row = self.layout.bytes_per_row.get();
         if bytes_per_row < row_bytes {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "texture write bytes_per_row ({bytes_per_row}) is smaller than row data ({row_bytes})"
             )));
         }
         if self.layout.rows_per_image.get() < self.size.height() {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "texture write rows_per_image ({}) is smaller than upload height ({})",
                 self.layout.rows_per_image.get(),
                 self.size.height()
             )));
         }
         let source_offset = usize::try_from(self.layout.offset).map_err(|error| {
-            GfxError::InvalidInput(format!("texture write offset overflow: {error}"))
+            Error::InvalidInput(format!("texture write offset overflow: {error}"))
         })?;
         let source_row_pitch = usize::try_from(bytes_per_row).map_err(|error| {
-            GfxError::InvalidInput(format!("texture write row pitch overflow: {error}"))
+            Error::InvalidInput(format!("texture write row pitch overflow: {error}"))
         })?;
         let row_bytes = usize::try_from(row_bytes).map_err(|error| {
-            GfxError::InvalidInput(format!("texture write row size overflow: {error}"))
+            Error::InvalidInput(format!("texture write row size overflow: {error}"))
         })?;
         let height = usize::try_from(self.size.height()).map_err(|error| {
-            GfxError::InvalidInput(format!("texture write height overflow: {error}"))
+            Error::InvalidInput(format!("texture write height overflow: {error}"))
         })?;
         let required_len =
             required_texture_write_len(source_offset, source_row_pitch, row_bytes, height)?;
         if data_len < required_len {
-            return Err(GfxError::InvalidInput(format!(
+            return Err(Error::InvalidInput(format!(
                 "texture write data is smaller than layout: required {required_len} bytes, got {data_len}"
             )));
         }
@@ -1771,18 +1906,18 @@ fn required_texture_write_len(
                 .saturating_sub(1)
                 .checked_mul(source_row_pitch)
                 .ok_or_else(|| {
-                    GfxError::InvalidInput("texture write required size overflow".to_string())
+                    Error::InvalidInput("texture write required size overflow".to_string())
                 })?,
         )
         .and_then(|value| value.checked_add(row_bytes))
-        .ok_or_else(|| GfxError::InvalidInput("texture write required size overflow".to_string()))
+        .ok_or_else(|| Error::InvalidInput("texture write required size overflow".to_string()))
 }
 
-/// Borrowed texture upload used by the batch upload compatibility API.
+/// Borrowed texture upload in a backend batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextureWrite<'a> {
     /// Texture upload descriptor.
-    pub descriptor: TextureWriteDesc,
+    pub descriptor: TextureWriteDescriptor,
     /// Pixel bytes for this upload.
     pub data: &'a [u8],
 }
@@ -1802,7 +1937,7 @@ pub struct TextureReadback {
 
 /// Memory pressure level reported by upper layers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GfxMemoryTrimLevel {
+pub enum MemoryTrimLevel {
     /// Light memory pressure.
     Light,
     /// Moderate memory pressure.
@@ -1899,6 +2034,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renderer_extension_device_is_object_safe() {
+        let _: Option<&mut dyn ExtensionDevice> = None;
+    }
+
+    #[test]
+    fn depth_state_defaults_to_less_equal_with_depth_writes() {
+        assert_eq!(
+            DepthState::default(),
+            DepthState {
+                compare: CompareFunction::LessEqual,
+                write_enabled: true,
+            }
+        );
+    }
+
+    #[test]
     fn extent_rejects_zero_dimensions() {
         assert!(Extent2d::new(0, 1).is_err());
         assert!(Extent2d::new(1, 0).is_err());
@@ -1944,9 +2095,9 @@ mod tests {
     #[test]
     fn async_capabilities_default_to_owner_thread_sync() {
         assert_eq!(
-            GfxAsyncCapabilities::default(),
-            GfxAsyncCapabilities {
-                threading_mode: GfxThreadingMode::OwnerThreadOnly,
+            AsyncCapabilities::default(),
+            AsyncCapabilities {
+                threading_mode: ThreadingMode::OwnerThreadOnly,
                 async_submission: false,
                 async_wait: false,
                 async_presentation: false,
@@ -1957,7 +2108,7 @@ mod tests {
 
     #[test]
     fn buffer_desc_rejects_zero_size() {
-        let descriptor = BufferDesc {
+        let descriptor = BufferDescriptor {
             label: None,
             size: 0,
             usage: BufferUsage::VERTEX,
@@ -1969,9 +2120,10 @@ mod tests {
 
     #[test]
     fn texture_desc_rejects_empty_usage() {
-        let descriptor = TextureDesc {
+        let descriptor = TextureDescriptor {
             label: None,
             size: Extent2d::new(1, 1).expect("test dimensions are non-zero"),
+            mip_level_count: 1,
             format: Format::Rgba8Unorm,
             usage: TextureUsage::empty(),
             memory_location: MemoryLocation::GpuOnly,
@@ -1982,10 +2134,72 @@ mod tests {
     }
 
     #[test]
+    fn texture_desc_validates_mip_levels_and_reports_mip_extent() {
+        let mut texture = texture_desc(9, 4);
+        texture.mip_level_count = 4;
+        assert!(texture.validate().is_ok());
+        assert_eq!(
+            texture.mip_extent(3).expect("last mip exists"),
+            Extent2d::new(1, 1).expect("test dimensions are non-zero")
+        );
+        assert!(texture.mip_extent(4).is_err());
+
+        texture.mip_level_count = 5;
+        assert!(texture.validate().is_err());
+        texture.mip_level_count = 0;
+        assert!(texture.validate().is_err());
+    }
+
+    #[test]
+    fn texture_view_validates_mip_range() {
+        let mut texture = texture_desc(8, 8);
+        texture.mip_level_count = 4;
+        let view = TextureViewDescriptor {
+            label: None,
+            texture: TextureId::from_parts(1, 1),
+            base_mip_level: 1,
+            mip_level_count: 3,
+            format: Format::Rgba8Unorm,
+        };
+
+        assert!(view.validate_against(&texture).is_ok());
+        assert!(
+            TextureViewDescriptor {
+                mip_level_count: 4,
+                ..view.clone()
+            }
+            .validate_against(&texture)
+            .is_err()
+        );
+        assert!(
+            TextureViewDescriptor {
+                mip_level_count: 0,
+                ..view
+            }
+            .validate_against(&texture)
+            .is_err()
+        );
+    }
+
+    #[test]
     fn texture_write_rejects_out_of_bounds_rectangle() {
         let texture = texture_desc(16, 16);
         let descriptor = texture_write_desc(12, 0, 8, 8, 32, 8, 0);
 
+        assert!(descriptor.validate_against(&texture, 256).is_err());
+    }
+
+    #[test]
+    fn texture_write_uses_selected_mip_extent() {
+        let mut texture = texture_desc(16, 16);
+        texture.mip_level_count = 5;
+        let mut descriptor = texture_write_desc(0, 0, 8, 8, 32, 8, 0);
+        descriptor.mip_level = 1;
+
+        assert!(descriptor.validate_against(&texture, 256).is_ok());
+        descriptor.origin = Origin2d { x: 7, y: 0 };
+        assert!(descriptor.validate_against(&texture, 256).is_err());
+        descriptor.mip_level = 5;
         assert!(descriptor.validate_against(&texture, 256).is_err());
     }
 
@@ -2016,7 +2230,7 @@ mod tests {
 
     #[test]
     fn pipeline_desc_rejects_empty_entry_points() {
-        let descriptor = RenderPipelineDesc {
+        let descriptor = RenderPipelineDescriptor {
             label: None,
             vertex_shader: ShaderModuleId::from_parts(1, 1),
             vertex_entry_point: String::new(),
@@ -2036,7 +2250,7 @@ mod tests {
 
     #[test]
     fn resource_set_layout_rejects_duplicate_bindings() {
-        let descriptor = ResourceSetLayoutDesc {
+        let descriptor = ResourceSetLayoutDescriptor {
             label: None,
             entries: vec![
                 ResourceSetLayoutEntry {
@@ -2057,7 +2271,7 @@ mod tests {
 
     #[test]
     fn resource_set_rejects_mismatched_binding_type() {
-        let layout = ResourceSetLayoutDesc {
+        let layout = ResourceSetLayoutDescriptor {
             label: None,
             entries: vec![ResourceSetLayoutEntry {
                 binding: 0,
@@ -2065,12 +2279,12 @@ mod tests {
                 stages: ShaderStages::FRAGMENT,
             }],
         };
-        let descriptor = ResourceSetDesc {
+        let descriptor = ResourceSetDescriptor {
             label: None,
             layout: ResourceSetLayoutId::from_parts(1, 1),
             bindings: vec![ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Sampler(SamplerBinding {
+                resource: BindingResource::Sampler(SamplerBinding {
                     sampler: SamplerId::from_parts(2, 1),
                 }),
             }],
@@ -2081,7 +2295,7 @@ mod tests {
 
     #[test]
     fn resource_set_accepts_unordered_bindings() {
-        let layout = ResourceSetLayoutDesc {
+        let layout = ResourceSetLayoutDescriptor {
             label: None,
             entries: vec![
                 ResourceSetLayoutEntry {
@@ -2096,19 +2310,19 @@ mod tests {
                 },
             ],
         };
-        let descriptor = ResourceSetDesc {
+        let descriptor = ResourceSetDescriptor {
             label: None,
             layout: ResourceSetLayoutId::from_parts(1, 1),
             bindings: vec![
                 ResourceBinding {
                     binding: 2,
-                    resource: ResourceBindingResource::Sampler(SamplerBinding {
+                    resource: BindingResource::Sampler(SamplerBinding {
                         sampler: SamplerId::from_parts(2, 1),
                     }),
                 },
                 ResourceBinding {
                     binding: 0,
-                    resource: ResourceBindingResource::Buffer(BufferBinding {
+                    resource: BindingResource::Buffer(BufferBinding {
                         buffer: BufferId::from_parts(3, 1),
                         offset: 0,
                         size: 64,
@@ -2168,10 +2382,11 @@ mod tests {
         );
     }
 
-    fn texture_desc(width: u32, height: u32) -> TextureDesc {
-        TextureDesc {
+    fn texture_desc(width: u32, height: u32) -> TextureDescriptor {
+        TextureDescriptor {
             label: None,
             size: Extent2d::new(width, height).expect("test dimensions are non-zero"),
+            mip_level_count: 1,
             format: Format::Rgba8Unorm,
             usage: TextureUsage::SAMPLED,
             memory_location: MemoryLocation::GpuOnly,
@@ -2187,9 +2402,10 @@ mod tests {
         bytes_per_row: u32,
         rows_per_image: u32,
         offset: u64,
-    ) -> TextureWriteDesc {
-        TextureWriteDesc {
+    ) -> TextureWriteDescriptor {
+        TextureWriteDescriptor {
             texture: TextureId::from_parts(1, 1),
+            mip_level: 0,
             layout: TextureDataLayout::new(offset, bytes_per_row, rows_per_image)
                 .expect("test layout should be valid"),
             origin: Origin2d { x, y },

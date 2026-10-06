@@ -8,15 +8,15 @@ It contains:
 
 - typed generational resource handles;
 - resource, pipeline, command, surface, presentation, and diagnostics descriptors;
-- `GfxError` and `Result`;
+- `Error` and `Result`;
 - the public backend capability traits:
-  `GfxBackend`, `GfxSurfaceDevice`, `GfxResourceDevice`, `GfxPipelineDevice`,
-  `GfxCommandDevice`, `GfxPresentationDevice`, `GfxDiagnosticsDevice`, and
-  `GfxDevice`.
+  `Backend`, `SurfaceDevice`, `ResourceDevice`, `PipelineDevice`,
+  `CommandDevice`, `PresentationDevice`, `DiagnosticsDevice`, and
+  `Device`.
 
 `gfx-core` intentionally has no dependency on GPUI, winit, `raw-window-handle`,
 Vulkan, Direct3D 12, or Metal. Native window targets are expressed through
-`GfxSurfaceDevice::SurfaceTarget`, an associated type selected by each backend
+`SurfaceDevice::SurfaceTarget`, an associated type selected by each backend
 crate.
 
 ## Recommended Use
@@ -24,17 +24,17 @@ crate.
 Use the narrowest trait that a helper requires:
 
 ```rust
-use gfx_core::{BufferDesc, BufferId, GfxResourceDevice, Result};
+use gfx_core::{BufferDescriptor, BufferId, ResourceDevice, Result};
 
-fn create_upload_buffer<D>(device: &mut D, desc: &BufferDesc) -> Result<BufferId>
+fn create_upload_buffer<D>(device: &mut D, desc: &BufferDescriptor) -> Result<BufferId>
 where
-    D: GfxResourceDevice,
+    D: ResourceDevice,
 {
     device.create_buffer(desc)
 }
 ```
 
-Use `GfxDevice` only for code that genuinely needs the full device contract.
+Use `Device` only for code that genuinely needs the full device contract.
 
 ## API Stability
 

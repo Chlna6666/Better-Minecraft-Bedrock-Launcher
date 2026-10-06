@@ -8,14 +8,14 @@
 
 - 类型化的 generational resource handle；
 - resource、pipeline、command、surface、presentation、diagnostics 描述符；
-- `GfxError` 和 `Result`；
+- `Error` 和 `Result`；
 - 公共后端能力 trait：
-  `GfxBackend`、`GfxSurfaceDevice`、`GfxResourceDevice`、`GfxPipelineDevice`、
-  `GfxCommandDevice`、`GfxPresentationDevice`、`GfxDiagnosticsDevice` 和
-  `GfxDevice`。
+  `Backend`、`SurfaceDevice`、`ResourceDevice`、`PipelineDevice`、
+  `CommandDevice`、`PresentationDevice`、`DiagnosticsDevice` 和
+  `Device`。
 
 `gfx-core` 不依赖 GPUI、winit、`raw-window-handle`、Vulkan、Direct3D 12
-或 Metal。原生窗口目标通过 `GfxSurfaceDevice::SurfaceTarget` 表达，由各
+或 Metal。原生窗口目标通过 `SurfaceDevice::SurfaceTarget` 表达，由各
 后端 crate 自己选择具体类型。
 
 ## 推荐用法
@@ -23,17 +23,17 @@
 helper 应使用最窄的 trait bound：
 
 ```rust
-use gfx_core::{BufferDesc, BufferId, GfxResourceDevice, Result};
+use gfx_core::{BufferDescriptor, BufferId, ResourceDevice, Result};
 
-fn create_upload_buffer<D>(device: &mut D, desc: &BufferDesc) -> Result<BufferId>
+fn create_upload_buffer<D>(device: &mut D, desc: &BufferDescriptor) -> Result<BufferId>
 where
-    D: GfxResourceDevice,
+    D: ResourceDevice,
 {
     device.create_buffer(desc)
 }
 ```
 
-只有确实需要完整设备能力的代码才使用 `GfxDevice`。
+只有确实需要完整设备能力的代码才使用 `Device`。
 
 ## API 稳定性
 

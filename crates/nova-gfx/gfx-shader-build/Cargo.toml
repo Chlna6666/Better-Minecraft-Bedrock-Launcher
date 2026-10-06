@@ -1,0 +1,27 @@
+[package]
+name = "gfx-shader-build"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0"
+description = "Build-time WGSL compilation and embedding for nova-gfx backends"
+readme = "README.md"
+keywords = ["graphics", "shader", "wgsl", "naga", "build"]
+categories = ["rendering::graphics-api"]
+include = ["src/**", "Cargo.toml", "README.md"]
+
+[lib]
+path = "src/gfx_shader_build.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+gfx-dx12 = { version = "0.1.0", path = "../gfx-dx12" }
+gfx-shader = { version = "0.1.0", path = "../gfx-shader" }
+thiserror = "2.0.17"

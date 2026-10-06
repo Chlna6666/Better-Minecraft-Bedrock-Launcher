@@ -2,7 +2,7 @@
 //!
 //! This crate implements the `gfx-core` device traits for Metal on Apple
 //! targets. Non-Apple builds expose a minimal stub that returns
-//! `GfxError::Unavailable`.
+//! `Error::Unavailable`.
 //!
 //! Chinese documentation is available in `README.zh-CN.md` in the crate source
 //! package.

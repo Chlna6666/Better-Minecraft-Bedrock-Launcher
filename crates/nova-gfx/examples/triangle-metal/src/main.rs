@@ -21,10 +21,10 @@ mod macos_example {
     use std::{num::NonZeroU32, ptr::NonNull, thread, time::Duration, time::Instant};
 
     use gfx_core::{
-        BlendMode, ClearColor, ColorAttachmentDesc, DeviceDesc, Format, GfxPipelineDevice,
-        GfxPresentationDevice, GfxSurfaceDevice, PresentMode, RenderPassDesc, RenderPassId,
-        RenderPipelineDesc, RenderPipelineId, ShaderBinary, ShaderModuleDesc, ShaderStage,
-        SurfaceConfig, SurfaceDesc, SurfaceId, SwapchainId,
+        BlendMode, ClearColor, ColorAttachmentDescriptor, DeviceDescriptor, Format, PipelineDevice,
+        PresentationDevice, SurfaceDevice, PresentMode, RenderPassDescriptor, RenderPassId,
+        RenderPipelineDescriptor, RenderPipelineId, ShaderBinary, ShaderModuleDescriptor, ShaderStage,
+        SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId,
     };
     use gfx_metal::MetalDevice;
     use gfx_shader::compile_wgsl_to_msl;
@@ -216,29 +216,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             fragment_shader: ShaderBinary,
         ) -> Result<Self, Box<dyn std::error::Error>> {
             let metrics_started_at = Instant::now();
-            let mut device = MetalDevice::new(&DeviceDesc {
+            let mut device = MetalDevice::new(&DeviceDescriptor {
                 application_name: "nova-gfx triangle metal".to_string(),
-                ..DeviceDesc::default()
+                ..DeviceDescriptor::default()
             })?;
-            let surface = device.create_surface(window, &SurfaceDesc { label: None })?;
+            let surface = device.create_surface(window, &SurfaceDescriptor { label: None })?;
             let swapchain = device.create_swapchain(surface, surface_config)?;
-            let vertex_shader = device.create_shader_module(&ShaderModuleDesc {
+            let vertex_shader = device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("triangle metal vertex shader".to_string()),
                 binary: vertex_shader,
             })?;
-            let fragment_shader = device.create_shader_module(&ShaderModuleDesc {
+            let fragment_shader = device.create_shader_module(&ShaderModuleDescriptor {
                 label: Some("triangle metal fragment shader".to_string()),
                 binary: fragment_shader,
             })?;
-            let render_pass = device.create_render_pass(&RenderPassDesc {
+            let render_pass = device.create_render_pass(&RenderPassDescriptor {
                 label: Some("triangle metal render pass".to_string()),
-                color_attachment: ColorAttachmentDesc {
+                color_attachment: ColorAttachmentDescriptor {
                     format: surface_config.format,
                 },
                 depth_attachment: None,
             })?;
             let pipeline = device.create_render_pipeline(
-                &RenderPipelineDesc {
+                &RenderPipelineDescriptor {
                     label: Some("triangle metal pipeline".to_string()),
                     vertex_shader,
                     vertex_entry_point: "vs_main".to_string(),

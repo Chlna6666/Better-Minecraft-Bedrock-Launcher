@@ -1,4 +1,4 @@
-use gfx_core::{GfxError, ResourceId, Result};
+use gfx_core::{Error, ResourceId, Result};
 
 struct ResourceSlot<T> {
     generation: u32,
@@ -111,8 +111,8 @@ impl<T> ResourceRegistry<T> {
     }
 }
 
-fn stale_handle_error<R>(kind: &'static str, id: ResourceId<R>) -> GfxError {
-    GfxError::InvalidInput(format!(
+fn stale_handle_error<R>(kind: &'static str, id: ResourceId<R>) -> Error {
+    Error::InvalidInput(format!(
         "stale or invalid {kind} handle: index={}, generation={}",
         id.index(),
         id.generation()

@@ -88,7 +88,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when allocator creation fails.
+    /// Returns [`gfx_core::Error`] when allocator creation fails.
     pub fn new_dx12(desc: Dx12MemoryAllocatorDesc) -> Result<Self> {
         Ok(Self::Dx12(Dx12MemoryAllocator::new(desc)?))
     }
@@ -97,7 +97,7 @@ impl MemoryAllocator {
     ///
     /// # Errors
     ///
-    /// Returns [`gfx_core::GfxError`] when validation or allocation fails.
+    /// Returns [`gfx_core::Error`] when validation or allocation fails.
     pub fn allocate_dx12_resource(
         &mut self,
         desc: &Dx12AllocationCreateDesc<'_>,
@@ -105,11 +105,11 @@ impl MemoryAllocator {
         match self {
             Self::Dx12(allocator) => allocator.allocate_resource(desc),
             #[cfg(feature = "vulkan")]
-            Self::Vulkan(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Vulkan(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Direct3D 12 allocator".to_string(),
             )),
             #[cfg(feature = "metal")]
-            Self::Metal(_) => Err(gfx_core::GfxError::InvalidInput(
+            Self::Metal(_) => Err(gfx_core::Error::InvalidInput(
                 "allocator is not a Direct3D 12 allocator".to_string(),
             )),
         }

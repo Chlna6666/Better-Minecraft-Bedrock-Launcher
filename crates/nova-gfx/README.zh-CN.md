@@ -23,14 +23,14 @@ trait；Vulkan、Direct3D 12、Metal 后端 crate 负责实现这些 trait。
 
 调用方应按需要选择最窄的 core trait：
 
-- `GfxSurfaceDevice`：surface 和 swapchain。
-- `GfxResourceDevice`：buffer、texture、view、sampler、resource set。
-- `GfxPipelineDevice`：shader、render pass、layout、pipeline。
-- `GfxCommandDevice`：显式 command encoder 工作流。
-- `GfxPresentationDevice`：`draw_steps_and_present` 和 `draw_steps_to_texture`。
-- `GfxDiagnosticsDevice`：资源统计。
+- `SurfaceDevice`：surface 和 swapchain。
+- `ResourceDevice`：buffer、texture、view、sampler、resource set。
+- `PipelineDevice`：shader、render pass、layout、pipeline。
+- `CommandDevice`：显式 command encoder 工作流。
+- `PresentationDevice`：`draw_steps_and_present` 和 `draw_steps_to_texture`。
+- `DiagnosticsDevice`：资源统计。
 
-只有调用方确实需要完整设备能力时，才使用组合 trait `GfxDevice`。通用
+只有调用方确实需要完整设备能力时，才使用组合 trait `Device`。通用
 helper 优先使用更窄的 trait bound，避免给后端增加不必要的 API 要求。
 
 ## 发布
@@ -79,7 +79,7 @@ Vulkan tree 不应包含 `gfx-dx12`、`gfx-metal`、D3D12 或 Metal Objective-C
 ## 窗口边界
 
 `gfx-core` 不依赖 `raw-window-handle`。Surface target 通过
-`GfxSurfaceDevice` 的后端关联类型表达，由具体后端 crate 决定支持哪种
+`SurfaceDevice` 的后端关联类型表达，由具体后端 crate 决定支持哪种
 原生窗口目标。当前 Vulkan、DX12、Metal 后端在自己的 crate 中使用
 `raw-window-handle`，因为原生 surface 创建属于平台集成边界，不属于 core
 trait 依赖。

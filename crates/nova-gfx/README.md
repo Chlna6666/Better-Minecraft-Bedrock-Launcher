@@ -27,15 +27,15 @@ Current crates:
 
 Use the narrowest core trait required by the caller:
 
-- `GfxSurfaceDevice` for surfaces and swapchains.
-- `GfxResourceDevice` for buffers, textures, views, samplers, and resource sets.
-- `GfxPipelineDevice` for shaders, render passes, layouts, and pipelines.
-- `GfxCommandDevice` for explicit command encoder work.
-- `GfxPresentationDevice` for `draw_steps_and_present` and
+- `SurfaceDevice` for surfaces and swapchains.
+- `ResourceDevice` for buffers, textures, views, samplers, and resource sets.
+- `PipelineDevice` for shaders, render passes, layouts, and pipelines.
+- `CommandDevice` for explicit command encoder work.
+- `PresentationDevice` for `draw_steps_and_present` and
   `draw_steps_to_texture`.
-- `GfxDiagnosticsDevice` for live resource statistics.
+- `DiagnosticsDevice` for live resource statistics.
 
-`GfxDevice` combines the full device contract when a call site genuinely needs
+`Device` combines the full device contract when a call site genuinely needs
 all of it. Prefer narrower bounds in helpers so backends do not grow accidental
 API requirements.
 
@@ -100,7 +100,7 @@ Chinese documentation for users who prefer Chinese API guidance.
 ## Window Boundary
 
 `gfx-core` intentionally does not depend on `raw-window-handle`. Surface targets
-are modeled as a backend-associated type on `GfxSurfaceDevice`; concrete backend
+are modeled as a backend-associated type on `SurfaceDevice`; concrete backend
 crates decide which native presentation target they accept. The current Vulkan,
 DX12, and Metal backends use `raw-window-handle` in their own crates because
 native surface creation is a platform integration boundary, not a core trait
