@@ -408,6 +408,106 @@ fn orbit_pitch_keeps_rotation_invariant_preview_scale() -> Result<(), String> {
 }
 
 #[test]
+fn custom_geometry_limb_builds_walk_animation() -> Result<(), String> {
+    let image = patterned_skin();
+    let texture = skin_texture_asset(&image)?;
+    let color = [1.0, 1.0, 1.0, 1.0];
+    let custom_mesh = CustomGeometryMesh {
+        parts: vec![
+            CustomGeometryPartMesh {
+                role: CustomGeometryBoneRole::Body,
+                pivot: [0.0, 2.0, 0.0],
+                vertices: vec![
+                    SkinVertex {
+                        position: [-1.0, 0.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                    SkinVertex {
+                        position: [1.0, 0.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                    SkinVertex {
+                        position: [0.0, 2.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                ],
+                indices: vec![0, 1, 2],
+            },
+            CustomGeometryPartMesh {
+                role: CustomGeometryBoneRole::LeftArm,
+                pivot: [4.0, 8.0, 0.0],
+                vertices: vec![
+                    SkinVertex {
+                        position: [4.0, 8.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                    SkinVertex {
+                        position: [5.0, 8.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                    SkinVertex {
+                        position: [4.0, 3.0, 0.0],
+                        color,
+                        edge_mask: 0,
+                    },
+                ],
+                indices: vec![0, 1, 2],
+            },
+        ],
+    };
+
+    let preview = build_custom_geometry_meshes(image, texture, custom_mesh)?;
+    assert!(preview.has_walk_animation());
+    assert_eq!(preview.walk_track_count, 1);
+
+    let quarter = preview.walk_period / 4;
+    let looped = preview.walk_clip_time(preview.walk_period + quarter);
+    assert_eq!(looped, quarter);
+    Ok(())
+}
+
+#[test]
+fn custom_geometry_without_limb_roles_stays_static() -> Result<(), String> {
+    let image = patterned_skin();
+    let texture = skin_texture_asset(&image)?;
+    let custom_mesh = CustomGeometryMesh {
+        parts: vec![CustomGeometryPartMesh {
+            role: CustomGeometryBoneRole::Body,
+            pivot: [0.0, 2.0, 0.0],
+            vertices: vec![
+                SkinVertex {
+                    position: [-1.0, 0.0, 0.0],
+                    color: [1.0; 4],
+                    edge_mask: 0,
+                },
+                SkinVertex {
+                    position: [1.0, 0.0, 0.0],
+                    color: [1.0; 4],
+                    edge_mask: 0,
+                },
+                SkinVertex {
+                    position: [0.0, 2.0, 0.0],
+                    color: [1.0; 4],
+                    edge_mask: 0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+        }],
+    };
+
+    let preview = build_custom_geometry_meshes(image, texture, custom_mesh)?;
+    assert!(!preview.has_walk_animation());
+    assert_eq!(preview.walk_track_count, 0);
+    assert_eq!(preview.walk_clip_time(Duration::from_secs(5)), Duration::ZERO);
+    Ok(())
+}
+
+#[test]
 fn camera_moves_keep_the_retained_scene_snapshot() -> Result<(), String> {
     let texture = skin_texture_asset(&patterned_skin())?;
     let preview = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)?;

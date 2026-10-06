@@ -56,7 +56,26 @@ pub(super) struct SkinPreviewMeshes {
     scene_view: Arc<SceneView>,
     texture: Arc<TextureAsset>,
     walk_period: Duration,
+    walk_track_count: usize,
     bounds: Option<Aabb>,
+}
+
+impl SkinPreviewMeshes {
+    pub(super) const fn has_walk_animation(&self) -> bool {
+        self.walk_track_count != 0
+    }
+
+    fn walk_clip_time(&self, elapsed: Duration) -> Duration {
+        if self.walk_track_count == 0 || self.walk_period.is_zero() {
+            return Duration::ZERO;
+        }
+        let period_nanos = self.walk_period.as_nanos();
+        let phase_nanos = elapsed.as_nanos() % period_nanos;
+        Duration::from_nanos(
+            u64::try_from(phase_nanos)
+                .expect("skin preview walk period is shorter than u64 nanoseconds"),
+        )
+    }
 }
 
 #[derive(Clone)]
@@ -161,7 +180,7 @@ pub(super) fn skin_preview_scene_view(
         .with_camera(camera)
         .with_scene_transform(scene_transform)
         .map_err(|error| error.to_string())?
-        .with_animation_time(walk_time.min(meshes.walk_period));
+        .with_animation_time(meshes.walk_clip_time(walk_time));
     Ok(Arc::new(scene_view))
 }
 
@@ -245,17 +264,22 @@ fn build_custom_geometry_meshes(
 
     let mut scene = Scene::new();
     let material = baked_skin_material(AlphaMode::Opaque);
+    let mut tracks = Vec::new();
 
     for part in parts {
-        let (pivot, mesh_offset, _) = skin_part_layout(SkinPreviewPart::CustomGeometryBone {
-            role: part.role,
-            pivot: part.pivot,
-        });
+        let (pivot, mesh_offset, swing_sign) =
+            skin_part_layout(SkinPreviewPart::CustomGeometryBone {
+                role: part.role,
+                pivot: part.pivot,
+            });
         let mesh = Arc::new(build_skin_mesh(part.vertices, part.indices)?);
-        insert_part_node(&mut scene, pivot, mesh_offset, mesh, &material)?;
+        let node = insert_part_node(&mut scene, pivot, mesh_offset, mesh, &material)?;
+        if swing_sign != 0.0 {
+            tracks.push(skin_walk_track(node, swing_sign)?);
+        }
     }
 
-    finish_skin_preview(scene, texture, Vec::new())
+    finish_skin_preview(scene, texture, tracks)
 }
 
 fn build_skin_player_meshes(
@@ -422,6 +446,7 @@ fn finish_skin_preview(
     tracks: Vec<TransformTrack>,
 ) -> Result<SkinPreviewMeshes, String> {
     let bounds = scene.bounds().map_err(|error| error.to_string())?;
+    let walk_track_count = tracks.len();
     let camera = Camera::orthographic(
         Vec3::new(0.0, 0.0, PREVIEW_CAMERA_DISTANCE),
         Vec3::ZERO,
@@ -446,6 +471,7 @@ fn finish_skin_preview(
         scene_view: Arc::new(scene_view),
         texture,
         walk_period: WALK_PERIOD,
+        walk_track_count,
         bounds,
     })
 }

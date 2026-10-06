@@ -417,7 +417,11 @@ impl SkinPreviewWindowView {
 impl Render for SkinPreviewWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
-        if self.walking && self.mesh.as_ref().is_some_and(Result::is_ok) {
+        let has_walk_animation = matches!(
+            &self.mesh,
+            Some(Ok(mesh)) if mesh.has_walk_animation()
+        );
+        if self.walking && has_walk_animation {
             window.request_animation_frame();
         }
         let colors = self.theme_colors(now, cx);
