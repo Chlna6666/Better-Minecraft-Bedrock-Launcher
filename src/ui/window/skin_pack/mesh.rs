@@ -28,6 +28,8 @@ const WALK_KEYFRAMES: u32 = 128;
 const SKIN_PREVIEW_SCALE: f32 = 0.057;
 const PREVIEW_CAMERA_DISTANCE: f32 = 3.0;
 const WALK_PERIOD: Duration = Duration::from_nanos(1_208_304_867);
+const VANILLA_PREVIEW_FRONT_YAW: f32 = 0.0;
+const CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW: f32 = std::f32::consts::PI;
 /// Atlas size assumed by the vanilla skin UV layout.
 const SKIN_ATLAS_UNITS: f32 = 64.0;
 const SKIN_LAYER_ALPHA_CUTOFF: f32 = 0.04;
@@ -57,6 +59,7 @@ pub(super) struct SkinPreviewMeshes {
     texture: Arc<TextureAsset>,
     walk_period: Duration,
     walk_track_count: usize,
+    front_yaw: f32,
     bounds: Option<Aabb>,
 }
 
@@ -162,7 +165,7 @@ pub(super) fn skin_preview_scene_view(
     let camera = match meshes.bounds {
         Some(bounds) => skin_preview_orbit_camera(
             bounds.transformed(scene_transform),
-            view_yaw,
+            view_yaw + meshes.front_yaw,
             view_pitch,
             zoom,
         )?,
@@ -279,7 +282,12 @@ fn build_custom_geometry_meshes(
         }
     }
 
-    finish_skin_preview(scene, texture, tracks)
+    finish_skin_preview(
+        scene,
+        texture,
+        tracks,
+        CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW,
+    )
 }
 
 fn build_skin_player_meshes(
@@ -395,7 +403,7 @@ fn build_skin_player_meshes(
         }
     }
 
-    finish_skin_preview(scene, texture, tracks)
+    finish_skin_preview(scene, texture, tracks, VANILLA_PREVIEW_FRONT_YAW)
 }
 
 /// Inserts one animated part: a pivot node plus one mesh node offset into place.
@@ -444,6 +452,7 @@ fn finish_skin_preview(
     scene: Scene,
     texture: Arc<TextureAsset>,
     tracks: Vec<TransformTrack>,
+    front_yaw: f32,
 ) -> Result<SkinPreviewMeshes, String> {
     let bounds = scene.bounds().map_err(|error| error.to_string())?;
     let walk_track_count = tracks.len();
@@ -472,6 +481,7 @@ fn finish_skin_preview(
         texture,
         walk_period: WALK_PERIOD,
         walk_track_count,
+        front_yaw,
         bounds,
     })
 }

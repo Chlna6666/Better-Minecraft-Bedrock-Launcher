@@ -333,7 +333,8 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
         mesh,
         &material,
     )?;
-    let meshes = finish_skin_preview(scene, texture, Vec::new())?;
+    let meshes =
+        finish_skin_preview(scene, texture, Vec::new(), VANILLA_PREVIEW_FRONT_YAW)?;
     let base = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.0, Duration::ZERO)?;
     let rotated = skin_preview_scene_view(&meshes, 0.4, -0.2, 1.0, Duration::ZERO)?;
     let zoomed = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.2, Duration::ZERO)?;
@@ -347,6 +348,7 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
     assert!((camera.eye.x - camera.target.x).abs() < 1.0e-5);
     assert!((camera.eye.y - camera.target.y).abs() < 1.0e-5);
     assert!(camera.eye.z > camera.target.z);
+    assert_eq!(meshes.front_yaw, VANILLA_PREVIEW_FRONT_YAW);
     assert!(matches!(camera.projection, Projection::Orthographic { .. }));
     let Projection::Orthographic {
         height: base_height,
@@ -464,6 +466,13 @@ fn custom_geometry_limb_builds_walk_animation() -> Result<(), String> {
     let preview = build_custom_geometry_meshes(image, texture, custom_mesh)?;
     assert!(preview.has_walk_animation());
     assert_eq!(preview.walk_track_count, 1);
+    assert_eq!(preview.front_yaw, CUSTOM_GEOMETRY_PREVIEW_FRONT_YAW);
+
+    let initial = skin_preview_scene_view(&preview, 0.0, 0.0, 1.0, Duration::ZERO)?;
+    assert!(
+        initial.camera().eye.z < initial.camera().target.z,
+        "custom Bedrock geometry should open from its authored front (-Z)",
+    );
 
     let quarter = preview.walk_period / 4;
     let looped = preview.walk_clip_time(preview.walk_period + quarter);

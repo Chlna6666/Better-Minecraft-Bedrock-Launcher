@@ -14,7 +14,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const SKIN_PREVIEW_WINDOW_WIDTH: f32 = 640.0;
 const SKIN_PREVIEW_WINDOW_HEIGHT: f32 = 600.0;
@@ -25,6 +25,14 @@ const SKIN_PREVIEW_MAX_ZOOM: f32 = 1.65;
 const SKIN_PREVIEW_DEFAULT_ZOOM: f32 = 1.0;
 const SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE: f32 = 1.10;
 const SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT: f32 = 4.0;
+
+fn skin_preview_walk_time(walking: bool, started_at: Instant, now: Instant) -> Duration {
+    if walking {
+        now.saturating_duration_since(started_at)
+    } else {
+        Duration::ZERO
+    }
+}
 
 fn skin_preview_wheel_zoom_factor(delta_y: f32, line_height: f32) -> f32 {
     if !delta_y.is_finite() || !line_height.is_finite() {
@@ -216,9 +224,9 @@ impl SkinPreviewWindowView {
         self.select_skin((self.selected_index + 1) % self.skins.len(), cx);
     }
 
-    fn toggle_walking(&mut self, cx: &mut Context<Self>) {
+    fn toggle_walking(&mut self, now: Instant, cx: &mut Context<Self>) {
         self.walking = !self.walking;
-        self.walk_started_at = Instant::now();
+        self.walk_started_at = now;
         cx.notify();
     }
 
@@ -347,8 +355,7 @@ impl SkinPreviewWindowView {
                 let view_yaw = self.view_yaw;
                 let view_pitch = self.view_pitch;
                 let view_zoom = self.view_zoom;
-                let walk_time = now.saturating_duration_since(self.walk_started_at);
-                let walking = self.walking;
+                let walk_time = skin_preview_walk_time(self.walking, self.walk_started_at, now);
                 let scene_view = match skin_preview_scene_view(
                     &mesh, view_yaw, view_pitch, view_zoom, walk_time,
                 ) {
@@ -555,8 +562,8 @@ impl Render for SkinPreviewWindowView {
                                 )
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.toggle_walking(cx);
+                                    cx.listener(|this, _, window, cx| {
+                                        this.toggle_walking(window.animation_time(), cx);
                                     }),
                                 ),
                             )
@@ -669,6 +676,26 @@ fn centered_status(colors: &ThemeColors, label: SharedString) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_walk_time_stays_neutral_during_pointer_rerenders() {
+        let started = Instant::now();
+        let later = started + Duration::from_secs(20);
+        assert_eq!(
+            skin_preview_walk_time(false, started, later),
+            Duration::ZERO,
+        );
+    }
+
+    #[test]
+    fn running_walk_time_uses_the_frame_clock() {
+        let started = Instant::now();
+        let now = started + Duration::from_millis(250);
+        assert_eq!(
+            skin_preview_walk_time(true, started, now),
+            Duration::from_millis(250),
+        );
+    }
 
     #[test]
     fn wheel_zoom_tracks_fractional_scroll_delta() {
