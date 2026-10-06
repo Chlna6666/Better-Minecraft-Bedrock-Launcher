@@ -14,7 +14,9 @@
 
 use std::{
     ffi::{CStr, CString},
+    fs,
     mem::ManuallyDrop,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -49,6 +51,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 const FRAMES_IN_FLIGHT: usize = 2;
 const UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
+const MAX_PIPELINE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Native presentation target accepted by the Vulkan backend.
 pub trait VulkanSurfaceTarget: HasDisplayHandle + HasWindowHandle {}
@@ -134,6 +137,7 @@ pub struct VulkanDevice {
     swapchains: ResourceRegistry<VulkanSwapchain>,
     descriptor_pool: vk::DescriptorPool,
     pipeline_cache: vk::PipelineCache,
+    pipeline_cache_path: Option<PathBuf>,
     upload_ring: UploadRingAllocator,
     upload_pages: Vec<Option<VulkanBuffer>>,
     upload_command_pool: Vec<VulkanUploadCommands>,
@@ -143,6 +147,98 @@ pub struct VulkanDevice {
     next_upload_fence_value: u64,
     submitted_frames: u64,
     incremental_presentation: bool,
+}
+
+
+fn vulkan_pipeline_cache_path(
+    root: Option<&Path>,
+    properties: &vk::PhysicalDeviceProperties,
+) -> Option<PathBuf> {
+    let root = root?;
+    let dir = root.join("vulkan");
+    if let Err(error) = fs::create_dir_all(&dir) {
+        log::warn!(
+            "nova-gfx Vulkan pipeline cache disabled: path={} error={error}",
+            dir.display()
+        );
+        return None;
+    }
+
+    let mut uuid = String::with_capacity(properties.pipeline_cache_uuid.len() * 2);
+    for byte in properties.pipeline_cache_uuid {
+        use core::fmt::Write as _;
+        let _ = write!(&mut uuid, "{byte:02x}");
+    }
+
+    Some(dir.join(format!(
+        "{:04x}-{:04x}-{uuid}.bin",
+        properties.vendor_id, properties.device_id
+    )))
+}
+
+fn read_pipeline_cache_data(path: &Path) -> Option<Vec<u8>> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() == 0 || metadata.len() > MAX_PIPELINE_CACHE_BYTES {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
+fn create_pipeline_cache(
+    device: &ash::Device,
+    initial_data: Option<&[u8]>,
+    cache_path: Option<&Path>,
+) -> Result<vk::PipelineCache> {
+    let info = initial_data.map_or_else(
+        vk::PipelineCacheCreateInfo::default,
+        |data| vk::PipelineCacheCreateInfo::default().initial_data(data),
+    );
+    // SAFETY: Initial data is borrowed for this call and the logical device is live.
+    match unsafe { device.create_pipeline_cache(&info, None) } {
+        Ok(cache) => Ok(cache),
+        Err(error) if initial_data.is_some() => {
+            log::debug!(
+                "nova-gfx Vulkan rejected pipeline cache; retrying empty: path={} error={error:?}",
+                cache_path.map_or_else(
+                    || "<none>".to_string(),
+                    |path| path.display().to_string()
+                )
+            );
+            // SAFETY: Empty create info has no borrowed pointers and the device is live.
+            let cache = unsafe {
+                device.create_pipeline_cache(&vk::PipelineCacheCreateInfo::default(), None)
+            }
+            .map_err(VulkanError::from)?;
+            Ok(cache)
+        }
+        Err(error) => Err(VulkanError::from(error).into()),
+    }
+}
+
+fn persist_pipeline_cache(
+    device: &ash::Device,
+    cache: vk::PipelineCache,
+    path: Option<&Path>,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    // SAFETY: Pipeline cache belongs to this live device and device work is idle at drop.
+    let Ok(bytes) = (unsafe { device.get_pipeline_cache_data(cache) }) else {
+        return;
+    };
+    let Ok(size) = u64::try_from(bytes.len()) else {
+        return;
+    };
+    if bytes.is_empty() || size > MAX_PIPELINE_CACHE_BYTES {
+        return;
+    }
+    if let Err(error) = fs::write(path, bytes) {
+        log::debug!(
+            "nova-gfx Vulkan pipeline cache write skipped: path={} error={error}",
+            path.display()
+        );
+    }
 }
 
 impl VulkanDevice {
@@ -192,10 +288,13 @@ impl VulkanDevice {
         })?;
         let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())?;
         let descriptor_pool = create_descriptor_pool(&device)?;
-        let pipeline_cache_info = vk::PipelineCacheCreateInfo::default();
-        // SAFETY: The create info has no pointers and the logical device is live.
-        let pipeline_cache = unsafe { device.create_pipeline_cache(&pipeline_cache_info, None) }
-            .map_err(VulkanError::from)?;
+        let pipeline_cache_path =
+            vulkan_pipeline_cache_path(desc.pipeline_cache_dir.as_deref(), &adapter_properties);
+        let pipeline_cache_data = pipeline_cache_path
+            .as_deref()
+            .and_then(read_pipeline_cache_data);
+        let pipeline_cache =
+            create_pipeline_cache(&device, pipeline_cache_data.as_deref(), pipeline_cache_path.as_deref())?;
 
         Ok(Self {
             entry,
@@ -227,6 +326,7 @@ impl VulkanDevice {
             swapchains: ResourceRegistry::new("swapchain"),
             descriptor_pool,
             pipeline_cache,
+            pipeline_cache_path,
             upload_ring,
             upload_pages: Vec::new(),
             upload_command_pool: Vec::with_capacity(UPLOAD_COMMAND_POOL_CAPACITY),
@@ -3326,6 +3426,11 @@ impl Drop for VulkanDevice {
     fn drop(&mut self) {
         // SAFETY: Device may still have in-flight work; waiting before destruction is valid.
         let _ = unsafe { self.device.device_wait_idle() };
+        persist_pipeline_cache(
+            &self.device,
+            self.pipeline_cache,
+            self.pipeline_cache_path.as_deref(),
+        );
         for resource in self.deferred_destroys.drain_all() {
             let _ = self.destroy_deferred_now(resource);
         }
