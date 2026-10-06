@@ -1,6 +1,5 @@
 use image::DynamicImage;
 use serde_json::Value;
-use std::collections::HashMap;
 
 #[path = "custom_geometry_poly_triangle.rs"]
 mod triangle;
@@ -8,11 +7,11 @@ mod triangle;
 use self::triangle::push_poly_mesh_triangle;
 use super::super::color::shade_layer_edge_color;
 use super::super::custom_geometry_json::{index_triplet, point2_array, point3_array};
-use super::super::custom_geometry_math::{bedrock_to_preview, normalize};
+use super::super::custom_geometry_math::normalize;
 use super::super::custom_geometry_uv::texture_grid_count;
 use super::super::geometry::{FaceGrid, QuadEdgeMask, push_quad_with_edges};
 use super::{
-    BonePose, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
+    BonePoses, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
     transform_normal_for_bone, transform_point_for_bone,
 };
 
@@ -31,7 +30,7 @@ struct PolyMeshVertex {
 pub(super) fn push_poly_mesh(
     image: &DynamicImage,
     texture_space: TextureSpace,
-    bone_poses: &HashMap<String, BonePose>,
+    poses: BonePoses<'_>,
     bone_name: Option<&str>,
     poly_mesh: &Value,
     builder: &mut CustomGeometryPartBuilder,
@@ -60,7 +59,7 @@ pub(super) fn push_poly_mesh(
             &normals,
             &uvs,
             bone_name,
-            bone_poses,
+            poses,
         ) else {
             index += 1;
             continue;
@@ -78,7 +77,7 @@ pub(super) fn push_poly_mesh(
 
         if let Some(next_poly) = polys.get(index + 1)
             && let Some(next_vertices) = poly_mesh_polygon_vertices(
-                next_poly, &positions, &normals, &uvs, bone_name, bone_poses,
+                next_poly, &positions, &normals, &uvs, bone_name, poses,
             )
             && let Some(quad) = poly_mesh_quad_from_triangle_pair(&polygon_vertices, &next_vertices)
         {
@@ -110,7 +109,7 @@ fn poly_mesh_polygon_vertices(
     normals: &[[f32; 3]],
     uvs: &[[f32; 2]],
     bone_name: Option<&str>,
-    bone_poses: &HashMap<String, BonePose>,
+    poses: BonePoses<'_>,
 ) -> Option<Vec<PolyMeshVertex>> {
     let vertex_refs = poly.as_array()?;
     let mut polygon_vertices = Vec::with_capacity(vertex_refs.len().min(8));
@@ -126,12 +125,11 @@ fn poly_mesh_polygon_vertices(
             continue;
         };
 
-        let position =
-            transform_point_for_bone(bedrock_to_preview(position), bone_name, bone_poses);
+        let position = transform_point_for_bone(position, bone_name, poses);
         let normal = normals
             .get(normal_index)
             .copied()
-            .map(|normal| transform_normal_for_bone(normal, bone_name, bone_poses))
+            .map(|normal| transform_normal_for_bone(normal, bone_name, poses))
             .unwrap_or([0.0, 1.0, 0.0]);
         polygon_vertices.push(PolyMeshVertex {
             position,

@@ -130,20 +130,16 @@ impl ToggleSwitchView {
             TogglePhase::Opening { .. } => knob
                 .with_visual_animation(
                     "toggle-switch-knob",
-                    ease_out_cubic_motion(ANIMATION_DURATION).with_translation(
-                        point(px(-KNOB_TRAVEL), px(0.0)),
-                        Point::default(),
-                    ),
+                    ease_out_cubic_motion(ANIMATION_DURATION)
+                        .with_translation(point(px(-KNOB_TRAVEL), px(0.0)), Point::default()),
                 )
                 .expect("toggle knob uses a visual translation track")
                 .into_any_element(),
             TogglePhase::Closing { .. } => knob
                 .with_visual_animation(
                     "toggle-switch-knob",
-                    ease_out_cubic_motion(ANIMATION_DURATION).with_translation(
-                        point(px(KNOB_TRAVEL), px(0.0)),
-                        Point::default(),
-                    ),
+                    ease_out_cubic_motion(ANIMATION_DURATION)
+                        .with_translation(point(px(KNOB_TRAVEL), px(0.0)), Point::default()),
                 )
                 .expect("toggle knob uses a visual translation track")
                 .into_any_element(),

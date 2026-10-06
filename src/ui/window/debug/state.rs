@@ -83,7 +83,6 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_underline_upload_bytes: usize,
     pub gpui_backdrop_blur_upload_bytes: usize,
     pub gpui_animation_upload_bytes: usize,
-    pub gpui_custom_mesh_parameter_upload_bytes: usize,
     pub gpui_pod_upload_bytes: usize,
     pub gpui_mask_pass_count: usize,
     pub gpui_main_pass_count: usize,
@@ -187,7 +186,6 @@ pub struct DebugRuntimeSnapshot {
     pub gpui_has_backdrop_texture: bool,
     pub gpui_has_depth_texture: bool,
     pub gpui_backdrop_blur_target_groups: usize,
-    pub gpui_gpu_mesh_buffers: usize,
     pub gpui_coalesced_refresh_count: usize,
     pub gpui_coalesced_refresh_effect_count: usize,
     pub gpui_inactive_present_skip_count: usize,
@@ -465,13 +463,6 @@ pub fn record_main_window_render_finished(render_time: Duration) {
     metrics.snapshot.main_render_time_avg_ms = metrics.render_time_ema;
 }
 
-pub fn main_window_first_render_finished() -> bool {
-    let metrics = RUNTIME_METRICS
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    metrics.main_window_first_render_finished
-}
-
 pub fn record_debug_window_geometry(window: &Window) {
     let viewport = window.viewport_size();
     let scale_factor = window.scale_factor().max(f32::EPSILON);
@@ -530,8 +521,6 @@ pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
     snapshot.gpui_underline_upload_bytes = gpui_metrics.underline_upload_bytes;
     snapshot.gpui_backdrop_blur_upload_bytes = gpui_metrics.backdrop_blur_upload_bytes;
     snapshot.gpui_animation_upload_bytes = gpui_metrics.animation_upload_bytes;
-    snapshot.gpui_custom_mesh_parameter_upload_bytes =
-        gpui_metrics.custom_mesh_parameter_upload_bytes;
     snapshot.gpui_pod_upload_bytes = gpui_metrics.pod_upload_bytes;
     snapshot.gpui_mask_pass_count = gpui_metrics.mask_pass_count;
     snapshot.gpui_main_pass_count = gpui_metrics.main_pass_count;
@@ -639,7 +628,6 @@ pub fn refresh_realtime_runtime_metrics(snapshot: &mut DebugRuntimeSnapshot) {
     snapshot.gpui_has_backdrop_texture = gpui_metrics.has_backdrop_texture;
     snapshot.gpui_has_depth_texture = gpui_metrics.has_depth_texture;
     snapshot.gpui_backdrop_blur_target_groups = gpui_metrics.backdrop_blur_target_groups;
-    snapshot.gpui_gpu_mesh_buffers = gpui_metrics.gpu_mesh_buffers;
     snapshot.gpui_coalesced_refresh_count = gpui_metrics.coalesced_refresh_count;
     snapshot.gpui_coalesced_refresh_effect_count = gpui_metrics.coalesced_refresh_effect_count;
     snapshot.gpui_inactive_present_skip_count = gpui_metrics.inactive_present_skip_count;

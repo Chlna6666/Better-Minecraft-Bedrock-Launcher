@@ -1,10 +1,10 @@
-use gpui::GpuMesh3dVertex;
 use image::DynamicImage;
 
 use super::super::super::color::shade_layer_edge_color;
 use super::super::super::custom_geometry_math::{
     average2, average3, barycentric2, barycentric3, normalize, texture_edge_length,
 };
+use super::super::SkinVertex;
 use super::super::{CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color};
 use super::PolyMeshVertex;
 
@@ -65,17 +65,18 @@ fn push_sampled_poly_triangle(
     push_triangle_vertices(
         &mut builder.vertices,
         &mut builder.indices,
-        triangle.map(|vertex| GpuMesh3dVertex {
+        triangle.map(|vertex| SkinVertex {
             position: vertex.position,
             color,
+            edge_mask: 0,
         }),
     )
 }
 
 fn push_triangle_vertices(
-    vertices: &mut Vec<GpuMesh3dVertex>,
+    vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
-    triangle: [GpuMesh3dVertex; 3],
+    triangle: [SkinVertex; 3],
 ) -> Result<(), String> {
     ensure_capacity(vertices, indices, 3, 3)?;
     let base = u32::try_from(vertices.len()).map_err(|_| "3D 网格顶点过多".to_string())?;

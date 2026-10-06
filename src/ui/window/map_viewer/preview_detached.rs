@@ -1,10 +1,6 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use super::preview_3d::{
-    preview_3d_chunk_mesh_is_visible, preview_3d_local_draw_parameters,
-    preview_3d_world_draw_parameters,
-};
 use std::cell::RefCell;
 
 const DETACHED_PREVIEW_WIDTH: f32 = 920.0;
@@ -312,36 +308,23 @@ impl Render for DetachedPreview3dView {
                     }))
                     .when_some(mesh, |this, mesh| {
                         let frame = detached_preview_world_frame(mesh.as_ref(), selection_bounds);
-                        this.child(
-                            canvas(
-                                move |bounds, _window, _cx| bounds,
-                                move |bounds, _prepaint, window, _cx| {
-                                    let width = f32::from(bounds.size.width);
-                                    let height = f32::from(bounds.size.height);
-                                    let aspect = if height <= 0.0 { 1.0 } else { width / height };
-                                    let world_parameters = preview_3d_world_draw_parameters(
-                                        aspect,
-                                        frame.center,
-                                        frame.fit_scale,
-                                        camera,
-                                        model_rotation,
-                                    );
-                                    for chunk_mesh in &mesh.chunk_meshes {
-                                        let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
-                                        let parameters = preview_3d_local_draw_parameters(
-                                            &world_parameters,
-                                            chunk_mesh.world_origin,
-                                        );
-                                        if preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters)
-                                        {
-                                            window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
-                                        }
-                                    }
-                                },
-                            )
-                            .absolute()
-                            .inset_0(),
-                        )
+                        match mesh.scene_view_for(
+                            camera,
+                            frame.center,
+                            frame.fit_scale,
+                            model_rotation,
+                        ) {
+                            Ok(scene_view) => this.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .child(gpui_3d::scene_view(scene_view)),
+                            ),
+                            Err(error) => {
+                                tracing::error!(%error, "failed to configure detached map preview scene view");
+                                this
+                            }
+                        }
                     }),
             )
     }

@@ -201,7 +201,7 @@ pub fn run() -> Result<()> {
         info!("Import-mode preinit done");
     }
 
-    let bootstrap = runtime.block_on(crate::app::AppBootstrap::from_config(&config, launch_mode));
+    let bootstrap = runtime.block_on(crate::app::AppBootstrap::from_config(config, launch_mode));
     info!(
         elapsed_ms = startup_started.elapsed().as_millis(),
         "startup critical path complete; entering GPUI"

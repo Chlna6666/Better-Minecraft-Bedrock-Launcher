@@ -2783,7 +2783,7 @@ impl Render for DebugView {
                                 (
                                     SharedString::from("Scene upload"),
                                     SharedString::from(format!(
-                                        "mono {} / poly {} / underline {} / blur {} / animation {} / mesh params {}",
+                                        "mono {} / poly {} / underline {} / blur {} / animation {}",
                                         bytes_to_human(
                                             runtime.gpui_mono_sprite_upload_bytes as u64
                                         ),
@@ -2794,10 +2794,7 @@ impl Render for DebugView {
                                         bytes_to_human(
                                             runtime.gpui_backdrop_blur_upload_bytes as u64
                                         ),
-                                        bytes_to_human(runtime.gpui_animation_upload_bytes as u64),
-                                        bytes_to_human(
-                                            runtime.gpui_custom_mesh_parameter_upload_bytes as u64
-                                        )
+                                        bytes_to_human(runtime.gpui_animation_upload_bytes as u64)
                                     )),
                                 ),
                                 (
@@ -3055,13 +3052,12 @@ impl Render for DebugView {
                                 (
                                     SharedString::from("Retained targets"),
                                     SharedString::from(format!(
-                                        "frame={} path={} backdrop={} depth={} blur_groups={} mesh_buffers={}",
+                                        "frame={} path={} backdrop={} depth={} blur_groups={}",
                                         bool_label(runtime.gpui_has_retained_frame_target),
                                         bool_label(runtime.gpui_has_path_textures),
                                         bool_label(runtime.gpui_has_backdrop_texture),
                                         bool_label(runtime.gpui_has_depth_texture),
-                                        runtime.gpui_backdrop_blur_target_groups,
-                                        runtime.gpui_gpu_mesh_buffers
+                                        runtime.gpui_backdrop_blur_target_groups
                                     )),
                                 ),
                                 (

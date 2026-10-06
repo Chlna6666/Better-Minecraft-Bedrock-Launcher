@@ -182,15 +182,10 @@ impl Render for UnderlineTabsView {
                         self.id.as_ref()
                     )),
                     if reduced_motion || self.from_index == active_index {
-                        settled_animation().with_translation(
-                            Point::default(),
-                            Point::default(),
-                        )
+                        settled_animation().with_translation(Point::default(), Point::default())
                     } else {
-                        spring_motion(apple_spring(0.30, 0.82)).with_translation(
-                            point(px(offset_px), px(0.0)),
-                            Point::default(),
-                        )
+                        spring_motion(apple_spring(0.30, 0.82))
+                            .with_translation(point(px(offset_px), px(0.0)), Point::default())
                     },
                 )
                 .expect("tab underline uses a visual translation track")
@@ -514,15 +509,10 @@ impl Render for AnimatedSegmentTabsView {
                 .with_visual_animation(
                     SharedString::from(format!("{}-indicator-presentation", self.id.as_ref())),
                     if reduced_motion || self.from_index == active_index {
-                        settled_animation().with_translation(
-                            Point::default(),
-                            Point::default(),
-                        )
+                        settled_animation().with_translation(Point::default(), Point::default())
                     } else {
-                        spring_motion(apple_spring(0.30, 0.82)).with_translation(
-                            point(px(offset_px), px(0.0)),
-                            Point::default(),
-                        )
+                        spring_motion(apple_spring(0.30, 0.82))
+                            .with_translation(point(px(offset_px), px(0.0)), Point::default())
                     },
                 )
                 .expect("tab indicator uses a visual translation track")

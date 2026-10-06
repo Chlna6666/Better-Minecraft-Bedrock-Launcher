@@ -212,7 +212,11 @@ fn render_bootstrap_field(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageSt
         )
 }
 
-fn render_bootstrap_input(colors: &ThemeColors, _i18n: &I18n, state: &ToolsPageState) -> AnyElement {
+fn render_bootstrap_input(
+    colors: &ThemeColors,
+    _i18n: &I18n,
+    state: &ToolsPageState,
+) -> AnyElement {
     state.bootstrap_peers_input.as_ref().map_or_else(
         || {
             div()

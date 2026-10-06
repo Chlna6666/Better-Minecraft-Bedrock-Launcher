@@ -1,103 +1,107 @@
-use gpui::GpuMesh3dVertex;
-use image::DynamicImage;
-
-use super::color::{Face, sample_image_color, shade_face_color, shade_layer_edge_color};
+use super::color::{Face, shade_face_color, shade_layer_edge_color};
 use super::geometry::{
-    CuboidSize, FaceGrid, QuadEdgeMask, SkinTextureScale, face_grid, face_pixel_corners,
-    face_region, push_quad_with_edges, source_pixel_offset,
+    ColorRun, CuboidSize, FaceGrid, QuadEdgeMask, SkinTextureScale, SkinVertex, color_runs,
+    face_color_rect, face_grid, face_rect_corners, face_region, push_quad_with_edges,
 };
 use super::uv::{CuboidUv, TextureRegion};
+use image::DynamicImage;
 
 const SKIN_LAYER_ALPHA_THRESHOLD: f32 = 0.04;
 const SKIN_LAYER_INNER_INFLATE: f32 = 0.0;
 
-pub(super) fn push_skin_layer(
-    image: &DynamicImage,
-    texture_scale: SkinTextureScale,
-    size: CuboidSize,
-    uv: CuboidUv,
-    inflate: f32,
-    vertices: &mut Vec<GpuMesh3dVertex>,
-    indices: &mut Vec<u32>,
-) {
-    for face in skin_layer_faces() {
-        push_skin_layer_face(
-            image,
-            texture_scale,
-            size,
-            *face,
-            face_region(uv, *face),
-            inflate,
-            vertices,
-            indices,
-        );
-    }
-}
-
-fn skin_layer_faces() -> &'static [Face; 6] {
-    &[
-        Face::Top,
-        Face::Bottom,
-        Face::Right,
-        Face::Front,
-        Face::Left,
-        Face::Back,
-    ]
-}
-
-fn push_skin_layer_face(
-    image: &DynamicImage,
-    texture_scale: SkinTextureScale,
+/// Builds one extruded overlay face into `vertices` and `indices`.
+///
+/// Visible texels are merged into same-color runs, and each run receives one front quad plus side
+/// quads for its exposed edges. Merging keeps neighbouring texels sharing one edge instead of
+/// overlapping, which removes the see-through seams the per-texel geometry produced.
+pub(super) fn push_skin_layer_face(
+    layer: &SkinLayerColors<'_>,
     size: CuboidSize,
     face: Face,
-    region: TextureRegion,
     inflate: f32,
-    vertices: &mut Vec<GpuMesh3dVertex>,
+    vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
 ) {
-    let grid = face_grid(region, texture_scale.preview);
+    let SkinLayerColors { colors, grid } = *layer;
 
-    for pixel_y in 0..grid.height {
-        for pixel_x in 0..grid.width {
-            let Some(color) = layer_pixel_color(image, texture_scale, region, pixel_x, pixel_y)
-            else {
-                continue;
-            };
+    for run in opaque_layer_runs(grid, colors) {
+        let Some(color) = colors.get(run.color_index).copied() else {
+            continue;
+        };
+        let outer = face_rect_corners(size, face, grid, run, inflate);
+        let inner = face_rect_corners(size, face, grid, run, SKIN_LAYER_INNER_INFLATE);
+        push_quad_with_edges(
+            vertices,
+            indices,
+            outer,
+            shade_face_color(color, face),
+            QuadEdgeMask::NONE,
+        );
 
-            let outer = face_pixel_corners(size, face, grid, pixel_x, pixel_y, inflate);
-            let inner =
-                face_pixel_corners(size, face, grid, pixel_x, pixel_y, SKIN_LAYER_INNER_INFLATE);
-            push_quad_with_edges(
-                vertices,
-                indices,
-                outer,
-                shade_face_color(color, face),
-                QuadEdgeMask::NONE,
-            );
-
-            for edge in LayerPixelEdge::ALL {
-                if layer_edge_is_visible(image, texture_scale, region, grid, pixel_x, pixel_y, edge)
-                {
-                    push_layer_edge(vertices, indices, inner, outer, edge, color);
-                }
+        for edge in LayerPixelEdge::ALL {
+            if layer_edge_is_visible(grid, colors, run, edge) {
+                push_layer_edge(vertices, indices, inner, outer, edge, color);
             }
         }
     }
 }
 
-fn layer_pixel_color(
+/// Authored texel colors for one skin layer face.
+pub(super) struct SkinLayerColors<'a> {
+    pub(super) colors: &'a [[f32; 4]],
+    pub(super) grid: FaceGrid,
+}
+
+/// Reads one overlay face into same-color runs and keeps the run list ready for merging.
+pub(super) fn layer_face_colors(
     image: &DynamicImage,
     texture_scale: SkinTextureScale,
     region: TextureRegion,
-    pixel_x: u32,
-    pixel_y: u32,
-) -> Option<[f32; 4]> {
-    let image_origin_x = region.x.saturating_mul(texture_scale.source);
-    let image_origin_y = region.y.saturating_mul(texture_scale.source);
-    let image_x = image_origin_x.saturating_add(source_pixel_offset(pixel_x, texture_scale));
-    let image_y = image_origin_y.saturating_add(source_pixel_offset(pixel_y, texture_scale));
-    let color = sample_image_color(image, image_x, image_y);
-    (color[3] > SKIN_LAYER_ALPHA_THRESHOLD).then_some(color)
+) -> (FaceGrid, Vec<[f32; 4]>) {
+    let grid = face_grid(region, texture_scale.preview);
+    let colors = face_color_rect(image, texture_scale, region, grid);
+    (grid, colors)
+}
+
+/// Reports whether an overlay face contains at least one visible texel.
+pub(super) fn layer_has_visible_texel(colors: &[[f32; 4]]) -> bool {
+    colors
+        .iter()
+        .any(|color| color[3] > SKIN_LAYER_ALPHA_THRESHOLD)
+}
+
+/// Splits same-color runs so that no run mixes opaque and transparent texels.
+///
+/// A run boundary at a transparent texel is what the layer needs for its side edges, and keeping
+/// opaque runs whole means adjacent texels share one quad edge instead of overlapping.
+fn opaque_layer_runs(grid: FaceGrid, colors: &[[f32; 4]]) -> Vec<ColorRun> {
+    let mut runs = Vec::new();
+    for run in color_runs(grid, colors) {
+        let mut start = run.x;
+        for column in run.x..run.right() {
+            let index = (run.y as usize).saturating_mul(grid.width as usize) + column as usize;
+            let opaque = colors
+                .get(index)
+                .is_some_and(|color| color[3] > SKIN_LAYER_ALPHA_THRESHOLD);
+            let last = column + 1 == run.right();
+            if opaque && !last {
+                continue;
+            }
+            let end = if opaque { column + 1 } else { column };
+            if end > start {
+                runs.push(ColorRun {
+                    x: start,
+                    y: run.y,
+                    width: end - start,
+                    height: 1,
+                    color_index: (run.y as usize).saturating_mul(grid.width as usize)
+                        + start as usize,
+                });
+            }
+            start = column + 1;
+        }
+    }
+    runs
 }
 
 #[derive(Clone, Copy)]
@@ -113,42 +117,57 @@ impl LayerPixelEdge {
 }
 
 fn layer_edge_is_visible(
-    image: &DynamicImage,
-    texture_scale: SkinTextureScale,
-    region: TextureRegion,
     grid: FaceGrid,
-    pixel_x: u32,
-    pixel_y: u32,
+    colors: &[[f32; 4]],
+    run: ColorRun,
     edge: LayerPixelEdge,
 ) -> bool {
-    let Some((neighbor_x, neighbor_y)) = layer_edge_neighbor(grid, pixel_x, pixel_y, edge) else {
-        return true;
-    };
-
-    layer_pixel_color(image, texture_scale, region, neighbor_x, neighbor_y).is_none()
-}
-
-fn layer_edge_neighbor(
-    grid: FaceGrid,
-    pixel_x: u32,
-    pixel_y: u32,
-    edge: LayerPixelEdge,
-) -> Option<(u32, u32)> {
     match edge {
-        LayerPixelEdge::Top => pixel_y
-            .checked_sub(1)
-            .map(|neighbor_y| (pixel_x, neighbor_y)),
-        LayerPixelEdge::Right if pixel_x + 1 < grid.width => Some((pixel_x + 1, pixel_y)),
-        LayerPixelEdge::Bottom if pixel_y + 1 < grid.height => Some((pixel_x, pixel_y + 1)),
-        LayerPixelEdge::Left => pixel_x
-            .checked_sub(1)
-            .map(|neighbor_x| (neighbor_x, pixel_y)),
-        LayerPixelEdge::Right | LayerPixelEdge::Bottom => None,
+        LayerPixelEdge::Top => edge_row_is_transparent(grid, colors, run, run.y.checked_sub(1)),
+        LayerPixelEdge::Bottom => edge_row_is_transparent(grid, colors, run, Some(run.bottom())),
+        LayerPixelEdge::Left => {
+            run.x == 0 || edge_column_is_transparent(grid, colors, run, run.x.checked_sub(1))
+        }
+        LayerPixelEdge::Right => {
+            run.right() >= grid.width
+                || edge_column_is_transparent(grid, colors, run, Some(run.right()))
+        }
     }
 }
 
+fn edge_row_is_transparent(
+    grid: FaceGrid,
+    colors: &[[f32; 4]],
+    run: ColorRun,
+    row: Option<u32>,
+) -> bool {
+    let Some(row) = row.filter(|row| *row < grid.height) else {
+        return true;
+    };
+    (run.x..run.right()).all(|column| !layer_texel_is_opaque(grid, colors, column, row))
+}
+
+fn edge_column_is_transparent(
+    grid: FaceGrid,
+    colors: &[[f32; 4]],
+    run: ColorRun,
+    column: Option<u32>,
+) -> bool {
+    let Some(column) = column.filter(|column| *column < grid.width) else {
+        return true;
+    };
+    (run.y..run.bottom()).all(|row| !layer_texel_is_opaque(grid, colors, column, row))
+}
+
+fn layer_texel_is_opaque(grid: FaceGrid, colors: &[[f32; 4]], column: u32, row: u32) -> bool {
+    let index = (row as usize).saturating_mul(grid.width as usize) + column as usize;
+    colors
+        .get(index)
+        .is_some_and(|color| color[3] > SKIN_LAYER_ALPHA_THRESHOLD)
+}
+
 fn push_layer_edge(
-    vertices: &mut Vec<GpuMesh3dVertex>,
+    vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
     inner: [[f32; 3]; 4],
     outer: [[f32; 3]; 4],

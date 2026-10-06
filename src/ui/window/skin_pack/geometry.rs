@@ -1,4 +1,3 @@
-use gpui::GpuMesh3dVertex;
 use image::DynamicImage;
 
 use super::color::{Face, sample_image_color, shade_face_color};
@@ -9,7 +8,13 @@ pub(super) const TRIANGLE_EDGE_0: u8 = 1;
 pub(super) const TRIANGLE_EDGE_1: u8 = 1 << 1;
 pub(super) const TRIANGLE_EDGE_2: u8 = 1 << 2;
 const SKIN_PREVIEW_MAX_TEXTURE_SCALE: u32 = 2;
-const EDGE_MASK_ALPHA_STRIDE: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SkinVertex {
+    pub(super) position: [f32; 3],
+    pub(super) color: [f32; 4],
+    pub(super) edge_mask: u8,
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct CuboidSize {
@@ -93,6 +98,46 @@ pub(super) fn cuboid_uv_pixel_count(uv: CuboidUv, preview_scale: u32) -> usize {
         .sum()
 }
 
+/// Reads a rectangle of the face grid into flat `[f32; 4]` colors.
+///
+/// One run is one quad, so a face with uniform texels collapses from one quad per texel to one
+/// quad per horizontal run. Adjacent runs share their edge exactly, which removes the overlap that
+/// per-texel quads created along the texture's vertical axis.
+pub(super) fn face_color_rect(
+    image: &DynamicImage,
+    texture_scale: SkinTextureScale,
+    region: TextureRegion,
+    grid: FaceGrid,
+) -> Vec<[f32; 4]> {
+    let mut colors = Vec::with_capacity((grid.width as usize).saturating_mul(grid.height as usize));
+    for pixel_y in 0..grid.height {
+        for pixel_x in 0..grid.width {
+            colors.push(face_source_color(
+                image,
+                texture_scale,
+                region,
+                pixel_x,
+                pixel_y,
+            ));
+        }
+    }
+    colors
+}
+
+pub(super) fn face_source_color(
+    image: &DynamicImage,
+    texture_scale: SkinTextureScale,
+    region: TextureRegion,
+    pixel_x: u32,
+    pixel_y: u32,
+) -> [f32; 4] {
+    let image_origin_x = region.x.saturating_mul(texture_scale.source);
+    let image_origin_y = region.y.saturating_mul(texture_scale.source);
+    let image_x = image_origin_x.saturating_add(source_pixel_offset(pixel_x, texture_scale));
+    let image_y = image_origin_y.saturating_add(source_pixel_offset(pixel_y, texture_scale));
+    sample_image_color(image, image_x, image_y)
+}
+
 pub(super) fn push_face(
     image: &DynamicImage,
     texture_scale: SkinTextureScale,
@@ -101,36 +146,112 @@ pub(super) fn push_face(
     region: TextureRegion,
     inflate: f32,
     transparent: bool,
-    vertices: &mut Vec<GpuMesh3dVertex>,
+    vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
 ) {
     let grid = face_grid(region, texture_scale.preview);
-    let image_origin_x = region.x.saturating_mul(texture_scale.source);
-    let image_origin_y = region.y.saturating_mul(texture_scale.source);
+    let colors = face_color_rect(image, texture_scale, region, grid);
+    for_each_color_run(grid, &colors, |run| {
+        let Some(run_color) = colors.get(run.color_index).copied() else {
+            return;
+        };
+        let mut color = run_color;
+        if color[3] <= 0.04 && transparent {
+            return;
+        }
+        if !transparent {
+            color[3] = color[3].max(1.0);
+        }
+        let corners = face_rect_corners(size, face, grid, run, inflate);
+        push_quad_with_edges(
+            vertices,
+            indices,
+            corners,
+            shade_face_color(color, face),
+            QuadEdgeMask::NONE,
+        );
+    });
+}
+
+/// One horizontal run of same-color face texels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ColorRun {
+    /// Left edge in preview-grid columns.
+    pub(super) x: u32,
+    /// Top edge in preview-grid rows.
+    pub(super) y: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) color_index: usize,
+}
+
+impl ColorRun {
+    pub(super) fn right(self) -> u32 {
+        self.x.saturating_add(self.width)
+    }
+
+    pub(super) fn bottom(self) -> u32 {
+        self.y.saturating_add(self.height)
+    }
+}
+
+/// Groups a row-major color grid into horizontal same-color runs.
+///
+/// `colors` is indexed `y * grid.width + x` and must contain one entry per cell.
+pub(super) fn color_runs(grid: FaceGrid, colors: &[[f32; 4]]) -> Vec<ColorRun> {
+    let mut runs = Vec::new();
+    for_each_color_run(grid, colors, |run| runs.push(run));
+    runs
+}
+
+fn for_each_color_run(grid: FaceGrid, colors: &[[f32; 4]], mut visit: impl FnMut(ColorRun)) {
+    if grid.width == 0 || grid.height == 0 {
+        return;
+    }
     for pixel_y in 0..grid.height {
-        for pixel_x in 0..grid.width {
-            let image_x =
-                image_origin_x.saturating_add(source_pixel_offset(pixel_x, texture_scale));
-            let image_y =
-                image_origin_y.saturating_add(source_pixel_offset(pixel_y, texture_scale));
-            let mut color = sample_image_color(image, image_x, image_y);
-            if color[3] <= 0.04 && transparent {
-                continue;
+        let row_start = (pixel_y as usize).saturating_mul(grid.width as usize);
+        let mut pixel_x = 0;
+        while pixel_x < grid.width {
+            let index = row_start.saturating_add(pixel_x as usize);
+            let Some(color) = colors.get(index) else {
+                break;
+            };
+            let mut run_width = 1;
+            while pixel_x + run_width < grid.width {
+                let next = row_start.saturating_add((pixel_x + run_width) as usize);
+                if colors.get(next) != Some(color) {
+                    break;
+                }
+                run_width += 1;
             }
-            if !transparent {
-                color[3] = color[3].max(1.0);
-            }
-            let corners = face_pixel_corners(size, face, grid, pixel_x, pixel_y, inflate);
-            push_quad_with_edges(
-                vertices,
-                indices,
-                corners,
-                shade_face_color(color, face),
-                QuadEdgeMask::NONE,
-            );
+            visit(ColorRun {
+                x: pixel_x,
+                y: pixel_y,
+                width: run_width,
+                height: 1,
+                color_index: index,
+            });
+            pixel_x += run_width;
         }
     }
 }
+
+/// Corners of one preview-grid rectangle on a face, in authored cuboid units.
+pub(super) fn face_rect_corners(
+    size: CuboidSize,
+    face: Face,
+    grid: FaceGrid,
+    run: ColorRun,
+    inflate: f32,
+) -> [[f32; 3]; 4] {
+    let u0 = run.x as f32 / grid.width as f32;
+    let u1 = run.right() as f32 / grid.width as f32;
+    let v0 = run.y as f32 / grid.height as f32;
+    let v1 = run.bottom() as f32 / grid.height as f32;
+
+    face_uv_corners(size, face, u0, u1, v0, v1, inflate)
+}
+
 
 pub(super) fn face_grid(region: TextureRegion, preview_scale: u32) -> FaceGrid {
     FaceGrid {
@@ -157,6 +278,49 @@ pub(super) fn quad_center(corners: [[f32; 3]; 4]) -> [f32; 3] {
     ]
 }
 
+/// Average authored color of one cuboid face region.
+///
+/// The preview bakes one color per cuboid face, so a face needs the mean of the texels it covers
+/// rather than one sampled texel. Transparent texels are excluded when the region has any opaque
+/// coverage, so an overlay region with holes still reports its visible color.
+pub(super) fn face_average_color(
+    image: &DynamicImage,
+    texture_scale: SkinTextureScale,
+    region: TextureRegion,
+    grid: FaceGrid,
+) -> [f32; 4] {
+    let colors = face_color_rect(image, texture_scale, region, grid);
+    let mut total = [0.0f32; 4];
+    let mut opaque_count = 0.0f32;
+    let mut count = 0.0f32;
+    for color in &colors {
+        if color[3] > 0.04 {
+            for channel in 0..4 {
+                total[channel] += color[channel];
+            }
+            opaque_count += 1.0;
+        }
+        count += 1.0;
+    }
+
+    if opaque_count > 0.0 {
+        return [
+            total[0] / opaque_count,
+            total[1] / opaque_count,
+            total[2] / opaque_count,
+            (total[3] / opaque_count).min(1.0),
+        ];
+    }
+
+    if count > 0.0 {
+        for channel in 0..4 {
+            total[channel] /= count;
+        }
+        return total;
+    }
+    [1.0, 1.0, 1.0, 1.0]
+}
+
 pub(super) fn face_pixel_corners(
     size: CuboidSize,
     face: Face,
@@ -165,13 +329,26 @@ pub(super) fn face_pixel_corners(
     pixel_y: u32,
     inflate: f32,
 ) -> [[f32; 3]; 4] {
-    let half_width = size.width * 0.5 + inflate;
-    let half_height = size.height * 0.5 + inflate;
-    let half_depth = size.depth * 0.5 + inflate;
     let u0 = pixel_x as f32 / grid.width as f32;
     let u1 = (pixel_x + 1) as f32 / grid.width as f32;
     let v0 = pixel_y as f32 / grid.height as f32;
     let v1 = (pixel_y + 1) as f32 / grid.height as f32;
+
+    face_uv_corners(size, face, u0, u1, v0, v1, inflate)
+}
+
+fn face_uv_corners(
+    size: CuboidSize,
+    face: Face,
+    u0: f32,
+    u1: f32,
+    v0: f32,
+    v1: f32,
+    inflate: f32,
+) -> [[f32; 3]; 4] {
+    let half_width = size.width * 0.5 + inflate;
+    let half_height = size.height * 0.5 + inflate;
+    let half_depth = size.depth * 0.5 + inflate;
 
     match face {
         Face::Front => front_face(half_width, half_height, half_depth, u0, u1, v0, v1),
@@ -240,7 +417,7 @@ fn cap_face(w: f32, d: f32, y: f32, u0: f32, u1: f32, v0: f32, v1: f32) -> [[f32
 }
 
 pub(super) fn push_quad_with_edges(
-    vertices: &mut Vec<GpuMesh3dVertex>,
+    vertices: &mut Vec<SkinVertex>,
     indices: &mut Vec<u32>,
     corners: [[f32; 3]; 4],
     color: [f32; 4],
@@ -250,29 +427,35 @@ pub(super) fn push_quad_with_edges(
         return;
     };
     vertices.extend([
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[0],
-            color: color_with_triangle_edge_mask(color, first_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: first_triangle_edge_mask(edge_mask),
         },
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[1],
-            color: color_with_triangle_edge_mask(color, first_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: first_triangle_edge_mask(edge_mask),
         },
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[2],
-            color: color_with_triangle_edge_mask(color, first_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: first_triangle_edge_mask(edge_mask),
         },
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[0],
-            color: color_with_triangle_edge_mask(color, second_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: second_triangle_edge_mask(edge_mask),
         },
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[2],
-            color: color_with_triangle_edge_mask(color, second_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: second_triangle_edge_mask(edge_mask),
         },
-        GpuMesh3dVertex {
+        SkinVertex {
             position: corners[3],
-            color: color_with_triangle_edge_mask(color, second_triangle_edge_mask(edge_mask)),
+            color,
+            edge_mask: second_triangle_edge_mask(edge_mask),
         },
     ]);
     indices.extend([
@@ -283,11 +466,6 @@ pub(super) fn push_quad_with_edges(
         base.saturating_add(4),
         base.saturating_add(5),
     ]);
-}
-
-pub(super) fn color_with_triangle_edge_mask(mut color: [f32; 4], edge_mask: u8) -> [f32; 4] {
-    color[3] = color[3].clamp(0.0, 1.0) + f32::from(edge_mask) * EDGE_MASK_ALPHA_STRIDE;
-    color
 }
 
 fn first_triangle_edge_mask(edge_mask: QuadEdgeMask) -> u8 {

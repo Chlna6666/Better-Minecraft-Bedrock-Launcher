@@ -43,7 +43,7 @@ pub(crate) use chrome::AppChromeState;
 
 pub(crate) const MAIN_WINDOW_INITIAL_SIZE: Size<Pixels> = size(px(972.), px(600.));
 
-const STARTUP_ROUTE_BOOTSTRAP_DELAY: Duration = Duration::from_millis(120);
+const STARTUP_ROUTE_BOOTSTRAP_DELAY: Duration = Duration::from_millis(80);
 const STARTUP_UPDATE_CHECK_DELAY: Duration = Duration::from_millis(900);
 const STARTUP_INTERACTION_WARMUP_DELAY: Duration = Duration::from_millis(1500);
 const STARTUP_INTERACTION_WARMUP_STEP_DELAY: Duration = Duration::from_millis(80);

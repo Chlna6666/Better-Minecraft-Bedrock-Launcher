@@ -103,6 +103,104 @@ pub(super) fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-pub(super) fn bedrock_to_preview(position: [f32; 3]) -> [f32; 3] {
-    [position[0], position[1] - 16.0, position[2]]
+/// Axis-aligned bounds of authored geometry in its own player coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct GeometryBounds {
+    pub(super) min: [f32; 3],
+    pub(super) max: [f32; 3],
+}
+
+impl GeometryBounds {
+    pub(super) fn from_point(point: [f32; 3]) -> Self {
+        Self {
+            min: point,
+            max: point,
+        }
+    }
+
+    pub(super) fn include(&mut self, point: [f32; 3]) {
+        for axis in 0..3 {
+            self.min[axis] = self.min[axis].min(point[axis]);
+            self.max[axis] = self.max[axis].max(point[axis]);
+        }
+    }
+
+    fn is_finite(self) -> bool {
+        self.min.iter().chain(self.max.iter()).all(|value| value.is_finite())
+    }
+}
+
+/// Uniform map from authored geometry space into the preview player skeleton.
+///
+/// Minecraft skin-pack geometry is authored in its own player model space: vanilla humanoid
+/// geometry spans 32 units from feet to head top, and a custom model can be any size. The preview
+/// skin skeleton places feet at `PREVIEW_FEET_Y` and the head top at `PREVIEW_HEAD_TOP_Y`, so
+/// authored geometry is fitted into that box instead of being shifted by a fixed amount.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ModelSpace {
+    scale: f32,
+    translation: [f32; 3],
+}
+
+/// Lowest preview Y of the reference player skeleton used by the skin preview.
+pub(super) const PREVIEW_FEET_Y: f32 = -4.0;
+/// Highest preview Y of the reference player skeleton used by the skin preview.
+pub(super) const PREVIEW_HEAD_TOP_Y: f32 = 16.0;
+
+const MODEL_SPACE_MIN_SCALE: f32 = 0.02;
+const MODEL_SPACE_MAX_SCALE: f32 = 4.0;
+const MODEL_SPACE_MIN_HEIGHT: f32 = 0.05;
+
+impl ModelSpace {
+    /// Maps authored bounds into the preview skeleton box, preserving aspect ratio.
+    ///
+    /// Degenerate or non-finite bounds fall back to authored units so a malformed geometry cannot
+    /// produce a non-finite transform.
+    pub(super) fn fit(bounds: GeometryBounds) -> Self {
+        if !bounds.is_finite() {
+            return Self::authored_units();
+        }
+        let height = bounds.max[1] - bounds.min[1];
+        let center_x = (bounds.min[0] + bounds.max[0]) * 0.5;
+        if height < MODEL_SPACE_MIN_HEIGHT {
+            return Self {
+                scale: 1.0,
+                translation: [-center_x, PREVIEW_FEET_Y - bounds.min[1], 0.0],
+            };
+        }
+        let scale = ((PREVIEW_HEAD_TOP_Y - PREVIEW_FEET_Y) / height)
+            .clamp(MODEL_SPACE_MIN_SCALE, MODEL_SPACE_MAX_SCALE);
+        Self {
+            scale,
+            translation: [
+                -center_x * scale,
+                PREVIEW_FEET_Y - bounds.min[1] * scale,
+                0.0,
+            ],
+        }
+    }
+
+    /// Keeps authored units and only moves the model so its feet rest on the preview ground.
+    pub(super) const fn authored_units() -> Self {
+        Self {
+            scale: 1.0,
+            translation: [0.0, 0.0, 0.0],
+        }
+    }
+
+    pub(super) const fn scale(self) -> f32 {
+        self.scale
+    }
+
+    pub(super) fn point(self, point: [f32; 3]) -> [f32; 3] {
+        add3(scale3(point, self.scale), self.translation)
+    }
+
+    pub(super) fn length(self, value: f32) -> f32 {
+        value * self.scale
+    }
+}
+
+fn scale3(vector: [f32; 3], factor: f32) -> [f32; 3] {
+    [vector[0] * factor, vector[1] * factor, vector[2] * factor]
 }

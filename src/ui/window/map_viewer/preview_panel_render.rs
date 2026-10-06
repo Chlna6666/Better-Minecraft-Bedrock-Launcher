@@ -1,10 +1,6 @@
 use super::model::*;
 use super::panels::*;
 use super::prelude::*;
-use super::preview_3d::{
-    preview_3d_chunk_mesh_is_visible, preview_3d_local_draw_parameters,
-    preview_3d_world_draw_parameters,
-};
 use super::preview_detached::Preview3dDetachDrag;
 
 #[derive(Clone, Copy, Debug)]
@@ -301,42 +297,27 @@ impl MapViewerWindowView {
             ));
 
         if let Some(mesh) = mesh {
-            let view_for_paint = view.clone();
             let selection_bounds = self.preview_3d.signature.map(|signature| signature.bounds);
             let world_frame = preview_3d_world_frame(mesh.as_ref(), selection_bounds);
-            panel = panel.child(
-                div().relative().size_full().overflow_hidden().child(
-                    canvas(
-                        move |bounds, _window, _cx| bounds,
-                        move |bounds, _prepaint, window, _cx| {
-                            let _ = &view_for_paint;
-                            let width = f32::from(bounds.size.width);
-                            let height = f32::from(bounds.size.height);
-                            let aspect = if height <= 0.0 { 1.0 } else { width / height };
-                            let world_parameters = preview_3d_world_draw_parameters(
-                                aspect,
-                                world_frame.center,
-                                world_frame.fit_scale,
-                                camera,
-                                model_rotation,
-                            );
-                            for chunk_mesh in &mesh.chunk_meshes {
-                                let gpu_mesh = chunk_mesh.selected_gpu_mesh(camera);
-                                let parameters = preview_3d_local_draw_parameters(
-                                    &world_parameters,
-                                    chunk_mesh.world_origin,
-                                );
-                                if !preview_3d_chunk_mesh_is_visible(chunk_mesh, &parameters) {
-                                    continue;
-                                }
-                                window.paint_gpu_mesh_3d(bounds, gpu_mesh, parameters);
-                            }
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
-                ),
-            );
+            match mesh.scene_view_for(
+                camera,
+                world_frame.center,
+                world_frame.fit_scale,
+                model_rotation,
+            ) {
+                Ok(scene_view) => {
+                    panel = panel.child(
+                        div()
+                            .relative()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(gpui_3d::scene_view(scene_view)),
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to configure map preview scene view");
+                }
+            }
         }
 
         panel

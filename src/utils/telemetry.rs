@@ -97,13 +97,12 @@ pub fn track_event(event: Event) {
 pub fn notify_language_changed(new_language: &str) {
     if let Some(client) = client() {
         let client = client.clone();
-        let resolved = if new_language.trim().eq_ignore_ascii_case("auto")
-            || new_language.trim().is_empty()
-        {
-            crate::utils::system_info::get_system_language()
-        } else {
-            new_language.trim().to_string()
-        };
+        let resolved =
+            if new_language.trim().eq_ignore_ascii_case("auto") || new_language.trim().is_empty() {
+                crate::utils::system_info::get_system_language()
+            } else {
+                new_language.trim().to_string()
+            };
         let _ = crate::tasks::runtime::spawn_io(async move {
             let facts = sonde_sdk::DeviceFacts {
                 app_version: Some(app_info::get_version().to_string()),
@@ -175,11 +174,7 @@ fn format_windows_os(os_version: Option<&str>, kernel_version: Option<&str>) -> 
                 break;
             }
         }
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     let os_version = os_version?.trim();

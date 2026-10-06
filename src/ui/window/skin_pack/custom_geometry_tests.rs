@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::window::skin_pack::custom_geometry_math::{PREVIEW_FEET_Y, PREVIEW_HEAD_TOP_Y};
 use image::{ImageBuffer, Rgba};
 use serde_json::json;
 
@@ -279,9 +280,133 @@ fn player_limb_geometry_uses_limb_animation_binding() {
         .find(|part| part.role == CustomGeometryBoneRole::LeftArm)
         .expect("left arm geometry should be grouped as a left arm");
 
-    assert_eq!(part.pivot, [5.0, 6.0, 0.0]);
+    let space = ModelSpace::fit(GeometryBounds {
+        min: [4.0, 16.0, 0.0],
+        max: [6.0, 18.0, 0.0],
+    });
+    assert_point_near(part.pivot, space.point([5.0, 22.0, 0.0]));
     assert!(!part.vertices.is_empty());
     assert!(!part.indices.is_empty());
+}
+
+#[test]
+fn authored_geometry_is_fitted_into_the_preview_player_box() {
+    // A player-shaped model authored at the 32-unit Bedrock player height.
+    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([0, 255, 0, 255])));
+    let geometry = json!({
+        "format_version": "1.8.0",
+        "geometry.test": {
+            "texturewidth": 64,
+            "textureheight": 64,
+            "bones": [{
+                "name": "body",
+                "pivot": [0.0, 24.0, 0.0],
+                "cubes": [{
+                    "origin": [-4.0, 12.0, -2.0],
+                    "size": [8.0, 12.0, 4.0],
+                    "uv": [16.0, 16.0]
+                }]
+            }, {
+                "name": "head",
+                "parent": "body",
+                "pivot": [0.0, 24.0, 0.0],
+                "cubes": [{
+                    "origin": [-4.0, 24.0, -4.0],
+                    "size": [8.0, 8.0, 8.0],
+                    "uv": [0.0, 0.0]
+                }]
+            }, {
+                "name": "leftLeg",
+                "parent": "body",
+                "pivot": [2.0, 12.0, 0.0],
+                "cubes": [{
+                    "origin": [0.0, 0.0, -2.0],
+                    "size": [4.0, 12.0, 4.0],
+                    "uv": [0.0, 16.0]
+                }]
+            }]
+        }
+    });
+
+    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+        .expect("custom geometry should parse")
+        .expect("custom geometry should produce mesh");
+    let (min_y, max_y) = mesh_vertical_extent(&mesh);
+
+    assert!(
+        (min_y - PREVIEW_FEET_Y).abs() < 0.001,
+        "authored feet should rest on the preview ground, got {min_y}",
+    );
+    assert!(
+        (max_y - PREVIEW_HEAD_TOP_Y).abs() < 0.001,
+        "authored head top should reach the preview head top, got {max_y}",
+    );
+}
+
+#[test]
+fn oversized_authored_geometry_stays_inside_the_preview_player_box() {
+    // The 4D packs author models taller than the vanilla 32-unit player.
+    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([0, 255, 0, 255])));
+    let geometry = json!({
+        "format_version": "1.8.0",
+        "geometry.test": {
+            "texturewidth": 64,
+            "textureheight": 64,
+            "bones": [{
+                "name": "head",
+                "pivot": [0.0, 26.48, -0.24],
+                "cubes": [{
+                    "origin": [-6.0, 23.74, -5.0],
+                    "size": [13.0, 13.0, 10.4],
+                    "uv": [0.0, 0.0]
+                }]
+            }, {
+                "name": "leftLeg",
+                "parent": "head",
+                "pivot": [1.76, 16.88, 0.0],
+                "cubes": [{
+                    "origin": [-0.83, 0.02, -3.27],
+                    "size": [5.08, 17.72, 5.11],
+                    "uv": [0.0, 16.0]
+                }]
+            }]
+        }
+    });
+
+    let mesh = build_custom_geometry_from_value(&image, &geometry, "geometry.test")
+        .expect("custom geometry should parse")
+        .expect("custom geometry should produce mesh");
+    let (min_y, max_y) = mesh_vertical_extent(&mesh);
+
+    assert!(
+        (min_y - PREVIEW_FEET_Y).abs() < 0.001,
+        "oversized authored feet should rest on the preview ground, got {min_y}",
+    );
+    assert!(
+        (max_y - PREVIEW_HEAD_TOP_Y).abs() < 0.001,
+        "oversized authored geometry should fit the preview head top, got {max_y}",
+    );
+}
+
+fn mesh_vertical_extent(mesh: &CustomGeometryMesh) -> (f32, f32) {
+    let mut min_y = f32::INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for part in &mesh.parts {
+        for vertex in &part.vertices {
+            min_y = min_y.min(vertex.position[1]);
+            max_y = max_y.max(vertex.position[1]);
+        }
+    }
+    (min_y, max_y)
+}
+
+fn assert_point_near(actual: [f32; 3], expected: [f32; 3]) {
+    for (axis, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "axis {axis} expected {expected}, got {actual}",
+        );
+    }
 }
 
 fn mesh_vertex_count(mesh: &CustomGeometryMesh) -> usize {

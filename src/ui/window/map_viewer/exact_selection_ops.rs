@@ -3,6 +3,7 @@ use super::prelude::*;
 use super::preview_3d::{
     Preview3dMesh, load_preview_3d_mesh_blocking_incremental,
     load_preview_3d_mesh_blocking_incremental_with_block_models, namespace_preview_3d_mesh,
+    preview_3d_scene_data,
 };
 use super::preview_3d_obj::export_preview_3d_obj_with_materials_with_progress;
 use crate::ui::state::launcher::LauncherState;
@@ -349,7 +350,14 @@ fn load_preview_3d_mesh_exact_impl(
                                  _inner_status: Preview3dBuildStatus| {
             let mut visible_parts = completed_parts.clone();
             visible_parts.push(partial.as_ref().clone());
-            let merged = merge_exact_preview_meshes(&visible_parts, chunks_for_update.as_slice());
+            let merged =
+                match merge_exact_preview_meshes(&visible_parts, chunks_for_update.as_slice()) {
+                    Ok(merged) => merged,
+                    Err(error) => {
+                        tracing::error!(%error, "failed to build exact-selection 3D preview scene");
+                        return;
+                    }
+                };
             let visible_chunks = completed_before
                 .saturating_add(partial.processed_chunk_count)
                 .min(total_chunks);
@@ -393,7 +401,7 @@ fn load_preview_3d_mesh_exact_impl(
         // The lower-level loader intentionally does not publish its final mesh twice,
         // so commit the completed rectangle explicitly. A one-chunk rectangle therefore
         // becomes visible here immediately even though it had no intermediate callback.
-        let merged = merge_exact_preview_meshes(&parts, chunks.as_slice());
+        let merged = merge_exact_preview_meshes(&parts, chunks.as_slice())?;
         let status = Preview3dBuildStatus::new(
             "精确选区",
             format!(
@@ -413,10 +421,13 @@ fn load_preview_3d_mesh_exact_impl(
         }
     }
 
-    Ok(merge_exact_preview_meshes(&parts, chunks.as_slice()))
+    merge_exact_preview_meshes(&parts, chunks.as_slice())
 }
 
-fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> Preview3dMesh {
+fn merge_exact_preview_meshes(
+    parts: &[Preview3dMesh],
+    chunks: &[ChunkPos],
+) -> Result<Preview3dMesh, String> {
     let min_chunk_x = chunks.iter().map(|chunk| chunk.x).min().unwrap_or(0);
     let max_chunk_x = chunks.iter().map(|chunk| chunk.x).max().unwrap_or(0);
     let min_chunk_z = chunks.iter().map(|chunk| chunk.z).min().unwrap_or(0);
@@ -437,13 +448,14 @@ fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> P
     let chunk_meshes = parts
         .iter()
         .enumerate()
-        .flat_map(|(part_index, mesh)| {
-            namespace_preview_3d_mesh(mesh, part_index as u64 + 1).chunk_meshes
-        })
-        .collect();
+        .flat_map(|(part_index, mesh)| namespace_preview_3d_mesh(mesh, part_index as u64 + 1))
+        .collect::<Vec<_>>();
+    let (scenes, scene_view) = preview_3d_scene_data(&chunk_meshes)?;
 
-    Preview3dMesh {
+    Ok(Preview3dMesh {
         chunk_meshes,
+        scenes,
+        scene_view,
         min_y,
         max_y,
         min_x: min_chunk_x.saturating_mul(16),
@@ -476,7 +488,7 @@ fn merge_exact_preview_meshes(parts: &[Preview3dMesh], chunks: &[ChunkPos]) -> P
         omitted_face_count: parts.iter().map(|mesh| mesh.omitted_face_count).sum(),
         truncated_chunk_count: parts.iter().map(|mesh| mesh.truncated_chunk_count).sum(),
         vertex_budget: parts.iter().map(|mesh| mesh.vertex_budget).sum(),
-    }
+    })
 }
 
 fn exact_preview_3d_resource_package_paths(world_path: &Path, cx: &App) -> Vec<PathBuf> {

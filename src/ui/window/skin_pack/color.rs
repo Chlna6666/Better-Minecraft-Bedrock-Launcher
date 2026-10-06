@@ -18,19 +18,27 @@ pub(super) fn sample_image_color(image: &DynamicImage, image_x: u32, image_y: u3
 }
 
 pub(super) fn shade_face_color(color: [f32; 4], face: Face) -> [f32; 4] {
-    let factor = match face {
-        Face::Top => 1.08,
-        Face::Bottom => 0.64,
-        Face::Right | Face::Left => 0.78,
-        Face::Back => 0.70,
-        Face::Front => 1.0,
-    };
+    let factor = shade_cuboid_face(face);
     [
         (color[0] * factor).min(1.0),
         (color[1] * factor).min(1.0),
         (color[2] * factor).min(1.0),
         color[3],
     ]
+}
+
+/// Per-face shade factor for geometry that samples the skin atlas per fragment.
+///
+/// Texture-mapped cuboids cannot bake a color per face, so they carry this factor as a vertex
+/// color and let the shader multiply it into the sampled texel.
+pub(super) fn shade_cuboid_face(face: Face) -> f32 {
+    match face {
+        Face::Top => 1.08,
+        Face::Bottom => 0.64,
+        Face::Right | Face::Left => 0.78,
+        Face::Back => 0.70,
+        Face::Front => 1.0,
+    }
 }
 
 pub(super) fn shade_layer_edge_color(color: [f32; 4], normal: [f32; 3]) -> [f32; 4] {

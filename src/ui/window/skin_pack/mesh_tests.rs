@@ -1,37 +1,87 @@
 use super::super::color::Face;
-use super::super::custom_geometry_animation::CustomGeometryBoneRole;
-use super::super::geometry::*;
-use super::super::uv::TextureRegion;
+use super::super::uv::head_uv;
 use super::*;
-use gpui::{GpuMesh3d, GpuMesh3dDrawRanges, GpuMesh3dRange, GpuMesh3dVertex};
+use gpui_3d::{AlphaMode, Mesh, PreparedScene, Vec3, Vertex};
 use image::{DynamicImage, ImageBuffer, Rgba};
-use std::sync::Arc;
+use std::time::Duration;
+
+/// A skin texture whose head-front region carries a recognizable per-texel pattern.
+fn patterned_skin() -> DynamicImage {
+    let mut image = ImageBuffer::from_pixel(64, 64, Rgba([0, 0, 0, 0]));
+    // Head front: x 8..16, y 8..16. Left half red, right half blue.
+    for y in 8..16u32 {
+        for x in 8..16u32 {
+            let color = if x < 12 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            };
+            image.put_pixel(x, y, color);
+        }
+    }
+    // Body front: x 20..28, y 20..32. Solid green.
+    for y in 20..32u32 {
+        for x in 20..28u32 {
+            image.put_pixel(x, y, Rgba([0, 255, 0, 255]));
+        }
+    }
+    DynamicImage::ImageRgba8(image)
+}
 
 #[test]
 fn default_pose_places_limbs_on_body_sides() {
-    for (part, expected) in [
-        (SkinPreviewPart::RightArm { width: 4.0 }, [-6.0, 2.0, 0.0]),
-        (SkinPreviewPart::LeftArm { width: 4.0 }, [6.0, 2.0, 0.0]),
-        (SkinPreviewPart::RightArm { width: 3.0 }, [-5.5, 2.0, 0.0]),
-        (SkinPreviewPart::RightLeg, [-2.0, -10.0, 0.0]),
-        (SkinPreviewPart::LeftLeg, [2.0, -10.0, 0.0]),
+    for (part, expected_pivot, expected_center) in [
+        (
+            SkinPreviewPart::RightArm { width: 4.0 },
+            [-6.0, 8.0, 0.0],
+            [-6.0, 2.0, 0.0],
+        ),
+        (
+            SkinPreviewPart::LeftArm { width: 4.0 },
+            [6.0, 8.0, 0.0],
+            [6.0, 2.0, 0.0],
+        ),
+        (
+            SkinPreviewPart::RightArm { width: 3.0 },
+            [-5.5, 8.0, 0.0],
+            [-5.5, 2.0, 0.0],
+        ),
+        (
+            SkinPreviewPart::RightLeg,
+            [-2.0, -4.0, 0.0],
+            [-2.0, -10.0, 0.0],
+        ),
+        (
+            SkinPreviewPart::LeftLeg,
+            [2.0, -4.0, 0.0],
+            [2.0, -10.0, 0.0],
+        ),
     ] {
-        assert_translation(skin_part_transform(part, 0.0), expected);
+        let (pivot, mesh_offset, _) = skin_part_layout(part);
+        assert_translation(pivot, expected_pivot);
+        assert_translation(
+            [
+                pivot[0] + mesh_offset[0],
+                pivot[1] + mesh_offset[1],
+                pivot[2] + mesh_offset[2],
+            ],
+            expected_center,
+        );
     }
 }
 
 #[test]
-fn custom_geometry_limb_transform_keeps_geometry_pivot_fixed() {
+fn custom_geometry_limb_keeps_its_authored_pivot() {
     let pivot = [5.0, 6.0, 0.0];
-    let transform = skin_part_transform(
-        SkinPreviewPart::CustomGeometryBone {
+    let (parent_translation, mesh_offset, swing_sign) =
+        skin_part_layout(SkinPreviewPart::CustomGeometryBone {
             role: CustomGeometryBoneRole::LeftArm,
             pivot,
-        },
-        0.5,
-    );
+        });
 
-    assert_point_near(transform_point(transform, pivot), pivot);
+    assert_point_near(parent_translation, pivot);
+    assert_point_near(mesh_offset, [-pivot[0], -pivot[1], -pivot[2]]);
+    assert_eq!(swing_sign, -1.0);
 }
 
 #[test]
@@ -42,8 +92,15 @@ fn cuboid_faces_use_outward_winding() {
         depth: 8.0,
     };
     let grid = FaceGrid {
-        width: 8,
-        height: 8,
+        width: 1,
+        height: 1,
+    };
+    let run = ColorRun {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        color_index: 0,
     };
 
     for (face, expected_axis, expected_sign) in [
@@ -54,7 +111,7 @@ fn cuboid_faces_use_outward_winding() {
         (Face::Top, 1, 1.0),
         (Face::Bottom, 1, -1.0),
     ] {
-        let normal = quad_normal(face_pixel_corners(size, face, grid, 0, 0, 0.0));
+        let normal = quad_normal(face_rect_corners(size, face, grid, run, 0.0));
         assert!(
             normal[expected_axis] * expected_sign > 0.0,
             "face winding was not outward for axis {expected_axis}: {normal:?}"
@@ -63,239 +120,243 @@ fn cuboid_faces_use_outward_winding() {
 }
 
 #[test]
-fn cuboid_face_texture_axes_match_skin_layout() {
-    let size = CuboidSize {
-        width: 8.0,
-        height: 8.0,
-        depth: 8.0,
-    };
-    let grid = FaceGrid {
-        width: 8,
-        height: 8,
-    };
-
-    assert!(pixel_center(size, Face::Front, grid, 0, 4)[0] < 0.0);
-    assert!(pixel_center(size, Face::Front, grid, 7, 4)[0] > 0.0);
-    assert!(pixel_center(size, Face::Back, grid, 0, 4)[0] > 0.0);
-    assert!(pixel_center(size, Face::Back, grid, 7, 4)[0] < 0.0);
-
-    assert!(pixel_center(size, Face::Right, grid, 0, 4)[2] < 0.0);
-    assert!(pixel_center(size, Face::Right, grid, 7, 4)[2] > 0.0);
-    assert!(pixel_center(size, Face::Left, grid, 0, 4)[2] > 0.0);
-    assert!(pixel_center(size, Face::Left, grid, 7, 4)[2] < 0.0);
-
-    assert!(pixel_center(size, Face::Top, grid, 4, 0)[2] < 0.0);
-    assert!(pixel_center(size, Face::Top, grid, 4, 7)[2] > 0.0);
-}
-
-#[test]
-fn high_resolution_skin_uses_extra_preview_subdivision() {
-    let region = TextureRegion {
-        x: 8,
-        y: 8,
-        width: 8,
-        height: 8,
-    };
-    let scale = SkinTextureScale::from_width(128);
-    let grid = face_grid(region, scale.preview);
-
-    assert_eq!(scale.source, 2);
-    assert_eq!(scale.preview, 2);
-    assert_eq!(grid.width, 16);
-    assert_eq!(grid.height, 16);
-    assert_eq!(source_pixel_offset(0, scale), 0);
-    assert_eq!(source_pixel_offset(15, scale), 15);
-}
-
-#[test]
-fn cuboid_face_does_not_encode_edge_alpha_masks() {
-    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([255, 0, 0, 255])));
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-
-    push_face(
-        &image,
-        SkinTextureScale::from_width(64),
+fn a_skin_part_is_one_textured_cuboid() {
+    let mesh = build_cuboid_mesh(
         CuboidSize {
             width: 8.0,
             height: 8.0,
             depth: 8.0,
         },
-        Face::Front,
-        TextureRegion {
-            x: 8,
-            y: 8,
-            width: 8,
-            height: 8,
-        },
+        head_uv(false),
         0.0,
-        false,
-        &mut vertices,
-        &mut indices,
-    );
+    )
+    .expect("cuboid mesh should build");
 
-    assert!(!vertices.is_empty());
-    assert!(!indices.is_empty());
+    // Six faces as six independent quads: 36 indices over 24 shared corners.
+    assert_eq!(mesh.indices().len(), 36);
+    assert_eq!(mesh.vertices().len(), 24);
     assert!(
-        vertices
-            .iter()
-            .all(|vertex| encoded_edge_mask(vertex.color[3]) == 0)
+        mesh.uses_uv_regions(),
+        "a cuboid without texture regions would render flat vertex colors",
     );
 }
 
 #[test]
-fn extruded_skin_layer_adds_edges_for_isolated_overlay_pixel() {
-    let mut source = ImageBuffer::from_pixel(64, 64, Rgba([0, 0, 0, 0]));
-    source.put_pixel(40, 8, Rgba([255, 0, 0, 255]));
-    let image = DynamicImage::ImageRgba8(source);
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-
-    super::super::layer::push_skin_layer(
-        &image,
-        SkinTextureScale::from_width(64),
+fn cuboid_face_uvs_address_the_authored_atlas_region() {
+    let mesh = build_cuboid_mesh(
         CuboidSize {
             width: 8.0,
             height: 8.0,
             depth: 8.0,
         },
-        head_uv(true),
-        SKIN_OVERLAY_INFLATE,
-        &mut vertices,
-        &mut indices,
-    );
+        head_uv(false),
+        0.0,
+    )
+    .expect("cuboid mesh should build");
+    // The head front region is x 8..16, y 8..16 of a 64x64 atlas.
+    let front = mesh
+        .vertices()
+        .iter()
+        .filter(|vertex| vertex.normal.z > 0.5)
+        .collect::<Vec<_>>();
 
-    assert_eq!(vertices.len(), 30);
-    assert_eq!(indices.len(), 30);
-    assert!(
-        vertices
-            .iter()
-            .all(|vertex| encoded_edge_mask(vertex.color[3]) == 0)
+    assert_eq!(front.len(), 4);
+    let min_u = front.iter().map(|v| v.uv.x).fold(f32::MAX, f32::min);
+    let max_u = front.iter().map(|v| v.uv.x).fold(f32::MIN, f32::max);
+    let min_v = front.iter().map(|v| v.uv.y).fold(f32::MAX, f32::min);
+    let max_v = front.iter().map(|v| v.uv.y).fold(f32::MIN, f32::max);
+    assert!((min_u - 0.125).abs() < 1.0e-5, "unexpected front u min {min_u}");
+    assert!((max_u - 0.25).abs() < 1.0e-5, "unexpected front u max {max_u}");
+    assert!((min_v - 0.125).abs() < 1.0e-5, "unexpected front v min {min_v}");
+    assert!((max_v - 0.25).abs() < 1.0e-5, "unexpected front v max {max_v}");
+}
+
+#[test]
+fn prepared_skin_preview_binds_the_skin_texture_to_every_part() {
+    let image = patterned_skin();
+    let texture = skin_texture_asset(&image).expect("skin texture asset should build");
+    let preview = build_skin_player_meshes(texture.clone(), false, SkinLayerMode::Extruded)
+        .expect("extruded skin preview should build");
+    let prepared = PreparedScene::new(
+        preview.scene_view.scene(),
+        preview.scene_view.camera(),
+        1.0,
+    )
+    .expect("preview scene should prepare");
+
+    assert_eq!(prepared.draws.len(), 12);
+    let mut opaque = 0;
+    let mut masked = 0;
+    for draw in &prepared.draws {
+        assert_eq!(
+            draw.material.albedo_texture,
+            Some(texture.id()),
+            "every preview part must sample the skin atlas instead of flat vertex colors",
+        );
+        assert!(
+            draw.mesh.uses_uv_regions(),
+            "a draw without UV regions cannot sample the atlas",
+        );
+        match draw.material.alpha_mode {
+            AlphaMode::Opaque => opaque += 1,
+            AlphaMode::Mask => masked += 1,
+            AlphaMode::Blend => panic!("preview parts must not need blend ordering"),
+        }
+    }
+    assert_eq!(opaque, 6, "six base parts");
+    assert_eq!(masked, 6, "six overlay parts");
+}
+
+#[test]
+fn layered_and_flat_modes_use_the_authored_layer_alpha() {
+    let image = patterned_skin();
+    let texture = skin_texture_asset(&image).expect("skin texture asset should build");
+    let flat = build_skin_player_meshes(texture.clone(), false, SkinLayerMode::Flat)
+        .expect("flat skin preview should build");
+    let extruded = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)
+        .expect("extruded skin preview should build");
+
+    let flat_draws = PreparedScene::new(
+        flat.scene_view.scene(),
+        flat.scene_view.camera(),
+        1.0,
+    )
+    .expect("flat scene should prepare")
+    .draws
+    .len();
+    let extruded_draws = PreparedScene::new(
+        extruded.scene_view.scene(),
+        extruded.scene_view.camera(),
+        1.0,
+    )
+    .expect("extruded scene should prepare")
+    .draws
+    .len();
+
+    // Six parts: one pivot node each. The overlay shares its part's pivot, so extruded mode adds
+    // one mesh node per part instead of another pivot.
+    assert_eq!(flat.scene_view.scene().len(), 12);
+    assert_eq!(extruded.scene_view.scene().len(), 18);
+    assert_eq!(flat_draws, 6);
+    assert_eq!(extruded_draws, 12);
+}
+
+#[test]
+fn prepared_skin_preview_geometry_stays_small() {
+    let image = patterned_skin();
+    let texture = skin_texture_asset(&image).expect("skin texture asset should build");
+    let preview = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)
+        .expect("extruded skin preview should build");
+    let prepared = PreparedScene::new(
+        preview.scene_view.scene(),
+        preview.scene_view.camera(),
+        1.0,
+    )
+    .expect("preview scene should prepare");
+
+    let triangles = prepared
+        .draws
+        .iter()
+        .map(|draw| draw.mesh.indices().len() / 3)
+        .sum::<usize>();
+    assert_eq!(
+        triangles,
+        12 * 6,
+        "a textured preview must stay at one cuboid per part",
     );
 }
 
 #[test]
-fn preview_paint_meshes_draw_original_then_antialias_underlay() -> Result<(), String> {
-    let shader = skin_preview_shader()?;
-    let mesh = Arc::new(GpuMesh3d::new(
-        vec![
-            GpuMesh3dVertex {
-                position: [-1.0, -1.0, 0.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [1.0, -1.0, 0.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [0.0, 1.0, 0.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-        ],
-        vec![0, 1, 2],
-        GpuMesh3dDrawRanges {
-            opaque: GpuMesh3dRange { start: 0, count: 3 },
-            glass: GpuMesh3dRange::default(),
-            water: GpuMesh3dRange::default(),
-        },
+fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
+    let mesh = Arc::new(
+        Mesh::new(
+            [
+                Vertex {
+                    position: Vec3::new(-1.0, -1.0, 0.0),
+                    normal: Vec3::Z,
+                    uv: Vec2::ZERO,
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+                Vertex {
+                    position: Vec3::new(1.0, -1.0, 0.0),
+                    normal: Vec3::Z,
+                    uv: Vec2::ZERO,
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+                Vertex {
+                    position: Vec3::new(0.0, 1.0, 0.0),
+                    normal: Vec3::Z,
+                    uv: Vec2::ZERO,
+                    color: [1.0, 0.0, 0.0, 1.0],
+                },
+            ],
+            [0, 1, 2],
+        )
+        .map_err(|error| error.to_string())?,
+    );
+    let texture = skin_texture_asset(&patterned_skin())?;
+    let mut scene = Scene::new();
+    let material = baked_skin_material(AlphaMode::Opaque);
+    insert_part_node(
+        &mut scene,
         [0.0, 0.0, 0.0],
-        1.0,
-        1.0,
-        shader,
-    ));
-    let meshes = SkinPreviewMeshes {
-        parts: Arc::from(
-            vec![SkinPreviewPartMesh {
-                part: SkinPreviewPart::Body,
-                mesh: mesh.clone(),
-            }]
-            .into_boxed_slice(),
-        ),
+        [0.0, 2.0, 0.0],
+        mesh,
+        &material,
+    )?;
+    let meshes = finish_skin_preview(scene, texture, Vec::new())?;
+    let base = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.0, Duration::ZERO)?;
+    let rotated = skin_preview_scene_view(&meshes, 0.4, -0.2, 1.0, Duration::ZERO)?;
+    let zoomed = skin_preview_scene_view(&meshes, 0.0, 0.0, 1.2, Duration::ZERO)?;
+
+    assert!(Arc::ptr_eq(meshes.scene_view.scene(), rotated.scene()));
+    assert_eq!(base.scene_transform(), rotated.scene_transform());
+    assert_eq!(base.scene_transform(), zoomed.scene_transform());
+    assert_ne!(base.camera(), zoomed.camera());
+    assert_ne!(base.camera(), rotated.camera());
+    let camera = base.camera();
+    assert!((camera.eye.x - camera.target.x).abs() < 1.0e-5);
+    assert!((camera.eye.y - camera.target.y).abs() < 1.0e-5);
+    assert!(camera.eye.z > camera.target.z);
+    assert!(matches!(camera.projection, Projection::Orthographic { .. }));
+    let Projection::Orthographic {
+        height: base_height,
+        ..
+    } = camera.projection
+    else {
+        unreachable!("skin preview should use orthographic projection")
     };
-    let paint_meshes = skin_preview_paint_meshes(&meshes, 1.0, 0.0, 0.0, 1.0, 0.0, false);
-
-    assert_eq!(paint_meshes.len(), 1 + SKIN_PREVIEW_ANTIALIAS_PASSES.len());
-    assert!(Arc::ptr_eq(&paint_meshes[0].mesh, &mesh));
-    assert!((paint_meshes[0].parameters.view_projection_model[0][3] - 1.0).abs() < f32::EPSILON);
-    assert!(paint_meshes[0].parameters.view_projection_model[1][3].abs() < f32::EPSILON);
-    assert!(paint_meshes[0].parameters.view_projection_model[2][3].abs() < f32::EPSILON);
-    assert!((paint_meshes[0].parameters.view_projection_model[3][3] - 1.0).abs() < f32::EPSILON);
-
-    for (paint_mesh, pass) in paint_meshes[1..].iter().zip(SKIN_PREVIEW_ANTIALIAS_PASSES) {
-        assert!(Arc::ptr_eq(&paint_mesh.mesh, &mesh));
-        assert!(
-            (paint_mesh.parameters.view_projection_model[0][3] - SKIN_PREVIEW_ANTIALIAS_OPACITY)
-                .abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (paint_mesh.parameters.view_projection_model[1][3] - pass.pixel_offset[0]).abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (paint_mesh.parameters.view_projection_model[2][3] - pass.pixel_offset[1]).abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (paint_mesh.parameters.view_projection_model[3][3]
-                - (1.0 + SKIN_PREVIEW_ANTIALIAS_DEPTH_BIAS))
-                .abs()
-                < f32::EPSILON
-        );
-    }
-
+    let Projection::Orthographic {
+        height: zoomed_height,
+        ..
+    } = zoomed.camera().projection
+    else {
+        unreachable!("skin preview should use orthographic projection")
+    };
+    assert!(zoomed_height < base_height);
+    assert!((base.camera().target.y - 2.0 * SKIN_PREVIEW_SCALE).abs() < 1.0e-4);
+    let view_projection = base.camera().view_projection(1.0).unwrap();
+    let front = view_projection.transform4([0.0, 0.5, 0.5, 1.0]);
+    let back = view_projection.transform4([0.0, 0.5, -0.5, 1.0]);
+    assert!((front[1] / front[3] - back[1] / back[3]).abs() < 1.0e-5);
+    assert_eq!(meshes.scene_view.scene().len(), 2);
     Ok(())
 }
 
 #[test]
-fn quad_edge_mask_encodes_only_requested_triangle_edges() {
-    let corners = [
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ];
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+fn camera_moves_keep_the_retained_scene_snapshot() -> Result<(), String> {
+    let texture = skin_texture_asset(&patterned_skin())?;
+    let preview = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)?;
+    let first = skin_preview_scene_view(&preview, 0.0, 0.0, 1.0, Duration::ZERO)?;
+    let second = skin_preview_scene_view(&preview, 0.3, 0.1, 1.0, Duration::ZERO)?;
 
-    push_quad_with_edges(
-        &mut vertices,
-        &mut indices,
-        corners,
-        [1.0, 0.0, 0.0, 1.0],
-        QuadEdgeMask::BOTTOM.union(QuadEdgeMask::RIGHT),
-    );
-
-    assert_eq!(vertices.len(), 6);
-    assert_eq!(indices, [0, 1, 2, 3, 4, 5]);
-    assert_eq!(
-        encoded_edge_mask(vertices[0].color[3]),
-        TRIANGLE_EDGE_0 | TRIANGLE_EDGE_2
-    );
-    assert_eq!(encoded_edge_mask(vertices[3].color[3]), 0);
-
-    vertices.clear();
-    indices.clear();
-    push_quad_with_edges(
-        &mut vertices,
-        &mut indices,
-        corners,
-        [1.0, 0.0, 0.0, 1.0],
-        QuadEdgeMask::TOP.union(QuadEdgeMask::LEFT),
-    );
-
-    assert_eq!(encoded_edge_mask(vertices[0].color[3]), 0);
-    assert_eq!(
-        encoded_edge_mask(vertices[3].color[3]),
-        TRIANGLE_EDGE_0 | TRIANGLE_EDGE_1
-    );
+    assert!(Arc::ptr_eq(first.scene(), second.scene()));
+    assert_eq!(first.scene().len(), second.scene().len());
+    Ok(())
 }
 
-fn assert_translation(matrix: [[f32; 4]; 4], expected: [f32; 3]) {
-    for (actual, expected) in [matrix[3][0], matrix[3][1], matrix[3][2]]
-        .into_iter()
-        .zip(expected)
-    {
+fn assert_translation(actual: [f32; 3], expected: [f32; 3]) {
+    for (actual, expected) in actual.into_iter().zip(expected) {
         assert!(
             (actual - expected).abs() < 0.001,
             "expected translation {expected}, got {actual}",
@@ -310,22 +371,6 @@ fn assert_point_near(actual: [f32; 3], expected: [f32; 3]) {
             "expected point coordinate {expected}, got {actual}",
         );
     }
-}
-
-fn transform_point(matrix: [[f32; 4]; 4], point: [f32; 3]) -> [f32; 3] {
-    [
-        point[0] * matrix[0][0] + point[1] * matrix[1][0] + point[2] * matrix[2][0] + matrix[3][0],
-        point[0] * matrix[0][1] + point[1] * matrix[1][1] + point[2] * matrix[2][1] + matrix[3][1],
-        point[0] * matrix[0][2] + point[1] * matrix[1][2] + point[2] * matrix[2][2] + matrix[3][2],
-    ]
-}
-
-fn encoded_edge_mask(alpha: f32) -> u8 {
-    (alpha * 0.5).floor() as u8
-}
-
-fn pixel_center(size: CuboidSize, face: Face, grid: FaceGrid, px: u32, py: u32) -> [f32; 3] {
-    quad_center(face_pixel_corners(size, face, grid, px, py, 0.0))
 }
 
 fn quad_normal(corners: [[f32; 3]; 4]) -> [f32; 3] {

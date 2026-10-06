@@ -1,9 +1,8 @@
 use super::config::{
     AppStateConfig, BedrockAuthConfig, CURRENT_CONFIG_VERSION, Config, CustomStyle,
     DEFAULT_APPX_API, DEFAULT_ERROR_REPORT_SENTRY_DSN, DEFAULT_TELEMETRY_ENDPOINT,
-    DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT,
-    GameConfig, GithubConfig, Launcher, LoginConfig, OnlineConfig, ProxyConfig, ProxyType,
-    UpdateChannel,
+    DEFAULT_TELEMETRY_KEY, DownloadConfig, FONT_SOURCE_DEFAULT, GameConfig, GithubConfig, Launcher,
+    LoginConfig, OnlineConfig, ProxyConfig, ProxyType, UpdateChannel,
 };
 
 pub(super) fn default_true() -> bool {

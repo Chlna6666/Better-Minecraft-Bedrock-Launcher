@@ -401,10 +401,7 @@ fn telemetry_defaults_and_resolvers() {
         launcher.telemetry_endpoint,
         super::config::DEFAULT_TELEMETRY_ENDPOINT
     );
-    assert_eq!(
-        launcher.telemetry_key,
-        super::config::DEFAULT_TELEMETRY_KEY
-    );
+    assert_eq!(launcher.telemetry_key, super::config::DEFAULT_TELEMETRY_KEY);
     assert_eq!(
         super::config::resolved_telemetry_endpoint(&launcher),
         super::config::DEFAULT_TELEMETRY_ENDPOINT

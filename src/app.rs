@@ -15,10 +15,26 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 pub const APP_ID: &str = "com.bmcbl.app";
-const DEBUG_WINDOW_STARTUP_DELAY: Duration = Duration::from_millis(900);
-const DEBUG_WINDOW_RENDER_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
-const DEBUG_WINDOW_RENDER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STARTUP_WARMUP_DELAY: Duration = Duration::from_millis(1500);
+
+/// Keystroke that opens the debug window immediately while debug logging is enabled.
+///
+/// The debug window also opens automatically, but only once the main window is
+/// actually on screen. A second window means a second nova renderer, and creating it
+/// while the main window is still starting competes with the main window's own first
+/// frame, so this shortcut exists for opening it deliberately instead of waiting.
+const DEBUG_WINDOW_KEYSTROKE: &str = "f12";
+
+/// How long to wait for the main window to become visible before giving up on the
+/// automatic debug window.
+const DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Poll interval used while waiting for the main window to become visible.
+const DEBUG_WINDOW_VISIBLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Settle delay applied after the main window becomes visible, so the debug window's
+/// renderer does not land in the same moment the main window finishes revealing itself.
+const DEBUG_WINDOW_VISIBLE_SETTLE_DELAY: Duration = Duration::from_millis(500);
+
+actions!(debug_window, [OpenDebugWindow]);
 
 pub(crate) struct AppBootstrap {
     debug_enabled: bool,
@@ -40,7 +56,7 @@ pub(crate) struct AppBootstrap {
 
 impl AppBootstrap {
     pub(crate) async fn from_config(
-        config: &crate::config::config::Config,
+        config: crate::config::config::Config,
         launch_mode: LaunchMode,
     ) -> Self {
         let lang = config.launcher.language.trim();
@@ -52,7 +68,7 @@ impl AppBootstrap {
 
         let renderer_backend = renderer_backend_from_config(&config.launcher.renderer_backend);
         let gpu_adapter_name =
-            gpu_adapter_name_from_config(renderer_backend, &config.launcher.gpu_adapter_name).await;
+            gpu_adapter_name_from_config(renderer_backend, &config.launcher.gpu_adapter_name);
 
         // Legacy agreement/onboarding migration may read, flush, and remove files. Resolve it on
         // the blocking pool before GPUI takes ownership of the foreground thread; UI globals below
@@ -62,8 +78,9 @@ impl AppBootstrap {
                 crate::config::agreement::is_current_agreement_accepted(),
                 crate::config::onboarding::is_current_onboarding_completed(),
             )
-        })
-        .await;
+        });
+        let (gpu_adapter_name, startup_gate_state) =
+            tokio::join!(gpu_adapter_name, startup_gate_state);
         let (agreement_accepted, onboarding_completed) = match startup_gate_state {
             Ok(state) => state,
             Err(error) => {
@@ -92,7 +109,7 @@ impl AppBootstrap {
             local_font_path: config.custom_style.local_font_path.clone(),
             local_font_family: config.custom_style.local_font_family.clone(),
             system_font_family: config.custom_style.system_font_family.clone(),
-            config: config.clone(),
+            config,
         }
     }
 }
@@ -275,7 +292,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
             if main_window_opened {
                 schedule_post_startup_warmups(cx);
                 if bootstrap.debug_enabled {
-                    schedule_debug_window_after_startup(cx);
+                    schedule_debug_window_after_main_window_visible(cx);
                 }
             }
         } else if let LaunchMode::Import(ref import_context) = bootstrap.launch_mode {
@@ -444,6 +461,12 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
 
     if bootstrap.debug_enabled {
         crate::ui::window::debug::devtools::configure_devtools(cx);
+        cx.bind_keys([KeyBinding::new(
+            DEBUG_WINDOW_KEYSTROKE,
+            OpenDebugWindow,
+            None,
+        )]);
+        cx.on_action(|_: &OpenDebugWindow, cx: &mut App| open_debug_window(cx));
     }
 
     cx.update_global(
@@ -532,37 +555,53 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
     }
 }
 
-fn schedule_debug_window_after_startup(cx: &mut App) {
+/// Opens the debug window automatically once the main window is actually on screen.
+///
+/// The gate is [`Window::is_window_visible`] rather than "the main view finished a
+/// render pass": the platform only reports a window as visible after it has presented
+/// a completed frame, which is the point at which the user can see it. Creating the
+/// debug window's second nova renderer before that competes with the main window's own
+/// first frame — the previous delay-and-first-render gate let the second renderer start
+/// roughly 280ms before the main window appeared.
+fn schedule_debug_window_after_main_window_visible(cx: &mut App) {
     cx.spawn(async move |cx| {
-        Timer::after(DEBUG_WINDOW_STARTUP_DELAY).await;
-
-        let wait_deadline = Instant::now() + DEBUG_WINDOW_RENDER_WAIT_TIMEOUT;
-        while !crate::ui::window::debug::state::main_window_first_render_finished() {
-            if Instant::now() >= wait_deadline {
+        let deadline = Instant::now() + DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT;
+        while !cx.update(main_window_is_visible).unwrap_or(false) {
+            if Instant::now() >= deadline {
                 warn!(
-                    "skipping delayed debug window because the main window did not finish its first render"
+                    "skipping automatic debug window because the main window never became visible"
                 );
                 return Ok::<(), anyhow::Error>(());
             }
-            Timer::after(DEBUG_WINDOW_RENDER_POLL_INTERVAL).await;
+            Timer::after(DEBUG_WINDOW_VISIBLE_POLL_INTERVAL).await;
         }
 
-        match cx.update(|cx| {
-            let already_open =
-                cx.read_global(|state: &crate::ui::window::debug::DebugState, _cx| {
-                    state.debug_window_id.is_some()
-                });
-            if !already_open {
-                open_debug_window(cx);
-            }
-        }) {
+        Timer::after(DEBUG_WINDOW_VISIBLE_SETTLE_DELAY).await;
+
+        // The shortcut may already have opened the window while this task waited.
+        match cx.update(|cx| open_debug_window(cx)) {
             Ok(()) => {}
-            Err(error) => warn!("delayed debug window open failed: {error:?}"),
+            Err(error) => warn!("deferred debug window open failed: {error:?}"),
         }
 
         Ok::<(), anyhow::Error>(())
     })
     .detach();
+}
+
+/// Returns whether the main window exists and is currently presented on screen.
+fn main_window_is_visible(cx: &mut App) -> bool {
+    let main_window_id =
+        cx.read_global(|state: &crate::ui::window::debug::DebugState, _cx| state.main_window_id);
+    let Some(main_window) =
+        crate::ui::window::debug::devtools::find_window_by_id(main_window_id, cx)
+    else {
+        return false;
+    };
+
+    main_window
+        .update(cx, |_root, window, _cx| window.is_window_visible())
+        .unwrap_or(false)
 }
 
 fn schedule_post_startup_warmups(cx: &mut App) {
@@ -597,6 +636,13 @@ fn schedule_post_startup_warmups(cx: &mut App) {
 }
 
 fn open_debug_window(cx: &mut App) {
+    let already_open = cx.read_global(|state: &crate::ui::window::debug::DebugState, _cx| {
+        state.debug_window_id.is_some()
+    });
+    if already_open {
+        return;
+    }
+
     let window_title = format!("{} Debug", crate::utils::app_info::runtime_app_name());
     let window_options = debug_window_options(&window_title, cx);
     let debug_window = cx.open_window(window_options, move |window, cx| {

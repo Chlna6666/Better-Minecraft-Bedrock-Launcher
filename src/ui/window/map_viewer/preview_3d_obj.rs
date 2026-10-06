@@ -28,7 +28,7 @@ pub(super) fn export_preview_3d_obj_with_materials_with_progress(
 
 impl ObjMeshFaceSource for Preview3dChunkMesh {
     fn obj_face_count(&self) -> usize {
-        (self.gpu_mesh.indices.len() / 6).min(self.face_metadata.len())
+        (self.mesh.indices().len() / 6).min(self.face_metadata.len())
     }
 
     fn obj_face_material(&self, face_index: usize) -> Option<&str> {
@@ -37,8 +37,8 @@ impl ObjMeshFaceSource for Preview3dChunkMesh {
 
     fn obj_face_color(&self, face_index: usize) -> Option<[f32; 4]> {
         let vertex_index = *self.face_indices(face_index)?.first()?;
-        self.gpu_mesh
-            .vertices
+        self.mesh
+            .vertices()
             .get(usize::try_from(vertex_index).ok()?)
             .map(|vertex| vertex.color)
     }
@@ -64,18 +64,18 @@ impl Preview3dChunkMesh {
     fn face_indices(&self, face_index: usize) -> Option<&[u32]> {
         let start = face_index.checked_mul(6)?;
         let end = start.checked_add(6)?;
-        self.gpu_mesh.indices.get(start..end)
+        self.mesh.indices().get(start..end)
     }
 
     fn index_position(&self, index: u32) -> Option<[f32; 3]> {
-        self.gpu_mesh
-            .vertices
+        self.mesh
+            .vertices()
             .get(usize::try_from(index).ok()?)
             .map(|vertex| {
                 [
-                    vertex.position[0] + self.world_origin[0] as f32,
-                    vertex.position[1] + self.world_origin[1] as f32,
-                    vertex.position[2] + self.world_origin[2] as f32,
+                    vertex.position.x + self.world_origin[0] as f32,
+                    vertex.position.y + self.world_origin[1] as f32,
+                    vertex.position.z + self.world_origin[2] as f32,
                 ]
             })
     }

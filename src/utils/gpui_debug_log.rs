@@ -122,7 +122,6 @@ fn emit_scene_upload_log(metrics: &PerformanceMetricsSnapshot) {
         underline_bytes = metrics.underline_upload_bytes,
         blur_descriptor_bytes = metrics.backdrop_blur_upload_bytes,
         animation_bytes = metrics.animation_upload_bytes,
-        custom_mesh_parameter_bytes = metrics.custom_mesh_parameter_upload_bytes,
         pod_upload_bytes = metrics.pod_upload_bytes,
         "GPUI scene and upload diagnostics (latest frame)"
     );

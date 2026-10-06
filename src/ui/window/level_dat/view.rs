@@ -30,11 +30,11 @@ pub struct LevelDatCodeWindowView {
     asset: ManageAssetEntry,
     document_version: u32,
     json_editor: Entity<CodeEditorState>,
-    validation: LevelDatJsonValidation,
+    validation: Option<LevelDatJsonValidation>,
     saved_text: SharedString,
     editor_dirty: bool,
-    line_count_text: SharedString,
-    char_count_text: SharedString,
+    line_count_text: Option<SharedString>,
+    char_count_text: Option<SharedString>,
     instance_name: SharedString,
     document_version_text: SharedString,
     save_path: SharedString,
@@ -46,17 +46,8 @@ pub struct LevelDatCodeWindowView {
 impl LevelDatCodeWindowView {
     pub fn new(init: LevelDatCodeWindowInit, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_title(t!("LevelDat.title").as_ref());
-        let validation = level_dat_editor::validate_document_json(init.initial_text.as_ref());
         let editor_dirty = init.initial_text != init.saved_text;
-        let line_count_text = SharedString::from(
-            init.initial_text
-                .as_ref()
-                .lines()
-                .count()
-                .max(1)
-                .to_string(),
-        );
-        let char_count_text = SharedString::from(init.initial_text.chars().count().to_string());
+        let initial_text = init.initial_text.clone();
         let instance_name = SharedString::from(init.version.display_name().to_string());
         let document_version_text = SharedString::from(init.document_version.to_string());
         let save_path = SharedString::from(format!("{}\\level.dat", init.asset.file_path));
@@ -80,23 +71,72 @@ impl LevelDatCodeWindowView {
             }),
         ];
 
-        Self {
+        let this = Self {
             version: init.version,
             asset: init.asset,
             document_version: init.document_version,
             json_editor,
-            validation,
+            validation: None,
             saved_text: init.saved_text,
             editor_dirty,
-            line_count_text,
-            char_count_text,
+            line_count_text: None,
+            char_count_text: None,
             instance_name,
             document_version_text,
             save_path,
             saving: false,
             status: None,
             _subscriptions: subscriptions,
-        }
+        };
+
+        let expected_text = initial_text.clone();
+        cx.spawn(async move |handle, cx| {
+            let result = crate::tasks::runtime::run_cpu(move || {
+                let validation = level_dat_editor::validate_document_json(initial_text.as_ref());
+                let line_count_text = SharedString::from(
+                    initial_text
+                        .as_ref()
+                        .lines()
+                        .count()
+                        .max(1)
+                        .to_string(),
+                );
+                let char_count_text = SharedString::from(initial_text.chars().count().to_string());
+                (validation, line_count_text, char_count_text)
+            })
+            .await;
+
+            if let Err(error) = handle.update(cx, |this, cx| {
+                match result {
+                    Ok((validation, line_count_text, char_count_text)) => {
+                        if this.validation.is_none()
+                            && this.json_editor.read(cx).value() == expected_text
+                        {
+                            this.validation = Some(validation);
+                            this.line_count_text = Some(line_count_text);
+                            this.char_count_text = Some(char_count_text);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to validate initial level.dat JSON");
+                        if this.validation.is_none()
+                            && this.json_editor.read(cx).value() == expected_text
+                        {
+                            this.status =
+                                Some((WindowStatusKind::Error, SharedString::from(error)));
+                        }
+                    }
+                }
+                cx.notify();
+            }) {
+                tracing::debug!(%error, "level.dat code window closed before initial validation completed");
+            }
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+
+        this
     }
 
     fn theme_colors(&self, now: std::time::Instant, cx: &App) -> ThemeColors {
@@ -111,20 +151,26 @@ impl LevelDatCodeWindowView {
 
     fn update_editor_render_metadata(&mut self, editor_text: &SharedString) {
         self.editor_dirty = editor_text.as_ref() != self.saved_text.as_ref();
-        self.line_count_text =
-            SharedString::from(editor_text.as_ref().lines().count().max(1).to_string());
-        self.char_count_text = SharedString::from(editor_text.chars().count().to_string());
+        self.line_count_text = Some(SharedString::from(
+            editor_text.as_ref().lines().count().max(1).to_string(),
+        ));
+        self.char_count_text = Some(SharedString::from(editor_text.chars().count().to_string()));
     }
 
     fn revalidate(&mut self, cx: &mut Context<Self>) {
         let editor_text = self.json_editor.read(cx).value();
         self.update_editor_render_metadata(&editor_text);
-        self.validation = level_dat_editor::validate_document_json(editor_text.as_ref());
+        self.validation = Some(level_dat_editor::validate_document_json(
+            editor_text.as_ref(),
+        ));
         if self
             .status
             .as_ref()
             .is_some_and(|(kind, _)| *kind == WindowStatusKind::Error)
-            && self.validation.valid
+            && self
+                .validation
+                .as_ref()
+                .is_some_and(|validation| validation.valid)
         {
             self.status = None;
         }
@@ -132,12 +178,16 @@ impl LevelDatCodeWindowView {
     }
 
     fn format_json(&mut self, cx: &mut Context<Self>) {
+        if self.validation.is_none() {
+            return;
+        }
+
         let editor_text = self.json_editor.read(cx).value();
         let parsed_root = match level_dat_editor::parse_document_json(editor_text.as_ref()) {
             Ok(root) => root,
             Err(validation) => {
                 let validation: LevelDatJsonValidation = validation;
-                self.validation = validation.clone();
+                self.validation = Some(validation.clone());
                 self.status = Some((
                     WindowStatusKind::Error,
                     validation
@@ -163,13 +213,13 @@ impl LevelDatCodeWindowView {
             editor.set_value(formatted.clone(), cx);
         });
         self.update_editor_render_metadata(&formatted);
-        self.validation = level_dat_editor::validate_document_json(formatted.as_ref());
+        self.validation = Some(level_dat_editor::validate_document_json(formatted.as_ref()));
         self.status = Some((WindowStatusKind::Success, t!("LevelDat.format_success")));
         cx.notify();
     }
 
     fn save_json(&mut self, cx: &mut Context<Self>) {
-        if self.saving {
+        if self.saving || self.validation.is_none() {
             return;
         }
 
@@ -178,7 +228,7 @@ impl LevelDatCodeWindowView {
             Ok(root) => root,
             Err(validation) => {
                 let validation: LevelDatJsonValidation = validation;
-                self.validation = validation.clone();
+                self.validation = Some(validation.clone());
                 self.status = Some((
                     WindowStatusKind::Error,
                     validation
@@ -197,7 +247,9 @@ impl LevelDatCodeWindowView {
 
         self.saving = true;
         self.status = None;
-        self.validation = level_dat_editor::validate_document_json(saved_text.as_ref());
+        self.validation = Some(level_dat_editor::validate_document_json(
+            saved_text.as_ref(),
+        ));
         let _i18n = cx.global::<I18n>().clone();
         let history_capture_label = t!("LevelDat.history_capture").to_string();
         let history_saved_label = t!("LevelDat.history_saved").to_string();
@@ -254,8 +306,9 @@ impl LevelDatCodeWindowView {
                     Ok(()) => {
                         this.saved_text = saved_text.clone();
                         this.editor_dirty = false;
-                        this.validation =
-                            level_dat_editor::validate_document_json(saved_text.as_ref());
+                        this.validation = Some(
+                            level_dat_editor::validate_document_json(saved_text.as_ref()),
+                        );
                         this.status = Some((
                             WindowStatusKind::Success,
                             t!("LevelDat.save_success"),
@@ -283,13 +336,18 @@ impl Render for LevelDatCodeWindowView {
             .as_ref()
             .map(|(_, message)| message.clone())
             .unwrap_or_else(|| {
-                self.validation.detail.clone().unwrap_or_else(|| {
-                    if dirty {
-                        t!("LevelDat.unsaved_hint")
-                    } else {
-                        t!("LevelDat.synced_hint")
-                    }
-                })
+                self.validation
+                    .as_ref()
+                    .and_then(|validation| validation.detail.clone())
+                    .unwrap_or_else(|| {
+                        if dirty {
+                            t!("LevelDat.unsaved_hint")
+                        } else if self.validation.is_none() {
+                            t!("common.loading")
+                        } else {
+                            t!("LevelDat.synced_hint")
+                        }
+                    })
             });
 
         div()
@@ -354,14 +412,18 @@ impl Render for LevelDatCodeWindowView {
                                             version = &self.document_version_text
                                         ),
                                     ))
-                                    .child(info_badge(
-                                        &colors,
-                                        t!("LevelDat.lines", count = &self.line_count_text),
-                                    ))
-                                    .child(info_badge(
-                                        &colors,
-                                        t!("LevelDat.characters", count = &self.char_count_text),
-                                    ))
+                                    .when_some(self.line_count_text.as_ref(), |this, count| {
+                                        this.child(info_badge(
+                                            &colors,
+                                            t!("LevelDat.lines", count = count),
+                                        ))
+                                    })
+                                    .when_some(self.char_count_text.as_ref(), |this, count| {
+                                        this.child(info_badge(
+                                            &colors,
+                                            t!("LevelDat.characters", count = count),
+                                        ))
+                                    })
                                     .when(dirty, |this| {
                                         this.child(status_badge(
                                             &colors,
@@ -369,18 +431,20 @@ impl Render for LevelDatCodeWindowView {
                                             colors.stat_orange_text,
                                         ))
                                     })
-                                    .child(if self.validation.valid {
-                                        status_badge(
-                                            &colors,
-                                            t!("LevelDat.json_valid"),
-                                            colors.stat_green_text,
-                                        )
-                                    } else {
-                                        status_badge(
-                                            &colors,
-                                            t!("LevelDat.json_invalid"),
-                                            colors.danger,
-                                        )
+                                    .when_some(self.validation.as_ref(), |this, validation| {
+                                        this.child(if validation.valid {
+                                            status_badge(
+                                                &colors,
+                                                t!("LevelDat.json_valid"),
+                                                colors.stat_green_text,
+                                            )
+                                        } else {
+                                            status_badge(
+                                                &colors,
+                                                t!("LevelDat.json_invalid"),
+                                                colors.danger,
+                                            )
+                                        })
                                     }),
                             ),
                     )

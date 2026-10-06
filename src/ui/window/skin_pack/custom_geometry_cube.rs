@@ -1,12 +1,9 @@
 use image::DynamicImage;
 use serde_json::Value;
-use std::collections::HashMap;
 
 use super::super::color::{Face, shade_layer_edge_color};
 use super::super::custom_geometry_json::array3;
-use super::super::custom_geometry_math::{
-    add3, bedrock_to_preview, normal_from_corners, rotate_point_around,
-};
+use super::super::custom_geometry_math::{add3, normal_from_corners, rotate_point_around};
 use super::super::custom_geometry_uv::{
     GeometryTextureRegion, cube_uv_regions, texture_grid_count,
 };
@@ -14,8 +11,8 @@ use super::super::geometry::{
     CuboidSize, FaceGrid, QuadEdgeMask, face_pixel_corners, push_quad_with_edges,
 };
 use super::{
-    BonePose, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
-    transform_point_for_bone,
+    BonePoses, CustomGeometryPartBuilder, TextureSpace, ensure_capacity, sample_uv_color,
+    transform_point_for_bone_unmapped,
 };
 
 const CUSTOM_GEOMETRY_MAX_CUBE_TEXELS: usize = 240_000;
@@ -23,7 +20,7 @@ const CUSTOM_GEOMETRY_MAX_CUBE_TEXELS: usize = 240_000;
 pub(super) fn push_cube(
     image: &DynamicImage,
     texture_space: TextureSpace,
-    bone_poses: &HashMap<String, BonePose>,
+    poses: BonePoses<'_>,
     bone_name: Option<&str>,
     bone: &Value,
     cube: &Value,
@@ -46,11 +43,11 @@ pub(super) fn push_cube(
     };
 
     let cuboid_size = CuboidSize {
-        width: size[0].abs(),
-        height: size[1].abs(),
-        depth: size[2].abs(),
+        width: poses.space.length(size[0].abs()),
+        height: poses.space.length(size[1].abs()),
+        depth: poses.space.length(size[2].abs()),
     };
-    let center = bedrock_to_preview([
+    let center = poses.space.point([
         origin[0] + size[0] * 0.5,
         origin[1] + size[1] * 0.5,
         origin[2] + size[2] * 0.5,
@@ -59,14 +56,15 @@ pub(super) fn push_cube(
         .get("pivot")
         .or_else(|| bone.get("pivot"))
         .and_then(|value| array3(Some(value)))
-        .map(bedrock_to_preview)
+        .map(|pivot| poses.space.point(pivot))
         .unwrap_or(center);
     let cube_rotation = array3(cube.get("rotation")).unwrap_or([0.0, 0.0, 0.0]);
-    let inflate = cube
-        .get("inflate")
-        .and_then(Value::as_f64)
-        .map(|value| value as f32)
-        .unwrap_or(0.0);
+    let inflate = poses.space.length(
+        cube.get("inflate")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(0.0),
+    );
 
     for face in cube_faces(size) {
         let Some(region) = regions.region(*face) else {
@@ -82,7 +80,7 @@ pub(super) fn push_cube(
             |point| {
                 let point = add3(center, point);
                 let point = rotate_point_around(point, pivot, cube_rotation);
-                transform_point_for_bone(point, bone_name, bone_poses)
+                transform_point_for_bone_unmapped(point, bone_name, poses)
             },
             builder,
         )?;

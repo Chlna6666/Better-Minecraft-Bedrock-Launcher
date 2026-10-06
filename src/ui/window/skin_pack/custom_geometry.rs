@@ -1,4 +1,3 @@
-use gpui::GpuMesh3dVertex;
 use image::{DynamicImage, GenericImageView as _};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -19,8 +18,9 @@ use super::custom_geometry_animation::{
 };
 use super::custom_geometry_json::{array3, first_number};
 use super::custom_geometry_math::{
-    bedrock_to_preview, clamp_image_index, normalize, rotate_point_around, rotate_vector,
+    GeometryBounds, ModelSpace, clamp_image_index, normalize, rotate_point_around, rotate_vector,
 };
+use super::geometry::SkinVertex;
 
 const CUSTOM_PREVIEW_MAX_TEXTURE_SCALE: u32 = 2;
 const CUSTOM_GEOMETRY_MAX_VERTICES: usize = 1_000_000;
@@ -33,7 +33,7 @@ pub(super) struct CustomGeometryMesh {
 pub(super) struct CustomGeometryPartMesh {
     pub(super) role: CustomGeometryBoneRole,
     pub(super) pivot: [f32; 3],
-    pub(super) vertices: Vec<GpuMesh3dVertex>,
+    pub(super) vertices: Vec<SkinVertex>,
     pub(super) indices: Vec<u32>,
 }
 
@@ -42,6 +42,16 @@ struct BonePose {
     parent: Option<String>,
     pivot: [f32; 3],
     rotation: [f32; 3],
+}
+
+/// Authored bone poses plus the map from authored units into the preview player skeleton.
+///
+/// Every authored point is mapped through [`ModelSpace`] before any bone rotation is applied, and
+/// every pivot is mapped the same way, so pivots and geometry keep a shared origin.
+#[derive(Clone, Copy)]
+struct BonePoses<'a> {
+    poses: &'a HashMap<String, BonePose>,
+    space: ModelSpace,
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +68,7 @@ struct CustomGeometryBuilder {
 struct CustomGeometryPartBuilder {
     role: CustomGeometryBoneRole,
     pivot: [f32; 3],
-    vertices: Vec<GpuMesh3dVertex>,
+    vertices: Vec<SkinVertex>,
     indices: Vec<u32>,
     polygon_count: usize,
     cube_texel_count: usize,
@@ -131,8 +141,13 @@ fn build_custom_geometry_from_value(
         return Ok(None);
     };
 
+    let space = ModelSpace::fit(model_bounds(bones));
     let bone_poses = bone_poses(bones);
     let bone_bindings = custom_geometry_bone_bindings(bone_animation_descriptors(&bone_poses));
+    let poses = BonePoses {
+        poses: &bone_poses,
+        space,
+    };
     let texture_space = texture_space(geometry, image);
     let mut builder = CustomGeometryBuilder::new();
 
@@ -146,10 +161,10 @@ fn build_custom_geometry_from_value(
             push_poly_mesh(
                 image,
                 texture_space,
-                &bone_poses,
+                poses,
                 bone_name,
                 poly_mesh,
-                builder.part_mut(bone_binding)?,
+                builder.part_mut(model_bone_binding(space, bone_binding))?,
             )?;
         }
 
@@ -158,17 +173,27 @@ fn build_custom_geometry_from_value(
                 push_cube(
                     image,
                     texture_space,
-                    &bone_poses,
+                    poses,
                     bone_name,
                     bone,
                     cube,
-                    builder.part_mut(bone_binding)?,
+                    builder.part_mut(model_bone_binding(space, bone_binding))?,
                 )?;
             }
         }
     }
 
     Ok(builder.into_mesh())
+}
+
+fn model_bone_binding(
+    space: ModelSpace,
+    binding: CustomGeometryBoneBinding,
+) -> CustomGeometryBoneBinding {
+    CustomGeometryBoneBinding {
+        role: binding.role,
+        pivot: space.point(binding.pivot),
+    }
 }
 
 fn geometry_definition<'a>(root: &'a Value, identifier: &str) -> Option<&'a Value> {
@@ -188,6 +213,51 @@ fn geometry_definition<'a>(root: &'a Value, identifier: &str) -> Option<&'a Valu
         })
 }
 
+/// Unions the authored bounds of every poly-mesh vertex and every cube corner.
+///
+/// Bone pivots are excluded: a pivot can sit outside the visible geometry, and fitting to pivots
+/// would move the model away from the preview skeleton.
+fn model_bounds(bones: &[Value]) -> GeometryBounds {
+    let mut bounds: Option<GeometryBounds> = None;
+
+    for bone in bones {
+        if let Some(poly_mesh) = bone.get("poly_mesh") {
+            for position in super::custom_geometry_json::point3_array(poly_mesh.get("positions")) {
+                include_point(&mut bounds, position);
+            }
+        }
+
+        let Some(cubes) = bone.get("cubes").and_then(Value::as_array) else {
+            continue;
+        };
+        for cube in cubes {
+            let (Some(origin), Some(size)) = (
+                array3(cube.get("origin")),
+                array3(cube.get("size")),
+            ) else {
+                continue;
+            };
+            for corner in 0..8 {
+                let point = [
+                    origin[0] + if corner & 1 == 0 { 0.0 } else { size[0] },
+                    origin[1] + if corner & 2 == 0 { 0.0 } else { size[1] },
+                    origin[2] + if corner & 4 == 0 { 0.0 } else { size[2] },
+                ];
+                include_point(&mut bounds, point);
+            }
+        }
+    }
+
+    bounds.unwrap_or_else(|| GeometryBounds::from_point([0.0, 0.0, 0.0]))
+}
+
+fn include_point(bounds: &mut Option<GeometryBounds>, point: [f32; 3]) {
+    match bounds {
+        Some(bounds) => bounds.include(point),
+        None => *bounds = Some(GeometryBounds::from_point(point)),
+    }
+}
+
 fn bone_poses(bones: &[Value]) -> HashMap<String, BonePose> {
     bones
         .iter()
@@ -198,7 +268,7 @@ fn bone_poses(bones: &[Value]) -> HashMap<String, BonePose> {
                 .and_then(Value::as_str)
                 .filter(|parent| !parent.trim().is_empty())
                 .map(ToString::to_string);
-            let pivot = bedrock_to_preview(array3(bone.get("pivot")).unwrap_or([0.0, 0.0, 0.0]));
+            let pivot = array3(bone.get("pivot")).unwrap_or([0.0, 0.0, 0.0]);
             let rotation = array3(bone.get("rotation")).unwrap_or([0.0, 0.0, 0.0]);
 
             Some((
@@ -284,7 +354,7 @@ fn sample_uv_color(
 }
 
 fn ensure_capacity(
-    vertices: &[GpuMesh3dVertex],
+    vertices: &[SkinVertex],
     indices: &[u32],
     add_vertices: usize,
     add_indices: usize,
@@ -300,7 +370,19 @@ fn ensure_capacity(
 fn transform_point_for_bone(
     point: [f32; 3],
     bone_name: Option<&str>,
-    bone_poses: &HashMap<String, BonePose>,
+    poses: BonePoses<'_>,
+) -> [f32; 3] {
+    transform_point_for_bone_unmapped(poses.space.point(point), bone_name, poses)
+}
+
+/// Applies bone rotations to a point that is already in preview model space.
+///
+/// Cube faces build their corners in preview space from an already-mapped center and pivot, then
+/// call this to share the authored bone chain behavior with poly meshes.
+pub(super) fn transform_point_for_bone_unmapped(
+    point: [f32; 3],
+    bone_name: Option<&str>,
+    poses: BonePoses<'_>,
 ) -> [f32; 3] {
     let Some(bone_name) = bone_name else {
         return point;
@@ -313,10 +395,10 @@ fn transform_point_for_bone(
         if !visited.insert(name.to_string()) {
             break;
         }
-        let Some(pose) = bone_poses.get(name) else {
+        let Some(pose) = poses.poses.get(name) else {
             break;
         };
-        point = rotate_point_around(point, pose.pivot, pose.rotation);
+        point = rotate_point_around(point, poses.space.point(pose.pivot), pose.rotation);
         current = pose.parent.as_deref();
     }
 
@@ -326,7 +408,7 @@ fn transform_point_for_bone(
 fn transform_normal_for_bone(
     normal: [f32; 3],
     bone_name: Option<&str>,
-    bone_poses: &HashMap<String, BonePose>,
+    poses: BonePoses<'_>,
 ) -> [f32; 3] {
     let Some(bone_name) = bone_name else {
         return normalize(normal);
@@ -339,7 +421,7 @@ fn transform_normal_for_bone(
         if !visited.insert(name.to_string()) {
             break;
         }
-        let Some(pose) = bone_poses.get(name) else {
+        let Some(pose) = poses.poses.get(name) else {
             break;
         };
         normal = rotate_vector(normal, pose.rotation);

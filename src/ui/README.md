@@ -10,6 +10,9 @@ Background execution and state propagation are defined in
 [`docs/ASYNC_RUNTIME_MODEL.md`](../../docs/ASYNC_RUNTIME_MODEL.md).
 The GPUI rendering pipeline is documented in
 [`docs/GPUI_VENDOR_RENDERING.md`](../../docs/GPUI_VENDOR_RENDERING.md).
+Reusable 3D scene and viewport APIs are documented in
+[`docs/GPUI_3D.md`](../../docs/GPUI_3D.md); map and skin preview conversion stays in the owning
+`src/ui/window` modules.
 
 ## Role Of `src/ui`
 
@@ -52,6 +55,7 @@ src/ui/views and src/ui/window
   -> src/ui/theme
   -> src/ui/state
   -> src/core / src/downloads / src/tasks / src/http / src/plugins
+  -> gpui-3d for reusable 3D scene and viewport rendering
   -> gpui
 
 src/ui/components

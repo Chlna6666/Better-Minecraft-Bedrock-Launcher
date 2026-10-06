@@ -1,16 +1,20 @@
+use super::bedrock_world_domains as bedrock_world;
+mod mesh_namespace;
+pub(super) use mesh_namespace::namespace_preview_3d_mesh;
+
 pub(super) use super::preview_3d_source::{
-    Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
-    Preview3dModelRotation, Preview3dMovementInput, Preview3dSelectionSignature, Preview3dSource,
-    Preview3dStatus, preview_3d_bounds_depth, preview_3d_bounds_width,
-    preview_3d_local_draw_parameters, preview_3d_world_draw_parameters,
+    IndexRange, Preview3dBuildStatus, Preview3dCamera, Preview3dDragMode, Preview3dDragState,
+    Preview3dMaterialRanges, Preview3dModelRotation, Preview3dMovementInput,
+    Preview3dSelectionSignature, Preview3dSource, Preview3dStatus, preview_3d_bounds_depth,
+    preview_3d_bounds_width, preview_3d_viewport_parameters,
 };
 
 use bedrock_block_model::BlockModelRepository;
 use bedrock_render::ChunkPos;
 use bedrock_world::{CancelFlag, SlimeChunkBounds};
-use gpui::{
-    GpuMesh3d, GpuMesh3dDrawRanges, GpuMesh3dId, GpuMesh3dRange, GpuMesh3dShader, GpuMesh3dVertex,
-    WgslShaderSource,
+use gpui_3d::{
+    AlphaMode, Camera, Material, Mesh, MeshId, Node, ProjectionRegion, Scene, SceneView,
+    ShadingModel, Transform, Vec2, Vec3, Vertex,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::hash::Hash;
@@ -22,14 +26,14 @@ const REGION_CHUNKS_XZ: i32 = 8;
 const REGION_BLOCKS_XZ: i32 = REGION_CHUNKS_XZ * 16;
 const REGION_SUBCHUNKS_Y: i32 = 4;
 const REGION_BLOCKS_Y: i32 = REGION_SUBCHUNKS_Y * 16;
-const REGION_SHADER_SOURCE: &str = include_str!("preview_3d_surface.wgsl");
-const PREVIEW_3D_VERTICAL_SCALE: f32 = 1.0;
 const LOD1_ZOOM_THRESHOLD: f32 = 0.48;
 const LOD2_ZOOM_THRESHOLD: f32 = 0.20;
 
 #[derive(Clone, Debug)]
 pub(super) struct Preview3dMesh {
     pub(super) chunk_meshes: Vec<Preview3dChunkMesh>,
+    pub(super) scenes: [Arc<Scene>; 3],
+    pub(super) scene_view: Arc<SceneView>,
     pub(super) min_y: i16,
     pub(super) max_y: i16,
     pub(super) min_x: i32,
@@ -55,10 +59,35 @@ pub(super) struct Preview3dMesh {
 }
 
 impl Preview3dMesh {
+    pub(super) fn scene_view_for(
+        &self,
+        camera: Preview3dCamera,
+        center: [f32; 3],
+        fit_scale: f32,
+        model_rotation: Preview3dModelRotation,
+    ) -> Result<Arc<SceneView>, String> {
+        let scene_index = if camera.zoom <= LOD2_ZOOM_THRESHOLD {
+            2
+        } else if camera.zoom <= LOD1_ZOOM_THRESHOLD {
+            1
+        } else {
+            0
+        };
+        let (camera, scene_transform) =
+            preview_3d_viewport_parameters(center, fit_scale, camera, model_rotation);
+        let scene_view = self
+            .scene_view
+            .with_scene(self.scenes[scene_index].clone())
+            .with_camera(camera)
+            .with_scene_transform(scene_transform)
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(scene_view))
+    }
+
     pub(super) fn vertex_count(&self) -> usize {
         self.chunk_meshes
             .iter()
-            .map(|mesh| mesh.gpu_mesh.vertices.len())
+            .map(|mesh| mesh.mesh.vertices().len())
             .sum()
     }
 
@@ -111,11 +140,10 @@ impl Preview3dMesh {
 
 #[derive(Clone, Debug)]
 pub(super) struct Preview3dChunkMesh {
-    pub(super) gpu_mesh: Arc<GpuMesh3d>,
-    lod1_mesh: Option<Arc<GpuMesh3d>>,
-    lod2_mesh: Option<Arc<GpuMesh3d>>,
+    pub(super) mesh: Arc<Mesh>,
+    lod1_mesh: Option<Arc<Mesh>>,
+    lod2_mesh: Option<Arc<Mesh>>,
     pub(super) world_origin: [i32; 3],
-    local_bounds: Preview3dMeshBounds,
     material_table: Arc<[Arc<str>]>,
     pub(super) face_metadata: Arc<[Preview3dFaceMetadata]>,
     region_key: Preview3dRegionKey,
@@ -124,21 +152,21 @@ pub(super) struct Preview3dChunkMesh {
 
 impl Preview3dChunkMesh {
     fn estimated_cpu_bytes(&self) -> usize {
-        let mesh_bytes = |mesh: &GpuMesh3d| {
-            std::mem::size_of::<GpuMesh3d>()
+        let mesh_bytes = |mesh: &Mesh| {
+            std::mem::size_of::<Mesh>()
                 .saturating_add(
-                    mesh.vertices
+                    mesh.vertices()
                         .len()
-                        .saturating_mul(std::mem::size_of::<GpuMesh3dVertex>()),
+                        .saturating_mul(std::mem::size_of::<Vertex>()),
                 )
                 .saturating_add(
-                    mesh.indices
+                    mesh.indices()
                         .len()
                         .saturating_mul(std::mem::size_of::<u32>()),
                 )
         };
         std::mem::size_of::<Self>()
-            .saturating_add(mesh_bytes(&self.gpu_mesh))
+            .saturating_add(mesh_bytes(&self.mesh))
             .saturating_add(self.lod1_mesh.as_deref().map_or(0, mesh_bytes))
             .saturating_add(self.lod2_mesh.as_deref().map_or(0, mesh_bytes))
             .saturating_add(
@@ -160,32 +188,12 @@ impl Preview3dChunkMesh {
             .get(usize::from(metadata.material_id))
             .map(AsRef::as_ref)
     }
-
-    pub(super) fn selected_gpu_mesh(&self, camera: Preview3dCamera) -> Arc<GpuMesh3d> {
-        if camera.zoom <= LOD2_ZOOM_THRESHOLD {
-            if let Some(mesh) = &self.lod2_mesh {
-                return mesh.clone();
-            }
-        }
-        if camera.zoom <= LOD1_ZOOM_THRESHOLD {
-            if let Some(mesh) = &self.lod1_mesh {
-                return mesh.clone();
-            }
-        }
-        self.gpu_mesh.clone()
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Preview3dFaceMetadata {
     pub(super) material_id: u16,
     pub(super) uv: Option<[[f32; 2]; 4]>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Preview3dMeshBounds {
-    min: [f32; 3],
-    max: [f32; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -392,12 +400,18 @@ fn load_incremental_with_converter(
     let callback_last = last.clone();
     let source_mesh = loader(Box::new(move |source_mesh, status| {
         let signature = source_mesh_signature(&source_mesh);
-        let converted = convert_source_mesh(
+        let converted = match convert_source_mesh(
             source_mesh.as_ref().clone(),
             &mut callback_cache
                 .lock()
                 .expect("preview 3D region reuse cache poisoned"),
-        );
+        ) {
+            Ok(converted) => converted,
+            Err(error) => {
+                tracing::error!(%error, "failed to prepare map 3D scene view");
+                return;
+            }
+        };
         *callback_last
             .lock()
             .expect("preview 3D last mesh cache poisoned") = Some((signature, converted.clone()));
@@ -418,12 +432,12 @@ fn load_incremental_with_converter(
             return Ok(last_mesh.clone());
         }
     }
-    Ok(convert_source_mesh(
+    convert_source_mesh(
         source_mesh,
         &mut cache
             .lock()
             .expect("preview 3D region reuse cache poisoned"),
-    ))
+    )
 }
 
 pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
@@ -436,36 +450,21 @@ pub(super) fn load_preview_3d_mesh_from_mcstructure_blocking(
         anchor_chunk,
         origin_y,
     )
-    .map(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
+    .and_then(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
 }
 
 pub(super) fn load_preview_3d_mesh_from_copied_chunk_blocking(
     copied_chunk: &super::model::CopiedChunkData,
 ) -> Result<Preview3dMesh, String> {
     super::preview_3d_source::load_preview_3d_mesh_from_copied_chunk_blocking(copied_chunk)
-        .map(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
+        .and_then(|mesh| convert_source_mesh(mesh, &mut RegionMeshReuseCache::default()))
 }
 
 fn convert_source_mesh(
     source_mesh: super::preview_3d_source::Preview3dMesh,
     cache: &mut RegionMeshReuseCache,
-) -> Preview3dMesh {
+) -> Result<Preview3dMesh, String> {
     let started_at = Instant::now();
-    let global_center = source_mesh
-        .chunk_meshes
-        .first()
-        .map(|chunk| {
-            [
-                chunk.gpu_mesh.center[0] + chunk.world_origin[0] as f32,
-                chunk.gpu_mesh.center[1] + chunk.world_origin[1] as f32,
-                chunk.gpu_mesh.center[2] + chunk.world_origin[2] as f32,
-            ]
-        })
-        .unwrap_or([0.0; 3]);
-    let fit_scale = source_mesh
-        .chunk_meshes
-        .first()
-        .map_or(1.0, |chunk| chunk.gpu_mesh.fit_scale);
     let mut groups =
         FxHashMap::<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>::default();
     let mut extracted_faces = 0usize;
@@ -491,26 +490,19 @@ fn convert_source_mesh(
             reused_regions = reused_regions.saturating_add(1);
             cached.chunk.clone()
         } else {
-            build_region_chunk(
-                region_key,
-                pass,
-                &faces,
-                global_center,
-                fit_scale,
-                build_lods,
-            )
+            build_region_chunk(region_key, pass, &faces, build_lods)
         };
         lod1_faces = lod1_faces.saturating_add(
             chunk
                 .lod1_mesh
                 .as_ref()
-                .map_or(0, |mesh| mesh.indices.len() / 6),
+                .map_or(0, |mesh| mesh.indices().len() / 6),
         );
         lod2_faces = lod2_faces.saturating_add(
             chunk
                 .lod2_mesh
                 .as_ref()
-                .map_or(0, |mesh| mesh.indices.len() / 6),
+                .map_or(0, |mesh| mesh.indices().len() / 6),
         );
         cache.chunks.insert(
             cache_key,
@@ -532,12 +524,12 @@ fn convert_source_mesh(
                 Preview3dRegionPass::Opaque | Preview3dRegionPass::Cutout
             )
         })
-        .map(|chunk| chunk.gpu_mesh.indices.len() / 6)
+        .map(|chunk| chunk.mesh.indices().len() / 6)
         .sum();
     let transparent_faces = chunks
         .iter()
         .filter(|chunk| chunk.pass == Preview3dRegionPass::Transparent)
-        .map(|chunk| chunk.gpu_mesh.indices.len() / 6)
+        .map(|chunk| chunk.mesh.indices().len() / 6)
         .sum::<usize>();
     tracing::debug!(
         processed_chunks = source_mesh.processed_chunk_count,
@@ -553,8 +545,12 @@ fn convert_source_mesh(
         "map_viewer preview_3d_spatial_regions_built"
     );
 
-    Preview3dMesh {
+    let (scenes, scene_view) = preview_3d_scene_data(&chunks)?;
+
+    Ok(Preview3dMesh {
         chunk_meshes: chunks,
+        scenes,
+        scene_view,
         min_y: source_mesh.min_y,
         max_y: source_mesh.max_y,
         min_x: source_mesh.min_x,
@@ -577,7 +573,89 @@ fn convert_source_mesh(
         omitted_face_count: source_mesh.omitted_face_count,
         truncated_chunk_count: source_mesh.truncated_chunk_count,
         vertex_budget: source_mesh.vertex_budget,
+    })
+}
+
+pub(super) fn preview_3d_scene_data(
+    chunks: &[Preview3dChunkMesh],
+) -> Result<([Arc<Scene>; 3], Arc<SceneView>), String> {
+    let scenes = [
+        build_map_scene(chunks, 0)?,
+        build_map_scene(chunks, 1)?,
+        build_map_scene(chunks, 2)?,
+    ];
+    let scene_view = SceneView::new(
+        scenes[0].clone(),
+        Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            55.0_f32.to_radians(),
+            0.1,
+            256.0,
+        ),
+    )
+    .with_projection_region(ProjectionRegion::VisibleContent)
+    .with_projection_inset(6.0, 0.08)
+    .map_err(|error| error.to_string())?
+    .with_blend_edge_feather(1.0)
+    .map_err(|error| error.to_string())?;
+    Ok((scenes, Arc::new(scene_view)))
+}
+
+fn build_map_scene(chunks: &[Preview3dChunkMesh], lod: usize) -> Result<Arc<Scene>, String> {
+    let mut scene = Scene::new();
+    for chunk in chunks {
+        let mesh = match lod {
+            1 => chunk.lod1_mesh.as_ref().unwrap_or(&chunk.mesh),
+            2 => chunk
+                .lod2_mesh
+                .as_ref()
+                .or(chunk.lod1_mesh.as_ref())
+                .unwrap_or(&chunk.mesh),
+            _ => &chunk.mesh,
+        };
+        scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([region_material(chunk.pass)])
+                    .with_transform(Transform {
+                        translation: Vec3::new(
+                            chunk.world_origin[0] as f32,
+                            chunk.world_origin[1] as f32,
+                            chunk.world_origin[2] as f32,
+                        ),
+                        ..Transform::IDENTITY
+                    }),
+            )
+            .map_err(|error| error.to_string())?;
     }
+    Ok(Arc::new(scene))
+}
+
+fn region_material(pass: Preview3dRegionPass) -> Arc<Material> {
+    static OPAQUE: OnceLock<Arc<Material>> = OnceLock::new();
+    static CUTOUT: OnceLock<Arc<Material>> = OnceLock::new();
+    static TRANSPARENT: OnceLock<Arc<Material>> = OnceLock::new();
+    let slot = match pass {
+        Preview3dRegionPass::Opaque => &OPAQUE,
+        Preview3dRegionPass::Cutout => &CUTOUT,
+        Preview3dRegionPass::Transparent => &TRANSPARENT,
+    };
+    slot.get_or_init(|| {
+        let mut material = Material::new();
+        material.alpha_mode = if pass == Preview3dRegionPass::Transparent {
+            AlphaMode::Blend
+        } else {
+            AlphaMode::Opaque
+        };
+        material.shading_model = ShadingModel::Unlit;
+        material.double_sided = true;
+        Arc::new(material)
+    })
+    .clone()
 }
 
 fn region_faces_fingerprint(faces: &[RegionFace], build_lods: bool) -> RegionFaceFingerprint {
@@ -623,32 +701,32 @@ fn extract_legacy_faces(
     groups: &mut FxHashMap<(Preview3dRegionKey, Preview3dRegionPass), Vec<RegionFace>>,
     extracted_faces: &mut usize,
 ) {
-    let mesh = chunk.gpu_mesh.as_ref();
-    for (face_index, indices) in mesh.indices.chunks_exact(6).enumerate() {
+    let mesh = chunk.mesh.as_ref();
+    for (face_index, indices) in mesh.indices().chunks_exact(6).enumerate() {
         let first_index = face_index.saturating_mul(6);
         let pass = pass_for_legacy_range(
             first_index,
-            mesh.ranges,
+            chunk.ranges,
             chunk.face_metadata.get(face_index),
         );
         let corner_indices = [indices[0], indices[1], indices[2], indices[5]];
         let mut corners = [[0.0; 3]; 4];
         let mut valid = true;
         for (output, index) in corners.iter_mut().zip(corner_indices) {
-            let Some(vertex) = mesh.vertices.get(index as usize) else {
+            let Some(vertex) = mesh.vertices().get(index as usize) else {
                 valid = false;
                 break;
             };
             *output = [
-                vertex.position[0] + chunk.world_origin[0] as f32,
-                vertex.position[1] + chunk.world_origin[1] as f32,
-                vertex.position[2] + chunk.world_origin[2] as f32,
+                vertex.position.x + chunk.world_origin[0] as f32,
+                vertex.position.y + chunk.world_origin[1] as f32,
+                vertex.position.z + chunk.world_origin[2] as f32,
             ];
         }
         if !valid {
             continue;
         }
-        let Some(vertex) = mesh.vertices.get(indices[0] as usize) else {
+        let Some(vertex) = mesh.vertices().get(indices[0] as usize) else {
             continue;
         };
         let metadata = chunk.face_metadata.get(face_index);
@@ -670,7 +748,7 @@ fn extract_legacy_faces(
 
 fn pass_for_legacy_range(
     first_index: usize,
-    ranges: GpuMesh3dDrawRanges,
+    ranges: Preview3dMaterialRanges,
     metadata: Option<&super::preview_3d_source::Preview3dFaceMetadata>,
 ) -> Preview3dRegionPass {
     let first_index = first_index as u32;
@@ -684,7 +762,7 @@ fn pass_for_legacy_range(
     }
 }
 
-fn range_contains(range: GpuMesh3dRange, index: u32) -> bool {
+fn range_contains(range: IndexRange, index: u32) -> bool {
     range.count > 0 && index >= range.start && index < range.start.saturating_add(range.count)
 }
 
@@ -844,13 +922,10 @@ fn build_region_chunk(
     key: Preview3dRegionKey,
     pass: Preview3dRegionPass,
     faces: &[RegionFace],
-    global_center: [f32; 3],
-    fit_scale: f32,
     build_lods: bool,
 ) -> Preview3dChunkMesh {
     let origin = key.origin();
-    let (gpu_mesh, material_table, face_metadata, bounds) =
-        build_region_gpu_mesh(key, pass, 0, faces, origin, global_center, fit_scale);
+    let (mesh, material_table, face_metadata) = build_region_mesh(key, pass, 0, faces, origin);
     let (lod1_mesh, lod2_mesh) = if build_lods {
         let lod1_faces = faces
             .iter()
@@ -862,24 +937,20 @@ fn build_region_chunk(
             .filter(|face| lod2_keeps_face(face, key))
             .cloned()
             .collect::<Vec<_>>();
-        let lod1_mesh = (!lod1_faces.is_empty() && lod1_faces.len() < faces.len()).then(|| {
-            build_region_gpu_mesh(key, pass, 1, &lod1_faces, origin, global_center, fit_scale).0
-        });
+        let lod1_mesh = (!lod1_faces.is_empty() && lod1_faces.len() < faces.len())
+            .then(|| build_region_mesh(key, pass, 1, &lod1_faces, origin).0);
         let lod2_mesh = (!lod2_faces.is_empty()
             && lod2_faces.len() < lod1_faces.len().max(faces.len()))
-        .then(|| {
-            build_region_gpu_mesh(key, pass, 2, &lod2_faces, origin, global_center, fit_scale).0
-        });
+        .then(|| build_region_mesh(key, pass, 2, &lod2_faces, origin).0);
         (lod1_mesh, lod2_mesh)
     } else {
         (None, None)
     };
     Preview3dChunkMesh {
-        gpu_mesh,
+        mesh,
         lod1_mesh,
         lod2_mesh,
         world_origin: origin,
-        local_bounds: bounds,
         material_table,
         face_metadata,
         region_key: key,
@@ -887,30 +958,19 @@ fn build_region_chunk(
     }
 }
 
-fn build_region_gpu_mesh(
+fn build_region_mesh(
     key: Preview3dRegionKey,
     pass: Preview3dRegionPass,
     lod: u8,
     faces: &[RegionFace],
     origin: [i32; 3],
-    global_center: [f32; 3],
-    fit_scale: f32,
-) -> (
-    Arc<GpuMesh3d>,
-    Arc<[Arc<str>]>,
-    Arc<[Preview3dFaceMetadata]>,
-    Preview3dMeshBounds,
-) {
+) -> (Arc<Mesh>, Arc<[Arc<str>]>, Arc<[Preview3dFaceMetadata]>) {
     let mut vertices = Vec::with_capacity(faces.len().saturating_mul(4));
     let mut indices = Vec::with_capacity(faces.len().saturating_mul(6));
-    let mut vertex_map = FxHashMap::<([u32; 3], [u32; 4]), u32>::default();
+    let mut vertex_map = FxHashMap::<([u32; 3], [u32; 3], [u32; 2], [u32; 4]), u32>::default();
     let mut materials = Vec::<Arc<str>>::new();
     let mut material_ids = FxHashMap::<Arc<str>, u16>::default();
     let mut metadata = Vec::with_capacity(faces.len());
-    let mut bounds = Preview3dMeshBounds {
-        min: [f32::INFINITY; 3],
-        max: [f32::NEG_INFINITY; 3],
-    };
     for face in faces {
         let material_id = if let Some(id) = material_ids.get(&face.material).copied() {
             id
@@ -927,20 +987,24 @@ fn build_region_gpu_mesh(
                 corner[1] - origin[1] as f32,
                 corner[2] - origin[2] as f32,
             ];
-            for axis in 0..3 {
-                bounds.min[axis] = bounds.min[axis].min(position[axis]);
-                bounds.max[axis] = bounds.max[axis].max(position[axis]);
-            }
+            let normal = face_normal(face);
+            let uv = face.uv.map_or(Vec2::ZERO, |coordinates| {
+                Vec2::new(coordinates[slot][0], coordinates[slot][1])
+            });
             let vertex_key = (
                 position.map(canonical_f32_bits),
+                normal.map(canonical_f32_bits),
+                [uv.x, uv.y].map(canonical_f32_bits),
                 face.color.map(canonical_f32_bits),
             );
             let index = if let Some(index) = vertex_map.get(&vertex_key).copied() {
                 index
             } else {
                 let index = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
-                vertices.push(GpuMesh3dVertex {
-                    position,
+                vertices.push(Vertex {
+                    position: Vec3::new(position[0], position[1], position[2]),
+                    normal: Vec3::new(normal[0], normal[1], normal[2]),
+                    uv,
                     color: face.color,
                 });
                 vertex_map.insert(vertex_key, index);
@@ -961,88 +1025,19 @@ fn build_region_gpu_mesh(
             uv: face.uv,
         });
     }
-    if !bounds.min[0].is_finite() {
-        bounds = Preview3dMeshBounds {
-            min: [0.0; 3],
-            max: [0.0; 3],
-        };
-    }
-    let range = GpuMesh3dRange {
-        start: 0,
-        count: u32::try_from(indices.len()).unwrap_or(u32::MAX),
-    };
-    let ranges = match pass {
-        Preview3dRegionPass::Opaque | Preview3dRegionPass::Cutout => GpuMesh3dDrawRanges {
-            opaque: range,
-            glass: GpuMesh3dRange::default(),
-            water: GpuMesh3dRange::default(),
-        },
-        Preview3dRegionPass::Transparent => GpuMesh3dDrawRanges {
-            opaque: GpuMesh3dRange::default(),
-            glass: range,
-            water: GpuMesh3dRange::default(),
-        },
-    };
-    let id = stable_region_mesh_id(key, pass, lod);
+    let id = region_mesh_id(key, pass, lod);
     let generation = region_mesh_generation(&vertices, &indices, &materials, &metadata);
-    let center = [
-        global_center[0] - origin[0] as f32,
-        global_center[1] - origin[1] as f32,
-        global_center[2] - origin[2] as f32,
-    ];
-    let mesh = GpuMesh3d {
-        id,
-        generation,
-        vertices: Arc::from(vertices.into_boxed_slice()),
-        indices: Arc::from(indices.into_boxed_slice()),
-        ranges,
-        center,
-        fit_scale,
-        vertical_scale: PREVIEW_3D_VERTICAL_SCALE,
-        shader: region_shader(pass),
-    };
+    let mesh = Mesh::new(vertices, indices)
+        .expect("region builder produces valid indexed triangles")
+        .with_identity(id, generation);
     (
         Arc::new(mesh),
         Arc::from(materials.into_boxed_slice()),
         Arc::from(metadata.into_boxed_slice()),
-        bounds,
     )
 }
 
-fn region_shader(pass: Preview3dRegionPass) -> Arc<GpuMesh3dShader> {
-    static OPAQUE: OnceLock<Arc<GpuMesh3dShader>> = OnceLock::new();
-    static CUTOUT: OnceLock<Arc<GpuMesh3dShader>> = OnceLock::new();
-    static TRANSPARENT: OnceLock<Arc<GpuMesh3dShader>> = OnceLock::new();
-    let slot = match pass {
-        Preview3dRegionPass::Opaque => &OPAQUE,
-        Preview3dRegionPass::Cutout => &CUTOUT,
-        Preview3dRegionPass::Transparent => &TRANSPARENT,
-    };
-    slot.get_or_init(|| {
-        let source = WgslShaderSource::from_source(
-            "src/ui/window/map_viewer/preview_3d_surface.wgsl",
-            REGION_SHADER_SOURCE,
-        )
-        .expect("preview 3D region shader should validate");
-        let fragment = match pass {
-            Preview3dRegionPass::Opaque => "fs_preview_3d_opaque",
-            Preview3dRegionPass::Cutout => "fs_preview_3d_cutout",
-            Preview3dRegionPass::Transparent => "fs_preview_3d_transparent",
-        };
-        Arc::new(GpuMesh3dShader::new(
-            Arc::new(source),
-            "vs_preview_3d",
-            fragment,
-        ))
-    })
-    .clone()
-}
-
-fn stable_region_mesh_id(
-    key: Preview3dRegionKey,
-    pass: Preview3dRegionPass,
-    lod: u8,
-) -> GpuMesh3dId {
+fn region_mesh_id(key: Preview3dRegionKey, pass: Preview3dRegionPass, lod: u8) -> MeshId {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for value in [
         key.x as u32,
@@ -1055,11 +1050,11 @@ fn stable_region_mesh_id(
         hash ^= u64::from(value);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    GpuMesh3dId(hash as usize)
+    MeshId(hash)
 }
 
 fn region_mesh_generation(
-    vertices: &[GpuMesh3dVertex],
+    vertices: &[Vertex],
     indices: &[u32],
     materials: &[Arc<str>],
     metadata: &[Preview3dFaceMetadata],
@@ -1070,7 +1065,15 @@ fn region_mesh_generation(
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     };
     for vertex in vertices {
-        for value in vertex.position.map(canonical_f32_bits) {
+        for value in
+            [vertex.position.x, vertex.position.y, vertex.position.z].map(canonical_f32_bits)
+        {
+            push(value);
+        }
+        for value in [vertex.normal.x, vertex.normal.y, vertex.normal.z].map(canonical_f32_bits) {
+            push(value);
+        }
+        for value in [vertex.uv.x, vertex.uv.y].map(canonical_f32_bits) {
             push(value);
         }
         for value in vertex.color.map(canonical_f32_bits) {
@@ -1162,59 +1165,4 @@ fn vec3_length(value: [f32; 3]) -> f32 {
 
 fn canonical_f32_bits(value: f32) -> u32 {
     if value == 0.0 { 0 } else { value.to_bits() }
-}
-
-pub(super) fn preview_3d_chunk_mesh_is_visible(
-    mesh: &Preview3dChunkMesh,
-    parameters: &gpui::GpuMesh3dDrawParameters,
-) -> bool {
-    let mut outside_left = true;
-    let mut outside_right = true;
-    let mut outside_top = true;
-    let mut outside_bottom = true;
-    let mut outside_near = true;
-    let mut outside_far = true;
-    let mut behind_camera = true;
-    for x in [mesh.local_bounds.min[0], mesh.local_bounds.max[0]] {
-        for y in [mesh.local_bounds.min[1], mesh.local_bounds.max[1]] {
-            for z in [mesh.local_bounds.min[2], mesh.local_bounds.max[2]] {
-                let clip = mat4_mul_vec4(parameters.view_projection_model, [x, y, z, 1.0]);
-                outside_left &= clip[0] < -clip[3];
-                outside_right &= clip[0] > clip[3];
-                outside_bottom &= clip[1] < -clip[3];
-                outside_top &= clip[1] > clip[3];
-                outside_near &= clip[2] < 0.0;
-                outside_far &= clip[2] > clip[3];
-                behind_camera &= clip[3] <= 0.0;
-            }
-        }
-    }
-    !(outside_left
-        || outside_right
-        || outside_top
-        || outside_bottom
-        || outside_near
-        || outside_far
-        || behind_camera)
-}
-
-fn mat4_mul_vec4(matrix: [[f32; 4]; 4], value: [f32; 4]) -> [f32; 4] {
-    [
-        matrix[0][0] * value[0]
-            + matrix[1][0] * value[1]
-            + matrix[2][0] * value[2]
-            + matrix[3][0] * value[3],
-        matrix[0][1] * value[0]
-            + matrix[1][1] * value[1]
-            + matrix[2][1] * value[2]
-            + matrix[3][1] * value[3],
-        matrix[0][2] * value[0]
-            + matrix[1][2] * value[1]
-            + matrix[2][2] * value[2]
-            + matrix[3][2] * value[3],
-        matrix[0][3] * value[0]
-            + matrix[1][3] * value[1]
-            + matrix[2][3] * value[2]
-            + matrix[3][3] * value[3],
-    ]
 }

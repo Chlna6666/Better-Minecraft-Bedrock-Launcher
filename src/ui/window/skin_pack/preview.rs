@@ -1,6 +1,6 @@
 use super::mesh::{
     SkinLayerMode, SkinPreviewGeometrySource, SkinPreviewMeshes, skin_player_mesh,
-    skin_preview_paint_meshes,
+    skin_preview_scene_view,
 };
 use super::selector::{
     render_current_preview, render_skin_selector, skin_selector_page_count,
@@ -81,8 +81,8 @@ impl SkinPreviewWindowView {
             mesh_request_id: 0,
             walking: false,
             walk_started_at: Instant::now(),
-            view_yaw: 0.42,
-            view_pitch: -0.18,
+            view_yaw: 0.0,
+            view_pitch: 0.0,
             view_zoom: SKIN_PREVIEW_DEFAULT_ZOOM,
             drag_position: None,
             layer_mode: SkinLayerMode::Extruded,
@@ -200,16 +200,6 @@ impl SkinPreviewWindowView {
             return;
         }
         self.select_skin((self.selected_index + 1) % self.skins.len(), cx);
-    }
-
-    fn walk_phase(&self, now: Instant) -> f32 {
-        if self.walking {
-            now.saturating_duration_since(self.walk_started_at)
-                .as_secs_f32()
-                * 5.2
-        } else {
-            0.0
-        }
     }
 
     fn toggle_walking(&mut self, cx: &mut Context<Self>) {
@@ -343,35 +333,26 @@ impl SkinPreviewWindowView {
                 let view_yaw = self.view_yaw;
                 let view_pitch = self.view_pitch;
                 let view_zoom = self.view_zoom;
-                let walk_phase = self.walk_phase(now);
+                let walk_time = now.saturating_duration_since(self.walk_started_at);
                 let walking = self.walking;
+                let scene_view = match skin_preview_scene_view(
+                    &mesh, view_yaw, view_pitch, view_zoom, walk_time,
+                ) {
+                    Ok(scene_view) => scene_view,
+                    Err(error) => {
+                        return centered_status(
+                            colors,
+                            t!("SkinPreview.mesh_error", detail = error),
+                        );
+                    }
+                };
                 div()
                     .relative()
                     .size_full()
                     .overflow_hidden()
                     .bg(colors.surface)
                     .cursor_pointer()
-                    .child(
-                        canvas(
-                            move |bounds, _window, _cx| bounds,
-                            move |bounds, _prepaint, window, _cx| {
-                                let height = f32::from(bounds.size.height).max(1.0);
-                                let aspect = f32::from(bounds.size.width).max(1.0) / height;
-                                for paint_mesh in skin_preview_paint_meshes(
-                                    &mesh, aspect, view_yaw, view_pitch, view_zoom, walk_phase,
-                                    walking,
-                                ) {
-                                    window.paint_gpu_mesh_3d(
-                                        bounds,
-                                        paint_mesh.mesh,
-                                        paint_mesh.parameters,
-                                    );
-                                }
-                            },
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
+                    .child(gpui_3d::scene_view(scene_view))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, _window, cx| {
@@ -418,7 +399,9 @@ impl SkinPreviewWindowView {
 impl Render for SkinPreviewWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
-        let preview_animating = self.walking && self.mesh.as_ref().is_some_and(Result::is_ok);
+        if self.walking && self.mesh.as_ref().is_some_and(Result::is_ok) {
+            window.request_animation_frame();
+        }
         let colors = self.theme_colors(now, cx);
         let model_label = self.current_model_label();
         let skin_label = self.current_skin_label();
@@ -586,10 +569,7 @@ impl Render for SkinPreviewWindowView {
                             .border_1()
                             .border_color(colors.border)
                             .overflow_hidden()
-                            .child(
-                                self.render_canvas(&colors, now, cx)
-                                    .with_layout_animation_target(preview_animating),
-                            ),
+                            .child(self.render_canvas(&colors, now, cx)),
                     ),
             )
             .when(self.skins.len() > 1, |this| {
