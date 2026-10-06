@@ -18,7 +18,7 @@ mod imp {
     #[allow(unsafe_code)]
     mod dx11 {
         use super::*;
-        use std::sync::Mutex;
+        use std::sync::{Mutex, OnceLock};
         use std::time::Instant;
         use windows::Win32::Foundation::HMODULE;
         use windows::Win32::Graphics::Direct3D::Fxc::{D3DCOMPILE_ENABLE_STRICTNESS, D3DCompile};
@@ -94,16 +94,8 @@ void main(uint3 id : SV_DispatchThreadID) {
                 })?;
                 let adapter_name =
                     dx11_adapter_name(&device).unwrap_or_else(|| "Direct3D 11".to_string());
-                let shader_blob = compile_copy_shader()?;
+                let shader_bytecode = copy_shader_bytecode()?;
                 let mut shader = None;
-                let shader_bytecode = unsafe {
-                    // SAFETY: shader_blob is live, and the compiler reports a byte
-                    // pointer/length pair that remains valid for the blob lifetime.
-                    std::slice::from_raw_parts(
-                        shader_blob.GetBufferPointer().cast::<u8>(),
-                        shader_blob.GetBufferSize(),
-                    )
-                };
                 // SAFETY: shader bytecode slice comes from a live ID3DBlob, and the
                 // output pointer is valid.
                 unsafe { device.CreateComputeShader(shader_bytecode, None, Some(&mut shader)) }
@@ -460,6 +452,32 @@ void main(uint3 id : SV_DispatchThreadID) {
             shader.ok_or_else(|| {
                 BedrockRenderError::Validation("DX11 shader compiler returned no blob".to_string())
             })
+        }
+
+        /// Returns the DX11 copy shader bytecode, compiling it at most once per process.
+        ///
+        /// `D3DCompile` is the only shader compiler on this path and it ships with Windows
+        /// rather than being linked in, so it is a genuine runtime dependency. Every map
+        /// render session used to compile this one trivial copy shader again; the bytecode
+        /// depends only on the shader source and target, so it is cached process-wide and
+        /// reused across devices and sessions.
+        fn copy_shader_bytecode() -> Result<&'static [u8]> {
+            static BYTECODE: OnceLock<std::result::Result<Vec<u8>, String>> = OnceLock::new();
+
+            match BYTECODE.get_or_init(|| {
+                let blob = compile_copy_shader().map_err(|error| error.to_string())?;
+                // SAFETY: the blob is live for this call, and its buffer is read-only.
+                let bytecode = unsafe {
+                    std::slice::from_raw_parts(
+                        blob.GetBufferPointer().cast::<u8>(),
+                        blob.GetBufferSize(),
+                    )
+                };
+                Ok(bytecode.to_vec())
+            }) {
+                Ok(bytecode) => Ok(bytecode.as_slice()),
+                Err(message) => Err(BedrockRenderError::Validation(message.clone())),
+            }
         }
     }
 
