@@ -1556,11 +1556,11 @@ mod platform {
                 ShaderCode::Hlsl(source) => {
                     #[cfg(feature = "shader-compiler")]
                     {
-                        compile_hlsl_to_dx_bytecode(
+                        Dx12ShaderBytecode::Owned(compile_hlsl_to_dx_bytecode(
                             source,
                             &desc.binary.entry_point,
                             desc.binary.stage,
-                        )?
+                        )?)
                     }
                     #[cfg(not(feature = "shader-compiler"))]
                     {
@@ -1571,7 +1571,8 @@ mod platform {
                         ));
                     }
                 }
-                ShaderCode::DxBytecode(bytecode) => bytecode.clone(),
+                ShaderCode::DxBytecode(bytecode) => Dx12ShaderBytecode::Owned(bytecode.clone()),
+                ShaderCode::DxBytecodeStatic(bytecode) => Dx12ShaderBytecode::Static(*bytecode),
                 ShaderCode::Spirv(_) | ShaderCode::Msl(_) => {
                     return Err(Error::Shader(
                         "DX12 shader module requires precompiled D3D bytecode".to_string(),
@@ -3931,9 +3932,9 @@ mod platform {
         let mut hash = FNV1A64_OFFSET;
         extend_stable_hash(&mut hash, &pipeline_layout_cache_key.to_le_bytes());
         extend_stable_hash(&mut hash, vertex_shader.entry_point.as_bytes());
-        extend_stable_hash(&mut hash, &vertex_shader.bytecode);
+        extend_stable_hash(&mut hash, vertex_shader.bytecode.as_slice());
         extend_stable_hash(&mut hash, fragment_shader.entry_point.as_bytes());
-        extend_stable_hash(&mut hash, &fragment_shader.bytecode);
+        extend_stable_hash(&mut hash, fragment_shader.bytecode.as_slice());
         extend_stable_hash(
             &mut hash,
             format!(
@@ -4011,8 +4012,8 @@ mod platform {
         };
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC::default();
         desc.pRootSignature = core::mem::ManuallyDrop::new(Some(root_signature.clone()));
-        desc.VS = shader_bytecode(&vertex_shader.bytecode);
-        desc.PS = shader_bytecode(&fragment_shader.bytecode);
+        desc.VS = shader_bytecode(vertex_shader.bytecode.as_slice());
+        desc.PS = shader_bytecode(fragment_shader.bytecode.as_slice());
         desc.StreamOutput = D3D12_STREAM_OUTPUT_DESC::default();
         desc.BlendState = blend_desc;
         desc.SampleMask = u32::MAX;
@@ -6343,10 +6344,25 @@ mod platform {
     }
 
     #[derive(Clone)]
+    enum Dx12ShaderBytecode {
+        Owned(Vec<u8>),
+        Static(&'static [u8]),
+    }
+
+    impl Dx12ShaderBytecode {
+        fn as_slice(&self) -> &[u8] {
+            match self {
+                Self::Owned(bytes) => bytes,
+                Self::Static(bytes) => *bytes,
+            }
+        }
+    }
+
+    #[derive(Clone)]
     struct Dx12ShaderModule {
         stage: ShaderStage,
         entry_point: String,
-        bytecode: Vec<u8>,
+        bytecode: Dx12ShaderBytecode,
     }
 
     #[derive(Clone, Copy)]

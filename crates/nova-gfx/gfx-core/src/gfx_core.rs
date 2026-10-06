@@ -1142,6 +1142,20 @@ impl ShaderBinary {
         }
     }
 
+    /// Creates a borrowed static D3D bytecode shader binary without copying the embedded bytes.
+    #[must_use]
+    pub fn dx_bytecode_static(
+        stage: ShaderStage,
+        entry_point: impl Into<String>,
+        bytecode: &'static [u8],
+    ) -> Self {
+        Self {
+            stage,
+            entry_point: entry_point.into(),
+            code: ShaderCode::DxBytecodeStatic(bytecode),
+        }
+    }
+
     /// Creates an MSL shader binary.
     #[must_use]
     pub fn msl(stage: ShaderStage, entry_point: impl Into<String>, source: String) -> Self {
@@ -1157,7 +1171,10 @@ impl ShaderBinary {
     pub fn spirv_words(&self) -> Option<&[u32]> {
         match &self.code {
             ShaderCode::Spirv(words) => Some(words),
-            ShaderCode::Hlsl(_) | ShaderCode::DxBytecode(_) | ShaderCode::Msl(_) => None,
+            ShaderCode::Hlsl(_)
+            | ShaderCode::DxBytecode(_)
+            | ShaderCode::DxBytecodeStatic(_)
+            | ShaderCode::Msl(_) => None,
         }
     }
 
@@ -1168,6 +1185,7 @@ impl ShaderBinary {
             ShaderCode::Spirv(words) => words.is_empty(),
             ShaderCode::Hlsl(source) | ShaderCode::Msl(source) => source.is_empty(),
             ShaderCode::DxBytecode(bytecode) => bytecode.is_empty(),
+            ShaderCode::DxBytecodeStatic(bytecode) => bytecode.is_empty(),
         }
     }
 }
@@ -1179,8 +1197,10 @@ pub enum ShaderCode {
     Spirv(Vec<u32>),
     /// HLSL source for DX12 compilation.
     Hlsl(String),
-    /// D3D compiled shader bytecode.
+    /// Owned D3D compiled shader bytecode.
     DxBytecode(Vec<u8>),
+    /// Borrowed D3D bytecode embedded in the executable.
+    DxBytecodeStatic(&'static [u8]),
     /// Metal Shading Language source.
     Msl(String),
 }
@@ -1223,7 +1243,7 @@ impl EmbeddedShader {
         Ok(match self {
             Self::Hlsl(source) => ShaderBinary::hlsl(stage, entry_point, source.to_string()),
             Self::DxBytecode(bytecode) => {
-                ShaderBinary::dx_bytecode(stage, entry_point, bytecode.to_vec())
+                ShaderBinary::dx_bytecode_static(stage, entry_point, bytecode)
             }
             Self::SpirvBytes(bytes) => ShaderBinary::spirv(
                 stage,
@@ -1241,6 +1261,24 @@ impl EmbeddedShader {
 
 /// Decodes little-endian SPIR-V bytes into words, or `None` when the payload is
 /// not word aligned.
+#[cfg(test)]
+mod embedded_shader_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_dxbc_keeps_the_static_payload_borrowed() {
+        static DXBC: &[u8] = b"DXBC-test";
+        let binary = EmbeddedShader::DxBytecode(DXBC)
+            .to_binary(ShaderStage::Vertex, "vs_main")
+            .expect("embedded DXBC should build a shader binary");
+        let ShaderCode::DxBytecodeStatic(actual) = binary.code else {
+            panic!("embedded DXBC should stay borrowed");
+        };
+        assert!(core::ptr::eq(actual.as_ptr(), DXBC.as_ptr()));
+        assert_eq!(actual, DXBC);
+    }
+}
+
 fn decode_spirv_words(bytes: &[u8]) -> Option<Vec<u32>> {
     let word_size = core::mem::size_of::<u32>();
     if bytes.len() % word_size != 0 {

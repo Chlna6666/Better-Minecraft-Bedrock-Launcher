@@ -345,7 +345,10 @@ mod platform {
                         .map_err(|error| Error::Shader(nserror_message(&error)))?;
                     (source.clone(), library)
                 }
-                ShaderCode::Hlsl(_) | ShaderCode::DxBytecode(_) | ShaderCode::Spirv(_) => {
+                ShaderCode::Hlsl(_)
+                | ShaderCode::DxBytecode(_)
+                | ShaderCode::DxBytecodeStatic(_)
+                | ShaderCode::Spirv(_) => {
                     return Err(Error::Shader(
                         "Metal shader module requires MSL source".to_string(),
                     ));
