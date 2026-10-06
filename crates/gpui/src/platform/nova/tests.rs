@@ -1895,6 +1895,56 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     assert!(passes.is_empty());
 }
 
+#[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+#[test]
+fn nova_dx12_build_artifacts_are_precompiled_dxbc() {
+    const ENTRY_POINTS: &[&str] = &[
+        "vs_solid_quad",
+        "fs_solid_quad",
+        "vs_quad",
+        "fs_quad",
+        "vs_shadow",
+        "fs_shadow",
+        "vs_path_rasterization",
+        "fs_path_rasterization",
+        "vs_path",
+        "fs_path",
+        "vs_mono_sprite",
+        "fs_mono_sprite",
+        "vs_subpixel_sprite",
+        "fs_subpixel_sprite",
+        "fs_subpixel_sprite_grayscale",
+        "vs_poly_sprite",
+        "fs_poly_sprite",
+        "vs_underline",
+        "fs_underline",
+        "vs_backdrop_blur_pass",
+        "fs_backdrop_blur_downsample",
+        "fs_backdrop_blur_upsample",
+        "vs_backdrop_blur",
+        "fs_backdrop_blur",
+    ];
+
+    assert_eq!(
+        NOVA_DX12_SHADER_ARTIFACT_KIND,
+        "precompiled D3D bytecode embedded at build time"
+    );
+    for entry_point in ENTRY_POINTS {
+        match nova_dx12_shader(entry_point) {
+            Some(gfx_core::EmbeddedShader::DxBytecode(bytes)) => {
+                assert!(
+                    bytes.starts_with(b"DXBC"),
+                    "{entry_point} should contain a DXBC container"
+                );
+            }
+            Some(other) => panic!(
+                "{entry_point} must be embedded as DX bytecode, got {other:?}"
+            ),
+            None => panic!("missing build-generated DX12 shader {entry_point}"),
+        }
+    }
+}
+
 #[test]
 fn nova_production_shader_entries_compile_for_enabled_backends() {
     #[cfg(all(

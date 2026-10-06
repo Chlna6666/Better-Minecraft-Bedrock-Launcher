@@ -590,6 +590,29 @@ mod tests {
     use gfx_core::{BackendKind, ShaderStage};
     use gpui::Bounds;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn scene_view_dx12_artifacts_are_precompiled_dxbc() {
+        assert_eq!(
+            super::artifacts::SCENE_VIEW_DX12_SHADER_ARTIFACT_KIND,
+            "precompiled D3D bytecode embedded at build time"
+        );
+        for entry_point in ["vs_main", "fs_main"] {
+            match super::artifacts::scene_view_dx12_shader(entry_point) {
+                Some(gfx_core::EmbeddedShader::DxBytecode(bytes)) => {
+                    assert!(
+                        bytes.starts_with(b"DXBC"),
+                        "{entry_point} should contain a DXBC container"
+                    );
+                }
+                Some(other) => panic!(
+                    "{entry_point} must be embedded as DX bytecode, got {other:?}"
+                ),
+                None => panic!("missing scene-view DX12 shader {entry_point}"),
+            }
+        }
+    }
+
     #[test]
     fn empty_scene_encodes_minimum_draw_and_light_slots() {
         let draw = PreparedScene::default();
