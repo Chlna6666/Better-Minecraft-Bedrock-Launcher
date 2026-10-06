@@ -15,10 +15,10 @@ pub(super) enum NovaAtlasResourceSetMode {
     UsedByTextureKind,
 }
 
-fn default_atlas_texture_size() -> Size<DevicePixels> {
+fn startup_atlas_texture_size() -> Size<DevicePixels> {
     Size {
-        width: DevicePixels(NOVA_DEFAULT_ATLAS_SIZE as i32),
-        height: DevicePixels(NOVA_DEFAULT_ATLAS_SIZE as i32),
+        width: DevicePixels(NOVA_STARTUP_ATLAS_SIZE as i32),
+        height: DevicePixels(NOVA_STARTUP_ATLAS_SIZE as i32),
     }
 }
 
@@ -32,7 +32,7 @@ pub(super) fn initial_gpu_atlas_textures(
             kind: AtlasTextureKind::Bgra,
         },
         NovaGpuAtlasTexture {
-            size: default_atlas_texture_size(),
+            size: startup_atlas_texture_size(),
             texture: resources.atlas_texture,
             texture_view: resources.atlas_texture_view,
             mono_resource_sets: resources
@@ -410,6 +410,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_atlas_page_is_smaller_than_normal_growth_page() {
+        let startup = startup_atlas_texture_size();
+        assert_eq!(startup.width.0, NOVA_STARTUP_ATLAS_SIZE as i32);
+        assert_eq!(startup.height.0, NOVA_STARTUP_ATLAS_SIZE as i32);
+        assert!(NOVA_STARTUP_ATLAS_SIZE < NOVA_DEFAULT_ATLAS_SIZE);
+    }
 
     #[test]
     fn dynamic_atlas_textures_only_create_used_sprite_resource_sets() {

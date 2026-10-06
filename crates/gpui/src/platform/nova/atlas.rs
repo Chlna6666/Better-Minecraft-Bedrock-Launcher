@@ -12,6 +12,9 @@ use super::upload_encoding::{atlas_kind_index, fallback_atlas_bytes};
 pub(super) use super::upload_queue::AtlasUploadStats;
 use super::upload_queue::PendingAtlasUpload;
 
+/// Small first-page size used by each atlas kind for fallback pixels and typical first-frame
+/// glyph/icon traffic. When this page fills, normal allocation keeps using 2048px pages.
+pub(super) const NOVA_STARTUP_ATLAS_SIZE: u32 = 512;
 pub(super) const NOVA_DEFAULT_ATLAS_SIZE: u32 = 2048;
 pub(super) const NOVA_LARGE_IMAGE_ATLAS_SIZE: u32 = 4096;
 pub(super) const NOVA_MAX_ATLAS_SIZE: u32 = 16_384;
@@ -607,8 +610,26 @@ impl NovaAtlasState {
             height: DevicePixels(1),
         };
         for texture_kind in NOVA_ATLAS_TEXTURE_KINDS {
+            // A 1px fallback must not force a full 2048² allocation for every atlas kind before
+            // the first frame. Seed one compact page, then let ordinary allocations reuse it until
+            // full; the existing allocator still grows with 2048² pages afterwards.
+            let index = atlas_kind_index(texture_kind);
+            let startup_texture_created = {
+                let list = &mut self.texture_lists[index];
+                Self::push_texture_with_size(
+                    texture_kind,
+                    NOVA_STARTUP_ATLAS_SIZE,
+                    NOVA_STARTUP_ATLAS_SIZE,
+                    list,
+                )
+                .is_some()
+            };
+            if startup_texture_created {
+                self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
+            }
+
             let bytes = fallback_atlas_bytes(texture_kind);
-            self.fallback_tiles[atlas_kind_index(texture_kind)] =
+            self.fallback_tiles[index] =
                 self.allocate_and_upload_kind(texture_kind, size, bytes);
         }
     }

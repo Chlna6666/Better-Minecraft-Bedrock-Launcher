@@ -83,8 +83,8 @@ where
             kind: AtlasTextureKind::Bgra,
         },
         Size {
-            width: DevicePixels(i32::try_from(NOVA_DEFAULT_ATLAS_SIZE).unwrap_or(i32::MAX)),
-            height: DevicePixels(i32::try_from(NOVA_DEFAULT_ATLAS_SIZE).unwrap_or(i32::MAX)),
+            width: DevicePixels(i32::try_from(NOVA_STARTUP_ATLAS_SIZE).unwrap_or(i32::MAX)),
+            height: DevicePixels(i32::try_from(NOVA_STARTUP_ATLAS_SIZE).unwrap_or(i32::MAX)),
         },
         &AtlasResourceDescriptor {
             mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
