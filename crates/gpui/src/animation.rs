@@ -1418,7 +1418,7 @@ mod tests {
                 .driver(AnimationDriver::Layout),
             now,
         );
-        assert_eq!(engine.test_index_counts(), (1, 1, 1, 0));
+        assert_eq!(engine.test_index_counts(), (1, 1, 1, 1));
 
         engine.start_transition(
             &element,

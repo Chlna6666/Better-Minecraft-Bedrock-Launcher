@@ -52,7 +52,7 @@ impl FrameUpload {
                     | UploadedBatch::Underlines { .. }
                     | UploadedBatch::BackdropBlurs { .. }
                     | UploadedBatch::CompositeBlur { .. }
-                    | UploadedBatch::CustomMesh3d { .. } => {}
+                    | UploadedBatch::RendererExtensions { .. } => {}
                 }
             }
 

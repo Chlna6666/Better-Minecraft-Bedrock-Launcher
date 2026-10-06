@@ -643,16 +643,17 @@ impl Window {
         });
     }
 
-    /// Paint a GPU-resident 3D mesh into the scene for the next frame at the current z-index.
+    /// Paint a renderer-owned extension at this position in the scene's draw order.
     ///
-    /// This method should only be called as part of the paint phase of element drawing.
-    pub fn paint_gpu_mesh_3d(
+    /// The extension input must be an immutable, thread-safe snapshot because Nova may consume
+    /// it on the presentation thread. Its GPU resources are created and destroyed separately for
+    /// each Nova renderer. Draw steps are clipped to `bounds` and the active content mask.
+    pub fn paint_renderer_extension(
         &mut self,
         bounds: Bounds<Pixels>,
-        mesh: Arc<GpuMesh3d>,
-        parameters: GpuMesh3dDrawParameters,
+        extension: std::sync::Arc<dyn crate::RendererExtension>,
     ) {
-        use crate::PaintGpuMesh3d;
+        use crate::PaintRendererExtension;
 
         self.invalidator.debug_assert_paint();
 
@@ -665,14 +666,9 @@ impl Window {
             crate::TransitionProperty::Transform,
             crate::TransitionProperty::Translation,
         ]);
-        self.next_frame.scene.insert_primitive(PaintGpuMesh3d {
-            order: 0,
-            bounds,
-            content_mask,
-            mesh,
-            parameters,
-            animation_id,
-        });
+        let mut primitive = PaintRendererExtension::new(bounds, content_mask, extension);
+        primitive.animation_id = animation_id;
+        self.next_frame.scene.insert_primitive(primitive);
     }
 
     /// Paint a surface into the scene for the next frame at the current z-index.

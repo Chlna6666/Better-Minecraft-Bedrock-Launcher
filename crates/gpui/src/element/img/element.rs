@@ -457,37 +457,31 @@ impl Element for Img {
                     let animation_config = animation_policy
                         .apply_to(cx.image_pipeline_config().animated)
                         .clamped();
-                    let frame =
-                        if should_request_image_animation_frame(&render_image, animation_config)
-                            && let Some(global_id) = global_id
-                        {
-                            window.with_element_state(
-                                global_id,
-                                |state: Option<ImageElementState>, window| {
-                                    let mut state = state.unwrap_or(ImageElementState {
-                                        current_image: None,
-                                        current_frame: layout_state.frame.clone(),
-                                        next_frame_at: None,
-                                        started_loading: None,
-                                    });
-                                    let frame = select_animation_frame(
-                                        &mut state,
-                                        &render_image,
-                                        animation_config,
-                                        cx.background_executor(),
-                                    );
-                                    request_next_image_animation_frame(
-                                        &state,
-                                        window,
-                                        cx,
-                                        animation_config,
-                                    );
-                                    (frame, state)
-                                },
-                            )
-                        } else {
-                            layout_state.frame.clone()
-                        };
+                    let frame = if should_animate(&render_image, animation_config)
+                        && let Some(global_id) = global_id
+                    {
+                        window.with_element_state(
+                            global_id,
+                            |state: Option<ImageElementState>, window| {
+                                let mut state = state.unwrap_or(ImageElementState {
+                                    current_image: None,
+                                    current_frame: layout_state.frame.clone(),
+                                    next_frame_at: None,
+                                    started_loading: None,
+                                });
+                                let frame = select_animation_frame(
+                                    &mut state,
+                                    &render_image,
+                                    animation_config,
+                                    cx.background_executor(),
+                                );
+                                schedule_next_frame(&state, window, cx, animation_config);
+                                (frame, state)
+                            },
+                        )
+                    } else {
+                        layout_state.frame.clone()
+                    };
 
                     let Some(frame) = frame else {
                         return;

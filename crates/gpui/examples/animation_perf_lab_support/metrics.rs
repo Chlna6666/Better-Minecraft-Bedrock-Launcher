@@ -9,15 +9,15 @@ use std::{
 };
 
 use gpui::{
-    WindowAnimationPresentationTiming, WindowAnimationSamples, performance_metrics_snapshot,
-    window_animation_samples_since, window_metrics_snapshot,
+    WindowAnimationPresentationTiming, WindowAnimationSamples, WindowBackendReadyMetricsSnapshot,
+    WindowVSyncMetricsSnapshot, performance_metrics_snapshot, window_animation_samples_since,
+    window_metrics_snapshot,
 };
 
 use crate::{
     Config, GATE_WINDOW, UI_RENDER_BLOCK, backend_label, duration_ms, duration_us, micros_to_millis,
 };
 
-#[derive(Clone, Copy)]
 pub(crate) struct GateBaseline {
     pub(crate) window_id: u64,
     pub(crate) sample_rate: f64,
@@ -26,6 +26,8 @@ pub(crate) struct GateBaseline {
     pub(crate) changed_sample_count: u64,
     pub(crate) unchanged_sample_count: u64,
     pub(crate) skipped_frame_count: u64,
+    pub(crate) native_vsync: Option<WindowVSyncMetricsSnapshot>,
+    pub(crate) backend_ready_wake_count: usize,
     pub(crate) started_at: Instant,
     pub(crate) render_count: usize,
 }
@@ -35,6 +37,8 @@ pub(crate) enum BlockEvent {
     Finished {
         ended_at: Instant,
         render_count: usize,
+        native_vsync: Option<WindowVSyncMetricsSnapshot>,
+        backend_ready: Option<WindowBackendReadyMetricsSnapshot>,
     },
 }
 
@@ -77,6 +81,8 @@ pub(crate) fn observe(
     let mut block_finished = false;
     let mut block_finished_at = None;
     let mut block_render_count = None;
+    let mut block_native_vsync_after = None;
+    let mut block_backend_ready_after = None;
     while !block_finished {
         let event = receiver.recv_timeout(Duration::from_millis(40));
         if matches!(&event, Ok(BlockEvent::Started(_))) {
@@ -120,11 +126,15 @@ pub(crate) fn observe(
         if let Ok(BlockEvent::Finished {
             ended_at,
             render_count,
+            native_vsync,
+            backend_ready,
         }) = &event
         {
             block_finished = true;
             block_finished_at = Some(*ended_at);
             block_render_count = Some(*render_count);
+            block_native_vsync_after = native_vsync.clone();
+            block_backend_ready_after = backend_ready.clone();
         }
         if matches!(&event, Err(mpsc::RecvTimeoutError::Disconnected)) {
             slices_continuous = false;
@@ -221,8 +231,16 @@ pub(crate) fn observe(
         renderer_substage_timing_ms(worst_gap_timing),
     );
     println!(
-        "  worst_gap_vulkan_command_ms[encoder/record/fence_reset/cleanup]={:?}",
-        vulkan_command_timing_ms(worst_gap_timing.backend_timings),
+        "  worst_gap_backend_command_ms[encoder/record/fence_reset/cleanup]={:?}",
+        backend_command_timing_ms(worst_gap_timing.backend_timings),
+    );
+    print_native_vsync_gate_delta(
+        baseline.native_vsync.as_ref(),
+        block_native_vsync_after.as_ref(),
+    );
+    print_backend_ready_gate_delta_and_final_queue_delay(
+        baseline.backend_ready_wake_count,
+        block_backend_ready_after.as_ref(),
     );
     if !gate_passed {
         eprintln!(
@@ -243,7 +261,7 @@ pub(crate) fn observe(
     let visual_duration = visual_end.saturating_duration_since(visual_start);
     continuity_passed &= print_interval_report(
         "visual-only",
-        baseline,
+        &baseline,
         max_sample_gap_micros,
         visual_start,
         visual_end,
@@ -281,7 +299,7 @@ pub(crate) fn observe(
         let current_renders = render_count.load(Ordering::Relaxed);
         continuity_passed &= print_interval_report(
             "sustained",
-            baseline,
+            &baseline,
             max_sample_gap_micros,
             interval_start,
             interval_end,
@@ -535,7 +553,7 @@ fn backend_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 5]
     .map(|duration| micros_to_millis(duration_micros(duration) as usize))
 }
 
-fn vulkan_command_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 4] {
+fn backend_command_timing_ms(timings: Option<gfx_core::PresentationTimings>) -> [f64; 4] {
     let Some(timings) = timings else {
         return [0.0; 4];
     };
@@ -669,7 +687,7 @@ mod tests {
         assert_eq!(continuity.worst_gap_after_sequence, Some(42));
         assert_eq!(continuity.worst_gap_timing, Some(timing));
         assert_eq!(
-            vulkan_command_timing_ms(timing.backend_timings),
+            backend_command_timing_ms(timing.backend_timings),
             [0.4, 2.0, 0.1, 0.2]
         );
         assert_eq!(continuity.backend_timing_sample_count, 1);
@@ -787,7 +805,7 @@ fn max_sample_gap(baseline_interval_p50_micros: u64) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn print_interval_report(
     label: &str,
-    baseline: GateBaseline,
+    baseline: &GateBaseline,
     max_sample_gap_micros: u64,
     started_at: Instant,
     ended_at: Instant,
@@ -878,8 +896,8 @@ fn print_interval_report(
         renderer_substage_timing_ms(worst_gap_timing),
     );
     println!(
-        "  worst_gap_vulkan_command_ms[encoder/record/fence_reset/cleanup]={:?}",
-        vulkan_command_timing_ms(worst_gap_timing.backend_timings),
+        "  worst_gap_backend_command_ms[encoder/record/fence_reset/cleanup]={:?}",
+        backend_command_timing_ms(worst_gap_timing.backend_timings),
     );
     let _ = before_window.present_count;
     passed
@@ -908,6 +926,14 @@ fn print_snapshot(
 ) {
     let snapshot = performance_metrics_snapshot();
     let window = window_sample(window_id);
+    let native_vsync = if label == "final" {
+        window_metrics_snapshot()
+            .into_iter()
+            .find(|window| window.window_id == window_id)
+            .map(|window| window.native_vsync)
+    } else {
+        None
+    };
     println!(
         "{label}: backend={} adapter={:?} copies={} ui_renders={} global_presents={} global_active_sample_changes={} uploads={} animation_uploads={} passes(mask/main/composite)={}/{}/{} blur_frames={} gpu_wait_us={}",
         backend_label(snapshot.renderer_backend),
@@ -924,7 +950,7 @@ fn print_snapshot(
         snapshot.backdrop_blur_frame_count,
         duration_us(snapshot.gpu_submission_wait_time),
     );
-    if let Some(window) = window {
+    if let Some(window) = window.as_ref() {
         println!(
             "  window={} active={} visible={} minimized={} animation_active_samples={} animation_changed={} animation_unchanged={} animation_interval_ms[p50/p95/p99/max]={:.3}/{:.3}/{:.3}/{:.3} animation_interval_samples={} callback_frame_ms[p50/p95/p99]={:.3}/{:.3}/{:.3} callback_present_ms[p50/p95/p99]={:.3}/{:.3}/{:.3} callback_frame_samples={} callback_present_samples={} callback_presents={} callback_skipped={}",
             window.window_id,
@@ -966,6 +992,13 @@ fn print_snapshot(
             1.0 / scale_factor,
         );
     }
+    if label == "final" {
+        if let Some(native_vsync) = &native_vsync {
+            print_native_vsync_snapshot(native_vsync);
+        } else {
+            println!("  native_vsync_final_snapshot=unavailable");
+        }
+    }
     println!(
         "  latest CPU stages ms: build={} layout={} prepaint={} paint={} scene_finish={} backend_draw={} pack={} encode={} upload={}",
         duration_ms(snapshot.frame_build_time),
@@ -977,5 +1010,89 @@ fn print_snapshot(
         duration_ms(snapshot.scene_pack_time),
         duration_ms(snapshot.scene_encode_time),
         duration_ms(snapshot.buffer_upload_time),
+    );
+}
+
+fn print_native_vsync_gate_delta(
+    before: Option<&WindowVSyncMetricsSnapshot>,
+    after: Option<&WindowVSyncMetricsSnapshot>,
+) {
+    let (Some(before), Some(after)) = (before, after) else {
+        println!("  native_vsync_gate_delta[boundary_counters]=unavailable");
+        return;
+    };
+    println!(
+        "  native_vsync_gate_delta[boundary_counters]: wakes={} fallback_wakes={} active_attempts={} preflight_not_ready={} retries={}",
+        after.wake_count.saturating_sub(before.wake_count),
+        after
+            .fallback_wake_count
+            .saturating_sub(before.fallback_wake_count),
+        after
+            .active_presentation_attempt_count
+            .saturating_sub(before.active_presentation_attempt_count),
+        after
+            .active_presentation_preflight_not_ready_count
+            .saturating_sub(before.active_presentation_preflight_not_ready_count),
+        after
+            .active_presentation_retry_count
+            .saturating_sub(before.active_presentation_retry_count),
+    );
+}
+
+fn print_backend_ready_gate_delta_and_final_queue_delay(
+    baseline_wake_count: usize,
+    final_snapshot: Option<&WindowBackendReadyMetricsSnapshot>,
+) {
+    let Some(final_snapshot) = final_snapshot else {
+        println!("  backend_ready_gate_delta: unavailable");
+        println!("  backend_ready_final_snapshot_queue_delay: unavailable");
+        return;
+    };
+    println!(
+        "  backend_ready_gate_delta[wake_count]={}",
+        final_snapshot
+            .wake_count
+            .saturating_sub(baseline_wake_count),
+    );
+    println!(
+        "  backend_ready_final_snapshot_recent_queue_delay_us[p50/p95/max]={}/{}/{} samples={}",
+        final_snapshot.queue_delay_p50_micros,
+        final_snapshot.queue_delay_p95_micros,
+        final_snapshot.queue_delay_max_micros,
+        final_snapshot.queue_delay_sample_count,
+    );
+}
+
+fn print_native_vsync_snapshot(snapshot: &WindowVSyncMetricsSnapshot) {
+    let refresh_rate_p50_hz = if snapshot.refresh_period_p50_micros == 0 {
+        0.0
+    } else {
+        1_000_000.0 / snapshot.refresh_period_p50_micros as f64
+    };
+    println!(
+        "  native_vsync_totals: wakes={} fallback_wakes={} active_attempts={} preflight_not_ready={} retries={}",
+        snapshot.wake_count,
+        snapshot.fallback_wake_count,
+        snapshot.active_presentation_attempt_count,
+        snapshot.active_presentation_preflight_not_ready_count,
+        snapshot.active_presentation_retry_count,
+    );
+    println!(
+        "  native_vsync_recent_ms: wake_interval[p50/p95/p99/max]={:.3}/{:.3}/{:.3}/{:.3} samples={} dwm_qpc_refresh_period[p50/p95/p99/max]={:.3}/{:.3}/{:.3}/{:.3} samples={} refresh_rate_from_qpc_p50_hz={refresh_rate_p50_hz:.3} dwm_composition_period[p50/p95/p99/max]={:.3}/{:.3}/{:.3}/{:.3} samples={}",
+        micros_to_millis(snapshot.wake_interval_p50_micros),
+        micros_to_millis(snapshot.wake_interval_p95_micros),
+        micros_to_millis(snapshot.wake_interval_p99_micros),
+        micros_to_millis(snapshot.wake_interval_max_micros),
+        snapshot.wake_interval_sample_count,
+        micros_to_millis(snapshot.refresh_period_p50_micros),
+        micros_to_millis(snapshot.refresh_period_p95_micros),
+        micros_to_millis(snapshot.refresh_period_p99_micros),
+        micros_to_millis(snapshot.refresh_period_max_micros),
+        snapshot.refresh_period_sample_count,
+        micros_to_millis(snapshot.composition_period_p50_micros),
+        micros_to_millis(snapshot.composition_period_p95_micros),
+        micros_to_millis(snapshot.composition_period_p99_micros),
+        micros_to_millis(snapshot.composition_period_max_micros),
+        snapshot.composition_period_sample_count,
     );
 }

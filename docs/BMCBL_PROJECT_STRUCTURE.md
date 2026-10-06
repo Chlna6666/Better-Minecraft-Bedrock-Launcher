@@ -32,8 +32,9 @@ flowchart LR
 ```
 
 The application crate owns product behavior. `crates/gpui` owns generic UI and
-rendering behavior. Local crates under `crates/` provide reusable support for
-icons, hooks, graphics backends, and plugins.
+renderer lifecycle behavior; `crates/gpui-3d` owns reusable 3D scene and scene-view
+behavior. Local crates under `crates/` provide reusable support for icons,
+hooks, graphics backends, and plugins.
 
 ## Root Files
 
@@ -167,6 +168,7 @@ Detailed UI placement rules live in [`../src/ui/README.md`](../src/ui/README.md)
 | `crates/gpui-hooks` | React-style hook support for GPUI views. |
 | `crates/gpui-hooks-macros` | Procedural macros for hooks. |
 | `crates/lucide-gpui` | Lucide icon asset crate for GPUI. |
+| `crates/gpui-3d` | Backend-neutral 3D scene, geometry, camera, material, animation, query, and GPUI scene view over Nova renderer extensions. It must not depend on BMCBL page or Minecraft modules. |
 | `crates/bmcbl-plugin-api` | Public plugin API types and pack metadata. |
 | `crates/bmcbl-plugin-macros` | Plugin derive and helper macros. |
 | `crates/bmcbl-plugin-tools` | Plugin packaging and validation tools when present. |
@@ -201,14 +203,15 @@ Major GPUI areas:
 | `crates/gpui/src/diagnostics` | Performance metrics and inspector support. |
 
 The GPUI render path is documented in
-[`GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md).
+[`GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md); reusable 3D ownership
+and API behavior are documented in [`GPUI_3D.md`](GPUI_3D.md).
 
 ## Dependency Direction
 
 ```text
 src/ui
   -> src/core / src/downloads / src/tasks / src/http / src/plugins
-  -> crates/gpui-hooks / crates/lucide-gpui
+  -> crates/gpui-hooks / crates/lucide-gpui / crates/gpui-3d
   -> crates/egpui
   -> crates/gpui
 
@@ -223,6 +226,10 @@ src/core and service modules
 crates/gpui
   -> generic framework dependencies
   -> crates/nova-gfx through feature-gated backend paths
+
+crates/gpui-3d
+  -> crates/gpui
+  -> crates/nova-gfx/gfx-core and gfx-shader
 ```
 
 Forbidden directions:

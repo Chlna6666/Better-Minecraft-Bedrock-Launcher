@@ -66,7 +66,8 @@ use crate::window::Decorations;
 use crate::*;
 
 mod proxy;
-use proxy::{SceneMailbox, WindowsWindowProxy};
+pub(crate) use proxy::QueuedScene;
+use proxy::{SceneMailbox, WindowProxy};
 
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
 const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
@@ -125,6 +126,11 @@ fn with_active_context<R>(
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
     VSync(super::vsync::VSyncEventTiming),
+    BackendFrameReady {
+        window_id: winit::window::WindowId,
+        generation: u64,
+        enqueued_at: Instant,
+    },
     DockMenuAction(usize),
     NativeCommand(WindowsNativeCommand),
     ActivateApp,
@@ -667,7 +673,6 @@ impl WindowsPlatform {
         let platform = Rc::downgrade(&self.inner);
         let end_session_platform = platform.clone();
         WindowCreationInfo {
-            background_executor: self.background_executor.clone(),
             executor: self.foreground_executor.clone(),
             power_event: Rc::new(move |wparam| {
                 if let Some(platform) = platform.upgrade() {
@@ -780,7 +785,7 @@ fn vulkan_renderer_backend_is_available() -> Result<()> {
 ))]
 fn backend_has_adapters(
     backend: RendererBackend,
-    adapters: std::result::Result<Vec<gfx_core::AdapterInfo>, gfx_core::GfxError>,
+    adapters: std::result::Result<Vec<gfx_core::AdapterInfo>, gfx_core::Error>,
 ) -> Result<()> {
     let adapters = adapters?;
     if adapters.is_empty() {
@@ -996,7 +1001,7 @@ impl Platform for WindowsPlatform {
             let snapshot = receiver
                 .recv()
                 .context("native Windows owner did not answer window creation")??;
-            return Ok(Box::new(WindowsWindowProxy::new(
+            return Ok(Box::new(WindowProxy::new(
                 snapshot,
                 handle,
                 Rc::downgrade(&self.inner),
@@ -1007,7 +1012,14 @@ impl Platform for WindowsPlatform {
         let creation_info = self.generate_creation_info();
         let cursor_style = self.inner.state.borrow().cursor_style;
         let window = with_active_context(|event_loop, app| {
-            let window = WindowsWindow::new(event_loop, handle, options, creation_info)?;
+            let event_loop_proxy = app
+                .event_loop_proxy
+                .lock()
+                .map_err(|_| anyhow!("Windows event loop proxy mutex is poisoned"))?
+                .clone()
+                .context("Windows event loop proxy is not initialized")?;
+            let window =
+                WindowsWindow::new(event_loop, handle, options, creation_info, event_loop_proxy)?;
             let window_id = window.window_id();
             apply_cursor_style_to_window(window.window(), cursor_style);
             app.windows.insert(window_id, window.clone());
@@ -1427,6 +1439,7 @@ impl WindowsApplication {
         let Some(window) = self.windows.get(&window_id).cloned() else {
             return;
         };
+        window.invalidate_frame_ready_swapchain();
         window.invoke_close();
         if self.hovered_window_id == Some(window_id) {
             self.hovered_window_id = None;
@@ -1450,7 +1463,19 @@ impl WindowsApplication {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<WindowsNativeWindow> {
-        let window = WindowsWindow::new(event_loop, handle, options, self.creation_info.clone())?;
+        let event_loop_proxy = self
+            .event_loop_proxy
+            .lock()
+            .map_err(|_| anyhow!("Windows event loop proxy mutex is poisoned"))?
+            .clone()
+            .context("Windows event loop proxy is not initialized")?;
+        let window = WindowsWindow::new(
+            event_loop,
+            handle,
+            options,
+            self.creation_info.clone(),
+            event_loop_proxy,
+        )?;
         let native_window = window
             .0
             .winit_window
@@ -1513,19 +1538,24 @@ impl WindowsApplication {
                 // Sample the committed visual timelines on the native owner's clock, otherwise
                 // installing this scene can rewind geometry to the older UI frame timestamp.
                 packet.frame_time = Instant::now();
-                let result = self
-                    .windows
-                    .get(&window_id)
-                    .map_or(PlatformFrameResult::Deferred, |window| window.draw(packet));
+                let result =
+                    self.windows
+                        .get(&window_id)
+                        .map_or(PlatformFrameResult::Deferred, |window| {
+                            window.invalidate_frame_ready_scene();
+                            window.draw(packet)
+                        });
                 if reply.send(result).is_err() {
                     log::warn!("Windows UI owner dropped native scene submission reply");
                 }
             }
             WindowsNativeCommand::CommitLatestScene { window_id, mailbox } => {
-                let Some(scene) = mailbox.lock().take() else {
+                let Some(mut scene) = mailbox.lock().take() else {
                     return;
                 };
+                scene.prepare_for_native_frame(Instant::now());
                 if let Some(window) = self.windows.get(&window_id) {
+                    window.invalidate_frame_ready_scene();
                     if scene.framebuffer_only {
                         window.present_framebuffer_only(scene.packet);
                     } else {
@@ -1767,6 +1797,15 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
+            WindowsUserEvent::BackendFrameReady {
+                window_id,
+                generation,
+                enqueued_at,
+            } => {
+                if let Some(window) = self.windows.get(&window_id) {
+                    window.dispatch_pending_update_from_backend_ready(generation, enqueued_at);
+                }
+            }
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
             }
@@ -2199,7 +2238,6 @@ impl Drop for WindowsPlatformState {
 
 #[derive(Clone)]
 pub(crate) struct WindowCreationInfo {
-    pub(crate) background_executor: BackgroundExecutor,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) power_event: Rc<dyn Fn(WPARAM)>,
     pub(crate) end_session_event: Rc<dyn Fn() -> bool>,

@@ -89,8 +89,12 @@ impl Window {
     }
 
     pub(crate) fn appearance_changed(&mut self, cx: &mut App) {
-        self.appearance = self.platform_window.appearance();
-        self.refresh();
+        let appearance = self.platform_window.appearance();
+        let changed = self.appearance != appearance;
+        self.appearance = appearance;
+        if changed {
+            self.refresh();
+        }
 
         self.appearance_observers
             .clone()

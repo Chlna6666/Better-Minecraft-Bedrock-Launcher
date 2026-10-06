@@ -15,12 +15,6 @@ pub(in crate::platform::nova) struct RetainedResidentSpan {
     pub(in crate::platform::nova) byte_hash: u64,
 }
 
-#[derive(Clone, Copy)]
-pub(in crate::platform::nova) struct ResolvedMeshAnimation {
-    pub(in crate::platform::nova) property: u32,
-    pub(in crate::platform::nova) sampled: [f32; 4],
-}
-
 #[derive(Clone, Copy, Default)]
 pub(in crate::platform::nova) struct FrameUploadSummary {
     pub(in crate::platform::nova) quad_count: u32,
@@ -90,10 +84,6 @@ impl FrameUploadSummary {
             .unsupported_batches
             .backdrop_blur_tint_fallbacks
             .saturating_add(other.unsupported_batches.backdrop_blur_tint_fallbacks);
-        self.unsupported_batches.gpu_meshes_3d = self
-            .unsupported_batches
-            .gpu_meshes_3d
-            .saturating_add(other.unsupported_batches.gpu_meshes_3d);
     }
 }
 
@@ -151,16 +141,9 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) animated_primitive_staging: Vec<u8>,
     pub(in crate::platform::nova) animated_visual_bounds_scratch:
         Vec<crate::Bounds<crate::ScaledPixels>>,
-    pub(in crate::platform::nova) custom_mesh_3d_parameters: Vec<u8>,
-    pub(in crate::platform::nova) custom_mesh_3d_animation_ids:
-        Vec<Option<crate::SceneAnimationId>>,
-    pub(in crate::platform::nova) custom_mesh_3d_animations: Vec<u8>,
-    pub(in crate::platform::nova) custom_mesh_3d_resolved_animation_scratch:
-        FxHashMap<crate::SceneAnimationId, ResolvedMeshAnimation>,
-    pub(in crate::platform::nova) custom_mesh_3d_meshes: Vec<Arc<GpuMesh3d>>,
-    pub(in crate::platform::nova) custom_mesh_3d_shaders: Vec<Arc<GpuMesh3dShader>>,
-    pub(in crate::platform::nova) custom_mesh_3d_ids: FxHashSet<GpuMesh3dId>,
-    pub(in crate::platform::nova) custom_mesh_3d_shader_ids: FxHashSet<GpuMesh3dShaderId>,
+    pub(in crate::platform::nova) renderer_extensions: Vec<PaintRendererExtension>,
+    pub(in crate::platform::nova) renderer_extension_steps: Vec<Vec<RenderStepDescriptor>>,
+    pub(in crate::platform::nova) renderer_extension_frame_id: u64,
     pub(in crate::platform::nova) batches: Vec<UploadedBatch>,
     pub(in crate::platform::nova) path_rasterization_cache: PathRasterizationCache,
     pub(in crate::platform::nova) path_rasterization_cache_hits: u64,

@@ -14,6 +14,8 @@ Related documents:
   BMCBL workspace and module map.
 - [`docs/GPUI_VENDOR_RENDERING.md`](GPUI_VENDOR_RENDERING.md): GPUI vendor
   structure, frame scheduling, and nova-gfx rendering pipeline.
+- [`docs/GPUI_3D.md`](GPUI_3D.md): `gpui-3d` scene, material, scene view, and backend
+  resource ownership.
 - [`src/ui/README.md`](../src/ui/README.md): UI layer placement rules and
   current `src/ui` structure.
 
@@ -32,6 +34,7 @@ BMCBL product behavior
 
 Reusable workspace support
   crates/egpui
+  crates/gpui-3d
   crates/gpui-hooks
   crates/lucide-gpui
   crates/nova-gfx
@@ -54,6 +57,11 @@ application lifecycle, service registration, the replaceable application
 runtime provider, structured task scopes, shutdown coordination, and bounded
 background-to-GPUI bridges. It may depend on `crates/gpui`, but neither
 framework crate may depend on BMCBL application modules.
+
+`crates/gpui-3d` owns reusable 3D scene, geometry, camera, material, animation,
+query, and scene-view APIs. It depends on generic GPUI and Nova graphics
+interfaces. It must not contain Minecraft, BMCBL preview, asset-name, or page
+state. Application-specific mesh conversion remains in `src/ui`.
 
 ## GPUI Framework Code
 
@@ -219,6 +227,7 @@ Before changing a file, classify the behavior:
 | Downloads, archive extraction, integrity, progress, task snapshots | `src/downloads`, `src/archive`, `src/tasks` |
 | HTTP transport and proxy handling | `src/http` |
 | Reusable icons, hooks, plugin API, graphics abstraction | `crates/*` |
+| Reusable 3D scene, mesh, material, camera, query, or viewport behavior | `crates/gpui-3d` |
 
 If a proposed framework change references a BMCBL route, asset, page, launcher
 policy, or background selection, keep it in application code. If an application

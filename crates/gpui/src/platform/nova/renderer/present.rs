@@ -16,7 +16,6 @@ struct FrameBufferTargets {
     underline: BufferId,
     backdrop_blur_pass: BufferId,
     backdrop_blur: BufferId,
-    custom_mesh_3d_parameters: BufferId,
 }
 
 impl NovaRenderer {
@@ -33,7 +32,6 @@ impl NovaRenderer {
             underline: self.underline_buffer,
             backdrop_blur_pass: self.backdrop_blur_pass_buffer,
             backdrop_blur: self.backdrop_blur_buffer,
-            custom_mesh_3d_parameters: self.custom_mesh_3d_parameters_buffer,
         }
     }
 }
@@ -91,16 +89,6 @@ where
     if has_backdrop_blurs && static_uploads.backdrop_blur {
         device.write_buffer(buffers.backdrop_blur, 0, &frame_upload.backdrop_blurs)?;
     }
-    if static_uploads.custom_mesh_3d_parameters
-        && !frame_upload.custom_mesh_3d_parameters.is_empty()
-    {
-        device.write_buffer(
-            buffers.custom_mesh_3d_parameters,
-            0,
-            &frame_upload.custom_mesh_3d_parameters,
-        )?;
-    }
-
     // A partial static refresh may leave other primitive streams resident. Those clean streams can
     // still contain active animations, so refresh only their animated ranges. Streams uploaded in
     // full above already contain the sampled bytes and deliberately skip duplicate range writes.
@@ -255,7 +243,7 @@ fn upload_animated_buffers<D: BackendResources>(
 
 struct MainPresentDescriptor<'a> {
     submission_mode: GpuSubmissionMode,
-    async_capabilities: BackendAsyncCapabilities,
+    async_capabilities: AsyncCapabilities,
     pending_submissions: &'a mut Vec<PendingSubmission>,
     frame_resource_index: usize,
     swapchain: SwapchainId,
@@ -446,7 +434,7 @@ fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
             | UploadedBatch::Underlines { .. }
             | UploadedBatch::BackdropBlurs { .. }
             | UploadedBatch::CompositeBlur { .. }
-            | UploadedBatch::CustomMesh3d { .. } => {}
+            | UploadedBatch::RendererExtensions { .. } => {}
         }
     }
     false
@@ -628,15 +616,14 @@ impl NovaRenderer {
             }
         }
         self.sync_atlas_textures_for_current_backend()?;
-        self.ensure_custom_mesh_3d_cache_for_current_backend()?;
         if let Some(timing) = presentation_timing.as_mut() {
             timing.retained_resource_prepare = retained_resource_prepare_started.elapsed();
         }
         let frame_started = Instant::now();
-        let backend_label = self.backend.label();
-        let async_capabilities = self.backend.async_capabilities();
+        let backend_label = self.backend_info.label();
+        let async_capabilities = lock_backend(&self.backend).async_capabilities();
         let native_partial_presentation =
-            self.backend.supports_partial_presentation(self.swapchain);
+            lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
         let has_root_backdrop_blurs = has_root_backdrop_blurs(&self.frame_upload);
@@ -709,9 +696,9 @@ impl NovaRenderer {
             self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
         let blur_full_target_pixels = self.backdrop_blur_full_target_pixels();
-        let draw_step_count = self.draw_step_scratch.draw_steps.len();
+        let draw_step_count = self.draw_step_scratch.steps().len();
         let draw_step_cache_hit = self.draw_step_scratch.draw_step_cache_hit;
-        let path_mask_step_count = self.draw_step_scratch.path_mask_steps.len();
+        let path_mask_step_count = self.draw_step_scratch.path_steps().len();
         let path_mask_cache_hit = self.draw_step_scratch.path_mask_cache_hit;
         let mask_pass_count = usize::from(path_mask_step_count != 0);
         let main_pass_count = 1;
@@ -776,14 +763,13 @@ impl NovaRenderer {
                 concat!(
                     "nova-gfx unsupported or fallback batches: backend={} ",
                     "paths={} surfaces={} backdrop_blurs={} backdrop_blur_tint_fallbacks={} ",
-                    "gpu_meshes_3d={} set GPUI_NOVA_RENDER_DIAGNOSTICS=1 for every-frame details"
+                    "set GPUI_NOVA_RENDER_DIAGNOSTICS=1 for every-frame details"
                 ),
                 backend_label,
                 unsupported.paths,
                 unsupported.surfaces,
                 unsupported.backdrop_blurs,
                 unsupported.backdrop_blur_tint_fallbacks,
-                unsupported.gpu_meshes_3d,
             );
         }
         if self.diagnostics.enabled {
@@ -884,389 +870,376 @@ impl NovaRenderer {
         } else {
             None
         };
-        let mesh_upload_bytes = self.custom_mesh_3d_uploaded_bytes_this_frame;
-        let mesh_retained_bytes = self.custom_mesh_3d_retained_bytes();
-        let mesh_buffer_count = self.custom_mesh_3d_buffer_count();
         let atlas_texture_region_count: usize;
         let atlas_texture_upload_bytes: usize;
         let backend_work_started = Instant::now();
 
-        let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> = match &mut self
-            .backend
-        {
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => {
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.draw_step_prepare =
-                        backend_work_started.saturating_duration_since(frame_started);
-                }
-                let upload_started = Instant::now();
-                upload_frame_buffers(
-                    device,
-                    frame_buffers,
-                    &self.frame_upload,
-                    has_backdrop_blurs,
-                    static_uploads,
-                    &quad_upload_plan,
-                )?;
-                let buffer_upload_elapsed = upload_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.buffer_upload = buffer_upload_elapsed;
-                }
-                let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
-                let atlas_started = Instant::now();
-                let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                    self.gpu_atlas_textures
-                        .get(&atlas_id)
-                        .map(|texture| texture.texture)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "missing nova atlas texture {:?}/{}",
-                                atlas_id.kind,
-                                atlas_id.index
-                            )
-                        })
-                })?;
-                let atlas_upload_elapsed = atlas_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.atlas_upload = atlas_upload_elapsed;
-                }
-                let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
-                atlas_texture_region_count = atlas_stats.upload_count;
-                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                record_nova_upload_metrics(
-                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                    mesh_upload_bytes,
-                    mesh_retained_bytes,
-                    mesh_buffer_count,
-                    atlas_stats,
-                );
-                let offscreen_started = Instant::now();
-                if path_mask_step_count != 0 {
-                    device.render_step_list_to_texture(
-                        self.path_texture_view,
-                        self.render_pass,
-                        RenderStepList::from_draw_steps(&self.draw_step_scratch.path_mask_steps),
-                        LoadOp::Clear(clear_color()),
-                        Some(depth_attachment),
-                    )?;
-                }
-                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                element_blur_refreshed = !element_blur_layers.is_empty();
-                if element_blur_refreshed {
-                    render_element_blur_layers(
+        let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
+            match &mut *lock_backend(&self.backend) {
+                #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+                NovaBackend::Dx12(device) => {
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.draw_step_prepare =
+                            backend_work_started.saturating_duration_since(frame_started);
+                    }
+                    let upload_started = Instant::now();
+                    upload_frame_buffers(
                         device,
-                        self.render_pass,
-                        depth_attachment,
-                        &element_blur_layers,
+                        frame_buffers,
+                        &self.frame_upload,
+                        has_backdrop_blurs,
+                        static_uploads,
+                        &quad_upload_plan,
                     )?;
-                }
-                if backdrop_blur_refreshed
-                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                {
-                    render_backdrop_blur_groups(
-                        device,
-                        source_texture_view,
-                        self.render_pass,
-                        depth_attachment,
-                        &backdrop_blur_groups,
-                    )?;
-                }
-                let offscreen_elapsed = offscreen_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.offscreen_render = offscreen_elapsed;
-                }
-                let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
-                let present_started = Instant::now();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.frame_prepare_upload =
-                        present_started.saturating_duration_since(frame_started);
-                }
-                let presentation_frame = render_main_and_present(
-                    device,
-                    MainPresentDescriptor {
-                        submission_mode,
-                        async_capabilities,
-                        pending_submissions: &mut self.pending_submissions,
-                        frame_resource_index: self.current_frame_resource_index,
-                        swapchain: self.swapchain,
-                        render_pass: self.render_pass,
-                        depth_attachment,
-                        damage: present_damage,
-                    },
-                    &self.draw_step_scratch.draw_steps,
-                )?;
-                let did_present = presentation_frame.is_some();
-                let backend_presentation_timings =
-                    presentation_frame.and_then(|frame| frame.timings);
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.backend_present = present_started.elapsed();
-                }
-                let present_elapsed_ms = present_started.elapsed().as_millis();
-                let total_elapsed_ms = frame_started.elapsed().as_millis();
-                if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                    log::warn!(
-                        concat!(
-                            "nova-gfx frame stages: backend={} total_ms={} ",
-                            "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                            "present_ms={} submission_mode={:?} atlas_uploads={} ",
-                            "atlas_bytes={} blur_groups={} element_blur_layers={}"
-                        ),
-                        backend_label,
-                        total_elapsed_ms,
-                        buffer_upload_elapsed_ms,
-                        atlas_upload_elapsed_ms,
-                        offscreen_elapsed_ms,
-                        present_elapsed_ms,
-                        submission_mode,
-                        atlas_stats.upload_count,
-                        atlas_stats.uploaded_bytes,
-                        backdrop_blur_groups.len(),
-                        element_blur_layers.len(),
+                    let buffer_upload_elapsed = upload_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.buffer_upload = buffer_upload_elapsed;
+                    }
+                    let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
+                    let atlas_started = Instant::now();
+                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
+                        self.gpu_atlas_textures
+                            .get(&atlas_id)
+                            .map(|texture| texture.texture)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "missing nova atlas texture {:?}/{}",
+                                    atlas_id.kind,
+                                    atlas_id.index
+                                )
+                            })
+                    })?;
+                    let atlas_upload_elapsed = atlas_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.atlas_upload = atlas_upload_elapsed;
+                    }
+                    let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
+                    atlas_texture_region_count = atlas_stats.upload_count;
+                    atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
+                    record_nova_upload_metrics(
+                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
+                        atlas_stats,
                     );
-                }
-                Ok((did_present, backend_presentation_timings))
-            }
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => {
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.draw_step_prepare =
-                        backend_work_started.saturating_duration_since(frame_started);
-                }
-                upload_frame_buffers(
-                    device,
-                    frame_buffers,
-                    &self.frame_upload,
-                    has_backdrop_blurs,
-                    static_uploads,
-                    &quad_upload_plan,
-                )?;
-                let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                    self.gpu_atlas_textures
-                        .get(&atlas_id)
-                        .map(|texture| texture.texture)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "missing nova atlas texture {:?}/{}",
-                                atlas_id.kind,
-                                atlas_id.index
-                            )
-                        })
-                })?;
-                atlas_texture_region_count = atlas_stats.upload_count;
-                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                record_nova_upload_metrics(
-                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                    mesh_upload_bytes,
-                    mesh_retained_bytes,
-                    mesh_buffer_count,
-                    atlas_stats,
-                );
-                if path_mask_step_count != 0 {
-                    device.render_step_list_to_texture(
-                        self.path_texture_view,
-                        self.render_pass,
-                        RenderStepList::from_draw_steps(&self.draw_step_scratch.path_mask_steps),
-                        LoadOp::Clear(clear_color()),
-                        Some(depth_attachment),
-                    )?;
-                }
-                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                element_blur_refreshed = !element_blur_layers.is_empty();
-                if element_blur_refreshed {
-                    render_element_blur_layers(
+                    let offscreen_started = Instant::now();
+                    if path_mask_step_count != 0 {
+                        device.render_step_list_to_texture(
+                            self.path_texture_view,
+                            self.render_pass,
+                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
+                            LoadOp::Clear(clear_color()),
+                            Some(depth_attachment),
+                        )?;
+                    }
+                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                    element_blur_refreshed = !element_blur_layers.is_empty();
+                    if element_blur_refreshed {
+                        render_element_blur_layers(
+                            device,
+                            self.render_pass,
+                            depth_attachment,
+                            &element_blur_layers,
+                        )?;
+                    }
+                    if backdrop_blur_refreshed
+                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                    {
+                        render_backdrop_blur_groups(
+                            device,
+                            source_texture_view,
+                            self.render_pass,
+                            depth_attachment,
+                            &backdrop_blur_groups,
+                        )?;
+                    }
+                    let offscreen_elapsed = offscreen_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.offscreen_render = offscreen_elapsed;
+                    }
+                    let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
+                    let present_started = Instant::now();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.frame_prepare_upload =
+                            present_started.saturating_duration_since(frame_started);
+                    }
+                    let presentation_frame = render_main_and_present(
                         device,
-                        self.render_pass,
-                        depth_attachment,
-                        &element_blur_layers,
+                        MainPresentDescriptor {
+                            submission_mode,
+                            async_capabilities,
+                            pending_submissions: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                            swapchain: self.swapchain,
+                            render_pass: self.render_pass,
+                            depth_attachment,
+                            damage: present_damage,
+                        },
+                        self.draw_step_scratch.steps(),
                     )?;
+                    let did_present = presentation_frame.is_some();
+                    let backend_presentation_timings =
+                        presentation_frame.and_then(|frame| frame.timings);
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.backend_present = present_started.elapsed();
+                    }
+                    let present_elapsed_ms = present_started.elapsed().as_millis();
+                    let total_elapsed_ms = frame_started.elapsed().as_millis();
+                    if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
+                        log::warn!(
+                            concat!(
+                                "nova-gfx frame stages: backend={} total_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "atlas_bytes={} blur_groups={} element_blur_layers={}"
+                            ),
+                            backend_label,
+                            total_elapsed_ms,
+                            buffer_upload_elapsed_ms,
+                            atlas_upload_elapsed_ms,
+                            offscreen_elapsed_ms,
+                            present_elapsed_ms,
+                            submission_mode,
+                            atlas_stats.upload_count,
+                            atlas_stats.uploaded_bytes,
+                            backdrop_blur_groups.len(),
+                            element_blur_layers.len(),
+                        );
+                    }
+                    Ok((did_present, backend_presentation_timings))
                 }
-                if backdrop_blur_refreshed
-                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                {
-                    render_backdrop_blur_groups(
+                #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+                NovaBackend::Metal(device) => {
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.draw_step_prepare =
+                            backend_work_started.saturating_duration_since(frame_started);
+                    }
+                    upload_frame_buffers(
                         device,
-                        source_texture_view,
-                        self.render_pass,
-                        depth_attachment,
-                        &backdrop_blur_groups,
+                        frame_buffers,
+                        &self.frame_upload,
+                        has_backdrop_blurs,
+                        static_uploads,
+                        &quad_upload_plan,
                     )?;
-                }
-                let present_started = Instant::now();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.frame_prepare_upload =
-                        present_started.saturating_duration_since(frame_started);
-                }
-                let presentation_frame = render_main_and_present(
-                    device,
-                    MainPresentDescriptor {
-                        submission_mode,
-                        async_capabilities,
-                        pending_submissions: &mut self.pending_submissions,
-                        frame_resource_index: self.current_frame_resource_index,
-                        swapchain: self.swapchain,
-                        render_pass: self.render_pass,
-                        depth_attachment,
-                        damage: present_damage,
-                    },
-                    &self.draw_step_scratch.draw_steps,
-                )?;
-                let did_present = presentation_frame.is_some();
-                let backend_presentation_timings =
-                    presentation_frame.and_then(|frame| frame.timings);
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.backend_present = present_started.elapsed();
-                }
-                Ok((did_present, backend_presentation_timings))
-            }
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => {
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.draw_step_prepare =
-                        backend_work_started.saturating_duration_since(frame_started);
-                }
-                let upload_started = Instant::now();
-                upload_frame_buffers(
-                    device,
-                    frame_buffers,
-                    &self.frame_upload,
-                    has_backdrop_blurs,
-                    static_uploads,
-                    &quad_upload_plan,
-                )?;
-                let buffer_upload_elapsed = upload_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.buffer_upload = buffer_upload_elapsed;
-                }
-                let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
-                let atlas_started = Instant::now();
-                let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                    self.gpu_atlas_textures
-                        .get(&atlas_id)
-                        .map(|texture| texture.texture)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "missing nova atlas texture {:?}/{}",
-                                atlas_id.kind,
-                                atlas_id.index
-                            )
-                        })
-                })?;
-                let atlas_upload_elapsed = atlas_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.atlas_upload = atlas_upload_elapsed;
-                }
-                let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
-                atlas_texture_region_count = atlas_stats.upload_count;
-                atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                record_nova_upload_metrics(
-                    (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                    mesh_upload_bytes,
-                    mesh_retained_bytes,
-                    mesh_buffer_count,
-                    atlas_stats,
-                );
-                let offscreen_started = Instant::now();
-                if path_mask_step_count != 0 {
-                    device.render_step_list_to_texture(
-                        self.path_texture_view,
-                        self.render_pass,
-                        RenderStepList::from_draw_steps(&self.draw_step_scratch.path_mask_steps),
-                        LoadOp::Clear(clear_color()),
-                        Some(depth_attachment),
-                    )?;
-                }
-                backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                element_blur_refreshed = !element_blur_layers.is_empty();
-                if element_blur_refreshed {
-                    render_element_blur_layers(
-                        device,
-                        self.render_pass,
-                        depth_attachment,
-                        &element_blur_layers,
-                    )?;
-                }
-                if backdrop_blur_refreshed
-                    && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                {
-                    render_backdrop_blur_groups(
-                        device,
-                        source_texture_view,
-                        self.render_pass,
-                        depth_attachment,
-                        &backdrop_blur_groups,
-                    )?;
-                }
-                let offscreen_elapsed = offscreen_started.elapsed();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.offscreen_render = offscreen_elapsed;
-                }
-                let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
-                let present_started = Instant::now();
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.frame_prepare_upload =
-                        present_started.saturating_duration_since(frame_started);
-                }
-                let presentation_frame = render_main_and_present(
-                    device,
-                    MainPresentDescriptor {
-                        submission_mode,
-                        async_capabilities,
-                        pending_submissions: &mut self.pending_submissions,
-                        frame_resource_index: self.current_frame_resource_index,
-                        swapchain: self.swapchain,
-                        render_pass: self.render_pass,
-                        depth_attachment,
-                        damage: present_damage,
-                    },
-                    &self.draw_step_scratch.draw_steps,
-                )?;
-                let did_present = presentation_frame.is_some();
-                let backend_presentation_timings =
-                    presentation_frame.and_then(|frame| frame.timings);
-                if let Some(timing) = presentation_timing.as_mut() {
-                    timing.backend_present = present_started.elapsed();
-                }
-                let present_elapsed_ms = present_started.elapsed().as_millis();
-                let total_elapsed_ms = frame_started.elapsed().as_millis();
-                if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
-                    log::warn!(
-                        concat!(
-                            "nova-gfx frame stages: backend={} total_ms={} ",
-                            "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
-                            "present_ms={} submission_mode={:?} atlas_uploads={} ",
-                            "atlas_bytes={} blur_groups={} element_blur_layers={}"
-                        ),
-                        backend_label,
-                        total_elapsed_ms,
-                        buffer_upload_elapsed_ms,
-                        atlas_upload_elapsed_ms,
-                        offscreen_elapsed_ms,
-                        present_elapsed_ms,
-                        submission_mode,
-                        atlas_stats.upload_count,
-                        atlas_stats.uploaded_bytes,
-                        backdrop_blur_groups.len(),
-                        element_blur_layers.len(),
+                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
+                        self.gpu_atlas_textures
+                            .get(&atlas_id)
+                            .map(|texture| texture.texture)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "missing nova atlas texture {:?}/{}",
+                                    atlas_id.kind,
+                                    atlas_id.index
+                                )
+                            })
+                    })?;
+                    atlas_texture_region_count = atlas_stats.upload_count;
+                    atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
+                    record_nova_upload_metrics(
+                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
+                        atlas_stats,
                     );
+                    if path_mask_step_count != 0 {
+                        device.render_step_list_to_texture(
+                            self.path_texture_view,
+                            self.render_pass,
+                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
+                            LoadOp::Clear(clear_color()),
+                            Some(depth_attachment),
+                        )?;
+                    }
+                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                    element_blur_refreshed = !element_blur_layers.is_empty();
+                    if element_blur_refreshed {
+                        render_element_blur_layers(
+                            device,
+                            self.render_pass,
+                            depth_attachment,
+                            &element_blur_layers,
+                        )?;
+                    }
+                    if backdrop_blur_refreshed
+                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                    {
+                        render_backdrop_blur_groups(
+                            device,
+                            source_texture_view,
+                            self.render_pass,
+                            depth_attachment,
+                            &backdrop_blur_groups,
+                        )?;
+                    }
+                    let present_started = Instant::now();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.frame_prepare_upload =
+                            present_started.saturating_duration_since(frame_started);
+                    }
+                    let presentation_frame = render_main_and_present(
+                        device,
+                        MainPresentDescriptor {
+                            submission_mode,
+                            async_capabilities,
+                            pending_submissions: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                            swapchain: self.swapchain,
+                            render_pass: self.render_pass,
+                            depth_attachment,
+                            damage: present_damage,
+                        },
+                        self.draw_step_scratch.steps(),
+                    )?;
+                    let did_present = presentation_frame.is_some();
+                    let backend_presentation_timings =
+                        presentation_frame.and_then(|frame| frame.timings);
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.backend_present = present_started.elapsed();
+                    }
+                    Ok((did_present, backend_presentation_timings))
                 }
-                Ok((did_present, backend_presentation_timings))
-            }
-            #[cfg(not(any(
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
+                #[cfg(all(
                     feature = "nova-gfx-vulkan",
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        };
+                ))]
+                NovaBackend::Vulkan(device) => {
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.draw_step_prepare =
+                            backend_work_started.saturating_duration_since(frame_started);
+                    }
+                    let upload_started = Instant::now();
+                    upload_frame_buffers(
+                        device,
+                        frame_buffers,
+                        &self.frame_upload,
+                        has_backdrop_blurs,
+                        static_uploads,
+                        &quad_upload_plan,
+                    )?;
+                    let buffer_upload_elapsed = upload_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.buffer_upload = buffer_upload_elapsed;
+                    }
+                    let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
+                    let atlas_started = Instant::now();
+                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
+                        self.gpu_atlas_textures
+                            .get(&atlas_id)
+                            .map(|texture| texture.texture)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "missing nova atlas texture {:?}/{}",
+                                    atlas_id.kind,
+                                    atlas_id.index
+                                )
+                            })
+                    })?;
+                    let atlas_upload_elapsed = atlas_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.atlas_upload = atlas_upload_elapsed;
+                    }
+                    let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
+                    atlas_texture_region_count = atlas_stats.upload_count;
+                    atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
+                    record_nova_upload_metrics(
+                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
+                        atlas_stats,
+                    );
+                    let offscreen_started = Instant::now();
+                    if path_mask_step_count != 0 {
+                        device.render_step_list_to_texture(
+                            self.path_texture_view,
+                            self.render_pass,
+                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
+                            LoadOp::Clear(clear_color()),
+                            Some(depth_attachment),
+                        )?;
+                    }
+                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
+                    element_blur_refreshed = !element_blur_layers.is_empty();
+                    if element_blur_refreshed {
+                        render_element_blur_layers(
+                            device,
+                            self.render_pass,
+                            depth_attachment,
+                            &element_blur_layers,
+                        )?;
+                    }
+                    if backdrop_blur_refreshed
+                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
+                    {
+                        render_backdrop_blur_groups(
+                            device,
+                            source_texture_view,
+                            self.render_pass,
+                            depth_attachment,
+                            &backdrop_blur_groups,
+                        )?;
+                    }
+                    let offscreen_elapsed = offscreen_started.elapsed();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.offscreen_render = offscreen_elapsed;
+                    }
+                    let offscreen_elapsed_ms = offscreen_elapsed.as_millis();
+                    let present_started = Instant::now();
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.frame_prepare_upload =
+                            present_started.saturating_duration_since(frame_started);
+                    }
+                    let presentation_frame = render_main_and_present(
+                        device,
+                        MainPresentDescriptor {
+                            submission_mode,
+                            async_capabilities,
+                            pending_submissions: &mut self.pending_submissions,
+                            frame_resource_index: self.current_frame_resource_index,
+                            swapchain: self.swapchain,
+                            render_pass: self.render_pass,
+                            depth_attachment,
+                            damage: present_damage,
+                        },
+                        self.draw_step_scratch.steps(),
+                    )?;
+                    let did_present = presentation_frame.is_some();
+                    let backend_presentation_timings =
+                        presentation_frame.and_then(|frame| frame.timings);
+                    if let Some(timing) = presentation_timing.as_mut() {
+                        timing.backend_present = present_started.elapsed();
+                    }
+                    let present_elapsed_ms = present_started.elapsed().as_millis();
+                    let total_elapsed_ms = frame_started.elapsed().as_millis();
+                    if self.diagnostics.should_warn_slow_frame(total_elapsed_ms) {
+                        log::warn!(
+                            concat!(
+                                "nova-gfx frame stages: backend={} total_ms={} ",
+                                "buffer_upload_ms={} atlas_upload_ms={} offscreen_ms={} ",
+                                "present_ms={} submission_mode={:?} atlas_uploads={} ",
+                                "atlas_bytes={} blur_groups={} element_blur_layers={}"
+                            ),
+                            backend_label,
+                            total_elapsed_ms,
+                            buffer_upload_elapsed_ms,
+                            atlas_upload_elapsed_ms,
+                            offscreen_elapsed_ms,
+                            present_elapsed_ms,
+                            submission_mode,
+                            atlas_stats.upload_count,
+                            atlas_stats.uploaded_bytes,
+                            backdrop_blur_groups.len(),
+                            element_blur_layers.len(),
+                        );
+                    }
+                    Ok((did_present, backend_presentation_timings))
+                }
+                #[cfg(not(any(
+                    all(feature = "nova-gfx-dx12", target_os = "windows"),
+                    all(feature = "nova-gfx-metal", target_os = "macos"),
+                    all(
+                        feature = "nova-gfx-vulkan",
+                        any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                    )
+                )))]
+                NovaBackend::Unavailable => {
+                    anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+                }
+            };
 
         let frame_elapsed_ms = frame_started.elapsed().as_millis();
         if let Err(error) = &render_result {
@@ -1340,7 +1313,7 @@ impl NovaRenderer {
                 self.submitted_frames.saturating_add(1),
                 atlas_texture_region_count,
                 atlas_texture_upload_bytes,
-                mapped_upload_bytes.saturating_add(mesh_upload_bytes),
+                mapped_upload_bytes,
                 usize::from(present_damage.is_some()),
                 mask_pass_count,
                 blur_render_passes,
@@ -1393,12 +1366,13 @@ impl NovaRenderer {
         if !self.first_frame_reported {
             self.first_frame_reported = true;
             log::info!(
-                "GPUI nova-gfx first frame: renderer_path=nova-gfx phase=path-offscreen first_frame_time_ms={} submitted_frames={} quads={} paths={} mono_sprites={}",
+                "GPUI nova-gfx first frame: renderer_path=nova-gfx phase=path-offscreen first_frame_time_ms={} submitted_frames={} quads={} paths={} mono_sprites={} thread={:?}",
                 self.metrics_started_at.elapsed().as_millis(),
                 self.submitted_frames,
                 upload.quad_count,
                 upload.path_sprite_count,
-                upload.mono_sprite_count
+                upload.mono_sprite_count,
+                std::thread::current().id()
             );
         }
         if packet.sampled_active_presentation_animation {

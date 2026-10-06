@@ -30,3 +30,8 @@ pub use scene::*;
 pub use snapshot::*;
 pub use upload::*;
 pub use window::*;
+pub(crate) use window::{
+    record_window_active_presentation_attempt,
+    record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
+    record_window_backend_ready_wake, record_window_native_vsync_wake,
+};

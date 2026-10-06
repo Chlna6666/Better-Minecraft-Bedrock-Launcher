@@ -438,7 +438,7 @@ pub enum AnimationExecutionClass {
 
 - map 3D preview；
 - skin model；
-- custom mesh canvas；
+- `gpui-3d` scene view；
 - audio visualization 等自定义 renderer。
 
 要求：
@@ -641,7 +641,7 @@ struct LayoutInstanceId(...);
 - GPU busy 高；
 - overdraw/offscreen 明显。
 
-- [?] GPUI animation-engine 的 framebuffer-only 帧仍会重复准备主 draw steps 与 path-mask steps；已增加按 frame-resource slot 的 retained descriptor cache。主 draw-step 缓存键只包含它实际依赖的静态 scene revision、drawable size、atlas generation 与 alpha 模式；blur quality 不参与主 descriptor 键，3D mesh/pipeline 变化通过显式失效事件处理，不进入动画采样键；等待 Windows runtime 对比确认收益。
+- [?] GPUI animation-engine 的 framebuffer-only 帧仍会重复准备主 draw steps 与 path-mask steps；已增加按 frame-resource slot 的 retained descriptor cache。主 draw-step 缓存键只包含它实际依赖的静态 scene revision、drawable size、atlas generation 与 alpha 模式；blur quality 不参与主 descriptor 键。Renderer extension 帧带有独立 frame id，避免复用过期 draw steps；GPUI 不再维护 mesh/pipeline 资源 revision。
 
 ### 7.2 Batch
 
@@ -1740,7 +1740,7 @@ BMCBL fork 的改动必须证明：
 
 - Commit: 未提交（按当前任务权限不自动提交）
 - 状态: [?] 已实现，等待本地 Windows benchmark
-- 变化：Nova 的 framebuffer-only animation frame 不再在静态 scene revision 未变时重复从 `FrameUpload.batches` 构造主 draw-step descriptor 与 path-mask descriptor；每个 frame-resource slot 独立缓存，atlas、backdrop/alpha 通过缓存键处理，custom mesh/pipeline 资源变化通过显式失效事件处理，不把 3D 资源 revision 混入动画缓存键。
+- 变化：Nova 的 framebuffer-only animation frame 不再在静态 scene revision 未变时重复从 `FrameUpload.batches` 构造主 draw-step descriptor 与 path-mask descriptor；每个 frame-resource slot 独立缓存，atlas、backdrop/alpha 通过缓存键处理。Renderer extension 帧使用独立 frame id，GPUI 不追踪其 mesh/pipeline 资源 revision。
 - 保持：不改变 animation easing、scene animation value、dirty bounds、blur damage 或透明 Windows partial-present 安全策略；缓存只复用 descriptor，不复用可能已失效的 GPU resource id。
 - 观测：`nova-gfx frame diagnostics` 增加 `draw_step_cache_hit` 与 `path_mask_cache_hit`，可直接比较 engine animation frame 是否仍重复 descriptor 构造。
 - 未验证项：Windows DX12 实机的 frame generation、present interval、FPS、GPU wait、blur pass 与视觉/命中测试；GPUI framework check 已通过。

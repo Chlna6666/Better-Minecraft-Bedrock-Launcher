@@ -37,19 +37,23 @@ The loader validates WGSL with `naga` before application rendering code creates
 backend shader modules. File read errors include the path. Parse and validation
 errors include the provided label or path and a formatted WGSL diagnostic.
 
-## Integration With Application Rendering
+## Integration With Renderer Extensions
 
-Runtime WGSL belongs to the application-owned renderer:
+Runtime WGSL belongs to the crate that implements custom GPU rendering. A GPUI
+`RendererExtension` can create its pipelines and buffers from the extension
+device, then append draw steps to the host render pass:
 
 1. Load and validate WGSL with `WgslShaderSource`.
 2. Cross-compile or translate it for the selected backend.
-3. Build bind groups, pipelines, buffers, and textures from the renderer device.
-4. Render into an application-owned render target or surface.
-5. Composite the rendered output into the GPUI scene through the application's
-   integration point.
+3. Build bind groups, pipelines, buffers, and textures in the extension renderer.
+4. Return ordered `RenderStepDescriptor`s from `RendererExtensionRenderer::render`.
+5. Let GPUI apply the element scissor and submit those steps at the extension's
+   scene position.
 
-The custom render pipeline's color target must match the surface texture
-format.
+The pipeline's color target must match `RendererExtensionContext::color_format`.
+Extension callbacks run synchronously on the renderer owner; they must not do
+blocking IO or call back into application UI state. GPUI owns window and render
+pass lifetime, while the extension implementation owns its GPU resources.
 
 ## Error Handling
 
@@ -61,18 +65,17 @@ Treat shader loading as fallible application setup:
 - Keep runtime shader errors out of GPUI renderer internals unless the shader is
   part of the framework renderer.
 
-## Example
+## 3D examples
 
-`hatsune_miku_viewer` demonstrates the full path on Windows:
-
-- load WGSL from an example shader file;
-- parse OBJ and MTL files with `tobj`;
-- load material textures with `image`;
-- render per-material submeshes into a GPUI-managed GPU surface;
-- support mouse drag rotation, wheel zoom, and resize.
-
-Set `GPUI_HATSUNE_MIKU_DIR` to point it at an OBJ asset directory.
+The old standalone `hatsune_miku_viewer` example used GPUI's removed mesh and
+surface path. Reusable 3D examples now live in the `gpui-3d` crate; they exercise
+the viewport API, while `WgslShaderSource` remains a generic validation helper.
 
 ```powershell
-cargo run --example hatsune_miku_viewer
+cargo run -p gpui-3d --example scene
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx12
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-vulkan
 ```
+
+See [`gpui-3d`'s architecture guide](../../../docs/GPUI_3D.md) for the 3D/API boundary and current
+backend validation status.

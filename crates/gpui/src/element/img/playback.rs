@@ -85,7 +85,7 @@ pub(super) fn select_animation_frame(
     Some(current_frame)
 }
 
-pub(super) fn request_next_image_animation_frame(
+pub(super) fn schedule_next_frame(
     state: &ImageElementState,
     window: &mut Window,
     cx: &App,
@@ -94,10 +94,10 @@ pub(super) fn request_next_image_animation_frame(
     let deadline = state.next_frame_at.unwrap_or_else(|| {
         cx.background_executor().now() + animation_config.minimum_frame_duration()
     });
-    window.request_image_animation_frame_at(deadline, cx, animation_config);
+    window.schedule_image_frame(deadline, cx, animation_config);
 }
 
-pub(super) fn should_request_image_animation_frame(
+pub(super) fn should_animate(
     render_image: &RenderImage,
     animation_config: crate::AnimatedImageConfig,
 ) -> bool {

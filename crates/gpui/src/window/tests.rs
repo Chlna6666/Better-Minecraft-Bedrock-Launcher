@@ -9,6 +9,8 @@ use crate::{
 };
 use std::{cell::Cell, cell::RefCell, rc::Rc};
 
+mod presentation_ownership;
+
 #[cfg(test)]
 #[derive(Default)]
 struct EmptyTestView;
@@ -392,7 +394,7 @@ impl Window {
         });
     }
 
-    pub(crate) fn test_request_image_animation_frame_at(
+    pub(crate) fn test_schedule_image_frame(
         &mut self,
         entity: EntityId,
         deadline: Instant,
@@ -400,11 +402,7 @@ impl Window {
     ) {
         self.invalidator.set_phase(DrawPhase::Paint);
         self.with_rendered_view(entity, |window| {
-            window.request_image_animation_frame_at(
-                deadline,
-                cx,
-                ImagePipelineConfig::default().animated,
-            )
+            window.schedule_image_frame(deadline, cx, ImagePipelineConfig::default().animated)
         });
         self.invalidator.set_phase(DrawPhase::None);
     }
@@ -762,12 +760,8 @@ fn inactive_image_animation_deadline_requests_are_coalesced(cx: &mut TestAppCont
         .update(cx, |_, window, cx| {
             let entity = cx.entity_id();
             let deadline = Instant::now() + Duration::from_millis(10);
-            window.test_request_image_animation_frame_at(entity, deadline, cx);
-            window.test_request_image_animation_frame_at(
-                entity,
-                deadline + Duration::from_millis(5),
-                cx,
-            );
+            window.test_schedule_image_frame(entity, deadline, cx);
+            window.test_schedule_image_frame(entity, deadline + Duration::from_millis(5), cx);
             assert!(window.test_image_animation_frame_pending());
         })
         .unwrap();
@@ -789,8 +783,8 @@ fn active_image_animation_immediate_requests_are_coalesced(cx: &mut TestAppConte
             let test_window = window.platform_window.as_test().unwrap().clone();
             let baseline = test_window.requested_frame_count();
             let deadline = Instant::now();
-            window.test_request_image_animation_frame_at(entity, deadline, cx);
-            window.test_request_image_animation_frame_at(entity, deadline, cx);
+            window.test_schedule_image_frame(entity, deadline, cx);
+            window.test_schedule_image_frame(entity, deadline, cx);
 
             assert_eq!(test_window.requested_frame_count(), baseline + 1);
         })
@@ -812,7 +806,7 @@ fn active_image_animation_waits_for_media_deadline(cx: &mut TestAppContext) {
             let test_window = window.platform_window.as_test().unwrap().clone();
             let baseline = test_window.requested_frame_count();
 
-            window.test_request_image_animation_frame_at(
+            window.test_schedule_image_frame(
                 entity,
                 Instant::now() + Duration::from_millis(50),
                 cx,
@@ -841,9 +835,10 @@ fn minimized_image_animation_does_not_schedule_frames(cx: &mut TestAppContext) {
             let entity = cx.entity_id();
             let test_window = window.platform_window.as_test().unwrap().clone();
             test_window.0.lock().shown = false;
+            window.refresh_visibility(cx);
             let baseline = test_window.requested_frame_count();
 
-            window.test_request_image_animation_frame_at(entity, Instant::now(), cx);
+            window.test_schedule_image_frame(entity, Instant::now(), cx);
 
             assert_eq!(test_window.requested_frame_count(), baseline);
             assert!(!window.test_image_animation_frame_pending());

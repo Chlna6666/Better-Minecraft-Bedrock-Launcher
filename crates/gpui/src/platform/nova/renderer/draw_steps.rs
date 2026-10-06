@@ -1,3 +1,4 @@
+use super::super::blur_damage::{bounds_to_scissor, intersect_scissor_rects};
 use super::*;
 
 pub(super) struct PreparedBackdropBlurGroup {
@@ -24,67 +25,156 @@ pub(super) struct PreparedElementBlurLayer {
 
 impl NovaRenderer {
     pub(super) fn prepare_draw_steps(&mut self, scene_revision: u64) {
-        self.draw_step_scratch.draw_step_cache_hit = false;
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let cache_key = DrawStepCacheKey {
             scene_revision,
+            dynamic_frame_id: (!self.frame_upload.renderer_extensions.is_empty())
+                .then_some(self.frame_upload.renderer_extension_frame_id),
             size: self.current_size,
             frame_resource_index,
             atlas_texture_generation: self.synced_atlas_texture_generation,
             atlas_texture_count: self.gpu_atlas_textures.len(),
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
         };
-        let cacheable = scene_revision != 0;
-        if self.draw_step_scratch.draw_step_cache.len() != self.frame_resources.len() {
-            self.draw_step_scratch
-                .draw_step_cache
-                .resize_with(self.frame_resources.len(), Default::default);
+        let gpu_atlas_textures = &self.gpu_atlas_textures;
+        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
+        self.draw_step_scratch
+            .prepare_steps(cache_key, self.frame_resources.len(), |steps| {
+                draw_steps_for_upload_into(
+                    &self.frame_upload,
+                    &self.pipelines,
+                    blend_pipelines,
+                    self.quad_resource_set,
+                    self.shadow_resource_set,
+                    self.path_resource_set,
+                    |texture_id| {
+                        sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
+                    },
+                    self.underline_resource_set,
+                    |config| {
+                        backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index)
+                    },
+                    DrawStepMode::Present,
+                    steps,
+                );
+            });
+    }
+
+    pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
+        let extension_count = self.frame_upload.renderer_extensions.len();
+        self.frame_upload
+            .renderer_extension_steps
+            .resize_with(extension_count, Vec::new);
+        self.frame_upload
+            .renderer_extension_steps
+            .truncate(extension_count);
+        let viewport = Extent2d::new(self.current_size.width, self.current_size.height)?;
+        let active_types = self.active_renderer_extension_types();
+        self.release_inactive_renderer_extensions(&active_types);
+        for index in 0..extension_count {
+            self.prepare_renderer_extension(index, viewport, frame_time)?;
         }
-        if cacheable
-            && let Some(cached) = self
-                .draw_step_scratch
-                .draw_step_cache
-                .get(frame_resource_index)
-                .filter(|cached| cached.key == Some(cache_key))
-        {
-            self.draw_step_scratch.draw_step_cache_hit = true;
-            self.draw_step_scratch.draw_steps.clone_from(&cached.steps);
-            return;
+        Ok(())
+    }
+
+    fn active_renderer_extension_types(&self) -> SmallVec<[std::any::TypeId; 4]> {
+        let mut active_types = SmallVec::new();
+        for extension in &self.frame_upload.renderer_extensions {
+            let type_id = extension.extension.type_id();
+            if !active_types.contains(&type_id) {
+                active_types.push(type_id);
+            }
+        }
+        active_types
+    }
+
+    fn release_inactive_renderer_extensions(&mut self, active_types: &[std::any::TypeId]) {
+        let stale_types = self
+            .renderer_extension_renderers
+            .keys()
+            .copied()
+            .filter(|type_id| !active_types.contains(type_id))
+            .collect::<SmallVec<[_; 4]>>();
+        for type_id in stale_types {
+            if let Some(mut renderer) = self.renderer_extension_renderers.remove(&type_id) {
+                if let Err(error) = lock_backend(&self.backend)
+                    .with_extension_device(|device| renderer.destroy(device))
+                {
+                    log::debug!("failed to destroy inactive GPUI renderer extension: {error}");
+                }
+            }
+        }
+    }
+
+    fn prepare_renderer_extension(
+        &mut self,
+        index: usize,
+        viewport: Extent2d,
+        frame_time: Instant,
+    ) -> Result<()> {
+        let extension = self.frame_upload.renderer_extensions[index].clone();
+        let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.current_size) else {
+            return Ok(());
+        };
+        let Some(mask_scissor) =
+            bounds_to_scissor(extension.content_mask.bounds, self.current_size)
+        else {
+            return Ok(());
+        };
+        let scissor = intersect_scissor_rects(bounds_scissor, mask_scissor);
+        if scissor.is_empty() {
+            return Ok(());
         }
 
-        let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
-        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
-        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
-        let steps = &mut self.draw_step_scratch.draw_steps;
-        draw_steps_for_upload_into(
-            &self.frame_upload,
-            &self.pipelines,
-            blend_pipelines,
-            self.quad_resource_set,
-            self.shadow_resource_set,
-            self.path_resource_set,
-            |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
-            |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
-            |mesh_id, generation| {
-                custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
-            },
-            self.underline_resource_set,
-            |config| backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index),
-            self.custom_mesh_3d_resource_set,
-            self.custom_mesh_3d_indices_buffer,
-            DrawStepMode::Present,
-            steps,
+        let context = crate::RendererExtensionContext::new(
+            self.backend_info.kind()?,
+            self.render_pass,
+            self.surface_config.format,
+            viewport,
+            extension.bounds,
+            extension.content_mask,
+            scissor,
+            frame_time,
         );
-        if cacheable
-            && let Some(cached) = self
-                .draw_step_scratch
-                .draw_step_cache
-                .get_mut(frame_resource_index)
-        {
-            cached.key = Some(cache_key);
-            cached.steps.clone_from(steps);
+        let type_id = extension.extension.type_id();
+        let mut backend = lock_backend(&self.backend);
+        let (renderers, steps) = (
+            &mut self.renderer_extension_renderers,
+            &mut self.frame_upload.renderer_extension_steps[index],
+        );
+        steps.clear();
+        backend.with_extension_device(|device| {
+            if !renderers.contains_key(&type_id) {
+                let renderer = extension
+                    .extension
+                    .create_renderer(device, context.clone())?;
+                renderers.insert(type_id, renderer);
+            }
+            let Some(renderer) = renderers.get_mut(&type_id) else {
+                anyhow::bail!("failed to initialize GPUI renderer extension")
+            };
+            renderer.render(extension.extension.as_ref(), device, context, steps)
+        })?;
+        apply_scissor_to_steps(steps, scissor);
+        Ok(())
+    }
+
+    pub(super) fn destroy_renderer_extensions(&mut self) {
+        if self.renderer_extension_renderers.is_empty() {
+            return;
+        }
+        let result = lock_backend(&self.backend).with_extension_device(|device| {
+            for (_, mut renderer) in self.renderer_extension_renderers.drain() {
+                if let Err(error) = renderer.destroy(device) {
+                    log::debug!("failed to destroy GPUI renderer extension: {error}");
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            log::debug!("failed to access nova-gfx device to destroy extensions: {error}");
+            self.renderer_extension_renderers.clear();
         }
     }
 
@@ -108,8 +198,6 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
-        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
 
         let blur_groups: Vec<_> =
             direct_backdrop_barriers(&self.frame_upload, 0, self.frame_upload.batches.len())
@@ -199,14 +287,8 @@ impl NovaRenderer {
                 |texture_id| {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
-                |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
-                |mesh_id, generation| {
-                    custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
-                },
                 self.underline_resource_set,
                 |config| targets.resource_set_for_config(config, frame_resource_index),
-                self.custom_mesh_3d_resource_set,
-                self.custom_mesh_3d_indices_buffer,
                 DrawStepMode::BackdropSegment {
                     batch_start,
                     batch_end,
@@ -287,8 +369,6 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
-        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
         let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
         let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let composite_only = if force_full {
@@ -418,14 +498,8 @@ impl NovaRenderer {
                 |texture_id| {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
-                |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
-                |mesh_id, generation| {
-                    custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
-                },
                 self.underline_resource_set,
                 |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
-                self.custom_mesh_3d_resource_set,
-                self.custom_mesh_3d_indices_buffer,
                 DrawStepMode::BlurContent {
                     batch_start: segment_start,
                     batch_end: range.content_end,
@@ -482,8 +556,6 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let custom_mesh_3d_pipelines = &self.custom_mesh_3d_pipelines;
-        let custom_mesh_3d_mesh_cache = &self.custom_mesh_3d_mesh_cache;
         let mut source_steps = Vec::new();
         draw_steps_for_upload_into(
             &self.frame_upload,
@@ -493,14 +565,8 @@ impl NovaRenderer {
             self.shadow_resource_set,
             self.path_resource_set,
             |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
-            |shader_id| custom_mesh_3d_pipelines.get(&shader_id).copied(),
-            |mesh_id, generation| {
-                custom_mesh_cache_entry(custom_mesh_3d_mesh_cache, mesh_id, generation)
-            },
             self.underline_resource_set,
             |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
-            self.custom_mesh_3d_resource_set,
-            self.custom_mesh_3d_indices_buffer,
             DrawStepMode::BlurContent {
                 batch_start,
                 batch_end,
@@ -547,54 +613,27 @@ impl NovaRenderer {
     }
 
     pub(super) fn prepare_path_mask_draw_steps(&mut self, scene_revision: u64) {
-        self.draw_step_scratch.path_mask_cache_hit = false;
         let cache_key = PathMaskCacheKey {
             scene_revision,
             path_rasterization_resource_set: self.path_rasterization_resource_set,
         };
-        let cacheable = scene_revision != 0;
-        if cacheable
-            && self
-                .draw_step_scratch
-                .path_mask_cache
-                .as_ref()
-                .is_some_and(|cached| cached.key == Some(cache_key))
-        {
-            let cached = self
-                .draw_step_scratch
-                .path_mask_cache
-                .as_ref()
-                .expect("path mask cache key was checked above");
-            self.draw_step_scratch.path_mask_cache_hit = true;
-            self.draw_step_scratch
-                .path_mask_steps
-                .clone_from(&cached.steps);
-            return;
-        }
-
-        path_mask_draw_steps_for_upload_into(
-            &self.frame_upload,
-            &self.pipelines,
-            self.path_rasterization_resource_set,
-            &mut self.draw_step_scratch.path_mask_steps,
+        self.draw_step_scratch.prepare_path_steps(
+            cache_key,
+            self.current_frame_resource_index,
+            self.frame_resources.len(),
+            |steps| {
+                path_mask_draw_steps_for_upload_into(
+                    &self.frame_upload,
+                    &self.pipelines,
+                    self.path_rasterization_resource_set,
+                    steps,
+                );
+            },
         );
-        if cacheable {
-            let cache = self
-                .draw_step_scratch
-                .path_mask_cache
-                .get_or_insert_with(Default::default);
-            cache.key = Some(cache_key);
-            cache
-                .steps
-                .clone_from(&self.draw_step_scratch.path_mask_steps);
-        }
     }
 
     pub(super) fn invalidate_draw_step_cache(&mut self) {
-        for cache in &mut self.draw_step_scratch.draw_step_cache {
-            cache.key = None;
-        }
-        self.draw_step_scratch.draw_step_cache_hit = false;
+        self.draw_step_scratch.invalidate_draw_steps();
     }
 }
 
@@ -612,17 +651,6 @@ fn sprite_resource_set(
         };
         resource_sets.get(frame_resource_index).copied()
     })
-}
-
-fn custom_mesh_cache_entry(
-    custom_mesh_3d_mesh_cache: &FxHashMap<GpuMesh3dId, MeshCacheEntry>,
-    mesh_id: GpuMesh3dId,
-    generation: u64,
-) -> Option<MeshCacheEntry> {
-    custom_mesh_3d_mesh_cache
-        .get(&mesh_id)
-        .copied()
-        .filter(|entry| entry.generation == generation)
 }
 
 fn backdrop_damage_for_configs(
@@ -760,7 +788,7 @@ fn direct_backdrop_barriers(upload: &FrameUpload, start: usize, end: usize) -> V
             | UploadedBatch::Underlines { .. }
             | UploadedBatch::BackdropBlurs { .. }
             | UploadedBatch::CompositeBlur { .. }
-            | UploadedBatch::CustomMesh3d { .. } => {}
+            | UploadedBatch::RendererExtensions { .. } => {}
         }
     }
     barriers

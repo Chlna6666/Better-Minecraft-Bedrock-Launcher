@@ -1,10 +1,9 @@
 use super::*;
 use crate::{
-    FontId, GlobalElementId, GlyphId, GpuMesh3dDrawParameters, GpuMesh3dDrawRanges,
-    GpuMesh3dVertex, ImageId, ImagePixelFormat, PaintGpuMesh3d, RenderGlyphParams,
+    FontId, GlobalElementId, GlyphId, ImageId, ImagePixelFormat, RenderGlyphParams,
     RenderImageParams, TileId, WgslShaderSource, bounds, point, px, size,
 };
-use gfx_core::{DrawIndexedStepDescriptor, IndexBufferBinding, IndexFormat, RenderStepDescriptor};
+use gfx_core::RenderStepDescriptor;
 use std::cell::Cell;
 
 fn force_atlas_full(atlas: &NovaAtlas) {
@@ -77,42 +76,6 @@ fn test_sprite_resource_set(
         AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => mono_set,
         AtlasTextureKind::Bgra | AtlasTextureKind::Rgba => poly_set,
     })
-}
-
-fn test_gpu_mesh_3d_shader() -> Arc<GpuMesh3dShader> {
-    let source = WgslShaderSource::from_source(
-        "nova-test-gpu-mesh-3d-shader",
-        r#"
-struct MeshVertex {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec4<f32>,
-};
-
-struct MeshOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-};
-
-@vertex
-fn vs_test_mesh(vertex: MeshVertex) -> MeshOut {
-    var out: MeshOut;
-    out.position = vec4<f32>(vertex.position, 1.0);
-    out.color = vertex.color;
-    return out;
-}
-
-@fragment
-fn fs_test_mesh(input: MeshOut) -> @location(0) vec4<f32> {
-    return input.color;
-}
-"#,
-    )
-    .expect("test shader should validate");
-    Arc::new(GpuMesh3dShader::new(
-        Arc::new(source),
-        "vs_test_mesh",
-        "fs_test_mesh",
-    ))
 }
 
 #[test]
@@ -854,10 +817,9 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
         surfaces: 2,
         backdrop_blurs: 3,
         backdrop_blur_tint_fallbacks: 4,
-        gpu_meshes_3d: 5,
     };
 
-    assert_eq!(summary.total(), 15);
+    assert_eq!(summary.total(), 10);
 }
 
 #[test]
@@ -1382,161 +1344,6 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 }
 
 #[test]
-fn frame_upload_lists_repeated_custom_gpu_mesh_once() {
-    let mesh = Arc::new(GpuMesh3d::new(
-        vec![
-            GpuMesh3dVertex {
-                position: [0.0, 0.0, 0.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [1.0, 0.0, 0.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [0.0, 1.0, 0.0],
-                color: [0.0, 0.0, 1.0, 1.0],
-            },
-        ],
-        vec![0, 1, 2],
-        GpuMesh3dDrawRanges {
-            opaque: GpuMesh3dRange { start: 0, count: 3 },
-            glass: GpuMesh3dRange::default(),
-            water: GpuMesh3dRange::default(),
-        },
-        [0.5, 0.5, 0.0],
-        1.0,
-        1.0,
-        test_gpu_mesh_3d_shader(),
-    ));
-    let bounds = Bounds::new(
-        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
-        crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
-    );
-    let content_mask = crate::ContentMask {
-        bounds,
-        ..Default::default()
-    };
-    let parameters = GpuMesh3dDrawParameters {
-        view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
-    };
-    let mut scene = crate::Scene::default();
-    for order in [0, 1] {
-        scene.insert_primitive(PaintGpuMesh3d {
-            order,
-            bounds,
-            content_mask: content_mask.clone(),
-            mesh: mesh.clone(),
-            parameters,
-            animation_id: None,
-        });
-    }
-    scene.finish();
-
-    let mut upload = FrameUpload::default();
-    let summary = upload.encode(
-        &scene,
-        &[],
-        DrawableSize {
-            width: 640,
-            height: 480,
-        },
-        &RenderingParameters::from_env(),
-        true,
-        BackdropBlurQuality::Full,
-    );
-
-    assert_eq!(summary.unsupported_batches.gpu_meshes_3d, 0);
-    assert_eq!(upload.custom_mesh_3d_meshes.len(), 1);
-    assert_eq!(upload.custom_mesh_3d_meshes[0].id, mesh.id);
-    assert_eq!(
-        upload.custom_mesh_3d_parameters.len(),
-        PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES * 2
-    );
-    assert_eq!(
-        upload
-            .batches
-            .iter()
-            .filter(|batch| matches!(batch, UploadedBatch::CustomMesh3d { .. }))
-            .count(),
-        2
-    );
-}
-
-#[test]
-fn frame_upload_skips_custom_gpu_mesh_with_out_of_bounds_index() {
-    let mesh = Arc::new(GpuMesh3d::new(
-        vec![
-            GpuMesh3dVertex {
-                position: [0.0, 0.0, 0.0],
-                color: [1.0, 0.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [1.0, 0.0, 0.0],
-                color: [0.0, 1.0, 0.0, 1.0],
-            },
-            GpuMesh3dVertex {
-                position: [0.0, 1.0, 0.0],
-                color: [0.0, 0.0, 1.0, 1.0],
-            },
-        ],
-        vec![0, 1, 99],
-        GpuMesh3dDrawRanges {
-            opaque: GpuMesh3dRange { start: 0, count: 3 },
-            glass: GpuMesh3dRange::default(),
-            water: GpuMesh3dRange::default(),
-        },
-        [0.5, 0.5, 0.0],
-        1.0,
-        1.0,
-        test_gpu_mesh_3d_shader(),
-    ));
-    let bounds = Bounds::new(
-        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
-        crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
-    );
-    let content_mask = crate::ContentMask {
-        bounds,
-        ..Default::default()
-    };
-    let mut scene = crate::Scene::default();
-    scene.insert_primitive(PaintGpuMesh3d {
-        order: 0,
-        bounds,
-        content_mask,
-        mesh,
-        parameters: GpuMesh3dDrawParameters {
-            view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
-        },
-        animation_id: None,
-    });
-    scene.finish();
-
-    let mut upload = FrameUpload::default();
-    let summary = upload.encode(
-        &scene,
-        &[],
-        DrawableSize {
-            width: 640,
-            height: 480,
-        },
-        &RenderingParameters::from_env(),
-        true,
-        BackdropBlurQuality::Full,
-    );
-
-    assert_eq!(summary.unsupported_batches.gpu_meshes_3d, 1);
-    assert!(upload.custom_mesh_3d_meshes.is_empty());
-    assert!(upload.custom_mesh_3d_parameters.is_empty());
-    assert!(
-        !upload
-            .batches
-            .iter()
-            .any(|batch| matches!(batch, UploadedBatch::CustomMesh3d { .. }))
-    );
-}
-
-#[test]
 fn draw_steps_preserve_supported_batch_order_and_resources() {
     let mut upload = FrameUpload::default();
     append_test_backdrop_blur(&mut upload);
@@ -1587,8 +1394,6 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
     let poly_set = test_resource_set_id(14);
     let underline_set = test_resource_set_id(15);
     let backdrop_blur_set = test_resource_set_id(16);
-    let gpu_mesh_set = test_resource_set_id(17);
-    let gpu_mesh_indices_buffer = test_buffer_id(18);
 
     let steps = draw_steps_for_upload(
         &upload,
@@ -1598,12 +1403,8 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
         shadow_set,
         path_set,
         |texture_id| test_sprite_resource_set(texture_id, mono_set, poly_set),
-        |_| None,
-        |_, _| None,
         underline_set,
         backdrop_blur_set,
-        gpu_mesh_set,
-        gpu_mesh_indices_buffer,
         DrawStepMode::Present,
     );
 
@@ -1784,12 +1585,8 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         test_resource_set_id(12),
         test_resource_set_id(13),
         |texture_id| test_sprite_resource_set(texture_id, mono_set, test_resource_set_id(14)),
-        |_| None,
-        |_, _| None,
         test_resource_set_id(15),
         test_resource_set_id(16),
-        test_resource_set_id(17),
-        test_buffer_id(18),
         DrawStepMode::Present,
     );
 
@@ -1848,12 +1645,8 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
                 test_resource_set_id(12),
             )
         },
-        |_| None,
-        |_, _| None,
         test_resource_set_id(13),
         test_resource_set_id(14),
-        test_resource_set_id(15),
-        test_buffer_id(16),
         DrawStepMode::Present,
     );
 
@@ -1868,75 +1661,6 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
             first_instance: 0,
             scissor: None,
         })]
-    );
-}
-
-#[test]
-fn draw_steps_emit_custom_gpu_mesh_3d_step() {
-    let mut upload = FrameUpload::default();
-    let shader_id = GpuMesh3dShaderId(3);
-    let mesh_pipeline = test_render_pipeline_id(90);
-    let mesh_set = test_resource_set_id(91);
-    let mesh_indices_buffer = test_buffer_id(92);
-    let mesh_id = GpuMesh3dId(5);
-    let generation = 7;
-    upload.batches.push(UploadedBatch::CustomMesh3d {
-        mesh_id,
-        generation,
-        shader_id,
-        range: GpuMesh3dRange {
-            start: 7,
-            count: 12,
-        },
-        first_parameter_index: 2,
-    });
-
-    let pipelines = test_pipelines();
-    let blend_pipelines = pipelines.alpha;
-    let steps = draw_steps_for_upload(
-        &upload,
-        &pipelines,
-        blend_pipelines,
-        test_resource_set_id(10),
-        test_resource_set_id(11),
-        test_resource_set_id(12),
-        |_| None,
-        |id| (id == shader_id).then_some(mesh_pipeline),
-        |id, generation| {
-            (id == mesh_id && generation == 7).then_some(MeshCacheEntry {
-                generation,
-                vertex_offset: 3,
-                vertex_count: 20,
-                index_offset: 100,
-                index_count: 32,
-            })
-        },
-        test_resource_set_id(13),
-        test_resource_set_id(14),
-        mesh_set,
-        mesh_indices_buffer,
-        DrawStepMode::Present,
-    );
-
-    assert_eq!(
-        steps,
-        vec![RenderStepDescriptor::DrawIndexed(
-            DrawIndexedStepDescriptor {
-                pipeline: mesh_pipeline,
-                resource_sets: resource_set_list([mesh_set]),
-                index_buffer: IndexBufferBinding {
-                    buffer: mesh_indices_buffer,
-                    format: IndexFormat::Uint32,
-                    offset: 100,
-                },
-                index_count: 12,
-                first_index: 7,
-                base_vertex: 3,
-                instance_count: 1,
-                first_instance: 2,
-                scissor: None,
-            }
-        )]
     );
 }
 
@@ -1975,12 +1699,8 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
                 test_resource_set_id(14),
             )
         },
-        |_| None,
-        |_, _| None,
         test_resource_set_id(15),
         test_resource_set_id(16),
-        test_resource_set_id(17),
-        test_buffer_id(18),
         DrawStepMode::BackdropSegment {
             batch_start: 0,
             batch_end: 1,
@@ -2036,12 +1756,8 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
                 test_resource_set_id(14),
             )
         },
-        |_| None,
-        |_, _| None,
         test_resource_set_id(15),
         test_resource_set_id(16),
-        test_resource_set_id(17),
-        test_buffer_id(18),
         DrawStepMode::Present,
     );
 

@@ -35,17 +35,20 @@ loader 会在应用渲染代码创建后端 shader module 前用 `naga` 校验 W
 误会包含路径；解析和校验错误会包含传入的 label 或路径，以及格式化后的 WGSL 诊断
 信息。
 
-## 与应用渲染集成
+## 接入 Renderer Extension
 
-运行时 WGSL 属于应用自己拥有的 renderer：
+运行时 WGSL 属于实现自定义 GPU 绘制的 crate。GPUI `RendererExtension` 可以在 extension
+device 上创建 pipeline 和 buffer，再向宿主 render pass 添加 draw step：
 
 1. 使用 `WgslShaderSource` 加载并校验 WGSL。
 2. 按选中的后端 cross-compile 或转换 shader。
-3. 从 renderer device 构建 bind groups、pipelines、buffers 和 textures。
-4. 渲染到应用自己拥有的 render target 或 surface。
-5. 通过应用的集成点把渲染结果合成进 GPUI scene。
+3. 在 extension renderer 中构建 bind groups、pipelines、buffers 和 textures。
+4. 从 `RendererExtensionRenderer::render` 返回有序的 `RenderStepDescriptor`。
+5. GPUI 应用元素 scissor，并在 extension 的 scene 顺序位置提交这些步骤。
 
-自定义 render pipeline 的 color target 必须匹配 surface texture format。
+pipeline 的 color target 必须匹配 `RendererExtensionContext::color_format`。extension callback
+在 renderer owner 上同步执行；不得执行阻塞 IO 或回调应用 UI 状态。GPUI 拥有窗口和 render
+pass 生命周期，extension 实现拥有自己的 GPU 资源。
 
 ## 错误处理
 
@@ -57,18 +60,15 @@ loader 会在应用渲染代码创建后端 shader module 前用 `naga` 校验 W
 - 除非 shader 属于框架渲染器，否则不要把运行时 shader 错误放进 GPUI renderer
   internals。
 
-## 示例
+## 3D 示例
 
-`hatsune_miku_viewer` 在 Windows 上演示完整流程：
-
-- 从示例 shader 文件加载 WGSL；
-- 用 `tobj` 解析 OBJ 和 MTL；
-- 用 `image` 加载材质贴图；
-- 将按材质拆分的 submesh 渲染到 GPUI 管理的 GPU surface；
-- 支持鼠标拖拽旋转、滚轮缩放和 resize。
-
-设置 `GPUI_HATSUNE_MIKU_DIR` 可指定 OBJ 资源目录。
+旧 `hatsune_miku_viewer` 示例依赖已移除的 GPUI mesh 和 surface 路径。可复用的 3D 示例现位于
+`gpui-3d` crate，覆盖 viewport API；`WgslShaderSource` 仍是通用 shader 校验工具。
 
 ```powershell
-cargo run --example hatsune_miku_viewer
+cargo run -p gpui-3d --example scene
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx12
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-vulkan
 ```
+
+参阅 [`gpui-3d` 架构指南](../../../docs/GPUI_3D.md)，了解 3D/API 边界和当前后端验证状态。

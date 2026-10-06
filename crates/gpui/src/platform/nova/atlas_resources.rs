@@ -174,6 +174,7 @@ where
             atlas_id.kind, atlas_id.index
         )),
         size: Extent2d::new(width, height)?,
+        mip_level_count: 1,
         format: Format::Bgra8Unorm,
         usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
@@ -185,6 +186,8 @@ where
             atlas_id.kind, atlas_id.index
         )),
         texture,
+        base_mip_level: 0,
+        mip_level_count: 1,
         format: Format::Bgra8Unorm,
     }) {
         Ok(texture_view) => texture_view,
@@ -282,7 +285,7 @@ fn uses_poly_sprite_resource_sets(
 fn indexed_animation_binding(buffers: FrameResourceBuffers) -> ResourceBinding {
     ResourceBinding {
         binding: 17,
-        resource: ResourceBindingResource::Buffer(BufferBinding {
+        resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
             offset: 0,
             size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
@@ -312,7 +315,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -321,7 +324,7 @@ where
             },
             ResourceBinding {
                 binding: 1,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.text_raster_buffer,
                     offset: 0,
                     size: TEXT_RASTER_UPLOAD_BYTES as u64,
@@ -330,17 +333,17 @@ where
             },
             ResourceBinding {
                 binding: 4,
-                resource: ResourceBindingResource::Texture(TextureBinding { texture_view }),
+                resource: BindingResource::Texture(TextureBinding { texture_view }),
             },
             ResourceBinding {
                 binding: 5,
-                resource: ResourceBindingResource::Sampler(SamplerBinding {
+                resource: BindingResource::Sampler(SamplerBinding {
                     sampler: descriptor.sampler,
                 }),
             },
             ResourceBinding {
                 binding: 8,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.mono_sprite_buffer,
                     offset: 0,
                     size: (MAX_MONO_SPRITES * PACKED_MONO_SPRITE_BYTES) as u64,
@@ -373,7 +376,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -382,17 +385,17 @@ where
             },
             ResourceBinding {
                 binding: 4,
-                resource: ResourceBindingResource::Texture(TextureBinding { texture_view }),
+                resource: BindingResource::Texture(TextureBinding { texture_view }),
             },
             ResourceBinding {
                 binding: 5,
-                resource: ResourceBindingResource::Sampler(SamplerBinding {
+                resource: BindingResource::Sampler(SamplerBinding {
                     sampler: descriptor.sampler,
                 }),
             },
             ResourceBinding {
                 binding: 9,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.poly_sprite_buffer,
                     offset: 0,
                     size: (MAX_POLY_SPRITES * PACKED_POLY_SPRITE_BYTES) as u64,

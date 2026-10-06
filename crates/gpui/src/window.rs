@@ -7,15 +7,15 @@ use crate::{
     BackdropBlurDamagePlan, BackdropBlurStyle, Background, BorderStyle, Bounds, BoxShadow,
     Capslock, Context, Corners, CursorStyle, DevicePixels, DirtyRegion, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
-    FileDropEvent, FontId, FramePhaseMetrics, Global, GlobalElementId, GlyphId, GpuMesh3d,
-    GpuMesh3dDrawParameters, GpuSpecs, GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel,
-    ImagePipelineConfig, ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext,
-    KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId,
-    LineLayoutFrameMetrics, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MonochromeSpriteSampling, MouseButton, MouseDownEvent, MouseEvent, MouseExitEvent,
-    MouseMoveEvent, MouseUpEvent, PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay,
-    PlatformFrameRequest, PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PolychromeSprite, PresentationPacket, Quad, Render, RenderGlyphParams, RenderImage,
+    FileDropEvent, FontId, FramePhaseMetrics, Global, GlobalElementId, GlyphId, GpuSpecs,
+    GpuiMemoryTrimLevel, Hsla, ImageMemoryTrimLevel, ImagePipelineConfig,
+    ImagePixelFormat, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
+    Keystroke, KeystrokeEvent, LayoutFrameMetrics, LayoutId, LineLayoutFrameMetrics,
+    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MonochromeSpriteSampling,
+    MouseButton, MouseDownEvent, MouseEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
+    PartialPresentMode, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformFrameRequest,
+    PlatformFrameResult, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
+    PolychromeSprite, PresentationPacket, Quad, Render, RenderGlyphParams, RenderImage,
     RenderImageParams, RenderSvgParams, Replay, RetainedResourceTrimPolicy,
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, SceneFrameMetrics, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, TaffyLayoutEngine,
@@ -78,6 +78,7 @@ mod draw;
 mod draw_reuse;
 mod element_context;
 mod element_id;
+pub(crate) mod element_work;
 mod elements;
 mod focus;
 mod frame;

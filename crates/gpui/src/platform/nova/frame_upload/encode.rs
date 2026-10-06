@@ -1,9 +1,10 @@
 use super::*;
-use std::hash::Hasher;
 use std::ops::Range;
 
-const RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER: usize = 4;
-const RETAINED_CHUNK_SCRATCH_MIN_CAPACITY: usize = 16;
+mod backdrop;
+mod paths;
+mod primitives;
+mod retained;
 
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
@@ -45,6 +46,7 @@ impl FrameUpload {
         reset: bool,
     ) -> FrameUploadSummary {
         if reset {
+            self.renderer_extension_frame_id = self.renderer_extension_frame_id.wrapping_add(1);
             self.globals.clear();
             self.text_raster_params.clear();
             self.quads.clear();
@@ -66,13 +68,10 @@ impl FrameUpload {
             self.gpu_indexed_composite_animation_ids.clear();
             self.gpu_indexed_composite_element_blur_animation_ids
                 .clear();
-            self.custom_mesh_3d_parameters.clear();
-            self.custom_mesh_3d_animation_ids.clear();
-            self.custom_mesh_3d_animations.clear();
-            self.custom_mesh_3d_meshes.clear();
-            self.custom_mesh_3d_shaders.clear();
-            self.custom_mesh_3d_ids.clear();
-            self.custom_mesh_3d_shader_ids.clear();
+            self.renderer_extensions.clear();
+            for steps in &mut self.renderer_extension_steps {
+                steps.clear();
+            }
             self.batches.clear();
             self.resident_quad_spans.clear();
             self.globals.reserve(GLOBAL_UPLOAD_BYTES);
@@ -86,11 +85,6 @@ impl FrameUpload {
             self.animation_bindings
                 .reserve(PACKED_ANIMATION_BINDING_BYTES);
             self.animation_values.reserve(PACKED_ANIMATION_VALUE_BYTES);
-            self.custom_mesh_3d_parameters
-                .reserve(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES);
-            self.custom_mesh_3d_animation_ids.reserve(1);
-            self.custom_mesh_3d_animations
-                .reserve(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES);
             write_f32_vec(&mut self.globals, drawable_size.width as f32);
             write_f32_vec(&mut self.globals, drawable_size.height as f32);
             write_u32_vec(&mut self.globals, u32::from(premultiplied_alpha));
@@ -128,20 +122,10 @@ impl FrameUpload {
             write_scene_animation_value(self, &mut summary, value);
         }
 
-        let mut custom_mesh_vertex_count: usize = self
-            .custom_mesh_3d_meshes
-            .iter()
-            .map(|mesh| mesh.vertices.len())
-            .sum();
-        let mut custom_mesh_index_count: usize = self
-            .custom_mesh_3d_meshes
-            .iter()
-            .map(|mesh| mesh.indices.len())
-            .sum();
         for batch in scene.prepared_batches() {
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
-                    self.encode_quad_batch_with_retained_chunks(
+                    self.encode_retained_quads(
                         scene,
                         quad_run.range.clone(),
                         quad_run.is_solid,
@@ -149,260 +133,41 @@ impl FrameUpload {
                     );
                 }
                 PreparedSceneBatch::Shadows(range) => {
-                    let first = (self.shadows.len() / PACKED_SHADOW_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for shadow in &scene.shadows[range.clone()] {
-                        if self.shadows.len() / PACKED_SHADOW_BYTES >= MAX_SHADOWS {
-                            break;
-                        }
-                        if clip_is_degenerate(&shadow.content_mask) {
-                            continue;
-                        }
-                        let primitive_index = (self.shadows.len() / PACKED_SHADOW_BYTES) as u32;
-                        write_shadow(&mut self.shadows, shadow);
-                        register_scene_animated_primitive(
-                            self,
-                            &mut summary,
-                            shadow
-                                .animation_id
-                                .map(|_| crate::Primitive::Shadow(*shadow)),
-                            AnimatedPrimitiveKind::Shadow,
-                            primitive_index,
-                        );
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches.push(UploadedBatch::Shadows { first, count });
-                        summary.shadow_count = summary.shadow_count.saturating_add(count);
-                    }
+                    self.encode_shadows(&scene.shadows[range.clone()], &mut summary);
                 }
                 PreparedSceneBatch::MonochromeSprites {
                     texture_id, range, ..
                 } => {
-                    let first = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for sprite in &scene.monochrome_sprites[range.clone()] {
-                        if self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES >= MAX_MONO_SPRITES {
-                            break;
-                        }
-                        if clip_is_degenerate(&sprite.content_mask) {
-                            continue;
-                        }
-                        let primitive_index =
-                            (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
-                        write_monochrome_sprite(&mut self.mono_sprites, sprite);
-                        register_scene_animated_primitive(
-                            self,
-                            &mut summary,
-                            sprite
-                                .animation_id
-                                .map(|_| crate::Primitive::MonochromeSprite(*sprite)),
-                            AnimatedPrimitiveKind::MonochromeSprite,
-                            primitive_index,
-                        );
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches.push(UploadedBatch::MonoSprites {
-                            texture_id: *texture_id,
-                            first,
-                            count,
-                        });
-                        summary.mono_sprite_count = summary.mono_sprite_count.saturating_add(count);
-                    }
+                    self.encode_monochrome_sprites(
+                        &scene.monochrome_sprites[range.clone()],
+                        *texture_id,
+                        &mut summary,
+                    );
                 }
                 PreparedSceneBatch::PolychromeSprites { texture_id, range } => {
-                    let first = (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for sprite in &scene.polychrome_sprites[range.clone()] {
-                        if self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES >= MAX_POLY_SPRITES {
-                            break;
-                        }
-                        if clip_is_degenerate(&sprite.content_mask) {
-                            continue;
-                        }
-                        let primitive_index =
-                            (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
-                        write_polychrome_sprite(&mut self.poly_sprites, sprite);
-                        register_scene_animated_primitive(
-                            self,
-                            &mut summary,
-                            sprite
-                                .animation_id
-                                .map(|_| crate::Primitive::PolychromeSprite(*sprite)),
-                            AnimatedPrimitiveKind::PolychromeSprite,
-                            primitive_index,
-                        );
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches.push(UploadedBatch::PolySprites {
-                            texture_id: *texture_id,
-                            first,
-                            count,
-                        });
-                        summary.poly_sprite_count = summary.poly_sprite_count.saturating_add(count);
-                    }
+                    self.encode_polychrome_sprites(
+                        &scene.polychrome_sprites[range.clone()],
+                        *texture_id,
+                        &mut summary,
+                    );
                 }
                 PreparedSceneBatch::Underlines(range) => {
-                    let first = (self.underlines.len() / PACKED_UNDERLINE_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for underline in &scene.underlines[range.clone()] {
-                        if self.underlines.len() / PACKED_UNDERLINE_BYTES >= MAX_UNDERLINES {
-                            break;
-                        }
-                        if clip_is_degenerate(&underline.content_mask) {
-                            continue;
-                        }
-                        write_underline(&mut self.underlines, underline);
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches
-                            .push(UploadedBatch::Underlines { first, count });
-                        summary.underline_count = summary.underline_count.saturating_add(count);
-                    }
+                    self.encode_underlines(&scene.underlines[range.clone()], &mut summary);
                 }
                 PreparedSceneBatch::Paths(range) => {
-                    let paths = &scene.paths[range.clone()];
-                    let first_vertex = (self.path_rasterization_vertices.len()
-                        / PACKED_PATH_RASTERIZATION_VERTEX_BYTES)
-                        as u32;
-                    let mut vertex_count = 0_u32;
-                    for path in paths {
-                        let Some(encoded) = self.encoded_path_rasterization(path) else {
-                            continue;
-                        };
-                        let remaining_vertices = MAX_PATH_VERTICES.saturating_sub(
-                            self.path_rasterization_vertices.len()
-                                / PACKED_PATH_RASTERIZATION_VERTEX_BYTES,
-                        );
-                        let encoded_vertex_count = encoded.vertex_count as usize;
-                        if encoded_vertex_count > remaining_vertices {
-                            break;
-                        }
-                        self.path_rasterization_vertices
-                            .extend_from_slice(&encoded.bytes);
-                        vertex_count = vertex_count.saturating_add(encoded.vertex_count);
-                    }
-                    if vertex_count > 0 {
-                        self.batches.push(UploadedBatch::PathRasterization {
-                            first_vertex,
-                            vertex_count,
-                        });
-                        summary.path_vertex_count =
-                            summary.path_vertex_count.saturating_add(vertex_count);
-                    }
-
-                    let Some(first_path) = paths.first() else {
-                        continue;
-                    };
-                    let first = (self.path_sprites.len() / PACKED_PATH_SPRITE_BYTES) as u32;
-                    let mut count = 0_u32;
-                    if paths
-                        .last()
-                        .is_some_and(|path| path.order == first_path.order)
-                    {
-                        for path in paths {
-                            if self.path_sprites.len() / PACKED_PATH_SPRITE_BYTES
-                                >= MAX_PATH_SPRITES
-                            {
-                                break;
-                            }
-                            write_path_sprite(&mut self.path_sprites, &path.clipped_bounds());
-                            count = count.saturating_add(1);
-                        }
-                    } else {
-                        let mut bounds = first_path.clipped_bounds();
-                        for path in paths.iter().skip(1) {
-                            bounds = bounds.union(&path.clipped_bounds());
-                        }
-                        if self.path_sprites.len() / PACKED_PATH_SPRITE_BYTES < MAX_PATH_SPRITES {
-                            write_path_sprite(&mut self.path_sprites, &bounds);
-                            count = 1;
-                        }
-                    }
-                    if count > 0 {
-                        self.batches.push(UploadedBatch::Paths { first, count });
-                        summary.path_sprite_count = summary.path_sprite_count.saturating_add(count);
-                    }
+                    self.encode_paths(&scene.paths[range.clone()], &mut summary);
                 }
                 PreparedSceneBatch::Surfaces(_) => {
                     summary.unsupported_batches.surfaces =
                         summary.unsupported_batches.surfaces.saturating_add(1);
                 }
                 PreparedSceneBatch::BackdropBlurs(group) => {
-                    if backdrop_blur_quality == BackdropBlurQuality::Disabled {
-                        let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-                        let mut count = 0_u32;
-                        for blur in &scene.backdrop_blurs[group.range.clone()] {
-                            if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
-                                break;
-                            }
-                            let Some(mut tint) = blur.tint.filter(|tint| !tint.is_transparent())
-                            else {
-                                continue;
-                            };
-                            tint.a *= blur.opacity;
-                            let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-                            let quad = Quad {
-                                order: blur.order,
-                                border_style: crate::BorderStyle::Solid,
-                                animation_id: blur.animation_id,
-                                bounds: blur.bounds,
-                                content_mask: blur.content_mask,
-                                background: tint.into(),
-                                border_color: crate::Hsla::transparent_black().into(),
-                                corner_radii: blur.corner_radii,
-                                border_widths: Default::default(),
-                            };
-                            write_quad(&mut self.quads, &quad);
-                            register_scene_animated_primitive(
-                                self,
-                                &mut summary,
-                                quad.animation_id.map(|_| crate::Primitive::Quad(quad)),
-                                AnimatedPrimitiveKind::Quad,
-                                primitive_index,
-                            );
-                            count = count.saturating_add(1);
-                        }
-                        if count > 0 {
-                            self.batches.push(UploadedBatch::Quads { first, count });
-                            summary.quad_count = summary.quad_count.saturating_add(count);
-                        }
-                        continue;
-                    }
-                    let first = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-                    let mut count = 0_u32;
-                    for blur in &scene.backdrop_blurs[group.range.clone()] {
-                        if self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES
-                            >= MAX_BACKDROP_BLURS
-                        {
-                            break;
-                        }
-                        let Some(blur) = backdrop_blur_quality.adjusted_blur(blur) else {
-                            continue;
-                        };
-                        let blur = blur.as_ref();
-                        let primitive_index =
-                            (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-                        write_backdrop_blur(&mut self.backdrop_blurs, blur, drawable_size);
-                        register_scene_animated_primitive(
-                            self,
-                            &mut summary,
-                            blur.animation_id
-                                .map(|_| crate::Primitive::BackdropBlur(blur.clone())),
-                            AnimatedPrimitiveKind::BackdropBlur,
-                            primitive_index,
-                        );
-                        count = count.saturating_add(1);
-                    }
-                    if count > 0 {
-                        self.batches
-                            .push(UploadedBatch::BackdropBlurs { first, count });
-                        summary.backdrop_blur_count =
-                            summary.backdrop_blur_count.saturating_add(count);
-                    }
+                    self.encode_backdrop_blurs(
+                        &scene.backdrop_blurs[group.range.clone()],
+                        drawable_size,
+                        backdrop_blur_quality,
+                        &mut summary,
+                    );
                 }
                 PreparedSceneBatch::Blurs(range) => {
                     for blur in &scene.blurs[range.clone()] {
@@ -429,16 +194,6 @@ impl FrameUpload {
                             false,
                         );
                         summary.accumulate(child_summary);
-                        custom_mesh_vertex_count = self
-                            .custom_mesh_3d_meshes
-                            .iter()
-                            .map(|mesh| mesh.vertices.len())
-                            .sum();
-                        custom_mesh_index_count = self
-                            .custom_mesh_3d_meshes
-                            .iter()
-                            .map(|mesh| mesh.indices.len())
-                            .sum();
                         self.batches
                             .push(UploadedBatch::EndBlur { index: blur_index });
                         self.batches
@@ -446,457 +201,24 @@ impl FrameUpload {
                         summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
                     }
                 }
-                PreparedSceneBatch::GpuMeshes3d(group) => {
-                    for painted in &scene.gpu_meshes_3d[group.range.clone()] {
-                        if painted.mesh.vertices.is_empty() || painted.mesh.indices.is_empty() {
-                            continue;
-                        }
-                        if self.custom_mesh_3d_parameters.len()
-                            / PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES
-                            >= MAX_CUSTOM_MESH_3D_DRAWS
-                        {
-                            summary.unsupported_batches.gpu_meshes_3d =
-                                summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                            break;
-                        }
-
-                        if painted.mesh.vertices.len() > MAX_CUSTOM_MESH_3D_VERTICES
-                            || painted.mesh.indices.len() > MAX_CUSTOM_MESH_3D_INDICES
-                        {
-                            summary.unsupported_batches.gpu_meshes_3d =
-                                summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                            continue;
-                        }
-                        let validated_ranges = [
-                            mesh_range_within_vertices(
-                                painted.mesh.ranges.opaque,
-                                &painted.mesh.indices,
-                                painted.mesh.vertices.len(),
-                            ),
-                            mesh_range_within_vertices(
-                                painted.mesh.ranges.glass,
-                                &painted.mesh.indices,
-                                painted.mesh.vertices.len(),
-                            ),
-                            mesh_range_within_vertices(
-                                painted.mesh.ranges.water,
-                                &painted.mesh.indices,
-                                painted.mesh.vertices.len(),
-                            ),
-                        ];
-                        let requested_range_count = [
-                            painted.mesh.ranges.opaque,
-                            painted.mesh.ranges.glass,
-                            painted.mesh.ranges.water,
-                        ]
-                        .into_iter()
-                        .filter(|range| range.count > 0)
-                        .count();
-                        let valid_range_count = validated_ranges
-                            .iter()
-                            .filter(|range| range.is_some())
-                            .count();
-                        if valid_range_count == 0 {
-                            if requested_range_count > 0 {
-                                summary.unsupported_batches.gpu_meshes_3d =
-                                    summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                            }
-                            continue;
-                        }
-                        if valid_range_count < requested_range_count {
-                            summary.unsupported_batches.gpu_meshes_3d =
-                                summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                        }
-                        if !self.custom_mesh_3d_ids.contains(&painted.mesh.id) {
-                            let Some(next_vertex_count) =
-                                custom_mesh_vertex_count.checked_add(painted.mesh.vertices.len())
-                            else {
-                                summary.unsupported_batches.gpu_meshes_3d =
-                                    summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                                continue;
-                            };
-                            let Some(next_index_count) =
-                                custom_mesh_index_count.checked_add(painted.mesh.indices.len())
-                            else {
-                                summary.unsupported_batches.gpu_meshes_3d =
-                                    summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                                continue;
-                            };
-                            if next_vertex_count > MAX_CUSTOM_MESH_3D_VERTICES
-                                || next_index_count > MAX_CUSTOM_MESH_3D_INDICES
-                            {
-                                summary.unsupported_batches.gpu_meshes_3d =
-                                    summary.unsupported_batches.gpu_meshes_3d.saturating_add(1);
-                                continue;
-                            }
-                            custom_mesh_vertex_count = next_vertex_count;
-                            custom_mesh_index_count = next_index_count;
-                            self.custom_mesh_3d_ids.insert(painted.mesh.id);
-                            self.custom_mesh_3d_meshes.push(painted.mesh.clone());
-                        }
-                        if self
-                            .custom_mesh_3d_shader_ids
-                            .insert(painted.mesh.shader.id)
-                        {
-                            self.custom_mesh_3d_shaders
-                                .push(painted.mesh.shader.clone());
-                        }
-                        let first_parameter_index = (self.custom_mesh_3d_parameters.len()
-                            / PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES)
-                            as u32;
-                        write_custom_mesh_3d_parameters(
-                            &mut self.custom_mesh_3d_parameters,
-                            painted,
-                        );
-                        self.custom_mesh_3d_animation_ids.push(painted.animation_id);
-                        for range in validated_ranges.into_iter().flatten() {
-                            self.batches.push(UploadedBatch::CustomMesh3d {
-                                mesh_id: painted.mesh.id,
-                                generation: painted.mesh.generation,
-                                shader_id: painted.mesh.shader.id,
-                                range,
-                                first_parameter_index,
-                            });
-                        }
-                    }
+                PreparedSceneBatch::RendererExtensions(range) => {
+                    let first = self.renderer_extensions.len() as u32;
+                    let extensions = &scene.renderer_extensions[range.clone()];
+                    self.renderer_extensions.extend(extensions.iter().cloned());
+                    self.batches.push(UploadedBatch::RendererExtensions {
+                        first,
+                        count: extensions.len() as u32,
+                    });
                 }
             }
         }
         if reset {
-            self.active_retained_chunk_ids_scratch.clear();
-            self.active_retained_chunk_ids_scratch.extend(
-                scene
-                    .prepared_retained_quad_chunks()
-                    .iter()
-                    .map(|chunk| chunk.id.clone()),
-            );
-            let active_chunk_count = self.active_retained_chunk_ids_scratch.len();
-            {
-                let active_chunks = &self.active_retained_chunk_ids_scratch;
-                self.retained_quad_chunks
-                    .retain(|id, _| active_chunks.contains(id));
-            }
-            self.active_retained_chunk_ids_scratch.clear();
-            let scratch_target = RETAINED_CHUNK_SCRATCH_MIN_CAPACITY.max(active_chunk_count);
-            if self.active_retained_chunk_ids_scratch.capacity()
-                > scratch_target.saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
-            {
-                self.active_retained_chunk_ids_scratch
-                    .shrink_to(scratch_target);
-            }
-            self.rebuild_custom_mesh_3d_animations();
+            self.prune_retained_quads(scene);
             self.refresh_backdrop_blur_configs();
-            self.rebuild_backdrop_blur_passes_for_current_frame();
+            self.rebuild_backdrop_blur_passes();
         }
         summary
     }
-
-    fn encode_quad_batch_with_retained_chunks(
-        &mut self,
-        scene: &crate::Scene,
-        range: Range<usize>,
-        is_solid: bool,
-        summary: &mut FrameUploadSummary,
-    ) {
-        let mut cursor = range.start;
-        for chunk in scene.prepared_retained_quad_chunks() {
-            if chunk.quad_range.end <= range.start || chunk.quad_range.start >= range.end {
-                continue;
-            }
-            if chunk.quad_range.start < cursor
-                || chunk.quad_range.end > range.end
-                || chunk.is_solid != is_solid
-            {
-                continue;
-            }
-            self.encode_quad_range(
-                &scene.quads[cursor..chunk.quad_range.start],
-                is_solid,
-                summary,
-            );
-            if !self.reuse_retained_quad_chunk(chunk, summary) {
-                summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
-                let byte_start = self.quads.len();
-                let count = self.encode_quad_range(
-                    &scene.quads[chunk.quad_range.clone()],
-                    is_solid,
-                    summary,
-                );
-                if count == chunk.quad_range.len() as u32 {
-                    let byte_end = self.quads.len();
-                    let encoded_bytes = &self.quads[byte_start..byte_end];
-                    let mut hasher = collections::FxHasher::default();
-                    hasher.write(encoded_bytes);
-                    let byte_hash = hasher.finish();
-                    self.resident_quad_spans.push(RetainedResidentSpan {
-                        id: chunk.id.clone(),
-                        range: byte_start..byte_end,
-                        byte_hash,
-                    });
-
-                    let byte_target = PACKED_QUAD_BYTES.max(encoded_bytes.len());
-                    let cached = self
-                        .retained_quad_chunks
-                        .entry(chunk.id.clone())
-                        .or_insert_with(|| PackedRetainedQuadChunk {
-                            bytes: Vec::with_capacity(encoded_bytes.len()),
-                            byte_hash,
-                            quad_count: count,
-                            is_solid,
-                        });
-                    cached.bytes.clear();
-                    if cached.bytes.capacity()
-                        > byte_target.saturating_mul(RETAINED_UPLOAD_WORKING_SET_TRIM_MULTIPLIER)
-                    {
-                        cached.bytes.shrink_to(byte_target);
-                    }
-                    cached.bytes.extend_from_slice(encoded_bytes);
-                    cached.byte_hash = byte_hash;
-                    cached.quad_count = count;
-                    cached.is_solid = is_solid;
-                }
-            }
-            cursor = chunk.quad_range.end;
-        }
-        self.encode_quad_range(&scene.quads[cursor..range.end], is_solid, summary);
-    }
-
-    fn reuse_retained_quad_chunk(
-        &mut self,
-        chunk: &crate::PreparedRetainedQuadChunk,
-        summary: &mut FrameUploadSummary,
-    ) -> bool {
-        if !chunk.replayed {
-            return false;
-        }
-        let Some(cached) = self.retained_quad_chunks.get(&chunk.id) else {
-            return false;
-        };
-        if cached.is_solid != chunk.is_solid
-            || self.quads.len() / PACKED_QUAD_BYTES + cached.quad_count as usize > MAX_QUADS
-        {
-            return false;
-        }
-        let byte_start = self.quads.len();
-        let first = (byte_start / PACKED_QUAD_BYTES) as u32;
-        self.quads.extend_from_slice(&cached.bytes);
-        self.resident_quad_spans.push(RetainedResidentSpan {
-            id: chunk.id.clone(),
-            range: byte_start..self.quads.len(),
-            byte_hash: cached.byte_hash,
-        });
-        self.batches.push(if cached.is_solid {
-            UploadedBatch::SolidQuads {
-                first,
-                count: cached.quad_count,
-            }
-        } else {
-            UploadedBatch::Quads {
-                first,
-                count: cached.quad_count,
-            }
-        });
-        summary.quad_count = summary.quad_count.saturating_add(cached.quad_count);
-        summary.retained_chunk_hits = summary.retained_chunk_hits.saturating_add(1);
-        summary.retained_chunk_reused_bytes = summary
-            .retained_chunk_reused_bytes
-            .saturating_add(cached.bytes.len());
-        true
-    }
-
-    fn encode_quad_range(
-        &mut self,
-        quads: &[Quad],
-        is_solid: bool,
-        summary: &mut FrameUploadSummary,
-    ) -> u32 {
-        let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-        let mut count = 0_u32;
-        for quad in quads {
-            if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
-                break;
-            }
-            if clip_is_degenerate(&quad.content_mask) {
-                continue;
-            }
-            let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-            write_quad(&mut self.quads, quad);
-            register_scene_animated_primitive(
-                self,
-                summary,
-                quad.animation_id.map(|_| crate::Primitive::Quad(*quad)),
-                AnimatedPrimitiveKind::Quad,
-                primitive_index,
-            );
-            count = count.saturating_add(1);
-        }
-        if count > 0 {
-            self.batches.push(if is_solid {
-                UploadedBatch::SolidQuads { first, count }
-            } else {
-                UploadedBatch::Quads { first, count }
-            });
-            summary.quad_count = summary.quad_count.saturating_add(count);
-        }
-        count
-    }
-
-    fn encoded_path_rasterization(
-        &mut self,
-        path: &crate::Path<crate::ScaledPixels>,
-    ) -> Option<PathRasterizationCacheEntry> {
-        let vertex_count = u32::try_from(path.vertices.len()).ok()?;
-        if vertex_count == 0 {
-            return None;
-        }
-
-        let clipped_bounds = path.clipped_bounds();
-        let content_mask = crate::ContentMask {
-            bounds: clipped_bounds,
-            corner_bounds: path.content_mask.corner_bounds,
-            corner_radii: if clipped_bounds == path.content_mask.bounds {
-                path.content_mask.corner_radii
-            } else {
-                Default::default()
-            },
-        };
-        self.path_paint_key_scratch.clear();
-        write_content_mask(&mut self.path_paint_key_scratch, &content_mask);
-        write_background(&mut self.path_paint_key_scratch, &path.color);
-        let paint_hash = fnv1a_bytes(&self.path_paint_key_scratch);
-
-        let key = PathRasterizationCacheKey {
-            path_id: path.cache_id,
-            generation: path.geometry_generation,
-            vertex_count: path.vertices.len(),
-            geometry_hash: self.path_geometry_hash_for(path),
-            paint_hash,
-        };
-        if let Some(entry) = self.path_rasterization_cache.get(&key) {
-            self.path_rasterization_cache_hits =
-                self.path_rasterization_cache_hits.saturating_add(1);
-            return Some(entry.clone());
-        }
-
-        let encoded_bytes = path
-            .vertices
-            .len()
-            .saturating_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
-        self.path_rasterization_encode_scratch.clear();
-        if self.path_rasterization_encode_scratch.capacity() < encoded_bytes {
-            self.path_rasterization_encode_scratch
-                .reserve(encoded_bytes);
-        }
-        for vertex in &path.vertices {
-            write_path_rasterization_vertex(
-                &mut self.path_rasterization_encode_scratch,
-                vertex,
-                &path.color,
-                &content_mask,
-            );
-        }
-        debug_assert_eq!(self.path_rasterization_encode_scratch.len(), encoded_bytes);
-        let entry = PathRasterizationCacheEntry {
-            bytes: Arc::<[u8]>::from(self.path_rasterization_encode_scratch.as_slice()),
-            vertex_count,
-        };
-        self.path_rasterization_encode_scratch.clear();
-        self.path_rasterization_cache.insert(key, entry.clone());
-        self.path_rasterization_cache_misses =
-            self.path_rasterization_cache_misses.saturating_add(1);
-        Some(entry)
-    }
-
-    fn path_geometry_hash_for(&mut self, path: &crate::Path<crate::ScaledPixels>) -> u64 {
-        let (Some(first), Some(last)) = (path.vertices.first(), path.vertices.last()) else {
-            return path_geometry_hash(&path.vertices);
-        };
-        let first_xy_bits = (
-            first.xy_position.x.0.to_bits(),
-            first.xy_position.y.0.to_bits(),
-        );
-        let last_xy_bits = (
-            last.xy_position.x.0.to_bits(),
-            last.xy_position.y.0.to_bits(),
-        );
-        if let Some(memo) = self.path_geometry_hash_memo.get(&path.cache_id)
-            && memo.generation == path.geometry_generation
-            && memo.vertex_count == path.vertices.len()
-            && memo.first_xy_bits == first_xy_bits
-            && memo.last_xy_bits == last_xy_bits
-        {
-            return memo.geometry_hash;
-        }
-        let geometry_hash = path_geometry_hash(&path.vertices);
-        self.path_geometry_hash_memo.insert(
-            path.cache_id,
-            PathGeometryHashMemo {
-                generation: path.geometry_generation,
-                vertex_count: path.vertices.len(),
-                first_xy_bits,
-                last_xy_bits,
-                geometry_hash,
-            },
-        );
-        geometry_hash
-    }
-}
-
-fn path_geometry_hash(vertices: &[crate::PathVertex_ScaledPixels]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for vertex in vertices {
-        hash = fnv1a_u32(hash, vertex.xy_position.x.0.to_bits());
-        hash = fnv1a_u32(hash, vertex.xy_position.y.0.to_bits());
-        hash = fnv1a_u32(hash, vertex.st_position.x.to_bits());
-        hash = fnv1a_u32(hash, vertex.st_position.y.to_bits());
-    }
-    hash
-}
-
-fn fnv1a_u32(hash: u64, value: u32) -> u64 {
-    let hash = hash ^ u64::from(value);
-    hash.wrapping_mul(0x0000_0100_0000_01b3)
-}
-
-fn fnv1a_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
-fn mesh_range_within_indices(
-    range: crate::GpuMesh3dRange,
-    index_count: usize,
-) -> Option<crate::GpuMesh3dRange> {
-    if range.count == 0 {
-        return None;
-    }
-    let index_count = u32::try_from(index_count).ok()?;
-    let end = range.start.checked_add(range.count)?;
-    if end > index_count {
-        return None;
-    }
-    Some(range)
-}
-
-fn mesh_range_within_vertices(
-    range: crate::GpuMesh3dRange,
-    indices: &[u32],
-    vertex_count: usize,
-) -> Option<crate::GpuMesh3dRange> {
-    let range = mesh_range_within_indices(range, indices.len())?;
-    let vertex_count = u32::try_from(vertex_count).ok()?;
-    let start = usize::try_from(range.start).ok()?;
-    let count = usize::try_from(range.count).ok()?;
-    let end = start.checked_add(count)?;
-    let indices = indices.get(start..end)?;
-    if indices.iter().any(|index| *index >= vertex_count) {
-        return None;
-    }
-    Some(range)
 }
 
 fn register_scene_animated_primitive(

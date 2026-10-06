@@ -20,38 +20,62 @@ fn is_gpu_indexed_kind(kind: AnimatedPrimitiveKind) -> bool {
     )
 }
 
-#[inline]
-fn composite_animation_property(
+type ElementBlurSampleIndices = FxHashMap<crate::SceneAnimationId, Option<usize>>;
+
+fn index_element_blur_samples(
+    animated_primitives: &[AnimatedUpload],
     sampled_animation_values: &[crate::SceneAnimationValue],
-    animation_id: crate::SceneAnimationId,
-) -> Option<AnimationProperty> {
-    sampled_animation_values
-        .iter()
-        .find(|value| value.animation_id == animation_id)
-        .and_then(|value| AnimationProperty::from_transition_property(value.property))
+) -> Option<ElementBlurSampleIndices> {
+    let mut sample_indices: Option<ElementBlurSampleIndices> = None;
+    for primitive in animated_primitives {
+        if primitive.kind == AnimatedPrimitiveKind::BackdropBlur
+            && primitive.base_paint_blur().is_some()
+        {
+            sample_indices
+                .get_or_insert_with(FxHashMap::default)
+                .entry(primitive.animation_id)
+                .or_insert(None);
+        }
+    }
+
+    let mut sample_indices = sample_indices?;
+    for (index, value) in sampled_animation_values.iter().enumerate() {
+        if let Some(first_match) = sample_indices.get_mut(&value.animation_id) {
+            if first_match.is_none() {
+                *first_match = Some(index);
+            }
+        }
+    }
+    Some(sample_indices)
 }
 
-#[inline]
-fn can_promote_element_blur(
+fn promotable_element_blur_animation_property(
     sampled_animation_values: &[crate::SceneAnimationValue],
+    sample_indices: Option<&ElementBlurSampleIndices>,
     primitive: &AnimatedUpload,
-) -> bool {
+) -> Option<AnimationProperty> {
     if primitive.kind != AnimatedPrimitiveKind::BackdropBlur
         || primitive.base_paint_blur().is_none()
     {
-        return false;
+        return None;
     }
+    let sample_index = sample_indices?
+        .get(&primitive.animation_id)
+        .copied()
+        .flatten()?;
+    let property = sampled_animation_values
+        .get(sample_index)
+        .and_then(|value| AnimationProperty::from_transition_property(value.property))?;
     matches!(
-        composite_animation_property(sampled_animation_values, primitive.animation_id),
-        Some(
-            AnimationProperty::Opacity
-                | AnimationProperty::Transform
-                | AnimationProperty::Translation
-                | AnimationProperty::Scale
-                | AnimationProperty::BlurRadius
-                | AnimationProperty::ClipReveal
-        )
+        property,
+        AnimationProperty::Opacity
+            | AnimationProperty::Transform
+            | AnimationProperty::Translation
+            | AnimationProperty::Scale
+            | AnimationProperty::BlurRadius
+            | AnimationProperty::ClipReveal
     )
+    .then_some(property)
 }
 
 #[inline]
@@ -176,6 +200,8 @@ impl FrameUpload {
         }
         write_u32(&mut self.globals, INDEXED_ANIMATION_ENABLED_OFFSET, 0);
 
+        let mut element_blur_sample_indices = None;
+        let sampled_animation_values = &self.sampled_animation_values;
         let mut slots_overflowed = false;
         for animation_id in self
             .gpu_indexed_underline_animation_ids
@@ -191,10 +217,24 @@ impl FrameUpload {
             }
         }
         if !slots_overflowed {
-            let sampled_animation_values = &self.sampled_animation_values;
             for primitive in &self.animated_primitives {
+                if primitive.kind == AnimatedPrimitiveKind::BackdropBlur
+                    && primitive.base_paint_blur().is_some()
+                    && element_blur_sample_indices.is_none()
+                {
+                    element_blur_sample_indices = index_element_blur_samples(
+                        &self.animated_primitives,
+                        sampled_animation_values,
+                    );
+                }
+                let sample_indices = element_blur_sample_indices.as_ref();
                 if !is_gpu_indexed_kind(primitive.kind)
-                    && !can_promote_element_blur(sampled_animation_values, primitive)
+                    && promotable_element_blur_animation_property(
+                        sampled_animation_values,
+                        sample_indices,
+                        primitive,
+                    )
+                    .is_none()
                 {
                     continue;
                 }
@@ -222,6 +262,7 @@ impl FrameUpload {
         if self.gpu_indexed_animation_slots.is_empty() {
             return;
         }
+        let sample_indices = element_blur_sample_indices.as_ref();
 
         // The second underline u32 is ABI padding. Clear every record when the global indexed
         // animation feature gate is enabled so static underlines remain an explicit zero sentinel.
@@ -250,7 +291,6 @@ impl FrameUpload {
             self.gpu_indexed_source_animation_ids.insert(animation_id);
         }
 
-        let sampled_animation_values = &self.sampled_animation_values;
         let mut promoted_blur_radius = false;
         for primitive in &self.animated_primitives {
             let Some(&slot) = self
@@ -260,10 +300,12 @@ impl FrameUpload {
                 continue;
             };
             let slot_plus_one = slot + 1;
-            if can_promote_element_blur(sampled_animation_values, primitive) {
-                let property =
-                    composite_animation_property(sampled_animation_values, primitive.animation_id);
-                let is_blur_radius = property == Some(AnimationProperty::BlurRadius);
+            if let Some(property) = promotable_element_blur_animation_property(
+                sampled_animation_values,
+                sample_indices,
+                primitive,
+            ) {
+                let is_blur_radius = property == AnimationProperty::BlurRadius;
                 promoted_blur_radius |= is_blur_radius;
                 let offset = primitive.index as usize * PACKED_BACKDROP_BLUR_BYTES;
                 debug_assert!(
@@ -314,16 +356,20 @@ impl FrameUpload {
             write_u32(bytes, offset, slot_plus_one);
         }
 
-        let sampled_animation_values = &self.sampled_animation_values;
         self.animated_primitives.retain(|primitive| {
             !is_gpu_indexed_kind(primitive.kind)
-                && !can_promote_element_blur(sampled_animation_values, primitive)
+                && promotable_element_blur_animation_property(
+                    sampled_animation_values,
+                    sample_indices,
+                    primitive,
+                )
+                .is_none()
         });
         write_u32(&mut self.globals, INDEXED_ANIMATION_ENABLED_OFFSET, 1);
 
         if promoted_blur_radius {
             self.refresh_backdrop_blur_configs();
-            self.rebuild_backdrop_blur_passes_for_current_frame();
+            self.rebuild_backdrop_blur_passes();
         }
     }
 
@@ -331,7 +377,7 @@ impl FrameUpload {
     /// dependency analysis cannot cheaply recover their sampled geometry. While one of their
     /// timelines is active (or was active on the previous frame), conservatively disable retained
     /// blur self-damage suppression rather than risk reusing stale filtered pixels.
-    pub(in crate::platform::nova) fn gpu_indexed_animation_affects_blur_history(&self) -> bool {
+    pub(in crate::platform::nova) fn affects_blur_history(&self) -> bool {
         self.sampled_animation_values.iter().any(|value| {
             self.gpu_indexed_source_animation_ids
                 .contains(&value.animation_id)
@@ -344,7 +390,7 @@ impl FrameUpload {
     /// Builds one dense, frame-local timeline table for all GPU-indexed ordinary primitives.
     /// The source scene stream remains compact; inactive retained slots stay zeroed so primitive
     /// slot indices never change while the static upload is reused.
-    pub(in crate::platform::nova) fn rebuild_gpu_indexed_animation_values(&mut self) {
+    pub(in crate::platform::nova) fn rebuild_indexed_animation_values(&mut self) {
         let byte_len = self
             .gpu_indexed_animation_slots
             .len()
@@ -387,6 +433,8 @@ impl FrameUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod lookup;
 
     #[test]
     fn shared_glyph_style_animation_uses_one_gpu_slot() {
@@ -472,7 +520,7 @@ mod tests {
         );
         assert_eq!(read_u32(&upload.backdrop_blurs, 12), 1);
         assert!(upload.animated_primitives.is_empty());
-        assert!(!upload.gpu_indexed_animation_affects_blur_history());
+        assert!(!upload.affects_blur_history());
         assert!(
             upload
                 .gpu_indexed_composite_element_blur_animation_ids
@@ -551,7 +599,7 @@ mod tests {
             [4.0, 0.0, 0.0, 0.0],
             [20.0, 0.0, 0.0, 0.0],
         );
-        upload.rebuild_gpu_indexed_animation_values();
+        upload.rebuild_indexed_animation_values();
         let first_sidecar = upload.gpu_indexed_animation_values.clone();
         let static_blur_bytes = upload.backdrop_blurs.clone();
         let static_pass_bytes = upload.backdrop_blur_passes.clone();
@@ -570,7 +618,7 @@ mod tests {
             width: 640,
             height: 480,
         });
-        upload.rebuild_gpu_indexed_animation_values();
+        upload.rebuild_indexed_animation_values();
 
         assert_ne!(
             upload.gpu_indexed_animation_values, first_sidecar,
@@ -669,14 +717,14 @@ mod tests {
             .gpu_indexed_animation_values
             .reserve(4096 * PACKED_ANIMATION_VALUE_BYTES);
         let oversized_value_capacity = upload.gpu_indexed_animation_values.capacity();
-        upload.rebuild_gpu_indexed_animation_values();
+        upload.rebuild_indexed_animation_values();
 
         assert!(
             upload.gpu_indexed_animation_values.capacity() < oversized_value_capacity,
             "indexed animation values should retire a one-frame high-water mark"
         );
         let retained_value_capacity = upload.gpu_indexed_animation_values.capacity();
-        upload.rebuild_gpu_indexed_animation_values();
+        upload.rebuild_indexed_animation_values();
         assert_eq!(
             upload.gpu_indexed_animation_values.capacity(),
             retained_value_capacity,

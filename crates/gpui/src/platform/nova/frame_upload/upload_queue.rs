@@ -109,6 +109,7 @@ impl NovaAtlas {
                 writes.push(TextureWrite {
                     descriptor: TextureWriteDescriptor {
                         texture: resolve_texture(pending_upload.texture_id)?,
+                        mip_level: 0,
                         layout: TextureDataLayout::new(
                             0,
                             pending_upload.bytes_per_row,

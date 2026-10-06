@@ -14,11 +14,10 @@ GUI 核心。它不是 Zed 官方发行版本。当前渲染方向是 nova-gfx�
 - macOS 框架代码的普通 nova-gfx 路径面向 Nova Metal。
 - 默认合成策略是事件驱动。连续渲染只用于显式配置
   `RenderPolicy::Continuous` 的窗口。
-- 自定义 GPU 内容应通过 scene primitives、图片元素、runtime WGSL shader helper
-  或自定义 3D mesh primitive 接入，而不是已经移除的 application-facing surface
-  API。
-- WGSL shader 既可作为内置 renderer shader 在构建时校验，也可在运行时由 custom
-  mesh 示例或应用加载。
+- 自定义 GPU 绘制应使用 GPUI scene primitives、图片元素或通用
+  `RendererExtension` API。`WgslShaderSource` 负责校验 extension 自有 WGSL；可复用的
+  3D scene 和 viewport 位于独立 `gpui-3d` crate。
+- WGSL shader 可在构建时校验内置 renderer shader，也可由 extension 实现在运行时校验。
 - 示例使用当前 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` API 形态。
 
 ## 快速开始
@@ -158,13 +157,12 @@ sequenceDiagram
 
 - 普通 element paint 写入 GPUI scene primitives；
 - image 和 SVG elements；
-- custom mesh pipeline 使用的 runtime WGSL shader modules；
-- 使用 `GpuMesh3d`、`GpuMesh3dShader` 和 `GpuMesh3dDrawParameters` 的自定义
-  3D mesh primitives；
-- 通过明确的 GPUI scene 或 renderer extension point 暴露应用级 render targets。
+- 通过通用 `RendererExtension` 生命周期实现应用拥有的 GPU 绘制；
+- 通过独立 `gpui-3d` crate 创建 retained 3D scene、材质、查询和 viewport element。
 
-这样可以保持 renderer backend-neutral。应用代码不应假设存在 backend-specific
-device、queue 或 surface handle。
+GPUI 负责窗口、输入和 extension 调度；`gpui-3d` 负责 3D 场景准备与 viewport 资源；
+应用 crate 负责领域数据转换。GPUI 本身不提供 3D mesh primitive 或业务策略。应用代码不应
+假设存在 backend-specific device、queue 或 surface handle。
 
 ## 上游 GPUI 架构对比
 
@@ -183,8 +181,8 @@ dependency。
 | Animated images | 上游 image elements 和 format support | 固定 animation worker pool，同时按每个 stream 和全进程 decoded bytes 背压 |
 | Image memory | application/cache lifetime conventions | decoded/compressed/atlas/prefetch 有界预算、可取消 cache load 和 capacity-bucketed bitmap reuse |
 | Performance evidence | 上游 project-wide profiling infrastructure | fork 自有 layout/path/image/memory Criterion suites 与 runtime frame/resource metrics |
-| Shader model | Built-in renderer shaders owned by platform paths | 内置 WGSL validation，并提供 runtime WGSL helpers 给 custom mesh shader |
-| Custom GPU content | 主要通过 framework rendering primitives 扩展 | Scene primitives、图片、SVG、runtime shader helpers 和 custom mesh primitives |
+| Shader model | Built-in renderer shaders owned by platform paths | 内置 WGSL validation，并提供通用 runtime WGSL helpers |
+| Custom GPU content | 主要通过 framework rendering primitives 扩展 | Scene primitives、图片、SVG 和通用 `RendererExtension` 生命周期；3D 能力由 `gpui-3d` 提供 |
 | Example API style | 旧示例可能使用 previous context 和 view terminology | 示例使用 `App`、`Context<T>`、显式 `Window` 和 `Entity<T>` |
 
 ## 渲染说明
@@ -213,6 +211,7 @@ redraw。
 
 BMCBL 集成级渲染说明位于从当前目录访问的
 `../../docs/GPUI_VENDOR_RENDERING.md`。
+独立 3D 的职责边界和 API 说明见 [`../../docs/GPUI_3D.md`](../../docs/GPUI_3D.md)。
 
 ## 示例
 
@@ -225,8 +224,8 @@ cargo run --manifest-path Cargo.toml --example minimal_window
 cargo run --manifest-path Cargo.toml --example image_gallery
 ```
 
-部分示例是平台专用的。runtime shader 和 custom mesh 示例必须声明所需 renderer
-features。
+部分示例是平台专用的，必须声明所需 renderer features。独立 `gpui-3d` crate 提供 CPU
+scene 和原生 viewport 示例。
 
 ## 验证
 

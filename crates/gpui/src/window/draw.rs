@@ -177,6 +177,7 @@ impl Window {
         directly_dirty_views: &[EntityId],
         cx: &mut App,
     ) -> Duration {
+        let finalize_started_at = Instant::now();
         self.finish_layout_and_text_frame();
         let scene_finish_started_at = Instant::now();
         self.next_frame.finish(&mut self.rendered_frame);
@@ -284,6 +285,8 @@ impl Window {
         }
         self.finish_debug_visualization_frame(cx);
         self.draw_deadline = None;
+        self.last_generation_stats.scene_finish_elapsed = scene_finish_time;
+        self.last_generation_stats.finalize_elapsed = finalize_started_at.elapsed();
 
         scene_finish_time
     }
@@ -637,6 +640,7 @@ impl Window {
         let prepaint_started_at = Instant::now();
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
+        super::element_work::reset();
 
         let _inspector_width: Pixels = rems(30.0).to_pixels(self.rem_size());
         let root_size = {
@@ -738,6 +742,29 @@ impl Window {
 
         self.paint_debug_surface_update_flash(cx);
         self.paint_debug_frame_time_overlay(cx);
+        self.last_generation_stats.prepaint_elapsed = prepaint_time;
+        self.last_generation_stats.paint_elapsed = paint_started_at.elapsed();
+        let element_work = super::element_work::take();
+        self.last_generation_stats.element_prepaint = format!(
+            "elements={} self_total_us={} top={:?}",
+            element_work.prepaint_elements,
+            element_work
+                .prepaint
+                .iter()
+                .map(|(_, elapsed)| elapsed.as_micros())
+                .sum::<u128>(),
+            element_work.prepaint
+        );
+        self.last_generation_stats.element_paint = format!(
+            "elements={} self_total_us={} top={:?}",
+            element_work.paint_elements,
+            element_work
+                .paint
+                .iter()
+                .map(|(_, elapsed)| elapsed.as_micros())
+                .sum::<u128>(),
+            element_work.paint
+        );
         FramePhaseMetrics {
             layout: self
                 .layout_engine

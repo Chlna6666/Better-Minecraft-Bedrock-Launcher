@@ -108,7 +108,7 @@ fn animated_img_requests_frames_when_policy_plays() {
         .apply_to(crate::AnimatedImageConfig::default())
         .clamped();
 
-    assert!(should_request_image_animation_frame(&image, config));
+    assert!(should_animate(&image, config));
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn animated_img_does_not_request_frames_when_policy_pauses() {
         .apply_to(crate::AnimatedImageConfig::default())
         .clamped();
 
-    assert!(!should_request_image_animation_frame(&image, config));
+    assert!(!should_animate(&image, config));
 }
 
 #[test]
@@ -137,5 +137,5 @@ fn static_img_does_not_request_animation_frames() {
         .apply_to(crate::AnimatedImageConfig::default())
         .clamped();
 
-    assert!(!should_request_image_animation_frame(&image, config));
+    assert!(!should_animate(&image, config));
 }

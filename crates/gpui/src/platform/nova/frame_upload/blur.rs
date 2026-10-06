@@ -264,7 +264,7 @@ impl FrameUpload {
                 | UploadedBatch::Underlines { .. }
                 | UploadedBatch::BeginBlur { .. }
                 | UploadedBatch::EndBlur { .. }
-                | UploadedBatch::CustomMesh3d { .. } => {}
+                | UploadedBatch::RendererExtensions { .. } => {}
             }
         }
         self.backdrop_blur_configs = configs;
@@ -305,7 +305,7 @@ impl FrameUpload {
 
     /// Rebuilds the two axis pass records. Both source axes are still full resolution at the point
     /// where their convolution runs; X is downsampled by the first target and Y by the second.
-    pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes_for_current_frame(&mut self) {
+    pub(in crate::platform::nova) fn rebuild_backdrop_blur_passes(&mut self) {
         self.backdrop_blur_passes.clear();
         self.backdrop_blur_passes.reserve(
             self.backdrop_blur_configs
@@ -522,7 +522,7 @@ mod tests {
             upload.backdrop_blur_configs()[0].animation_slot_plus_one(),
             slot_plus_one
         );
-        upload.rebuild_backdrop_blur_passes_for_current_frame();
+        upload.rebuild_backdrop_blur_passes();
         assert_eq!(
             upload.backdrop_blur_passes.len(),
             BACKDROP_BLUR_PASS_BYTES * 2
@@ -685,7 +685,7 @@ mod tests {
             .batches
             .push(UploadedBatch::BackdropBlurs { first: 0, count: 1 });
         upload.refresh_backdrop_blur_configs();
-        upload.rebuild_backdrop_blur_passes_for_current_frame();
+        upload.rebuild_backdrop_blur_passes();
 
         assert_eq!(
             upload.backdrop_blur_passes.len(),

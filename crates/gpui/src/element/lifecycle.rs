@@ -647,19 +647,30 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let mut prepaint = None;
+                let element_type = std::any::type_name::<E>();
+                let prepaint_element_id = self.element.id();
+                let element = &mut self.element;
                 let (node_id, prepaint_range) = run_element_prepaint(
-                    self.element.id(),
+                    prepaint_element_id,
                     global_id.as_ref(),
                     &retained_segment,
                     window,
                     &mut |window| {
-                        prepaint = Some(self.element.prepaint(
-                            global_id.as_ref(),
-                            inspector_id.as_ref(),
-                            bounds,
-                            &mut request_layout,
+                        prepaint = Some(crate::window::element_work::measure_named(
+                            element_type,
+                            crate::window::element_work::ElementWorkPhase::Prepaint,
                             window,
                             cx,
+                            |window, cx| {
+                                element.prepaint(
+                                    global_id.as_ref(),
+                                    inspector_id.as_ref(),
+                                    bounds,
+                                    &mut request_layout,
+                                    window,
+                                    cx,
+                                )
+                            },
                         ));
                     },
                 );
@@ -703,8 +714,11 @@ impl<E: Element> Drawable<E> {
                 prepaint_range,
                 plain_text_key,
             } => {
+                let paint_element_type = std::any::type_name::<E>();
+                let paint_element_id = self.element.id();
+                let element = &mut self.element;
                 let paint_run = run_element_paint(
-                    self.element.id(),
+                    paint_element_id,
                     global_id.as_ref(),
                     node_id,
                     &retained_segment,
@@ -712,14 +726,22 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                     &mut |window, cx| {
-                        self.element.paint(
-                            global_id.as_ref(),
-                            inspector_id.as_ref(),
-                            bounds,
-                            &mut request_layout,
-                            &mut prepaint,
+                        crate::window::element_work::measure_named(
+                            paint_element_type,
+                            crate::window::element_work::ElementWorkPhase::Paint,
                             window,
                             cx,
+                            |window, cx| {
+                                element.paint(
+                                    global_id.as_ref(),
+                                    inspector_id.as_ref(),
+                                    bounds,
+                                    &mut request_layout,
+                                    &mut prepaint,
+                                    window,
+                                    cx,
+                                );
+                            },
                         );
                     },
                 );

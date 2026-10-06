@@ -2,7 +2,7 @@ use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use gpui::benchmark::{
-    AtlasPixelEncodingBenchmark, AtlasUploadBenchmark, FrameUploadBenchmark, MeshPackingBenchmark,
+    AtlasPixelEncodingBenchmark, AtlasUploadBenchmark, FrameUploadBenchmark,
 };
 
 const QUAD_COUNTS: [usize; 3] = [128, 1_024, 8_192];
@@ -19,7 +19,6 @@ const RGBA_PIXEL_WORKLOADS: [(usize, u32, u32); 6] = [
     (1_024, 32, 32),
     (65_536, 256, 256),
 ];
-const MESH_VERTEX_COUNTS: [usize; 3] = [256, 1_024, 65_536];
 
 fn frame_upload(criterion: &mut Criterion) {
     let mut quads = criterion.benchmark_group("frame_upload/scene_pack_time/quads");
@@ -137,31 +136,6 @@ fn frame_upload(criterion: &mut Criterion) {
     }
     subpixel.finish();
 
-    let mut meshes = criterion.benchmark_group("mesh_packing");
-    meshes.sample_size(30);
-    for vertex_count in MESH_VERTEX_COUNTS {
-        for uses_u16 in [true, false] {
-            let index_format = if uses_u16 { "u16" } else { "u32" };
-            meshes.throughput(Throughput::Elements(vertex_count as u64));
-            meshes.bench_with_input(
-                BenchmarkId::new(format!("scalar/{index_format}"), vertex_count),
-                &vertex_count,
-                |bencher, _| {
-                    let mut mesh = MeshPackingBenchmark::new(vertex_count, uses_u16);
-                    bencher.iter(|| black_box(mesh.pack_scalar()));
-                },
-            );
-            meshes.bench_with_input(
-                BenchmarkId::new(format!("fearless_simd/{index_format}"), vertex_count),
-                &vertex_count,
-                |bencher, _| {
-                    let mut mesh = MeshPackingBenchmark::new(vertex_count, uses_u16);
-                    bencher.iter(|| black_box(mesh.pack_simd()));
-                },
-            );
-        }
-    }
-    meshes.finish();
 }
 
 criterion_group!(gpui_frame_upload, frame_upload);

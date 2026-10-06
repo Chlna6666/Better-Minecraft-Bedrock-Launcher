@@ -7,7 +7,7 @@ use crate::{
     TransitionProperty,
 };
 
-use super::{DrawOrder, PaintGpuMesh3d, Path, Scene, TransformationMatrix};
+use super::{DrawOrder, PaintRendererExtension, Path, Scene, TransformationMatrix};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
 #[cfg_attr(
@@ -28,7 +28,7 @@ pub(crate) enum PrimitiveKind {
     Surface,
     BackdropBlur,
     Blur,
-    GpuMesh3d,
+    RendererExtension,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -62,7 +62,7 @@ pub(crate) enum Primitive {
     Surface(PaintSurface),
     BackdropBlur(PaintBackdropBlur),
     Blur(PaintBlur),
-    GpuMesh3d(PaintGpuMesh3d),
+    RendererExtension(PaintRendererExtension),
 }
 
 impl Primitive {
@@ -76,7 +76,9 @@ impl Primitive {
             (Self::PolychromeSprite(left), Self::PolychromeSprite(right)) => left == right,
             (Self::BackdropBlur(left), Self::BackdropBlur(right)) => left.visually_eq(right),
             (Self::Blur(left), Self::Blur(right)) => left == right,
-            (Self::GpuMesh3d(left), Self::GpuMesh3d(right)) => left.visually_eq(right),
+            (Self::RendererExtension(left), Self::RendererExtension(right)) => {
+                left.visually_eq(right)
+            }
             (Self::Surface(_), Self::Surface(_)) => false,
             _ => false,
         }
@@ -110,7 +112,7 @@ impl Primitive {
             Primitive::Surface(surface) => surface.order,
             Primitive::BackdropBlur(blur) => blur.order,
             Primitive::Blur(blur) => blur.order,
-            Primitive::GpuMesh3d(mesh) => mesh.order,
+            Primitive::RendererExtension(extension) => extension.order,
         }
     }
 
@@ -125,7 +127,7 @@ impl Primitive {
             Primitive::Surface(surface) => &surface.bounds,
             Primitive::BackdropBlur(blur) => &blur.bounds,
             Primitive::Blur(blur) => &blur.bounds,
-            Primitive::GpuMesh3d(mesh) => &mesh.bounds,
+            Primitive::RendererExtension(extension) => &extension.bounds,
         }
     }
 
@@ -140,7 +142,7 @@ impl Primitive {
             Primitive::Surface(surface) => surface.order = order,
             Primitive::BackdropBlur(blur) => blur.order = order,
             Primitive::Blur(blur) => blur.order = order,
-            Primitive::GpuMesh3d(mesh) => mesh.order = order,
+            Primitive::RendererExtension(extension) => extension.order = order,
         }
     }
 
@@ -155,7 +157,7 @@ impl Primitive {
             Primitive::Surface(surface) => &surface.content_mask,
             Primitive::BackdropBlur(blur) => &blur.content_mask,
             Primitive::Blur(blur) => &blur.content_mask,
-            Primitive::GpuMesh3d(mesh) => &mesh.content_mask,
+            Primitive::RendererExtension(extension) => &extension.content_mask,
         }
     }
 
@@ -169,7 +171,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.animation_id,
             Primitive::BackdropBlur(blur) => blur.animation_id,
             Primitive::Blur(blur) => blur.animation_id,
-            Primitive::GpuMesh3d(mesh) => mesh.animation_id,
+            Primitive::RendererExtension(extension) => extension.animation_id,
             Primitive::Surface(_) => None,
         }
     }
@@ -184,7 +186,7 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => sprite.animation_id = Some(animation_id),
             Primitive::BackdropBlur(blur) => blur.animation_id = Some(animation_id),
             Primitive::Blur(blur) => blur.animation_id = Some(animation_id),
-            Primitive::GpuMesh3d(mesh) => mesh.set_animation_id(animation_id),
+            Primitive::RendererExtension(extension) => extension.animation_id = Some(animation_id),
             Primitive::Surface(_) => {}
         }
     }

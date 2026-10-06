@@ -6,11 +6,13 @@ pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> Bounds<Pixels> {
     const DEFAULT_WINDOW_OFFSET: Point<Pixels> = point(px(0.), px(35.));
 
-    // TODO, BUG: if you open a window with the currently active window
-    // on the stack, this will erroneously select the 'unwrap_or_else'
-    // code path
     cx.active_window()
-        .and_then(|w| w.update(cx, |_, window, _| window.bounds()).ok())
+        .and_then(|handle| {
+            cx.windows
+                .get(handle.window_id())?
+                .as_deref()
+                .map(Window::bounds)
+        })
         .map(|mut bounds| {
             bounds.origin += DEFAULT_WINDOW_OFFSET;
             bounds
@@ -532,5 +534,48 @@ impl Window {
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TestAppContext;
+    use std::time::Instant;
+
+    #[gpui::test]
+    fn window_open_sync_performance_sample(cx: &mut TestAppContext) {
+        let mut main_samples = Vec::with_capacity(17);
+        for _ in 0..17 {
+            let isolated = cx.new_app();
+            let started_at = Instant::now();
+            let _main_window = isolated.update(|app| {
+                app.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+                    .expect("test window should open")
+            });
+            main_samples.push(started_at.elapsed());
+        }
+
+        let _main_window = cx.add_window(|_, _| crate::Empty);
+        assert!(cx.read(|app| app.active_window().is_some()));
+
+        let mut samples = Vec::with_capacity(17);
+        for _ in 0..17 {
+            let started_at = Instant::now();
+            let _child_window = cx.update(|app| {
+                app.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+                    .expect("test window should open")
+            });
+            samples.push(started_at.elapsed());
+        }
+
+        samples.sort_unstable();
+        main_samples.sort_unstable();
+        eprintln!(
+            "GPUI_WINDOW_OPEN_SAMPLE main_median_us={} child_median_us={} samples={} active_parent=true",
+            main_samples[main_samples.len() / 2].as_micros(),
+            samples[samples.len() / 2].as_micros(),
+            samples.len(),
+        );
     }
 }

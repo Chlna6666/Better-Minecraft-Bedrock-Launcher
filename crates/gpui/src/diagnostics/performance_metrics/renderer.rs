@@ -63,7 +63,6 @@ pub fn record_gpu_resource_breakdown(
     has_backdrop_texture: bool,
     has_depth_texture: bool,
     backdrop_blur_target_groups: usize,
-    gpu_mesh_buffers: usize,
 ) {
     let metrics = shared_metrics();
     metrics
@@ -84,9 +83,6 @@ pub fn record_gpu_resource_breakdown(
     metrics
         .backdrop_blur_target_groups
         .store(backdrop_blur_target_groups as u64, Ordering::Relaxed);
-    metrics
-        .gpu_mesh_buffers
-        .store(gpu_mesh_buffers as u64, Ordering::Relaxed);
 }
 
 /// Records GPU pass diagnostics for the latest frame.

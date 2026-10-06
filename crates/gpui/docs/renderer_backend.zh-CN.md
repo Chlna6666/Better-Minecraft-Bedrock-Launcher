@@ -50,5 +50,6 @@ rate 会被 clamp 到 GPUI 支持的范围。
 ## Metrics
 
 Renderer metrics 包括 backend selection、frame timing、image cache state、atlas
-usage、backdrop blur 和 3D mesh counts、allocator totals，以及 retained resource
-trimming。诊断 frame pacing 或 GPU resource lifetime 时启用 `frame_metrics`。
+usage、backdrop blur、allocator totals 和 retained resource trimming。3D viewport
+GPUI 不采集 3D viewport resource counts，这些资源由 extension 实现持有。诊断 frame
+pacing 或 GPUI resource lifetime 时启用 `frame_metrics`。

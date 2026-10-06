@@ -30,12 +30,6 @@ impl FrameUpload {
             self.animated_primitive_staging.capacity(),
             self.animated_visual_bounds_scratch.capacity()
                 * std::mem::size_of::<crate::Bounds<crate::ScaledPixels>>(),
-            self.custom_mesh_3d_parameters.capacity(),
-            self.custom_mesh_3d_animation_ids.capacity()
-                * std::mem::size_of::<Option<crate::SceneAnimationId>>(),
-            self.custom_mesh_3d_animations.capacity(),
-            self.custom_mesh_3d_meshes.capacity() * std::mem::size_of::<Arc<GpuMesh3d>>(),
-            self.custom_mesh_3d_shaders.capacity() * std::mem::size_of::<Arc<GpuMesh3dShader>>(),
             self.path_paint_key_scratch.capacity(),
             self.path_rasterization_encode_scratch.capacity(),
         ]
@@ -159,24 +153,6 @@ impl FrameUpload {
         self.gpu_indexed_composite_element_blur_animation_ids
             .shrink_to(hash_floor);
 
-        trim_upload_vec(
-            &mut self.custom_mesh_3d_parameters,
-            16 * PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES,
-            multiplier,
-        );
-        trim_upload_vec(&mut self.custom_mesh_3d_animation_ids, 16, multiplier);
-        trim_upload_vec(
-            &mut self.custom_mesh_3d_animations,
-            16 * PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES,
-            multiplier,
-        );
-        self.custom_mesh_3d_resolved_animation_scratch.clear();
-        self.custom_mesh_3d_resolved_animation_scratch
-            .shrink_to(8 * multiplier);
-        trim_upload_vec(&mut self.custom_mesh_3d_meshes, 8, multiplier);
-        trim_upload_vec(&mut self.custom_mesh_3d_shaders, 8, multiplier);
-        self.custom_mesh_3d_ids.shrink_to(8 * multiplier);
-        self.custom_mesh_3d_shader_ids.shrink_to(8 * multiplier);
         trim_upload_vec(&mut self.batches, 64, multiplier);
 
         // Path cache values can contain large Arc-backed raster payloads and the hash tables can
@@ -267,7 +243,7 @@ impl FrameUpload {
                 | UploadedBatch::BeginBlur { .. }
                 | UploadedBatch::EndBlur { .. }
                 | UploadedBatch::CompositeBlur { .. }
-                | UploadedBatch::CustomMesh3d { .. } => {}
+                | UploadedBatch::RendererExtensions { .. } => {}
             }
         }
     }
@@ -297,7 +273,6 @@ impl FrameUpload {
             .saturating_add(self.backdrop_blur_passes.len())
             .saturating_add(self.backdrop_blurs.len())
             .saturating_add(self.animation_values.len())
-            .saturating_add(self.custom_mesh_3d_parameters.len())
     }
 
     pub(in crate::platform::nova) fn upload_breakdown(
@@ -320,7 +295,6 @@ impl FrameUpload {
                 .len()
                 .saturating_add(self.backdrop_blurs.len()),
             animation_bytes: self.animation_values.len(),
-            custom_mesh_parameter_bytes: self.custom_mesh_3d_parameters.len(),
         }
     }
 

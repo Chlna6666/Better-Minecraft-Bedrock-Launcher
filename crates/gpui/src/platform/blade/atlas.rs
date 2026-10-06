@@ -284,7 +284,7 @@ impl BladeAtlasState {
             }
         }
 
-        let raw = self.gpu.create_texture(gpu::TextureDesc {
+        let raw = self.gpu.create_texture(gpu::TextureDescriptor {
             name: "atlas",
             format,
             size: gpu::Extent {
@@ -301,7 +301,7 @@ impl BladeAtlasState {
         });
         let raw_view = self.gpu.create_texture_view(
             raw,
-            gpu::TextureViewDesc {
+            gpu::TextureViewDescriptor {
                 name: "",
                 format,
                 dimension: gpu::ViewDimension::D2,
@@ -348,7 +348,7 @@ impl BladeAtlasState {
         layers: Vec<ColorGlyphLayer>,
     ) -> Result<()> {
         for (ix, layer) in layers.into_iter().enumerate() {
-            let texture = self.gpu.create_texture(gpu::TextureDesc {
+            let texture = self.gpu.create_texture(gpu::TextureDescriptor {
                 name: "emoji layer mask",
                 format: gpu::TextureFormat::R8Unorm,
                 size: gpu::Extent {
@@ -365,7 +365,7 @@ impl BladeAtlasState {
             });
             let view = self.gpu.create_texture_view(
                 texture,
-                gpu::TextureViewDesc {
+                gpu::TextureViewDescriptor {
                     name: "emoji layer mask view",
                     format: gpu::TextureFormat::R8Unorm,
                     dimension: gpu::ViewDimension::D2,

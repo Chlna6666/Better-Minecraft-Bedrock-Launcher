@@ -160,7 +160,6 @@ fn records_extended_gpu_metrics() {
         underline_bytes: 96,
         backdrop_blur_bytes: 152,
         animation_bytes: 160,
-        custom_mesh_parameter_bytes: 192,
     });
     let direct_before = before.direct_present_count;
     let retained_before = before.retained_present_count;
@@ -220,7 +219,6 @@ fn records_extended_gpu_metrics() {
     assert_eq!(snapshot.underline_upload_bytes, 96);
     assert_eq!(snapshot.backdrop_blur_upload_bytes, 152);
     assert_eq!(snapshot.animation_upload_bytes, 160);
-    assert_eq!(snapshot.custom_mesh_parameter_upload_bytes, 192);
     assert_eq!(snapshot.direct_present_count, direct_before + 1);
     assert_eq!(snapshot.retained_present_count, retained_before + 1);
     assert_eq!(snapshot.backdrop_blur_frame_count, blur_before + 1);
@@ -672,14 +670,14 @@ fn records_windows_vsync_stages_with_the_successful_animation_sample() {
     assert_eq!(
         timing
             .backend_timings
-            .expect("Vulkan timings should be associated with the sample")
+            .expect("backend timings should be associated with the sample")
             .queue_present,
         Duration::from_millis(5),
     );
     assert_eq!(
         timing
             .backend_timings
-            .expect("Vulkan timings should be associated with the sample")
+            .expect("backend timings should be associated with the sample")
             .command_record,
         Duration::from_micros(400),
     );

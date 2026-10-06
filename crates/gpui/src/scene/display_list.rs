@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
     BatchIterator, BlurCapture, DrawOrder, MonochromeSprite, PaintBackdropBlur, PaintBlur,
-    PaintGpuMesh3d, PaintOperation, PaintSurface, Path, PathId, PolychromeSprite,
-    PreparedBackdropBlurGroup, PreparedGpuMesh3dPass, PreparedQuadRun, PreparedSceneBatch,
-    PreparedSceneBatches, Primitive, PrimitiveBatch, Quad, SceneAnimationId, SceneAnimationValue,
-    Shadow, Underline, blur_influence_radius,
+    PaintOperation, PaintRendererExtension, PaintSurface, Path, PathId, PolychromeSprite,
+    PreparedBackdropBlurGroup, PreparedQuadRun, PreparedSceneBatch, PreparedSceneBatches,
+    Primitive, PrimitiveBatch, Quad, SceneAnimationId,
+    SceneAnimationValue, Shadow, Underline, blur_influence_radius,
 };
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ pub(crate) struct Scene {
     pub(crate) surfaces: Vec<PaintSurface>,
     pub(crate) backdrop_blurs: Vec<PaintBackdropBlur>,
     pub(crate) blurs: Vec<PaintBlur>,
-    pub(crate) gpu_meshes_3d: Vec<PaintGpuMesh3d>,
+    pub(crate) renderer_extensions: Vec<PaintRendererExtension>,
     /// Scene-local animation samples emitted while building this display list.
     ///
     /// Engine-owned presentation samples intentionally live outside Scene so retained display-list
@@ -101,7 +101,7 @@ enum ScenePrimitiveKind {
     Surface,
     BackdropBlur,
     Blur,
-    GpuMesh3d,
+    RendererExtension,
 }
 
 const SCENE_IDLE_TRIM_FRAMES: u16 = 45;
@@ -225,7 +225,7 @@ impl Scene {
         self.surfaces.clear();
         self.backdrop_blurs.clear();
         self.blurs.clear();
-        self.gpu_meshes_3d.clear();
+        self.renderer_extensions.clear();
         self.animation_values.clear();
         self.next_scene_animation_id = 0;
         self.prepared_batches.clear();
@@ -519,7 +519,7 @@ impl Scene {
 
     pub(crate) fn requires_full_redraw_fallback(&self) -> bool {
         !self.surfaces.is_empty()
-            || !self.gpu_meshes_3d.is_empty()
+            || !self.renderer_extensions.is_empty()
             || self
                 .blurs
                 .iter()
@@ -1026,9 +1026,9 @@ impl Scene {
                 blur.order = order;
                 self.blurs.push(blur.clone());
             }
-            Primitive::GpuMesh3d(mesh) => {
-                mesh.order = order;
-                self.gpu_meshes_3d.push(mesh.clone());
+            Primitive::RendererExtension(extension) => {
+                extension.order = order;
+                self.renderer_extensions.push(extension.clone());
             }
         }
         if record_operation {
@@ -1136,11 +1136,11 @@ impl Scene {
                 self.blurs.push(blur);
                 ScenePrimitiveKind::Blur
             }
-            Primitive::GpuMesh3d(mesh) => {
-                let mut mesh = mesh.clone();
-                mesh.order = order;
-                self.gpu_meshes_3d.push(mesh);
-                ScenePrimitiveKind::GpuMesh3d
+            Primitive::RendererExtension(extension) => {
+                let mut extension = extension.clone();
+                extension.order = order;
+                self.renderer_extensions.push(extension);
+                ScenePrimitiveKind::RendererExtension
             }
         }
     }
@@ -1279,7 +1279,8 @@ impl Scene {
         self.surfaces.sort_unstable_by_key(|surface| surface.order);
         self.backdrop_blurs.sort_unstable_by_key(|blur| blur.order);
         self.blurs.sort_unstable_by_key(|blur| blur.order);
-        self.gpu_meshes_3d.sort_unstable_by_key(|mesh| mesh.order);
+        self.renderer_extensions
+            .sort_unstable_by_key(|extension| extension.order);
         self.prepare_batches();
         self.prepare_retained_quad_chunks();
         if let Some(previous) = previous
@@ -1337,9 +1338,9 @@ impl Scene {
             blurs: &self.blurs,
             blurs_start: 0,
             blurs_iter: self.blurs.iter().peekable(),
-            gpu_meshes_3d: &self.gpu_meshes_3d,
-            gpu_meshes_3d_start: 0,
-            gpu_meshes_3d_iter: self.gpu_meshes_3d.iter().peekable(),
+            renderer_extensions: &self.renderer_extensions,
+            renderer_extensions_start: 0,
+            renderer_extensions_iter: self.renderer_extensions.iter().peekable(),
         }
     }
 
@@ -1353,7 +1354,7 @@ impl Scene {
             + self.surfaces.len()
             + self.backdrop_blurs.len()
             + self.blurs.len()
-            + self.gpu_meshes_3d.len()
+            + self.renderer_extensions.len()
     }
 
     fn retained_capacity(&self) -> usize {
@@ -1367,7 +1368,7 @@ impl Scene {
             + self.surfaces.capacity()
             + self.backdrop_blurs.capacity()
             + self.blurs.capacity()
-            + self.gpu_meshes_3d.capacity()
+            + self.renderer_extensions.capacity()
             + self.animation_values.capacity()
             + self.prepared_batches.batches.capacity()
             + self.primitive_bounds.retained_capacity()
@@ -1400,7 +1401,7 @@ impl Scene {
         trim_vec_against!(surfaces);
         trim_vec_against!(backdrop_blurs);
         trim_vec_against!(blurs);
-        trim_vec_against!(gpu_meshes_3d);
+        trim_vec_against!(renderer_extensions);
         trim_vec_against!(animation_values);
         trim_vec_against!(blur_captures);
         trim_vec_against!(retained_chunk_candidates);
@@ -1483,7 +1484,7 @@ impl Scene {
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
         trim_vec_capacity(
-            &mut self.gpu_meshes_3d,
+            &mut self.renderer_extensions,
             primitive_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
@@ -1571,10 +1572,11 @@ impl Scene {
                 PrimitiveBatch::Blurs(blurs) => {
                     PreparedSceneBatch::Blurs(slice_range(&self.blurs, blurs))
                 }
-                PrimitiveBatch::GpuMeshes3d(meshes) => {
-                    PreparedSceneBatch::GpuMeshes3d(PreparedGpuMesh3dPass {
-                        range: slice_range(&self.gpu_meshes_3d, meshes),
-                    })
+                PrimitiveBatch::RendererExtensions(extensions) => {
+                    PreparedSceneBatch::RendererExtensions(slice_range(
+                        &self.renderer_extensions,
+                        extensions,
+                    ))
                 }
             });
         }

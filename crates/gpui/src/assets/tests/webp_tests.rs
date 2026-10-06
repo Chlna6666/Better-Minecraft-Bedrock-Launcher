@@ -3,6 +3,23 @@ use image::{ExtendedColorType, codecs::webp::WebPEncoder};
 use std::{thread, time::Instant};
 
 #[test]
+fn static_webp_decode_and_resize_preserve_bgra_pixels() {
+    let bytes = encoded_lossless_webp(8, 8, [17, 93, 201, 255]);
+    for dimension in [8, 2] {
+        let target = ImageRenderSize::new(dimension, dimension).unwrap();
+        let (image, _) = crate::assets::webp::render_sized(&bytes, target, ObjectFit::Fill)
+            .unwrap()
+            .expect("static WebP uses the native BGRA decoder");
+        assert!(!image.is_animated());
+        assert_eq!(image.size(0), target.size());
+        assert_eq!(
+            image.as_bytes(0).unwrap(),
+            [201, 93, 17, 255].repeat((dimension * dimension) as usize)
+        );
+    }
+}
+
+#[test]
 fn animated_webp_render_keeps_multiple_frames() {
     let bytes = animated_webp_bytes(8, 6);
     let image = render_image(&bytes, ImageFormat::WebP, AnimatedImageConfig::default()).unwrap();

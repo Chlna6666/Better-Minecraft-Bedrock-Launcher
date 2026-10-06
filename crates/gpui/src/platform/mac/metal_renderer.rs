@@ -538,10 +538,6 @@ impl MetalRenderer {
                     let _ = blurs;
                     true
                 }
-                PrimitiveBatch::GpuMeshes3d(meshes) => {
-                    let _ = meshes;
-                    true
-                }
             };
             if !ok {
                 command_encoder.end_encoding();

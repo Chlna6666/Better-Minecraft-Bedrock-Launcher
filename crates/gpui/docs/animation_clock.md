@@ -133,6 +133,15 @@ rather than written into the committed Scene. The target steady state must not
 clone, mutate, serialize, and rewrite every animated primitive merely to advance
 visual time.
 
+`PlatformWindow::owns_scene_animations()` determines whether the UI leaves
+scene-bound sampling and completion to the platform. Independent owners return
+true even while a scene is queued or deferred: a UI tick cannot finish those
+timelines before successful native presentation reports their completion. This
+ownership query must not synchronously wait for the presentation thread.
+UI-only visual and layout timelines still advance on the UI frame clock.
+Platforms using the default implementation retain their existing committed-scene
+activity check and UI fallback behavior.
+
 CPU-only filter/damage planning may sample lightweight geometry, but it must use
 the same current-frame animation sample as renderer-visible values.
 

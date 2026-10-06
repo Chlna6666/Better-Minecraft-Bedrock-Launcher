@@ -3,15 +3,16 @@ use crate::platform::frame::ActivePresentationFrame;
 use smallvec::SmallVec;
 
 mod chunk_upload;
-mod custom_mesh_pipeline;
+mod draw_step_scratch;
 mod draw_steps;
+
 mod init;
-mod mesh_cache;
-mod mesh_cache_release;
 mod present;
 mod retained_upload;
 mod submission;
 mod surface_lifecycle;
+
+use draw_step_scratch::{DrawStepCacheKey, DrawStepScratch, PathMaskCacheKey};
 
 const SWAPCHAIN_WARMUP_FRAME_COUNT: u8 = 1;
 
@@ -64,15 +65,6 @@ pub(super) struct DrawableSize {
     pub(super) height: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct MeshCacheEntry {
-    pub(super) generation: u64,
-    pub(super) vertex_offset: u32,
-    pub(super) vertex_count: u32,
-    pub(super) index_offset: u32,
-    pub(super) index_count: u32,
-}
-
 #[derive(Clone)]
 pub(crate) struct NovaRendererAtlas(Arc<NovaAtlas>);
 
@@ -87,7 +79,8 @@ impl NovaRendererAtlas {
 }
 
 pub(crate) struct NovaRenderer {
-    backend: NovaBackend,
+    backend: SharedBackend,
+    backend_info: NovaBackendInfo,
     surface: SurfaceId,
     swapchain: SwapchainId,
     surface_config: SurfaceConfig,
@@ -112,9 +105,6 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_pass_buffer: BufferId,
     backdrop_blur_buffer: BufferId,
     animation_value_buffer: BufferId,
-    custom_mesh_3d_parameters_buffer: BufferId,
-    custom_mesh_3d_vertices_buffer: BufferId,
-    custom_mesh_3d_indices_buffer: BufferId,
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_rasterization_resource_set: ResourceSetId,
@@ -127,18 +117,6 @@ pub(crate) struct NovaRenderer {
     underline_resource_set: ResourceSetId,
     backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
     backdrop_blur_resource_set_layout: ResourceSetLayoutId,
-    custom_mesh_3d_pipeline_layout: PipelineLayoutId,
-    custom_mesh_3d_resource_set: ResourceSetId,
-    custom_mesh_3d_resource_set_layout: ResourceSetLayoutId,
-    custom_mesh_3d_buffers_ready: bool,
-    custom_mesh_3d_mesh_cache: FxHashMap<GpuMesh3dId, MeshCacheEntry>,
-    custom_mesh_3d_vertex_cursor: usize,
-    custom_mesh_3d_index_cursor: usize,
-    custom_mesh_3d_uploaded_bytes_this_frame: usize,
-    custom_mesh_3d_vertex_upload_scratch: Vec<u8>,
-    custom_mesh_3d_index_upload_scratch: Vec<u8>,
-    custom_mesh_3d_pipelines: FxHashMap<GpuMesh3dShaderId, RenderPipelineId>,
-    custom_mesh_3d_pipeline_failures: FxHashSet<GpuMesh3dShaderId>,
     backdrop_blur_targets: Option<BackdropBlurTargets>,
     backdrop_blur_cache_valid: bool,
     backdrop_blur_cache_atlas_generation: u64,
@@ -147,6 +125,8 @@ pub(crate) struct NovaRenderer {
     path_texture: TextureId,
     path_texture_view: TextureViewId,
     frame_upload: FrameUpload,
+    renderer_extension_renderers:
+        FxHashMap<std::any::TypeId, Box<dyn crate::RendererExtensionRenderer>>,
     retained_upload: retained_upload::RetainedUpload,
     draw_step_scratch: DrawStepScratch,
     current_size: DrawableSize,
@@ -170,48 +150,6 @@ struct PendingSubmission {
     frame_resource_index: usize,
 }
 
-#[derive(Default)]
-struct DrawStepScratch {
-    draw_steps: Vec<RenderStepDescriptor>,
-    draw_step_cache: Vec<DrawStepCacheEntry>,
-    draw_step_cache_hit: bool,
-    path_mask_steps: Vec<DrawStepDescriptor>,
-    path_mask_cache: Option<PathMaskCacheEntry>,
-    path_mask_cache_hit: bool,
-    backdrop_blur_passes: Vec<BackdropBlurRenderPass>,
-    backdrop_blur_damage_region: DirtyRegion,
-    backdrop_blur_damage_plan: crate::BackdropBlurDamagePlan,
-    force_full_backdrop_blur_refresh: bool,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct DrawStepCacheKey {
-    scene_revision: u64,
-    size: DrawableSize,
-    frame_resource_index: usize,
-    atlas_texture_generation: Option<u64>,
-    atlas_texture_count: usize,
-    premultiplied_alpha: bool,
-}
-
-#[derive(Default)]
-struct DrawStepCacheEntry {
-    key: Option<DrawStepCacheKey>,
-    steps: Vec<RenderStepDescriptor>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-struct PathMaskCacheKey {
-    scene_revision: u64,
-    path_rasterization_resource_set: ResourceSetId,
-}
-
-#[derive(Default)]
-struct PathMaskCacheEntry {
-    key: Option<PathMaskCacheKey>,
-    steps: Vec<DrawStepDescriptor>,
-}
-
 impl NovaRenderer {
     pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
@@ -222,7 +160,14 @@ impl NovaRenderer {
     /// Windows consumes this as a platform-frame preflight. A saturated DXGI queue is therefore a
     /// deferred presentation rather than synchronous work on GPUI's UI thread.
     pub(crate) fn can_present_without_wait(&mut self) -> Result<bool> {
-        self.backend.can_present_without_wait(self.swapchain)
+        lock_backend(&self.backend).can_present_without_wait(self.swapchain)
+    }
+
+    pub(crate) fn arm_swapchain_frame_ready(
+        &mut self,
+        callback: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<bool> {
+        lock_backend(&self.backend).arm_swapchain_frame_ready(self.swapchain, callback)
     }
 
     pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
@@ -255,7 +200,7 @@ impl NovaRenderer {
         self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
-            && self.backend.supports_partial_presentation(self.swapchain);
+            && lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
         resolve_surface_packet(packet, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
@@ -263,11 +208,11 @@ impl NovaRenderer {
             packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
+        self.prepare_renderer_extensions(packet.frame_time)?;
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
-        self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
         self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
     }
 
@@ -286,7 +231,7 @@ impl NovaRenderer {
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
-        let next_backdrop_blur_targets = match &mut self.backend {
+        let next_backdrop_blur_targets = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 let targets = create_backdrop_blur_target_chain(
@@ -359,7 +304,7 @@ impl NovaRenderer {
             self.observe_presentation_packet(&packet);
             let supports_partial = self.swapchain_warmup_frames == 0
                 && surface_alpha_allows_partial_presentation(self.surface_alpha)
-                && self.backend.supports_partial_presentation(self.swapchain);
+                && lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
             resolve_surface_packet(&mut packet, !supports_partial);
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
@@ -371,7 +316,6 @@ impl NovaRenderer {
             if !self.frame_upload.backdrop_blurs.is_empty() {
                 self.ensure_backdrop_blur_targets()?;
             }
-            self.ensure_custom_mesh_3d_pipelines_for_current_backend()?;
             let mut presentation_timing = None;
             self.draw_present(
                 upload,
@@ -445,48 +389,29 @@ impl NovaRenderer {
     }
 
     pub(crate) fn gpu_specs(&self) -> GpuSpecs {
-        let driver_name = match self.backend {
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(_) => "nova-dx12",
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(_) => "nova-metal",
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(_) => "nova-vulkan",
-            #[cfg(not(any(
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => "nova-unavailable",
-        };
         GpuSpecs {
             is_software_emulated: false,
-            device_name: self.backend.adapter_name().to_string(),
-            driver_name: driver_name.to_string(),
+            device_name: self.backend_info.adapter_name().to_string(),
+            driver_name: self.backend_info.label().to_string(),
             driver_info: "phase2b2-nova-batch-smoke".to_string(),
         }
     }
 
     pub(crate) fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
-        if !matches!(level, GpuiMemoryTrimLevel::Light) {
-            if let Err(error) = self.wait_for_pending_submissions() {
-                log::debug!("failed to drain nova-gfx submissions before memory trim: {error}");
+        let submissions_drained = if !matches!(level, GpuiMemoryTrimLevel::Light) {
+            match self.wait_for_pending_submissions() {
+                Ok(()) => true,
+                Err(error) => {
+                    log::debug!("failed to drain nova-gfx submissions before memory trim: {error}");
+                    false
+                }
             }
-        }
+        } else {
+            false
+        };
         self.atlas.trim(level);
         self.frame_upload.trim_retained_capacity(level);
         self.draw_step_scratch.trim_retained_capacity(level);
-        self.trim_custom_mesh_3d_cache(level);
-        if let Err(error) = self.demote_custom_mesh_3d_buffers_if_idle(level) {
-            log::debug!("failed to demote idle nova 3D mesh buffers: {error}");
-        }
-
         if matches!(
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
@@ -504,7 +429,23 @@ impl NovaRenderer {
             }
         }
 
-        if let Err(error) = self.backend.trim_memory(gfx_memory_trim_level(level)) {
+        if submissions_drained && !self.renderer_extension_renderers.is_empty() {
+            let extension_renderers = &mut self.renderer_extension_renderers;
+            if let Err(error) = lock_backend(&self.backend).with_extension_device(|device| {
+                for renderer in extension_renderers.values_mut() {
+                    if let Err(error) = renderer.trim_memory(device, memory_trim_level(level)) {
+                        log::debug!("failed to trim GPUI renderer extension resources: {error}");
+                    }
+                }
+                Ok(())
+            }) {
+                log::debug!(
+                    "failed to access nova-gfx device to trim renderer extensions: {error}"
+                );
+            }
+        }
+
+        if let Err(error) = lock_backend(&self.backend).trim_memory(memory_trim_level(level)) {
             log::debug!("failed to trim nova-gfx backend memory: {error}");
         }
     }
@@ -514,6 +455,7 @@ impl NovaRenderer {
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
+        self.destroy_renderer_extensions();
     }
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
@@ -552,7 +494,7 @@ impl NovaRenderer {
         let Some(targets) = self.backdrop_blur_targets.take() else {
             return;
         };
-        match &mut self.backend {
+        match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 destroy_backdrop_blur_target_chain(device, targets, "DX12");
@@ -609,14 +551,12 @@ impl NovaRenderer {
         self.backdrop_blur_pass_buffer = resources.buffers.backdrop_blur_pass_buffer;
         self.backdrop_blur_buffer = resources.buffers.backdrop_blur_buffer;
         self.animation_value_buffer = resources.buffers.animation_value_buffer;
-        self.custom_mesh_3d_parameters_buffer = resources.buffers.custom_mesh_3d_parameters_buffer;
         self.quad_resource_set = resources.resource_sets.quad_resource_set;
         self.shadow_resource_set = resources.resource_sets.shadow_resource_set;
         self.path_rasterization_resource_set =
             resources.resource_sets.path_rasterization_resource_set;
         self.path_resource_set = resources.path_resource_set;
         self.underline_resource_set = resources.resource_sets.underline_resource_set;
-        self.custom_mesh_3d_resource_set = resources.resource_sets.custom_mesh_3d_resource_set;
         Ok(())
     }
 
@@ -659,7 +599,7 @@ impl NovaRenderer {
             return Ok(());
         }
         let descriptor = self.atlas_resource_descriptor();
-        let result = match &mut self.backend {
+        let result = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => sync_gpu_atlas_textures(
                 &self.atlas,
@@ -704,31 +644,6 @@ impl NovaRenderer {
     }
 }
 
-impl DrawStepScratch {
-    fn trim_retained_capacity(&mut self, level: GpuiMemoryTrimLevel) {
-        let multiplier = match level {
-            GpuiMemoryTrimLevel::Light => 16,
-            GpuiMemoryTrimLevel::Moderate => 8,
-            GpuiMemoryTrimLevel::Aggressive => 1,
-        };
-        trim_vec_capacity(&mut self.draw_steps, 64, multiplier);
-        trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
-        trim_vec_capacity(&mut self.backdrop_blur_passes, 16, multiplier);
-        if self
-            .path_mask_cache
-            .as_ref()
-            .is_some_and(|cache| cache.steps.capacity() > 32usize.saturating_mul(multiplier.max(1)))
-        {
-            self.path_mask_cache = None;
-        }
-        for cache in &mut self.draw_step_cache {
-            if cache.steps.capacity() > 64usize.saturating_mul(multiplier.max(1)) {
-                *cache = DrawStepCacheEntry::default();
-            }
-        }
-    }
-}
-
 fn trim_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     let target = floor.max(1);
     if vec.capacity() > target.saturating_mul(multiplier.max(1)) {
@@ -736,11 +651,11 @@ fn trim_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     }
 }
 
-fn gfx_memory_trim_level(level: GpuiMemoryTrimLevel) -> GfxMemoryTrimLevel {
+fn memory_trim_level(level: GpuiMemoryTrimLevel) -> MemoryTrimLevel {
     match level {
-        GpuiMemoryTrimLevel::Light => GfxMemoryTrimLevel::Light,
-        GpuiMemoryTrimLevel::Moderate => GfxMemoryTrimLevel::Moderate,
-        GpuiMemoryTrimLevel::Aggressive => GfxMemoryTrimLevel::Aggressive,
+        GpuiMemoryTrimLevel::Light => MemoryTrimLevel::Light,
+        GpuiMemoryTrimLevel::Moderate => MemoryTrimLevel::Moderate,
+        GpuiMemoryTrimLevel::Aggressive => MemoryTrimLevel::Aggressive,
     }
 }
 
@@ -751,18 +666,6 @@ fn force_full_backdrop_blur_refresh(cache_valid: bool, explicitly_forced: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn draw_step_scratch_aggressive_trim_shrinks_retained_capacity() {
-        let mut scratch = DrawStepScratch::default();
-        scratch.draw_steps.reserve(2048);
-        scratch.path_mask_steps.reserve(1024);
-
-        scratch.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
-
-        assert!(scratch.draw_steps.capacity() <= 64);
-        assert!(scratch.path_mask_steps.capacity() <= 32);
-    }
 
     #[test]
     fn empty_spatial_damage_does_not_force_full_blur_refresh() {

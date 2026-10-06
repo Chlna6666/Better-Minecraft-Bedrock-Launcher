@@ -1,9 +1,9 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 #![cfg_attr(any(not(target_os = "macos"), feature = "macos-blade"), allow(unused))]
 
-// TODO: consider generating shader code for WGSL.
 // TODO: deprecate "runtime-shaders" and "macos-blade".
 
+use gfx_shader_build::{Shader, ShaderSet, ShaderStage};
 use std::env;
 
 fn main() {
@@ -19,6 +19,10 @@ fn main() {
         feature = "macos-blade"
     ))]
     check_blade_wgsl_shaders();
+
+    // Not optional: the renderer resolves every production shader from these
+    // generated artifacts instead of running the WGSL frontend at startup.
+    generate_nova_shader_bytes();
 
     match target.as_deref() {
         Ok("macos") => {
@@ -500,5 +504,130 @@ mod windows {
         embed_resource::compile(rc_file, embed_resource::ParamsIncludeDirs([resource_dir]))
             .manifest_required()
             .unwrap();
+    }
+}
+
+const NOVA_CORE_WGSL: &str = "./src/platform/nova/shaders/core.wgsl";
+const NOVA_ANIMATION_WGSL: &str = "./src/platform/nova/shaders/animation.wgsl";
+const NOVA_SHAPE_WGSL: &str = "./src/platform/nova/shaders/shape.wgsl";
+const NOVA_QUAD_COMMON_WGSL: &str = "./src/platform/nova/shaders/quad_common.wgsl";
+const NOVA_TEXT_WGSL: &str = "./src/platform/nova/shaders/text.wgsl";
+const NOVA_SPRITE_COMMON_WGSL: &str = "./src/platform/nova/shaders/sprite_common.wgsl";
+const NOVA_SUBPIXEL_COMMON_WGSL: &str = "./src/platform/nova/shaders/subpixel_sprite_common.wgsl";
+
+/// Compiles the production Nova shader set into embedded backend artifacts.
+///
+/// The entry points declared here are the ones `src/platform/nova/shader.rs` binds.
+/// `gfx-shader-build` rejects a duplicate entry point, and a name that drifts from the
+/// renderer surfaces at runtime as a `MissingArtifact` shader error naming the entry
+/// point, so a mismatch cannot silently drop a shader.
+///
+/// The subpixel sprite shaders are Windows-only because only the Windows renderer
+/// binds them and they require dual-source blending.
+fn generate_nova_shader_bytes() {
+    let shaders = ShaderSet::new("nova")
+        .shader(
+            Shader::new("solid_quad")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/solid_quad.wgsl")
+                .entry("vs_solid_quad", ShaderStage::Vertex)
+                .entry("fs_solid_quad", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("mono_sprite")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_TEXT_WGSL)
+                .wgsl_file(NOVA_SPRITE_COMMON_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/mono_sprite.wgsl")
+                .entry("vs_mono_sprite", ShaderStage::Vertex)
+                .entry("fs_mono_sprite", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("subpixel_sprite")
+                .target_os("windows")
+                .prelude("enable dual_source_blending;\n")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_TEXT_WGSL)
+                .wgsl_file(NOVA_SPRITE_COMMON_WGSL)
+                .wgsl_file(NOVA_SUBPIXEL_COMMON_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/subpixel_sprite.wgsl")
+                .entry("vs_subpixel_sprite", ShaderStage::Vertex)
+                .entry("fs_subpixel_sprite", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("subpixel_sprite_grayscale")
+                .target_os("windows")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_TEXT_WGSL)
+                .wgsl_file(NOVA_SPRITE_COMMON_WGSL)
+                .wgsl_file(NOVA_SUBPIXEL_COMMON_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/subpixel_sprite_grayscale.wgsl")
+                .entry("fs_subpixel_sprite_grayscale", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("quad")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_SHAPE_WGSL)
+                .wgsl_file(NOVA_QUAD_COMMON_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/quad.wgsl")
+                .entry("vs_quad", ShaderStage::Vertex)
+                .entry("fs_quad", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("shadow")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_SHAPE_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/shadow.wgsl")
+                .entry("vs_shadow", ShaderStage::Vertex)
+                .entry("fs_shadow", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("path")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_QUAD_COMMON_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/path.wgsl")
+                .entry("vs_path_rasterization", ShaderStage::Vertex)
+                .entry("fs_path_rasterization", ShaderStage::Fragment)
+                .entry("vs_path", ShaderStage::Vertex)
+                .entry("fs_path", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("poly_sprite")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file(NOVA_SHAPE_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/poly_sprite.wgsl")
+                .entry("vs_poly_sprite", ShaderStage::Vertex)
+                .entry("fs_poly_sprite", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("underline")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/underline.wgsl")
+                .entry("vs_underline", ShaderStage::Vertex)
+                .entry("fs_underline", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("backdrop_blur")
+                .wgsl_file(NOVA_CORE_WGSL)
+                .wgsl_file(NOVA_SHAPE_WGSL)
+                .wgsl_file(NOVA_ANIMATION_WGSL)
+                .wgsl_file("./src/platform/nova/shaders/blur.wgsl")
+                .entry("vs_backdrop_blur_pass", ShaderStage::Vertex)
+                .entry("fs_backdrop_blur_downsample", ShaderStage::Fragment)
+                .entry("fs_backdrop_blur_upsample", ShaderStage::Fragment)
+                .entry("vs_backdrop_blur", ShaderStage::Vertex)
+                .entry("fs_backdrop_blur", ShaderStage::Fragment),
+        );
+
+    if let Err(error) = shaders.emit() {
+        println!("cargo::error={error}");
+        std::process::exit(1);
     }
 }

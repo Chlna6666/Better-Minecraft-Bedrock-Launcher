@@ -30,7 +30,7 @@ This document covers:
 | `crates/gpui/src/element` | Element trait implementations and built-in elements such as `div`, text, image, SVG, list, canvas, and surface. |
 | `crates/gpui/src/layout` | Layout engine wrapper, layout builders, layout cache, layout metrics, and conversion helpers. |
 | `crates/gpui/src/text_system` | Fonts, fallback, line layout, wrapping, truncation, shaping, glyph rasterization, and text paint helpers. |
-| `crates/gpui/src/scene` | Scene primitives, path data, batches, prepared scene data, bounds trees, transforms, and 3D mesh descriptors. |
+| `crates/gpui/src/scene` | UI scene primitives, path data, batches, prepared scene data, bounds trees, transforms, and generic renderer extensions. |
 | `crates/gpui/src/render_pipeline` | Renderer backend options, shader helpers, and SVG renderer bridge. |
 | `crates/gpui/src/platform` | Platform windows, GPU backend adapters, clipboard, displays, keyboard, and test platforms. |
 | `crates/gpui/src/platform/nova` | nova-gfx renderer integration, resources, pipelines, frame upload, swapchain, and backend-specific submission. |
@@ -106,7 +106,14 @@ UI / entity state                         retained presentation
 
 When a platform callback contains both a renderer-owned animation tick and dirty UI work, presentation runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
 
-Windows has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene. The first frame remains synchronous so native visibility waits for a submitted frame; later UI packets enter a latest-wins mailbox without waiting for native rendering. If DXGI backpressure or a pending resize defers a packet, the native owner retains it, carries forward unsubmitted scene and backdrop damage, and retries it on the next native frame. Native presentation continues from the active scene while UI `Render` is blocked. Both Windows DX12 and Vulkan pass the 200 ms blocked-`Render` gate with distinct animation samples and no per-frame UI rendering.
+Windows has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene. The first frame remains synchronous so native visibility waits for a submitted frame; later UI packets enter a latest-wins mailbox without waiting for native rendering. If DXGI backpressure or a pending resize defers a packet, the native owner retains it, carries forward unsubmitted scene and backdrop damage, and retries it on the next native frame. Native presentation continues from the active scene while UI `Render` is blocked. The blocked-Render lab checks that native animation samples keep changing without per-frame UI rendering. This independence does not establish nominal-refresh continuity or physical scanout timing.
+
+The Windows proxy declares scene-animation ownership locally through
+`owns_scene_animations()`. UI animation ticks do not synchronously query native
+activity to select their completion owner. Queued or deferred scene timelines
+wait for native completion reports; UI-only visual and layout timelines still
+advance on the UI thread. Other platform paths retain their previous activity
+check through the trait's default implementation.
 
 Linux Wayland and X11 keep protocol objects, callbacks, and native surfaces on their platform thread. Each window moves its `NovaRenderer` into a dedicated presentation owner thread. The first frame remains synchronous; later scene packets and presentation ticks enter a coalescing owner queue. The queue keeps the latest scene while accumulating all unsubmitted damage, and the owner reports animation completions only after a successful submission. Resize, renderer queries, trim, and destruction are serialized with drawing on that owner; shutdown joins it before the platform destroys its surface. This isolates scene encoding and renderer submission from the UI and native protocol event loops without moving Wayland/X11 objects across threads.
 
@@ -288,7 +295,7 @@ Paint methods add primitives to the frame scene:
 - text glyphs and emoji glyphs through the text system and sprite atlas;
 - images and SVG output through element-specific rendering;
 - backdrop blur primitives;
-- custom 3D mesh primitives.
+- generic renderer extensions submitted by extension implementations.
 
 Scene ownership lives under `crates/gpui/src/scene`:
 
@@ -298,7 +305,7 @@ Scene ownership lives under `crates/gpui/src/scene`:
 | `batch.rs` | Primitive batching and batch metadata. |
 | `prepared.rs` | Prepared frame data. |
 | `path.rs`, `path_builder.rs` | Path storage and path geometry. |
-| `mesh.rs` | GPU 3D mesh descriptors and draw ranges. |
+| `renderer_extension.rs` | Generic renderer-extension payloads and frame ordering. |
 | `bounds_tree.rs` | Spatial data for bounds and dirty region support. |
 | `transform.rs` | Transformation matrices. |
 
@@ -370,19 +377,103 @@ Major modules:
 | Path | Responsibility |
 | --- | --- |
 | `renderer.rs` | Renderer state, draw entry point, retained resources, memory trim, and backend-independent orchestration. |
-| `renderer/init.rs` | Device, surface, swapchain, resource, and pipeline initialization. |
+| `renderer/init.rs` | Surface, swapchain, and per-window resource initialization on a device and renderer core resolved from the sharing registries. |
 | `renderer/draw_steps.rs` | Conversion from frame upload data to render step descriptors. |
 | `renderer/present.rs` | Buffer upload, atlas upload, offscreen passes, direct swapchain rendering, and submission. |
 | `renderer/submission.rs` | GPU submission and pending submission handling. |
 | `renderer/surface_lifecycle.rs` | Resize and surface lifecycle behavior. |
-| `renderer/custom_mesh_pipeline.rs` | Custom 3D mesh pipeline management. |
-| `renderer/mesh_cache.rs` | Retained custom mesh buffer cache. |
 | `frame_upload` | CPU packing of scene primitives into GPU upload buffers. |
 | `resources` | Buffer, texture, depth, shader, pipeline, and resource set creation. |
-| `shader.rs`, `shaders/*.wgsl` | Shader module loading and WGSL shader sources. |
+| `resources/core.rs` | Cache of the renderer core shared by windows that agree on device and color format. |
+| `device.rs` | Device keys and the registry that shares one backend device between windows. |
+| `shader_artifacts.rs` | Build-generated shader artifact table included from `OUT_DIR`. |
+| `shader.rs`, `shaders/*.wgsl` | Shader module lookup and WGSL shader sources. |
 | `atlas.rs`, `atlas_resources.rs` | Sprite atlas management and GPU atlas synchronization. |
 | `swapchain.rs`, `surface.rs`, `surface_plan.rs` | Surface and swapchain handling. |
 | `diagnostics.rs`, `upload_metrics.rs` | Renderer diagnostics and upload metrics. |
+
+### Build-Time Shader Artifacts
+
+Components declare their WGSL in a build script instead of compiling shaders at
+runtime. `gfx-shader-build` provides the reusable surface: `ShaderSet::new`,
+`Shader::wgsl_file`/`wgsl`/`entry`, `BackendSelection`, and `ShaderSet::emit`,
+which writes a generated table plus the backend payloads (`dxbc`, `spv`, `msl`)
+into `OUT_DIR` and registers `cargo:rerun-if-changed`. Both `crates/gpui` and
+`crates/gpui-3d` use it, so a component adds shaders without reimplementing the
+pipeline.
+
+`gfx_core::EmbeddedShader` is the runtime side. Each generated table exposes
+`{name}_{backend}_shader(entry_point) -> Option<EmbeddedShader>`, and
+`EmbeddedShader::to_binary(stage, entry_point)` returns the compiled bytes for
+the running backend. Windows builds therefore embed D3D bytecode instead of
+calling FXC at launch; a missing artifact surfaces as
+`ShaderError::MissingArtifact` rather than a silent fallback.
+
+### Shared Device And Compiled Pipelines
+
+Windows of one process render through one backend device and one set of compiled
+pipelines when they agree on adapter and surface format.
+
+`device.rs` keys devices by `DeviceKey` (`backend`, `adapter_name`,
+`power_preference`) and hands out `Arc<Mutex<NovaBackend>>`. `NovaRenderer` holds
+that handle and locks it for one backend operation at a time. `resources/core.rs`
+caches the renderer core — resource and pipeline layouts, the render pass, the
+compiled shader modules, and the render pipelines — per device key and color
+format, and `create_renderer_resources` adds only the parts sized to one window
+(path mask target, depth texture, frame resources). The renderer core is
+size-independent: DX12 and Vulkan both ignore the viewport extent at pipeline
+creation and drive viewport and scissor as dynamic state, so windows of different
+sizes share it.
+
+Renderer initialization runs on a dedicated `gpui-renderer-init` thread
+(`crates/gpui/src/platform/windows/renderer_init.rs`) instead of the shared
+background executor. Initialization must be serialized onto one thread because
+the registries are keyed per creating thread; the finished renderer is still
+handed to the window's own thread, which draws.
+
+Two limits are intentional and current:
+
+- The registries are thread local because a DX12 device is not `Send`: it holds
+  `HANDLE`, `IUnknown`, and mapped-upload `NonNull` pointers. A process-wide
+  registry would require an `unsafe` `Send` assertion for the device.
+- Linux gives each window its own presentation thread, so windows there do not
+  share a device yet.
+
+### Measured Frame Cost
+
+`GPUI_NOVA_RENDER_DIAGNOSTICS` enables the per-frame copy attribution line, which
+reports where a frame actually moves bytes and pixels. Measured on BMCBL's main
+window plus its debug window:
+
+| Quantity | Steady-state frame | First frame |
+| --- | --- | --- |
+| Atlas texture upload | ~3-5 KB in 1-6 regions | 4.9 MB in 45 regions |
+| Mapped frame upload | ~9 KB | ~10 KB |
+| Blur pixels actually processed | ~5 K | ~131 K |
+| Blur render passes | 3 | 7 |
+
+The steady-state figures are the ones to optimize against; the first frame
+populates the whole atlas and is a startup cost, not a recurring one.
+
+Points that were measured rather than assumed, so that they are not re-opened as
+speculative work:
+
+- The only explicit copy in a frame is the atlas texture upload. The mapped frame
+  upload is a CPU write into host-visible memory
+  (`mapped_frame_upload_is_gpu_copy=false`), so packing scene data into a staging
+  vector and then copying it into the mapped page costs one extra pass over about
+  100 KB in a dense frame, roughly 0.1% of a 60 Hz frame budget. A zero-copy
+  encoder is not worth the backend API it would require.
+- The frame path creates no resources: `present.rs`, `draw_steps.rs`, and
+  `renderer.rs` call no `create_*` and no descriptor `validate()`, so pipeline
+  labels and creation-time validation never run per frame.
+- The blur path is damage local (`blur_source_mode=damage-local-retained-filter`);
+  `blur_full_target_pixels` is the size of the full target, not the work done.
+- Atlas uploads are gated on the atlas texture-set generation and uploaded as
+  regions, and the DX12 upload ring reuses pages and trims idle ones through
+  `MemoryTrimLevel` rather than reallocating per upload.
+
+
 
 ## nova-gfx Frame Path
 
@@ -393,23 +484,22 @@ Major modules:
 3. Determine backdrop blur quality.
 4. Encode the GPUI scene into `FrameUpload`.
 5. Ensure backdrop blur targets if needed.
-6. Ensure custom 3D mesh pipelines for the current backend.
+6. Prepare generic renderer-extension draw steps from the committed render plan.
 7. Call `draw_present(upload, render_plan)`.
 
 `draw_present` then:
 
 1. Prepares the backend for frame submission.
 2. Syncs atlas textures.
-3. Ensures custom 3D mesh cache resources.
-4. Determines partial present scissor eligibility.
-5. Builds draw steps, path mask steps, and backdrop blur source steps.
-6. Records GPU pass metrics.
-7. Uploads frame buffers.
-8. Uploads pending atlas pages.
-9. Runs offscreen path-mask passes and refreshes backdrop blur only when its source changed.
-10. Renders the main scene directly to the swapchain.
-11. Presents the frame through the swapchain.
-12. Records diagnostics.
+3. Determines partial present scissor eligibility.
+4. Builds draw steps, path mask steps, and backdrop blur source steps.
+5. Records GPU pass metrics.
+6. Uploads frame buffers.
+7. Uploads pending atlas pages.
+8. Runs offscreen path-mask passes and refreshes backdrop blur only when its source changed.
+9. Renders the main scene directly to the swapchain.
+10. Presents the frame through the swapchain.
+11. Records diagnostics.
 
 ## Frame Upload Buckets
 
@@ -427,7 +517,9 @@ Major modules:
 - backdrop blur pass descriptors;
 - backdrop blur primitives;
 - animation bindings and values;
-- custom 3D mesh parameters.
+- renderer-extension input references and ordered batch descriptors. Extension renderers prepare
+  their draw steps before the frame is submitted; those resources are not packed into GPUI upload
+  buffers.
 
 The renderer writes only non-empty buckets where possible. Atlas uploads are
 handled separately through the GPUI sprite atlas and backend atlas textures.
@@ -441,7 +533,7 @@ The nova path may run these GPU passes:
 | Path mask pass | Rasterizes vector path masks to an offscreen texture. |
 | Backdrop source pass | Captures source content for blur sampling. |
 | Backdrop blur passes | Builds downsampled and blurred textures for backdrop blur primitives. |
-| Main pass | Draws quads, shadows, paths, sprites, text, underlines, custom mesh content, and composited blur. |
+| Main pass | Draws GPUI quads, shadows, paths, sprites, text, underlines, and composited blur. Renderer extensions submit their own draw work through the generic extension lifecycle. |
 Nova keeps every rotating back buffer coherent by rendering directly to the
 swapchain. It does not allocate a full-size retained present texture and does
 not run a second full-screen present-copy pass.
@@ -485,7 +577,7 @@ Nested candidates are collapsed to the largest safe span.
 
 The first production slice promotes a span only when it contains at least 32
 static quads, has an exclusive draw-order interval, and contains no layer, blur,
-surface, custom-mesh, animation, or mixed-pipeline barrier. On a partial dirty
+surface, renderer-extension, animation, or mixed-pipeline barrier. On a partial dirty
 frame, a replayed chunk with the same identity and generation reuses its packed
 quad bytes. Static signature construction combines the cached chunk token and
 hashes only uncached byte spans. A generation change, reordered/nonexclusive
@@ -516,8 +608,13 @@ GPUI keeps renderer resources across frames:
 - retained packed quad chunks;
 - draw step scratch buffers;
 - backdrop blur targets;
-- custom mesh pipeline and mesh buffers;
 - text layout and glyph atlas state.
+
+Renderer extensions own their GPU resources and trimming policy. GPUI calls the
+`RendererExtensionRenderer::trim_memory` hook for moderate and aggressive trims
+after pending submissions drain; light trims do not call extensions. The default
+hook is a no-op, so extensions release only resources they own and can recreate
+from the current extension input.
 
 On Windows, glyph antialiasing follows the destination window surface. Opaque
 surfaces may use DirectWrite RGB ClearType coverage. Transparent or blurred
@@ -529,8 +626,9 @@ window appearance cannot reuse coverage generated for the other mode. Nova
 DX12 and Nova Vulkan share this rule.
 
 Idle windows advance trim policy from no trim to light and moderate levels.
-Trim may shrink retained CPU buffers, atlas capacity, custom mesh caches, and
-backend memory. It must not change application state.
+Trim may shrink retained CPU buffers, atlas capacity, and backend memory. Extension
+implementations own the lifetime and trimming policy of their resources through the
+trim hook. Trim must not change application state.
 
 ## Diagnostics
 
@@ -541,7 +639,8 @@ Useful diagnostics include:
   renderer backend details;
 - renderer startup logs for selected backend and first-frame data;
 - frame budget warnings from `window/frame_lifecycle.rs`;
-- upload metrics for frame buffers, atlas pages, and custom mesh buffers.
+- upload metrics for GPUI frame buffers and atlas pages. GPUI does not collect
+  3D viewport resource counts; those resources are owned by `gpui-3d`.
 
 When changing renderer code, record what metric proves the change works. Do
 not weaken rendering correctness to hit an arbitrary memory or CPU number.

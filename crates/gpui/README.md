@@ -18,11 +18,11 @@ Zed distribution. The current renderer direction is nova-gfx:
 - macOS framework code targets Nova Metal for the normal nova-gfx path.
 - The compositor is event driven by default. Continuous rendering is reserved
   for explicit `RenderPolicy::Continuous` configuration.
-- Custom GPU content should enter GPUI through scene primitives, image
-  elements, runtime WGSL shader helpers, or custom 3D mesh primitives rather
-  than the removed application-facing surface API.
+- Custom GPU rendering should use GPUI scene primitives and image elements or
+  the generic `RendererExtension` API. `WgslShaderSource` validates extension-
+  owned WGSL; reusable 3D scenes and viewports live in `gpui-3d`.
 - WGSL shaders can be validated at build time for built-in renderer shaders or
-  loaded at runtime for custom mesh examples and applications.
+  validated at runtime by extension implementations.
 - The examples use the current `App`, `Context<T>`, explicit `Window`, and
   `Entity<T>` API shape.
 
@@ -168,14 +168,15 @@ New custom GPU content should use one of these paths:
 
 - ordinary element painting into GPUI scene primitives;
 - image and SVG elements;
-- runtime WGSL shader modules for custom mesh pipelines;
-- custom 3D mesh primitives with `GpuMesh3d`, `GpuMesh3dShader`, and
-  `GpuMesh3dDrawParameters`;
-- application-level render targets exposed through a deliberate GPUI scene or
-  renderer extension point.
+- the generic `RendererExtension` lifecycle for application-owned GPU rendering;
+- the separate `gpui-3d` crate for retained 3D scenes, materials, queries, and
+  viewport elements built on that extension boundary.
 
-This keeps the renderer backend-neutral. Application code should not assume a
-backend-specific device, queue, or surface handle.
+GPUI owns window, input, and extension scheduling; `gpui-3d` owns 3D scene
+preparation and viewport resources. Application domain conversion stays in the
+application crate. GPUI itself does not provide 3D mesh primitives or 3D policy.
+Application code should not assume a backend-specific device, queue, or surface
+handle.
 
 ## Upstream GPUI Architecture Comparison
 
@@ -194,8 +195,8 @@ review baseline, not a source or build dependency.
 | Animated images | Upstream image elements and format support | Fixed animation worker pool with per-stream and process-wide decoded-byte backpressure |
 | Image memory | Application/cache lifetime conventions | Bounded decoded/compressed/atlas/prefetch budgets, cancellable cache loads, and capacity-bucketed bitmap reuse |
 | Performance evidence | Upstream project-wide profiling infrastructure | Fork-owned Criterion layout/path/image/memory suites plus runtime frame/resource metrics |
-| Shader model | Built-in renderer shaders owned by platform paths | Built-in WGSL validation plus runtime WGSL helpers for custom mesh shaders |
-| Custom GPU content | Framework rendering primitives are the main extension point | Scene primitives, images, SVG, runtime shader helpers, and custom mesh primitives |
+| Shader model | Built-in renderer shaders owned by platform paths | Built-in WGSL validation plus generic runtime WGSL helpers |
+| Custom GPU content | Framework rendering primitives are the main extension point | Scene primitives, images, SVG, and the generic `RendererExtension` lifecycle; 3D is provided by `gpui-3d` |
 | Example API style | Older examples may use previous context and view terminology | Examples use `App`, `Context<T>`, explicit `Window`, and `Entity<T>` |
 
 ## Renderer Notes
@@ -225,6 +226,7 @@ bounded safely; otherwise the renderer falls back to full redraw.
 
 BMCBL's integration-level renderer guide lives at
 `../../docs/GPUI_VENDOR_RENDERING.md` from this directory.
+The separate 3D ownership and API guide is [`../../docs/GPUI_3D.md`](../../docs/GPUI_3D.md).
 
 ## Examples
 
@@ -237,8 +239,8 @@ cargo run --manifest-path Cargo.toml --example minimal_window
 cargo run --manifest-path Cargo.toml --example image_gallery
 ```
 
-Some examples are platform-specific. Runtime shader and custom mesh examples
-must declare the renderer features they require.
+Some examples are platform-specific and must declare the renderer features they require. The
+separate `gpui-3d` crate contains CPU scene and native viewport examples.
 
 ## Validation
 

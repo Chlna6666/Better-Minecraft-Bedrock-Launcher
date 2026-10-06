@@ -906,6 +906,12 @@ version = "0.6.1"
 version = "3.0"
 optional = true
 
+# Compiles the production Nova WGSL entry points for the enabled backends at build
+# time, so the renderer never runs the WGSL frontend or the Direct3D compiler while
+# the application starts.
+[build-dependencies.gfx-shader-build]
+path = "../nova-gfx/gfx-shader-build"
+
 [target.'cfg(target_os = "windows")'.build-dependencies.naga]
 version = "30.0.1"
 features = ["wgsl-in"]

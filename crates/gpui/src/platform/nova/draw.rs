@@ -1,8 +1,5 @@
 use super::*;
 
-const INDEX_FORMAT_U16_FLAG: u32 = 1 << 31;
-const INDEX_OFFSET_MASK: u32 = !INDEX_FORMAT_U16_FLAG;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DrawStepMode {
     Present,
@@ -54,12 +51,8 @@ pub(super) fn draw_steps_for_upload(
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
     sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
-    custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<MeshCacheEntry>,
     underline_resource_set: ResourceSetId,
     backdrop_blur_resource_set: ResourceSetId,
-    custom_mesh_3d_resource_set: ResourceSetId,
-    custom_mesh_3d_indices_buffer: BufferId,
     mode: DrawStepMode,
 ) -> Vec<RenderStepDescriptor> {
     let mut steps = Vec::new();
@@ -71,12 +64,8 @@ pub(super) fn draw_steps_for_upload(
         shadow_resource_set,
         path_resource_set,
         sprite_resource_set,
-        custom_mesh_3d_pipeline,
-        custom_mesh_3d_cache_entry,
         underline_resource_set,
         |_| Some(backdrop_blur_resource_set),
-        custom_mesh_3d_resource_set,
-        custom_mesh_3d_indices_buffer,
         mode,
         &mut steps,
     );
@@ -91,12 +80,8 @@ pub(super) fn draw_steps_for_upload_into(
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
     mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
-    mut custom_mesh_3d_pipeline: impl FnMut(GpuMesh3dShaderId) -> Option<RenderPipelineId>,
-    mut custom_mesh_3d_cache_entry: impl FnMut(GpuMesh3dId, u64) -> Option<MeshCacheEntry>,
     underline_resource_set: ResourceSetId,
     mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
-    custom_mesh_3d_resource_set: ResourceSetId,
-    custom_mesh_3d_indices_buffer: BufferId,
     mode: DrawStepMode,
     steps: &mut Vec<RenderStepDescriptor>,
 ) {
@@ -266,43 +251,13 @@ pub(super) fn draw_steps_for_upload_into(
             UploadedBatch::BeginBlur { .. }
             | UploadedBatch::EndBlur { .. }
             | UploadedBatch::CompositeBlur { .. } => unreachable!("blur markers handled above"),
-            UploadedBatch::CustomMesh3d {
-                mesh_id,
-                generation,
-                shader_id,
-                range,
-                first_parameter_index,
-            } => {
-                let Some(mesh) = custom_mesh_3d_cache_entry(mesh_id, generation) else {
-                    continue;
-                };
-                let Some(range_end) = range.start.checked_add(range.count) else {
-                    continue;
-                };
-                if range.count == 0 || range_end > mesh.index_count || mesh.vertex_count == 0 {
-                    continue;
-                }
-                let Ok(base_vertex) = i32::try_from(mesh.vertex_offset) else {
-                    continue;
-                };
-                if let Some(pipeline) = custom_mesh_3d_pipeline(shader_id) {
-                    steps.push(RenderStepDescriptor::DrawIndexed(
-                        DrawIndexedStepDescriptor {
-                            pipeline,
-                            resource_sets: resource_set_list([custom_mesh_3d_resource_set]),
-                            index_buffer: IndexBufferBinding {
-                                buffer: custom_mesh_3d_indices_buffer,
-                                format: custom_mesh_3d_index_format(mesh),
-                                offset: u64::from(custom_mesh_3d_index_byte_offset(mesh)),
-                            },
-                            index_count: range.count,
-                            first_index: range.start,
-                            base_vertex,
-                            instance_count: 1,
-                            first_instance: first_parameter_index,
-                            scissor: None,
-                        },
-                    ));
+            UploadedBatch::RendererExtensions { first, count } => {
+                let start = first as usize;
+                let end = start.saturating_add(count as usize);
+                if let Some(extension_steps) = upload.renderer_extension_steps.get(start..end) {
+                    for extension_steps in extension_steps {
+                        steps.extend(extension_steps.iter().cloned());
+                    }
                 }
             }
         }
@@ -345,18 +300,6 @@ fn push_blur_composite_step(
             scissor: None,
         },
     );
-}
-
-fn custom_mesh_3d_index_byte_offset(entry: MeshCacheEntry) -> u32 {
-    entry.index_offset & INDEX_OFFSET_MASK
-}
-
-fn custom_mesh_3d_index_format(entry: MeshCacheEntry) -> IndexFormat {
-    if entry.index_offset & INDEX_FORMAT_U16_FLAG != 0 {
-        IndexFormat::Uint16
-    } else {
-        IndexFormat::Uint32
-    }
 }
 
 fn push_draw_step(steps: &mut Vec<RenderStepDescriptor>, step: DrawStepDescriptor) {
@@ -600,7 +543,7 @@ pub(super) fn path_mask_draw_steps_for_upload_into(
             | UploadedBatch::BeginBlur { .. }
             | UploadedBatch::EndBlur { .. }
             | UploadedBatch::CompositeBlur { .. }
-            | UploadedBatch::CustomMesh3d { .. } => {}
+            | UploadedBatch::RendererExtensions { .. } => {}
         }
     }
 }

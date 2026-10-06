@@ -43,7 +43,7 @@ pub(crate) enum PreparedSceneBatch {
     Surfaces(Range<usize>),
     BackdropBlurs(PreparedBackdropBlurGroup),
     Blurs(Range<usize>),
-    GpuMeshes3d(PreparedGpuMesh3dPass),
+    RendererExtensions(Range<usize>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,10 +54,5 @@ pub(crate) struct PreparedQuadRun {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedBackdropBlurGroup {
-    pub range: Range<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PreparedGpuMesh3dPass {
     pub range: Range<usize>,
 }

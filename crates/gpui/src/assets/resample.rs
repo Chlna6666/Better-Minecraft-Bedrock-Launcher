@@ -350,3 +350,33 @@ pub(super) fn rgba_image_from_bgra(bytes: Vec<u8>, size: ImageRenderSize) -> Res
     RgbaImage::from_raw(size.width, size.height, rgba)
         .ok_or_else(|| anyhow::anyhow!("decoded image buffer dimensions were invalid"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pooled_resize_preserves_bgra_pixels_and_sequence() {
+        for dimension in [2, 6] {
+            let frame = AnimatedFrame::from_bgra_bytes(
+                7,
+                size(3.into(), 3.into()),
+                [201, 93, 17, 255].repeat(9),
+            );
+            let target = ImageRenderSize::new(dimension, dimension).unwrap();
+            let resized = resample_bgra_frame(frame, target).unwrap();
+            assert_eq!(resized.sequence(), 7);
+            assert_eq!(resized.size(), target.size());
+            assert_eq!(
+                resized.bytes(),
+                [201, 93, 17, 255].repeat((dimension * dimension) as usize)
+            );
+        }
+    }
+
+    #[test]
+    fn pooled_resize_rejects_incomplete_source_pixels() {
+        let frame = AnimatedFrame::from_bgra_bytes(0, size(3.into(), 3.into()), vec![0; 35]);
+        assert!(resample_bgra_frame(frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
+    }
+}

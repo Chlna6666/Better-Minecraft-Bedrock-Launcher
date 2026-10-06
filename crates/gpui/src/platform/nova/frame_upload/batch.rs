@@ -6,7 +6,6 @@ pub(in crate::platform::nova) struct UnsupportedBatchSummary {
     pub(in crate::platform::nova) surfaces: u32,
     pub(in crate::platform::nova) backdrop_blurs: u32,
     pub(in crate::platform::nova) backdrop_blur_tint_fallbacks: u32,
-    pub(in crate::platform::nova) gpu_meshes_3d: u32,
 }
 
 impl UnsupportedBatchSummary {
@@ -15,7 +14,6 @@ impl UnsupportedBatchSummary {
             .saturating_add(self.surfaces)
             .saturating_add(self.backdrop_blurs)
             .saturating_add(self.backdrop_blur_tint_fallbacks)
-            .saturating_add(self.gpu_meshes_3d)
     }
 }
 
@@ -72,11 +70,8 @@ pub(in crate::platform::nova) enum UploadedBatch {
     CompositeBlur {
         index: u32,
     },
-    CustomMesh3d {
-        mesh_id: GpuMesh3dId,
-        generation: u64,
-        shader_id: GpuMesh3dShaderId,
-        range: GpuMesh3dRange,
-        first_parameter_index: u32,
+    RendererExtensions {
+        first: u32,
+        count: u32,
     },
 }

@@ -140,16 +140,77 @@ fn cached_nova_shader_binaries(
     }
 }
 
+/// Converts one build-generated artifact into the backend binary a renderer uploads.
+///
+/// `src` is accepted and ignored so this can stand in for a WGSL translation
+/// closure: production shaders are translated by `build.rs`, not at startup.
+fn generated_shader_binary(
+    generated: Option<gfx_core::EmbeddedShader>,
+    stage: ShaderStage,
+    entry_point: &str,
+) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
+    let generated = generated
+        .ok_or_else(|| gfx_shader::ShaderError::MissingArtifact(entry_point.to_string()))?;
+
+    // `EmbeddedShader::to_binary` only fails on a malformed SPIR-V payload, so the
+    // SPIR-V error variant is the accurate mapping here.
+    generated
+        .to_binary(stage, entry_point)
+        .map_err(|error| gfx_shader::ShaderError::Spirv(error.to_string()))
+}
+
+#[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+fn resolve_generated_dx12(
+    _source: &str,
+    stage: ShaderStage,
+    entry_point: &str,
+) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
+    generated_shader_binary(nova_dx12_shader(entry_point), stage, entry_point)
+}
+
+#[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+fn resolve_generated_metal(
+    _source: &str,
+    stage: ShaderStage,
+    entry_point: &str,
+) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
+    generated_shader_binary(nova_metal_shader(entry_point), stage, entry_point)
+}
+
+#[cfg(all(
+    feature = "nova-gfx-vulkan",
+    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+))]
+fn resolve_generated_vulkan(
+    _source: &str,
+    stage: ShaderStage,
+    entry_point: &str,
+) -> std::result::Result<gfx_core::ShaderBinary, gfx_shader::ShaderError> {
+    generated_shader_binary(nova_vulkan_shader(entry_point), stage, entry_point)
+}
+
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
-    cached_nova_shader_binaries(&CACHE, compile_wgsl_to_hlsl)
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+
+    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_dx12)?;
+    REPORTED.call_once(|| {
+        log::info!("nova DX12 shader artifacts: {NOVA_DX12_SHADER_ARTIFACT_KIND}");
+    });
+    Ok(binaries)
 }
 
 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
 pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
-    cached_nova_shader_binaries(&CACHE, compile_wgsl_to_msl)
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+
+    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_metal)?;
+    REPORTED.call_once(|| {
+        log::info!("nova Metal shader artifacts: {NOVA_METAL_SHADER_ARTIFACT_KIND}");
+    });
+    Ok(binaries)
 }
 
 #[cfg(all(
@@ -158,7 +219,13 @@ pub(super) fn cached_nova_metal_shader_binaries() -> Result<ShaderBinaries> {
 ))]
 pub(super) fn cached_nova_vulkan_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
-    cached_nova_shader_binaries(&CACHE, compile_wgsl_to_spirv)
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+
+    let binaries = cached_nova_shader_binaries(&CACHE, resolve_generated_vulkan)?;
+    REPORTED.call_once(|| {
+        log::info!("nova Vulkan shader artifacts: {NOVA_VULKAN_SHADER_ARTIFACT_KIND}");
+    });
+    Ok(binaries)
 }
 
 pub(super) struct BlendPipelineDescriptor<'a> {

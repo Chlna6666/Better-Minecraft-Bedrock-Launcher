@@ -313,9 +313,9 @@ CompositorIndependent
 
 ### 本轮 GPUI Animation Engine/Nova 热路径修复
 
-- [?] `present_framebuffer_only` 的静态 scene animation 帧增加主 draw-step descriptor cache；按 frame-resource slot 保存，scene revision/size/blur/alpha/atlas 资源变化时失效，3D mesh/pipeline 更新通过显式事件失效，不进入动画采样键。
+- [?] `present_framebuffer_only` 的静态 scene animation 帧增加主 draw-step descriptor cache；按 frame-resource slot 保存，scene revision/size/blur/alpha/atlas 资源变化时失效。Renderer extension 帧使用 frame id，避免复用旧 extension draw steps。
 - [?] path-mask descriptor 同样按静态 scene revision 与 path resource set 复用，避免 engine 帧重复扫描相同 batch topology。
-- [?] custom mesh/pipeline 更新显式失效主 draw-step descriptor，避免同一 scene revision 下 mesh buffer 重新分配或 pipeline 首次创建后误命中旧 descriptor；不把 3D 资源 revision 当作动画状态。
+- [?] GPUI 专用 mesh/pipeline 路径已移除；`gpui-3d` 通过通用 RendererExtension 准备有序 draw steps，GPUI 不再追踪 3D mesh 或 pipeline revision。
 - [?] Nova 诊断日志增加 `draw_step_cache_hit`、`path_mask_cache_hit`，用于 Windows A/B。
 - [ ] Windows DX12 实机对比 engine animation 与 targeted layout animation：frame generation、layout/prepaint、scene replay、descriptor cache hit、FPS、present interval、GPU wait、blur 与视觉/hit-test。
 

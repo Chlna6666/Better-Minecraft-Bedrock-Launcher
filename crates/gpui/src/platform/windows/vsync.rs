@@ -33,7 +33,23 @@ pub(super) const WM_MODAL_VSYNC: u32 = WM_APP + 0x475;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VSyncEventTiming {
     pub(super) pacing_wait: Duration,
+    pub(super) reported_refresh_period: Option<Duration>,
+    pub(super) reported_composition_period: Option<Duration>,
     pub(super) enqueued_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct VSyncPacing {
+    elapsed: Duration,
+    reported_refresh_period: Option<Duration>,
+    reported_composition_period: Option<Duration>,
+}
+
+#[derive(Clone, Copy)]
+struct DwmRefreshTiming {
+    wait_until_refresh: Duration,
+    refresh_period: Duration,
+    composition_period: Option<Duration>,
 }
 
 pub(super) struct VSyncScheduler {
@@ -171,19 +187,28 @@ pub(super) fn spawn_vsync_thread(
                     continue;
                 }
 
-                let pacing_wait = if process_owns_foreground_window() {
+                let pacing = if process_owns_foreground_window() {
                     last_background_tick = None;
                     wait_for_vsync(interval, &mut last_foreground_tick)
                 } else {
                     last_foreground_tick = None;
-                    wait_for_background_tick(&thread_scheduler, &mut last_background_tick)
+                    VSyncPacing {
+                        elapsed: wait_for_background_tick(
+                            &thread_scheduler,
+                            &mut last_background_tick,
+                        ),
+                        reported_refresh_period: None,
+                        reported_composition_period: None,
+                    }
                 };
 
                 if thread_scheduler.shutdown.load(Ordering::Acquire) {
                     break;
                 }
                 let timing = VSyncEventTiming {
-                    pacing_wait,
+                    pacing_wait: pacing.elapsed,
+                    reported_refresh_period: pacing.reported_refresh_period,
+                    reported_composition_period: pacing.reported_composition_period,
                     enqueued_at: Instant::now(),
                 };
                 // HWND messages reach Win32's nested move loop while winit's outer handler is
@@ -246,15 +271,19 @@ fn process_owns_foreground_window() -> bool {
     }
 }
 
-fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> Duration {
+fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> VSyncPacing {
     let started_at = Instant::now();
-    if let Some(wait) = dwm_next_refresh_wait() {
+    if let Some(timing) = dwm_next_refresh_wait() {
         // DwmFlush drains this process's pending DirectX updates. Used after DXGI presentation,
         // that completion barrier can consume another refresh instead of pacing the next sample.
         // Follow the current DWM vblank phase; swapchain readiness remains the backpressure gate.
-        std::thread::sleep(wait);
+        std::thread::sleep(timing.wait_until_refresh);
         *last_tick = Some(Instant::now());
-        return started_at.elapsed();
+        return VSyncPacing {
+            elapsed: started_at.elapsed(),
+            reported_refresh_period: Some(timing.refresh_period),
+            reported_composition_period: timing.composition_period,
+        };
     }
     // SAFETY: DwmFlush has no pointer parameters and only waits for the compositor.
     let dwm_wait_succeeded = unsafe { DwmFlush() }.is_ok();
@@ -276,10 +305,14 @@ fn wait_for_vsync(interval: Duration, last_tick: &mut Option<Instant>) -> Durati
     }
 
     *last_tick = Some(Instant::now());
-    started_at.elapsed()
+    VSyncPacing {
+        elapsed: started_at.elapsed(),
+        reported_refresh_period: None,
+        reported_composition_period: None,
+    }
 }
 
-fn dwm_next_refresh_wait() -> Option<Duration> {
+fn dwm_next_refresh_wait() -> Option<DwmRefreshTiming> {
     let mut timing = DWM_TIMING_INFO {
         cbSize: u32::try_from(mem::size_of::<DWM_TIMING_INFO>()).ok()?,
         ..Default::default()
@@ -299,7 +332,17 @@ fn dwm_next_refresh_wait() -> Option<Duration> {
         return None;
     }
     let ticks = ticks_until_next_refresh(counter, timing.qpcVBlank, period)?;
-    (ticks <= period).then(|| Duration::from_secs_f64(ticks as f64 / frequency as f64))
+    if ticks > period {
+        return None;
+    }
+    Some(DwmRefreshTiming {
+        wait_until_refresh: Duration::from_secs_f64(ticks as f64 / frequency as f64),
+        refresh_period: Duration::from_secs_f64(period as f64 / frequency as f64),
+        composition_period: refresh_interval(
+            u64::from(timing.rateCompose.uiNumerator),
+            u64::from(timing.rateCompose.uiDenominator),
+        ),
+    })
 }
 
 fn ticks_until_next_refresh(counter: u64, vblank: u64, period: u64) -> Option<u64> {
@@ -368,10 +411,14 @@ mod tests {
     fn modal_frame_coalesces_to_latest_timing() {
         let first = VSyncEventTiming {
             pacing_wait: Duration::from_millis(4),
+            reported_refresh_period: None,
+            reported_composition_period: None,
             enqueued_at: Instant::now(),
         };
         let latest = VSyncEventTiming {
             pacing_wait: Duration::from_millis(8),
+            reported_refresh_period: Some(Duration::from_micros(4_167)),
+            reported_composition_period: Some(Duration::from_micros(8_333)),
             enqueued_at: first.enqueued_at + Duration::from_millis(4),
         };
         let mut target = ModalFrameTarget {
@@ -396,6 +443,8 @@ mod tests {
         assert!(scheduler.start_modal_loop(1));
         let timing = VSyncEventTiming {
             pacing_wait: Duration::ZERO,
+            reported_refresh_period: None,
+            reported_composition_period: None,
             enqueued_at: Instant::now(),
         };
         scheduler

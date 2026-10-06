@@ -1,5 +1,10 @@
 use super::*;
 
+/// Render pipelines compiled for one device and color format.
+///
+/// Every field is a device-registry handle, so a value can be copied into each window's
+/// renderer instead of recompiling the pipeline set per window.
+#[derive(Clone, Copy)]
 pub(super) struct Pipelines {
     pub(super) alpha: BlendPipelines,
     pub(super) premultiplied: BlendPipelines,
@@ -277,67 +282,4 @@ where
         underlines,
         backdrop_blurs,
     })
-}
-
-pub(super) fn create_custom_mesh_3d_pipeline<D>(
-    device: &mut D,
-    label: &str,
-    render_pass: RenderPassId,
-    pipeline_layout: PipelineLayoutId,
-    surface_config: SurfaceConfig,
-    vertex_shader: gfx_core::ShaderBinary,
-    fragment_shader: gfx_core::ShaderBinary,
-    vertex_entry_point: &str,
-    fragment_entry_point: &str,
-) -> Result<RenderPipelineId>
-where
-    D: BackendResources + BackendPipelines,
-{
-    let vertex_shader = device
-        .create_shader_module(&ShaderModuleDescriptor {
-            label: Some(format!("{label} custom GPU mesh 3D vertex shader")),
-            binary: vertex_shader,
-        })
-        .context("creating nova custom GPU mesh 3D vertex shader module")?;
-    let fragment_shader = device
-        .create_shader_module(&ShaderModuleDescriptor {
-            label: Some(format!("{label} custom GPU mesh 3D fragment shader")),
-            binary: fragment_shader,
-        })
-        .context("creating nova custom GPU mesh 3D fragment shader module")?;
-
-    let opaque_or_cutout =
-        fragment_entry_point.ends_with("_opaque") || fragment_entry_point.ends_with("_cutout");
-    // Renderer-owned opacity/transform animations can fade a draw that is otherwise classified as
-    // opaque. Keep every custom-mesh material on premultiplied blending so alpha sampled from the
-    // per-draw animation sidecar is composited correctly without rebuilding pipelines mid-frame.
-    // At alpha=1 this is visually equivalent to Replace for the existing opaque/cutout shaders.
-    let blend_mode = BlendMode::PremultipliedAlpha;
-
-    device
-        .create_render_pipeline(
-            &RenderPipelineDescriptor {
-                label: Some(format!(
-                    "{label} custom GPU mesh 3D {} pipeline",
-                    if opaque_or_cutout {
-                        "opaque"
-                    } else {
-                        "transparent"
-                    }
-                )),
-                vertex_shader,
-                vertex_entry_point: vertex_entry_point.to_string(),
-                fragment_shader,
-                fragment_entry_point: fragment_entry_point.to_string(),
-                vertex_buffers: Vec::new(),
-                render_pass,
-                pipeline_layout: Some(pipeline_layout),
-                color_format: surface_config.format,
-                blend_mode,
-                primitive_topology: PrimitiveTopology::TriangleList,
-                depth_state: Some(DepthState),
-            },
-            surface_config.size,
-        )
-        .context("creating nova custom GPU mesh 3D material pipeline")
 }

@@ -12,7 +12,6 @@ mod encode;
 mod frame;
 mod gpu_indexed_animation;
 mod layers;
-mod mesh_animation;
 mod path_cache;
 mod quality;
 mod retained_animation;

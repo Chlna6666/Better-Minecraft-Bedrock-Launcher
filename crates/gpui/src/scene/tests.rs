@@ -1,11 +1,11 @@
 use super::*;
 use crate::{
     AtlasTextureId, AtlasTile, Bounds, ContentMask, DevicePixels, Edges, GlobalElementId, Hsla,
-    ScaledPixels, WgslShaderSource, bounds, point, px, size,
+    ScaledPixels, bounds, point, px, size,
 };
 use std::{
     ops::Range,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 #[test]
@@ -297,81 +297,6 @@ fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
     );
 
     assert!(plan.refresh_required());
-}
-
-const TEST_GPU_MESH_3D_SHADER_SOURCE: &str = r#"
-struct GlobalParams {
-    viewport_size: vec2<f32>,
-    premultiplied_alpha: u32,
-    pad: u32,
-};
-
-struct MeshParams {
-    bounds_origin: vec2<f32>,
-    bounds_size: vec2<f32>,
-    content_mask_origin: vec2<f32>,
-    content_mask_size: vec2<f32>,
-    view_proj_model: mat4x4<f32>,
-};
-
-struct MeshVertex {
-    position_x: f32,
-    position_y: f32,
-    position_z: f32,
-    color_r: f32,
-    color_g: f32,
-    color_b: f32,
-    color_a: f32,
-};
-
-struct MeshOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-};
-
-@group(0) @binding(0) var<uniform> globals: GlobalParams;
-@group(0) @binding(20) var<storage, read> mesh_params: array<MeshParams>;
-@group(0) @binding(21) var<storage, read> mesh_vertices: array<MeshVertex>;
-
-@vertex
-fn vs_test_mesh(
-    @builtin(vertex_index) vertex_index: u32,
-    @builtin(instance_index) instance_index: u32,
-) -> MeshOut {
-    let vertex = mesh_vertices[vertex_index];
-    let params = mesh_params[instance_index];
-    let viewport = max(globals.viewport_size, vec2<f32>(1.0));
-    let position = params.bounds_origin + params.bounds_size * vec2<f32>(0.5, 0.5);
-    let device = position / viewport * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
-    var out: MeshOut;
-    out.position = vec4<f32>(device, 0.0, 1.0);
-    out.color = vec4<f32>(vertex.color_r, vertex.color_g, vertex.color_b, vertex.color_a);
-    return out;
-}
-
-@fragment
-fn fs_test_mesh(input: MeshOut) -> @location(0) vec4<f32> {
-    return input.color;
-}
-"#;
-
-fn test_gpu_mesh_3d_shader() -> Arc<GpuMesh3dShader> {
-    static SHADER: OnceLock<Arc<GpuMesh3dShader>> = OnceLock::new();
-    if let Some(shader) = SHADER.get() {
-        return shader.clone();
-    }
-    let source =
-        WgslShaderSource::from_source("test-gpu-mesh-3d-shader", TEST_GPU_MESH_3D_SHADER_SOURCE)
-            .expect("test shader should validate");
-    let _ = SHADER.set(Arc::new(GpuMesh3dShader::new(
-        Arc::new(source),
-        "vs_test_mesh",
-        "fs_test_mesh",
-    )));
-    SHADER
-        .get()
-        .expect("test shader should be initialized")
-        .clone()
 }
 
 fn monochrome_sprite(order: DrawOrder, pad: u32) -> MonochromeSprite {
@@ -792,54 +717,6 @@ fn monochrome_sprite_batches_split_by_sampling() {
 }
 
 #[test]
-fn scene_batches_use_draw_order_then_primitive_kind() {
-    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
-    let content_mask = ContentMask {
-        bounds,
-        ..Default::default()
-    };
-    let mut scene = Scene::default();
-
-    scene.push_layer(bounds);
-    scene.insert_primitive(PaintGpuMesh3d {
-        order: 0,
-        bounds,
-        content_mask: content_mask.clone(),
-        mesh: Arc::new(GpuMesh3d::new(
-            vec![GpuMesh3dVertex {
-                position: [0.0, 0.0, 0.0],
-                color: [1.0, 1.0, 1.0, 1.0],
-            }],
-            vec![0],
-            GpuMesh3dDrawRanges {
-                opaque: GpuMesh3dRange { start: 0, count: 1 },
-                glass: GpuMesh3dRange::default(),
-                water: GpuMesh3dRange::default(),
-            },
-            [0.0, 0.0, 0.0],
-            1.0,
-            1.0,
-            test_gpu_mesh_3d_shader(),
-        )),
-        parameters: GpuMesh3dDrawParameters {
-            view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
-        },
-        animation_id: None,
-    });
-    scene.insert_primitive(Quad {
-        bounds,
-        content_mask,
-        ..Quad::default()
-    });
-    scene.pop_layer();
-    scene.finish();
-
-    let batches = scene.batches().collect::<Vec<_>>();
-    assert!(matches!(batches[0], PrimitiveBatch::Quads(_)));
-    assert!(matches!(batches[1], PrimitiveBatch::GpuMeshes3d(_)));
-}
-
-#[test]
 fn retained_prefix_replay_preserves_draw_orders() {
     let layer_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(40.0), px(40.0))).scale(1.0);
     let first_bounds = Bounds::new(point(px(2.0), px(2.0)), size(px(12.0), px(12.0))).scale(1.0);
@@ -1030,88 +907,6 @@ fn prepared_quad_runs_split_solid_and_bordered_quads() {
     assert!(!quad_runs[1].is_solid);
     assert_eq!(quad_runs[0].range, 0..1);
     assert_eq!(quad_runs[1].range, 1..2);
-}
-
-#[test]
-fn scene_batches_gpu_mesh_3d_in_draw_order() {
-    let mesh = Arc::new(GpuMesh3d::new(
-        vec![GpuMesh3dVertex {
-            position: [0.0, 0.0, 0.0],
-            color: [1.0, 1.0, 1.0, 1.0],
-        }],
-        vec![0],
-        GpuMesh3dDrawRanges {
-            opaque: GpuMesh3dRange { start: 0, count: 1 },
-            glass: GpuMesh3dRange::default(),
-            water: GpuMesh3dRange::default(),
-        },
-        [0.0, 0.0, 0.0],
-        1.0,
-        1.0,
-        test_gpu_mesh_3d_shader(),
-    ));
-    let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0))).scale(1.0);
-    let content_mask = ContentMask {
-        bounds,
-        ..Default::default()
-    };
-    let parameters = GpuMesh3dDrawParameters {
-        view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
-    };
-    let mut scene = Scene::default();
-
-    scene.insert_primitive(Quad {
-        bounds,
-        content_mask: content_mask.clone(),
-        ..Quad::default()
-    });
-    scene.insert_primitive(PaintGpuMesh3d {
-        order: 0,
-        bounds,
-        content_mask,
-        mesh: mesh.clone(),
-        parameters,
-        animation_id: None,
-    });
-    scene.finish();
-
-    let batches = scene.batches().collect::<Vec<_>>();
-    assert!(matches!(batches[0], PrimitiveBatch::Quads(_)));
-    let PrimitiveBatch::GpuMeshes3d(meshes) = batches[1] else {
-        panic!("expected gpu mesh batch");
-    };
-    assert_eq!(meshes.len(), 1);
-    assert_eq!(meshes[0].mesh.id, mesh.id);
-    assert_eq!(meshes[0].parameters, parameters);
-}
-
-#[test]
-fn gpu_mesh_3d_generation_is_stable_for_draw_parameter_changes() {
-    let mesh = GpuMesh3d::new(
-        vec![GpuMesh3dVertex {
-            position: [1.0, 2.0, 3.0],
-            color: [0.25, 0.5, 0.75, 1.0],
-        }],
-        vec![0],
-        GpuMesh3dDrawRanges::default(),
-        [0.0, 0.0, 0.0],
-        1.0,
-        1.0,
-        test_gpu_mesh_3d_shader(),
-    )
-    .with_generation(42);
-    let before_id = mesh.id;
-    let before_generation = mesh.generation;
-    let parameters_a = GpuMesh3dDrawParameters {
-        view_projection_model: [[1.0, 0.0, 0.0, 0.0]; 4],
-    };
-    let parameters_b = GpuMesh3dDrawParameters {
-        view_projection_model: [[2.0, 0.0, 0.0, 0.0]; 4],
-    };
-
-    assert_ne!(parameters_a, parameters_b);
-    assert_eq!(mesh.id, before_id);
-    assert_eq!(mesh.generation, before_generation);
 }
 
 fn append_retained_test_quads(scene: &mut Scene, count: usize) -> Range<usize> {

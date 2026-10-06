@@ -35,7 +35,7 @@ impl FrameUpload {
                 | UploadedBatch::BackdropBlurs { .. }
                 | UploadedBatch::EndBlur { .. }
                 | UploadedBatch::CompositeBlur { .. }
-                | UploadedBatch::CustomMesh3d { .. } => None,
+                | UploadedBatch::RendererExtensions { .. } => None,
             })
             .collect();
         debug_assert_eq!(

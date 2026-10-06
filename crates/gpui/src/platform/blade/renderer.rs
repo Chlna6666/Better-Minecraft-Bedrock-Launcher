@@ -220,7 +220,7 @@ impl BladePipelines {
         }];
 
         Ok(Self {
-            quads: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            quads: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "quads",
                 data_layouts: &[&ShaderQuadsData::layout()],
                 vertex: shader.at("vs_quad"),
@@ -234,7 +234,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            shadows: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            shadows: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "shadows",
                 data_layouts: &[&ShaderShadowsData::layout()],
                 vertex: shader.at("vs_shadow"),
@@ -248,7 +248,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            path_rasterization: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            path_rasterization: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "path_rasterization",
                 data_layouts: &[&ShaderPathRasterizationData::layout()],
                 vertex: shader.at("vs_path_rasterization"),
@@ -276,7 +276,7 @@ impl BladePipelines {
                     ..Default::default()
                 },
             }),
-            paths: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            paths: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "paths",
                 data_layouts: &[&ShaderPathsData::layout()],
                 vertex: shader.at("vs_path"),
@@ -297,7 +297,7 @@ impl BladePipelines {
                 }],
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            underlines: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            underlines: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "underlines",
                 data_layouts: &[&ShaderUnderlinesData::layout()],
                 vertex: shader.at("vs_underline"),
@@ -311,7 +311,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            mono_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            mono_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "mono-sprites",
                 data_layouts: &[&ShaderMonoSpritesData::layout()],
                 vertex: shader.at("vs_mono_sprite"),
@@ -325,7 +325,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            poly_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            poly_sprites: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "poly-sprites",
                 data_layouts: &[&ShaderPolySpritesData::layout()],
                 vertex: shader.at("vs_poly_sprite"),
@@ -339,7 +339,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            surfaces: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            surfaces: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "surfaces",
                 data_layouts: &[&ShaderSurfacesData::layout()],
                 vertex: shader.at("vs_surface"),
@@ -353,7 +353,7 @@ impl BladePipelines {
                 color_targets,
                 multisample_state: gpu::MultisampleState::default(),
             }),
-            emoji_layer: gpu.create_render_pipeline(gpu::RenderPipelineDesc {
+            emoji_layer: gpu.create_render_pipeline(gpu::RenderPipelineDescriptor {
                 name: "emoji-layer",
                 data_layouts: &[&ShaderEmojiLayerData::layout()],
                 vertex: shader.at("vs_emoji_layer"),
@@ -437,7 +437,7 @@ impl BladeRenderer {
             .create_surface_configured(window, surface_config)
             .map_err(|err| anyhow::anyhow!("Failed to create surface: {err:?}"))?;
 
-        let command_encoder = context.gpu.create_command_encoder(gpu::CommandEncoderDesc {
+        let command_encoder = context.gpu.create_command_encoder(gpu::CommandEncoderDescriptor {
             name: "main",
             buffer_count: 2,
         });
@@ -453,7 +453,7 @@ impl BladeRenderer {
             min_chunk_size: 0x1000,
             alignment: 0x40, // Vulkan `minStorageBufferOffsetAlignment` on Intel Xe
         });
-        let atlas_sampler = context.gpu.create_sampler(gpu::SamplerDesc {
+        let atlas_sampler = context.gpu.create_sampler(gpu::SamplerDescriptor {
             name: "path rasterization sampler",
             mag_filter: gpu::FilterMode::Linear,
             min_filter: gpu::FilterMode::Linear,
@@ -767,8 +767,7 @@ impl BladeRenderer {
             + scene.monochrome_sprites.len()
             + scene.polychrome_sprites.len()
             + scene.surfaces.len()
-            + scene.backdrop_blurs.len()
-            + scene.gpu_meshes_3d.len();
+            + scene.backdrop_blurs.len();
         if scene_primitive_count == 0 {
             self.clear_only_frames = self.clear_only_frames.saturating_add(1);
             if self.clear_only_frames == 3 || self.clear_only_frames % 60 == 0 {
@@ -1066,11 +1065,6 @@ impl BladeRenderer {
                         );
                     }
                 }
-                PrimitiveBatch::GpuMeshes3d(meshes) => {
-                    for mesh in meshes {
-                        let _ = mesh;
-                    }
-                }
             }
         }
         drop(pass);
@@ -1105,7 +1099,7 @@ fn create_path_intermediate_texture(
     width: u32,
     height: u32,
 ) -> (gpu::Texture, gpu::TextureView) {
-    let texture = gpu.create_texture(gpu::TextureDesc {
+    let texture = gpu.create_texture(gpu::TextureDescriptor {
         name: "path intermediate",
         format,
         size: gpu::Extent {
@@ -1122,7 +1116,7 @@ fn create_path_intermediate_texture(
     });
     let texture_view = gpu.create_texture_view(
         texture,
-        gpu::TextureViewDesc {
+        gpu::TextureViewDescriptor {
             name: "path intermediate view",
             format,
             dimension: gpu::ViewDimension::D2,
@@ -1142,7 +1136,7 @@ fn create_msaa_texture(
     if sample_count <= 1 {
         return None;
     }
-    let texture_msaa = gpu.create_texture(gpu::TextureDesc {
+    let texture_msaa = gpu.create_texture(gpu::TextureDescriptor {
         name: "path intermediate msaa",
         format,
         size: gpu::Extent {
@@ -1159,7 +1153,7 @@ fn create_msaa_texture(
     });
     let texture_view_msaa = gpu.create_texture_view(
         texture_msaa,
-        gpu::TextureViewDesc {
+        gpu::TextureViewDescriptor {
             name: "path intermediate msaa view",
             format,
             dimension: gpu::ViewDimension::D2,

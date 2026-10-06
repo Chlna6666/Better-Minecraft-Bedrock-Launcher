@@ -24,6 +24,10 @@ impl NovaRenderDiagnostics {
     }
 
     pub(super) fn should_warn_slow_frame(&mut self, elapsed_ms: u128) -> bool {
+        // TEMP measurement: log every frame's phase breakdown.
+        let _ = elapsed_ms;
+        return true;
+        #[allow(unreachable_code)]
         if self.enabled || elapsed_ms < DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS {
             return false;
         }

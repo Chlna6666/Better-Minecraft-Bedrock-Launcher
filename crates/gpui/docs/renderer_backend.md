@@ -52,6 +52,7 @@ all frames explicitly.
 ## Metrics
 
 Renderer metrics include backend selection, frame timing, image cache state,
-atlas usage, backdrop blur and 3D mesh counts, allocator totals, and retained
-resource trimming. Enable `frame_metrics` when diagnosing frame pacing or GPU
-resource lifetime.
+atlas usage, backdrop blur, allocator totals, and retained resource trimming.
+GPUI does not collect 3D viewport resource counts; those resources are owned by
+the extension implementation. Enable `frame_metrics` when diagnosing frame
+pacing or GPUI resource lifetime.

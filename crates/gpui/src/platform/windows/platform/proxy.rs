@@ -28,6 +28,14 @@ pub(crate) struct QueuedScene {
     pub(crate) framebuffer_only: bool,
 }
 
+impl QueuedScene {
+    /// Set the native sampling time for retained presentation submission or retry.
+    /// Static values remain unchanged; this does not modify the UI frame clock.
+    pub(crate) fn prepare_for_native_frame(&mut self, native_frame_time: Instant) {
+        self.packet.frame_time = native_frame_time;
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SceneMailbox {
     pending: Option<QueuedScene>,
@@ -67,8 +75,9 @@ impl SceneMailbox {
 mod tests {
     use super::*;
     use crate::{
-        BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode, Point, ScaledPixels, Scene,
-        bounds, size,
+        AnimationDriver, AnimationEngine, AnimationSpec, BackdropBlurDamagePlan, DirtyRegion,
+        Easing, ElementId, GlobalElementId, PartialPresentMode, Point, ScaledPixels, Scene,
+        SceneAnimationId, SceneAnimationValue, TransitionProperty, bounds, size,
     };
 
     fn packet(scene: Arc<Scene>, x: f32) -> crate::PresentationPacket {
@@ -90,6 +99,143 @@ mod tests {
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
         )
+    }
+
+    fn value(
+        packet: &crate::PresentationPacket,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> SceneAnimationValue {
+        packet
+            .presentation_animation_values
+            .iter()
+            .find(|value| value.animation_id == animation_id && value.property == property)
+            .copied()
+            .expect("packet contains the requested animation value")
+    }
+
+    fn retargeted_engine(ui_frame_time: Instant) -> AnimationEngine {
+        let element_id = GlobalElementId::from_path(&[ElementId::from("queued-retarget")]);
+        let animation_id = SceneAnimationId(103);
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element_id,
+            TransitionProperty::Opacity,
+            AnimationSpec::new(std::time::Duration::from_secs(1))
+                .ease(Easing::Linear)
+                .driver(AnimationDriver::Gpu),
+            ui_frame_time - std::time::Duration::from_millis(100),
+        );
+        assert!(engine.bind_scene_animation(
+            &element_id,
+            TransitionProperty::Opacity,
+            animation_id,
+            [0.0; 4],
+            [1.0, 0.0, 0.0, 0.0],
+        ));
+        assert!(
+            engine.retarget_scene_animation(
+                &element_id,
+                TransitionProperty::Opacity,
+                animation_id,
+                AnimationSpec::new(std::time::Duration::from_secs(1))
+                    .ease(Easing::Linear)
+                    .driver(AnimationDriver::Gpu),
+                None,
+                ui_frame_time,
+                bounds(Point::default(), size(crate::px(5.0), crate::px(5.0))),
+                [0.0; 2],
+                [0.8, 0.0, 0.0, 0.0],
+            )
+        );
+        engine
+    }
+
+    fn animated_packet(
+        engine: &AnimationEngine,
+        ui_frame_time: Instant,
+        scene: Arc<Scene>,
+        x: f32,
+        static_value: SceneAnimationValue,
+    ) -> crate::PresentationPacket {
+        let dirty_region = packet(scene.clone(), x).dirty_region;
+        let mut values = engine.scene_values(ui_frame_time);
+        values.push(static_value);
+        crate::PresentationPacket::new(
+            scene,
+            values,
+            engine.presentation_timelines(),
+            ui_frame_time,
+            1.0,
+            dirty_region,
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        )
+    }
+
+    fn sampled_value(
+        queued: &mut QueuedScene,
+        animation_id: SceneAnimationId,
+        property: TransitionProperty,
+    ) -> SceneAnimationValue {
+        queued.packet.sample_animations(queued.packet.frame_time);
+        value(&queued.packet, animation_id, property)
+    }
+
+    fn queued_latest_scene(
+        engine: &AnimationEngine,
+        ui_frame_time: Instant,
+        static_value: SceneAnimationValue,
+    ) -> QueuedScene {
+        let mut mailbox = SceneMailbox::default();
+        assert!(mailbox.queue(
+            animated_packet(
+                engine,
+                ui_frame_time,
+                Arc::new(Scene::default()),
+                0.0,
+                static_value,
+            ),
+            false,
+        ));
+        assert!(!mailbox.queue(
+            animated_packet(
+                engine,
+                ui_frame_time,
+                Arc::new(Scene::default()),
+                20.0,
+                static_value,
+            ),
+            true,
+        ));
+        mailbox.take().expect("mailbox contains the latest scene")
+    }
+
+    fn assert_opacity(queued: &mut QueuedScene, expected: f32) {
+        let value = sampled_value(queued, SceneAnimationId(103), TransitionProperty::Opacity);
+        let opacity = value.from[0] + (value.to[0] - value.from[0]) * value.progress;
+        assert!((opacity - expected).abs() < 0.001);
+    }
+
+    fn assert_static_value_and_damage(queued: &mut QueuedScene, static_value: SceneAnimationValue) {
+        assert_eq!(
+            sampled_value(queued, static_value.animation_id, static_value.property,),
+            static_value
+        );
+        assert_accumulated_damage(queued);
+    }
+
+    fn assert_accumulated_damage(queued: &QueuedScene) {
+        assert_eq!(
+            queued.packet.dirty_region.union_bounds(),
+            Some(bounds(
+                Point {
+                    x: ScaledPixels(0.0),
+                    y: ScaledPixels(0.0),
+                },
+                size(ScaledPixels(30.0), ScaledPixels(10.0)),
+            )),
+        );
     }
 
     #[test]
@@ -116,6 +262,31 @@ mod tests {
         );
         assert!(mailbox.queue(packet(Arc::new(Scene::default()), 40.0), false));
     }
+
+    #[test]
+    fn queued_scene_samples_retargeted_animation_at_native_and_retry_times() {
+        let ui_frame_time = Instant::now();
+        let native_commit_time = ui_frame_time + std::time::Duration::from_millis(250);
+        let native_retry_time = ui_frame_time + std::time::Duration::from_millis(500);
+        let engine = retargeted_engine(ui_frame_time);
+        let static_value = SceneAnimationValue {
+            animation_id: SceneAnimationId(104),
+            property: TransitionProperty::Translation,
+            progress: 0.4,
+            from: [10.0, 20.0, 0.0, 0.0],
+            to: [30.0, 40.0, 0.0, 0.0],
+        };
+        let mut queued = queued_latest_scene(&engine, ui_frame_time, static_value);
+
+        queued.prepare_for_native_frame(native_commit_time);
+        assert_opacity(&mut queued, 0.275);
+        assert_static_value_and_damage(&mut queued, static_value);
+
+        // A backpressured packet is retained and sampled again at its later native retry frame.
+        queued.prepare_for_native_frame(native_retry_time);
+        assert_opacity(&mut queued, 0.45);
+        assert_static_value_and_damage(&mut queued, static_value);
+    }
 }
 
 #[derive(Default)]
@@ -133,7 +304,7 @@ struct Callbacks {
 }
 
 #[derive(Clone)]
-pub(super) struct WindowsWindowProxy {
+pub(super) struct WindowProxy {
     id: winit::window::WindowId,
     handle: AnyWindowHandle,
     platform: Weak<WindowsPlatformInner>,
@@ -147,7 +318,7 @@ pub(super) struct WindowsWindowProxy {
     first_frame_presented: Rc<Cell<bool>>,
 }
 
-impl WindowsWindowProxy {
+impl WindowProxy {
     pub(super) fn new(
         snapshot: WindowsNativeWindow,
         handle: AnyWindowHandle,
@@ -391,19 +562,19 @@ impl WindowsWindowProxy {
     }
 }
 
-impl rwh::HasWindowHandle for WindowsWindowProxy {
+impl rwh::HasWindowHandle for WindowProxy {
     fn window_handle(&self) -> std::result::Result<rwh::WindowHandle<'_>, rwh::HandleError> {
         self.window.window_handle()
     }
 }
 
-impl rwh::HasDisplayHandle for WindowsWindowProxy {
+impl rwh::HasDisplayHandle for WindowProxy {
     fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
         Ok(rwh::DisplayHandle::windows())
     }
 }
 
-impl PlatformWindow for WindowsWindowProxy {
+impl PlatformWindow for WindowProxy {
     fn bounds(&self) -> Bounds<Pixels> {
         self.snapshot.borrow().bounds
     }
@@ -636,6 +807,10 @@ impl PlatformWindow for WindowsWindowProxy {
     fn has_active_presentation_animations(&self) -> bool {
         self.call(|window| window.has_active_presentation_animations())
             .unwrap_or(false)
+    }
+    fn owns_scene_animations(&self) -> bool {
+        // Native owns queued/deferred timelines too; UI must not wait for activity or finish them.
+        true
     }
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()

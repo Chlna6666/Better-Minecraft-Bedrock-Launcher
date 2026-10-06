@@ -1,10 +1,7 @@
 use super::element::SizedImageLoader;
 use super::layout::ImageLayout;
 use super::loader::{ImageRenderRequest, image_size_for_window};
-use super::playback::{
-    request_next_image_animation_frame, select_animation_frame,
-    should_request_image_animation_frame,
-};
+use super::playback::{schedule_next_frame, select_animation_frame, should_animate};
 use super::retained::{SizedImageElementState, SizedImageRequestLease};
 use super::source::ImageSource;
 use super::style::ImageAnimationPolicy;
@@ -100,22 +97,14 @@ pub(super) fn render_sized_image(
                         state.playback.current_frame = render_image.frame(0);
                         state.playback.next_frame_at = None;
 
-                        let frame = if should_request_image_animation_frame(
-                            &render_image,
-                            animation_config,
-                        ) {
+                        let frame = if should_animate(&render_image, animation_config) {
                             let frame = select_animation_frame(
                                 &mut state.playback,
                                 &render_image,
                                 animation_config,
                                 cx.background_executor(),
                             );
-                            request_next_image_animation_frame(
-                                &state.playback,
-                                window,
-                                cx,
-                                animation_config,
-                            );
+                            schedule_next_frame(&state.playback, window, cx, animation_config);
                             frame
                         } else {
                             render_image.frame(0)
@@ -209,14 +198,14 @@ fn render_current_sized_image(
     cx: &App,
 ) -> Option<(Arc<RenderImage>, AnimatedFrame)> {
     let render_image = state.current_image.clone()?;
-    let frame = if should_request_image_animation_frame(&render_image, animation_config) {
+    let frame = if should_animate(&render_image, animation_config) {
         let frame = select_animation_frame(
             &mut state.playback,
             &render_image,
             animation_config,
             cx.background_executor(),
         );
-        request_next_image_animation_frame(&state.playback, window, cx, animation_config);
+        schedule_next_frame(&state.playback, window, cx, animation_config);
         frame?
     } else {
         let frame = render_image.frame(0)?;

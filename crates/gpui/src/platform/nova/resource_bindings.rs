@@ -16,7 +16,7 @@ pub(super) fn path_resource_bindings(
     vec![
         ResourceBinding {
             binding: 0,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: global_buffer,
                 offset: 0,
                 size: GLOBAL_UPLOAD_BYTES as u64,
@@ -25,17 +25,17 @@ pub(super) fn path_resource_bindings(
         },
         ResourceBinding {
             binding: 4,
-            resource: ResourceBindingResource::Texture(TextureBinding {
+            resource: BindingResource::Texture(TextureBinding {
                 texture_view: path_texture_view,
             }),
         },
         ResourceBinding {
             binding: 5,
-            resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
+            resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
         ResourceBinding {
             binding: 6,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: path_sprite_buffer,
                 offset: 0,
                 size: (MAX_PATH_SPRITES * PACKED_PATH_SPRITE_BYTES) as u64,
@@ -54,17 +54,17 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
     vec![
         ResourceBinding {
             binding: 4,
-            resource: ResourceBindingResource::Texture(TextureBinding {
+            resource: BindingResource::Texture(TextureBinding {
                 texture_view: source_texture_view,
             }),
         },
         ResourceBinding {
             binding: 5,
-            resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
+            resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
         ResourceBinding {
             binding: 15,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: pass_buffer,
                 offset: 0,
                 size: (MAX_BACKDROP_BLURS * 2 * BACKDROP_BLUR_PASS_BYTES) as u64,
@@ -73,7 +73,7 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
         },
         ResourceBinding {
             binding: 17,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: animation_buffer,
                 offset: 0,
                 size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
@@ -93,7 +93,7 @@ pub(super) fn backdrop_blur_resource_bindings(
     vec![
         ResourceBinding {
             binding: 0,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: global_buffer,
                 offset: 0,
                 size: GLOBAL_UPLOAD_BYTES as u64,
@@ -102,17 +102,17 @@ pub(super) fn backdrop_blur_resource_bindings(
         },
         ResourceBinding {
             binding: 4,
-            resource: ResourceBindingResource::Texture(TextureBinding {
+            resource: BindingResource::Texture(TextureBinding {
                 texture_view: source_texture_view,
             }),
         },
         ResourceBinding {
             binding: 5,
-            resource: ResourceBindingResource::Sampler(SamplerBinding { sampler }),
+            resource: BindingResource::Sampler(SamplerBinding { sampler }),
         },
         ResourceBinding {
             binding: 16,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: blur_buffer,
                 offset: 0,
                 size: (MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES) as u64,
@@ -121,57 +121,11 @@ pub(super) fn backdrop_blur_resource_bindings(
         },
         ResourceBinding {
             binding: 17,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
+            resource: BindingResource::Buffer(BufferBinding {
                 buffer: animation_buffer,
                 offset: 0,
                 size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
                 stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
-            }),
-        },
-    ]
-}
-
-pub(super) fn custom_mesh_3d_resource_bindings(
-    global_buffer: BufferId,
-    parameters_buffer: BufferId,
-    vertex_buffer: BufferId,
-    vertex_capacity: usize,
-) -> Vec<ResourceBinding> {
-    vec![
-        ResourceBinding {
-            binding: 0,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: global_buffer,
-                offset: 0,
-                size: GLOBAL_UPLOAD_BYTES as u64,
-                stride: None,
-            }),
-        },
-        ResourceBinding {
-            binding: 20,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: parameters_buffer,
-                offset: 0,
-                size: CUSTOM_MESH_3D_PARAMETERS_REGION_BYTES as u64,
-                stride: Some(PACKED_CUSTOM_MESH_3D_PARAMETERS_BYTES as u32),
-            }),
-        },
-        ResourceBinding {
-            binding: 21,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: vertex_buffer,
-                offset: 0,
-                size: (vertex_capacity * PACKED_CUSTOM_MESH_3D_VERTEX_BYTES) as u64,
-                stride: Some(PACKED_CUSTOM_MESH_3D_VERTEX_BYTES as u32),
-            }),
-        },
-        ResourceBinding {
-            binding: 22,
-            resource: ResourceBindingResource::Buffer(BufferBinding {
-                buffer: parameters_buffer,
-                offset: CUSTOM_MESH_3D_PARAMETERS_REGION_BYTES as u64,
-                size: CUSTOM_MESH_3D_ANIMATION_REGION_BYTES as u64,
-                stride: Some(PACKED_CUSTOM_MESH_3D_ANIMATION_BYTES as u32),
             }),
         },
     ]

@@ -6,18 +6,61 @@ use super::depth::create_depth_texture;
 use super::pipelines::create_renderer_pipelines;
 use super::resource_sets::create_renderer_resource_sets;
 use super::shaders::create_renderer_shaders;
-use super::{FrameResources, RendererResources};
+use super::{FrameResources, RendererCore, RendererResources};
 
-pub(in crate::platform::nova) fn create_renderer_resources<D>(
+/// Creates the renderer resources shared by every window using this device and color format.
+///
+/// These are the compiled artifacts: the resource and pipeline layouts, the render pass, the
+/// compiled shader modules, and the render pipelines. None of them depend on a window's size, so
+/// a second window reuses them instead of paying for another shader compile and driver pipeline
+/// build.
+pub(in crate::platform::nova) fn create_renderer_core<D>(
     device: &mut D,
     surface_config: SurfaceConfig,
     label: &str,
     shader_binaries: ShaderBinaries,
-) -> Result<RendererResources>
+) -> Result<RendererCore>
 where
     D: BackendResources + BackendPipelines,
 {
     let layouts = create_resource_layouts(device, label)?;
+    let render_pass = device.create_render_pass(&RenderPassDescriptor {
+        label: Some(format!("{label} render pass")),
+        color_attachment: ColorAttachmentDescriptor {
+            format: surface_config.format,
+        },
+        depth_attachment: Some(DepthAttachmentDescriptor {
+            format: Format::Depth32Float,
+        }),
+    })?;
+    let shaders = create_renderer_shaders(device, label, shader_binaries)?;
+    let pipelines = create_renderer_pipelines(
+        device,
+        label,
+        surface_config,
+        render_pass,
+        &layouts,
+        shaders,
+    )?;
+
+    Ok(RendererCore {
+        layouts,
+        render_pass,
+        pipelines,
+    })
+}
+
+/// Creates the renderer resources sized to one window, reusing `core` for the shared parts.
+pub(in crate::platform::nova) fn create_renderer_resources<D>(
+    device: &mut D,
+    surface_config: SurfaceConfig,
+    label: &str,
+    core: &RendererCore,
+) -> Result<RendererResources>
+where
+    D: BackendResources + BackendPipelines,
+{
+    let layouts = core.layouts;
     let buffers = create_resource_buffers(device, label)?;
     let frame_buffers = buffers.frame_buffers;
     let shared_buffers = buffers.shared;
@@ -58,8 +101,6 @@ where
             &format!("{label} frame {index}"),
             &layouts,
             &frame_buffers,
-            shared_buffers.custom_mesh_3d_vertices_buffer,
-            CUSTOM_MESH_3D_PLACEHOLDER_VERTICES,
         )?;
         frame_resources.push(FrameResources {
             buffers: frame_buffers,
@@ -85,42 +126,22 @@ where
     let depth_texture_view = device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} depth texture view")),
         texture: depth_texture,
+        base_mip_level: 0,
+        mip_level_count: 1,
         format: Format::Depth32Float,
     })?;
-    let render_pass = device.create_render_pass(&RenderPassCompatibilityDescriptor {
-        label: Some(format!("{label} render pass")),
-        color_attachment: ColorAttachmentDescriptor {
-            format: surface_config.format,
-        },
-        depth_attachment: Some(DepthAttachmentDescriptor {
-            format: Format::Depth32Float,
-        }),
-    })?;
-    let shaders = create_renderer_shaders(device, label, shader_binaries)?;
-    let pipelines = create_renderer_pipelines(
-        device,
-        label,
-        surface_config,
-        render_pass,
-        &layouts,
-        shaders,
-    )?;
 
     Ok(RendererResources {
-        render_pass,
-        pipelines,
+        render_pass: core.render_pass,
+        pipelines: core.pipelines,
         depth_texture,
         depth_texture_view,
         frame_resources,
-        custom_mesh_3d_vertices_buffer: shared_buffers.custom_mesh_3d_vertices_buffer,
-        custom_mesh_3d_indices_buffer: shared_buffers.custom_mesh_3d_indices_buffer,
-        custom_mesh_3d_resource_set_layout: layouts.custom_mesh_3d_resource_set_layout,
         path_resource_set_layout: layouts.path_resource_set_layout,
         mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
         poly_sprite_resource_set_layout: layouts.poly_resource_set_layout,
         backdrop_blur_pass_resource_set_layout: layouts.backdrop_blur_pass_resource_set_layout,
         backdrop_blur_resource_set_layout: layouts.backdrop_blur_resource_set_layout,
-        custom_mesh_3d_pipeline_layout: layouts.custom_mesh_3d_pipeline_layout,
         backdrop_blur_targets: None,
         atlas_texture: atlas_resources.texture,
         atlas_texture_view: atlas_resources.texture_view,

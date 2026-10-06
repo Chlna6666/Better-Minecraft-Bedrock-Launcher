@@ -220,9 +220,6 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         animation_upload_bytes: shared_metrics()
             .animation_upload_bytes
             .load(Ordering::Relaxed) as usize,
-        custom_mesh_parameter_upload_bytes: shared_metrics()
-            .custom_mesh_parameter_upload_bytes
-            .load(Ordering::Relaxed) as usize,
         mask_pass_count: shared_metrics().mask_pass_count.load(Ordering::Relaxed) as usize,
         main_pass_count: shared_metrics().main_pass_count.load(Ordering::Relaxed) as usize,
         composite_pass_count: shared_metrics()
@@ -460,7 +457,6 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         backdrop_blur_target_groups: shared_metrics()
             .backdrop_blur_target_groups
             .load(Ordering::Relaxed) as usize,
-        gpu_mesh_buffers: shared_metrics().gpu_mesh_buffers.load(Ordering::Relaxed) as usize,
         gpu_adapter_name,
         gpu_adapter_type,
         coalesced_refresh_count: shared_metrics()

@@ -263,6 +263,15 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn has_active_presentation_animations(&self) -> bool {
         false
     }
+    /// Whether the platform owns sampling and completion of scene-bound animation timelines.
+    ///
+    /// Independent presentation owners must return true even before a queued scene is accepted:
+    /// the UI must not complete its timelines before the platform successfully presents them.
+    /// This query must not wait for an independent presentation thread. Platforms without such
+    /// an owner retain the existing committed-scene behavior by default.
+    fn owns_scene_animations(&self) -> bool {
+        self.has_active_presentation_animations()
+    }
     fn set_presentation_animation_completion_sender(
         &self,
         _sender: SceneAnimationCompletionSender,

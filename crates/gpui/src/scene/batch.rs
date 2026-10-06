@@ -3,7 +3,8 @@ use std::{iter::Peekable, slice};
 
 use super::{
     DrawOrder, MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintBlur,
-    PaintGpuMesh3d, PaintSurface, Path, PolychromeSprite, PrimitiveKind, Quad, Shadow, Underline,
+    PaintRendererExtension, PaintSurface, Path, PolychromeSprite, PrimitiveKind, Quad, Shadow,
+    Underline,
 };
 
 type BatchCandidate = (Option<DrawOrder>, PrimitiveKind);
@@ -64,9 +65,9 @@ pub(super) struct BatchIterator<'a> {
     pub(super) blurs: &'a [PaintBlur],
     pub(super) blurs_start: usize,
     pub(super) blurs_iter: Peekable<slice::Iter<'a, PaintBlur>>,
-    pub(super) gpu_meshes_3d: &'a [PaintGpuMesh3d],
-    pub(super) gpu_meshes_3d_start: usize,
-    pub(super) gpu_meshes_3d_iter: Peekable<slice::Iter<'a, PaintGpuMesh3d>>,
+    pub(super) renderer_extensions: &'a [PaintRendererExtension],
+    pub(super) renderer_extensions_start: usize,
+    pub(super) renderer_extensions_iter: Peekable<slice::Iter<'a, PaintRendererExtension>>,
 }
 
 impl<'a> Iterator for BatchIterator<'a> {
@@ -105,8 +106,10 @@ impl<'a> Iterator for BatchIterator<'a> {
                 PrimitiveKind::Blur,
             ),
             (
-                self.gpu_meshes_3d_iter.peek().map(|mesh| mesh.order),
-                PrimitiveKind::GpuMesh3d,
+                self.renderer_extensions_iter
+                    .peek()
+                    .map(|extension| extension.order),
+                PrimitiveKind::RendererExtension,
             ),
         ]);
 
@@ -269,20 +272,20 @@ impl<'a> Iterator for BatchIterator<'a> {
                 self.blurs_start = blurs_end;
                 Some(PrimitiveBatch::Blurs(&self.blurs[blurs_start..blurs_end]))
             }
-            PrimitiveKind::GpuMesh3d => {
-                let meshes_start = self.gpu_meshes_3d_start;
-                let mut meshes_end = meshes_start + 1;
-                self.gpu_meshes_3d_iter.next();
+            PrimitiveKind::RendererExtension => {
+                let start = self.renderer_extensions_start;
+                let mut end = start + 1;
+                self.renderer_extensions_iter.next();
                 while self
-                    .gpu_meshes_3d_iter
-                    .next_if(|mesh| (mesh.order, batch_kind) < max_order_and_kind)
+                    .renderer_extensions_iter
+                    .next_if(|extension| (extension.order, batch_kind) < max_order_and_kind)
                     .is_some()
                 {
-                    meshes_end += 1;
+                    end += 1;
                 }
-                self.gpu_meshes_3d_start = meshes_end;
-                Some(PrimitiveBatch::GpuMeshes3d(
-                    &self.gpu_meshes_3d[meshes_start..meshes_end],
+                self.renderer_extensions_start = end;
+                Some(PrimitiveBatch::RendererExtensions(
+                    &self.renderer_extensions[start..end],
                 ))
             }
         }
@@ -314,5 +317,5 @@ pub(crate) enum PrimitiveBatch<'a> {
     Surfaces(&'a [PaintSurface]),
     BackdropBlurs(&'a [PaintBackdropBlur]),
     Blurs(&'a [PaintBlur]),
-    GpuMeshes3d(&'a [PaintGpuMesh3d]),
+    RendererExtensions(&'a [PaintRendererExtension]),
 }

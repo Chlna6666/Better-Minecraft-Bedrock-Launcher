@@ -62,8 +62,6 @@ pub struct PerformanceMetricsSnapshot {
     pub backdrop_blur_upload_bytes: usize,
     /// Bytes uploaded for animation bindings and values by the latest Nova submission.
     pub animation_upload_bytes: usize,
-    /// Bytes uploaded for custom mesh parameters by the latest Nova submission.
-    pub custom_mesh_parameter_upload_bytes: usize,
     /// Number of mask passes submitted by the latest reported frame.
     pub mask_pass_count: usize,
     /// Number of main 2D passes submitted by the latest reported frame.
@@ -276,8 +274,6 @@ pub struct PerformanceMetricsSnapshot {
     pub has_depth_texture: bool,
     /// Number of retained backdrop blur target groups.
     pub backdrop_blur_target_groups: usize,
-    /// Number of retained GPU mesh buffers.
-    pub gpu_mesh_buffers: usize,
     /// The resolved GPU adapter name reported by the active renderer.
     pub gpu_adapter_name: String,
     /// The resolved GPU adapter type reported by the active renderer.

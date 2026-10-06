@@ -14,6 +14,7 @@ where
         .create_texture(&TextureDescriptor {
             label: Some(format!("{label} depth texture")),
             size,
+            mip_level_count: 1,
             format: Format::Depth32Float,
             usage: TextureUsage::DEPTH_ATTACHMENT,
             memory_location: MemoryLocation::GpuOnly,

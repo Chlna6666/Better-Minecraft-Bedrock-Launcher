@@ -27,8 +27,6 @@ pub struct FrameUploadBreakdown {
     pub backdrop_blur_bytes: usize,
     /// Encoded animation binding and value bytes.
     pub animation_bytes: usize,
-    /// Encoded custom mesh parameter bytes.
-    pub custom_mesh_parameter_bytes: usize,
 }
 
 /// Records per-category bytes encoded for the latest Nova frame submission.
@@ -57,10 +55,6 @@ pub fn record_frame_upload_breakdown(breakdown: FrameUploadBreakdown) {
             breakdown.backdrop_blur_bytes,
         ),
         (&metrics.animation_upload_bytes, breakdown.animation_bytes),
-        (
-            &metrics.custom_mesh_parameter_upload_bytes,
-            breakdown.custom_mesh_parameter_bytes,
-        ),
     ] {
         target.store(value as u64, Ordering::Relaxed);
     }

@@ -94,6 +94,15 @@ impl Render for AnimationLab {
             let block_metrics = window_metrics_snapshot()
                 .into_iter()
                 .find(|metrics| metrics.window_id == self.window_id);
+            if !block_metrics
+                .as_ref()
+                .is_some_and(|metrics| metrics.active && metrics.visible && !metrics.minimized)
+            {
+                eprintln!(
+                    "FAIL: animation window lost foreground visibility before the UI Render block"
+                );
+                std::process::exit(1);
+            }
             let started_at = Instant::now();
             if let Some(sender) = &block_sender
                 && sender
@@ -114,6 +123,12 @@ impl Render for AnimationLab {
                             skipped_frame_count: block_metrics
                                 .as_ref()
                                 .map_or(0, |metrics| metrics.skipped_frame_count as u64),
+                            native_vsync: block_metrics
+                                .as_ref()
+                                .map(|metrics| metrics.native_vsync.clone()),
+                            backend_ready_wake_count: block_metrics
+                                .as_ref()
+                                .map_or(0, |metrics| metrics.backend_ready.wake_count),
                             started_at,
                             render_count: self.render_count.load(Ordering::Relaxed),
                         },
@@ -124,12 +139,21 @@ impl Render for AnimationLab {
             }
             // The native presentation owner must keep sampling the committed scene here.
             thread::sleep(UI_RENDER_BLOCK);
+            let final_window_metrics = window_metrics_snapshot()
+                .into_iter()
+                .find(|metrics| metrics.window_id == self.window_id);
+            let native_vsync = final_window_metrics
+                .as_ref()
+                .map(|metrics| metrics.native_vsync.clone());
+            let backend_ready = final_window_metrics.map(|metrics| metrics.backend_ready);
             let ended_at = Instant::now();
             if let Some(sender) = block_sender
                 && sender
                     .send(animation_perf_lab_support::BlockEvent::Finished {
                         ended_at,
                         render_count: self.render_count.load(Ordering::Relaxed),
+                        native_vsync,
+                        backend_ready,
                     })
                     .is_err()
             {
@@ -309,6 +333,7 @@ fn open_lab(
         }
 
         let history_deadline = Instant::now() + GATE_WINDOW;
+        let mut foreground_sample_start = None;
         loop {
             let Some(metrics) = window_metrics_snapshot()
                 .into_iter()
@@ -317,12 +342,20 @@ fn open_lab(
                 eprintln!("FAIL: could not read animation window warm-up metrics");
                 return;
             };
-            if metrics.animation_sample_interval_sample_count >= SAMPLE_HISTORY_CAPACITY {
-                break;
+            if metrics.active && metrics.visible && !metrics.minimized {
+                let start = foreground_sample_start
+                    .get_or_insert(metrics.animation_sampled_present_count);
+                if metrics.animation_sampled_present_count.saturating_sub(*start)
+                    >= SAMPLE_HISTORY_CAPACITY
+                {
+                    break;
+                }
+            } else {
+                foreground_sample_start = None;
             }
             if Instant::now() >= history_deadline {
                 eprintln!(
-                    "FAIL: animation sample history did not fill during warm-up ({}/{})",
+                    "FAIL: foreground animation sample history did not fill during warm-up ({}/{})",
                     metrics.animation_sample_interval_sample_count, SAMPLE_HISTORY_CAPACITY
                 );
                 return;
@@ -340,6 +373,10 @@ fn open_lab(
             eprintln!("FAIL: could not read animation window cadence baseline");
             return;
         };
+        if !baseline_metrics.active || !baseline_metrics.visible || baseline_metrics.minimized {
+            eprintln!("FAIL: animation window lost foreground visibility during cadence baseline");
+            return;
+        }
         let baseline_presentation_rate = animation_sample_count(window_id)
             .saturating_sub(baseline_sample_count) as f64
             / baseline_started.elapsed().as_secs_f64();

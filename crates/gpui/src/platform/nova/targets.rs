@@ -149,6 +149,7 @@ where
     let texture = device.create_texture(&TextureDescriptor {
         label: Some(format!("{label} path mask texture")),
         size: descriptor.size,
+        mip_level_count: 1,
         format: descriptor.format,
         usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
@@ -157,6 +158,8 @@ where
     let texture_view = device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} path mask texture view")),
         texture,
+        base_mip_level: 0,
+        mip_level_count: 1,
         format: descriptor.format,
     })?;
     let mut resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
@@ -429,6 +432,8 @@ where
     let texture_view = device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} depth texture view")),
         texture,
+        base_mip_level: 0,
+        mip_level_count: 1,
         format: Format::Depth32Float,
     })?;
     Ok((texture, texture_view))
@@ -462,6 +467,7 @@ where
     let texture = device.create_texture(&TextureDescriptor {
         label: Some(format!("{label} texture")),
         size,
+        mip_level_count: 1,
         format,
         usage: TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
@@ -470,6 +476,8 @@ where
     let texture_view = device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} texture view")),
         texture,
+        base_mip_level: 0,
+        mip_level_count: 1,
         format,
     })?;
     Ok(TextureTarget {

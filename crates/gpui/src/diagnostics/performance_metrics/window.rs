@@ -6,6 +6,18 @@ use std::{
 
 use super::store::shared_metrics;
 
+mod backend_ready;
+mod native_vsync;
+
+pub use backend_ready::WindowBackendReadyMetricsSnapshot;
+pub(crate) use backend_ready::record_window_backend_ready_wake;
+pub use native_vsync::WindowVSyncMetricsSnapshot;
+pub(crate) use native_vsync::{
+    record_window_active_presentation_attempt,
+    record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
+    record_window_native_vsync_wake,
+};
+
 /// Metrics for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowMetricsSnapshot {
@@ -73,6 +85,10 @@ pub struct WindowMetricsSnapshot {
     pub animation_sample_interval_max_micros: usize,
     /// Number of recent active-animation presentation intervals retained.
     pub animation_sample_interval_sample_count: usize,
+    /// DWM pacing and active-presentation counters for this window.
+    pub native_vsync: WindowVSyncMetricsSnapshot,
+    /// Backend readiness wake counts and queue delay, separate from DWM pacing.
+    pub backend_ready: WindowBackendReadyMetricsSnapshot,
     /// Skipped frame decisions.
     pub skip_count: usize,
     /// Skipped frame opportunities.
@@ -132,7 +148,7 @@ pub struct WindowAnimationPresentationTiming {
     pub backend_present: Duration,
     /// Renderer bookkeeping after a successful backend present.
     pub renderer_post_present: Duration,
-    /// Synchronous Vulkan host-side presentation stages when the backend reported them.
+    /// Backend-specific host-side presentation stages when the backend reported them.
     pub backend_timings: Option<gfx_core::PresentationTimings>,
 }
 
@@ -224,7 +240,6 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                     let present_interval = metrics.present_interval_samples.percentiles();
                     let animation_sample_interval =
                         metrics.animation_sample_interval_samples.percentiles();
-
                     WindowMetricsSnapshot {
                         window_id,
                         present_fps_milli,
@@ -258,6 +273,8 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                             .max_micros()
                             as usize,
                         animation_sample_interval_sample_count: animation_sample_interval.count,
+                        native_vsync: native_vsync::snapshot(metrics),
+                        backend_ready: backend_ready::snapshot(metrics),
                         logical_width_milli: metrics.logical_width_milli as usize,
                         logical_height_milli: metrics.logical_height_milli as usize,
                         physical_width_px: metrics.physical_width_px as usize,

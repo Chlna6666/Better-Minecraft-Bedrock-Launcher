@@ -9,41 +9,43 @@ pub(super) use collections::{FxHashMap, FxHashSet};
 
 pub(super) use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels,
-    GlyphRasterization, GpuMesh3d, GpuMesh3dId, GpuMesh3dRange, GpuMesh3dShader, GpuMesh3dShaderId,
-    GpuSpecs, GpuSubmissionMode, GpuiMemoryTrimLevel, MonochromeSprite, PartialPresentMode,
-    PlatformAtlas, Point, PolychromeSprite, PreparedSceneBatch, PresentModePreference,
-    PresentationPacket, Quad, RenderGlyphParams, RendererBackend, RendererOptions, RetainedChunkId,
-    Shadow, Size, Underline,
+    GlyphRasterization, GpuSpecs, GpuSubmissionMode, GpuiMemoryTrimLevel, MonochromeSprite,
+    PaintRendererExtension, PartialPresentMode, PlatformAtlas, Point, PolychromeSprite,
+    PreparedSceneBatch, PresentModePreference, PresentationPacket, Quad, RenderGlyphParams,
+    RendererBackend, RendererExtension, RendererExtensionContext, RendererExtensionRenderer,
+    RendererOptions, RetainedChunkId, Shadow, Size, Underline,
 };
 
 pub(super) use gfx_core::{
-    AddressMode, BackendAsyncCapabilities, BackendPipelines, BackendPresentationCompat,
-    BackendQueue, BackendResources, BackendSurface, BlendMode, BufferBinding, BufferDescriptor,
-    BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor, CompositeAlphaMode,
+    AddressMode, AsyncCapabilities, BackendPipelines, BackendPresentationCompat, BackendQueue,
+    BackendResources, BackendSurface, BlendMode, BufferBinding, BufferDescriptor, BufferId,
+    BufferUsage, ClearColor, ColorAttachmentDescriptor, CompareFunction, CompositeAlphaMode,
     DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawIndexedStepDescriptor,
-    DrawStepDescriptor, Extent2d, FilterMode, Format, GfxMemoryTrimLevel, GfxPresentationDevice,
-    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, Origin2d, PipelineLayoutId,
-    PipelineLayoutResourceDescriptor, PowerPreference, PrimitiveTopology,
-    RenderPassCompatibilityDescriptor, RenderPassDepthAttachment, RenderPassId,
-    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
-    ResourceBinding, ResourceBindingResource, ResourceBindingType, ResourceSetDescriptor,
-    ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, ResourceSetLayoutId,
-    SamplerBinding, SamplerDescriptor, SamplerId, ScissorRect, ShaderModuleDescriptor, ShaderStage,
-    ShaderStages, SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId,
-    SwapchainId, TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureId,
-    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
-    resource_set_list,
+    DrawStepDescriptor, Extent2d, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
+    MemoryLocation, MemoryTrimLevel, Origin2d, PipelineLayoutDescriptor, PipelineLayoutId,
+    PowerPreference, PresentationDevice, PrimitiveTopology, RenderPassDepthAttachment,
+    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
+    RenderStepDescriptor, RenderStepList, ResourceBinding, BindingResource,
+    ResourceBindingType, ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor,
+    ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerBinding, SamplerDescriptor, SamplerId,
+    ScissorRect, ShaderModuleDescriptor, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus,
+    SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureBinding, TextureDataLayout,
+    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
+    TextureViewId, TextureWrite, TextureWriteDescriptor, resource_set_list,
 };
 
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 pub(super) use gfx_dx12::Dx12Device;
 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
 pub(super) use gfx_metal::MetalDevice;
-#[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+// Production shaders come from the artifacts `build.rs` embeds, so WGSL translation
+// is only reachable from tests that exercise the translator directly.
+#[cfg(all(test, feature = "nova-gfx-dx12", target_os = "windows"))]
 pub(super) use gfx_shader::compile_wgsl_to_hlsl;
-#[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+#[cfg(all(test, feature = "nova-gfx-metal", target_os = "macos"))]
 pub(super) use gfx_shader::compile_wgsl_to_msl;
 #[cfg(all(
+    test,
     feature = "nova-gfx-vulkan",
     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
 ))]

@@ -6,7 +6,7 @@ pub(super) struct LayoutCacheFrameMetrics {
     pub(super) misses: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct FrameGenerationStats {
     pub(super) layout: LayoutFrameMetrics,
     pub(super) layout_cache: LayoutCacheFrameMetrics,
@@ -14,6 +14,12 @@ pub(super) struct FrameGenerationStats {
     pub(super) scene: SceneFrameMetrics,
     pub(super) frame_retained_capacity: usize,
     pub(super) list_measured_items: usize,
+    pub(super) prepaint_elapsed: Duration,
+    pub(super) paint_elapsed: Duration,
+    pub(super) scene_finish_elapsed: Duration,
+    pub(super) finalize_elapsed: Duration,
+    pub(super) element_prepaint: String,
+    pub(super) element_paint: String,
     pub(super) deadline_remaining_at_prepaint_start_us: Option<i64>,
     pub(super) deadline_remaining_at_layout_start_us: Option<i64>,
     pub(super) deadline_remaining_at_paint_start_us: Option<i64>,

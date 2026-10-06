@@ -118,7 +118,6 @@ struct StaticUploadSignature {
     underline: StaticStreamToken,
     backdrop_blur_pass: StaticStreamToken,
     backdrop_blur: StaticStreamToken,
-    custom_mesh_3d_parameters: StaticStreamToken,
 }
 
 impl StaticUploadSignature {
@@ -138,7 +137,6 @@ impl StaticUploadSignature {
             upload.underlines.len(),
             upload.backdrop_blur_passes.len(),
             upload.backdrop_blurs.len(),
-            upload.custom_mesh_3d_parameters.len(),
             animation_topology_bytes,
             quad_hashed_bytes,
         ]
@@ -177,9 +175,6 @@ impl StaticUploadSignature {
                     &upload.backdrop_blurs,
                     animation_topology.backdrop_blur,
                 ),
-                custom_mesh_3d_parameters: StaticStreamToken::from_bytes(
-                    &upload.custom_mesh_3d_parameters,
-                ),
             },
             hashed_bytes,
         )
@@ -202,8 +197,6 @@ impl StaticUploadSignature {
             underline: self.underline != previous.underline,
             backdrop_blur_pass: self.backdrop_blur_pass != previous.backdrop_blur_pass,
             backdrop_blur: self.backdrop_blur != previous.backdrop_blur,
-            custom_mesh_3d_parameters: self.custom_mesh_3d_parameters
-                != previous.custom_mesh_3d_parameters,
         }
     }
 }
@@ -293,11 +286,10 @@ pub(super) struct StaticUploadMask {
     pub(super) underline: bool,
     pub(super) backdrop_blur_pass: bool,
     pub(super) backdrop_blur: bool,
-    pub(super) custom_mesh_3d_parameters: bool,
 }
 
 impl StaticUploadMask {
-    const STREAM_COUNT: usize = 12;
+    const STREAM_COUNT: usize = 11;
 
     const fn all() -> Self {
         Self {
@@ -312,7 +304,6 @@ impl StaticUploadMask {
             underline: true,
             backdrop_blur_pass: true,
             backdrop_blur: true,
-            custom_mesh_3d_parameters: true,
         }
     }
 
@@ -327,8 +318,7 @@ impl StaticUploadMask {
             || self.poly_sprite
             || self.underline
             || self.backdrop_blur_pass
-            || self.backdrop_blur
-            || self.custom_mesh_3d_parameters)
+            || self.backdrop_blur)
     }
 
     pub(super) fn count(self) -> usize {
@@ -344,7 +334,6 @@ impl StaticUploadMask {
             self.underline,
             self.backdrop_blur_pass,
             self.backdrop_blur,
-            self.custom_mesh_3d_parameters,
         ]
         .into_iter()
         .filter(|dirty| *dirty)
@@ -388,10 +377,6 @@ impl StaticUploadMask {
             add(self.backdrop_blur_pass, upload.backdrop_blur_passes.len());
             add(self.backdrop_blur, upload.backdrop_blurs.len());
         }
-        add(
-            self.custom_mesh_3d_parameters,
-            upload.custom_mesh_3d_parameters.len(),
-        );
         drop(add);
 
         for primitive in &upload.animated_primitives {
@@ -559,9 +544,7 @@ impl NovaRenderer {
         // GPU-indexed source animations are intentionally absent from `animated_primitives`.
         // During their active/previous-frame window, disable aggressive retained blur self-damage
         // suppression so a filtered backdrop cannot reuse stale source pixels.
-        let gpu_indexed_animation_blocks_blur_reuse = self
-            .frame_upload
-            .gpu_indexed_animation_affects_blur_history();
+        let gpu_indexed_animation_blocks_blur_reuse = self.frame_upload.affects_blur_history();
         self.frame_upload.retained_static_reused =
             reusable && !gpu_indexed_animation_blocks_blur_reuse;
         self.frame_upload

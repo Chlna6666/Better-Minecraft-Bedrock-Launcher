@@ -16,15 +16,15 @@ Performance metrics cover:
 - queued animation bytes and their process-wide limit;
 - sprite atlas and texture counts;
 - backdrop blur primitive counts;
-- GPU mesh resource counts;
 - allocator totals where supported;
 - retained resource trim activity.
 
 ## Retained Resources
 
-The renderer keeps resources such as pipelines, shader modules, atlases,
-backdrop blur targets, and mesh buffers across frames. Trimming should release
-idle resources without changing application state.
+The renderer keeps resources such as pipelines, shader modules, atlases, and
+backdrop blur targets across frames. GPUI no longer owns 3D mesh resources;
+extensions own their GPU resources and lifetime. Trimming should release idle
+GPUI resources without changing application state.
 
 ## Reproducible Benchmarks
 
@@ -66,6 +66,47 @@ Full-frame and renderer measurements are a separate layer. Capture at least
 uploaded bytes, atlas/cache residency, and the selected renderer. Use the same
 window size, scale factor, content, animation state, and foreground/background
 state for baseline and candidate runs.
+
+## Bitmap Pool Working-Set Benchmarks
+
+The local runner preserves raw logs, exit codes, commands, environment metadata,
+and source hashes under `target/diagnostics/gpui-cpu-bench/<Baseline>/`:
+
+```powershell
+rtk proxy pwsh -NoProfile -File scripts/benchmark_gpui_cpu.ps1 -Suite Memory -Baseline before -WarmupSeconds 3 -MeasurementSeconds 5
+```
+
+Use the same benchmark source, machine, features, and power mode for the
+candidate run. When restoring source snapshots for A/B runs, ensure their
+modification times trigger recompilation. Verify the executed binary's hash
+and a distinguishing fixture result as well as source hashes; a restored
+source file alone does not prove that Cargo rebuilt its cached binary.
+The Memory suite has 13 timing workloads: three steady-state
+cases, their cold-after-trim and trim-reclaim variants, a complete
+large/small/trim/small sequence, and three switches without trimming
+(`large_to_tiny`, `large_to_half`, `large_tiny_alternating`). The first two
+no-trim cases also report capacities for the first small request, warm reuse,
+and return to large requests outside timing. Cold and trim cases use
+Criterion `PerIteration` setup outside the measured operation. The benchmark
+binary uses Rust's System allocator and serializes its process-global pool;
+it does not use BMCBL's mimalloc configuration or create a window/GPU device.
+
+The pool considers the smallest available capacity in the same reuse class,
+limited to twice the **rounded request bucket**. Bucket rounding means this is
+not a strict twofold limit relative to the raw request. Classes increase with
+capacity, so an incompatible smallest candidate makes scanning larger entries
+unnecessary. Skipped buffers remain idle for larger requests. Existing release
+budgets and event-driven trimming retain their semantics. Allocation on a miss
+occurs after releasing the pool lock; another thread may return a buffer after
+that miss, consistent with best-effort reuse. The idle budget does not cap
+active image allocations.
+
+Acquired Vec capacity, idle retained capacity, and allocator retention are
+distinct measurements. CPU heap-fragmentation or process-memory claims require
+allocator statistics and OS PrivateUsage/RSS samples; GPU-fragmentation claims
+require backend reserved/allocated measurements. Clearing a pool or shrinking
+a Vec does not prove lower OS memory usage. CPU-only benchmark results do not
+prove window FPS or presentation latency.
 
 ## Guidelines
 

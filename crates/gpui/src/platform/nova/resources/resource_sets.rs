@@ -9,31 +9,6 @@ pub(in crate::platform::nova) struct FrameResourceSets {
     pub(in crate::platform::nova) shadow_resource_set: ResourceSetId,
     pub(in crate::platform::nova) path_rasterization_resource_set: ResourceSetId,
     pub(in crate::platform::nova) underline_resource_set: ResourceSetId,
-    pub(in crate::platform::nova) custom_mesh_3d_resource_set: ResourceSetId,
-}
-
-pub(in crate::platform::nova) fn create_custom_mesh_3d_resource_set<D>(
-    device: &mut D,
-    label: &str,
-    layout: ResourceSetLayoutId,
-    global_buffer: BufferId,
-    parameters_buffer: BufferId,
-    vertices_buffer: BufferId,
-    vertex_capacity: usize,
-) -> Result<ResourceSetId>
-where
-    D: BackendResources,
-{
-    Ok(device.create_resource_set(&ResourceSetDescriptor {
-        label: Some(format!("{label} custom GPU mesh 3D resource set")),
-        layout,
-        bindings: custom_mesh_3d_resource_bindings(
-            global_buffer,
-            parameters_buffer,
-            vertices_buffer,
-            vertex_capacity,
-        ),
-    })?)
 }
 
 pub(super) fn create_renderer_resource_sets<D>(
@@ -41,15 +16,13 @@ pub(super) fn create_renderer_resource_sets<D>(
     label: &str,
     layouts: &ResourceLayouts,
     buffers: &FrameResourceBuffers,
-    custom_mesh_3d_vertices_buffer: BufferId,
-    custom_mesh_3d_vertex_capacity: usize,
 ) -> Result<FrameResourceSets>
 where
     D: BackendResources,
 {
     let animation_value_binding = || ResourceBinding {
         binding: 17,
-        resource: ResourceBindingResource::Buffer(BufferBinding {
+        resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
             offset: 0,
             size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
@@ -62,7 +35,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -71,7 +44,7 @@ where
             },
             ResourceBinding {
                 binding: 1,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.quad_buffer,
                     offset: 0,
                     size: (MAX_QUADS * PACKED_QUAD_BYTES) as u64,
@@ -87,7 +60,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -96,7 +69,7 @@ where
             },
             ResourceBinding {
                 binding: 2,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.shadow_buffer,
                     offset: 0,
                     size: (MAX_SHADOWS * PACKED_SHADOW_BYTES) as u64,
@@ -112,7 +85,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -121,7 +94,7 @@ where
             },
             ResourceBinding {
                 binding: 3,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.path_rasterization_vertex_buffer,
                     offset: 0,
                     size: (MAX_PATH_VERTICES * PACKED_PATH_RASTERIZATION_VERTEX_BYTES) as u64,
@@ -136,7 +109,7 @@ where
         bindings: vec![
             ResourceBinding {
                 binding: 0,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.global_buffer,
                     offset: 0,
                     size: GLOBAL_UPLOAD_BYTES as u64,
@@ -145,7 +118,7 @@ where
             },
             ResourceBinding {
                 binding: 7,
-                resource: ResourceBindingResource::Buffer(BufferBinding {
+                resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.underline_buffer,
                     offset: 0,
                     size: (MAX_UNDERLINES * PACKED_UNDERLINE_BYTES) as u64,
@@ -155,21 +128,10 @@ where
             animation_value_binding(),
         ],
     })?;
-    let custom_mesh_3d_resource_set = create_custom_mesh_3d_resource_set(
-        device,
-        label,
-        layouts.custom_mesh_3d_resource_set_layout,
-        buffers.global_buffer,
-        buffers.custom_mesh_3d_parameters_buffer,
-        custom_mesh_3d_vertices_buffer,
-        custom_mesh_3d_vertex_capacity,
-    )?;
-
     Ok(FrameResourceSets {
         quad_resource_set,
         shadow_resource_set,
         path_rasterization_resource_set,
         underline_resource_set,
-        custom_mesh_3d_resource_set,
     })
 }

@@ -49,8 +49,15 @@ use windows::{
     core::*,
 };
 
+use super::{
+    frame_ready::FrameReadyRequestState,
+    platform::{QueuedScene, WindowsUserEvent},
+};
 use crate::diagnostics::performance_metrics::{
     record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
+    record_window_active_presentation_attempt,
+    record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
+    record_window_backend_ready_wake, record_window_native_vsync_wake,
     record_window_request_redraw,
 };
 use crate::platform::winit::{
@@ -62,7 +69,7 @@ use crate::platform::winit::{
 use crate::platform::{NovaRenderer, NovaRendererAtlas};
 use crate::*;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows, WindowExtWindows};
 use winit::raw_window_handle as rwh;
 use winit::raw_window_handle::HasWindowHandle as _;
@@ -788,6 +795,12 @@ impl WindowsRenderer {
         }
     }
 
+    fn arm_frame_ready_if_needed(&mut self, window: &WindowsWindow) {
+        match self {
+            Self::Nova(renderer) => window.arm_frame_ready_if_needed(renderer),
+        }
+    }
+
     pub fn draw(&mut self, packet: PresentationPacket) -> Result<bool> {
         match self {
             Self::Nova(renderer) => renderer.draw(packet),
@@ -822,6 +835,8 @@ impl WindowsRenderer {
 
     fn present_active_frame(
         &mut self,
+        window: &WindowsWindow,
+        window_id: u64,
         now: Instant,
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
@@ -833,9 +848,15 @@ impl WindowsRenderer {
                     return Ok(None);
                 }
                 if !renderer.can_present_without_wait()? {
+                    record_window_active_presentation_preflight_not_ready(window_id);
+                    window.arm_frame_ready_if_needed(renderer);
                     return Ok(None);
                 }
-                renderer.present_active_frame(now, timing)
+                let result = renderer.present_active_frame(now, timing);
+                if result.as_ref().is_ok_and(Option::is_some) {
+                    window.invalidate_frame_ready_scene();
+                }
+                result
             }
         }
     }
@@ -1073,12 +1094,9 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) renderer_resize_retry_pending: Cell<bool>,
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
-    pending_scene: RefCell<Option<PendingWindowsScene>>,
-}
-
-struct PendingWindowsScene {
-    packet: PresentationPacket,
-    framebuffer_only: bool,
+    pending_scene: RefCell<Option<QueuedScene>>,
+    frame_ready_request: Cell<FrameReadyRequestState>,
+    event_loop_proxy: EventLoopProxy<WindowsUserEvent>,
 }
 
 fn defer_scene_until_native_frame(
@@ -1091,7 +1109,7 @@ fn defer_scene_until_native_frame(
         if let Some(previous) = pending.take() {
             packet.merge_pending_damage_from(&previous.packet);
         }
-        *pending = Some(PendingWindowsScene {
+        *pending = Some(QueuedScene {
             packet,
             framebuffer_only,
         });
@@ -1177,14 +1195,96 @@ impl WindowsWindow {
         }
     }
 
+    pub(crate) fn invalidate_frame_ready_scene(&self) {
+        let mut request = self.0.frame_ready_request.get();
+        request.invalidate_scene();
+        self.0.frame_ready_request.set(request);
+    }
+
+    pub(crate) fn invalidate_frame_ready_swapchain(&self) {
+        let mut request = self.0.frame_ready_request.get();
+        request.invalidate_swapchain();
+        self.0.frame_ready_request.set(request);
+    }
+
+    fn arm_frame_ready_if_needed(&self, renderer: &mut NovaRenderer) {
+        let mut request = self.0.frame_ready_request.get();
+        let Some(generation) = request.begin_registration() else {
+            return;
+        };
+        self.0.frame_ready_request.set(request);
+
+        let event_loop_proxy = self.0.event_loop_proxy.clone();
+        let window_id = self.window().id();
+        let callback = Box::new(move || {
+            let enqueued_at = Instant::now();
+            if event_loop_proxy
+                .send_event(WindowsUserEvent::BackendFrameReady {
+                    window_id,
+                    generation,
+                    enqueued_at,
+                })
+                .is_err()
+            {
+                log::trace!("discarding backend-ready wake after the Windows event loop closed");
+            }
+        });
+
+        match renderer.arm_swapchain_frame_ready(callback) {
+            Ok(true) => {}
+            Ok(false) => {
+                request.mark_unsupported(generation);
+                self.0.frame_ready_request.set(request);
+            }
+            Err(error) => {
+                request.reject_registration(generation);
+                self.0.frame_ready_request.set(request);
+                log::debug!("failed to arm Windows backend-ready wake: {error:#}");
+            }
+        }
+    }
+
+    pub(crate) fn dispatch_pending_update_from_backend_ready(
+        &self,
+        generation: u64,
+        enqueued_at: Instant,
+    ) {
+        let mut request = self.0.frame_ready_request.get();
+        if !request.consume_if_current(generation) {
+            return;
+        }
+        self.0.frame_ready_request.set(request);
+
+        let event_received_at = Instant::now();
+        record_window_backend_ready_wake(
+            self.0.handle.window_id().data().as_ffi(),
+            enqueued_at,
+            event_received_at,
+        );
+        let has_pending_frame = self
+            .0
+            .state
+            .borrow()
+            .pending_frame_request
+            .get()
+            .requires_frame();
+        let has_retained_scene =
+            self.0.pending_scene.borrow().is_some() || self.has_active_presentation_animations();
+        if !has_pending_frame && has_retained_scene {
+            self.0
+                .queue_frame_request(PlatformFrameRequest::presentation());
+        }
+        self.dispatch_pending_update_with_vsync(None);
+    }
+
     pub(crate) fn new(
         event_loop: &ActiveEventLoop,
         handle: AnyWindowHandle,
         params: WindowParams,
         creation_info: WindowCreationInfo,
+        event_loop_proxy: EventLoopProxy<WindowsUserEvent>,
     ) -> Result<Self> {
         let WindowCreationInfo {
-            background_executor,
             executor,
             power_event,
             end_session_event,
@@ -1338,28 +1438,24 @@ impl WindowsWindow {
             fallback_corner_radius,
             winit_window: cell,
             pending_scene: RefCell::new(None),
+            frame_ready_request: Cell::new(FrameReadyRequestState::default()),
+            event_loop_proxy,
         }));
         if let Some(hwnd) = hwnd {
             register_native_window(hwnd, &window);
         }
-        window.start_renderer_initialization(background_executor, renderer_initialization);
+        window.start_renderer_initialization(renderer_initialization);
         Ok(window)
     }
 
-    fn start_renderer_initialization(
-        &self,
-        background_executor: BackgroundExecutor,
-        initialization: WindowsRendererInitialization,
-    ) {
+    fn start_renderer_initialization(&self, initialization: WindowsRendererInitialization) {
         let (sender, receiver) = oneshot::channel();
-        background_executor
-            .spawn(async move {
-                let renderer = WindowsRenderer::new(initialization).map(InitializedWindowsRenderer);
-                if sender.send(renderer).is_err() {
-                    log::debug!("Windows renderer initialization receiver was dropped");
-                }
-            })
-            .detach();
+        super::renderer_init::spawn(move || {
+            let renderer = WindowsRenderer::new(initialization).map(InitializedWindowsRenderer);
+            if sender.send(renderer).is_err() {
+                log::debug!("Windows renderer initialization receiver was dropped");
+            }
+        });
 
         let weak_window = Rc::downgrade(&self.0);
         self.0
@@ -1444,6 +1540,7 @@ impl WindowsWindow {
     }
 
     pub(crate) fn queue_resize(&self, resize: PendingWindowsResize) {
+        self.invalidate_frame_ready_swapchain();
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
@@ -1518,6 +1615,12 @@ impl WindowsWindow {
         timing: super::vsync::VSyncEventTiming,
         event_received_at: Instant,
     ) {
+        record_window_native_vsync_wake(
+            self.0.handle.window_id().data().as_ffi(),
+            timing.reported_refresh_period,
+            timing.reported_composition_period,
+            event_received_at,
+        );
         self.dispatch_pending_update_with_vsync(Some((timing, event_received_at)));
     }
 
@@ -1535,27 +1638,40 @@ impl WindowsWindow {
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
             let had_active_presentation = self.has_active_presentation_animations();
-            let presented = if had_active_presentation && !options.needs_ui_commit() {
+            // UI commits and retained presentation are separate request domains. Continue sampling
+            // an already committed scene even when this wakeup also asks the UI owner to commit.
+            let presented = if had_active_presentation {
+                let window_id = self.0.handle.window_id().data().as_ffi();
+                record_window_active_presentation_attempt(window_id);
                 let frame_started_at = Instant::now();
-                let presentation_timing = vsync_timing.map(|(timing, event_received_at)| {
-                    crate::platform::frame::ActivePresentationTiming {
-                        frame_pacing_wait: timing.pacing_wait,
-                        vsync_event_queue_delay: event_received_at
-                            .saturating_duration_since(timing.enqueued_at),
-                        window_dispatch_delay: frame_started_at
-                            .saturating_duration_since(event_received_at),
-                        frame_started_at,
-                        renderer_scene_prepare: Duration::ZERO,
-                        submission_prepare: Duration::ZERO,
-                        retained_resource_prepare: Duration::ZERO,
-                        frame_prepare_upload: Duration::ZERO,
-                        draw_step_prepare: Duration::ZERO,
-                        buffer_upload: Duration::ZERO,
-                        atlas_upload: Duration::ZERO,
-                        offscreen_render: Duration::ZERO,
-                        backend_present: Duration::ZERO,
-                        renderer_post_present: Duration::ZERO,
-                    }
+                // Ready/redraw wakes also need renderer/backend timings. Their
+                // VSync-specific durations are zero, not an absent timing sample.
+                let presentation_timing = Some(crate::platform::frame::ActivePresentationTiming {
+                    frame_pacing_wait: vsync_timing
+                        .map_or(Duration::ZERO, |(timing, _)| timing.pacing_wait),
+                    vsync_event_queue_delay: vsync_timing.map_or(
+                        Duration::ZERO,
+                        |(timing, event_received_at)| {
+                            event_received_at.saturating_duration_since(timing.enqueued_at)
+                        },
+                    ),
+                    window_dispatch_delay: vsync_timing.map_or(
+                        Duration::ZERO,
+                        |(_, event_received_at)| {
+                            frame_started_at.saturating_duration_since(event_received_at)
+                        },
+                    ),
+                    frame_started_at,
+                    renderer_scene_prepare: Duration::ZERO,
+                    submission_prepare: Duration::ZERO,
+                    retained_resource_prepare: Duration::ZERO,
+                    frame_prepare_upload: Duration::ZERO,
+                    draw_step_prepare: Duration::ZERO,
+                    buffer_upload: Duration::ZERO,
+                    atlas_upload: Duration::ZERO,
+                    offscreen_render: Duration::ZERO,
+                    backend_present: Duration::ZERO,
+                    renderer_post_present: Duration::ZERO,
                 });
                 match PlatformWindow::present_active_frame(
                     self,
@@ -1582,9 +1698,9 @@ impl WindowsWindow {
             };
             if had_active_presentation
                 && !presented
-                && !options.needs_ui_commit()
                 && matches!(self.current_visibility(), WindowVisibility::Visible)
             {
+                record_window_active_presentation_retry(self.0.handle.window_id().data().as_ffi());
                 // A saturated DXGI frame-latency queue is transient. Retry on the native
                 // cadence without waiting for a UI commit to unblock the compositor.
                 self.request_frame(PlatformFrameRequest::presentation());
@@ -2024,7 +2140,8 @@ impl PlatformWindow for WindowsWindow {
 
         // Release the pending slot before submission can re-enter its state queries.
         let pending_scene = self.0.pending_scene.borrow_mut().take();
-        if let Some(scene) = pending_scene {
+        if let Some(mut scene) = pending_scene {
+            scene.prepare_for_native_frame(now);
             let result = if scene.framebuffer_only {
                 PlatformWindow::present_framebuffer_only(self, scene.packet)
             } else {
@@ -2045,7 +2162,7 @@ impl PlatformWindow for WindowsWindow {
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return Ok(None);
         };
-        renderer.present_active_frame(now, timing)
+        renderer.present_active_frame(self, self.0.handle.window_id().data().as_ffi(), now, timing)
     }
 
     fn has_active_presentation_animations(&self) -> bool {
@@ -2134,7 +2251,10 @@ impl PlatformWindow for WindowsWindow {
                         completed_animations,
                     )
                 }
-                Ok(false) => (None, false, smallvec::SmallVec::new()),
+                Ok(false) => {
+                    renderer.arm_frame_ready_if_needed(self);
+                    (None, false, smallvec::SmallVec::new())
+                }
                 Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
@@ -2146,6 +2266,7 @@ impl PlatformWindow for WindowsWindow {
         };
         match draw_result {
             Ok(true) => {
+                self.invalidate_frame_ready_scene();
                 self.mark_first_frame_presented();
                 for completion in completed_animations {
                     self.invoke_presentation_animation_completed(completion);
@@ -2204,7 +2325,10 @@ impl PlatformWindow for WindowsWindow {
                         completed_animations,
                     )
                 }
-                Ok(false) => (None, false, smallvec::SmallVec::new()),
+                Ok(false) => {
+                    renderer.arm_frame_ready_if_needed(self);
+                    (None, false, smallvec::SmallVec::new())
+                }
                 Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
             }
         };
@@ -2216,6 +2340,7 @@ impl PlatformWindow for WindowsWindow {
         };
         match present_result {
             Ok(true) => {
+                self.invalidate_frame_ready_scene();
                 self.mark_first_frame_presented();
                 for completion in completed_animations {
                     self.invoke_presentation_animation_completed(completion);

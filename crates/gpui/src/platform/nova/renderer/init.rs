@@ -139,33 +139,64 @@ impl NovaRenderer {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
                 let shader_binaries = cached_nova_dx12_shader_binaries()?;
-                let mut device = Dx12Device::new(&DeviceDescriptor {
-                    application_name: "gpui nova dx12".to_string(),
-                    adapter_name: renderer_options.adapter_name.clone(),
-                    power_preference: nova_power_preference(renderer_options),
-                })
-                .context("creating nova DX12 device")?;
+                let backend = shared_backend(
+                    DeviceKey {
+                        backend: RendererBackend::NovaDx12,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    || {
+                        Ok(NovaBackend::Dx12(
+                            Dx12Device::new(&DeviceDescriptor {
+                                application_name: "gpui nova dx12".to_string(),
+                                adapter_name: renderer_options.adapter_name.clone(),
+                                power_preference: nova_power_preference(renderer_options),
+                            })
+                            .context("creating nova DX12 device")?,
+                        ))
+                    },
+                )?;
+                let mut backend_guard = lock_backend(&backend);
+                let device = match &mut *backend_guard {
+                    NovaBackend::Dx12(device) => device,
+                    _ => anyhow::bail!("shared nova backend is not a DX12 device"),
+                };
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova DX12 surface")?;
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova DX12 swapchain")?;
-                let resources = create_renderer_resources(
-                    &mut device,
-                    surface_config,
-                    "gpui nova dx12",
-                    shader_binaries,
-                )
-                .context("creating GPUI nova DX12 render resources")?;
+                let core = shared_renderer_core(
+                    DeviceKey {
+                        backend: RendererBackend::NovaDx12,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    surface_config.format,
+                    || {
+                        create_renderer_core(
+                            device,
+                            surface_config,
+                            "gpui nova dx12",
+                            shader_binaries,
+                        )
+                    },
+                )?;
+                let resources =
+                    create_renderer_resources(device, surface_config, "gpui nova dx12", &core)
+                        .context("creating GPUI nova DX12 render resources")?;
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
                 let frame_resources = resources.frame_resources;
                 let current_frame_resources = frame_resources
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
+                let backend_info = backend_guard.info();
+                drop(backend_guard);
                 Ok(Self {
-                    backend: NovaBackend::Dx12(device),
+                    backend,
+                    backend_info,
                     surface,
                     swapchain,
                     surface_config,
@@ -194,11 +225,6 @@ impl NovaRenderer {
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: current_frame_resources
-                        .buffers
-                        .custom_mesh_3d_parameters_buffer,
-                    custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
-                    custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
@@ -216,21 +242,6 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: current_frame_resources
-                        .resource_sets
-                        .custom_mesh_3d_resource_set,
-                    custom_mesh_3d_resource_set_layout: resources
-                        .custom_mesh_3d_resource_set_layout,
-                    custom_mesh_3d_buffers_ready: false,
-                    custom_mesh_3d_mesh_cache: FxHashMap::default(),
-                    custom_mesh_3d_vertex_cursor: 0,
-                    custom_mesh_3d_index_cursor: 0,
-                    custom_mesh_3d_uploaded_bytes_this_frame: 0,
-                    custom_mesh_3d_vertex_upload_scratch: Vec::new(),
-                    custom_mesh_3d_index_upload_scratch: Vec::new(),
-                    custom_mesh_3d_pipelines: FxHashMap::default(),
-                    custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
                     backdrop_blur_cache_valid: false,
                     backdrop_blur_cache_atlas_generation: 0,
@@ -239,6 +250,7 @@ impl NovaRenderer {
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     frame_upload: FrameUpload::default(),
+                    renderer_extension_renderers: FxHashMap::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,
@@ -265,33 +277,64 @@ impl NovaRenderer {
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             RendererBackend::NovaMetal => {
                 let shader_binaries = cached_nova_metal_shader_binaries()?;
-                let mut device = MetalDevice::new(&DeviceDescriptor {
-                    application_name: "gpui nova metal".to_string(),
-                    adapter_name: renderer_options.adapter_name.clone(),
-                    power_preference: nova_power_preference(renderer_options),
-                })
-                .context("creating nova Metal device")?;
+                let backend = shared_backend(
+                    DeviceKey {
+                        backend: RendererBackend::NovaMetal,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    || {
+                        Ok(NovaBackend::Metal(
+                            MetalDevice::new(&DeviceDescriptor {
+                                application_name: "gpui nova metal".to_string(),
+                                adapter_name: renderer_options.adapter_name.clone(),
+                                power_preference: nova_power_preference(renderer_options),
+                            })
+                            .context("creating nova Metal device")?,
+                        ))
+                    },
+                )?;
+                let mut backend_guard = lock_backend(&backend);
+                let device = match &mut *backend_guard {
+                    NovaBackend::Metal(device) => device,
+                    _ => anyhow::bail!("shared nova backend is not a Metal device"),
+                };
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova Metal surface")?;
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova Metal swapchain")?;
-                let resources = create_renderer_resources(
-                    &mut device,
-                    surface_config,
-                    "gpui nova metal",
-                    shader_binaries,
-                )
-                .context("creating GPUI nova Metal render resources")?;
+                let core = shared_renderer_core(
+                    DeviceKey {
+                        backend: RendererBackend::NovaMetal,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    surface_config.format,
+                    || {
+                        create_renderer_core(
+                            device,
+                            surface_config,
+                            "gpui nova metal",
+                            shader_binaries,
+                        )
+                    },
+                )?;
+                let resources =
+                    create_renderer_resources(device, surface_config, "gpui nova metal", &core)
+                        .context("creating GPUI nova Metal render resources")?;
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
                 let frame_resources = resources.frame_resources;
                 let current_frame_resources = frame_resources
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
+                let backend_info = backend_guard.info();
+                drop(backend_guard);
                 Ok(Self {
-                    backend: NovaBackend::Metal(device),
+                    backend,
+                    backend_info,
                     surface,
                     swapchain,
                     surface_config,
@@ -320,11 +363,6 @@ impl NovaRenderer {
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: current_frame_resources
-                        .buffers
-                        .custom_mesh_3d_parameters_buffer,
-                    custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
-                    custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
@@ -342,21 +380,6 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: current_frame_resources
-                        .resource_sets
-                        .custom_mesh_3d_resource_set,
-                    custom_mesh_3d_resource_set_layout: resources
-                        .custom_mesh_3d_resource_set_layout,
-                    custom_mesh_3d_buffers_ready: false,
-                    custom_mesh_3d_mesh_cache: FxHashMap::default(),
-                    custom_mesh_3d_vertex_cursor: 0,
-                    custom_mesh_3d_index_cursor: 0,
-                    custom_mesh_3d_uploaded_bytes_this_frame: 0,
-                    custom_mesh_3d_vertex_upload_scratch: Vec::new(),
-                    custom_mesh_3d_index_upload_scratch: Vec::new(),
-                    custom_mesh_3d_pipelines: FxHashMap::default(),
-                    custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
                     backdrop_blur_cache_valid: false,
                     backdrop_blur_cache_atlas_generation: 0,
@@ -365,6 +388,7 @@ impl NovaRenderer {
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     frame_upload: FrameUpload::default(),
+                    renderer_extension_renderers: FxHashMap::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,
@@ -395,12 +419,28 @@ impl NovaRenderer {
             RendererBackend::NovaVulkan => {
                 let shader_binaries = cached_nova_vulkan_shader_binaries()?;
                 let device_started_at = Instant::now();
-                let mut device = VulkanDevice::new(&DeviceDescriptor {
-                    application_name: "gpui nova vulkan".to_string(),
-                    adapter_name: renderer_options.adapter_name.clone(),
-                    power_preference: nova_power_preference(renderer_options),
-                })
-                .context("creating nova Vulkan device")?;
+                let backend = shared_backend(
+                    DeviceKey {
+                        backend: RendererBackend::NovaVulkan,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    || {
+                        Ok(NovaBackend::Vulkan(
+                            VulkanDevice::new(&DeviceDescriptor {
+                                application_name: "gpui nova vulkan".to_string(),
+                                adapter_name: renderer_options.adapter_name.clone(),
+                                power_preference: nova_power_preference(renderer_options),
+                            })
+                            .context("creating nova Vulkan device")?,
+                        ))
+                    },
+                )?;
+                let mut backend_guard = lock_backend(&backend);
+                let device = match &mut *backend_guard {
+                    NovaBackend::Vulkan(device) => device,
+                    _ => anyhow::bail!("shared nova backend is not a Vulkan device"),
+                };
                 let device_elapsed = device_started_at.elapsed();
                 let surface_started_at = Instant::now();
                 let surface = device
@@ -420,13 +460,25 @@ impl NovaRenderer {
                     .context("creating nova Vulkan swapchain")?;
                 let surface_elapsed = surface_started_at.elapsed();
                 let resources_started_at = Instant::now();
-                let resources = create_renderer_resources(
-                    &mut device,
-                    surface_config,
-                    "gpui nova vulkan",
-                    shader_binaries,
-                )
-                .context("creating GPUI nova Vulkan render resources")?;
+                let core = shared_renderer_core(
+                    DeviceKey {
+                        backend: RendererBackend::NovaVulkan,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                    },
+                    surface_config.format,
+                    || {
+                        create_renderer_core(
+                            device,
+                            surface_config,
+                            "gpui nova vulkan",
+                            shader_binaries,
+                        )
+                    },
+                )?;
+                let resources =
+                    create_renderer_resources(device, surface_config, "gpui nova vulkan", &core)
+                        .context("creating GPUI nova Vulkan render resources")?;
                 log::info!(
                     "GPUI nova-gfx Vulkan startup: total_ms={} device_ms={} surface_swapchain_ms={} resources_ms={}",
                     metrics_started_at.elapsed().as_millis(),
@@ -440,8 +492,11 @@ impl NovaRenderer {
                     .first()
                     .copied()
                     .context("nova renderer resources should include at least one frame slot")?;
+                let backend_info = backend_guard.info();
+                drop(backend_guard);
                 Ok(Self {
-                    backend: NovaBackend::Vulkan(device),
+                    backend,
+                    backend_info,
                     surface,
                     swapchain,
                     surface_config,
@@ -470,11 +525,6 @@ impl NovaRenderer {
                         .backdrop_blur_pass_buffer,
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    custom_mesh_3d_parameters_buffer: current_frame_resources
-                        .buffers
-                        .custom_mesh_3d_parameters_buffer,
-                    custom_mesh_3d_vertices_buffer: resources.custom_mesh_3d_vertices_buffer,
-                    custom_mesh_3d_indices_buffer: resources.custom_mesh_3d_indices_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
@@ -492,21 +542,6 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    custom_mesh_3d_pipeline_layout: resources.custom_mesh_3d_pipeline_layout,
-                    custom_mesh_3d_resource_set: current_frame_resources
-                        .resource_sets
-                        .custom_mesh_3d_resource_set,
-                    custom_mesh_3d_resource_set_layout: resources
-                        .custom_mesh_3d_resource_set_layout,
-                    custom_mesh_3d_buffers_ready: false,
-                    custom_mesh_3d_mesh_cache: FxHashMap::default(),
-                    custom_mesh_3d_vertex_cursor: 0,
-                    custom_mesh_3d_index_cursor: 0,
-                    custom_mesh_3d_uploaded_bytes_this_frame: 0,
-                    custom_mesh_3d_vertex_upload_scratch: Vec::new(),
-                    custom_mesh_3d_index_upload_scratch: Vec::new(),
-                    custom_mesh_3d_pipelines: FxHashMap::default(),
-                    custom_mesh_3d_pipeline_failures: FxHashSet::default(),
                     backdrop_blur_targets: resources.backdrop_blur_targets,
                     backdrop_blur_cache_valid: false,
                     backdrop_blur_cache_atlas_generation: 0,
@@ -515,6 +550,7 @@ impl NovaRenderer {
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     frame_upload: FrameUpload::default(),
+                    renderer_extension_renderers: FxHashMap::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,

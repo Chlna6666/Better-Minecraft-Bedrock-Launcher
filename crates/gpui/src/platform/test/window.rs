@@ -42,6 +42,10 @@ pub(crate) struct TestWindowState {
     present_framebuffer_only_count: Rc<Cell<usize>>,
     frame_result: PlatformFrameResult,
     draw_delay: Duration,
+    #[cfg(test)]
+    owns_scene_animations: bool,
+    #[cfg(test)]
+    scene_animation_query_count: usize,
     input_handler: Option<PlatformInputHandler>,
     is_maximized: bool,
     is_fullscreen: bool,
@@ -105,6 +109,10 @@ impl TestWindow {
             present_framebuffer_only_count: Rc::new(Cell::new(0)),
             frame_result: PlatformFrameResult::Submitted,
             draw_delay: Duration::ZERO,
+            #[cfg(test)]
+            owns_scene_animations: false,
+            #[cfg(test)]
+            scene_animation_query_count: 0,
             input_handler: None,
             is_maximized: false,
             is_fullscreen: false,
@@ -179,6 +187,16 @@ impl TestWindow {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_scene_animation_owner(&self, owns_scene_animations: bool) {
+        self.0.lock().owns_scene_animations = owns_scene_animations;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scene_animation_query_count(&self) -> usize {
+        self.0.lock().scene_animation_query_count
+    }
+
+    #[cfg(test)]
     pub(crate) fn last_requested_frame(&self) -> Option<PlatformFrameRequest> {
         self.0.lock().last_requested_frame.get()
     }
@@ -245,6 +263,21 @@ impl TestWindow {
 }
 
 impl PlatformWindow for TestWindow {
+    #[cfg(test)]
+    fn has_active_presentation_animations(&self) -> bool {
+        self.0.lock().scene_animation_query_count += 1;
+        false
+    }
+
+    #[cfg(test)]
+    fn owns_scene_animations(&self) -> bool {
+        if self.0.lock().owns_scene_animations {
+            true
+        } else {
+            self.has_active_presentation_animations()
+        }
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.lock().bounds
     }

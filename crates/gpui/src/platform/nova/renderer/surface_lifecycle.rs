@@ -2,9 +2,8 @@ use super::*;
 
 impl NovaRenderer {
     pub(super) fn reset_live_resize_stretch(&mut self) {
-        if let Err(error) = self
-            .backend
-            .set_swapchain_content_stretch(self.swapchain, None)
+        if let Err(error) =
+            lock_backend(&self.backend).set_swapchain_content_stretch(self.swapchain, None)
         {
             log::warn!("failed to reset nova-gfx live-resize stretch: {error:#}");
         }
@@ -43,7 +42,7 @@ impl NovaRenderer {
         let (next_path_mask_target, next_backdrop_blur_targets): (
             PathMaskTarget,
             Option<BackdropBlurTargets>,
-        ) = match &mut self.backend {
+        ) = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 let next_path_mask_target =
@@ -217,9 +216,8 @@ impl NovaRenderer {
             width as f32 / self.current_size.width.max(1) as f32,
             height as f32 / self.current_size.height.max(1) as f32,
         ];
-        if let Err(error) = self
-            .backend
-            .set_swapchain_content_stretch(self.swapchain, Some(scale))
+        if let Err(error) =
+            lock_backend(&self.backend).set_swapchain_content_stretch(self.swapchain, Some(scale))
         {
             log::warn!("failed to stretch nova-gfx surface during live resize: {error:#}");
         }
@@ -273,7 +271,7 @@ impl NovaRenderer {
             Err(error) => {
                 log::warn!(
                     "failed to resolve nova-gfx surface alpha mode: backend={} error={error:#}",
-                    self.backend.label(),
+                    self.backend_info.label(),
                 );
                 return;
             }
@@ -288,7 +286,7 @@ impl NovaRenderer {
                     "swapchain=index:{} generation:{} old_swapchain={:?} old_output={:?} ",
                     "new_swapchain={:?} new_output={:?} error={:#}"
                 ),
-                self.backend.label(),
+                self.backend_info.label(),
                 self.swapchain.index(),
                 self.swapchain.generation(),
                 previous_alpha.swapchain_mode,
@@ -316,7 +314,7 @@ impl NovaRenderer {
         is_transparent: bool,
     ) -> Result<SurfaceAlphaState> {
         let requested = Self::alpha_state_for_window_transparency(is_transparent);
-        match &self.backend {
+        match &*lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(_) => Ok(requested),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -349,7 +347,7 @@ impl NovaRenderer {
                     "backend={} swapchain=index:{} generation:{} swapchain_alpha={:?} ",
                     "old_output={:?} new_output={:?}"
                 ),
-                self.backend.label(),
+                self.backend_info.label(),
                 self.swapchain.index(),
                 self.swapchain.generation(),
                 alpha.swapchain_mode,
@@ -375,7 +373,7 @@ impl NovaRenderer {
         let (next_path_mask_target, next_backdrop_blur_targets): (
             PathMaskTarget,
             Option<BackdropBlurTargets>,
-        ) = match &mut self.backend {
+        ) = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 self.swapchain =

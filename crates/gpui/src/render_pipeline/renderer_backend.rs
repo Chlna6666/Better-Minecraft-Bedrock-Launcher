@@ -6,7 +6,7 @@ pub const MAX_WINDOW_COMPOSITION_FPS: f32 = 240.0;
 const MIN_WINDOW_COMPOSITION_FPS: f32 = 1.0;
 
 /// Runtime renderer backend preference for GPUI.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum RendererBackend {
     /// Use GPUI's platform default renderer.
     #[default]
@@ -39,7 +39,7 @@ pub struct RendererCapabilities {
 }
 
 /// GPU adapter power preference for renderers that can choose an adapter.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub enum GpuPowerPreference {
     /// Prefer low idle power and let the backend pick the most efficient adapter.
     #[default]

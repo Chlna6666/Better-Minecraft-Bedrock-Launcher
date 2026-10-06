@@ -19,7 +19,7 @@ impl FrameUpload {
         let mut refreshed_count = 0usize;
         let mut topology_matches = self.animation_values.len()
             == expected_count.saturating_mul(PACKED_ANIMATION_VALUE_BYTES);
-        self.refresh_retained_animation_values_in_place(
+        self.refresh_values(
             scene,
             presentation_animation_values,
             &mut refreshed_count,
@@ -35,15 +35,9 @@ impl FrameUpload {
             summary.animation_value_count = refreshed_count as u32;
         }
 
-        // Custom-mesh animation is a separate renderer path. Avoid touching its sidecar on the
-        // normal 2D retained-animation path; a full encode already rebuilt it when mesh topology
-        // changed.
-        if !self.custom_mesh_3d_animation_ids.is_empty() {
-            self.rebuild_custom_mesh_3d_animations();
-        }
     }
 
-    fn refresh_retained_animation_values_in_place(
+    fn refresh_values(
         &mut self,
         scene: &crate::Scene,
         presentation_animation_values: &[crate::SceneAnimationValue],
@@ -97,12 +91,7 @@ impl FrameUpload {
                 continue;
             };
             for blur in &scene.blurs[range.clone()] {
-                self.refresh_retained_animation_values_in_place(
-                    &blur.content,
-                    &[],
-                    refreshed_count,
-                    topology_matches,
-                );
+                self.refresh_values(&blur.content, &[], refreshed_count, topology_matches);
             }
         }
     }

@@ -1,12 +1,11 @@
 use crate::assets::AnimatedFrame;
 use crate::platform::{
     AtlasPixelEncodingBenchmarkCore, AtlasUploadBenchmarkCore, FrameUploadBenchmarkCore,
-    MeshPackingBenchmarkCore, PathPackingBenchmarkCore,
+    PathPackingBenchmarkCore,
 };
 use crate::{
     AnimatedImageConfig, Bounds, ContentMask, EncodedImage, PaintBackdropBlur, Path, Pixels, Quad,
-    RenderImage, ScaledPixels, Scene, acquire_bitmap_buffer_capacity, configure_global_bitmap_pool,
-    global_bitmap_pool, point, px, release_bitmap_buffer, size, trim_global_bitmap_pool_to,
+    RenderImage, ScaledPixels, Scene, point, px, size,
 };
 #[cfg(feature = "test-support")]
 use crate::{AvailableSpace, LayoutId, Style, TaffyLayoutEngine, VisualTestContext};
@@ -16,30 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Controls the global bitmap pool for isolated Criterion measurements.
-pub struct BitmapPoolBenchmark;
-
-impl BitmapPoolBenchmark {
-    /// Applies benchmark-local pool limits and clears retained buffers.
-    pub fn new(byte_limit: usize, _max_buffer_bytes: usize) -> Self {
-        configure_global_bitmap_pool(byte_limit);
-        trim_global_bitmap_pool_to(0);
-        Self
-    }
-
-    /// Acquires and releases one buffer for every requested capacity.
-    pub fn cycle(&mut self, capacities: &[usize]) -> (usize, usize) {
-        let buffers = capacities
-            .iter()
-            .map(|capacity| acquire_bitmap_buffer_capacity(*capacity))
-            .collect::<Vec<_>>();
-        for buffer in buffers {
-            release_bitmap_buffer(buffer);
-        }
-        let snapshot = global_bitmap_pool().snapshot();
-        (snapshot.retained_bytes, snapshot.free_buffers)
-    }
-}
+mod memory;
+pub use memory::{BitmapPoolBenchmark, BitmapPoolBenchmarkSample};
 
 /// Owns retained layout state for Criterion measurements.
 #[cfg(feature = "test-support")]
@@ -137,11 +114,6 @@ pub struct PathPackingBenchmark {
     core: PathPackingBenchmarkCore,
 }
 
-/// Owns a CPU-only mesh conversion workload for packed vertex and index buffers.
-pub struct MeshPackingBenchmark {
-    core: MeshPackingBenchmarkCore,
-}
-
 fn benchmark_path(requested_vertex_count: usize) -> Path<Pixels> {
     let mut path = Path::new(point(px(0.0), px(0.0)));
     let triangle_count = requested_vertex_count.saturating_add(2) / 3;
@@ -217,30 +189,6 @@ impl PathPackingBenchmark {
     /// Clears the path cache before encoding, forcing the cache-miss packing path.
     pub fn encode_cache_miss(&mut self) -> usize {
         self.core.encode_cache_miss()
-    }
-}
-
-impl MeshPackingBenchmark {
-    /// Creates a mesh conversion workload with either 16-bit or 32-bit output indices.
-    pub fn new(vertex_count: usize, uses_u16: bool) -> Self {
-        Self {
-            core: MeshPackingBenchmarkCore::new(vertex_count, uses_u16),
-        }
-    }
-
-    /// Rebuilds the packed vertex and index buffers and returns their byte lengths.
-    pub fn pack(&mut self) -> (usize, usize) {
-        self.core.pack()
-    }
-
-    /// Rebuilds the same mesh using the scalar index-packing baseline.
-    pub fn pack_scalar(&mut self) -> (usize, usize) {
-        self.core.pack_scalar()
-    }
-
-    /// Rebuilds the same mesh using the runtime-selected Fearless SIMD index packer.
-    pub fn pack_simd(&mut self) -> (usize, usize) {
-        self.core.pack_simd()
     }
 }
 
