@@ -356,12 +356,24 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
         unreachable!("skin preview should use orthographic projection")
     };
     let Projection::Orthographic {
+        height: rotated_height,
+        ..
+    } = rotated.camera().projection
+    else {
+        unreachable!("skin preview should use orthographic projection")
+    };
+    let Projection::Orthographic {
         height: zoomed_height,
         ..
     } = zoomed.camera().projection
     else {
         unreachable!("skin preview should use orthographic projection")
     };
+    assert!(
+        (rotated_height - base_height).abs() < 1.0e-6,
+        "orbiting must not change skin preview scale",
+    );
+    assert_eq!(base.camera().target, rotated.camera().target);
     assert!(zoomed_height < base_height);
     assert!((base.camera().target.y - 2.0 * SKIN_PREVIEW_SCALE).abs() < 1.0e-4);
     let view_projection = base.camera().view_projection(1.0).unwrap();
@@ -369,6 +381,29 @@ fn skin_view_changes_reuse_scene_and_renderer_identity() -> Result<(), String> {
     let back = view_projection.transform4([0.0, 0.5, -0.5, 1.0]);
     assert!((front[1] / front[3] - back[1] / back[3]).abs() < 1.0e-5);
     assert_eq!(meshes.scene_view.scene().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn orbit_pitch_keeps_rotation_invariant_preview_scale() -> Result<(), String> {
+    let texture = skin_texture_asset(&patterned_skin())?;
+    let preview = build_skin_player_meshes(texture, false, SkinLayerMode::Extruded)?;
+    let base = skin_preview_scene_view(&preview, 0.0, 0.0, 1.0, Duration::ZERO)?;
+    let upper = skin_preview_scene_view(&preview, 0.0, 0.45, 1.0, Duration::ZERO)?;
+    let lower = skin_preview_scene_view(&preview, 0.0, -0.75, 1.0, Duration::ZERO)?;
+    let diagonal = skin_preview_scene_view(&preview, 1.25, -0.55, 1.0, Duration::ZERO)?;
+
+    let height = |view: &Arc<SceneView>| match view.camera().projection {
+        Projection::Orthographic { height, .. } => height,
+        Projection::Perspective { .. } => panic!("skin preview must stay orthographic"),
+    };
+    let expected = height(&base);
+    for actual in [height(&upper), height(&lower), height(&diagonal)] {
+        assert!(
+            (actual - expected).abs() < 1.0e-6,
+            "yaw/pitch must not mutate orthographic preview height",
+        );
+    }
     Ok(())
 }
 

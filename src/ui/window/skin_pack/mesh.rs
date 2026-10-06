@@ -141,21 +141,12 @@ pub(super) fn skin_preview_scene_view(
     .matrix();
     let zoom = view_zoom.max(0.01);
     let camera = match meshes.bounds {
-        Some(bounds) => OrbitCamera::new(
-            Vec3::ZERO,
-            -view_yaw,
+        Some(bounds) => skin_preview_orbit_camera(
+            bounds.transformed(scene_transform),
+            view_yaw,
             view_pitch,
-            PREVIEW_CAMERA_DISTANCE,
-            Projection::Orthographic {
-                height: 1.0,
-                near: 0.1,
-                far: 100.0,
-            },
-        )
-        .and_then(|camera| camera.fit_bounds(bounds.transformed(scene_transform), 1.0, 1.1))
-        .and_then(|camera| camera.zoom(zoom.recip()))
-        .map_err(|error| error.to_string())?
-        .camera(),
+            zoom,
+        )?,
         None => Camera::orthographic(
             Vec3::new(0.0, 0.0, PREVIEW_CAMERA_DISTANCE),
             Vec3::ZERO,
@@ -172,6 +163,46 @@ pub(super) fn skin_preview_scene_view(
         .map_err(|error| error.to_string())?
         .with_animation_time(walk_time.min(meshes.walk_period));
     Ok(Arc::new(scene_view))
+}
+
+/// Builds a rotation-invariant orthographic orbit camera for skin previews.
+///
+/// Re-fitting an AABB after every yaw/pitch change changes the orthographic height because the
+/// projected AABB extents depend on camera direction. That turns a vertical orbit drag into an
+/// unintended zoom. A bounding sphere has the same projected radius at every orbit angle, so the
+/// view scale stays constant while still leaving enough room for any orientation.
+fn skin_preview_orbit_camera(
+    bounds: Aabb,
+    view_yaw: f32,
+    view_pitch: f32,
+    zoom: f32,
+) -> Result<Camera, String> {
+    let center = (bounds.min + bounds.max) * 0.5;
+    let radius = (bounds.max - bounds.min).length() * 0.5;
+    if !center.is_finite() || !radius.is_finite() || radius <= f32::EPSILON {
+        return Err("skin preview bounds are invalid".to_string());
+    }
+
+    let padding = 1.1;
+    let base_height = (radius * 2.0 * padding).max(f32::EPSILON);
+    let near = 0.1;
+    let distance = PREVIEW_CAMERA_DISTANCE.max(radius + near + 0.01);
+    let far = 100.0_f32.max(distance + radius + 1.0);
+
+    OrbitCamera::new(
+        center,
+        -view_yaw,
+        view_pitch,
+        distance,
+        Projection::Orthographic {
+            height: base_height,
+            near,
+            far,
+        },
+    )
+    .and_then(|camera| camera.zoom(zoom.recip()))
+    .map(OrbitCamera::camera)
+    .map_err(|error| error.to_string())
 }
 
 /// Uploads the skin atlas as an sRGB texture.
