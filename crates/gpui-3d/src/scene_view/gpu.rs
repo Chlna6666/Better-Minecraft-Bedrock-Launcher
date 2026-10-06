@@ -538,6 +538,7 @@ pub(super) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let light_count =
         u32::try_from(scene.lights.len()).context("GPUI 3D light count exceeds u32")?;
     for draw in &scene.draws {
+        let slot_start = bytes.len();
         write_vec4(&mut bytes, draw.material.base_color);
         write_vec4(&mut bytes, draw.material.emissive);
         write_f32(&mut bytes, draw.material.metallic);
@@ -565,10 +566,18 @@ pub(super) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
             texture_flags |= TEXTURE_FLAG_UV;
         }
         write_u32(&mut bytes, texture_flags);
-        bytes.resize(
-            bytes.len() + (DRAW_SLOT_STRIDE - DRAW_PARAMS_STRIDE as usize),
-            0,
-        );
+
+        let encoded_size = bytes.len() - slot_start;
+        if encoded_size > DRAW_PARAMS_STRIDE as usize {
+            return Err(anyhow!(
+                "GPUI 3D DrawParams encoding is {encoded_size} bytes but WGSL stride is {DRAW_PARAMS_STRIDE}"
+            )
+            .into());
+        }
+        let slot_end = slot_start
+            .checked_add(DRAW_SLOT_STRIDE)
+            .ok_or_else(|| anyhow!("GPUI 3D draw slot size overflow"))?;
+        bytes.resize(slot_end, 0);
     }
     if scene.draws.is_empty() {
         bytes.resize(DRAW_SLOT_STRIDE, 0);

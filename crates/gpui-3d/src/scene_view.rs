@@ -16,7 +16,10 @@ use std::time::Duration;
 
 pub(super) const SHADER: &str = include_str!("scene_view.wgsl");
 pub(super) const PACKED_VERTEX_STRIDE: u32 = 64;
-pub(super) const DRAW_PARAMS_STRIDE: u32 = 48;
+// WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
+// stride is 80 bytes. Keeping this smaller makes DX12/Vulkan expose only a prefix of the
+// record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
+pub(super) const DRAW_PARAMS_STRIDE: u32 = 80;
 pub(super) const DRAW_SLOT_STRIDE: usize = 512;
 pub(super) const FRAME_PARAMS_STRIDE: usize = 112;
 pub(super) const INSTANCE_STRIDE: u32 = 144;
@@ -663,6 +666,8 @@ mod tests {
         );
         let prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
         let bytes = encode_draws(&prepared).unwrap();
+        assert_eq!(bytes.len(), DRAW_SLOT_STRIDE);
+        assert_eq!(DRAW_PARAMS_STRIDE, 80);
         // DrawParams: base_color(0), emissive(16), metallic(32), roughness(36), alpha_cutoff(40),
         // normal_mapping_enabled(44), occlusion_strength(48), alpha_mode(52), light_count(56),
         // shading_model(60), texture_flags(64). The scene adds no lights.
@@ -683,6 +688,61 @@ mod tests {
         );
         assert_eq!(f32::from_ne_bytes(bytes[8..12].try_into().unwrap()), 1.0);
         assert_eq!(f32::from_ne_bytes(bytes[12..16].try_into().unwrap()), 1.0);
+    }
+
+    #[test]
+    fn packed_draws_keep_exact_fixed_slot_boundaries() {
+        let mesh = Arc::new(Mesh::cube());
+        let mut material = Material::new();
+        material.albedo_texture = Some(TextureAssetId(23));
+        material.shading_model = crate::ShadingModel::Unlit;
+        let material = Arc::new(material);
+        let mut scene = Scene::new();
+        for x in [-0.5, 0.5] {
+            scene
+                .insert(
+                    None,
+                    Node::new()
+                        .with_mesh(mesh.clone())
+                        .with_materials([material.clone()])
+                        .with_transform(crate::Transform {
+                            translation: Vec3::new(x, 0.0, 0.0),
+                            ..crate::Transform::IDENTITY
+                        }),
+                )
+                .unwrap();
+        }
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            1.0,
+            0.1,
+            10.0,
+        );
+        let prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
+        assert_eq!(prepared.draws.len(), 2);
+
+        let bytes = encode_draws(&prepared).unwrap();
+        assert_eq!(bytes.len(), DRAW_SLOT_STRIDE * 2);
+        for slot in [0, DRAW_SLOT_STRIDE] {
+            assert_eq!(
+                u32::from_ne_bytes(bytes[slot + 60..slot + 64].try_into().unwrap()),
+                1,
+                "shading model must stay inside its own draw slot",
+            );
+            assert_eq!(
+                u32::from_ne_bytes(bytes[slot + 64..slot + 68].try_into().unwrap()),
+                1 | 4,
+                "albedo/UV flags must stay inside their own draw slot",
+            );
+            assert!(
+                bytes[slot + 68..slot + DRAW_PARAMS_STRIDE as usize]
+                    .iter()
+                    .all(|byte| *byte == 0),
+                "WGSL struct tail padding must be zeroed",
+            );
+        }
     }
 
     #[test]
