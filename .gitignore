@@ -10,6 +10,7 @@ build.log
 /BMCBL.zip
 /vendor/gpui.zip
 /backdrop-blur-fix.patch
+/build/*.png
 
 # Local GDK CIK key material.
 /src/core/minecraft/gdk/Cik/
