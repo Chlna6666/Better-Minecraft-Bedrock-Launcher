@@ -177,11 +177,12 @@ fn vulkan_pipeline_cache_path(
 }
 
 fn read_pipeline_cache_data(path: &Path) -> Option<Vec<u8>> {
-    let metadata = fs::metadata(path).ok()?;
-    if metadata.len() == 0 || metadata.len() > MAX_PIPELINE_CACHE_BYTES {
+    let bytes = fs::read(path).ok()?;
+    let size = u64::try_from(bytes.len()).ok()?;
+    if bytes.is_empty() || size > MAX_PIPELINE_CACHE_BYTES {
         return None;
     }
-    fs::read(path).ok()
+    Some(bytes)
 }
 
 fn create_pipeline_cache(

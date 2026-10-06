@@ -1579,10 +1579,16 @@ mod platform {
                     ));
                 }
             };
+            let cache_key = shader_module_cache_key(
+                desc.binary.stage,
+                &desc.binary.entry_point,
+                bytecode.as_slice(),
+            );
             Ok(self.shader_modules.insert(Dx12ShaderModule {
                 stage: desc.binary.stage,
                 entry_point: desc.binary.entry_point.clone(),
                 bytecode,
+                cache_key,
             }))
         }
 
@@ -3920,6 +3926,24 @@ mod platform {
         }
     }
 
+    fn shader_module_cache_key(
+        stage: ShaderStage,
+        entry_point: &str,
+        bytecode: &[u8],
+    ) -> u64 {
+        let mut hash = FNV1A64_OFFSET;
+        extend_stable_hash(
+            &mut hash,
+            &[match stage {
+                ShaderStage::Vertex => 0,
+                ShaderStage::Fragment => 1,
+            }],
+        );
+        extend_stable_hash(&mut hash, entry_point.as_bytes());
+        extend_stable_hash(&mut hash, bytecode);
+        hash
+    }
+
     fn pipeline_cache_key(
         pipeline_layout_cache_key: u64,
         vertex_shader: &Dx12ShaderModule,
@@ -3931,10 +3955,8 @@ mod platform {
     ) -> u64 {
         let mut hash = FNV1A64_OFFSET;
         extend_stable_hash(&mut hash, &pipeline_layout_cache_key.to_le_bytes());
-        extend_stable_hash(&mut hash, vertex_shader.entry_point.as_bytes());
-        extend_stable_hash(&mut hash, vertex_shader.bytecode.as_slice());
-        extend_stable_hash(&mut hash, fragment_shader.entry_point.as_bytes());
-        extend_stable_hash(&mut hash, fragment_shader.bytecode.as_slice());
+        extend_stable_hash(&mut hash, &vertex_shader.cache_key.to_le_bytes());
+        extend_stable_hash(&mut hash, &fragment_shader.cache_key.to_le_bytes());
         extend_stable_hash(
             &mut hash,
             format!(
@@ -3946,11 +3968,11 @@ mod platform {
     }
 
     fn read_pipeline_cache_blob(path: &Path) -> Option<Vec<u8>> {
-        let metadata = fs::metadata(path).ok()?;
-        if metadata.len() == 0 || metadata.len() > MAX_PIPELINE_CACHE_BLOB_BYTES {
+        let bytes = fs::read(path).ok()?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_PIPELINE_CACHE_BLOB_BYTES {
             return None;
         }
-        fs::read(path).ok()
+        Some(bytes)
     }
 
     fn persist_pipeline_cache_blob(path: &Path, pipeline_state: &ID3D12PipelineState) {
@@ -6363,6 +6385,7 @@ mod platform {
         stage: ShaderStage,
         entry_point: String,
         bytecode: Dx12ShaderBytecode,
+        cache_key: u64,
     }
 
     #[derive(Clone, Copy)]

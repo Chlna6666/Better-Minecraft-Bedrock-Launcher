@@ -575,7 +575,9 @@ fn compile_hlsl_to_dxbc(
     entry_point: &str,
     stage: ShaderStage,
 ) -> Result<Option<Vec<u8>>, String> {
-    use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    use windows::Win32::Graphics::Direct3D::Fxc::{
+        D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile,
+    };
     use windows::core::PCSTR;
 
     let target = match stage {
@@ -596,7 +598,7 @@ fn compile_hlsl_to_dxbc(
             None,
             PCSTR(entry_point.as_ptr().cast()),
             PCSTR(target.as_ptr()),
-            0,
+            D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
             0,
             &raw mut bytecode,
             Some(&raw mut errors),

@@ -138,7 +138,6 @@ impl NovaRenderer {
         match backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
-                let shader_binaries = cached_nova_dx12_shader_binaries()?;
                 let backend = shared_backend(
                     DeviceKey {
                         backend: RendererBackend::NovaDx12,
@@ -182,7 +181,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova dx12",
-                            shader_binaries,
+                            cached_nova_dx12_shader_binaries()?,
                         )
                     },
                 )?;
@@ -279,7 +278,6 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             RendererBackend::NovaMetal => {
-                let shader_binaries = cached_nova_metal_shader_binaries()?;
                 let backend = shared_backend(
                     DeviceKey {
                         backend: RendererBackend::NovaMetal,
@@ -323,7 +321,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova metal",
-                            shader_binaries,
+                            cached_nova_metal_shader_binaries()?,
                         )
                     },
                 )?;
@@ -423,7 +421,6 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             RendererBackend::NovaVulkan => {
-                let shader_binaries = cached_nova_vulkan_shader_binaries()?;
                 let device_started_at = Instant::now();
                 let backend = shared_backend(
                     DeviceKey {
@@ -481,7 +478,7 @@ impl NovaRenderer {
                             device,
                             surface_config,
                             "gpui nova vulkan",
-                            shader_binaries,
+                            cached_nova_vulkan_shader_binaries()?,
                         )
                     },
                 )?;
