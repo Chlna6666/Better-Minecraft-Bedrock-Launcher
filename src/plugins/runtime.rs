@@ -4205,7 +4205,9 @@ fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
 
 pub fn init(cx: &mut App) {
     cx.default_global::<PluginRegistry>();
-    start_watcher(cx);
+    // Manifest/WASM preparation is already offloaded to the blocking pool. Keep the filesystem
+    // watcher out of the first-window critical path; the application starts it after the main
+    // window has presented its first visible frame.
     spawn_initial_reload(cx);
 }
 
@@ -4323,7 +4325,6 @@ pub fn ensure_manifest_index(cx: &mut App) {
     if needs_sync_reload {
         reload_all(cx);
     }
-    start_watcher(cx);
 }
 
 pub fn ensure_loaded(cx: &mut App) {
@@ -4342,6 +4343,9 @@ pub fn start_watcher(cx: &mut App) {
             cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.set_watcher(sender, task);
             });
+            if drain_async_host_refreshes(cx) {
+                cx.refresh_windows();
+            }
         }
         Err(error) => {
             let error_message = crate::plugins::manifest::format_error_chain(&error);

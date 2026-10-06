@@ -267,14 +267,25 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
     let image_pipeline = image_pipeline_config();
     let default_font = application_default_font(&bootstrap);
     let launch = move |cx: &mut App| {
+        let launch_started_at = Instant::now();
         gpui_tokio::init_from_handle(cx, io_handle);
+
+        let configure_runtime_started_at = Instant::now();
         configure_runtime(cx, &bootstrap.launch_mode);
+        let configure_runtime_elapsed = configure_runtime_started_at.elapsed();
+
+        let app_state_started_at = Instant::now();
         build_app_state(cx, &bootstrap);
+        let app_state_elapsed = app_state_started_at.elapsed();
+
         if bootstrap.debug_enabled {
             crate::utils::gpui_debug_log::start(cx);
         }
         start_domain_event_bridges(cx);
+
+        let plugin_init_started_at = Instant::now();
         crate::plugins::runtime::init(cx);
+        let plugin_init_elapsed = plugin_init_started_at.elapsed();
 
         gpui_router::init(cx);
         if matches!(bootstrap.launch_mode, LaunchMode::Main) {
@@ -289,8 +300,19 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
                 debug!("startup background compressed image bytes preload scheduled");
             }
             crate::ui::navigation::set_route(cx, crate::ui::navigation::AppRoute::Home);
+            let open_window_started_at = Instant::now();
             let main_window_opened = open_main_window(&bootstrap, cx);
+            let open_window_elapsed = open_window_started_at.elapsed();
+            tracing::info!(
+                "startup_trace: pre_window total_ms={:.3} configure_runtime_ms={:.3} app_state_ms={:.3} plugin_init_ms={:.3} open_window_ms={:.3}",
+                launch_started_at.elapsed().as_secs_f64() * 1000.0,
+                configure_runtime_elapsed.as_secs_f64() * 1000.0,
+                app_state_elapsed.as_secs_f64() * 1000.0,
+                plugin_init_elapsed.as_secs_f64() * 1000.0,
+                open_window_elapsed.as_secs_f64() * 1000.0,
+            );
             if main_window_opened {
+                schedule_plugin_watcher_after_main_window_visible(cx);
                 schedule_post_startup_warmups(cx);
                 if bootstrap.debug_enabled {
                     schedule_debug_window_after_main_window_visible(cx);
@@ -451,7 +473,9 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
             debug_state.debug_window_id = None;
             debug_state.reset_runtime_state();
 
-            if let Ok(exe_path) = env::current_exe() {
+            if bootstrap.debug_enabled
+                && let Ok(exe_path) = env::current_exe()
+            {
                 debug_state.exe_path = SharedString::from(exe_path.to_string_lossy().to_string());
                 if let Ok(metadata) = std::fs::metadata(&exe_path) {
                     debug_state.exe_size_bytes = metadata.len();
@@ -554,6 +578,28 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
             false
         }
     }
+}
+
+fn schedule_plugin_watcher_after_main_window_visible(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let deadline = Instant::now() + DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT;
+        while !cx.update(main_window_is_visible).unwrap_or(false) {
+            if Instant::now() >= deadline {
+                warn!(
+                    "starting plugin watcher after visibility wait timeout"
+                );
+                break;
+            }
+            Timer::after(DEBUG_WINDOW_VISIBLE_POLL_INTERVAL).await;
+        }
+
+        if let Err(error) = cx.update(crate::plugins::runtime::start_watcher) {
+            warn!("deferred plugin watcher startup failed: {error:?}");
+        }
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
 }
 
 /// Opens the debug window automatically once the main window is actually on screen.
