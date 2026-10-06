@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fmt, str::FromStr};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 /// Maximum frame rate GPUI allows for continuous window composition.
 pub const MAX_WINDOW_COMPOSITION_FPS: f32 = 240.0;
@@ -132,6 +132,9 @@ pub struct RendererOptions {
     pub render_policy: RenderPolicy,
     /// Enables extra frame metrics for debugging and profiling.
     pub frame_metrics: bool,
+    /// Optional persistent nova-gfx pipeline-cache root.
+    #[serde(default)]
+    pub pipeline_cache_dir: Option<PathBuf>,
 }
 
 impl Default for RendererOptions {
@@ -144,6 +147,7 @@ impl Default for RendererOptions {
             submission_mode: GpuSubmissionMode::Deferred,
             render_policy: RenderPolicy::EventDriven,
             frame_metrics: false,
+            pipeline_cache_dir: None,
         }
     }
 }

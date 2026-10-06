@@ -32,6 +32,7 @@ use std::{
     hash::{Hash, Hasher},
     marker::PhantomData,
     num::NonZeroU32,
+    path::PathBuf,
     pin::Pin,
 };
 
@@ -405,6 +406,11 @@ pub struct DeviceDescriptor {
     pub adapter_name: Option<String>,
     /// Preferred GPU power class.
     pub power_preference: PowerPreference,
+    /// Optional persistent backend pipeline-cache root.
+    ///
+    /// Backends place adapter-specific cache files below this directory. `None` keeps
+    /// pipeline caches process-local only.
+    pub pipeline_cache_dir: Option<PathBuf>,
 }
 
 impl Default for DeviceDescriptor {
@@ -413,6 +419,7 @@ impl Default for DeviceDescriptor {
             application_name: "nova-gfx".to_string(),
             adapter_name: None,
             power_preference: PowerPreference::LowPower,
+            pipeline_cache_dir: None,
         }
     }
 }

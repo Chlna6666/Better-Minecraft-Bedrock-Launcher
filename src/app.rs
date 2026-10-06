@@ -261,6 +261,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         backend: bootstrap.renderer_backend,
         adapter_name: bootstrap.gpu_adapter_name.clone(),
         power_preference: gpu_power_preference_for_adapter(bootstrap.gpu_adapter_name.as_deref()),
+        pipeline_cache_dir: Some(crate::utils::file_ops::cache_subdir("gpu/pipelines")),
         ..gpui::RendererOptions::default()
     };
     let image_pipeline = image_pipeline_config();

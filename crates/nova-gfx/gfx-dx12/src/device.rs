@@ -29,6 +29,8 @@ mod frame_pacing;
 #[cfg(windows)]
 mod platform {
     use std::{
+        fs,
+        path::{Path, PathBuf},
         ptr::{self, NonNull},
         str,
         sync::Arc,
@@ -219,6 +221,7 @@ mod platform {
         deferred_releases: DeferredFreeQueue<DeferredDx12Release>,
         allow_tearing: bool,
         submitted_frames: u64,
+        pipeline_cache_dir: Option<PathBuf>,
     }
 
     impl Dx12Device {
@@ -233,6 +236,8 @@ mod platform {
             let allow_tearing = factory_supports_tearing(&factory);
             let adapter = pick_adapter(&factory, desc)?;
             let adapter_description = adapter_description(&adapter)?;
+            let pipeline_cache_dir =
+                dx12_pipeline_cache_dir(desc.pipeline_cache_dir.as_deref(), &adapter_description);
             log::info!(
                 "nova-gfx DX12 selected adapter: name=\"{}\" preference={:?}",
                 adapter_description.name,
@@ -301,6 +306,7 @@ mod platform {
                 deferred_releases: DeferredFreeQueue::new(),
                 allow_tearing,
                 submitted_frames: 0,
+                pipeline_cache_dir,
             })
         }
 
@@ -1317,12 +1323,14 @@ mod platform {
                 .copied()
                 .map(|layout| Ok(self.resource_set_layouts.get(layout)?.desc.clone()))
                 .collect::<Result<Vec<_>>>()?;
+            let cache_key = stable_hash_debug(&layouts);
             let root_signature = create_root_signature(&self.device, &layouts)?;
             let draw_step_constants_root_index = draw_step_constants_root_index(&layouts)?;
             Ok(self.pipeline_layouts.insert(Dx12PipelineLayout {
                 root_signature,
                 resource_set_layouts: Arc::from(desc.resource_set_layouts.as_slice()),
                 draw_step_constants_root_index,
+                cache_key,
             }))
         }
 
@@ -1621,21 +1629,27 @@ mod platform {
                     "DX12 depth pipeline requires a render pass depth attachment".to_string(),
                 ));
             }
-            let (root_signature, draw_step_constants_root_index, resource_set_layouts) =
-                if let Some(pipeline_layout) = desc.pipeline_layout {
-                    let pipeline_layout = self.pipeline_layouts.get(pipeline_layout)?;
-                    (
-                        pipeline_layout.root_signature.clone(),
-                        pipeline_layout.draw_step_constants_root_index,
-                        pipeline_layout.resource_set_layouts.clone(),
-                    )
-                } else {
-                    (
-                        create_empty_root_signature(&self.device)?,
-                        0,
-                        Arc::from(Vec::new()),
-                    )
-                };
+            let (
+                root_signature,
+                draw_step_constants_root_index,
+                resource_set_layouts,
+                pipeline_layout_cache_key,
+            ) = if let Some(pipeline_layout) = desc.pipeline_layout {
+                let pipeline_layout = self.pipeline_layouts.get(pipeline_layout)?;
+                (
+                    pipeline_layout.root_signature.clone(),
+                    pipeline_layout.draw_step_constants_root_index,
+                    pipeline_layout.resource_set_layouts.clone(),
+                    pipeline_layout.cache_key,
+                )
+            } else {
+                (
+                    create_empty_root_signature(&self.device)?,
+                    0,
+                    Arc::from(Vec::new()),
+                    stable_hash_bytes(b"nova-dx12-empty-root-signature"),
+                )
+            };
             let pipeline_state = create_pipeline_state(
                 &self.device,
                 &root_signature,
@@ -1645,6 +1659,8 @@ mod platform {
                 desc.blend_mode,
                 render_pass.depth_format,
                 desc.depth_state,
+                pipeline_layout_cache_key,
+                self.pipeline_cache_dir.as_deref(),
             )?;
             Ok(self.render_pipelines.insert(Dx12RenderPipeline {
                 color_format: desc.color_format,
@@ -3639,6 +3655,8 @@ mod platform {
 
     struct Dx12AdapterDescription {
         name: String,
+        vendor_id: u32,
+        device_id: u32,
         dedicated_video_memory: usize,
         software: bool,
     }
@@ -3742,6 +3760,8 @@ mod platform {
             name: String::from_utf16_lossy(&description.Description)
                 .trim_end_matches('\0')
                 .to_string(),
+            vendor_id: description.VendorId,
+            device_id: description.DeviceId,
             dedicated_video_memory: description.DedicatedVideoMemory,
             software: description.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0,
         })
@@ -3855,6 +3875,106 @@ mod platform {
         }
     }
 
+    const MAX_PIPELINE_CACHE_BLOB_BYTES: u64 = 16 * 1024 * 1024;
+    const FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV1A64_PRIME: u64 = 0x100000001b3;
+
+    fn stable_hash_bytes(bytes: &[u8]) -> u64 {
+        let mut hash = FNV1A64_OFFSET;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV1A64_PRIME);
+        }
+        hash
+    }
+
+    fn stable_hash_debug(value: &impl core::fmt::Debug) -> u64 {
+        stable_hash_bytes(format!("{value:?}").as_bytes())
+    }
+
+    fn extend_stable_hash(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(FNV1A64_PRIME);
+        }
+    }
+
+    fn dx12_pipeline_cache_dir(
+        root: Option<&Path>,
+        adapter: &Dx12AdapterDescription,
+    ) -> Option<PathBuf> {
+        let root = root?;
+        let dir = root
+            .join("dx12")
+            .join(format!("{:04x}-{:04x}", adapter.vendor_id, adapter.device_id));
+        match fs::create_dir_all(&dir) {
+            Ok(()) => Some(dir),
+            Err(error) => {
+                log::warn!(
+                    "nova-gfx DX12 pipeline cache disabled: path={} error={error}",
+                    dir.display()
+                );
+                None
+            }
+        }
+    }
+
+    fn pipeline_cache_key(
+        pipeline_layout_cache_key: u64,
+        vertex_shader: &Dx12ShaderModule,
+        fragment_shader: &Dx12ShaderModule,
+        color_format: Format,
+        blend_mode: BlendMode,
+        depth_format: Option<Format>,
+        depth_state: Option<DepthState>,
+    ) -> u64 {
+        let mut hash = FNV1A64_OFFSET;
+        extend_stable_hash(&mut hash, &pipeline_layout_cache_key.to_le_bytes());
+        extend_stable_hash(&mut hash, vertex_shader.entry_point.as_bytes());
+        extend_stable_hash(&mut hash, &vertex_shader.bytecode);
+        extend_stable_hash(&mut hash, fragment_shader.entry_point.as_bytes());
+        extend_stable_hash(&mut hash, &fragment_shader.bytecode);
+        extend_stable_hash(
+            &mut hash,
+            format!(
+                "{color_format:?}|{blend_mode:?}|{depth_format:?}|{depth_state:?}"
+            )
+            .as_bytes(),
+        );
+        hash
+    }
+
+    fn read_pipeline_cache_blob(path: &Path) -> Option<Vec<u8>> {
+        let metadata = fs::metadata(path).ok()?;
+        if metadata.len() == 0 || metadata.len() > MAX_PIPELINE_CACHE_BLOB_BYTES {
+            return None;
+        }
+        fs::read(path).ok()
+    }
+
+    fn persist_pipeline_cache_blob(path: &Path, pipeline_state: &ID3D12PipelineState) {
+        // SAFETY: The pipeline state is live and D3D12 owns the returned blob.
+        let Ok(blob) = (unsafe { pipeline_state.GetCachedBlob() }) else {
+            return;
+        };
+        // SAFETY: Blob pointer and size are valid for the duration of this read-only view.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                blob.GetBufferPointer().cast::<u8>(),
+                blob.GetBufferSize(),
+            )
+        };
+        if bytes.is_empty() || bytes.len() as u64 > MAX_PIPELINE_CACHE_BLOB_BYTES {
+            return;
+        }
+        if let Err(error) = fs::write(path, bytes) {
+            log::debug!(
+                "nova-gfx DX12 pipeline cache write skipped: path={} error={error}",
+                path.display()
+            );
+        }
+    }
+
     #[expect(
         clippy::field_reassign_with_default,
         reason = "windows-rs D3D12 PSO structs are clearer when filled field-by-field"
@@ -3868,6 +3988,8 @@ mod platform {
         blend_mode: BlendMode,
         depth_format: Option<Format>,
         depth_state: Option<DepthState>,
+        pipeline_layout_cache_key: u64,
+        pipeline_cache_dir: Option<&Path>,
     ) -> Result<ID3D12PipelineState> {
         let blend_desc = D3D12_BLEND_DESC {
             AlphaToCoverageEnable: false.into(),
@@ -3922,16 +4044,56 @@ mod platform {
             Quality: 0,
         };
         desc.NodeMask = 0;
-        desc.CachedPSO = D3D12_CACHED_PIPELINE_STATE::default();
         desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+        let cache_path = pipeline_cache_dir.map(|dir| {
+            dir.join(format!(
+                "{:016x}.pso",
+                pipeline_cache_key(
+                    pipeline_layout_cache_key,
+                    vertex_shader,
+                    fragment_shader,
+                    color_format,
+                    blend_mode,
+                    depth_format,
+                    depth_state,
+                )
+            ))
+        });
+        let cached_blob = cache_path.as_deref().and_then(read_pipeline_cache_blob);
+        if let Some(bytes) = cached_blob.as_deref() {
+            desc.CachedPSO = D3D12_CACHED_PIPELINE_STATE {
+                pCachedBlob: bytes.as_ptr().cast(),
+                CachedBlobSizeInBytes: bytes.len(),
+            };
+        }
+
         clear_d3d12_messages(device);
         // SAFETY: Pipeline state description points to live root signature and shader blobs.
-        let pipeline_state = unsafe { device.CreateGraphicsPipelineState(&raw const desc) };
-        // SAFETY: The descriptor owns one temporary cloned COM reference for the call above.
+        let first_attempt = unsafe { device.CreateGraphicsPipelineState(&raw const desc) };
+        let mut rejected_cached_blob = false;
+        let pipeline_state = if first_attempt.is_err() && cached_blob.is_some() {
+            rejected_cached_blob = true;
+            log::debug!(
+                "nova-gfx DX12 rejected cached PSO; retrying uncached: path={}",
+                cache_path
+                    .as_ref()
+                    .map_or_else(|| "<none>".to_string(), |path| path.display().to_string())
+            );
+            desc.CachedPSO = D3D12_CACHED_PIPELINE_STATE::default();
+            clear_d3d12_messages(device);
+            // SAFETY: Same live descriptor as above, with the stale cached blob removed.
+            unsafe { device.CreateGraphicsPipelineState(&raw const desc) }
+        } else {
+            first_attempt
+        };
+
+        // SAFETY: The descriptor owns one temporary cloned COM reference for the calls above.
         unsafe {
             core::mem::ManuallyDrop::drop(&mut desc.pRootSignature);
         }
-        pipeline_state.map_err(|error| {
+
+        let pipeline_state = pipeline_state.map_err(|error| {
             let messages = d3d12_messages(device);
             let suffix = if messages.is_empty() {
                 String::new()
@@ -3941,7 +4103,15 @@ mod platform {
             Error::Backend(format!(
                 "ID3D12Device::CreateGraphicsPipelineState failed: {error}{suffix}"
             ))
-        })
+        })?;
+
+        if (cached_blob.is_none() || rejected_cached_blob)
+            && let Some(cache_path) = cache_path.as_deref()
+        {
+            persist_pipeline_cache_blob(cache_path, &pipeline_state);
+        }
+
+        Ok(pipeline_state)
     }
 
     fn depth_compare_function(compare: CompareFunction) -> D3D12_COMPARISON_FUNC {
@@ -6057,6 +6227,7 @@ mod platform {
         root_signature: ID3D12RootSignature,
         resource_set_layouts: Arc<[ResourceSetLayoutId]>,
         draw_step_constants_root_index: u32,
+        cache_key: u64,
     }
 
     #[derive(Clone, Copy)]

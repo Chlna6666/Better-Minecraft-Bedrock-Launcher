@@ -144,6 +144,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaDx12,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     || {
                         Ok(NovaBackend::Dx12(
@@ -151,6 +152,7 @@ impl NovaRenderer {
                                 application_name: "gpui nova dx12".to_string(),
                                 adapter_name: renderer_options.adapter_name.clone(),
                                 power_preference: nova_power_preference(renderer_options),
+                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                             })
                             .context("creating nova DX12 device")?,
                         ))
@@ -172,6 +174,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaDx12,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     surface_config.format,
                     || {
@@ -282,6 +285,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaMetal,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     || {
                         Ok(NovaBackend::Metal(
@@ -289,6 +293,7 @@ impl NovaRenderer {
                                 application_name: "gpui nova metal".to_string(),
                                 adapter_name: renderer_options.adapter_name.clone(),
                                 power_preference: nova_power_preference(renderer_options),
+                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                             })
                             .context("creating nova Metal device")?,
                         ))
@@ -310,6 +315,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaMetal,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     surface_config.format,
                     || {
@@ -424,6 +430,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaVulkan,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     || {
                         Ok(NovaBackend::Vulkan(
@@ -431,6 +438,7 @@ impl NovaRenderer {
                                 application_name: "gpui nova vulkan".to_string(),
                                 adapter_name: renderer_options.adapter_name.clone(),
                                 power_preference: nova_power_preference(renderer_options),
+                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                             })
                             .context("creating nova Vulkan device")?,
                         ))
@@ -465,6 +473,7 @@ impl NovaRenderer {
                         backend: RendererBackend::NovaVulkan,
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
                     },
                     surface_config.format,
                     || {

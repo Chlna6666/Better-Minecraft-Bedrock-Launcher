@@ -3,6 +3,7 @@
 use super::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Identifies the backend device a window should render with.
@@ -17,6 +18,8 @@ pub(super) struct DeviceKey {
     pub(super) adapter_name: Option<String>,
     /// Adapter power preference used when the name does not pin one.
     pub(super) power_preference: PowerPreference,
+    /// Pipeline-cache root; cache ownership is part of the shared-device identity.
+    pub(super) pipeline_cache_dir: Option<PathBuf>,
 }
 
 /// A backend device shared by every window created on the same thread.
