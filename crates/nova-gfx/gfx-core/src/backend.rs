@@ -12,7 +12,8 @@ use std::{
 use crate::{
     AsyncCapabilities, BackendKind, BoxFuture, BufferDescriptor, BufferId, ClearColor,
     CommandEncoderDescriptor, CommandEncoderId, DrawDescriptor, DrawStepDescriptor, Error, LoadOp,
-    MemoryTrimLevel, PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDepthAttachment,
+    MemoryTrimLevel, PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
+    RenderPassDepthAttachment,
     RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
     RenderStepDescriptor, RenderStepList, ResourceSetDescriptor, ResourceSetId,
     ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
@@ -939,14 +940,15 @@ pub trait PresentationDevice {
         Ok(false)
     }
 
-    /// Returns whether `swapchain` can consume native presentation damage.
+    /// Reports swapchain presentation facilities, separate from device submission capabilities.
     ///
-    /// Backends returning `true` must keep every rotating back buffer coherent, restrict rendering
+    /// Backends reporting partial presentation must keep every rotating back buffer coherent, restrict rendering
     /// to the effective damaged region, and pass that same region to the native presentation API.
     /// This contract avoids a retained full-surface texture or a previous-buffer copy.
     #[must_use]
-    fn supports_partial_presentation(&self, _swapchain: SwapchainId) -> bool {
-        false
+    /// Unsupported facilities and stale swapchain IDs return default capabilities.
+    fn presentation_capabilities(&self, _swapchain: SwapchainId) -> PresentationCapabilities {
+        PresentationCapabilities::default()
     }
 
     /// Stretches the swapchain's composited content over a window larger than its buffers.
@@ -1992,7 +1994,6 @@ where
                 async_submission: false,
                 async_wait: false,
                 async_presentation: false,
-                partial_presentation: false,
             };
         };
         let mut capabilities = device.async_capabilities();
@@ -2188,9 +2189,9 @@ where
         self.with_device(|device| device.arm_swapchain_frame_ready(swapchain, callback))
     }
 
-    fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
-        self.with_device(|device| Ok(device.supports_partial_presentation(swapchain)))
-            .unwrap_or(false)
+    fn presentation_capabilities(&self, swapchain: SwapchainId) -> PresentationCapabilities {
+        self.with_device(|device| Ok(device.presentation_capabilities(swapchain)))
+            .unwrap_or_default()
     }
 
     fn draw_steps_and_present(

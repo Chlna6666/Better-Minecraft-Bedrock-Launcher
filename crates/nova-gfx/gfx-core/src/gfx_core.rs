@@ -292,8 +292,19 @@ pub struct AsyncCapabilities {
     pub async_wait: bool,
     /// Presentation helper can be submitted through an async/deferred path.
     pub async_presentation: bool,
-    /// Swapchain presentation preserves or restricts unchanged regions safely.
+}
+
+/// Actual presentation facilities available for one live swapchain.
+///
+/// Query these after surface creation and after swapchain recreation. They are distinct from
+/// adapter [`BackendCapabilities`], device [`AsyncCapabilities`] and requested [`SurfaceConfig`]
+/// policy. Default capabilities select portable full presentation without a native ready wake.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PresentationCapabilities {
+    /// Native presentation consumes damage while keeping every rotating backbuffer coherent.
     pub partial_presentation: bool,
+    /// A one-shot ready callback can wake the owner when this swapchain accepts another frame.
+    pub frame_ready_notification: bool,
 }
 
 impl Default for AsyncCapabilities {
@@ -303,7 +314,6 @@ impl Default for AsyncCapabilities {
             async_submission: false,
             async_wait: false,
             async_presentation: false,
-            partial_presentation: false,
         }
     }
 }
@@ -2167,7 +2177,6 @@ mod tests {
                 async_submission: false,
                 async_wait: false,
                 async_presentation: false,
-                partial_presentation: false,
             }
         );
     }

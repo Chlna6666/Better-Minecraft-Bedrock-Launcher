@@ -883,7 +883,6 @@ mod platform {
                 async_submission: false,
                 async_wait: false,
                 async_presentation: false,
-                partial_presentation: false,
             }
         }
 

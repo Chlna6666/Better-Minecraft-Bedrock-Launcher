@@ -3145,7 +3145,6 @@ impl SubmissionDevice for VulkanDevice {
             async_submission: true,
             async_wait: true,
             async_presentation: true,
-            partial_presentation: false,
         }
     }
 
@@ -3163,12 +3162,15 @@ impl SubmissionDevice for VulkanDevice {
 }
 
 impl PresentationDevice for VulkanDevice {
-    fn supports_partial_presentation(&self, _swapchain: gfx_core::SwapchainId) -> bool {
+    fn presentation_capabilities(
+        &self,
+        _swapchain: gfx_core::SwapchainId,
+    ) -> gfx_core::PresentationCapabilities {
         // The renderer submits a complete frame, but Vulkan swapchain images rotate between
         // presents. Without per-image damage accumulation, VK_KHR_incremental_present can leave
         // unchanged pixels sourced from an uninitialized image, which appears as intermittent
         // black corners or rectangular stale regions on Linux/X11 and Wayland.
-        false
+        gfx_core::PresentationCapabilities::default()
     }
 
     fn draw_steps_and_present(

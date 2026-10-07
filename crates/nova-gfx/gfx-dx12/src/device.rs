@@ -4596,7 +4596,6 @@ mod platform {
                 async_submission: true,
                 async_wait: true,
                 async_presentation: true,
-                partial_presentation: true,
             }
         }
 
@@ -4650,10 +4649,17 @@ mod platform {
             Ok(true)
         }
 
-        fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
-            self.swapchains
-                .get(swapchain)
-                .is_ok_and(|swapchain| swapchain.partial_presentation)
+        fn presentation_capabilities(
+            &self,
+            swapchain: SwapchainId,
+        ) -> gfx_core::PresentationCapabilities {
+            self.swapchains.get(swapchain).map_or_else(
+                |_| Default::default(),
+                |swapchain| gfx_core::PresentationCapabilities {
+                    partial_presentation: swapchain.partial_presentation,
+                    frame_ready_notification: swapchain.frame_latency_waitable.is_some(),
+                },
+            )
         }
 
         fn set_swapchain_content_stretch(
