@@ -394,16 +394,13 @@ fn install_http_client(cx: &mut App) {
 
 fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
     let config = &bootstrap.config;
-    let startup_background_option = config.custom_style.background_option.clone();
-    let startup_local_image_path = config.custom_style.local_image_path.clone();
-    let startup_network_image_url = config.custom_style.network_image_url.clone();
     if bootstrap.launch_mode.is_main() {
         tracing::info!(
             "startup_trace: config_ready t={:.3}ms background_option={} local_path_len={} network_url_len={} phase=app_state",
             crate::ui::main_window::startup_trace_elapsed_ms(),
-            startup_background_option,
-            startup_local_image_path.len(),
-            startup_network_image_url.len()
+            config.custom_style.background_option,
+            config.custom_style.local_image_path.len(),
+            config.custom_style.network_image_url.len()
         );
     }
 
@@ -430,7 +427,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
             state.apply_config(&bootstrap.config.online);
         },
     );
-    cx.default_global::<crate::ui::views::settings::state::SettingsPageState>();
+    cx.set_global(crate::ui::views::settings::state::SettingsPageState::from_config(config));
     cx.default_global::<crate::ui::state::theme::ThemeState>();
     cx.default_global::<crate::ui::state::update::UpdateState>();
     cx.default_global::<crate::ui::state::agreement::AgreementState>();
@@ -499,12 +496,6 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
         )]);
         cx.on_action(|_: &OpenDebugWindow, cx: &mut App| open_debug_window(cx));
     }
-
-    cx.update_global(
-        |settings: &mut crate::ui::views::settings::state::SettingsPageState, _cx| {
-            settings.apply_config(&config);
-        },
-    );
 
 
 }

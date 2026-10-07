@@ -212,7 +212,18 @@ pub struct AboutSponsorEntry {
 
 impl Default for SettingsPageState {
     fn default() -> Self {
-        let mut state = Self {
+        let mut state = Self::unconfigured();
+        state.apply_config_values(&crate::config::config::get_default_config());
+        state.loaded = false;
+        state
+    }
+}
+
+impl Global for SettingsPageState {}
+
+impl SettingsPageState {
+    fn unconfigured() -> Self {
+        Self {
             tab: SettingsTab::Game,
             launcher_display_mode: LauncherDisplayMode::KeepVisible,
             fix_uwp_minimize: false,
@@ -333,17 +344,15 @@ impl Default for SettingsPageState {
             plugin_config_cache: BTreeMap::new(),
             plugin_config_schema_cache: BTreeMap::new(),
             loaded: false,
-        };
+        }
+    }
 
-        state.apply_config_values(&crate::config::config::get_default_config());
-        state.loaded = false;
+    pub fn from_config(config: &crate::config::config::Config) -> Self {
+        let mut state = Self::unconfigured();
+        state.apply_config(config);
         state
     }
-}
 
-impl Global for SettingsPageState {}
-
-impl SettingsPageState {
     pub fn apply_config(&mut self, config: &crate::config::config::Config) {
         self.apply_config_values(config);
         self.loaded = true;
