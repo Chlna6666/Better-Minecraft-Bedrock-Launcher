@@ -1762,7 +1762,7 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.borrow().renderer.gpu_specs().log_err().ok()
+        self.borrow().renderer.gpu_specs().log_err()
     }
 }
 

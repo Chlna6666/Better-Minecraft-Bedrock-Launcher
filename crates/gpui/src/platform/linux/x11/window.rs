@@ -1966,6 +1966,6 @@ impl PlatformWindow for X11Window {
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
-        self.0.state.borrow().renderer.gpu_specs().log_err().ok()
+        self.0.state.borrow().renderer.gpu_specs().log_err()
     }
 }
