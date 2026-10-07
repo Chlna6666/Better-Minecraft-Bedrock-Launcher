@@ -117,6 +117,13 @@ native/UI host behavior on Linux; that requires its own native event-loop separa
 
 The first visibility handshake waits for an actual submitted frame. Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
 
+Windows `Application::run_separate` queues shared-device preparation on this GPU owner after
+resolving the backend, before starting winit and the UI owner. Device creation overlaps native/UI
+preparation; the window then reuses the same device key. Surface, swapchain and window resources
+still require the native window. Preparation errors are logged, and normal window initialization
+retries uncached failures. Device-preparation and renderer first-frame logs have separate timing
+origins; compare process-to-visible time to measure the end-to-end benefit.
+
 Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI layout or rebuilding its committed display list. Animation completions are returned only after successful submission. Windows, Wayland and X11 declare scene-animation ownership through `owns_scene_animations()`; queued/deferred timelines wait for owner completion reports. Backend readiness wakes the native frame lane when supported. A pending frame continues through native pacing; a GPU error requests a fresh UI commit. A static completed scene schedules no continuous owner work.
 
 The blocked-Render lab checks whether animation presentation progresses while UI `Render` is blocked. This does not establish nominal-refresh continuity or physical scanout timing.

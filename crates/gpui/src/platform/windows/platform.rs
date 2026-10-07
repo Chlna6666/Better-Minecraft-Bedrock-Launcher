@@ -429,6 +429,17 @@ impl WindowsPlatform {
         ui_main: impl FnOnce(flume::Receiver<()>) + Send + 'static,
     ) -> Result<()> {
         let native = Rc::new(Self::new_native_owner(renderer_options)?);
+        if native.renderer_backend != RendererBackend::HeadlessTest {
+            // Device creation needs no HWND. Queue it on the same GPU owner that will create
+            // the window renderer while winit and the UI owner prepare their own state.
+            let options = RendererOptions {
+                backend: native.renderer_backend,
+                ..native.renderer_options.clone()
+            };
+            if let Err(error) = crate::platform::render_owner::prepare_device(options) {
+                log::warn!("failed to queue GPUI device preparation: {error:#}");
+            }
+        }
         let (shutdown, shutdown_receiver) = flume::bounded(1);
         let ui_thread = Rc::new(RefCell::new(None));
         let ui_thread_slot = ui_thread.clone();

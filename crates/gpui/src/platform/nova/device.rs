@@ -51,6 +51,62 @@ pub(super) fn lock_backend(backend: &SharedBackend) -> MutexGuard<'_, NovaBacken
     backend.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+/// Creates or reuses the device selected by the renderer, without requiring a native surface.
+///
+/// Startup preparation and window initialization must call this on the GPU owner with the same
+/// options so the thread-local registry retains one device for both operations.
+///
+/// # Errors
+///
+/// Returns device initialization errors or an error for an unsupported backend.
+pub(super) fn shared_device(
+    backend: RendererBackend,
+    options: &RendererOptions,
+) -> Result<SharedBackend> {
+    let key = DeviceKey {
+        backend,
+        adapter_name: options.adapter_name.clone(),
+        power_preference: nova_power_preference(options),
+        pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+    };
+    shared_backend(key, || {
+        let application_name = match backend {
+            RendererBackend::NovaDx12 => "gpui nova dx12",
+            RendererBackend::NovaMetal => "gpui nova metal",
+            RendererBackend::NovaVulkan => "gpui nova vulkan",
+            _ => anyhow::bail!("{backend} is not a concrete nova-gfx backend"),
+        };
+        let descriptor = DeviceDescriptor {
+            application_name: application_name.to_string(),
+            adapter_name: options.adapter_name.clone(),
+            power_preference: nova_power_preference(options),
+            pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        };
+        create_backend(backend, &descriptor)
+    })
+}
+
+fn create_backend(backend: RendererBackend, descriptor: &DeviceDescriptor) -> Result<NovaBackend> {
+    match backend {
+        #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+        RendererBackend::NovaDx12 => Ok(NovaBackend::Dx12(
+            Dx12Device::new(descriptor).context("creating nova DX12 device")?,
+        )),
+        #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+        RendererBackend::NovaMetal => Ok(NovaBackend::Metal(
+            MetalDevice::new(descriptor).context("creating nova Metal device")?,
+        )),
+        #[cfg(all(
+            feature = "nova-gfx-vulkan",
+            any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+        ))]
+        RendererBackend::NovaVulkan => Ok(NovaBackend::Vulkan(
+            VulkanDevice::new(descriptor).context("creating nova Vulkan device")?,
+        )),
+        _ => anyhow::bail!("{backend} is not an available nova-gfx backend"),
+    }
+}
+
 /// Runs `create` once per [`DeviceKey`] on this thread and returns the shared handle.
 ///
 /// # Errors

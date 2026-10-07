@@ -80,6 +80,31 @@ fn sender() -> Result<&'static Sender<Job>> {
         .map_err(|error| anyhow!("failed to start GPU owner: {error}"))
 }
 
+/// Queues device preparation without waiting for it, overlapping GPU and native/UI startup.
+///
+/// The job and subsequent window initialization use the same GPU thread and device registry.
+/// Device errors are logged here; normal window initialization retries uncached failures.
+///
+/// # Errors
+///
+/// Returns an error if the GPU owner cannot start or accept the preparation job.
+#[cfg(target_os = "windows")]
+pub(crate) fn prepare_device(options: crate::RendererOptions) -> Result<()> {
+    sender()?
+        .send(Box::new(move |_| {
+            let started_at = Instant::now();
+            match NovaRenderer::prepare_device(&options) {
+                Ok(()) => log::info!(
+                    "GPUI device preparation: backend={} elapsed_ms={}",
+                    options.backend,
+                    started_at.elapsed().as_millis(),
+                ),
+                Err(error) => log::warn!("GPUI device preparation failed: {error:#}"),
+            }
+        }))
+        .map_err(|_| anyhow!("GPU owner stopped before device preparation"))
+}
+
 /// Drains window resources and joins the GPU owner after the native/UI event loops exit.
 pub(crate) fn shutdown() {
     let Some(Ok(executor)) = EXECUTOR.get() else {

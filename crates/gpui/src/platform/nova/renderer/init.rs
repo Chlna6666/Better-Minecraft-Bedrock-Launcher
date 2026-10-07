@@ -69,6 +69,17 @@ where
 }
 
 impl NovaRenderer {
+    /// Prepares the shared device on its GPU owner, independently of native window creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns device initialization errors. A failed preparation leaves no cached device, so
+    /// the regular window initialization can retry and report its own error.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn prepare_device(options: &RendererOptions) -> Result<()> {
+        shared_device(options.backend, options).map(|_| ())
+    }
+
     #[cfg(not(target_os = "windows"))]
     pub(crate) fn new<W>(
         window: &W,
@@ -138,36 +149,23 @@ impl NovaRenderer {
         match backend {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
-                let backend = shared_backend(
-                    DeviceKey {
-                        backend: RendererBackend::NovaDx12,
-                        adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
-                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                    },
-                    || {
-                        Ok(NovaBackend::Dx12(
-                            Dx12Device::new(&DeviceDescriptor {
-                                application_name: "gpui nova dx12".to_string(),
-                                adapter_name: renderer_options.adapter_name.clone(),
-                                power_preference: nova_power_preference(renderer_options),
-                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                            })
-                            .context("creating nova DX12 device")?,
-                        ))
-                    },
-                )?;
+                let device_started_at = Instant::now();
+                let backend = shared_device(RendererBackend::NovaDx12, renderer_options)?;
                 let mut backend_guard = lock_backend(&backend);
                 let device = match &mut *backend_guard {
                     NovaBackend::Dx12(device) => device,
                     _ => anyhow::bail!("shared nova backend is not a DX12 device"),
                 };
+                let device_elapsed = device_started_at.elapsed();
+                let surface_started_at = Instant::now();
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova DX12 surface")?;
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova DX12 swapchain")?;
+                let surface_elapsed = surface_started_at.elapsed();
+                let resources_started_at = Instant::now();
                 let core = shared_renderer_core(
                     DeviceKey {
                         backend: RendererBackend::NovaDx12,
@@ -188,6 +186,13 @@ impl NovaRenderer {
                 let resources =
                     create_renderer_resources(device, surface_config, "gpui nova dx12", &core)
                         .context("creating GPUI nova DX12 render resources")?;
+                log::info!(
+                    "GPUI nova-gfx DX12 startup: total_ms={} device_ms={} surface_swapchain_ms={} resources_ms={}",
+                    metrics_started_at.elapsed().as_millis(),
+                    device_elapsed.as_millis(),
+                    surface_elapsed.as_millis(),
+                    resources_started_at.elapsed().as_millis(),
+                );
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
                 let frame_resources = resources.frame_resources;
                 let current_frame_resources = frame_resources
@@ -280,25 +285,7 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             RendererBackend::NovaMetal => {
-                let backend = shared_backend(
-                    DeviceKey {
-                        backend: RendererBackend::NovaMetal,
-                        adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
-                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                    },
-                    || {
-                        Ok(NovaBackend::Metal(
-                            MetalDevice::new(&DeviceDescriptor {
-                                application_name: "gpui nova metal".to_string(),
-                                adapter_name: renderer_options.adapter_name.clone(),
-                                power_preference: nova_power_preference(renderer_options),
-                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                            })
-                            .context("creating nova Metal device")?,
-                        ))
-                    },
-                )?;
+                let backend = shared_device(RendererBackend::NovaMetal, renderer_options)?;
                 let mut backend_guard = lock_backend(&backend);
                 let device = match &mut *backend_guard {
                     NovaBackend::Metal(device) => device,
@@ -426,25 +413,7 @@ impl NovaRenderer {
             ))]
             RendererBackend::NovaVulkan => {
                 let device_started_at = Instant::now();
-                let backend = shared_backend(
-                    DeviceKey {
-                        backend: RendererBackend::NovaVulkan,
-                        adapter_name: renderer_options.adapter_name.clone(),
-                        power_preference: nova_power_preference(renderer_options),
-                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                    },
-                    || {
-                        Ok(NovaBackend::Vulkan(
-                            VulkanDevice::new(&DeviceDescriptor {
-                                application_name: "gpui nova vulkan".to_string(),
-                                adapter_name: renderer_options.adapter_name.clone(),
-                                power_preference: nova_power_preference(renderer_options),
-                                pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
-                            })
-                            .context("creating nova Vulkan device")?,
-                        ))
-                    },
-                )?;
+                let backend = shared_device(RendererBackend::NovaVulkan, renderer_options)?;
                 let mut backend_guard = lock_backend(&backend);
                 let device = match &mut *backend_guard {
                     NovaBackend::Vulkan(device) => device,
