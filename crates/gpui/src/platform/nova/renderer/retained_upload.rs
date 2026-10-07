@@ -406,6 +406,21 @@ impl RetainedUpload {
         self.key = None;
     }
 
+    pub(super) fn invalidate_quad_slot(&mut self, slot: usize) {
+        if let Some(Some(signature)) = self.uploaded_slots.get_mut(slot) {
+            signature.quad = StaticStreamToken {
+                content: BufferContentToken {
+                    byte_len: usize::MAX,
+                    byte_hash: u64::MAX,
+                },
+                animation_topology: BufferContentToken::default(),
+            };
+        }
+        if let Some(layout) = self.uploaded_quad_layouts.get_mut(slot) {
+            *layout = None;
+        }
+    }
+
     pub(super) fn invalidate_path_rasterization_slot(&mut self, slot: usize) {
         let Some(Some(signature)) = self.uploaded_slots.get_mut(slot) else {
             return;
@@ -690,6 +705,33 @@ mod tests {
             QuadResidentLayout::default(),
         );
         assert!(!retained.needs_static_upload(0));
+    }
+
+    #[test]
+    fn replacing_quad_buffer_forces_full_quad_refill_for_slot() {
+        let mut retained = RetainedUpload::default();
+        let mut upload = FrameUpload::default();
+        upload.quads.resize(PACKED_QUAD_BYTES * 2, 1);
+        upload.resident_quad_spans = vec![
+            resident_span("left", 1, 0..PACKED_QUAD_BYTES),
+            resident_span("right", 1, PACKED_QUAD_BYTES..PACKED_QUAD_BYTES * 2),
+        ];
+        let (signature, _) = StaticUploadSignature::from_frame_upload(&upload);
+        retained.replace(
+            key(1),
+            FrameUploadSummary::default(),
+            2,
+            signature,
+            QuadResidentLayout::from_upload(&upload),
+        );
+        retained.mark_uploaded(0);
+        retained.invalidate_quad_slot(0);
+
+        assert!(retained.static_upload_mask(0).quad);
+        assert_eq!(
+            retained.quad_upload_plan(0, upload.quads.len()),
+            QuadUploadPlan::Full
+        );
     }
 
     #[test]

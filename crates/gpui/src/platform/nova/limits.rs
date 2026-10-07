@@ -1,4 +1,6 @@
 pub(super) const MAX_QUADS: usize = 8192;
+/// Initial per-frame quad capacity. Grows geometrically up to `MAX_QUADS`.
+pub(super) const INITIAL_QUADS: usize = 1024;
 pub(super) const MAX_SHADOWS: usize = 4096;
 pub(super) const MAX_PATH_VERTICES: usize = 65_536;
 /// Initial per-frame path vertex capacity. Grows geometrically up to `MAX_PATH_VERTICES`.

@@ -7,6 +7,7 @@ pub(in crate::platform::nova) struct FrameResourceBuffers {
     pub(in crate::platform::nova) global_buffer: BufferId,
     pub(in crate::platform::nova) text_raster_buffer: BufferId,
     pub(in crate::platform::nova) quad_buffer: BufferId,
+    pub(in crate::platform::nova) quad_capacity: usize,
     pub(in crate::platform::nova) shadow_buffer: BufferId,
     pub(in crate::platform::nova) path_rasterization_vertex_buffer: BufferId,
     pub(in crate::platform::nova) path_rasterization_vertex_capacity: usize,
@@ -75,7 +76,7 @@ where
     })?;
     let quad_buffer = device.create_buffer(&BufferDescriptor {
         label: Some(format!("{label} quads")),
-        size: (MAX_QUADS * PACKED_QUAD_BYTES) as u64,
+        size: (INITIAL_QUADS * PACKED_QUAD_BYTES) as u64,
         usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
         memory_location: MemoryLocation::CpuToGpu,
     })?;
@@ -137,6 +138,7 @@ where
         global_buffer,
         text_raster_buffer,
         quad_buffer,
+        quad_capacity: INITIAL_QUADS,
         shadow_buffer,
         path_rasterization_vertex_buffer,
         path_rasterization_vertex_capacity: INITIAL_PATH_VERTICES,

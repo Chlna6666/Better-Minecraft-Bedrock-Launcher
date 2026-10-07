@@ -106,6 +106,7 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_buffer: BufferId,
     animation_value_buffer: BufferId,
     quad_resource_set: ResourceSetId,
+    quad_resource_set_layout: ResourceSetLayoutId,
     shadow_resource_set: ResourceSetId,
     path_rasterization_resource_set: ResourceSetId,
     path_rasterization_resource_set_layout: ResourceSetLayoutId,
@@ -150,6 +151,52 @@ pub(crate) struct NovaRenderer {
 struct PendingSubmission {
     submission: SubmissionId,
     frame_resource_index: usize,
+}
+
+fn create_grown_quad_resources<D>(
+    device: &mut D,
+    label: &str,
+    layout: ResourceSetLayoutId,
+    current_buffers: FrameResourceBuffers,
+    new_capacity: usize,
+) -> Result<(BufferId, ResourceSetId)>
+where
+    D: BackendResources,
+{
+    let buffer = device.create_buffer(&BufferDescriptor {
+        label: Some(format!("{label} quads")),
+        size: (new_capacity * PACKED_QUAD_BYTES) as u64,
+        usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+        memory_location: MemoryLocation::CpuToGpu,
+    })?;
+    let mut next_buffers = current_buffers;
+    next_buffers.quad_buffer = buffer;
+    next_buffers.quad_capacity = new_capacity;
+    match create_quad_resource_set(device, label, layout, &next_buffers) {
+        Ok(resource_set) => Ok((buffer, resource_set)),
+        Err(error) => {
+            if let Err(destroy_error) = device.destroy_buffer(buffer) {
+                log::debug!("failed to roll back {label} grown quad buffer: {destroy_error}");
+            }
+            Err(error)
+        }
+    }
+}
+
+fn retire_replaced_quad_resources<D>(
+    device: &mut D,
+    label: &str,
+    resource_set: ResourceSetId,
+    buffer: BufferId,
+) where
+    D: BackendResources,
+{
+    if let Err(error) = device.destroy_resource_set(resource_set) {
+        log::debug!("failed to retire {label} old quad resource set: {error}");
+    }
+    if let Err(error) = device.destroy_buffer(buffer) {
+        log::debug!("failed to retire {label} old quad buffer: {error}");
+    }
 }
 
 fn create_grown_path_rasterization_resources<D>(
@@ -661,6 +708,134 @@ impl NovaRenderer {
             target: self.depth_texture_view,
             depth_load_op: LoadOp::Clear(1.0),
         }
+    }
+
+    pub(super) fn ensure_quad_capacity(&mut self) -> Result<()> {
+        let required_bytes = self.frame_upload.quads.len();
+        if required_bytes == 0 {
+            return Ok(());
+        }
+        let required_quads = required_bytes.div_ceil(PACKED_QUAD_BYTES);
+        if required_quads > MAX_QUADS {
+            anyhow::bail!(
+                "nova quad upload exceeds hard limit: required={} max={}",
+                required_quads,
+                MAX_QUADS
+            );
+        }
+
+        let index = self.current_frame_resource_index;
+        let current = self
+            .frame_resources
+            .get(index)
+            .copied()
+            .context("current nova frame resource slot is unavailable")?;
+        let current_capacity = current.buffers.quad_capacity;
+        if required_quads <= current_capacity {
+            return Ok(());
+        }
+
+        let new_capacity = required_quads
+            .next_power_of_two()
+            .max(current_capacity.saturating_mul(2))
+            .min(MAX_QUADS);
+        let old_buffer = current.buffers.quad_buffer;
+        let old_resource_set = current.resource_sets.quad_resource_set;
+        let layout = self.quad_resource_set_layout;
+
+        let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => create_grown_quad_resources(
+                device,
+                "gpui nova dx12 grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => create_grown_quad_resources(
+                device,
+                "gpui nova metal grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => create_grown_quad_resources(
+                device,
+                "gpui nova vulkan grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                anyhow::bail!("nova backend is unavailable while growing quad resources")
+            }
+        };
+
+        if let Some(resources) = self.frame_resources.get_mut(index) {
+            resources.buffers.quad_buffer = new_buffer;
+            resources.buffers.quad_capacity = new_capacity;
+            resources.resource_sets.quad_resource_set = new_resource_set;
+        }
+        self.quad_buffer = new_buffer;
+        self.quad_resource_set = new_resource_set;
+        self.retained_upload.invalidate_quad_slot(index);
+
+        match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => retire_replaced_quad_resources(
+                device,
+                "gpui nova dx12",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => retire_replaced_quad_resources(
+                device,
+                "gpui nova metal",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => retire_replaced_quad_resources(
+                device,
+                "gpui nova vulkan",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {}
+        }
+
+        log::debug!(
+            "nova quad buffer grew: slot={} quads={} -> {}",
+            index,
+            current_capacity,
+            new_capacity
+        );
+        Ok(())
     }
 
     pub(super) fn ensure_path_rasterization_capacity(&mut self) -> Result<()> {

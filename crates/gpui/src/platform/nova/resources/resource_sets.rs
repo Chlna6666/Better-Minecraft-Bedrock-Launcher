@@ -47,16 +47,8 @@ where
     })?)
 }
 
-pub(super) fn create_renderer_resource_sets<D>(
-    device: &mut D,
-    label: &str,
-    layouts: &ResourceLayouts,
-    buffers: &FrameResourceBuffers,
-) -> Result<FrameResourceSets>
-where
-    D: BackendResources,
-{
-    let animation_value_binding = || ResourceBinding {
+fn animation_value_binding(buffers: &FrameResourceBuffers) -> ResourceBinding {
+    ResourceBinding {
         binding: 17,
         resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
@@ -64,10 +56,21 @@ where
             size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
             stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
         }),
-    };
-    let quad_resource_set = device.create_resource_set(&ResourceSetDescriptor {
+    }
+}
+
+pub(in crate::platform::nova) fn create_quad_resource_set<D>(
+    device: &mut D,
+    label: &str,
+    layout: ResourceSetLayoutId,
+    buffers: &FrameResourceBuffers,
+) -> Result<ResourceSetId>
+where
+    D: BackendResources,
+{
+    Ok(device.create_resource_set(&ResourceSetDescriptor {
         label: Some(format!("{label} quad resource set")),
-        layout: layouts.quad_resource_set_layout,
+        layout,
         bindings: vec![
             ResourceBinding {
                 binding: 0,
@@ -83,13 +86,30 @@ where
                 resource: BindingResource::Buffer(BufferBinding {
                     buffer: buffers.quad_buffer,
                     offset: 0,
-                    size: (MAX_QUADS * PACKED_QUAD_BYTES) as u64,
+                    size: (buffers.quad_capacity * PACKED_QUAD_BYTES) as u64,
                     stride: Some(PACKED_QUAD_BYTES as u32),
                 }),
             },
-            animation_value_binding(),
+            animation_value_binding(buffers),
         ],
-    })?;
+    })?)
+}
+
+pub(super) fn create_renderer_resource_sets<D>(
+    device: &mut D,
+    label: &str,
+    layouts: &ResourceLayouts,
+    buffers: &FrameResourceBuffers,
+) -> Result<FrameResourceSets>
+where
+    D: BackendResources,
+{
+    let quad_resource_set = create_quad_resource_set(
+        device,
+        label,
+        layouts.quad_resource_set_layout,
+        buffers,
+    )?;
     let shadow_resource_set = device.create_resource_set(&ResourceSetDescriptor {
         label: Some(format!("{label} shadow resource set")),
         layout: layouts.shadow_resource_set_layout,
@@ -112,7 +132,7 @@ where
                     stride: Some(PACKED_SHADOW_BYTES as u32),
                 }),
             },
-            animation_value_binding(),
+            animation_value_binding(buffers),
         ],
     })?;
     let path_rasterization_resource_set = create_path_rasterization_resource_set(
@@ -143,7 +163,7 @@ where
                     stride: Some(PACKED_UNDERLINE_BYTES as u32),
                 }),
             },
-            animation_value_binding(),
+            animation_value_binding(buffers),
         ],
     })?;
     Ok(FrameResourceSets {

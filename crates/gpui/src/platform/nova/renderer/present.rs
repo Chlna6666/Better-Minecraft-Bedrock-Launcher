@@ -616,6 +616,7 @@ impl NovaRenderer {
             }
         }
         self.sync_atlas_textures_for_current_backend()?;
+        self.ensure_quad_capacity()?;
         self.ensure_path_rasterization_capacity()?;
         if let Some(timing) = presentation_timing.as_mut() {
             timing.retained_resource_prepare = retained_resource_prepare_started.elapsed();

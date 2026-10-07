@@ -228,6 +228,7 @@ impl NovaRenderer {
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    quad_resource_set_layout: resources.quad_resource_set_layout,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
@@ -371,6 +372,7 @@ impl NovaRenderer {
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    quad_resource_set_layout: resources.quad_resource_set_layout,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
@@ -538,6 +540,7 @@ impl NovaRenderer {
                     backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
                     animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
                     quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
+                    quad_resource_set_layout: resources.quad_resource_set_layout,
                     shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
                     path_rasterization_resource_set: current_frame_resources
                         .resource_sets
