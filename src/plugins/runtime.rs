@@ -466,8 +466,10 @@ pub struct PluginRegistry {
     watcher_task: Option<gpui::Task<()>>,
     last_error: Option<SharedString>,
     loaded_once: bool,
-    /// 启动阶段的清单扫描正在后台执行；期间不启动第二份文件扫描。
+    /// 启动阶段的清单扫描正在后台执行，或已被 first-visible gate 延后。
     initial_reload_pending: bool,
+    /// true 表示初始扫描正在等待主窗口第一次可见帧。
+    initial_reload_deferred: bool,
     /// 常规 reload 的文件准备阶段正在 blocking pool 执行。
     reload_prepare_pending: bool,
     /// pending 期间又收到 reload 请求；完成当前任务后合并为一次后续 reload。
@@ -552,6 +554,7 @@ impl PluginRegistry {
             last_error: None,
             loaded_once: false,
             initial_reload_pending: false,
+            initial_reload_deferred: false,
             reload_prepare_pending: false,
             reload_prepare_requested: false,
             active_modal: None,
@@ -4205,15 +4208,58 @@ fn prepare_plugin_wasm(manifest: &PluginManifest) -> PreparedPluginWasm {
 
 pub fn init(cx: &mut App) {
     cx.default_global::<PluginRegistry>();
-    // Manifest/WASM preparation is already offloaded to the blocking pool. Keep the filesystem
-    // watcher out of the first-window critical path; the application starts it after the main
-    // window has presented its first visible frame.
     spawn_initial_reload(cx);
+    start_watcher(cx);
 }
 
-/// 把启动阶段的插件清单扫描放到 IO 线程执行，完成后回主线程提交注册表，
-/// 避免目录扫描与 manifest 解析阻塞首帧。
+/// Initializes the plugin registry without starting filesystem or WASM work.
+///
+/// Main-window startup uses this path so the first visible frame owns the cold-start CPU and IO
+/// budget. Calls that try to render plugin UI before the gate opens see the pending flag and do not
+/// start a competing reload.
+pub fn init_deferred(cx: &mut App) {
+    cx.default_global::<PluginRegistry>();
+    cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        if registry.loaded_once || registry.initial_reload_pending {
+            return;
+        }
+        registry.initial_reload_pending = true;
+        registry.initial_reload_deferred = true;
+    });
+}
+
+/// Starts the initial plugin reload reserved by init_deferred.
+pub fn start_deferred_initial_reload(cx: &mut App) {
+    let should_start = cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        if !registry.initial_reload_deferred {
+            return false;
+        }
+        registry.initial_reload_deferred = false;
+        true
+    });
+    if should_start {
+        spawn_initial_reload_task(cx);
+    }
+}
+
+/// Schedules the initial plugin scan immediately.
 fn spawn_initial_reload(cx: &mut App) {
+    let should_start = cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        if registry.loaded_once || registry.initial_reload_pending {
+            return false;
+        }
+        registry.initial_reload_pending = true;
+        registry.initial_reload_deferred = false;
+        true
+    });
+    if !should_start {
+        return;
+    }
+    spawn_initial_reload_task(cx);
+}
+
+/// Reads manifests/resources/WASM on the blocking pool and publishes the prepared registry.
+fn spawn_initial_reload_task(cx: &mut App) {
     let (plugins_dir, package_cache_dir, cache_dir) = {
         let registry = cx.global::<PluginRegistry>();
         (
@@ -4222,9 +4268,6 @@ fn spawn_initial_reload(cx: &mut App) {
             registry.cache_dir().to_path_buf(),
         )
     };
-    cx.update_global(|registry: &mut PluginRegistry, _cx| {
-        registry.initial_reload_pending = true;
-    });
 
     cx.spawn(async move |cx| {
         let prepared = crate::tasks::runtime::run_io_blocking(move || {
@@ -4235,6 +4278,7 @@ fn spawn_initial_reload(cx: &mut App) {
         cx.update(|cx| {
             let reload_requested = cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.initial_reload_pending = false;
+                registry.initial_reload_deferred = false;
                 if !registry.loaded_once() {
                     let result = match prepared {
                         Ok(Ok(prepared)) => registry.reload_prepared_manifests(prepared),

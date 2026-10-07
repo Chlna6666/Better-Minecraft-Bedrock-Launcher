@@ -284,7 +284,11 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         start_domain_event_bridges(cx);
 
         let plugin_init_started_at = Instant::now();
-        crate::plugins::runtime::init(cx);
+        if bootstrap.launch_mode.is_main() {
+            crate::plugins::runtime::init_deferred(cx);
+        } else {
+            crate::plugins::runtime::init(cx);
+        }
         let plugin_init_elapsed = plugin_init_started_at.elapsed();
 
         gpui_router::init(cx);
@@ -312,7 +316,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
                 open_window_elapsed.as_secs_f64() * 1000.0,
             );
             if main_window_opened {
-                schedule_plugin_watcher_after_main_window_visible(cx);
+                schedule_post_visible_startup_services(cx);
                 schedule_post_startup_warmups(cx);
                 if bootstrap.debug_enabled {
                     schedule_debug_window_after_main_window_visible(cx);
@@ -371,7 +375,9 @@ fn configure_runtime(cx: &mut App, launch_mode: &LaunchMode) {
     if let Err(error) = crate::assets::load_startup_fonts(cx) {
         eprintln!("Failed to load startup fonts: {error:?}");
     }
-    crate::assets::spawn_deferred_font_load(cx);
+    if !launch_mode.is_main() {
+        crate::assets::spawn_deferred_font_load(cx);
+    }
 
     crate::ui::components::input::init(cx);
     crate::ui::components::code_editor::init(cx);
@@ -500,33 +506,7 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
         },
     );
 
-    if bootstrap.launch_mode.is_main() {
-        // 诊断报告读盘放到 IO 线程执行，避免阻塞主窗口创建；
-        // 结果回填 DiagnosticsState 后由观察者驱动弹窗展示。
-        cx.spawn(async move |cx| {
-            let report = crate::tasks::runtime::run_io_blocking(
-                crate::utils::diagnostics::load_pending_report,
-            )
-            .await;
-            cx.update(|cx| match report {
-                Ok(Ok(report)) => {
-                    cx.update_global(
-                        |diagnostics: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
-                            diagnostics.set_pending_report(report);
-                        },
-                    );
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(?error, "failed to load pending diagnostics report");
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "pending diagnostics report load task failed: {error}");
-                }
-            })?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
-    }
+
 }
 
 fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
@@ -580,23 +560,51 @@ fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {
     }
 }
 
-fn schedule_plugin_watcher_after_main_window_visible(cx: &mut App) {
+fn schedule_post_visible_startup_services(cx: &mut App) {
     cx.spawn(async move |cx| {
         let deadline = Instant::now() + DEBUG_WINDOW_VISIBLE_WAIT_TIMEOUT;
         while !cx.update(main_window_is_visible).unwrap_or(false) {
             if Instant::now() >= deadline {
-                warn!(
-                    "starting plugin watcher after visibility wait timeout"
-                );
+                warn!("starting deferred startup services after visibility wait timeout");
                 break;
             }
             Timer::after(DEBUG_WINDOW_VISIBLE_POLL_INTERVAL).await;
         }
 
-        if let Err(error) = cx.update(crate::plugins::runtime::start_watcher) {
-            warn!("deferred plugin watcher startup failed: {error:?}");
+        if let Err(error) = cx.update(|cx| {
+            crate::plugins::runtime::start_deferred_initial_reload(cx);
+            crate::plugins::runtime::start_watcher(cx);
+            crate::assets::spawn_deferred_font_load(cx);
+            schedule_pending_diagnostics_load(cx);
+        }) {
+            warn!("deferred post-visible startup services failed: {error:?}");
         }
 
+        Ok::<(), anyhow::Error>(())
+    })
+    .detach();
+}
+
+fn schedule_pending_diagnostics_load(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let report =
+            crate::tasks::runtime::run_io_blocking(crate::utils::diagnostics::load_pending_report)
+                .await;
+        cx.update(|cx| match report {
+            Ok(Ok(report)) => {
+                cx.update_global(
+                    |diagnostics: &mut crate::ui::state::diagnostics::DiagnosticsState, _cx| {
+                        diagnostics.set_pending_report(report);
+                    },
+                );
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(?error, "failed to load pending diagnostics report");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "pending diagnostics report load task failed: {error}");
+            }
+        })?;
         Ok::<(), anyhow::Error>(())
     })
     .detach();
