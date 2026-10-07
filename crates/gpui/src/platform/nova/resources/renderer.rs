@@ -32,4 +32,5 @@ pub(in crate::platform::nova) struct RendererResources {
     pub(in crate::platform::nova) atlas_sampler: SamplerId,
     pub(in crate::platform::nova) path_texture: TextureId,
     pub(in crate::platform::nova) path_texture_view: TextureViewId,
+    pub(in crate::platform::nova) path_texture_size: Extent2d,
 }

@@ -32,7 +32,15 @@ impl NovaRenderer {
             present_mode: self.present_mode,
             alpha_mode: self.surface_alpha.swapchain_mode,
         };
-        let path_mask_target_descriptor = self.path_mask_target_descriptor(target_size);
+        let path_mask_was_promoted = self.path_texture_size.width() == self.current_size.width
+            && self.path_texture_size.height() == self.current_size.height;
+        let next_path_mask_size = if path_mask_was_promoted {
+            target_size
+        } else {
+            Extent2d::new(1, 1)?
+        };
+        let path_mask_target_descriptor =
+            self.path_mask_target_descriptor(next_path_mask_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
@@ -177,6 +185,7 @@ impl NovaRenderer {
         };
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
+        self.path_texture_size = next_path_mask_size;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
@@ -364,7 +373,9 @@ impl NovaRenderer {
             present_mode: self.present_mode,
             alpha_mode: alpha.swapchain_mode,
         };
-        let path_mask_target_descriptor = self.path_mask_target_descriptor(config.size);
+        let next_path_mask_size = self.path_texture_size;
+        let path_mask_target_descriptor =
+            self.path_mask_target_descriptor(next_path_mask_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(config.size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
@@ -477,6 +488,7 @@ impl NovaRenderer {
         };
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
+        self.path_texture_size = next_path_mask_size;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
         self.backdrop_blur_targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();

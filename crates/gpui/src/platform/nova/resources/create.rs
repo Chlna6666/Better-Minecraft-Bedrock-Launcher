@@ -64,11 +64,12 @@ where
     let buffers = create_resource_buffers(device, label)?;
     let frame_buffers = buffers.frame_buffers;
     let shared_buffers = buffers.shared;
+    let startup_path_mask_size = Extent2d::new(1, 1)?;
     let path_mask_target = create_path_mask_target(
         device,
         label,
         PathMaskTargetDescriptor {
-            size: surface_config.size,
+            size: startup_path_mask_size,
             format: surface_config.format,
             resource_set_layout: layouts.path_resource_set_layout,
             frame_buffers: frame_buffers.clone(),
@@ -149,5 +150,6 @@ where
         atlas_sampler: shared_buffers.atlas_sampler,
         path_texture: path_mask_target.texture,
         path_texture_view: path_mask_target.texture_view,
+        path_texture_size: startup_path_mask_size,
     })
 }

@@ -125,6 +125,7 @@ pub(crate) struct NovaRenderer {
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
+    path_texture_size: Extent2d,
     frame_upload: FrameUpload,
     renderer_extension_renderers:
         FxHashMap<std::any::TypeId, Box<dyn crate::RendererExtensionRenderer>>,
@@ -257,12 +258,91 @@ impl NovaRenderer {
             packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
+        self.ensure_path_mask_target_for_frame()?;
         self.prepare_renderer_extensions(packet.frame_time)?;
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
         if !self.frame_upload.backdrop_blurs.is_empty() {
             self.ensure_backdrop_blur_targets()?;
         }
         self.draw_present(upload, packet, backdrop_blur_quality, presentation_timing)
+    }
+
+    fn ensure_path_mask_target_for_frame(&mut self) -> Result<()> {
+        if self.frame_upload.path_rasterization_vertices.is_empty()
+            && self.frame_upload.path_sprites.is_empty()
+        {
+            return Ok(());
+        }
+
+        let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
+        if self.path_texture_size == target_size {
+            return Ok(());
+        }
+
+        let descriptor = self.path_mask_target_descriptor(target_size);
+        let old_target = self.current_path_mask_target();
+        let next_target = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => {
+                create_path_mask_target(device, "gpui nova dx12", descriptor)?
+            }
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => {
+                create_path_mask_target(device, "gpui nova metal", descriptor)?
+            }
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => {
+                create_path_mask_target(device, "gpui nova vulkan", descriptor)?
+            }
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {
+                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+            }
+        };
+
+        self.update_path_mask_resource_sets(&next_target.resource_sets)?;
+        self.path_texture = next_target.texture;
+        self.path_texture_view = next_target.texture_view;
+        self.path_texture_size = target_size;
+        self.activate_frame_resources(self.current_frame_resource_index)?;
+
+        match &mut *lock_backend(&self.backend) {
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            NovaBackend::Dx12(device) => destroy_path_mask_target(device, old_target, "DX12"),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            NovaBackend::Metal(device) => destroy_path_mask_target(device, old_target, "Metal"),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            NovaBackend::Vulkan(device) => destroy_path_mask_target(device, old_target, "Vulkan"),
+            #[cfg(not(any(
+                all(feature = "nova-gfx-dx12", target_os = "windows"),
+                all(feature = "nova-gfx-metal", target_os = "macos"),
+                all(
+                    feature = "nova-gfx-vulkan",
+                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+                )
+            )))]
+            NovaBackend::Unavailable => {}
+        }
+
+        log::debug!(
+            "nova path mask target promoted from startup placeholder: {}x{}",
+            target_size.width(),
+            target_size.height()
+        );
+        Ok(())
     }
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
