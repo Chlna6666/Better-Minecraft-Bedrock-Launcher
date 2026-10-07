@@ -38,7 +38,7 @@ use std::{
 
 use bitflags::bitflags;
 use smallvec::SmallVec;
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 pub use backend::{
     AsyncCommandDevice, AsyncDevice, AsyncDiagnosticsDevice, AsyncPipelineDevice,
@@ -56,7 +56,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 /// Error type for backend-neutral validation and backend-provided failures.
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum Error {
     /// A required graphics capability or resource was not available.
     #[error("graphics resource is unavailable: {0}")]
