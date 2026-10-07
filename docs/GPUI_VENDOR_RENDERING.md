@@ -106,16 +106,20 @@ UI / entity state                         retained presentation
 
 When a platform callback contains both a renderer-owned animation tick and dirty UI work, presentation runs first. The last committed retained scene is submitted with the newest animation values before callbacks, View rendering, layout, text shaping, or scene rebuilding run. Dirty UI work then builds the next scene snapshot for a later presentation.
 
-Windows has a native winit/Nova owner and a separate GPUI UI owner. The native owner creates and retains the real window, surface, renderer, and active scene. The first frame remains synchronous so native visibility waits for a submitted frame; later UI packets enter a latest-wins mailbox without waiting for native rendering. If DXGI backpressure or a pending resize defers a packet, the native owner retains it, carries forward unsubmitted scene and backdrop damage, and retries it on the next native frame. Native presentation continues from the active scene while UI `Render` is blocked. The blocked-Render lab checks that native animation samples keep changing without per-frame UI rendering. This independence does not establish nominal-refresh continuity or physical scanout timing.
+Windows and Linux/FreeBSD Nova windows share one dedicated GPU owner thread. It creates devices, swapchains, window targets and extension renderers, encodes scenes, submits GPU work and destroys window resources. The thread-local device and pipeline registries are shared across windows on this owner. The UI produces immutable packets; native window owners hold producer proxies and native handles, without owning a Nova renderer.
 
-The Windows proxy declares scene-animation ownership locally through
-`owns_scene_animations()`. UI animation ticks do not synchronously query native
-activity to select their completion owner. Queued or deferred scene timelines
-wait for native completion reports; UI-only visual and layout timelines still
-advance on the UI thread. Other platform paths retain their previous activity
-check through the trait's default implementation.
+Windows keeps winit windows, native input and DWM frame pacing on its native event loop. Wayland and X11 keep protocol objects, callbacks and native surfaces on their platform thread. Only owned handle descriptors cross to the GPU owner; the native surface remains alive until the window's GPU destruction barrier completes. macOS's native Metal renderer is outside this Nova owner path.
 
-Linux Wayland and X11 keep protocol objects, callbacks, and native surfaces on their platform thread. Each window moves its `NovaRenderer` into a dedicated presentation owner thread. The first frame remains synchronous; later scene packets and presentation ticks enter a coalescing owner queue. The queue keeps the latest scene while accumulating all unsubmitted damage, and the owner reports animation completions only after a successful submission. Resize, renderer queries, trim, and destruction are serialized with drawing on that owner; shutdown joins it before the platform destroys its surface. This isolates scene encoding and renderer submission from the UI and native protocol event loops without moving Wayland/X11 objects across threads.
+Linux/FreeBSD currently runs native protocol dispatch and GPUI UI work on the same event loop.
+The GPU owner consumes submitted work independently, but a synchronous UI Render block also
+delays new native presentation ticks. This GPU ownership split does not provide Windows's separate
+native/UI host behavior on Linux; that requires its own native event-loop separation and validation.
+
+The first visibility handshake waits for an actual submitted frame. Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
+
+Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI layout or rebuilding its committed display list. Animation completions are returned only after successful submission. Windows, Wayland and X11 declare scene-animation ownership through `owns_scene_animations()`; queued/deferred timelines wait for owner completion reports. Backend readiness wakes the native frame lane when supported. A pending frame continues through native pacing; a GPU error requests a fresh UI commit. A static completed scene schedules no continuous owner work.
+
+The blocked-Render lab checks whether animation presentation progresses while UI `Render` is blocked. This does not establish nominal-refresh continuity or physical scanout timing.
 
 A UI commit produced after an early presentation sets needs_present and requests a follow-up presentation; it is not synchronously presented at the tail of the same expensive render callback. Dirty-to-present latency accounting therefore remains attached to the presentation that actually contains the committed UI state.
 
@@ -489,15 +493,29 @@ speculative work:
 
 ## nova-gfx Frame Path
 
-`NovaRenderer::draw(render_plan)` runs this sequence on the platform presentation owner:
+`NovaRenderer::draw(packet)` and `present_framebuffer_only(packet)` run this sequence on the GPU owner:
 
-1. Observe the render plan for metrics.
-2. Resolve full redraw or partial surface plan.
-3. Determine backdrop blur quality.
-4. Encode the GPUI scene into `FrameUpload`.
-5. Ensure backdrop blur targets if needed.
-6. Prepare generic renderer-extension draw steps from the committed render plan.
-7. Call `draw_present(upload, render_plan)`.
+1. Apply pending drawable-size changes.
+2. Observe packet damage and resolve the full or partial surface plan.
+3. Determine backdrop blur quality and encode the retained scene into `FrameUpload`.
+4. Ensure the path-mask target and prepare renderer-extension draw steps.
+5. Update the damage-aware blur cache plan and ensure blur targets if needed.
+6. Call `draw_present(upload, packet)`.
+
+The per-window `RendererRegistry` keys instances by `RendererExtension::renderer_type()`. Inputs
+remain immutable scene nodes; their shared mutable renderer stays on the GPU owner, including
+creation, trim and removal when the active retained scene no longer uses that renderer type.
+
+`FilterRegistry` owns backdrop target variants, quality and cache validity. `RenderTarget` groups
+a texture with its view. Source-damage provenance, isolated blur sources and partial-redraw
+eligibility remain in the existing damage plan and draw-step logic. Cache validity is recorded
+only after successful submission; a deferred refresh remains invalid.
+
+`RendererOptions` expresses application intent. `BackendCapabilities` describes backend facts;
+`PresentationCapabilities` queries a live swapchain's native partial-presentation and readiness
+notification support. Missing or stale swapchains return unsupported capabilities. These facts
+do not turn a requested present mode, a fixed queue latency or an unqueried MSAA limit into a
+reported hardware capability.
 
 `draw_present` then:
 

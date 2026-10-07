@@ -2,7 +2,7 @@ use super::*;
 use gfx_core::ResourceDevice;
 
 impl NovaRenderer {
-    pub(super) fn prepare_for_frame_submission(&mut self) -> Result<()> {
+    pub(super) fn prepare_for_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
             let had_pending_submissions = !self.pending_submissions.is_empty();
             let wait_started_at = Instant::now();
@@ -13,7 +13,7 @@ impl NovaRenderer {
                 );
             }
             self.activate_frame_resources(0)?;
-            self.upload_presentation_clock()?;
+            self.upload_presentation_clock(frame_time)?;
             self.upload_gpu_indexed_animation_values()?;
             return Ok(());
         }
@@ -23,7 +23,7 @@ impl NovaRenderer {
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
         self.activate_frame_resources(frame_resource_index)?;
-        self.upload_presentation_clock()?;
+        self.upload_presentation_clock(frame_time)?;
         self.upload_gpu_indexed_animation_values()?;
         Ok(())
     }
@@ -33,11 +33,11 @@ impl NovaRenderer {
     /// The first 16 bytes of GlobalParams remain static scene state. Only the final 8 bytes change
     /// on presentation-only frames, so custom retained GPU effects can advance without rebuilding
     /// scene primitives, layout, or View state.
-    fn upload_presentation_clock(&mut self) -> Result<()> {
+    fn upload_presentation_clock(&mut self, frame_time: Instant) -> Result<()> {
         const CLOCK_OFFSET: usize = 16;
         const CLOCK_BYTES: usize = 8;
 
-        let seconds = crate::animation::presentation_clock_seconds_now();
+        let seconds = crate::animation::presentation_clock_seconds_at(frame_time);
         let tick_60hz = ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
         let mut bytes = [0_u8; CLOCK_BYTES];
         bytes[..4].copy_from_slice(&seconds.to_ne_bytes());

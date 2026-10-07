@@ -55,8 +55,10 @@ DX12 backend 和 Vulkan fallback。平台专用示例应通过 guarded fallback 
 Windows presentation owner 必须分别以 `--backend=nova-dx12` 和
 `--backend=nova-vulkan` 运行 `presentation_lane_block`。每次运行均须在 UI
 `Render` 阻塞 200 ms 期间提交至少两个不同的动画样本，并保持 UI Render 次数不变。
-仅编译通过或只验证一个 backend 不算通过。Linux Wayland/X11 完成 owner 切分后需在
-原生平台执行相同门槛；Windows 构建不能替代 Linux 验证。
+仅编译通过或只验证一个 backend 不算通过。Linux Wayland/X11 已接入 GPU owner，但
+native/UI 共用事件循环，UI 同步阻塞仍会延迟原生 tick。需在原生平台验证建窗、resize、
+关闭和 retained presentation；阻塞 UI 时的独立推进还需要先分离 native 事件循环。
+Windows 构建不能替代 Linux 验证。
 
 更新 GPU examples 时，确认 flow 根据渲染发生的位置使用 `removed surface API`、
 `back_buffer_view`、`present` 或 `swap_buffers`，以及 `removed surface paint API`。

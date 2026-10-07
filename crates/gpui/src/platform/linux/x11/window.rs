@@ -248,7 +248,9 @@ fn find_visuals(xcb: &XCBConnection, screen_index: usize) -> VisualSet {
 }
 
 struct RawWindow {
-    connection: *mut c_void,
+    // The native XCB connection/window outlive the GPU owner's destruction barrier.
+    // Only handle identities enter its initialization factory, never the Rc/native client.
+    connection: usize,
     screen_id: usize,
     window_id: u32,
     visual_id: u32,
@@ -411,7 +413,7 @@ impl rwh::HasWindowHandle for RawWindow {
 }
 impl rwh::HasDisplayHandle for RawWindow {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        let Some(non_zero) = NonNull::new(self.connection) else {
+        let Some(non_zero) = NonNull::new(self.connection as *mut c_void) else {
             log::error!("Null RawWindow.connection when getting display handle.");
             return Err(rwh::HandleError::Unavailable);
         };
@@ -777,20 +779,23 @@ impl X11WindowState {
                 let raw_window = RawWindow {
                     connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
                         xcb,
-                    ) as *mut _,
+                    ) as usize,
                     screen_id: x_screen_index,
                     window_id: x_window,
                     visual_id: visual.id,
                 };
-                let renderer = NovaRenderer::new(
-                    &raw_window,
-                    renderer_options.backend,
-                    renderer_options,
-                    crate::GpuSubmissionMode::Deferred,
-                    query_render_extent(xcb, x_window)?,
-                    transparent,
-                )?;
-                OwnedNovaRenderer::new(renderer)?
+                let drawable_size = query_render_extent(xcb, x_window)?;
+                let renderer_options = renderer_options.clone();
+                OwnedNovaRenderer::new(move || {
+                    NovaRenderer::new(
+                        &raw_window,
+                        renderer_options.backend,
+                        &renderer_options,
+                        crate::GpuSubmissionMode::Deferred,
+                        drawable_size,
+                        transparent,
+                    )
+                })?
             };
 
             let display = Rc::new(X11Display::new(xcb, scale_factor, x_screen_index)?);
@@ -1752,6 +1757,10 @@ impl PlatformWindow for X11Window {
         _timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
         self.0.present_active_frame(now, None)
+    }
+
+    fn owns_scene_animations(&self) -> bool {
+        true
     }
 
     fn has_active_presentation_animations(&self) -> bool {

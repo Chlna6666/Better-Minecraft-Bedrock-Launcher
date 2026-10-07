@@ -195,17 +195,20 @@ impl NovaBackend {
         }
     }
 
-    pub(super) fn supports_partial_presentation(&self, swapchain: SwapchainId) -> bool {
+    pub(super) fn presentation_capabilities(
+        &self,
+        swapchain: SwapchainId,
+    ) -> gfx_core::PresentationCapabilities {
         match self {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => device.supports_partial_presentation(swapchain),
+            Self::Dx12(device) => device.presentation_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(device) => device.supports_partial_presentation(swapchain),
+            Self::Metal(device) => device.presentation_capabilities(swapchain),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => device.supports_partial_presentation(swapchain),
+            Self::Vulkan(device) => device.presentation_capabilities(swapchain),
             #[cfg(not(any(
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
@@ -214,7 +217,7 @@ impl NovaBackend {
                     any(target_os = "windows", target_os = "linux", target_os = "freebsd")
                 )
             )))]
-            Self::Unavailable => false,
+            Self::Unavailable => gfx_core::PresentationCapabilities::default(),
         }
     }
 

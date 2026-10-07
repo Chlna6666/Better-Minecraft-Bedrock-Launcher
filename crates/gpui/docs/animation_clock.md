@@ -7,8 +7,8 @@ application/rendering details are documented in
 
 ## Ownership
 
-`Window::run_platform_frame` owns the timestamp for one rendered/presented
-frame. At the beginning of the platform frame it captures one monotonic instant
+`Window::run_platform_frame` owns the timestamp for one UI commit frame.
+At the beginning of the platform frame it captures one monotonic instant
 and stores it in `Window::animation_time()` before advancing the animation
 engine and before layout, prepaint, paint, scene construction, and renderer
 preparation.
@@ -29,8 +29,16 @@ platform frame begins
     -> present
 ```
 
-The initial `Instant::now()` above is the capture point for the frame. It must
-not be repeated inside lifecycle stages to obtain a newer visual sample.
+The initial `Instant::now()` above is the capture point for the UI frame. It must
+not be repeated inside its lifecycle stages to obtain a newer visual sample.
+
+Windows and Linux/FreeBSD Nova presentation has a separate GPU frame. After a
+packet or tick leaves the owner queue and backend readiness is checked, the GPU
+owner captures that frame's timestamp. Its retained timeline sampling, extension
+contexts, damage planning and Nova preparation share this timestamp. The owner
+does not rerun UI layout or caller-sampled helpers; their committed geometry is
+stable input. Event/retarget anchors remain monotonic instants shared across both
+owners. Queueing must not replay an obsolete UI visual sample as the GPU frame.
 
 ## Visual-frame clock
 
@@ -77,7 +85,7 @@ merged with pending work and deferred, so all visible state is still sampled onc
 `run_platform_frame` timestamp.
 
 The interval is per window. Changing it updates that window's active Nova presentation packet on
-the platform event loop and does not change other windows' pacing. The watchdog uses the configured
+the GPU owner through an ordered control command and does not change other windows' pacing. The watchdog uses the configured
 interval when one is available and expands its timeout to match that window's recent native callback
 or presentation cadence when the compositor is delivering frames more slowly. An explicit inactive
 redraw interval also sets the minimum cadence for that window. The first deadline allows two missed

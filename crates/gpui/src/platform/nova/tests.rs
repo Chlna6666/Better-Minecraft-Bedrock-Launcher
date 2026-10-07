@@ -1820,7 +1820,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let pipelines = test_pipelines();
     let config = test_backdrop_blur_config(2, 3);
     let targets = BackdropBlurTargets {
-        source: TextureTarget {
+        source: RenderTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
@@ -1881,7 +1881,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
-        source: TextureTarget {
+        source: RenderTarget {
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },

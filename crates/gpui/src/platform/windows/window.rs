@@ -49,14 +49,10 @@ use windows::{
     core::*,
 };
 
-use super::{
-    frame_ready::FrameReadyRequestState,
-    platform::{QueuedScene, WindowsUserEvent},
-};
+use super::platform::{QueuedScene, WindowsUserEvent};
 use crate::diagnostics::performance_metrics::{
     record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
-    record_window_active_presentation_attempt,
-    record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
+    record_window_active_presentation_attempt, record_window_active_presentation_retry,
     record_window_backend_ready_wake, record_window_native_vsync_wake,
     record_window_request_redraw,
 };
@@ -66,7 +62,7 @@ use crate::platform::winit::{
     start_window_resize as start_winit_window_resize, toggle_window_fullscreen,
     toggle_window_maximized,
 };
-use crate::platform::{NovaRenderer, NovaRendererAtlas};
+use crate::platform::{NovaRenderer, NovaRendererAtlas, render_owner::RenderOwner};
 use crate::*;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
@@ -709,177 +705,66 @@ pub struct WindowsWindowState {
     pub click_state: RefCell<ClickState>,
 }
 
-pub enum WindowsRenderer {
-    Nova(NovaRenderer),
-}
+fn create_windows_renderer(initialization: WindowsRendererInitialization) -> Result<NovaRenderer> {
+    let WindowsRendererInitialization {
+        window,
+        logical_size,
+        scale_factor,
+        disable_direct_composition,
+        renderer_backend_candidates,
+        renderer_options,
+        window_id,
+        transparent,
+        atlas,
+    } = initialization;
+    let drawable_size = logical_size
+        .to_device_pixels(scale_factor)
+        .map(|axis| DevicePixels(axis.0.max(1)));
+    let candidate_count = renderer_backend_candidates.len();
+    let mut last_error = None;
 
-impl WindowsRenderer {
-    fn new(initialization: WindowsRendererInitialization) -> Result<Self> {
-        let WindowsRendererInitialization {
-            window,
-            logical_size,
-            scale_factor,
-            disable_direct_composition,
-            renderer_backend_candidates,
-            renderer_options,
-            window_id,
+    for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
+        match NovaRenderer::with_atlas(
+            &window,
+            candidate,
+            &renderer_options,
+            GpuSubmissionMode::Deferred,
+            drawable_size,
             transparent,
-            atlas,
-        } = initialization;
-        let drawable_size = logical_size
-            .to_device_pixels(scale_factor)
-            .map(|axis| DevicePixels(axis.0.max(1)));
-        let candidate_count = renderer_backend_candidates.len();
-        let mut last_error = None;
-
-        for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
-            match NovaRenderer::with_atlas(
-                &window,
-                candidate,
-                &renderer_options,
-                GpuSubmissionMode::Deferred,
-                drawable_size,
-                transparent,
-                atlas.clone(),
-            ) {
-                Ok(renderer) => {
-                    let gpu_specs = renderer.gpu_specs();
-                    log::info!(
-                        "Created Windows nova/{} renderer: gpu=\"{}\" driver=\"{}\" info=\"{}\" software={}",
-                        candidate,
-                        gpu_specs.device_name,
-                        gpu_specs.driver_name,
-                        gpu_specs.driver_info,
-                        gpu_specs.is_software_emulated
+            atlas.clone(),
+        ) {
+            Ok(renderer) => {
+                let gpu_specs = renderer.gpu_specs();
+                record_renderer_backend(candidate);
+                record_gpu_adapter_diagnostics(&gpu_specs.device_name, &gpu_specs.driver_name);
+                log::info!(
+                    "Created Windows nova/{} renderer: gpu=\"{}\" driver=\"{}\" info=\"{}\" software={}",
+                    candidate,
+                    gpu_specs.device_name,
+                    gpu_specs.driver_name,
+                    gpu_specs.driver_info,
+                    gpu_specs.is_software_emulated
+                );
+                return Ok(renderer);
+            }
+            Err(error) => {
+                let should_try_next = candidate_index + 1 < candidate_count;
+                if should_try_next {
+                    log::warn!(
+                        "Windows nova/{} renderer failed; trying next backend: {error:#}",
+                        candidate
                     );
-                    record_renderer_backend(candidate);
-                    record_gpu_adapter_diagnostics(&gpu_specs.device_name, &gpu_specs.driver_name);
-                    let _ = (disable_direct_composition, window_id);
-                    return Ok(Self::Nova(renderer));
+                    last_error = Some(error);
+                    continue;
                 }
-                Err(error) => {
-                    let should_try_next = candidate_index + 1 < candidate_count;
-                    if should_try_next {
-                        log::warn!(
-                            "Windows nova/{} renderer failed; trying next backend: {error:#}",
-                            candidate
-                        );
-                        last_error = Some(error);
-                        continue;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-
-        let _ = (disable_direct_composition, window_id);
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no Windows nova renderer candidates")))
-    }
-
-    pub fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
-        match self {
-            Self::Nova(renderer) => renderer.try_resize(size),
-        }
-    }
-
-    /// Stretches the previous frame over the new client size while a resize is pending.
-    pub(crate) fn stretch_for_pending_resize(&mut self, size: Size<DevicePixels>) {
-        match self {
-            Self::Nova(renderer) => renderer.stretch_surface_for_pending_resize(size),
-        }
-    }
-
-    pub fn can_present_without_wait(&mut self) -> Result<bool> {
-        match self {
-            Self::Nova(renderer) => renderer.can_present_without_wait(),
-        }
-    }
-
-    fn arm_frame_ready_if_needed(&mut self, window: &WindowsWindow) {
-        match self {
-            Self::Nova(renderer) => window.arm_frame_ready_if_needed(renderer),
-        }
-    }
-
-    pub fn draw(&mut self, packet: PresentationPacket) -> Result<bool> {
-        match self {
-            Self::Nova(renderer) => renderer.draw(packet),
-        }
-    }
-
-    pub fn present_framebuffer_only(&mut self, packet: PresentationPacket) -> Result<bool> {
-        match self {
-            Self::Nova(renderer) => renderer.present_framebuffer_only(packet),
-        }
-    }
-
-    fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
-        match self {
-            Self::Nova(renderer) => renderer.set_frame_interval(interval),
-        }
-    }
-
-    fn has_active_presentation_animations(&self) -> bool {
-        match self {
-            Self::Nova(renderer) => renderer.has_active_presentation_animations(),
-        }
-    }
-
-    fn take_animation_completions(
-        &mut self,
-    ) -> smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]> {
-        match self {
-            Self::Nova(renderer) => renderer.take_animation_completions(),
-        }
-    }
-
-    fn present_active_frame(
-        &mut self,
-        window: &WindowsWindow,
-        window_id: u64,
-        now: Instant,
-        timing: Option<crate::platform::frame::ActivePresentationTiming>,
-    ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
-        match self {
-            Self::Nova(renderer) => {
-                // DXGI's frame-latency waitable object can consume its readiness signal.
-                // An idle presentation request must not take that signal from the next UI frame.
-                if !renderer.has_active_presentation_animations() {
-                    return Ok(None);
-                }
-                if !renderer.can_present_without_wait()? {
-                    record_window_active_presentation_preflight_not_ready(window_id);
-                    window.arm_frame_ready_if_needed(renderer);
-                    return Ok(None);
-                }
-                let result = renderer.present_active_frame(now, timing);
-                if result.as_ref().is_ok_and(Option::is_some) {
-                    window.invalidate_frame_ready_scene();
-                }
-                result
+                return Err(error);
             }
         }
     }
 
-    pub fn update_transparency(&mut self, is_transparent: bool) {
-        match self {
-            Self::Nova(renderer) => renderer.update_transparency(is_transparent),
-        }
-    }
-
-    pub fn gpu_specs(&self) -> Result<GpuSpecs> {
-        match self {
-            Self::Nova(renderer) => Ok(renderer.gpu_specs()),
-        }
-    }
-
-    pub fn trim_gpui_memory(&mut self, level: GpuiMemoryTrimLevel) {
-        match self {
-            Self::Nova(renderer) => renderer.trim_gpui_memory(level),
-        }
-    }
+    let _ = (disable_direct_composition, window_id);
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no Windows nova renderer candidates")))
 }
-
 fn apply_window_background_appearance(
     hwnd: HWND,
     background_appearance: WindowBackgroundAppearance,
@@ -928,16 +813,9 @@ fn apply_window_background_appearance(
     }
 }
 
-impl Drop for WindowsRenderer {
-    fn drop(&mut self) {
-        let Self::Nova(renderer) = self;
-        renderer.destroy();
-    }
-}
-
 enum WindowsRendererState {
     Initializing,
-    Ready(WindowsRenderer),
+    Ready(RenderOwner),
     Failed,
 }
 
@@ -1016,14 +894,6 @@ impl WindowsWindowPresentationState {
     }
 }
 
-struct InitializedWindowsRenderer(WindowsRenderer);
-
-// SAFETY: Windows renderer initialization exclusively owns its DX12 or Vulkan device, surface,
-// swapchain, and resource handles. This wrapper is moved exactly once from the initialization
-// worker to the foreground thread, and the renderer is never accessed concurrently on both
-// threads. D3D12/DXGI and Vulkan handles do not require destruction on their creation thread.
-unsafe impl Send for InitializedWindowsRenderer {}
-
 struct WindowsRendererInitialization {
     window: WindowsRendererWindowHandle,
     logical_size: Size<Pixels>,
@@ -1091,11 +961,9 @@ pub(crate) struct WindowsWindowInner {
     frame_dispatch_in_progress: Cell<bool>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
-    pub(crate) renderer_resize_retry_pending: Cell<bool>,
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
     pending_scene: RefCell<Option<QueuedScene>>,
-    frame_ready_request: Cell<FrameReadyRequestState>,
     event_loop_proxy: EventLoopProxy<WindowsUserEvent>,
 }
 
@@ -1195,86 +1063,71 @@ impl WindowsWindow {
         }
     }
 
-    pub(crate) fn invalidate_frame_ready_scene(&self) {
-        let mut request = self.0.frame_ready_request.get();
-        request.invalidate_scene();
-        self.0.frame_ready_request.set(request);
+    pub(crate) fn report_render_owner_frame(
+        &self,
+        frame: crate::platform::render_owner::RenderOwnerFrame,
+    ) {
+        if frame.submitted {
+            self.mark_first_frame_presented();
+        }
+        if let Some(enqueued_at) = frame.ready_enqueued_at {
+            record_window_backend_ready_wake(
+                self.0.handle.window_id().data().as_ffi(),
+                enqueued_at,
+                Instant::now(),
+            );
+        }
+        for completion in frame.completed_animations {
+            self.invoke_presentation_animation_completed(completion);
+        }
+        if frame.pending || frame.failed {
+            self.request_frame(if frame.failed {
+                PlatformFrameRequest::ui_commit()
+            } else {
+                PlatformFrameRequest::presentation()
+            });
+        }
     }
 
-    pub(crate) fn invalidate_frame_ready_swapchain(&self) {
-        let mut request = self.0.frame_ready_request.get();
-        request.invalidate_swapchain();
-        self.0.frame_ready_request.set(request);
-    }
-
-    fn arm_frame_ready_if_needed(&self, renderer: &mut NovaRenderer) {
-        let mut request = self.0.frame_ready_request.get();
-        let Some(generation) = request.begin_registration() else {
-            return;
+    fn submit_render_packet(
+        &self,
+        packet: PresentationPacket,
+        framebuffer_only: bool,
+    ) -> PlatformFrameResult {
+        if !self.try_apply_queued_renderer_resize() {
+            return defer_scene_until_native_frame(self, packet, framebuffer_only);
+        }
+        let (result, has_submitted_frame) = {
+            let renderer_state = self.0.renderer.borrow();
+            let WindowsRendererState::Ready(renderer) = &*renderer_state else {
+                return defer_scene_until_native_frame(self, packet, framebuffer_only);
+            };
+            let result = if framebuffer_only {
+                renderer.present_framebuffer_only(packet)
+            } else {
+                renderer.draw(packet)
+            };
+            (result, renderer.has_submitted_frame())
         };
-        self.0.frame_ready_request.set(request);
-
-        let event_loop_proxy = self.0.event_loop_proxy.clone();
-        let window_id = self.window().id();
-        let callback = Box::new(move || {
-            let enqueued_at = Instant::now();
-            if event_loop_proxy
-                .send_event(WindowsUserEvent::BackendFrameReady {
-                    window_id,
-                    generation,
-                    enqueued_at,
-                })
-                .is_err()
-            {
-                log::trace!("discarding backend-ready wake after the Windows event loop closed");
+        match result {
+            Ok(true) => {
+                self.mark_first_frame_presented();
+                PlatformFrameResult::Submitted
             }
-        });
-
-        match renderer.arm_swapchain_frame_ready(callback) {
-            Ok(true) => {}
+            Ok(false) if has_submitted_frame => {
+                self.request_frame(PlatformFrameRequest::presentation());
+                PlatformFrameResult::Queued
+            }
             Ok(false) => {
-                request.mark_unsupported(generation);
-                self.0.frame_ready_request.set(request);
+                self.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
             }
             Err(error) => {
-                request.reject_registration(generation);
-                self.0.frame_ready_request.set(request);
-                log::debug!("failed to arm Windows backend-ready wake: {error:#}");
+                log::error!("failed to submit Windows GPU frame: {error:#}");
+                self.request_frame(PlatformFrameRequest::ui_commit());
+                PlatformFrameResult::Deferred
             }
         }
-    }
-
-    pub(crate) fn dispatch_pending_update_from_backend_ready(
-        &self,
-        generation: u64,
-        enqueued_at: Instant,
-    ) {
-        let mut request = self.0.frame_ready_request.get();
-        if !request.consume_if_current(generation) {
-            return;
-        }
-        self.0.frame_ready_request.set(request);
-
-        let event_received_at = Instant::now();
-        record_window_backend_ready_wake(
-            self.0.handle.window_id().data().as_ffi(),
-            enqueued_at,
-            event_received_at,
-        );
-        let has_pending_frame = self
-            .0
-            .state
-            .borrow()
-            .pending_frame_request
-            .get()
-            .requires_frame();
-        let has_retained_scene =
-            self.0.pending_scene.borrow().is_some() || self.has_active_presentation_animations();
-        if !has_pending_frame && has_retained_scene {
-            self.0
-                .queue_frame_request(PlatformFrameRequest::presentation());
-        }
-        self.dispatch_pending_update_with_vsync(None);
     }
 
     pub(crate) fn new(
@@ -1434,11 +1287,9 @@ impl WindowsWindow {
             frame_dispatch_in_progress: Cell::new(false),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
-            renderer_resize_retry_pending: Cell::new(false),
             fallback_corner_radius,
             winit_window: cell,
             pending_scene: RefCell::new(None),
-            frame_ready_request: Cell::new(FrameReadyRequestState::default()),
             event_loop_proxy,
         }));
         if let Some(hwnd) = hwnd {
@@ -1450,38 +1301,55 @@ impl WindowsWindow {
 
     fn start_renderer_initialization(&self, initialization: WindowsRendererInitialization) {
         let (sender, receiver) = oneshot::channel();
-        super::renderer_init::spawn(move || {
-            let renderer = WindowsRenderer::new(initialization).map(InitializedWindowsRenderer);
-            if sender.send(renderer).is_err() {
-                log::debug!("Windows renderer initialization receiver was dropped");
-            }
-        });
-
+        let window = self
+            .0
+            .winit_window
+            .get()
+            .expect("native window is initialized")
+            .clone();
+        let events = self.0.event_loop_proxy.clone();
+        let window_id = window.id();
+        let report = Arc::new(
+            move |frame: crate::platform::render_owner::RenderOwnerFrame| {
+                if events
+                    .send_event(WindowsUserEvent::RenderOwnerFrame { window_id, frame })
+                    .is_err()
+                {
+                    log::trace!("Windows GPU frame receiver closed");
+                }
+            },
+        );
+        if let Err(error) = RenderOwner::initialize(
+            move || create_windows_renderer(initialization),
+            Box::new(window),
+            report,
+            sender,
+        ) {
+            self.finish_renderer_initialization(Err(error));
+            return;
+        }
         let weak_window = Rc::downgrade(&self.0);
         self.0
             .executor
             .spawn(async move {
                 let renderer = receiver.await.unwrap_or_else(|error| {
                     Err(anyhow::anyhow!(
-                        "Windows renderer initialization task was cancelled: {error}"
+                        "Windows GPU owner initialization was cancelled: {error}"
                     ))
                 });
                 if let Some(window) = weak_window.upgrade() {
-                    WindowsWindow(window)
-                        .finish_renderer_initialization(renderer.map(|renderer| renderer.0));
+                    WindowsWindow(window).finish_renderer_initialization(renderer);
                 }
             })
             .detach();
     }
-
-    fn finish_renderer_initialization(&self, renderer: Result<WindowsRenderer>) {
+    fn finish_renderer_initialization(&self, renderer: Result<RenderOwner>) {
         match renderer {
             Ok(mut renderer) => {
                 let transparent = self.0.state.borrow().background_appearance.get()
                     != WindowBackgroundAppearance::Opaque;
                 renderer.update_transparency(transparent);
                 *self.0.renderer.borrow_mut() = WindowsRendererState::Ready(renderer);
-                self.0.renderer_resize_retry_pending.set(false);
                 self.request_first_presentable_frame();
             }
             Err(error) => {
@@ -1540,7 +1408,6 @@ impl WindowsWindow {
     }
 
     pub(crate) fn queue_resize(&self, resize: PendingWindowsResize) {
-        self.invalidate_frame_ready_swapchain();
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
@@ -1723,7 +1590,6 @@ impl WindowsWindow {
             return;
         };
         self.0.pending_renderer_size.set(Some(resize.drawable_size));
-        self.0.renderer_resize_retry_pending.set(false);
         self.invoke_resize(resize.logical_size, resize.scale_factor);
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
@@ -1733,31 +1599,13 @@ impl WindowsWindow {
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return false;
         };
-        let Some(size) = self.0.pending_renderer_size.take() else {
-            return true;
-        };
-
-        self.0.renderer_resize_retry_pending.set(false);
-        match renderer.try_resize(size) {
-            Ok(true) => {}
-            Ok(false) => {
+        if let Some(size) = self.0.pending_renderer_size.take() {
+            if let Err(error) = renderer.update_drawable_size(size) {
                 self.0.pending_renderer_size.set(Some(size));
-                if !self.0.renderer_resize_retry_pending.replace(true) {
-                    self.request_frame(PlatformFrameRequest::ui_commit());
-                }
-                return false;
-            }
-            Err(error) => {
-                log::warn!("failed to resize Windows renderer: {error:#}");
-                self.0.pending_renderer_size.set(Some(size));
-                if !self.0.renderer_resize_retry_pending.replace(true) {
-                    self.request_frame(PlatformFrameRequest::ui_commit());
-                }
+                log::error!("failed to queue Windows GPU resize: {error:#}");
                 return false;
             }
         }
-
-        self.0.renderer_resize_retry_pending.set(false);
         true
     }
 }
@@ -2162,7 +2010,7 @@ impl PlatformWindow for WindowsWindow {
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return Ok(None);
         };
-        renderer.present_active_frame(self, self.0.handle.window_id().data().as_ffi(), now, timing)
+        renderer.present_active_frame(now, timing)
     }
 
     fn has_active_presentation_animations(&self) -> bool {
@@ -2220,152 +2068,12 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        if !self.try_apply_queued_renderer_resize() {
-            return defer_scene_until_native_frame(self, packet, false);
-        }
-        let mut packet = Some(packet);
-        let (draw_result, has_active_presentation_animations, completed_animations) = {
-            let mut renderer_state = self.0.renderer.borrow_mut();
-            let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                drop(renderer_state);
-                return defer_scene_until_native_frame(
-                    self,
-                    packet
-                        .take()
-                        .expect("packet remains available before drawing"),
-                    false,
-                );
-            };
-            match renderer.can_present_without_wait() {
-                Ok(true) => {
-                    let result = renderer.draw(packet.take().expect("packet remains available"));
-                    let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
-                    {
-                        renderer.take_animation_completions()
-                    } else {
-                        smallvec::SmallVec::new()
-                    };
-                    (
-                        Some(result),
-                        renderer.has_active_presentation_animations(),
-                        completed_animations,
-                    )
-                }
-                Ok(false) => {
-                    renderer.arm_frame_ready_if_needed(self);
-                    (None, false, smallvec::SmallVec::new())
-                }
-                Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
-            }
-        };
-        if let Some(packet) = packet {
-            return defer_scene_until_native_frame(self, packet, false);
-        }
-        let Some(draw_result) = draw_result else {
-            unreachable!("a consumed packet must have a renderer draw result");
-        };
-        match draw_result {
-            Ok(true) => {
-                self.invalidate_frame_ready_scene();
-                self.mark_first_frame_presented();
-                for completion in completed_animations {
-                    self.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) if self.0.presentation_state.get().first_frame_presented => {
-                self.request_frame(PlatformFrameRequest::presentation());
-                PlatformFrameResult::Queued
-            }
-            Ok(false) => {
-                self.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to draw Windows frame: {error:#}");
-                self.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-        }
+        self.submit_render_packet(packet, false)
     }
 
     fn present_framebuffer_only(&self, packet: PresentationPacket) -> PlatformFrameResult {
-        if !self.try_apply_queued_renderer_resize() {
-            return defer_scene_until_native_frame(self, packet, true);
-        }
-        let mut packet = Some(packet);
-        let (present_result, has_active_presentation_animations, completed_animations) = {
-            let mut renderer_state = self.0.renderer.borrow_mut();
-            let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
-                drop(renderer_state);
-                return defer_scene_until_native_frame(
-                    self,
-                    packet
-                        .take()
-                        .expect("packet remains available before presentation"),
-                    true,
-                );
-            };
-            match renderer.can_present_without_wait() {
-                Ok(true) => {
-                    let result = renderer
-                        .present_framebuffer_only(packet.take().expect("packet remains available"));
-                    let completed_animations = if result.as_ref().is_ok_and(|submitted| *submitted)
-                    {
-                        renderer.take_animation_completions()
-                    } else {
-                        smallvec::SmallVec::new()
-                    };
-                    (
-                        Some(result),
-                        renderer.has_active_presentation_animations(),
-                        completed_animations,
-                    )
-                }
-                Ok(false) => {
-                    renderer.arm_frame_ready_if_needed(self);
-                    (None, false, smallvec::SmallVec::new())
-                }
-                Err(error) => (Some(Err(error)), false, smallvec::SmallVec::new()),
-            }
-        };
-        if let Some(packet) = packet {
-            return defer_scene_until_native_frame(self, packet, true);
-        }
-        let Some(present_result) = present_result else {
-            unreachable!("a consumed packet must have a renderer presentation result");
-        };
-        match present_result {
-            Ok(true) => {
-                self.invalidate_frame_ready_scene();
-                self.mark_first_frame_presented();
-                for completion in completed_animations {
-                    self.invoke_presentation_animation_completed(completion);
-                }
-                if has_active_presentation_animations {
-                    self.request_frame(PlatformFrameRequest::presentation());
-                }
-                PlatformFrameResult::Submitted
-            }
-            Ok(false) if self.0.presentation_state.get().first_frame_presented => {
-                self.request_frame(PlatformFrameRequest::presentation());
-                PlatformFrameResult::Queued
-            }
-            Ok(false) => {
-                self.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-            Err(error) => {
-                log::error!("failed to present Windows framebuffer: {error:#}");
-                self.request_frame(PlatformFrameRequest::ui_commit());
-                PlatformFrameResult::Deferred
-            }
-        }
+        self.submit_render_packet(packet, true)
     }
-
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.0.renderer_atlas.platform_atlas()
     }
@@ -2375,7 +2083,7 @@ impl PlatformWindow for WindowsWindow {
         let WindowsRendererState::Ready(renderer) = &*renderer else {
             return None;
         };
-        renderer.gpu_specs().log_err()
+        Some(renderer.gpu_specs())
     }
 
     fn trim_gpui_memory(&self, level: GpuiMemoryTrimLevel) {

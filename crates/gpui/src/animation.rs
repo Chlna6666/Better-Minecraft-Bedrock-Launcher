@@ -9,10 +9,6 @@ pub(crate) fn presentation_clock_seconds_at(now: Instant) -> f32 {
     now.saturating_duration_since(epoch).as_secs_f32()
 }
 
-pub(crate) fn presentation_clock_seconds_now() -> f32 {
-    presentation_clock_seconds_at(Instant::now())
-}
-
 mod animatable;
 mod easing;
 mod engine;

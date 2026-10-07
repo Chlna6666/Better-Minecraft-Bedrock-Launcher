@@ -247,16 +247,13 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    backdrop_blur_targets: resources.backdrop_blur_targets,
-                    backdrop_blur_cache_valid: false,
-                    backdrop_blur_cache_atlas_generation: 0,
-                    backdrop_blur_cache_quality: None,
+                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     path_texture_size: resources.path_texture_size,
                     frame_upload: FrameUpload::default(),
-                    renderer_extension_renderers: FxHashMap::default(),
+                    renderer_registry: extensions::RendererRegistry::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,
@@ -272,6 +269,7 @@ impl NovaRenderer {
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                     active_presentation_packet: None,
                     pending_animation_completions: SmallVec::new(),
+                    destroyed: false,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-dx12", target_os = "windows")))]
@@ -391,16 +389,13 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    backdrop_blur_targets: resources.backdrop_blur_targets,
-                    backdrop_blur_cache_valid: false,
-                    backdrop_blur_cache_atlas_generation: 0,
-                    backdrop_blur_cache_quality: None,
+                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     path_texture_size: resources.path_texture_size,
                     frame_upload: FrameUpload::default(),
-                    renderer_extension_renderers: FxHashMap::default(),
+                    renderer_registry: extensions::RendererRegistry::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,
@@ -416,6 +411,7 @@ impl NovaRenderer {
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                     active_presentation_packet: None,
                     pending_animation_completions: SmallVec::new(),
+                    destroyed: false,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-metal", target_os = "macos")))]
@@ -559,16 +555,13 @@ impl NovaRenderer {
                     backdrop_blur_pass_resource_set_layout: resources
                         .backdrop_blur_pass_resource_set_layout,
                     backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    backdrop_blur_targets: resources.backdrop_blur_targets,
-                    backdrop_blur_cache_valid: false,
-                    backdrop_blur_cache_atlas_generation: 0,
-                    backdrop_blur_cache_quality: None,
+                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
                     atlas_sampler: resources.atlas_sampler,
                     path_texture: resources.path_texture,
                     path_texture_view: resources.path_texture_view,
                     path_texture_size: resources.path_texture_size,
                     frame_upload: FrameUpload::default(),
-                    renderer_extension_renderers: FxHashMap::default(),
+                    renderer_registry: extensions::RendererRegistry::default(),
                     retained_upload: retained_upload::RetainedUpload::default(),
                     draw_step_scratch: DrawStepScratch::default(),
                     current_size,
@@ -584,6 +577,7 @@ impl NovaRenderer {
                     swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
                     active_presentation_packet: None,
                     pending_animation_completions: SmallVec::new(),
+                    destroyed: false,
                 })
             }
             #[cfg(not(all(

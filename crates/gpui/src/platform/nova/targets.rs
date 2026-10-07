@@ -18,7 +18,7 @@ pub(super) struct PathMaskTargetDescriptor {
 #[derive(Clone)]
 pub(super) struct BackdropBlurTargets {
     /// Shared accumulated scene color used as the ordered backdrop source.
-    pub(super) source: TextureTarget,
+    pub(super) source: RenderTarget,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     /// Per-element sources. Each CSS blur group starts from a clean attachment so one group's
     /// content can never become the backdrop source of a sibling group.
@@ -29,7 +29,7 @@ pub(super) struct BackdropBlurTargets {
 #[derive(Clone)]
 pub(super) struct IsolatedBlurSource {
     pub(super) index: u32,
-    pub(super) target: TextureTarget,
+    pub(super) target: RenderTarget,
     pub(super) pass_resource_sets: Vec<ResourceSetId>,
 }
 
@@ -64,7 +64,7 @@ pub(super) struct BackdropBlurTargetDescriptor {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct TextureTarget {
+pub(super) struct RenderTarget {
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
 }
@@ -409,7 +409,7 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
             }
             destroy_render_texture_target(
                 device,
-                TextureTarget {
+                RenderTarget {
                     texture: target.texture,
                     texture_view: target.texture_view,
                 },
@@ -460,7 +460,7 @@ fn create_render_texture_target<D>(
     label: &str,
     size: Extent2d,
     format: Format,
-) -> Result<TextureTarget>
+) -> Result<RenderTarget>
 where
     D: BackendResources + BackendPipelines,
 {
@@ -480,13 +480,13 @@ where
         mip_level_count: 1,
         format,
     })?;
-    Ok(TextureTarget {
+    Ok(RenderTarget {
         texture,
         texture_view,
     })
 }
 
-fn destroy_render_texture_target<D>(device: &mut D, target: TextureTarget, backend_name: &str)
+fn destroy_render_texture_target<D>(device: &mut D, target: RenderTarget, backend_name: &str)
 where
     D: BackendResources + BackendPipelines,
 {

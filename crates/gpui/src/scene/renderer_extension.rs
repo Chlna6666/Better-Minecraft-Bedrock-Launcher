@@ -1,4 +1,9 @@
-use std::{any::Any, fmt, sync::Arc, time::Instant};
+use std::{
+    any::{Any, TypeId},
+    fmt,
+    sync::Arc,
+    time::Instant,
+};
 
 use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId};
 
@@ -86,7 +91,7 @@ impl RendererExtensionContext {
         self.scissor
     }
 
-    /// Shared visual sample time for the current platform frame.
+    /// Shared visual sample time for the current renderer frame.
     #[must_use]
     pub fn frame_time(&self) -> Instant {
         self.frame_time
@@ -95,11 +100,21 @@ impl RendererExtensionContext {
 
 /// Immutable renderer input stored in a scene and shared with the presentation owner.
 ///
-/// GPUI creates one [`RendererExtensionRenderer`] per concrete extension type and Nova renderer.
+/// GPUI creates one [`RendererExtensionRenderer`] per [`RendererExtension::renderer_type`] and
+/// window's Nova renderer.
 /// The instance owns that window's GPU resources; `render` receives the current immutable input
 /// each frame and appends draw steps at this element's painter-order position. Implementations run
 /// synchronously on the renderer owner and must not perform application callbacks or blocking I/O.
 pub trait RendererExtension: Any + Send + Sync {
+    /// Identifies the per-window renderer shared by this input's scene nodes.
+    ///
+    /// The default uses the concrete input type. Inputs overriding this to share a renderer must
+    /// agree on its factory and accepted input types. The renderer is created on the GPU owner,
+    /// retained while any node of this type is present, and destroyed on that same owner.
+    fn renderer_type(&self) -> TypeId {
+        self.type_id()
+    }
+
     /// Creates per-window GPU state on the renderer's device.
     ///
     /// # Errors
@@ -123,8 +138,11 @@ impl dyn RendererExtension {
     }
 }
 
-/// Per-window state for a [`RendererExtension`].
-pub trait RendererExtensionRenderer: Send {
+/// Per-window state shared by scene inputs with the same renderer type.
+///
+/// Creation, encoding, trimming and destruction all run on the GPU owner. This state does not
+/// need to be `Send`; only the immutable [`RendererExtension`] inputs cross the UI boundary.
+pub trait RendererExtensionRenderer {
     /// Encodes the current extension input into ordered draw steps.
     ///
     /// The host applies the element scissor to every returned step. The `frame_time` in `context`
@@ -209,7 +227,7 @@ impl fmt::Debug for PaintRendererExtension {
             .field("order", &self.order)
             .field("bounds", &self.bounds)
             .field("content_mask", &self.content_mask)
-            .field("extension_type", &self.extension.type_id())
+            .field("renderer_type", &self.extension.renderer_type())
             .field("animation_id", &self.animation_id)
             .finish()
     }
@@ -218,5 +236,38 @@ impl fmt::Debug for PaintRendererExtension {
 impl From<PaintRendererExtension> for Primitive {
     fn from(extension: PaintRendererExtension) -> Self {
         Self::RendererExtension(extension)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct First;
+    struct Second;
+
+    macro_rules! input {
+        ($type:ty) => {
+            impl RendererExtension for $type {
+                fn create_renderer(
+                    &self,
+                    _device: &mut dyn ExtensionDevice,
+                    _context: RendererExtensionContext,
+                ) -> crate::Result<Box<dyn RendererExtensionRenderer>> {
+                    anyhow::bail!("this identity test must not create GPU resources")
+                }
+            }
+        };
+    }
+    input!(First);
+    input!(Second);
+
+    #[test]
+    fn shared_inputs_use_concrete_renderer_identity() {
+        let first: SharedRendererExtension = Arc::new(First);
+        let second: SharedRendererExtension = Arc::new(Second);
+        assert_eq!(first.renderer_type(), TypeId::of::<First>());
+        assert_eq!(second.renderer_type(), TypeId::of::<Second>());
+        assert_ne!(first.renderer_type(), second.renderer_type());
     }
 }

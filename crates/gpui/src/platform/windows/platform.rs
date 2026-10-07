@@ -127,10 +127,9 @@ fn with_active_context<R>(
 pub(crate) enum WindowsUserEvent {
     RunMainThreadTasks,
     VSync(super::vsync::VSyncEventTiming),
-    BackendFrameReady {
+    RenderOwnerFrame {
         window_id: winit::window::WindowId,
-        generation: u64,
-        enqueued_at: Instant,
+        frame: crate::platform::render_owner::RenderOwnerFrame,
     },
     DockMenuAction(usize),
     NativeCommand(WindowsNativeCommand),
@@ -1471,7 +1470,6 @@ impl WindowsApplication {
         let Some(window) = self.windows.get(&window_id).cloned() else {
             return;
         };
-        window.invalidate_frame_ready_swapchain();
         window.invoke_close();
         if self.hovered_window_id == Some(window_id) {
             self.hovered_window_id = None;
@@ -1570,13 +1568,10 @@ impl WindowsApplication {
                 // Sample the committed visual timelines on the native owner's clock, otherwise
                 // installing this scene can rewind geometry to the older UI frame timestamp.
                 packet.frame_time = Instant::now();
-                let result =
-                    self.windows
-                        .get(&window_id)
-                        .map_or(PlatformFrameResult::Deferred, |window| {
-                            window.invalidate_frame_ready_scene();
-                            window.draw(packet)
-                        });
+                let result = self
+                    .windows
+                    .get(&window_id)
+                    .map_or(PlatformFrameResult::Deferred, |window| window.draw(packet));
                 if reply.send(result).is_err() {
                     log::warn!("Windows UI owner dropped native scene submission reply");
                 }
@@ -1587,7 +1582,6 @@ impl WindowsApplication {
                 };
                 scene.prepare_for_native_frame(Instant::now());
                 if let Some(window) = self.windows.get(&window_id) {
-                    window.invalidate_frame_ready_scene();
                     if scene.framebuffer_only {
                         window.present_framebuffer_only(scene.packet);
                     } else {
@@ -1829,13 +1823,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
-            WindowsUserEvent::BackendFrameReady {
-                window_id,
-                generation,
-                enqueued_at,
-            } => {
+            WindowsUserEvent::RenderOwnerFrame { window_id, frame } => {
                 if let Some(window) = self.windows.get(&window_id) {
-                    window.dispatch_pending_update_from_backend_ready(generation, enqueued_at);
+                    window.report_render_owner_frame(frame);
                 }
             }
             WindowsUserEvent::DockMenuAction(action_index) => {

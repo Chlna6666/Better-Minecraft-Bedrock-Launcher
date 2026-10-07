@@ -44,9 +44,9 @@ transition metadata、窗口调度、renderer animation id 和 grouped timeline�
 
 绑定到 Scene 的视觉 timeline 会复制到不可变 `PresentationPacket`，并在采样时不读取
 可变的 `Window` 或 `App` 状态。动画完成通过 ID 和 retained target 作为事件回传，最终
-invalidation 仍由 UI owner 处理。Windows 已将 winit/Nova 原生 owner 与 GPUI UI 线程分离，
-DX12 和 Vulkan 在 UI `Render` 阻塞 200 ms 期间仍可采样和呈现不同帧。Linux Wayland/X11
-仍需完成相同的所有权切分。
+invalidation 仍由 UI owner 处理。Windows 与 Linux/FreeBSD 的 Nova 路径共用独立 GPU
+owner；原生窗口协议和 pacing 留在平台线程。阻塞 Render 验证用于检查各 backend 的采样
+和呈现是否持续；Linux Wayland/X11 仍需单独完成原生生命周期验证。
 
 ## Transition API
 
@@ -223,8 +223,8 @@ transition 或属性覆盖范围。
   纯视觉变化应使用按属性描述的 retained animation。
 - 影响 layout 的动画仍由 UI 所有；在深层树中仍可能产生较高成本。
 - 自动 dirty-bounds 发现，以及 driver fallback 和活跃动画数量的诊断尚未完整。
-- Windows DX12/Vulkan 已有独立原生 presentation owner。Linux Wayland/X11 仍需完成相同的
-  所有权切分和原生生命周期验证。
+- Windows DX12/Vulkan 与 Linux/FreeBSD Nova 已接入独立 GPU owner。Linux Wayland/X11
+  的原生生命周期验证仍是单独门槛，Windows 结果不能证明 Linux 运行时行为。
 
 性能结论必须来自实际工作负载。packet 自有 scratch storage 已避免呈现采样时重复创建
 临时集合，但在称为实测收益前，仍需比较 CPU p50/p95/p99、上传成本、帧间隔和输入延迟。

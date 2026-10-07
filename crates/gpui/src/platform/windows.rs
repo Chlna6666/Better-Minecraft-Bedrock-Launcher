@@ -7,12 +7,10 @@ mod dialogs;
 mod direct_write;
 mod dispatcher;
 mod display;
-mod frame_ready;
 mod input;
 mod keyboard;
 mod library;
 mod platform;
-mod renderer_init;
 mod vsync;
 mod window;
 

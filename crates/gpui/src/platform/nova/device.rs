@@ -24,18 +24,15 @@ pub(super) struct DeviceKey {
 
 /// A backend device shared by every window created on the same thread.
 ///
-/// This is the ownership shape professional graphics libraries use: a cheap reference-counted
-/// handle whose operations synchronize internally, instead of a device each window owns. A
-/// second window that resolves to the same [`DeviceKey`] on this thread reuses the adapter, the
+/// A second window that resolves to the same [`DeviceKey`] on this thread reuses the adapter, the
 /// descriptor heaps, the upload ring, and the compiled pipelines the first window already paid
 /// for.
 ///
 /// The registry is thread local because [`NovaBackend`] is not `Send`: the DX12 device holds
-/// `HANDLE`, `IUnknown`, and mapped-upload `NonNull` raw pointers. Windows initializes a
-/// renderer on a [`crate::BackgroundExecutor`] worker and moves it to the UI thread through a
-/// channel, so two windows can be initialized on different workers; those windows do not share
-/// a device. Making the registry process wide requires a device that is `Send`, which means an
-/// `unsafe` assertion of the kind `InitializedWindowsRenderer` already carries.
+/// `HANDLE`, `IUnknown`, and mapped-upload `NonNull` raw pointers. Windows and Linux/FreeBSD
+/// create and retain all Nova renderers on the shared GPU owner, so matching windows use this
+/// same registry without transferring a backend device across threads. Its entries live until
+/// that owner exits; window resources are released independently at window destruction.
 ///
 /// The lock is held for one backend operation at a time; a caller must not hold the guard
 /// across another backend use.

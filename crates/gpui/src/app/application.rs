@@ -262,6 +262,8 @@ impl Application {
             let cx = &mut *this.borrow_mut();
             on_finish_launching(cx);
         }));
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        crate::platform::render_owner::shutdown();
     }
 
     /// Starts the Windows native event loop and creates the GPUI app on its UI owner thread.
@@ -276,16 +278,19 @@ impl Application {
         B: FnOnce() -> Application + Send + 'static,
         F: FnOnce(&mut App) + Send + 'static,
     {
-        crate::platform::WindowsPlatform::run_separate(renderer_options, move |shutdown| {
-            let application = build();
-            let this = application.0.clone();
-            {
-                let app = this.borrow();
-                app.text_system.log_platform_default_font_once();
-            }
-            on_finish_launching(&mut this.borrow_mut());
-            crate::platform::WindowsPlatform::run_ui_owner_tasks(shutdown);
-        })
+        let result =
+            crate::platform::WindowsPlatform::run_separate(renderer_options, move |shutdown| {
+                let application = build();
+                let this = application.0.clone();
+                {
+                    let app = this.borrow();
+                    app.text_system.log_platform_default_font_once();
+                }
+                on_finish_launching(&mut this.borrow_mut());
+                crate::platform::WindowsPlatform::run_ui_owner_tasks(shutdown);
+            });
+        crate::platform::render_owner::shutdown();
+        result
     }
 
     /// Register a handler to be invoked when the platform instructs the application

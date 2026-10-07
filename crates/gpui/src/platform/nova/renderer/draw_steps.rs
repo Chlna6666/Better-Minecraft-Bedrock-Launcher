@@ -38,7 +38,7 @@ impl NovaRenderer {
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
         };
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let backdrop_blur_targets = self.backdrop_blur_targets.as_ref();
+        let backdrop_blur_targets = self.filters.targets.as_ref();
         self.draw_step_scratch
             .prepare_steps(cache_key, self.frame_resources.len(), |steps| {
                 draw_steps_for_upload_into(
@@ -81,7 +81,7 @@ impl NovaRenderer {
     fn active_renderer_extension_types(&self) -> SmallVec<[std::any::TypeId; 4]> {
         let mut active_types = SmallVec::new();
         for extension in &self.frame_upload.renderer_extensions {
-            let type_id = extension.extension.type_id();
+            let type_id = extension.extension.renderer_type();
             if !active_types.contains(&type_id) {
                 active_types.push(type_id);
             }
@@ -90,20 +90,15 @@ impl NovaRenderer {
     }
 
     fn release_inactive_renderer_extensions(&mut self, active_types: &[std::any::TypeId]) {
-        let stale_types = self
-            .renderer_extension_renderers
-            .keys()
-            .copied()
-            .filter(|type_id| !active_types.contains(type_id))
-            .collect::<SmallVec<[_; 4]>>();
-        for type_id in stale_types {
-            if let Some(mut renderer) = self.renderer_extension_renderers.remove(&type_id) {
-                if let Err(error) = lock_backend(&self.backend)
-                    .with_extension_device(|device| renderer.destroy(device))
-                {
-                    log::debug!("failed to destroy inactive GPUI renderer extension: {error}");
-                }
-            }
+        if !self.renderer_registry.has_inactive(active_types) {
+            return;
+        }
+        let registry = &mut self.renderer_registry;
+        if let Err(error) = lock_backend(&self.backend).with_extension_device(|device| {
+            registry.retain(active_types, device);
+            Ok(())
+        }) {
+            log::debug!("failed to access nova-gfx device to release extensions: {error}");
         }
     }
 
@@ -137,44 +132,31 @@ impl NovaRenderer {
             scissor,
             frame_time,
         );
-        let type_id = extension.extension.type_id();
         let mut backend = lock_backend(&self.backend);
-        let (renderers, steps) = (
-            &mut self.renderer_extension_renderers,
+        let (registry, steps) = (
+            &mut self.renderer_registry,
             &mut self.frame_upload.renderer_extension_steps[index],
         );
         steps.clear();
         backend.with_extension_device(|device| {
-            if !renderers.contains_key(&type_id) {
-                let renderer = extension
-                    .extension
-                    .create_renderer(device, context.clone())?;
-                renderers.insert(type_id, renderer);
-            }
-            let Some(renderer) = renderers.get_mut(&type_id) else {
-                anyhow::bail!("failed to initialize GPUI renderer extension")
-            };
-            renderer.render(extension.extension.as_ref(), device, context, steps)
+            registry.prepare(extension.extension.as_ref(), device, context, steps)
         })?;
         apply_scissor_to_steps(steps, scissor);
         Ok(())
     }
 
     pub(super) fn destroy_renderer_extensions(&mut self) {
-        if self.renderer_extension_renderers.is_empty() {
+        if self.renderer_registry.is_empty() {
             return;
         }
+        let registry = &mut self.renderer_registry;
         let result = lock_backend(&self.backend).with_extension_device(|device| {
-            for (_, mut renderer) in self.renderer_extension_renderers.drain() {
-                if let Err(error) = renderer.destroy(device) {
-                    log::debug!("failed to destroy GPUI renderer extension: {error}");
-                }
-            }
+            registry.destroy(device);
             Ok(())
         });
         if let Err(error) = result {
             log::debug!("failed to access nova-gfx device to destroy extensions: {error}");
-            self.renderer_extension_renderers.clear();
+            self.renderer_registry = extensions::RendererRegistry::default();
         }
     }
 
@@ -192,7 +174,7 @@ impl NovaRenderer {
         if !enabled {
             return Vec::new();
         }
-        let Some(targets) = self.backdrop_blur_targets.as_ref() else {
+        let Some(targets) = self.filters.targets.as_ref() else {
             return Vec::new();
         };
         let blend_pipelines = self.current_blend_pipelines();
@@ -338,7 +320,7 @@ impl NovaRenderer {
         if !enabled {
             return;
         }
-        let Some(targets) = self.backdrop_blur_targets.as_ref() else {
+        let Some(targets) = self.filters.targets.as_ref() else {
             return;
         };
         let configs = self.frame_upload.backdrop_blur_configs();
@@ -363,7 +345,7 @@ impl NovaRenderer {
         if !enabled {
             return Vec::new();
         }
-        let Some(targets) = self.backdrop_blur_targets.as_ref() else {
+        let Some(targets) = self.filters.targets.as_ref() else {
             return Vec::new();
         };
         let blend_pipelines = self.current_blend_pipelines();

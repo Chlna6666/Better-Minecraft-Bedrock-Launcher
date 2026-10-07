@@ -597,7 +597,7 @@ impl NovaRenderer {
                 Instant::now().saturating_duration_since(timing.frame_started_at);
         }
         let submission_prepare_started = Instant::now();
-        self.prepare_for_frame_submission()?;
+        self.prepare_for_frame_submission(packet.frame_time)?;
         if let Some(timing) = presentation_timing.as_mut() {
             timing.submission_prepare = submission_prepare_started.elapsed();
         }
@@ -624,8 +624,9 @@ impl NovaRenderer {
         let frame_started = Instant::now();
         let backend_label = self.backend_info.label();
         let async_capabilities = lock_backend(&self.backend).async_capabilities();
-        let native_partial_presentation =
-            lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
+        let native_partial_presentation = lock_backend(&self.backend)
+            .presentation_capabilities(self.swapchain)
+            .partial_presentation;
         let submission_mode = self.presentation_submission_mode();
         let has_backdrop_blurs = self.has_backdrop_blurs();
         let has_root_backdrop_blurs = has_root_backdrop_blurs(&self.frame_upload);
@@ -637,16 +638,15 @@ impl NovaRenderer {
             Default::default()
         };
         let atlas_content_generation = self.atlas.content_generation();
-        let atlas_generation_changed =
-            self.backdrop_blur_cache_atlas_generation != atlas_content_generation;
+        let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let backdrop_source_atlas_dirty = has_backdrop_blurs
             && self
                 .atlas
                 .pending_uploads_touch_any(&backdrop_source_atlas_textures);
         let shared_blur_cache_invalid = has_backdrop_blurs
-            && (!self.backdrop_blur_cache_valid
-                || backdrop_source_atlas_dirty
-                || self.backdrop_blur_cache_quality != Some(backdrop_blur_quality));
+            && self
+                .filters
+                .refresh_required(backdrop_blur_quality, backdrop_source_atlas_dirty);
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
             && (packet.force_full_backdrop_blur_refresh
                 || packet.backdrop_blur_damage_plan.refresh_required()
@@ -658,7 +658,7 @@ impl NovaRenderer {
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
         if backdrop_blur_refresh_required || element_blur_refresh_required {
-            self.backdrop_blur_cache_valid = false;
+            self.filters.begin_refresh();
         }
         let present_damage = (native_partial_presentation
             && upload.unsupported_batches.total() == 0)
@@ -782,7 +782,7 @@ impl NovaRenderer {
                     "path_vertices={} mono_sprites={} poly_sprites={} underlines={} ",
                     "draw_steps={} draw_step_cache_hit={} path_mask_steps={} path_mask_cache_hit={} gpu_passes={} upload_bytes={} ",
                     "async_submission={} async_wait={} async_presentation={} ",
-                    "async_partial_presentation={} native_partial_presentation={} ",
+                    "native_partial_presentation={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
@@ -813,7 +813,6 @@ impl NovaRenderer {
                 async_capabilities.async_submission,
                 async_capabilities.async_wait,
                 async_capabilities.async_presentation,
-                async_capabilities.partial_presentation,
                 native_partial_presentation,
                 present_damage,
                 packet.partial_present_mode,
@@ -863,7 +862,8 @@ impl NovaRenderer {
         let frame_buffers = self.frame_buffer_targets();
         let backdrop_blur_source_texture_view = if has_backdrop_blurs {
             Some(
-                self.backdrop_blur_targets
+                self.filters
+                    .targets
                     .as_ref()
                     .context("missing nova backdrop blur targets")?
                     .source
@@ -1281,9 +1281,8 @@ impl NovaRenderer {
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {
-            self.backdrop_blur_cache_valid = true;
-            self.backdrop_blur_cache_quality = Some(backdrop_blur_quality);
-            self.backdrop_blur_cache_atlas_generation = atlas_content_generation;
+            self.filters
+                .record_submission(backdrop_blur_quality, atlas_content_generation);
         } else {
             self.invalidate_backdrop_blur_cache();
         }

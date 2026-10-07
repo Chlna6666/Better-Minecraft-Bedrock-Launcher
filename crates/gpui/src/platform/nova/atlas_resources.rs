@@ -50,7 +50,7 @@ pub(super) fn initial_gpu_atlas_textures(
     textures
 }
 
-fn destroy_gpu_atlas_texture<D>(
+pub(super) fn destroy_gpu_atlas_texture<D>(
     device: &mut D,
     texture: NovaGpuAtlasTexture,
     backend_name: &str,

@@ -77,8 +77,10 @@ pub(crate) struct Callbacks {
 }
 
 struct RawWindow {
-    window: *mut c_void,
-    display: *mut c_void,
+    // Native handle identities only. The platform retains the wl_surface/display until the
+    // GPU owner's destruction barrier completes; no Wayland proxy or UI state crosses threads.
+    window: usize,
+    display: usize,
 }
 
 struct BaseSurface(wl_surface::WlSurface);
@@ -91,14 +93,14 @@ impl WaylandSurface for BaseSurface {
 
 impl rwh::HasWindowHandle for RawWindow {
     fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        let window = NonNull::new(self.window).unwrap();
+        let window = NonNull::new(self.window as *mut c_void).expect("live Wayland surface");
         let handle = rwh::WaylandWindowHandle::new(window);
         Ok(unsafe { rwh::WindowHandle::borrow_raw(handle.into()) })
     }
 }
 impl rwh::HasDisplayHandle for RawWindow {
     fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        let display = NonNull::new(self.display).unwrap();
+        let display = NonNull::new(self.display as *mut c_void).expect("live Wayland display");
         let handle = rwh::WaylandDisplayHandle::new(display);
         Ok(unsafe { rwh::DisplayHandle::borrow_raw(handle.into()) })
     }
@@ -187,28 +189,25 @@ impl WaylandWindowState {
     ) -> anyhow::Result<Self> {
         let renderer = {
             let raw_window = RawWindow {
-                window: surface.id().as_ptr().cast::<c_void>(),
-                display: surface
-                    .backend()
-                    .upgrade()
-                    .unwrap()
-                    .display_ptr()
-                    .cast::<c_void>(),
+                window: surface.id().as_ptr() as usize,
+                display: surface.backend().upgrade().unwrap().display_ptr() as usize,
             };
             let drawable_size = Size {
                 width: DevicePixels(options.bounds.size.width.0.max(1.0) as i32),
                 height: DevicePixels(options.bounds.size.height.0.max(1.0) as i32),
             };
             let transparent = options.window_background != WindowBackgroundAppearance::Opaque;
-            let renderer = NovaRenderer::new(
-                &raw_window,
-                renderer_options.backend,
-                renderer_options,
-                crate::GpuSubmissionMode::Deferred,
-                drawable_size,
-                transparent,
-            )?;
-            OwnedNovaRenderer::new(renderer)?
+            let renderer_options = renderer_options.clone();
+            OwnedNovaRenderer::new(move || {
+                NovaRenderer::new(
+                    &raw_window,
+                    renderer_options.backend,
+                    &renderer_options,
+                    crate::GpuSubmissionMode::Deferred,
+                    drawable_size,
+                    transparent,
+                )
+            })?
         };
         let title = options
             .titlebar
@@ -1658,6 +1657,10 @@ impl PlatformWindow for WaylandWindow {
         _timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> anyhow::Result<Option<crate::platform::frame::ActivePresentationFrame>> {
         self.0.present_active_frame(now, None)
+    }
+
+    fn owns_scene_animations(&self) -> bool {
+        true
     }
 
     fn has_active_presentation_animations(&self) -> bool {

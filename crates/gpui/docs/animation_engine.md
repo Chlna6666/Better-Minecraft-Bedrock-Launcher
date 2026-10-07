@@ -50,10 +50,10 @@ The public animation module exports:
 Scene-bound visual timelines are copied into an immutable `PresentationPacket`
 and sampled without reading mutable `Window` or `App` state. Completion is sent
 back as an animation ID and retained target, so the UI owner performs any final
-invalidation. Windows now submits these packets to a native winit/Nova owner
-separate from the GPUI UI thread. DX12 and Vulkan continue sampling and
-presenting while UI `Render` is blocked for 200 ms. Linux Wayland/X11 still
-need this ownership split.
+invalidation. Windows and Linux/FreeBSD Nova submit these packets to a shared
+dedicated GPU owner. Native window protocol and pacing stay on their platform
+thread. The blocked-Render gate checks continued sampling and presentation on
+each backend; Linux Wayland/X11 require their own native lifecycle validation.
 
 ## Transition API
 
@@ -251,9 +251,9 @@ specific areas:
 - Layout-affecting animations remain UI-owned and can be expensive in deep trees.
 - Automatic dirty-bounds discovery and diagnostics for driver fallbacks and
   active animation counts are still incomplete.
-- The independent native presentation owner is implemented for Windows DX12
-  and Vulkan. Linux Wayland/X11 still needs the same ownership split and its
-  native lifecycle validation.
+- The dedicated GPU owner is implemented for Windows DX12/Vulkan and
+  Linux/FreeBSD Nova. Linux Wayland/X11 native lifecycle validation remains a
+  separate gate; Windows results do not establish Linux runtime behavior.
 
 Performance claims require measured workloads. In particular, packet-owned
 scratch storage avoids rebuilding temporary collections during presentation

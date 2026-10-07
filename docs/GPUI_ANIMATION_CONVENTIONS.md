@@ -227,6 +227,12 @@ Interactive animation uses latest-state-wins semantics:
 - no stale animation-sample backlog;
 - when the frame executes, sample the current `window.animation_time()` rather than replaying intermediate samples.
 
+For Windows and Linux/FreeBSD Nova presentation, the GPU owner consumes immutable UI packets and
+captures a separate GPU frame timestamp after queueing. Retained timelines, extension contexts and
+filter/damage preparation share that sample; the owner does not rerun UI helpers or layout. UI
+commit helpers continue to use `window.animation_time()`. Native pacing requests a tick rather
+than supplying a stale animation sample for the consumer to replay.
+
 Do not globally disable progressive frame backpressure. Input responsiveness and animation pacing must be solved with request coalescing and reduced frame work, not an unrestricted backpressure bypass.
 
 ## 7. Retained reconciliation

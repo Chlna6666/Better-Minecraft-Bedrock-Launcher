@@ -3,8 +3,11 @@ use crate::platform::frame::ActivePresentationFrame;
 use smallvec::SmallVec;
 
 mod chunk_upload;
+mod destroy;
 mod draw_step_scratch;
 mod draw_steps;
+mod extensions;
+mod filters;
 
 mod init;
 mod present;
@@ -119,17 +122,13 @@ pub(crate) struct NovaRenderer {
     underline_resource_set: ResourceSetId,
     backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
     backdrop_blur_resource_set_layout: ResourceSetLayoutId,
-    backdrop_blur_targets: Option<BackdropBlurTargets>,
-    backdrop_blur_cache_valid: bool,
-    backdrop_blur_cache_atlas_generation: u64,
-    backdrop_blur_cache_quality: Option<BackdropBlurQuality>,
+    filters: filters::FilterRegistry,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
     path_texture_size: Extent2d,
     frame_upload: FrameUpload,
-    renderer_extension_renderers:
-        FxHashMap<std::any::TypeId, Box<dyn crate::RendererExtensionRenderer>>,
+    renderer_registry: extensions::RendererRegistry,
     retained_upload: retained_upload::RetainedUpload,
     draw_step_scratch: DrawStepScratch,
     current_size: DrawableSize,
@@ -145,6 +144,7 @@ pub(crate) struct NovaRenderer {
     swapchain_warmup_frames: u8,
     active_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    destroyed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -257,6 +257,9 @@ impl NovaRenderer {
     /// Windows consumes this as a platform-frame preflight. A saturated DXGI queue is therefore a
     /// deferred presentation rather than synchronous work on GPUI's UI thread.
     pub(crate) fn can_present_without_wait(&mut self) -> Result<bool> {
+        if !self.apply_pending_drawable_size()? {
+            return Ok(false);
+        }
         lock_backend(&self.backend).can_present_without_wait(self.swapchain)
     }
 
@@ -265,6 +268,10 @@ impl NovaRenderer {
         callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<bool> {
         lock_backend(&self.backend).arm_swapchain_frame_ready(self.swapchain, callback)
+    }
+
+    pub(crate) fn presentation_capabilities(&self) -> gfx_core::PresentationCapabilities {
+        lock_backend(&self.backend).presentation_capabilities(self.swapchain)
     }
 
     pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
@@ -297,7 +304,9 @@ impl NovaRenderer {
         self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
-            && lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
+            && lock_backend(&self.backend)
+                .presentation_capabilities(self.swapchain)
+                .partial_presentation;
         resolve_surface_packet(packet, !supports_partial);
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
@@ -393,7 +402,7 @@ impl NovaRenderer {
     }
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
-        if self.backdrop_blur_targets.as_ref().is_some_and(|targets| {
+        if self.filters.targets.as_ref().is_some_and(|targets| {
             targets.is_layout_compatible(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
@@ -459,7 +468,7 @@ impl NovaRenderer {
                 anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
             }
         };
-        self.backdrop_blur_targets = Some(next_backdrop_blur_targets);
+        self.filters.targets = Some(next_backdrop_blur_targets);
         self.invalidate_backdrop_blur_cache();
         Ok(())
     }
@@ -480,7 +489,9 @@ impl NovaRenderer {
             self.observe_presentation_packet(&packet);
             let supports_partial = self.swapchain_warmup_frames == 0
                 && surface_alpha_allows_partial_presentation(self.surface_alpha)
-                && lock_backend(&self.backend).supports_partial_presentation(self.swapchain);
+                && lock_backend(&self.backend)
+                    .presentation_capabilities(self.swapchain)
+                    .partial_presentation;
             resolve_surface_packet(&mut packet, !supports_partial);
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
@@ -488,6 +499,8 @@ impl NovaRenderer {
                 packet.presentation_animation_values.as_slice(),
                 backdrop_blur_quality,
             );
+            self.ensure_path_mask_target_for_frame()?;
+            self.prepare_renderer_extensions(packet.frame_time)?;
             self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
             if !self.frame_upload.backdrop_blurs.is_empty() {
                 self.ensure_backdrop_blur_targets()?;
@@ -552,6 +565,14 @@ impl NovaRenderer {
             .is_some_and(PresentationPacket::has_pending_presentation)
     }
 
+    pub(crate) fn active_presentation_is_due(&self, now: Instant) -> bool {
+        self.active_presentation_packet
+            .as_ref()
+            .is_some_and(|packet| {
+                packet.has_pending_presentation() && packet.presentation_is_due(now)
+            })
+    }
+
     pub(crate) fn set_frame_interval(&mut self, interval: Option<std::time::Duration>) {
         if let Some(packet) = self.active_presentation_packet.as_mut() {
             packet.set_frame_interval(interval);
@@ -605,14 +626,10 @@ impl NovaRenderer {
             }
         }
 
-        if submissions_drained && !self.renderer_extension_renderers.is_empty() {
-            let extension_renderers = &mut self.renderer_extension_renderers;
+        if submissions_drained && !self.renderer_registry.is_empty() {
+            let renderer_registry = &mut self.renderer_registry;
             if let Err(error) = lock_backend(&self.backend).with_extension_device(|device| {
-                for renderer in extension_renderers.values_mut() {
-                    if let Err(error) = renderer.trim_memory(device, memory_trim_level(level)) {
-                        log::debug!("failed to trim GPUI renderer extension resources: {error}");
-                    }
-                }
+                renderer_registry.trim(device, memory_trim_level(level));
                 Ok(())
             }) {
                 log::debug!(
@@ -627,24 +644,29 @@ impl NovaRenderer {
     }
 
     pub(crate) fn destroy(&mut self) {
+        if self.destroyed {
+            return;
+        }
+        self.destroyed = true;
         self.active_presentation_packet = None;
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
         self.destroy_renderer_extensions();
+        self.destroy_window_resources();
     }
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
         self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
         self.draw_step_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
         self.draw_step_scratch.force_full_backdrop_blur_refresh = force_full_backdrop_blur_refresh(
-            self.backdrop_blur_cache_valid,
+            self.filters.is_valid(),
             packet.force_full_backdrop_blur_refresh,
         );
     }
 
     fn update_backdrop_blur_cache_plan(&mut self, quality: BackdropBlurQuality) {
-        if self.backdrop_blur_cache_quality != Some(quality) {
+        if self.filters.quality != Some(quality) {
             self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
         }
         if self.frame_upload.backdrop_blurs.is_empty() {
@@ -667,7 +689,7 @@ impl NovaRenderer {
 
     fn destroy_backdrop_blur_targets(&mut self) {
         self.invalidate_backdrop_blur_cache();
-        let Some(targets) = self.backdrop_blur_targets.take() else {
+        let Some(targets) = self.filters.targets.take() else {
             return;
         };
         match &mut *lock_backend(&self.backend) {
@@ -699,8 +721,7 @@ impl NovaRenderer {
     }
 
     fn invalidate_backdrop_blur_cache(&mut self) {
-        self.backdrop_blur_cache_valid = false;
-        self.backdrop_blur_cache_quality = None;
+        self.filters.invalidate();
     }
 
     fn depth_attachment(&self) -> RenderPassDepthAttachment {

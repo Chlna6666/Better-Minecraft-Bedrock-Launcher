@@ -66,5 +66,8 @@ For the Windows presentation owner, run `presentation_lane_block` with both
 `--backend=nova-dx12` and `--backend=nova-vulkan`. Each run must report at least
 two distinct presented animation samples during its 200 ms blocked UI `Render`
 interval while the UI Render count stays unchanged. A compile check or a single
-backend does not satisfy this gate. Linux Wayland/X11 need the same native gate
-after their owner split is implemented; Windows builds do not validate Linux.
+backend does not satisfy this gate. Linux Wayland/X11 use the dedicated GPU
+owner but share the native/UI event loop, so blocked UI work also delays native ticks.
+Validate their window creation, resize, teardown and retained presentation on the native
+platform. Independent progress through a blocked UI Render requires separating that event
+loop first; Windows builds do not validate Linux.

@@ -13,6 +13,8 @@ mod interaction;
 mod keyboard;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod presentation_owner;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+pub(crate) mod render_owner;
 mod traits;
 mod winit;
 

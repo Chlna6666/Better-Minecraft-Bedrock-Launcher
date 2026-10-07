@@ -187,7 +187,7 @@ impl NovaRenderer {
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
-        self.backdrop_blur_targets = next_backdrop_blur_targets;
+        self.filters.targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
@@ -208,7 +208,7 @@ impl NovaRenderer {
     /// is pending, mirroring the scaling HWND flip swapchains get from DXGI.
     ///
     /// Compositor-backed swapchains (DirectComposition) do not scale on their
-    /// own, so the platform layer calls this synchronously from the resize
+    /// own, so the platform layer queues this on the GPU owner from the resize
     /// event to keep the old frame covering the new client size until the
     /// next frame applies the resize to the swapchain buffers.
     pub(crate) fn stretch_surface_for_pending_resize(&mut self, size: Size<DevicePixels>) {
@@ -232,7 +232,6 @@ impl NovaRenderer {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         self.pending_drawable_size = Some(size);
     }
@@ -490,7 +489,7 @@ impl NovaRenderer {
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
         self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
-        self.backdrop_blur_targets = next_backdrop_blur_targets;
+        self.filters.targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         self.activate_frame_resources(self.current_frame_resource_index)?;
@@ -498,7 +497,7 @@ impl NovaRenderer {
         Ok(())
     }
 
-    fn current_path_mask_target(&self) -> PathMaskTarget {
+    pub(super) fn current_path_mask_target(&self) -> PathMaskTarget {
         PathMaskTarget {
             texture: self.path_texture,
             texture_view: self.path_texture_view,
@@ -511,10 +510,10 @@ impl NovaRenderer {
     }
 
     pub(super) fn current_backdrop_blur_targets(&self) -> Option<BackdropBlurTargets> {
-        self.backdrop_blur_targets.clone()
+        self.filters.targets.clone()
     }
 
-    fn path_mask_target_descriptor(&self, size: Extent2d) -> PathMaskTargetDescriptor {
+    pub(super) fn path_mask_target_descriptor(&self, size: Extent2d) -> PathMaskTargetDescriptor {
         PathMaskTargetDescriptor {
             size,
             format: self.surface_format,
