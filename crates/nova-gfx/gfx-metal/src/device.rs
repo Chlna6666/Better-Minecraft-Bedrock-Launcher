@@ -31,18 +31,19 @@
 
 use crate::error::MetalError;
 use gfx_core::{
-    AddressMode, BackendKind, BeginRenderPassDescriptor, BlendMode, BufferDescriptor, BufferId, BufferUsage,
-    ClearColor, CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DrawDescriptor, DrawStepDescriptor,
-    FilterMode, Format, Backend, CommandDevice, DiagnosticsDevice, Error,
-    PipelineDevice, PresentationDevice, ResourceDevice, SubmissionDevice,
-    SurfaceDevice, ThreadingMode, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
-    PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology, RenderPassDepthAttachment,
-    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
-    RenderStepList, RenderStepRef, RenderTarget, BindingResource, ResourceSetDescriptor,
-    ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
-    SamplerId, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, SubmissionId,
-    SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureDescriptor,
-    TextureDimension, TextureId, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
+    AddressMode, Backend, BackendKind, BeginRenderPassDescriptor, BindingResource, BlendMode,
+    BufferDescriptor, BufferId, BufferUsage, ClearColor, CommandDevice, CommandEncoderDescriptor,
+    CommandEncoderId, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor,
+    Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation,
+    PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice,
+    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId,
+    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
+    RenderStepRef, RenderTarget, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
+    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
+    SamplerId, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, SubmissionDevice,
+    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+    SwapchainId, TextureDescriptor, TextureDimension, TextureId, TextureUsage,
+    TextureViewDescriptor, TextureViewId, TextureWriteDescriptor, ThreadingMode,
 };
 
 #[cfg(target_vendor = "apple")]
@@ -50,8 +51,8 @@ mod platform {
     use super::*;
     use crate::registry::ResourceRegistry;
     use core::ffi::c_void;
-    use dispatch2::DispatchData;
     use core::ptr::NonNull;
+    use dispatch2::DispatchData;
     use gfx_core::SwapchainId;
     use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
     use objc2_app_kit::NSView;
@@ -200,9 +201,8 @@ mod platform {
         /// Creates a buffer record.
         fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             desc.validate()?;
-            let length = usize::try_from(desc.size).map_err(|error| {
-                Error::InvalidInput(format!("buffer size overflow: {error}"))
-            })?;
+            let length = usize::try_from(desc.size)
+                .map_err(|error| Error::InvalidInput(format!("buffer size overflow: {error}")))?;
             let resource = self
                 .device
                 .newBufferWithLength_options(length, MTLResourceOptions::StorageModeShared)
@@ -334,7 +334,10 @@ mod platform {
         }
 
         /// Creates and validates a shader module.
-        fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
+        fn create_shader_module(
+            &mut self,
+            desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             desc.validate()?;
             let library = match &desc.binary.code {
                 ShaderCode::MetallibStatic(bytes) => {
@@ -350,12 +353,14 @@ mod platform {
                         .newLibraryWithSource_options_error(&source_string, Some(&options))
                         .map_err(|error| Error::Shader(nserror_message(&error)))?
                 }
-                ShaderCode::Hlsl(_)
+                ShaderCode::Glsl(_)
+                | ShaderCode::Hlsl(_)
                 | ShaderCode::DxBytecode(_)
                 | ShaderCode::DxBytecodeStatic(_)
                 | ShaderCode::Spirv(_) => {
                     return Err(Error::Shader(
-                        "Metal shader module requires precompiled metallib or MSL source".to_string(),
+                        "Metal shader module requires precompiled metallib or MSL source"
+                            .to_string(),
                     ));
                 }
             };
@@ -423,7 +428,11 @@ mod platform {
                 .insert(MetalCommandEncoder { in_flight: false }))
         }
 
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: &DrawDescriptor) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            encoder: CommandEncoderId,
+            draw: &DrawDescriptor,
+        ) -> Result<()> {
             let _encoder = self.command_encoders.get(encoder)?;
             let RenderTarget::Swapchain { swapchain, .. } = draw.pass.target else {
                 return Err(Error::Unavailable(
@@ -822,7 +831,10 @@ mod platform {
             Self::create_pipeline_layout(self, desc)
         }
 
-        fn create_shader_module(&mut self, desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
+        fn create_shader_module(
+            &mut self,
+            desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             Self::create_shader_module(self, desc)
         }
 
@@ -863,7 +875,11 @@ mod platform {
             Self::create_command_encoder(self, desc)
         }
 
-        fn record_draw_desc(&mut self, encoder: CommandEncoderId, draw: DrawDescriptor) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            encoder: CommandEncoderId,
+            draw: DrawDescriptor,
+        ) -> Result<()> {
             Self::record_draw_desc(self, encoder, &draw)
         }
 
@@ -1314,9 +1330,9 @@ mod platform {
                 "index buffer offset must be aligned to the index format size".to_string(),
             ));
         }
-        let first_index_byte = u64::from(first_index).checked_mul(stride).ok_or_else(|| {
-            Error::InvalidInput("first index byte offset overflow".to_string())
-        })?;
+        let first_index_byte = u64::from(first_index)
+            .checked_mul(stride)
+            .ok_or_else(|| Error::InvalidInput("first index byte offset overflow".to_string()))?;
         let index_bytes = u64::from(index_count)
             .checked_mul(stride)
             .ok_or_else(|| Error::InvalidInput("index buffer range overflow".to_string()))?;
@@ -1428,15 +1444,16 @@ mod platform {
 #[cfg(not(target_vendor = "apple"))]
 mod platform {
     use gfx_core::{
-        BackendKind, BufferDescriptor, BufferId, ClearColor, CommandEncoderDescriptor, CommandEncoderId,
-        DeviceDescriptor, DrawDescriptor, DrawStepDescriptor, Backend, CommandDevice, DiagnosticsDevice,
-        Error, PipelineDevice, PresentationDevice, ResourceDevice, SubmissionDevice,
-        SurfaceDevice, LoadOp, PipelineLayoutDescriptor, PipelineLayoutId, RenderPassDepthAttachment,
-        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
-        ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats,
-        Result, SamplerDescriptor, SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionId,
-        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureDescriptor,
-        TextureId, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
+        Backend, BackendKind, BufferDescriptor, BufferId, ClearColor, CommandDevice,
+        CommandEncoderDescriptor, CommandEncoderId, DeviceDescriptor, DiagnosticsDevice,
+        DrawDescriptor, DrawStepDescriptor, Error, LoadOp, PipelineDevice,
+        PipelineLayoutDescriptor, PipelineLayoutId, PresentationDevice, RenderPassDepthAttachment,
+        RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
+        RenderStepDescriptor, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
+        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
+        SamplerId, ShaderModuleDescriptor, ShaderModuleId, SubmissionDevice, SubmissionId,
+        SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId,
+        TextureDescriptor, TextureId, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
     };
 
     /// Stub Metal device for non-Apple targets.
@@ -1562,7 +1579,10 @@ mod platform {
             unavailable()
         }
 
-        fn create_shader_module(&mut self, _desc: &ShaderModuleDescriptor) -> Result<ShaderModuleId> {
+        fn create_shader_module(
+            &mut self,
+            _desc: &ShaderModuleDescriptor,
+        ) -> Result<ShaderModuleId> {
             unavailable()
         }
 
@@ -1603,7 +1623,11 @@ mod platform {
             unavailable()
         }
 
-        fn record_draw_desc(&mut self, _encoder: CommandEncoderId, _draw: DrawDescriptor) -> Result<()> {
+        fn record_draw_desc(
+            &mut self,
+            _encoder: CommandEncoderId,
+            _draw: DrawDescriptor,
+        ) -> Result<()> {
             unavailable()
         }
 

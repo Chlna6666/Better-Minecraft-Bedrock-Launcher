@@ -5,7 +5,7 @@
 `nova-gfx` is a lightweight graphics foundation for BMCBL and future projects.
 `gfx-core` is the canonical public API surface: it defines backend-neutral
 descriptors, typed handles, errors, and device traits. Backend crates implement
-those traits for Vulkan, Direct3D 12, and Metal.
+those traits for Vulkan, Direct3D 11/12, OpenGL 4.5, and Metal.
 
 Current crates:
 
@@ -14,7 +14,9 @@ Current crates:
   or Metal dependency.
 - `gfx-memory`: GPU allocation wrappers, upload-ring accounting, deferred-free
   queues, and memory statistics.
-- `gfx-shader`: WGSL validation and SPIR-V / HLSL / MSL generation through Naga.
+- `gfx-shader`: WGSL validation and SPIR-V / HLSL / MSL / GLSL generation through Naga.
+- `gfx-dx11`: Windows D3D11 resources, native presentation and SM5.0 bytecode.
+- `gfx-opengl`: native OpenGL 4.5 through WGL on Windows and EGL on Linux.
 - `gfx-dx12`: Windows D3D12 resource backend built on `windows-rs`.
 - `gfx-metal`: Apple Metal resource backend built on `objc2-metal`.
 - `gfx-vulkan`: Vulkan resource backend built on `ash`.
@@ -68,7 +70,7 @@ GPUI users must choose a concrete nova-gfx backend explicitly:
 gpui = { path = "../gpui", default-features = false, features = ["nova-gfx-vulkan"] }
 ```
 
-Use `nova-gfx-vulkan`, `nova-gfx-dx12`, or `nova-gfx-metal`. The old
+Use `nova-gfx-vulkan`, `nova-gfx-dx11`, `nova-gfx-dx12`, `nova-gfx-opengl`, or `nova-gfx-metal`. The old
 `nova-gfx` feature no longer selects a backend; this is a breaking compile-time
 selection change intended to avoid compiling unused backend crates.
 

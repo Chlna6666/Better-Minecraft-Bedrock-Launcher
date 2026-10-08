@@ -312,7 +312,7 @@ impl ShaderSet {
         for prepared in shaders {
             let shader = prepared.shader;
             for (entry_point, stage) in &shader.entry_points {
-                let (extension, include_macro, constructor, payload) =
+                let (extension, include_macro, constructor, payload, glsl) =
                     self.compile_entry(out_dir, backend, prepared, entry_point, *stage)?;
 
                 let relative = format!(
@@ -322,9 +322,15 @@ impl ShaderSet {
                 write_artifact(&out_dir.join(&relative), &payload)?;
 
                 let constant = format!("{prefix_upper}_{}", entry_point.to_uppercase());
-                generated.push_str(&format!(
+                if let Some(glsl) = glsl {
+                    let buffers = glsl.buffers.iter().map(|buffer| format!("::gfx_core::GlslBufferBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), binding: {}, kind: ::gfx_core::ResourceBindingType::{:?} }}", buffer.name, buffer.binding, buffer.kind)).collect::<Vec<_>>().join(",");
+                    let textures = glsl.textures.iter().map(|texture| format!("::gfx_core::GlslTextureBinding {{ name: ::std::borrow::Cow::Borrowed({:?}), texture: {}, sampler: {:?} }}", texture.name, texture.texture, texture.sampler)).collect::<Vec<_>>().join(",");
+                    generated.push_str(&format!("const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::Glsl {{ source: include_str!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")), buffers: &[{buffers}], textures: &[{textures}] }};\n"));
+                } else {
+                    generated.push_str(&format!(
                     "const {constant}: ::gfx_core::EmbeddedShader = ::gfx_core::EmbeddedShader::{constructor}({include_macro}!(concat!(env!(\"OUT_DIR\"), \"/{relative}\")));\n"
-                ));
+                    ));
+                }
                 arms.push_str(&format!("        \"{entry_point}\" => Some({constant}),\n"));
             }
         }
@@ -345,26 +351,84 @@ impl ShaderSet {
         prepared: &PreparedShader<'_>,
         entry_point: &str,
         stage: ShaderStage,
-    ) -> Result<(&'static str, &'static str, &'static str, Vec<u8>), Error> {
+    ) -> Result<
+        (
+            &'static str,
+            &'static str,
+            &'static str,
+            Vec<u8>,
+            Option<gfx_core::GlslShader>,
+        ),
+        Error,
+    > {
         let shader = prepared.shader;
         match backend {
+            Backend::OpenGl => {
+                let binary = prepared
+                    .module
+                    .compile_glsl(stage, entry_point)
+                    .map_err(|error| Error::Translate {
+                        shader: shader.name.clone(),
+                        entry_point: entry_point.into(),
+                        message: error.to_string(),
+                    })?;
+                let gfx_core::ShaderCode::Glsl(glsl) = binary.code else {
+                    return Err(Error::Invalid(
+                        "OpenGL translation did not produce GLSL".into(),
+                    ));
+                };
+                Ok((
+                    "glsl",
+                    "include_str",
+                    "Glsl",
+                    glsl.source.as_bytes().to_vec(),
+                    Some(glsl),
+                ))
+            }
+            Backend::Dx11 => {
+                let binary = prepared
+                    .module
+                    .compile_hlsl_dx11(stage, entry_point)
+                    .map_err(|error| Error::Translate {
+                        shader: shader.name.clone(),
+                        entry_point: entry_point.to_owned(),
+                        message: error.to_string(),
+                    })?;
+                let gfx_core::ShaderCode::Hlsl(hlsl) = binary.code else {
+                    return Err(Error::Invalid(
+                        "DX11 translation did not produce HLSL".into(),
+                    ));
+                };
+                let bytecode = compile_hlsl_to_dxbc(&hlsl, entry_point, stage, true)
+                    .map_err(|message| Error::Compile {
+                        shader: shader.name.clone(),
+                        entry_point: entry_point.to_owned(),
+                        message,
+                    })?
+                    .ok_or_else(|| {
+                        Error::Invalid(
+                            "DX11 requires build-time D3DCompile on a Windows host".into(),
+                        )
+                    })?;
+                Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None))
+            }
             Backend::Dx12 => {
                 let hlsl = translate(&prepared.module, entry_point, stage, shader)?;
-                match compile_hlsl_to_dxbc(&hlsl, entry_point, stage).map_err(|message| {
+                match compile_hlsl_to_dxbc(&hlsl, entry_point, stage, false).map_err(|message| {
                     Error::Compile {
                         shader: shader.name.clone(),
                         entry_point: entry_point.to_string(),
                         message,
                     }
                 })? {
-                    Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode)),
+                    Some(bytecode) => Ok(("dxbc", "include_bytes", "DxBytecode", bytecode, None)),
                     None => match self.dx12_artifact_policy {
                         Dx12ArtifactPolicy::AllowRuntimeCompilation => {
                             println!(
                                 "cargo::warning=DX12 shader `{}` entry point `{entry_point}` is embedded as HLSL because the build host cannot run D3DCompile; renderer startup requires an explicitly compiler-enabled DX12 backend",
                                 shader.name
                             );
-                            Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes()))
+                            Ok(("hlsl", "include_str", "Hlsl", hlsl.into_bytes(), None))
                         }
                         Dx12ArtifactPolicy::RequireBytecode => Err(Error::Dx12BytecodeRequired {
                             shader: shader.name.clone(),
@@ -375,18 +439,19 @@ impl ShaderSet {
             }
             Backend::Vulkan => {
                 let spirv = translate_vulkan(&prepared.module, entry_point, stage, shader)?;
-                Ok(("spv", "include_bytes", "SpirvBytes", spirv))
+                Ok(("spv", "include_bytes", "SpirvBytes", spirv, None))
             }
             Backend::Metal => {
                 let msl = translate_metal(&prepared.module, entry_point, stage, shader)?;
-                let metallib = compile_msl_to_metallib(out_dir, entry_point, &msl).map_err(
-                    |message| Error::Compile {
-                        shader: shader.name.clone(),
-                        entry_point: entry_point.to_string(),
-                        message,
-                    },
-                )?;
-                Ok(("metallib", "include_bytes", "Metallib", metallib))
+                let metallib =
+                    compile_msl_to_metallib(out_dir, entry_point, &msl).map_err(|message| {
+                        Error::Compile {
+                            shader: shader.name.clone(),
+                            entry_point: entry_point.to_string(),
+                            message,
+                        }
+                    })?;
+                Ok(("metallib", "include_bytes", "Metallib", metallib, None))
             }
         }
     }
@@ -410,6 +475,8 @@ impl<'a> PreparedShader<'a> {
 /// Backends an emit can produce artifacts for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Backend {
+    OpenGl,
+    Dx11,
     Dx12,
     Vulkan,
     Metal,
@@ -418,6 +485,8 @@ enum Backend {
 impl Backend {
     fn slug(self) -> &'static str {
         match self {
+            Self::OpenGl => "opengl",
+            Self::Dx11 => "dx11",
             Self::Dx12 => "dx12",
             Self::Vulkan => "vulkan",
             Self::Metal => "metal",
@@ -426,6 +495,8 @@ impl Backend {
 
     fn upper(self) -> &'static str {
         match self {
+            Self::OpenGl => "OPENGL",
+            Self::Dx11 => "DX11",
             Self::Dx12 => "DX12",
             Self::Vulkan => "VULKAN",
             Self::Metal => "METAL",
@@ -435,6 +506,8 @@ impl Backend {
     /// Describes what this build embedded, for the caller's startup log.
     fn artifact_kind(self) -> &'static str {
         match self {
+            Self::OpenGl => "GLSL 4.50 and resource reflection generated at build time",
+            Self::Dx11 => "precompiled D3D11 SM5.0 bytecode embedded at build time",
             Self::Dx12 if cfg!(target_os = "windows") => {
                 "precompiled D3D bytecode embedded at build time"
             }
@@ -457,6 +530,12 @@ fn enabled_backends(target_os: &str, selection: BackendSelection) -> Vec<Backend
     };
 
     let mut backends = Vec::new();
+    if requested("NOVA_GFX_OPENGL") && matches!(target_os, "windows" | "linux") {
+        backends.push(Backend::OpenGl);
+    }
+    if requested("NOVA_GFX_DX11") && target_os == "windows" {
+        backends.push(Backend::Dx11);
+    }
     if requested("NOVA_GFX_DX12") && target_os == "windows" {
         backends.push(Backend::Dx12);
     }
@@ -508,11 +587,13 @@ fn translate(
     stage: ShaderStage,
     shader: &Shader,
 ) -> Result<String, Error> {
-    let binary = module.compile_hlsl(stage, entry_point).map_err(|error| Error::Translate {
-        shader: shader.name.clone(),
-        entry_point: entry_point.to_string(),
-        message: error.to_string(),
-    })?;
+    let binary = module
+        .compile_hlsl(stage, entry_point)
+        .map_err(|error| Error::Translate {
+            shader: shader.name.clone(),
+            entry_point: entry_point.to_string(),
+            message: error.to_string(),
+        })?;
 
     match binary.code {
         gfx_core::ShaderCode::Hlsl(hlsl) => Ok(hlsl),
@@ -576,7 +657,8 @@ fn compile_msl_to_metallib(
     write_artifact(&source_path, msl.as_bytes()).map_err(|error| error.to_string())?;
 
     let mut metal = Command::new("xcrun");
-    metal.args(["-sdk", "macosx", "metal", "-c"])
+    metal
+        .args(["-sdk", "macosx", "metal", "-c"])
         .arg(&source_path)
         .arg("-o")
         .arg(&air_path);
@@ -635,11 +717,13 @@ fn translate_vulkan(
     stage: ShaderStage,
     shader: &Shader,
 ) -> Result<Vec<u8>, Error> {
-    let binary = module.compile_spirv(stage, entry_point).map_err(|error| Error::Translate {
-        shader: shader.name.clone(),
-        entry_point: entry_point.to_string(),
-        message: error.to_string(),
-    })?;
+    let binary = module
+        .compile_spirv(stage, entry_point)
+        .map_err(|error| Error::Translate {
+            shader: shader.name.clone(),
+            entry_point: entry_point.to_string(),
+            message: error.to_string(),
+        })?;
 
     match binary.code {
         gfx_core::ShaderCode::Spirv(words) => {
@@ -663,15 +747,18 @@ fn compile_hlsl_to_dxbc(
     hlsl: &str,
     entry_point: &str,
     stage: ShaderStage,
+    dx11: bool,
 ) -> Result<Option<Vec<u8>>, String> {
     use windows::Win32::Graphics::Direct3D::Fxc::{
         D3DCOMPILE_ENABLE_STRICTNESS, D3DCOMPILE_OPTIMIZATION_LEVEL3, D3DCompile,
     };
     use windows::core::PCSTR;
 
-    let target = match stage {
-        ShaderStage::Vertex => b"vs_5_1\0",
-        ShaderStage::Fragment => b"ps_5_1\0",
+    let target = match (stage, dx11) {
+        (ShaderStage::Vertex, true) => b"vs_5_0\0",
+        (ShaderStage::Fragment, true) => b"ps_5_0\0",
+        (ShaderStage::Vertex, false) => b"vs_5_1\0",
+        (ShaderStage::Fragment, false) => b"ps_5_1\0",
     };
     let entry_point = std::ffi::CString::new(entry_point)
         .map_err(|error| format!("entry point contains a NUL byte: {error}"))?;
@@ -722,10 +809,7 @@ fn compile_hlsl_to_dxbc(
 fn d3d_blob_message(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
     // SAFETY: the blob owns a byte range valid for its lifetime.
     let bytes = unsafe {
-        std::slice::from_raw_parts(
-            blob.GetBufferPointer().cast::<u8>(),
-            blob.GetBufferSize(),
-        )
+        std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
     };
     String::from_utf8_lossy(bytes)
         .trim_end_matches(char::from(0))
@@ -738,6 +822,7 @@ fn compile_hlsl_to_dxbc(
     _hlsl: &str,
     _entry_point: &str,
     _stage: ShaderStage,
+    _dx11: bool,
 ) -> Result<Option<Vec<u8>>, String> {
     Ok(None)
 }
@@ -795,7 +880,9 @@ pub enum Error {
         message: String,
     },
     /// Direct3D bytecode compilation failed for translated HLSL.
-    #[error("Direct3D bytecode compilation failed for `{shader}` entry point `{entry_point}`: {message}")]
+    #[error(
+        "Direct3D bytecode compilation failed for `{shader}` entry point `{entry_point}`: {message}"
+    )]
     Compile {
         /// Shader declaration name.
         shader: String,
@@ -805,7 +892,9 @@ pub enum Error {
         message: String,
     },
     /// A strict DX12 shader set could not be compiled to bytecode on this build host.
-    #[error("DX12 shader `{shader}` entry point `{entry_point}` requires build-time D3D bytecode, but this build host cannot run D3DCompile; build the Windows artifact on a Windows host or explicitly allow runtime compilation for a non-production tool")]
+    #[error(
+        "DX12 shader `{shader}` entry point `{entry_point}` requires build-time D3D bytecode, but this build host cannot run D3DCompile; build the Windows artifact on a Windows host or explicitly allow runtime compilation for a non-production tool"
+    )]
     Dx12BytecodeRequired {
         /// Shader declaration name.
         shader: String,
@@ -886,7 +975,7 @@ mod tests {
     #[test]
     fn non_windows_build_host_reports_no_dxbc_compiler() {
         assert_eq!(
-            compile_hlsl_to_dxbc("", "vs_main", ShaderStage::Vertex)
+            compile_hlsl_to_dxbc("", "vs_main", ShaderStage::Vertex, false)
                 .expect("host capability probe should not fail"),
             None
         );

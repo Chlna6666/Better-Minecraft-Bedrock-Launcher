@@ -13,6 +13,8 @@ use naga::{
     valid::{Capabilities, ValidationFlags, Validator},
 };
 use thiserror::Error;
+mod dx11;
+mod glsl;
 
 /// Result type used by shader compilation.
 pub type Result<T> = std::result::Result<T, ShaderError>;
@@ -41,6 +43,9 @@ impl MslVersion {
 /// Shader parse, validation, and translation errors.
 #[derive(Debug, Error)]
 pub enum ShaderError {
+    /// Desktop GLSL generation or reflection failed.
+    #[error("GLSL generation failed: {0}")]
+    Glsl(String),
     /// WGSL parsing failed.
     #[error("WGSL parse failed: {0}")]
     Parse(String),
@@ -137,6 +142,83 @@ impl WgslModule {
         Ok(ShaderBinary::hlsl(stage, entry_point, source))
     }
 
+    /// Translates an entry point to D3D11 Shader Model 5.0 with static resource slots.
+    ///
+    /// Group zero uses the WGSL binding number in each HLSL register namespace.
+    /// Constant slot b13 is reserved for draw offsets supplied by the backend.
+    /// This does not change the source or the DX12/Vulkan translation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an HLSL error for unsupported groups, slots or shader features.
+    pub fn compile_hlsl_dx11(&self, stage: ShaderStage, entry_point: &str) -> Result<ShaderBinary> {
+        let mut options = hlsl::Options {
+            shader_model: hlsl::ShaderModel::V5_0,
+            fake_missing_bindings: false,
+            special_constants_binding: Some(hlsl::BindTarget {
+                space: 0,
+                register: 13,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Naga's internal sampler indirection must have a complete binding map before
+        // the DX11 lowering replaces it with direct fixed samplers.
+        options.sampler_buffer_binding_map.insert(
+            hlsl::SamplerIndexBufferKey { group: 0 },
+            hlsl::BindTarget {
+                space: 0,
+                register: 127,
+                ..Default::default()
+            },
+        );
+        for (_, variable) in self.module.global_variables.iter() {
+            let Some(binding) = variable.binding else {
+                continue;
+            };
+            let limit = match variable.space {
+                naga::AddressSpace::Uniform => 13,
+                naga::AddressSpace::Storage { access } if access == naga::StorageAccess::LOAD => {
+                    128
+                }
+                naga::AddressSpace::Handle => match self.module.types[variable.ty].inner {
+                    naga::TypeInner::Sampler { .. } => 16,
+                    naga::TypeInner::Image {
+                        class: naga::ImageClass::Sampled { .. } | naga::ImageClass::Depth { .. },
+                        ..
+                    } => 128,
+                    _ => 0,
+                },
+                _ => 0,
+            };
+            if binding.group != 0 || binding.binding >= limit {
+                return Err(ShaderError::Hlsl(format!(
+                    "D3D11 unsupported resource binding {binding:?}"
+                )));
+            }
+            options.binding_map.insert(
+                binding,
+                hlsl::BindTarget {
+                    register: binding.binding,
+                    space: 0,
+                    ..Default::default()
+                },
+            );
+        }
+        let pipeline = hlsl::PipelineOptions {
+            entry_point: Some((shader_stage_to_naga(stage), entry_point.to_owned())),
+        };
+        let mut source = String::new();
+        hlsl::Writer::new(&mut source, &options, &pipeline)
+            .write(&self.module, &self.info, None)
+            .map_err(|error| ShaderError::Hlsl(error.to_string()))?;
+        Ok(ShaderBinary::hlsl(
+            stage,
+            entry_point,
+            dx11::declarations(&source)?,
+        ))
+    }
+
     /// Compiles one entry point to Metal Shading Language source.
     ///
     /// # Errors
@@ -188,11 +270,11 @@ impl WgslModule {
     ) -> Result<ShaderBinary> {
         match backend {
             BackendKind::Vulkan => self.compile_spirv(stage, entry_point),
+            BackendKind::Dx11 => self.compile_hlsl_dx11(stage, entry_point),
             BackendKind::Dx12 => self.compile_hlsl(stage, entry_point),
             BackendKind::Metal => self.compile_msl(stage, entry_point),
-            BackendKind::OpenGl | BackendKind::WebGl => {
-                Err(ShaderError::UnsupportedBackend(backend))
-            }
+            BackendKind::OpenGl => self.compile_glsl(stage, entry_point),
+            BackendKind::WebGl => Err(ShaderError::UnsupportedBackend(backend)),
         }
     }
 }

@@ -1,0 +1,32 @@
+[package]
+name = "gfx-dx11"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0"
+description = "Native Direct3D 11 backend for nova-gfx"
+
+[lib]
+path = "src/gfx_dx11.rs"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[dependencies]
+gfx-core = { version = "0.1.0", path = "../gfx-core" }
+log = "0.4.29"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-numerics = "0.3"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
+
+[dev-dependencies]
+gfx-shader = { path = "../gfx-shader" }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }

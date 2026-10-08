@@ -4,7 +4,7 @@
 
 `nova-gfx` 是 BMCBL 和后续项目使用的轻量图形基础库。`gfx-core` 是
 公共规范接口，负责定义后端无关的描述符、类型化句柄、错误类型和设备
-trait；Vulkan、Direct3D 12、Metal 后端 crate 负责实现这些 trait。
+trait；Vulkan、Direct3D 11/12、OpenGL 4.5、Metal 后端 crate 负责实现这些 trait。
 
 当前 crate：
 
@@ -12,7 +12,9 @@ trait；Vulkan、Direct3D 12、Metal 后端 crate 负责实现这些 trait。
   它不依赖 GPUI、winit、raw-window-handle、Vulkan、DX12 或 Metal。
 - `gfx-memory`：GPU 内存分配封装、upload-ring 统计、延迟释放队列和
   内存统计。
-- `gfx-shader`：通过 Naga 做 WGSL 校验，并生成 SPIR-V、HLSL、MSL。
+- `gfx-shader`：通过 Naga 做 WGSL 校验，并生成 SPIR-V、HLSL、MSL、GLSL。
+- `gfx-dx11`：Windows D3D11 资源、原生呈现和 SM5.0 字节码。
+- `gfx-opengl`：Windows WGL 与 Linux EGL 原生 OpenGL 4.5 后端。
 - `gfx-dx12`：基于 `windows-rs` 的 Windows Direct3D 12 后端。
 - `gfx-metal`：基于 `objc2-metal` 的 Apple Metal 后端。
 - `gfx-vulkan`：基于 `ash` 的 Vulkan 后端。
@@ -62,7 +64,8 @@ GPUI 用户必须显式选择具体 nova-gfx 后端：
 gpui = { path = "../gpui", default-features = false, features = ["nova-gfx-vulkan"] }
 ```
 
-可选 feature 为 `nova-gfx-vulkan`、`nova-gfx-dx12`、`nova-gfx-metal`。旧
+可选 feature 为 `nova-gfx-vulkan`、`nova-gfx-dx11`、`nova-gfx-dx12`、
+`nova-gfx-opengl`、`nova-gfx-metal`。旧
 `nova-gfx` feature 不再隐式选择后端；这是破坏性编译选择变更，用于避免只用
 Vulkan 时仍编译 DX12/Metal 等无关代码。
 

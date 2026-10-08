@@ -8,16 +8,28 @@ use std::{
 };
 
 use gpui::{
-    App, Application, Bounds, Context, RendererBackend, Timer, Window, WindowBounds, WindowOptions,
-    div, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, ImagePixelFormat, RenderImage, RendererBackend,
+    RendererFallback, RendererOptions, Timer, Window, WindowBounds, WindowOptions, div, img,
+    prelude::*, px, rgb, size,
 };
 use sysinfo::{ProcessesToUpdate, System};
 
-struct SmokeWindow;
+struct SmokeWindow {
+    image: Arc<RenderImage>,
+}
 
 impl Render for SmokeWindow {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(rgb(0x0010_1214)).child("nova-gfx")
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .p(px(12.0))
+            .gap(px(12.0))
+            .bg(rgb(0x0010_1214))
+            .text_color(rgb(0xffffff))
+            .child("nova-gfx text and image")
+            .child(img(self.image.clone()).size(px(64.0)))
     }
 }
 
@@ -26,6 +38,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = requested_backend()?;
     reject_conflicting_gpui_renderer_env(backend)?;
     let first_frame_printed = Arc::new(AtomicBool::new(false));
+    let initial_presents = gpui::performance_metrics_snapshot().direct_present_count;
+    let image = Arc::new(RenderImage::from_raw_pixels(
+        2,
+        2,
+        ImagePixelFormat::Rgba8,
+        vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    )?);
     if let Some(timeout) = auto_exit_timeout()? {
         spawn_exit_fallback(started_at, first_frame_printed.clone(), timeout);
     }
@@ -33,7 +54,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("renderer_path=nova-gfx");
     println!("startup_time_ms={}", started_at.elapsed().as_millis());
 
-    Application::with_renderer_backend(backend).run({
+    Application::with_renderer_options(RendererOptions {
+        backend,
+        fallback: RendererFallback::Disabled,
+        ..Default::default()
+    })
+    .run({
         let first_frame_printed = first_frame_printed.clone();
         move |cx: &mut App| {
             let bounds = Bounds::centered(None, size(px(320.0), px(200.0)), cx);
@@ -42,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|_| SmokeWindow),
+                move |_, cx| cx.new(|_| SmokeWindow { image }),
             ) {
                 eprintln!("failed to open nova-gfx GPUI smoke window: {error:#}");
                 cx.quit();
@@ -52,11 +78,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             cx.spawn({
                 let first_frame_printed = first_frame_printed.clone();
                 async move |cx| {
-                    Timer::after(Duration::from_millis(250)).await;
-                    if !first_frame_printed.swap(true, Ordering::SeqCst) {
-                        println!("first_frame_time_ms={}", started_at.elapsed().as_millis());
-                        println!("submitted_frames=1");
-                        println!("process_memory_kib={}", process_memory_kib());
+                    for _ in 0..200 {
+                        Timer::after(Duration::from_millis(50)).await;
+                        let metrics = gpui::performance_metrics_snapshot();
+                        if metrics.direct_present_count > initial_presents {
+                            first_frame_printed.store(true, Ordering::SeqCst);
+                            println!(
+                                "first_present_observed_time_ms={}",
+                                started_at.elapsed().as_millis()
+                            );
+                            println!(
+                                "native_presents={}",
+                                metrics.direct_present_count - initial_presents
+                            );
+                            println!("actual_backend={}", metrics.renderer_backend);
+                            println!("process_memory_kib={}", process_memory_kib());
+                            break;
+                        }
                     }
                     Timer::after(Duration::from_millis(750)).await;
                     let _ = cx.update(|cx| cx.quit());
@@ -68,7 +106,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    Ok(())
+    if first_frame_printed.load(Ordering::SeqCst) {
+        Ok(())
+    } else {
+        Err("smoke did not observe a native present".into())
+    }
 }
 
 fn requested_backend() -> Result<RendererBackend, Box<dyn Error>> {
@@ -82,7 +124,7 @@ fn requested_backend() -> Result<RendererBackend, Box<dyn Error>> {
         Ok(backend)
     } else {
         Err(format!(
-            "nova-gpui-minimal-window-smoke requires nova-dx12, nova-vulkan, or nova-metal on macOS; got {backend}"
+            "nova-gpui-minimal-window-smoke requires nova-opengl, nova-dx11, nova-dx12, nova-vulkan, or nova-metal on macOS; got {backend}"
         )
         .into())
     }
@@ -105,7 +147,10 @@ fn default_backend_name() -> String {
 
 fn is_supported_smoke_backend(backend: RendererBackend) -> bool {
     match backend {
-        RendererBackend::NovaDx12 | RendererBackend::NovaVulkan => true,
+        RendererBackend::NovaOpenGl
+        | RendererBackend::NovaDx11
+        | RendererBackend::NovaDx12
+        | RendererBackend::NovaVulkan => true,
         #[cfg(target_os = "macos")]
         RendererBackend::NovaMetal => true,
         _ => false,
@@ -157,10 +202,12 @@ fn spawn_exit_fallback(
 ) {
     std::thread::spawn(move || {
         std::thread::sleep(timeout);
-        if !first_frame_printed.swap(true, Ordering::SeqCst) {
-            println!("first_frame_time_ms={}", started_at.elapsed().as_millis());
-            println!("submitted_frames=1");
-            println!("process_memory_kib={}", process_memory_kib());
+        if !first_frame_printed.load(Ordering::SeqCst) {
+            eprintln!(
+                "native present timeout after {} ms",
+                started_at.elapsed().as_millis()
+            );
+            std::process::exit(1);
         }
         std::process::exit(0);
     });
