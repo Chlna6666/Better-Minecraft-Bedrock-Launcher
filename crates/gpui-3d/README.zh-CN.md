@@ -28,7 +28,7 @@ DX12 和 Vulkan 原生窗口均已看到场景几何与三个共享资源的小�
   `SceneViewRaycastScratch` 复用动画和遍历缓冲。
 
 贴图由不可变 RGBA8 `TextureAsset` 提供，材质通过 asset ID 引用。场景视图会上传调用方提供的
-mip 链，默认使用线性纹素/级间过滤和边缘钳制。调用 `SceneView::with_anisotropy(true)` 可请求硬件各向异性过滤；Vulkan 在设备支持时使用其报告上限，否则使用已配置的过滤模式。Nova 的 DX12 和 Vulkan 支持贴图上传。`gfx-metal` 尚未实现像素上传；
+mip 链，默认使用线性纹素/级间过滤和边缘钳制。调用 `SceneView::with_anisotropy(true)` 可请求硬件各向异性过滤；Vulkan 在设备支持时使用其报告上限，否则使用已配置的过滤模式。Nova 的 DX11、DX12、Vulkan 和 OpenGL 4.5 支持贴图上传。`gfx-metal` 尚未实现像素上传；
 shader 编译通过不代表 Metal 贴图可用。
 
 AO 贴图通过网格 UV 采样线性 R 通道，只衰减环境光。使用 `TextureAsset::linear_rgba8` 创建，
@@ -44,7 +44,7 @@ mesh pass、骨骼或 morph 变形、约束与 IK、headless capture 和异步 r
 
 `TextureAsset::rgba8` 和 `TextureAsset::linear_rgba8` 创建单级贴图；`rgba8_mip_chain` 与
 `linear_rgba8_mip_chain` 接收从 level 0 开始、每级宽高向下折半并至少为 1 的像素数据，允许不完整链。
-纹理解码、颜色空间转换和 mip 生成由调用方负责。Nova 在 DX12 和 Vulkan 上会通过一次批量上传提交整条链；Metal 上传尚未实现。
+纹理解码、颜色空间转换和 mip 生成由调用方负责。Nova 在 DX11、DX12、Vulkan 和 OpenGL 上支持 mip 链上传；Metal 上传尚未实现。
 
 聚光灯内外锥角使用弧度，且必须满足 `0 <= inner < outer < PI`。节点变换会移动灯光，并按最大轴缩放影响距离。
 内锥范围保持完整强度，向外锥平滑衰减；距离衰减仍按影响范围计算。
@@ -57,11 +57,13 @@ mesh pass、骨骼或 morph 变形、约束与 IK、headless capture 和异步 r
 cargo run -p gpui-3d --example scene
 ```
 
-运行原生场景视图示例，可选择 DX12 或 Vulkan：
+运行原生场景视图示例，可选择已编译的原生后端：
 
 ```powershell
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx12
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-vulkan
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx11
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-opengl
 ```
 
 CPU scene 示例通过 `Mesh::with_vertices` 替换顶点属性，保留源快照并重建 bounds 和查询数据；它还会生成导入三角面的法线和切线，跨绝对时间样本复用 `AnimationScratch`。示例读取动画姿态的世界空间场景 bounds 来调整正交相机取景，再演示 orbit/pan/zoom、场景射线和 viewport 像素拾取。

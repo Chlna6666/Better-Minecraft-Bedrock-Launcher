@@ -48,7 +48,7 @@ to linear texel/mip filtering with clamp-to-edge addressing. `SceneView::with_an
 into hardware anisotropic filtering; Vulkan uses the adapter's reported limit and falls back to the
 configured filters when sampler anisotropy is unavailable. Occlusion maps use mesh UVs and reduce ambient lighting according to the
 material strength; they do not affect direct lights. Create them with `TextureAsset::linear_rgba8`.
-The renderer rejects sRGB occlusion maps. Nova supports texture uploads on DX12 and Vulkan. Metal shader compilation
+The renderer rejects sRGB occlusion maps. Nova supports texture uploads on DX11, DX12, Vulkan and OpenGL 4.5. Metal shader compilation
 is tested, but `gfx-metal` does not upload texture pixels.
 
 Normal-map assets also use linear RGBA8; the renderer rejects sRGB normal maps. A lit metallic-roughness material with a normal map requires `Mesh::tangents()`;
@@ -69,11 +69,13 @@ Run the CPU scene, animation, preparation, and picking example:
 cargo run -p gpui-3d --example scene
 ```
 
-Run the native scene-view example with either supported Windows renderer:
+Run the native scene-view example with a compiled Windows renderer:
 
 ```powershell
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx12
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-vulkan
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx11
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-opengl
 ```
 
 The CPU scene example replaces vertex attributes through `Mesh::with_vertices`, leaving the source

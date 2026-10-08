@@ -1,17 +1,17 @@
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, FRAME_BINDING, INSTANCE_BINDING, LIGHT_BINDING,
-    NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING, SHADER, TANGENT_BINDING,
-    VERTEX_BINDING,
+    NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING,
 };
-use anyhow::anyhow;
 use crate::TextureSampling;
+use anyhow::anyhow;
 use gfx_core::{
-    AddressMode, BackendKind, BlendMode, CompareFunction, DepthState, Extent2d, FilterMode, Format,
-    ExtensionDevice, MemoryLocation, PipelineLayoutDescriptor, PipelineLayoutId, PrimitiveTopology,
-    RenderPipelineDescriptor, RenderPipelineId, ResourceBindingType, ResourceSetLayoutDescriptor,
-    ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerDescriptor, SamplerId, ShaderBinary,
-    ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, TextureDescriptor, TextureDimension,
-    TextureId, TextureUsage, TextureViewDescriptor, TextureViewId,
+    AddressMode, BackendKind, BlendMode, CompareFunction, DepthState, ExtensionDevice, Extent2d,
+    FilterMode, Format, MemoryLocation, PipelineLayoutDescriptor, PipelineLayoutId,
+    PrimitiveTopology, RenderPipelineDescriptor, RenderPipelineId, ResourceBindingType,
+    ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerDescriptor,
+    SamplerId, ShaderBinary, ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages,
+    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
+    TextureViewId,
 };
 use gpui::RendererExtensionContext;
 
@@ -46,8 +46,8 @@ impl RendererResources {
             samplers: [None; 4],
         };
         let result = (|| {
-            resources.resource_set_layout =
-                Some(device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+            resources.resource_set_layout = Some(device.create_resource_set_layout(
+                &ResourceSetLayoutDescriptor {
                     label: Some("gpui-3d scene-view resource-set layout".into()),
                     entries: vec![
                         ResourceSetLayoutEntry {
@@ -101,20 +101,23 @@ impl RendererResources {
                             stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                         },
                     ],
-                })?);
+                },
+            )?);
             resources.pipeline_layout =
                 Some(device.create_pipeline_layout(&PipelineLayoutDescriptor {
                     label: Some("gpui-3d pipeline layout".into()),
                     resource_set_layouts: vec![resources.resource_set_layout()?],
                 })?);
-            resources.vertex_shader = Some(device.create_shader_module(&ShaderModuleDescriptor {
-                label: Some("gpui-3d vertex shader".into()),
-                binary: vertex_binary,
-            })?);
-            resources.fragment_shader = Some(device.create_shader_module(&ShaderModuleDescriptor {
-                label: Some("gpui-3d fragment shader".into()),
-                binary: fragment_binary,
-            })?);
+            resources.vertex_shader =
+                Some(device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("gpui-3d vertex shader".into()),
+                    binary: vertex_binary,
+                })?);
+            resources.fragment_shader =
+                Some(device.create_shader_module(&ShaderModuleDescriptor {
+                    label: Some("gpui-3d fragment shader".into()),
+                    binary: fragment_binary,
+                })?);
             let fallback_texture = device.create_texture(&TextureDescriptor {
                 label: Some("gpui-3d fallback texture".into()),
                 size: Extent2d::new(1, 1)?,
@@ -166,8 +169,8 @@ impl RendererResources {
         sampling: TextureSampling,
         anisotropy_enabled: bool,
     ) -> gpui::Result<SamplerId> {
-        let sampler_index = usize::from(sampling == TextureSampling::Nearest)
-            + 2 * usize::from(anisotropy_enabled);
+        let sampler_index =
+            usize::from(sampling == TextureSampling::Nearest) + 2 * usize::from(anisotropy_enabled);
         if let Some(sampler) = self.samplers[sampler_index] {
             return Ok(sampler);
         }
@@ -258,6 +261,10 @@ fn embedded_shader(
     entry_point: &str,
 ) -> gpui::Result<ShaderBinary> {
     let artifact = match context.backend_kind() {
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        BackendKind::OpenGl => super::artifacts::scene_view_opengl_shader(entry_point),
+        #[cfg(target_os = "windows")]
+        BackendKind::Dx11 => super::artifacts::scene_view_dx11_shader(entry_point),
         #[cfg(target_os = "windows")]
         BackendKind::Dx12 => super::artifacts::scene_view_dx12_shader(entry_point),
         #[cfg(target_os = "macos")]

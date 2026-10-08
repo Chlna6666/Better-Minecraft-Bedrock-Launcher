@@ -1,15 +1,22 @@
 //! Opens a native GPUI window and draws a lit 3D scene through the Nova scene-view extension.
 
 use gpui::{
-    App, Application, Bounds, Context, RendererBackend, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, RendererBackend, RendererFallback, RendererOptions, Timer,
+    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
 use gpui_3d::{
     AlphaMode, Keyframe, Light, Material, Mesh, Node, OrbitCamera, Projection, ProjectionRegion,
     Scene, SceneView, ShadingModel, SpotCone, SpotLight, TextureAsset, Transform, TransformTrack,
     TriangleEdgeMask, Vec2, Vec3, Vec3Track,
 };
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 struct SceneViewExample {
     scene_view: Arc<SceneView>,
@@ -33,7 +40,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         .find_map(|argument| argument.strip_prefix("--backend=").map(str::to_owned))
         .unwrap_or_else(|| "nova-dx12".to_owned())
         .parse::<RendererBackend>()?;
-    Application::with_renderer_backend(backend).run(move |cx: &mut App| {
+    let timeout = std::env::args()
+        .skip(1)
+        .find_map(|argument| argument.strip_prefix("--auto-exit-ms=").map(str::to_owned))
+        .map(|milliseconds| milliseconds.parse::<u64>().map(Duration::from_millis))
+        .transpose()?;
+    let observed = Arc::new(AtomicBool::new(false));
+    let observed_by_window = observed.clone();
+    let initial_presents = gpui::performance_metrics_snapshot().direct_present_count;
+    Application::with_renderer_options(RendererOptions {
+        backend,
+        fallback: RendererFallback::Disabled,
+        ..Default::default()
+    })
+    .run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(960.0), px(640.0)), cx);
         if let Err(error) = cx.open_window(
             WindowOptions {
@@ -47,10 +67,46 @@ fn main() -> Result<(), Box<dyn Error>> {
         ) {
             eprintln!("failed to open 3D scene-view example: {error:#}");
             cx.quit();
+            return;
+        }
+        if let Some(timeout) = timeout {
+            quit_after_present(cx, observed_by_window, initial_presents, timeout);
         }
         cx.activate(true);
     });
+    if timeout.is_some() && !observed.load(Ordering::Acquire) {
+        return Err("3D scene-view example did not observe a native present".into());
+    }
     Ok(())
+}
+
+fn quit_after_present(
+    cx: &mut App,
+    observed: Arc<AtomicBool>,
+    initial_presents: usize,
+    timeout: Duration,
+) {
+    cx.spawn(async move |cx| {
+        let started_at = Instant::now();
+        while started_at.elapsed() < timeout {
+            Timer::after(Duration::from_millis(50)).await;
+            let metrics = gpui::performance_metrics_snapshot();
+            if metrics.direct_present_count > initial_presents {
+                observed.store(true, Ordering::Release);
+                println!(
+                    "scene_view_native_presents={}",
+                    metrics.direct_present_count - initial_presents
+                );
+                println!("actual_backend={}", metrics.renderer_backend);
+                Timer::after(Duration::from_millis(750)).await;
+                break;
+            }
+        }
+        if let Err(error) = cx.update(|cx| cx.quit()) {
+            eprintln!("3D scene-view example exit failed: {error:#}");
+        }
+    })
+    .detach();
 }
 
 fn build_scene_view() -> Result<SceneView, Box<dyn Error>> {

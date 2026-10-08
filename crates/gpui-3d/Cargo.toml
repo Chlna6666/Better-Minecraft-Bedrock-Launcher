@@ -12,10 +12,12 @@ path = "src/lib.rs"
 
 [features]
 default = []
+nova-gfx-opengl = ["gpui/nova-gfx-opengl"]
+nova-gfx-dx11 = ["gpui/nova-gfx-dx11"]
 nova-gfx-dx12 = ["gpui/nova-gfx-dx12"]
 nova-gfx-vulkan = ["gpui/nova-gfx-vulkan"]
 nova-gfx-metal = ["gpui/nova-gfx-metal"]
-native = ["nova-gfx-dx12", "nova-gfx-vulkan"]
+native = ["nova-gfx-opengl", "nova-gfx-dx11", "nova-gfx-dx12", "nova-gfx-vulkan"]
 
 [dependencies]
 anyhow = "1.0.100"

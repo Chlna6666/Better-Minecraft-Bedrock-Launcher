@@ -20,7 +20,7 @@ struct FrameParams {
     element_bounds_size: vec2<f32>,
     render_target_size: vec2<f32>,
     blend_edge_feather_px: f32,
-    _padding: vec3<f32>,
+    _padding: f32,
 };
 
 struct DrawParams {

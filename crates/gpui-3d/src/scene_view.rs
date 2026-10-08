@@ -581,7 +581,9 @@ impl RendererExtension for SceneView {
 
 #[cfg(test)]
 mod tests {
-    use super::gpu::{encode_draws, encode_frame_params, encode_instances, encode_lights, transpose};
+    use super::gpu::{
+        encode_draws, encode_frame_params, encode_instances, encode_lights, transpose,
+    };
     use super::*;
     use crate::{
         Keyframe, Mat4, Material, Mesh, Node, PreparedLight, PreparedScene, Projection,
@@ -589,6 +591,19 @@ mod tests {
     };
     use gfx_core::{BackendKind, ShaderStage};
     use gpui::Bounds;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn scene_view_dx11_artifacts_are_precompiled_sm5_bytecode() {
+        for entry_point in ["vs_main", "fs_main"] {
+            let Some(gfx_core::EmbeddedShader::DxBytecode(bytes)) =
+                super::artifacts::scene_view_dx11_shader(entry_point)
+            else {
+                panic!("missing DX11 bytecode for {entry_point}");
+            };
+            assert!(bytes.starts_with(b"DXBC"));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
@@ -605,9 +620,9 @@ mod tests {
                         "{entry_point} should contain a DXBC container"
                     );
                 }
-                Some(other) => panic!(
-                    "{entry_point} must be embedded as DX bytecode, got {other:?}"
-                ),
+                Some(other) => {
+                    panic!("{entry_point} must be embedded as DX bytecode, got {other:?}")
+                }
                 None => panic!("missing scene-view DX12 shader {entry_point}"),
             }
         }
@@ -1111,7 +1126,13 @@ mod tests {
 
     #[test]
     fn scene_view_shader_compiles_for_supported_native_backends() {
-        for backend in [BackendKind::Vulkan, BackendKind::Dx12, BackendKind::Metal] {
+        for backend in [
+            BackendKind::OpenGl,
+            BackendKind::Vulkan,
+            BackendKind::Dx11,
+            BackendKind::Dx12,
+            BackendKind::Metal,
+        ] {
             for (stage, entry_point) in [
                 (ShaderStage::Vertex, "vs_main"),
                 (ShaderStage::Fragment, "fs_main"),

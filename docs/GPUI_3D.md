@@ -232,12 +232,14 @@ queries do not yet account for alpha masks or blended surface visibility.
   for UV set zero, or attach imported frames with `Mesh::with_tangents()`. The generator returns any
   seam-split vertices and the output-to-source map for application-owned attributes. The shader
   transforms and orthogonalizes the tangent frame before applying normal-map RGB.
-- DX12 and Vulkan Nova devices implement the texture upload path. `gfx-metal` does not currently
+- DX11, DX12, Vulkan and OpenGL Nova devices implement the texture upload path. `gfx-metal` does not currently
   implement pixel uploads; Metal compiles the scene-view WGSL but textured scene views are not supported
   there yet.
 
 | Backend | GPUI 3D shader source compiles | RGBA8 texture and mip upload | Anisotropic sampling | Real scene-view proof in this work |
 | --- | --- | --- | --- | --- |
+| DX11 | Yes, build-time SM5.0 bytecode | Implemented; native texture/mip readback gates | Supported, opt-in | GPUI glyph/image pixels tested; strict-backend 3D example completed native present; 3D pixel inspection pending |
+| OpenGL 4.5 | Yes, build-time GLSL 4.50 translation | Implemented; native texture/mip readback gates | Requires native anisotropic extension when requested | Windows GPUI glyph/image pixels tested; strict-backend 3D example completed native present; Linux and 3D pixel inspection pending |
 | DX12 | Yes | Implemented, batched | Supported, opt-in | Geometry and shared-resource sphere instances visible in a native window; frame pacing and GPU draw count not measured |
 | Vulkan | Yes | Implemented, batched | Opt-in when `samplerAnisotropy` is supported; otherwise uses requested min/mag filters | Geometry and shared-resource sphere instances visible in a native window; frame pacing and GPU draw count not measured |
 | Metal | Yes | Not implemented | Not exercised; texture upload is unsupported | Pending; compile-only evidence |
@@ -278,9 +280,15 @@ native example should give its containing layout a finite size (the included win
 
 ```powershell
 cargo run -p gpui-3d --example scene
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx11
+cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-opengl
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-dx12
 cargo run -p gpui-3d --example scene_view --features native -- --backend=nova-vulkan
 ```
+
+For an unattended native-present check, append `--auto-exit-ms=5000`. The example disables backend
+fallback, reports the actual backend and observed native presents, and returns an error if no present
+is observed within the deadline. A successful present does not validate the scene's pixels.
 
 The BMCBL adapters show where product data crosses the boundary: [Map Viewer preview
 conversion](../src/ui/window/map_viewer/preview_3d.rs) and [Skin Pack preview

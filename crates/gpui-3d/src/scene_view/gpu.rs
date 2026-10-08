@@ -1,8 +1,8 @@
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_BINDING,
-    FRAME_PARAMS_STRIDE, INSTANCE_BINDING,
-    INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE, NORMAL_MAP_BINDING, OCCLUSION_BINDING,
-    PACKED_VERTEX_STRIDE, SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING,
+    FRAME_PARAMS_STRIDE, INSTANCE_BINDING, INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE,
+    NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE, SAMPLER_BINDING, TANGENT_BINDING,
+    VERTEX_BINDING,
 };
 use crate::{
     AlphaMode, Camera, Mat4, Mesh, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
@@ -166,7 +166,7 @@ pub(super) fn create_mesh(
     // stub backends have no staging path for device-local buffers yet, so their geometry stays
     // host visible.
     let mesh_memory_location = match backend {
-        BackendKind::Dx12 | BackendKind::Vulkan => MemoryLocation::GpuOnly,
+        BackendKind::Dx11 | BackendKind::Dx12 | BackendKind::Vulkan => MemoryLocation::GpuOnly,
         BackendKind::Metal | BackendKind::OpenGl | BackendKind::WebGl => MemoryLocation::CpuToGpu,
     };
     let vertex_buffer = create_storage_buffer(

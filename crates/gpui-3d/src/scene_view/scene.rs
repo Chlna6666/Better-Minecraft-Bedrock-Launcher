@@ -14,9 +14,9 @@ use crate::{
 };
 use anyhow::{Context as _, anyhow, bail};
 use gfx_core::{
-    BackendKind, BufferId, DrawIndexedStepDescriptor, ExtensionDevice, IndexBufferBinding,
-    IndexFormat, MemoryLocation, RenderStepDescriptor, ResourceSetId, ResourceSetLayoutId,
-    SamplerId, resource_set_list,
+    BackendKind, BufferDescriptor, BufferId, BufferUsage, DrawIndexedStepDescriptor,
+    ExtensionDevice, IndexBufferBinding, IndexFormat, MemoryLocation, RenderStepDescriptor,
+    ResourceSetId, ResourceSetLayoutId, SamplerId, resource_set_list,
 };
 use gpui::RendererExtensionContext;
 use std::{
@@ -114,18 +114,18 @@ impl SceneResources {
                 return Err(error);
             }
         };
-        let frame_buffer = match create_storage_buffer(
-            device,
-            "gpui-3d frame params",
-            FRAME_PARAMS_STRIDE,
-            MemoryLocation::CpuToGpu,
-        ) {
+        let frame_buffer = match device.create_buffer(&BufferDescriptor {
+            label: Some("gpui-3d frame params".into()),
+            size: FRAME_PARAMS_STRIDE as u64,
+            usage: BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::CpuToGpu,
+        }) {
             Ok(buffer) => buffer,
             Err(error) => {
                 device.destroy_buffer(instance_buffer)?;
                 device.destroy_buffer(light_buffer)?;
                 device.destroy_buffer(draw_buffer)?;
-                return Err(error);
+                return Err(error.into());
             }
         };
         Ok(Self {
@@ -165,7 +165,8 @@ impl SceneResources {
         context: &RendererExtensionContext,
     ) -> gpui::Result<()> {
         let projection = FrameProjection::new(scene_view, context)?;
-        let sampler = renderer.sampler(device, scene_view.sampling, scene_view.anisotropy_enabled)?;
+        let sampler =
+            renderer.sampler(device, scene_view.sampling, scene_view.anisotropy_enabled)?;
         let assets_changed =
             scene_assets_changed(self.scene.as_ref(), self.texture_table.as_ref(), scene_view);
         let draw_state_changed = assets_changed
