@@ -587,6 +587,9 @@ impl PlatformWindow for WindowProxy {
     fn visibility(&self) -> WindowVisibility {
         self.snapshot.borrow().visibility
     }
+    fn is_content_ready(&self) -> bool {
+        self.snapshot.borrow().content_ready.load(Ordering::Acquire)
+    }
     fn window_bounds(&self) -> WindowBounds {
         self.snapshot.borrow().window_bounds
     }

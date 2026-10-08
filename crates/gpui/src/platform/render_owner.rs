@@ -26,6 +26,8 @@ use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
 
 mod queue;
+#[cfg(all(test, target_os = "windows"))]
+mod tests;
 mod worker;
 
 use queue::{Command, Queue};
@@ -80,29 +82,29 @@ fn sender() -> Result<&'static Sender<Job>> {
         .map_err(|error| anyhow!("failed to start GPU owner: {error}"))
 }
 
-/// Queues device preparation without waiting for it, overlapping GPU and native/UI startup.
+/// Queues device and pipeline preparation, overlapping GPU and native/UI startup.
 ///
 /// The job and subsequent window initialization use the same GPU thread and device registry.
-/// Device errors are logged here; normal window initialization retries uncached failures.
+/// Preparation errors are logged here; window initialization retries uncached failures.
 ///
 /// # Errors
 ///
 /// Returns an error if the GPU owner cannot start or accept the preparation job.
 #[cfg(target_os = "windows")]
-pub(crate) fn prepare_device(options: crate::RendererOptions) -> Result<()> {
+pub(crate) fn prepare_renderer(options: crate::RendererOptions) -> Result<()> {
     sender()?
         .send(Box::new(move |_| {
             let started_at = Instant::now();
-            match NovaRenderer::prepare_device(&options) {
+            match NovaRenderer::prepare_renderer(&options) {
                 Ok(()) => log::info!(
-                    "GPUI device preparation: backend={} elapsed_ms={}",
+                    "GPUI renderer preparation completed: backend={} elapsed_ms={}",
                     options.backend,
                     started_at.elapsed().as_millis(),
                 ),
-                Err(error) => log::warn!("GPUI device preparation failed: {error:#}"),
+                Err(error) => log::warn!("GPUI renderer preparation failed: {error:#}"),
             }
         }))
-        .map_err(|_| anyhow!("GPU owner stopped before device preparation"))
+        .map_err(|_| anyhow!("GPU owner stopped before renderer preparation"))
 }
 
 /// Drains window resources and joins the GPU owner after the native/UI event loops exit.
@@ -267,7 +269,9 @@ impl RenderOwner {
         }
         self.enqueue(Command::Tick(now, timing))?;
         Ok(Some(ActivePresentationFrame {
-            continues: true,
+            // Enqueueing is not a completed sample. The GPU report owns continuation after it
+            // knows whether damage or timelines remain, including the animation's final frame.
+            continues: false,
             completed_animations: smallvec::SmallVec::new(),
         }))
     }

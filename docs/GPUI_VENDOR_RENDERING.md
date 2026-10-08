@@ -115,14 +115,26 @@ The GPU owner consumes submitted work independently, but a synchronous UI Render
 delays new native presentation ticks. This GPU ownership split does not provide Windows's separate
 native/UI host behavior on Linux; that requires its own native event-loop separation and validation.
 
-The first visibility handshake waits for an actual submitted frame. Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
+The default first visibility handshake waits for an actual submitted frame. Windows opaque
+windows may opt into `WindowOptions::initial_background`: a native solid fill makes the mapped
+window visible while GPU initialization continues. Transparent/composited windows and non-opaque
+colors retain the first-frame barrier. `Window::is_content_ready()` still waits for the Windows
+GPU submission acknowledgement; visibility alone may describe the startup background. BMCBL's
+deferred services and automatic debug window wait for both visibility and content readiness.
+BMCBL leaves the optional startup fill unset; the opaque minimal-window example opts in with
+the same color that its view paints.
 
-Windows `Application::run_separate` queues shared-device preparation on this GPU owner after
-resolving the backend, before starting winit and the UI owner. Device creation overlaps native/UI
-preparation; the window then reuses the same device key. Surface, swapchain and window resources
-still require the native window. Preparation errors are logged, and normal window initialization
-retries uncached failures. Device-preparation and renderer first-frame logs have separate timing
-origins; compare process-to-visible time to measure the end-to-end benefit.
+Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
+
+Windows queues shared-device and BGRA renderer-core preparation on this GPU owner after resolving
+the backend, before DirectWrite/App/winit initialization in both `run` and `run_separate`. Device,
+shader and pipeline creation overlap native/UI preparation; the window reuses the same device
+and format keys. Core pipelines have dynamic viewport/scissor and need no window-sized targets.
+Surface, swapchain and window resources remain in window initialization. Preparation errors are
+logged, and window initialization retries uncached failures. Logs separate device, core (layouts,
+shaders, pipelines), surface/swapchain and window resources (buffers, textures, bindings, depth).
+Preparation and renderer first-frame logs have separate timing origins; compare process-to-visible
+time to measure the end-to-end benefit.
 
 Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI layout or rebuilding its committed display list. Animation completions are returned only after successful submission. Windows, Wayland and X11 declare scene-animation ownership through `owns_scene_animations()`; queued/deferred timelines wait for owner completion reports. Backend readiness wakes the native frame lane when supported. A pending frame continues through native pacing; a GPU error requests a fresh UI commit. A static completed scene schedules no continuous owner work.
 
@@ -448,19 +460,22 @@ size-independent: DX12 and Vulkan both ignore the viewport extent at pipeline
 creation and drive viewport and scissor as dynamic state, so windows of different
 sizes share it.
 
-Renderer initialization runs on a dedicated `gpui-renderer-init` thread
-(`crates/gpui/src/platform/windows/renderer_init.rs`) instead of the shared
-background executor. Initialization must be serialized onto one thread because
-the registries are keyed per creating thread; the finished renderer is still
-handed to the window's own thread, which draws.
+Renderer initialization and presentation remain on `gpui-gpu-owner`
+(`crates/gpui/src/platform/render_owner.rs`). Windows and Linux/FreeBSD reuse the
+thread-local registries on this owner; renderer handles are not transferred to
+the native or UI owner. The UI root is built while renderer initialization is
+pending; only the first presentable frame waits for renderer readiness.
 
-Two limits are intentional and current:
+The registries remain thread local because a DX12 device is not `Send`: it holds
+`HANDLE`, `IUnknown`, and mapped-upload `NonNull` pointers. CPU-only work may run
+on a background executor, but wrapping a blocking driver call in a Future does
+not shorten it or permit moving these handles across threads.
 
-- The registries are thread local because a DX12 device is not `Send`: it holds
-  `HANDLE`, `IUnknown`, and mapped-upload `NonNull` pointers. A process-wide
-  registry would require an `unsafe` `Send` assertion for the device.
-- Linux gives each window its own presentation thread, so windows there do not
-  share a device yet.
+Backend startup logs further separate DX12 adapter/factory, native device,
+queue/fence, descriptor heaps and upload allocator creation. Vulkan logs separate
+surface-alpha negotiation, support queries, the native swapchain call and image
+resources. These fields are nested in the GPUI startup totals; do not sum a total
+and its component fields to estimate process startup time.
 
 ### Measured Frame Cost
 

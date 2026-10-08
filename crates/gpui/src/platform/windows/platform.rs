@@ -241,6 +241,7 @@ pub(crate) struct WindowsNativeWindow {
     pub(crate) active: bool,
     pub(crate) hovered: bool,
     pub(crate) visibility: WindowVisibility,
+    pub(crate) content_ready: Arc<AtomicBool>,
     pub(crate) maximized: bool,
     pub(crate) minimized: bool,
     pub(crate) fullscreen: bool,
@@ -429,17 +430,6 @@ impl WindowsPlatform {
         ui_main: impl FnOnce(flume::Receiver<()>) + Send + 'static,
     ) -> Result<()> {
         let native = Rc::new(Self::new_native_owner(renderer_options)?);
-        if native.renderer_backend != RendererBackend::HeadlessTest {
-            // Device creation needs no HWND. Queue it on the same GPU owner that will create
-            // the window renderer while winit and the UI owner prepare their own state.
-            let options = RendererOptions {
-                backend: native.renderer_backend,
-                ..native.renderer_options.clone()
-            };
-            if let Err(error) = crate::platform::render_owner::prepare_device(options) {
-                log::warn!("failed to queue GPUI device preparation: {error:#}");
-            }
-        }
         let (shutdown, shutdown_receiver) = flume::bounded(1);
         let ui_thread = Rc::new(RefCell::new(None));
         let ui_thread_slot = ui_thread.clone();
@@ -667,6 +657,18 @@ impl WindowsPlatform {
                 "GPUI Windows resolved renderer backend: {}",
                 renderer_backend
             );
+        }
+
+        if ui_bridge.is_none() && renderer_backend != RendererBackend::HeadlessTest {
+            // No HWND is needed: overlap device/core creation with DirectWrite, App and winit
+            // setup in both host modes. The split UI owner reuses the native owner's preparation.
+            let options = RendererOptions {
+                backend: renderer_backend,
+                ..renderer_options.clone()
+            };
+            if let Err(error) = crate::platform::render_owner::prepare_renderer(options) {
+                log::warn!("failed to queue GPUI renderer preparation: {error:#}");
+            }
         }
 
         // The native owner hosts winit, DWM pacing and window creation only. The GPUI App and
@@ -1538,6 +1540,7 @@ impl WindowsApplication {
             active: window.is_active(),
             hovered: window.is_hovered(),
             visibility: window.visibility(),
+            content_ready: window.0.content_ready.clone(),
             maximized: window.is_maximized(),
             minimized: window.is_minimized(),
             fullscreen: window.is_fullscreen(),

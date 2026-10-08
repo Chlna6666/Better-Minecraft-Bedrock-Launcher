@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use super::FrameClock;
-use crate::{App, Bounds, DisplayId, Pixels, Point, SharedString, Size};
+use crate::{App, Bounds, DisplayId, Pixels, Point, Rgba, SharedString, Size};
 
 /// Which part of the window to resize
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +160,13 @@ pub struct WindowOptions {
     /// The appearance of the window background.
     pub window_background: WindowBackgroundAppearance,
 
+    /// Optional solid background shown on Windows while the first GPU frame is pending.
+    ///
+    /// Only opaque windows and colors with alpha 1 are supported. Other platforms ignore this
+    /// option. `None` keeps the Windows first-frame visibility barrier. This does not count as
+    /// rendered content becoming ready; use [`crate::Window::is_content_ready`] for that barrier.
+    pub initial_background: Option<Rgba>,
+
     /// Preferred corner treatment for the window.
     pub window_corner_preference: WindowCornerPreference,
 
@@ -249,6 +256,8 @@ pub(crate) struct WindowParams {
     pub display_id: Option<DisplayId>,
 
     pub window_background: WindowBackgroundAppearance,
+    #[cfg(target_os = "windows")]
+    pub initial_background: Option<Rgba>,
     pub window_min_size: Option<Size<Pixels>>,
     pub window_corner_preference: WindowCornerPreference,
     #[cfg(target_os = "macos")]
@@ -309,6 +318,7 @@ impl Default for WindowOptions {
             is_minimizable: true,
             display_id: None,
             window_background: WindowBackgroundAppearance::default(),
+            initial_background: None,
             window_corner_preference: WindowCornerPreference::SystemDefault,
             app_id: None,
             window_min_size: None,

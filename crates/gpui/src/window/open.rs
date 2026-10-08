@@ -73,6 +73,8 @@ impl Window {
             is_minimizable,
             display_id,
             window_background,
+            #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+            initial_background,
             window_corner_preference,
             app_id,
             window_min_size,
@@ -103,6 +105,8 @@ impl Window {
                 show,
                 display_id,
                 window_background,
+                #[cfg(target_os = "windows")]
+                initial_background,
                 window_min_size,
                 window_corner_preference,
                 #[cfg(target_os = "macos")]

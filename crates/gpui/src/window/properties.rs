@@ -43,6 +43,14 @@ impl Window {
         self.visibility.is_visible()
     }
 
+    /// Returns whether UI content has been built and the platform's initial handoff is complete.
+    ///
+    /// On Windows this waits for a submitted GPU frame, even when an initial background is
+    /// already visible. This does not establish physical scanout or current visibility.
+    pub fn is_content_ready(&self) -> bool {
+        self.has_completed_rendered_frame && self.platform_window.is_content_ready()
+    }
+
     /// Returns whether this window is considered to be the window
     /// that currently owns the mouse cursor.
     /// On mac, this is equivalent to `is_window_active`.

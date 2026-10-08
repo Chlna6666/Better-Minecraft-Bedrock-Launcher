@@ -184,6 +184,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         }
     }
     fn window_bounds(&self) -> WindowBounds;
+    /// Whether the platform's initial content handoff has completed.
+    /// Platforms without a separate startup surface have no additional readiness barrier.
+    fn is_content_ready(&self) -> bool {
+        true
+    }
     fn content_size(&self) -> Size<Pixels>;
     fn resize(&mut self, size: Size<Pixels>);
     fn set_window_origin(&mut self, _origin: Point<Pixels>) -> bool {

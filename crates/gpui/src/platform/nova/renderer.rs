@@ -337,7 +337,7 @@ impl NovaRenderer {
 
         let descriptor = self.path_mask_target_descriptor(target_size);
         let old_target = self.current_path_mask_target();
-        let next_target = match &mut *lock_backend(&self.backend) {
+        let next_target: PathMaskTarget = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 create_path_mask_target(device, "gpui nova dx12", descriptor)?

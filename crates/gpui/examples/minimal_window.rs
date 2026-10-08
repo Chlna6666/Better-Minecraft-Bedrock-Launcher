@@ -34,6 +34,7 @@ fn main() {
         if let Err(error) = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                initial_background: Some(rgb(0x101214)),
                 ..Default::default()
             },
             |_, cx| cx.new(|_| MinimalWindow),

@@ -69,15 +69,61 @@ where
 }
 
 impl NovaRenderer {
-    /// Prepares the shared device on its GPU owner, independently of native window creation.
+    /// Prepares the shared device and BGRA renderer core on their GPU owner without a window.
     ///
     /// # Errors
     ///
-    /// Returns device initialization errors. A failed preparation leaves no cached device, so
-    /// the regular window initialization can retry and report its own error.
+    /// Returns device or pipeline initialization errors. Only successful cache entries are
+    /// retained, so regular window initialization can retry an unfinished preparation.
     #[cfg(target_os = "windows")]
-    pub(crate) fn prepare_device(options: &RendererOptions) -> Result<()> {
-        shared_device(options.backend, options).map(|_| ())
+    pub(crate) fn prepare_renderer(options: &RendererOptions) -> Result<()> {
+        let started_at = Instant::now();
+        let backend = shared_device(options.backend, options)?;
+        let device_elapsed = started_at.elapsed();
+        let mut backend = lock_backend(&backend);
+        // Core pipelines use dynamic viewport/scissor; only the attachment format is keyed.
+        // Window-sized textures and buffers are deliberately left to window initialization.
+        let config = SurfaceConfig::new(1, 1, Format::Bgra8Unorm)?;
+        let key = DeviceKey {
+            backend: options.backend,
+            adapter_name: options.adapter_name.clone(),
+            power_preference: nova_power_preference(options),
+            pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        };
+        let core_started_at = Instant::now();
+        match &mut *backend {
+            #[cfg(feature = "nova-gfx-dx12")]
+            NovaBackend::Dx12(device) => {
+                shared_renderer_core(key, config.format, || {
+                    create_renderer_core(
+                        device,
+                        config,
+                        "gpui nova dx12",
+                        cached_nova_dx12_shader_binaries()?,
+                    )
+                })?;
+            }
+            #[cfg(feature = "nova-gfx-vulkan")]
+            NovaBackend::Vulkan(device) => {
+                shared_renderer_core(key, config.format, || {
+                    create_renderer_core(
+                        device,
+                        config,
+                        "gpui nova vulkan",
+                        cached_nova_vulkan_shader_binaries()?,
+                    )
+                })?;
+            }
+            _ => anyhow::bail!("{} cannot prepare a Windows renderer", options.backend),
+        }
+        log::info!(
+            "GPUI renderer preparation: backend={} total_ms={} device_ms={} core_ms={}",
+            options.backend,
+            started_at.elapsed().as_millis(),
+            device_elapsed.as_millis(),
+            core_started_at.elapsed().as_millis(),
+        );
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -161,11 +207,14 @@ impl NovaRenderer {
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova DX12 surface")?;
+                let native_surface_elapsed = surface_started_at.elapsed();
+                let swapchain_started_at = Instant::now();
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova DX12 swapchain")?;
+                let swapchain_elapsed = swapchain_started_at.elapsed();
                 let surface_elapsed = surface_started_at.elapsed();
-                let resources_started_at = Instant::now();
+                let core_started_at = Instant::now();
                 let core = shared_renderer_core(
                     DeviceKey {
                         backend: RendererBackend::NovaDx12,
@@ -183,14 +232,19 @@ impl NovaRenderer {
                         )
                     },
                 )?;
+                let core_elapsed = core_started_at.elapsed();
+                let resources_started_at = Instant::now();
                 let resources =
                     create_renderer_resources(device, surface_config, "gpui nova dx12", &core)
                         .context("creating GPUI nova DX12 render resources")?;
                 log::info!(
-                    "GPUI nova-gfx DX12 startup: total_ms={} device_ms={} surface_swapchain_ms={} resources_ms={}",
+                    "GPUI nova-gfx DX12 startup: total_ms={} device_ms={} surface_swapchain_ms={} surface_ms={} swapchain_ms={} core_ms={} resources_ms={}",
                     metrics_started_at.elapsed().as_millis(),
                     device_elapsed.as_millis(),
                     surface_elapsed.as_millis(),
+                    native_surface_elapsed.as_millis(),
+                    swapchain_elapsed.as_millis(),
+                    core_elapsed.as_millis(),
                     resources_started_at.elapsed().as_millis(),
                 );
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
@@ -424,11 +478,14 @@ impl NovaRenderer {
                 let surface = device
                     .create_surface(window, &SurfaceDescriptor { label: None })
                     .context("creating nova Vulkan surface")?;
+                let native_surface_elapsed = surface_started_at.elapsed();
+                let swapchain_started_at = Instant::now();
                 let surface_alpha = SurfaceAlphaState::new(
                     device
                         .resolve_surface_alpha_mode(surface, surface_alpha.swapchain_mode)
                         .context("resolving nova Vulkan surface alpha mode")?,
                 );
+                let alpha_elapsed = swapchain_started_at.elapsed();
                 let surface_config = SurfaceConfig {
                     alpha_mode: surface_alpha.swapchain_mode,
                     ..surface_config
@@ -436,8 +493,9 @@ impl NovaRenderer {
                 let swapchain = device
                     .create_swapchain(surface, surface_config)
                     .context("creating nova Vulkan swapchain")?;
+                let swapchain_elapsed = swapchain_started_at.elapsed();
                 let surface_elapsed = surface_started_at.elapsed();
-                let resources_started_at = Instant::now();
+                let core_started_at = Instant::now();
                 let core = shared_renderer_core(
                     DeviceKey {
                         backend: RendererBackend::NovaVulkan,
@@ -455,14 +513,20 @@ impl NovaRenderer {
                         )
                     },
                 )?;
+                let core_elapsed = core_started_at.elapsed();
+                let resources_started_at = Instant::now();
                 let resources =
                     create_renderer_resources(device, surface_config, "gpui nova vulkan", &core)
                         .context("creating GPUI nova Vulkan render resources")?;
                 log::info!(
-                    "GPUI nova-gfx Vulkan startup: total_ms={} device_ms={} surface_swapchain_ms={} resources_ms={}",
+                    "GPUI nova-gfx Vulkan startup: total_ms={} device_ms={} surface_swapchain_ms={} surface_ms={} swapchain_ms={} alpha_ms={} core_ms={} resources_ms={}",
                     metrics_started_at.elapsed().as_millis(),
                     device_elapsed.as_millis(),
                     surface_elapsed.as_millis(),
+                    native_surface_elapsed.as_millis(),
+                    swapchain_elapsed.as_millis(),
+                    alpha_elapsed.as_millis(),
+                    core_elapsed.as_millis(),
                     resources_started_at.elapsed().as_millis(),
                 );
                 let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);

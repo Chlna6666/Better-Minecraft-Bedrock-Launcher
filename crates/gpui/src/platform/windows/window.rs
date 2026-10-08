@@ -9,7 +9,10 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -28,8 +31,8 @@ use windows::{
                 DwmGetWindowAttribute, DwmSetWindowAttribute,
             },
             Gdi::{
-                CreateRoundRectRgn, DeleteObject, HGDIOBJ, RDW_INVALIDATE, RDW_NOERASE,
-                RDW_UPDATENOW, RedrawWindow, SetWindowRgn,
+                CreateRoundRectRgn, DeleteObject, HDC, HGDIOBJ, RDW_ERASE, RDW_INVALIDATE,
+                RDW_NOERASE, RDW_UPDATENOW, RedrawWindow, SetWindowRgn,
             },
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -70,6 +73,9 @@ use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows, Win
 use winit::raw_window_handle as rwh;
 use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::Window as WinitWindow;
+
+mod startup;
+use startup::StartupBackground;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
 
@@ -260,6 +266,12 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
         // The GPU surface owns the complete client area. Letting DefWindowProc erase an enlarged
         // update region exposes the class background brush before the next swapchain present.
         SizeMoveLoopAction::SuppressErase => {
+            if let Some(window) = native_window(hwnd)
+                && let Some(background) = window.0.startup_background.borrow().as_ref()
+                && let Err(error) = background.paint(hwnd, HDC(wparam.0 as *mut c_void))
+            {
+                log::warn!("failed to repaint Windows startup background: {error:#}");
+            }
             return windows::Win32::Foundation::LRESULT(1);
         }
         SizeMoveLoopAction::Destroy => {
@@ -832,6 +844,7 @@ struct WindowsWindowPresentationState {
     mapped: bool,
     show_requested: bool,
     first_frame_presented: bool,
+    background_ready: bool,
     native_visible: bool,
     focus_requested: bool,
 }
@@ -842,6 +855,7 @@ impl WindowsWindowPresentationState {
             mapped: false,
             show_requested,
             first_frame_presented: false,
+            background_ready: false,
             native_visible: false,
             focus_requested,
         }
@@ -874,8 +888,20 @@ impl WindowsWindowPresentationState {
         self.reconcile()
     }
 
+    fn background_ready(&mut self) -> NativeWindowVisibilityAction {
+        self.background_ready = true;
+        self.reconcile()
+    }
+
+    fn revoke_background(&mut self) -> NativeWindowVisibilityAction {
+        self.background_ready = false;
+        self.reconcile()
+    }
+
     fn reconcile(&mut self) -> NativeWindowVisibilityAction {
-        let should_be_visible = self.mapped && self.show_requested && self.first_frame_presented;
+        let should_be_visible = self.mapped
+            && self.show_requested
+            && (self.first_frame_presented || self.background_ready);
         match (self.native_visible, should_be_visible) {
             (false, true) => {
                 self.native_visible = true;
@@ -956,6 +982,8 @@ pub(crate) struct WindowsWindowInner {
     end_session_event: Rc<dyn Fn() -> bool>,
     renderer: RefCell<WindowsRendererState>,
     renderer_atlas: NovaRendererAtlas,
+    startup_background: RefCell<Option<StartupBackground>>,
+    pub(crate) content_ready: Arc<AtomicBool>,
     presentation_state: Cell<WindowsWindowPresentationState>,
     pending_resize: Cell<Option<PendingWindowsResize>>,
     frame_dispatch_in_progress: Cell<bool>,
@@ -1094,6 +1122,14 @@ impl WindowsWindow {
         packet: PresentationPacket,
         framebuffer_only: bool,
     ) -> PlatformFrameResult {
+        if matches!(
+            *self.0.renderer.borrow(),
+            WindowsRendererState::Initializing
+        ) {
+            // Renderer readiness explicitly requests the first presentable frame. An early
+            // visible background must not turn initialization into a VSync UI rebuild loop.
+            return PlatformFrameResult::Deferred;
+        }
         if !self.try_apply_queued_renderer_resize() {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }
@@ -1115,7 +1151,8 @@ impl WindowsWindow {
                 PlatformFrameResult::Submitted
             }
             Ok(false) if has_submitted_frame => {
-                self.request_frame(PlatformFrameRequest::presentation());
+                // The GPU report schedules any remaining damage or animation. Requesting a
+                // frame here can outlive submission and replay an already idle scene forever.
                 PlatformFrameResult::Queued
             }
             Ok(false) => {
@@ -1282,6 +1319,8 @@ impl WindowsWindow {
             end_session_event,
             renderer: RefCell::new(WindowsRendererState::Initializing),
             renderer_atlas,
+            startup_background: RefCell::new(None),
+            content_ready: Arc::new(AtomicBool::new(false)),
             presentation_state: Cell::new(presentation_state),
             pending_resize: Cell::new(None),
             frame_dispatch_in_progress: Cell::new(false),
@@ -1296,6 +1335,22 @@ impl WindowsWindow {
             register_native_window(hwnd, &window);
         }
         window.start_renderer_initialization(renderer_initialization);
+        if let Some(hwnd) = hwnd {
+            let background = StartupBackground::prepare(
+                hwnd,
+                params.window_background,
+                params.initial_background,
+            )
+            .unwrap_or_else(|error| {
+                log::warn!("failed to prepare Windows startup background: {error:#}");
+                None
+            });
+            let ready = background.is_some();
+            *window.0.startup_background.borrow_mut() = background;
+            if ready {
+                window.update_presentation_state(WindowsWindowPresentationState::background_ready);
+            }
+        }
         Ok(window)
     }
 
@@ -1376,10 +1431,26 @@ impl WindowsWindow {
             NativeWindowVisibilityAction::None => {}
             NativeWindowVisibilityAction::Show { focus } => {
                 log::debug!(
-                    "showing Windows window after a completed frame: window={}",
-                    self.0.handle.window_id().data().as_ffi()
+                    "showing Windows window: window={} content_ready={}",
+                    self.0.handle.window_id().data().as_ffi(),
+                    self.is_content_ready(),
                 );
                 self.window().set_visible(true);
+                let has_startup_background = self.0.startup_background.borrow().is_some();
+                if has_startup_background
+                    && let Some(hwnd) = self.native_hwnd()
+                    && !unsafe {
+                        RedrawWindow(
+                            Some(hwnd),
+                            None,
+                            None,
+                            RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW,
+                        )
+                    }
+                    .as_bool()
+                {
+                    log::warn!("failed to redraw Windows startup background");
+                }
                 self.restore_minimized_window();
                 if focus {
                     self.window().focus_window();
@@ -1396,6 +1467,11 @@ impl WindowsWindow {
     }
 
     fn mark_first_frame_presented(&self) {
+        if self.0.presentation_state.get().first_frame_presented {
+            return;
+        }
+        self.0.content_ready.store(true, Ordering::Release);
+        self.0.startup_background.borrow_mut().take();
         self.update_presentation_state(WindowsWindowPresentationState::first_frame_presented);
     }
 
@@ -1674,6 +1750,10 @@ impl PlatformWindow for WindowsWindow {
         self.0.state.borrow().logical_size.get()
     }
 
+    fn is_content_ready(&self) -> bool {
+        self.0.content_ready.load(Ordering::Acquire)
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         request_window_inner_size(self.window(), size);
     }
@@ -1842,6 +1922,12 @@ impl PlatformWindow for WindowsWindow {
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let transparent = background_appearance != WindowBackgroundAppearance::Opaque;
+        if transparent {
+            let had_startup_background = self.0.startup_background.borrow_mut().take().is_some();
+            if had_startup_background {
+                self.update_presentation_state(WindowsWindowPresentationState::revoke_background);
+            }
+        }
         self.window().set_transparent(transparent);
         self.0
             .state
@@ -2265,6 +2351,7 @@ mod tests {
             show: true,
             display_id: None,
             window_background: WindowBackgroundAppearance::Transparent,
+            initial_background: None,
             window_min_size: None,
             window_corner_preference: WindowCornerPreference::SystemDefault,
         };
@@ -2449,6 +2536,56 @@ mod tests {
 
         assert_eq!(state.map(), NativeWindowVisibilityAction::None);
         assert!(!state.native_visible);
+    }
+
+    #[test]
+    fn bootstrap_background_reveals_before_first_frame() {
+        let mut state = WindowsWindowPresentationState::new(true, true);
+        assert_eq!(state.background_ready(), NativeWindowVisibilityAction::None);
+        assert_eq!(
+            state.map(),
+            NativeWindowVisibilityAction::Show { focus: true }
+        );
+        assert!(!state.first_frame_presented);
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::None
+        );
+    }
+
+    #[test]
+    fn hidden_bootstrap_stays_hidden_and_can_be_shown_then_hidden() {
+        let mut state = WindowsWindowPresentationState::new(false, false);
+        state.background_ready();
+        assert_eq!(state.map(), NativeWindowVisibilityAction::None);
+        assert_eq!(
+            state.request_show(),
+            NativeWindowVisibilityAction::Show { focus: false }
+        );
+        assert_eq!(state.request_hide(), NativeWindowVisibilityAction::Hide);
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::None
+        );
+    }
+
+    #[test]
+    fn revoked_background_restores_first_frame_visibility_barrier() {
+        let mut state = WindowsWindowPresentationState::new(true, true);
+        state.background_ready();
+        assert_eq!(
+            state.map(),
+            NativeWindowVisibilityAction::Show { focus: true }
+        );
+        assert_eq!(
+            state.revoke_background(),
+            NativeWindowVisibilityAction::Hide
+        );
+        assert_eq!(state.request_show(), NativeWindowVisibilityAction::None);
+        assert_eq!(
+            state.first_frame_presented(),
+            NativeWindowVisibilityAction::Show { focus: false }
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub(in crate::platform::nova) fn create_renderer_core<D>(
 where
     D: BackendResources + BackendPipelines,
 {
+    let started_at = std::time::Instant::now();
     let layouts = create_resource_layouts(device, label)?;
     let render_pass = device.create_render_pass(&RenderPassDescriptor {
         label: Some(format!("{label} render pass")),
@@ -33,7 +34,11 @@ where
             format: Format::Depth32Float,
         }),
     })?;
+    let layouts_elapsed = started_at.elapsed();
+    let shaders_started_at = std::time::Instant::now();
     let shaders = create_renderer_shaders(device, label, shader_binaries)?;
+    let shaders_elapsed = shaders_started_at.elapsed();
+    let pipelines_started_at = std::time::Instant::now();
     let pipelines = create_renderer_pipelines(
         device,
         label,
@@ -42,6 +47,14 @@ where
         &layouts,
         shaders,
     )?;
+
+    log::info!(
+        "GPUI renderer core: label={label} total_ms={} layouts_ms={} shaders_ms={} pipelines_ms={}",
+        started_at.elapsed().as_millis(),
+        layouts_elapsed.as_millis(),
+        shaders_elapsed.as_millis(),
+        pipelines_started_at.elapsed().as_millis(),
+    );
 
     Ok(RendererCore {
         layouts,
@@ -60,8 +73,11 @@ pub(in crate::platform::nova) fn create_renderer_resources<D>(
 where
     D: BackendResources + BackendPipelines,
 {
+    let started_at = std::time::Instant::now();
     let layouts = core.layouts;
     let buffers = create_resource_buffers(device, label)?;
+    let buffers_elapsed = started_at.elapsed();
+    let textures_started_at = std::time::Instant::now();
     let frame_buffers = buffers.frame_buffers;
     let shared_buffers = buffers.shared;
     let startup_path_mask_size = Extent2d::new(1, 1)?;
@@ -95,6 +111,8 @@ where
         },
         NovaAtlasResourceSetMode::All,
     )?;
+    let textures_elapsed = textures_started_at.elapsed();
+    let bindings_started_at = std::time::Instant::now();
     let mut frame_resources = Vec::with_capacity(frame_buffers.len());
     for (index, frame_buffers) in frame_buffers.iter().copied().enumerate() {
         let resource_sets = create_renderer_resource_sets(
@@ -123,6 +141,8 @@ where
                 .context("missing atlas poly frame resource set")?,
         });
     }
+    let bindings_elapsed = bindings_started_at.elapsed();
+    let depth_started_at = std::time::Instant::now();
     let depth_texture = create_depth_texture(device, label, surface_config.size)?;
     let depth_texture_view = device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} depth texture view")),
@@ -131,6 +151,15 @@ where
         mip_level_count: 1,
         format: Format::Depth32Float,
     })?;
+
+    log::info!(
+        "GPUI window resources: label={label} total_ms={} buffers_ms={} textures_ms={} bindings_ms={} depth_ms={}",
+        started_at.elapsed().as_millis(),
+        buffers_elapsed.as_millis(),
+        textures_elapsed.as_millis(),
+        bindings_elapsed.as_millis(),
+        depth_started_at.elapsed().as_millis(),
+    );
 
     Ok(RendererResources {
         render_pass: core.render_pass,
