@@ -31,26 +31,31 @@ impl CommandDevice for Dx11Device {
 
 impl Dx11Device {
     pub(crate) fn execute_encoder(&mut self, encoder: CommandEncoderId) -> Result<()> {
-        let draws = std::mem::take(self.encoders.get_mut(encoder)?);
-        for draw in draws {
-            let step = DrawStepDescriptor {
-                pipeline: draw.pipeline,
-                resource_sets: draw.resource_sets,
-                vertex_count: draw.vertex_count,
-                first_vertex: draw.first_vertex,
-                instance_count: draw.instance_count,
-                first_instance: draw.first_instance,
-                scissor: draw.scissor,
-            };
-            self.render_target(
-                draw.pass.target,
-                draw.pass.render_pass,
-                RenderStepList::Draw(&[step]),
-                draw.pass.color_load_op,
-                None,
-            )?;
-        }
-        Ok(())
+        let mut draws = std::mem::take(self.encoders.get_mut(encoder)?);
+        let result = (|| {
+            for draw in draws.drain(..) {
+                let step = DrawStepDescriptor {
+                    pipeline: draw.pipeline,
+                    resource_sets: draw.resource_sets,
+                    vertex_count: draw.vertex_count,
+                    first_vertex: draw.first_vertex,
+                    instance_count: draw.instance_count,
+                    first_instance: draw.first_instance,
+                    scissor: draw.scissor,
+                };
+                self.render_target(
+                    draw.pass.target,
+                    draw.pass.render_pass,
+                    RenderStepList::Draw(&[step]),
+                    draw.pass.color_load_op,
+                    None,
+                )?;
+            }
+            Ok(())
+        })();
+        // Reuse command storage after both successful submissions and rendering errors.
+        *self.encoders.get_mut(encoder)? = draws;
+        result
     }
     pub(crate) fn render_target(
         &mut self,

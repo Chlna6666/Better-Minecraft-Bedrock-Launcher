@@ -26,26 +26,31 @@ impl CommandDevice for OpenGlDevice {
 }
 impl OpenGlDevice {
     pub(crate) fn execute_encoder(&mut self, id: CommandEncoderId) -> Result<()> {
-        let draws = std::mem::take(self.encoders.get_mut(id)?);
-        for draw in draws {
-            let step = DrawStepDescriptor {
-                pipeline: draw.pipeline,
-                resource_sets: draw.resource_sets,
-                vertex_count: draw.vertex_count,
-                first_vertex: draw.first_vertex,
-                instance_count: draw.instance_count,
-                first_instance: draw.first_instance,
-                scissor: draw.scissor,
-            };
-            self.render_target(
-                draw.pass.target,
-                draw.pass.render_pass,
-                RenderStepList::Draw(&[step]),
-                draw.pass.color_load_op,
-                None,
-            )?;
-        }
-        Ok(())
+        let mut draws = std::mem::take(self.encoders.get_mut(id)?);
+        let result = (|| {
+            for draw in draws.drain(..) {
+                let step = DrawStepDescriptor {
+                    pipeline: draw.pipeline,
+                    resource_sets: draw.resource_sets,
+                    vertex_count: draw.vertex_count,
+                    first_vertex: draw.first_vertex,
+                    instance_count: draw.instance_count,
+                    first_instance: draw.first_instance,
+                    scissor: draw.scissor,
+                };
+                self.render_target(
+                    draw.pass.target,
+                    draw.pass.render_pass,
+                    RenderStepList::Draw(&[step]),
+                    draw.pass.color_load_op,
+                    None,
+                )?;
+            }
+            Ok(())
+        })();
+        // Reuse command storage after both successful submissions and rendering errors.
+        *self.encoders.get_mut(id)? = draws;
+        result
     }
 }
 

@@ -1,6 +1,83 @@
 use super::*;
 
 #[test]
+#[ignore = "requires native Windows graphics hardware"]
+fn command_storage_survives_submission_errors_and_pressure_reclaims_it() {
+    use gfx_core::{
+        BeginRenderPassDescriptor, CommandDevice as _, DrawDescriptor, MemoryTrimLevel,
+        RenderTarget, ResourceId,
+    };
+    let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("hardware DX11 device");
+    let encoder = device
+        .create_command_encoder(&CommandEncoderDescriptor { label: None })
+        .expect("encoder");
+    device
+        .encoders
+        .get_mut(encoder)
+        .expect("commands")
+        .reserve(64);
+    let capacity = device.encoders.get(encoder).expect("commands").capacity();
+    device.submit(encoder).expect("empty submission");
+    assert_eq!(
+        device.encoders.get(encoder).expect("commands").capacity(),
+        capacity
+    );
+    device
+        .encoders
+        .get_mut(encoder)
+        .expect("commands")
+        .push(DrawDescriptor {
+            pass: BeginRenderPassDescriptor {
+                render_pass: ResourceId::new(u64::MAX),
+                target: RenderTarget::TextureView(ResourceId::new(u64::MAX)),
+                color_load_op: LoadOp::Clear(CLEAR),
+            },
+            pipeline: ResourceId::new(u64::MAX),
+            resource_sets: resource_set_list([]),
+            vertex_count: 3,
+            first_vertex: 0,
+            instance_count: 1,
+            first_instance: 0,
+            scissor: None,
+        });
+    assert!(device.submit(encoder).is_err());
+    let commands = device.encoders.get(encoder).expect("commands after error");
+    assert!(commands.is_empty());
+    assert_eq!(commands.capacity(), capacity);
+    device.submit(encoder).expect("retry empty submission");
+    device
+        .trim_memory(MemoryTrimLevel::Moderate)
+        .expect("idle trim");
+    assert_eq!(
+        device
+            .encoders
+            .get(encoder)
+            .expect("live encoder after idle trim")
+            .capacity(),
+        0
+    );
+    device
+        .encoders
+        .get_mut(encoder)
+        .expect("commands")
+        .reserve(64);
+    device
+        .trim_memory(MemoryTrimLevel::Aggressive)
+        .expect("pressure trim");
+    assert_eq!(
+        device
+            .encoders
+            .get(encoder)
+            .expect("live encoder after trim")
+            .capacity(),
+        0
+    );
+    device
+        .destroy_command_encoder(encoder)
+        .expect("destroy encoder");
+}
+
+#[test]
 #[ignore = "requires Windows hardware D3D11 feature level 11.0"]
 fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
     let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("hardware DX11 device");

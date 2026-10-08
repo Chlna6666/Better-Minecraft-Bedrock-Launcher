@@ -112,22 +112,28 @@ impl UploadRingAllocator {
             ));
         }
         let allocation_size = align_to(size, self.desc.alignment)?;
+        Ok(self.allocate_aligned(size, allocation_size))
+    }
+
+    // Both sizes have been validated before any batch mutation. Page offsets are always aligned:
+    // allocation advances by aligned spans, and fence completion resets an offset to zero.
+    fn allocate_aligned(&mut self, size: u64, allocation_size: u64) -> UploadAllocation {
         for (page_index, page) in self.pages.iter_mut().enumerate() {
             if page.retire_fence.is_some() {
                 continue;
             }
-            let offset = align_to(page.offset, self.desc.alignment)?;
+            let offset = page.offset;
             let Some(end_offset) = offset.checked_add(allocation_size) else {
                 continue;
             };
             if end_offset <= page.size {
                 page.offset = end_offset;
-                return Ok(UploadAllocation {
+                return UploadAllocation {
                     page_index,
                     offset,
                     size,
                     end_offset,
-                });
+                };
             }
         }
 
@@ -138,12 +144,12 @@ impl UploadRingAllocator {
             offset: allocation_size,
             retire_fence: None,
         });
-        Ok(UploadAllocation {
+        UploadAllocation {
             page_index,
             offset: 0,
             size,
             end_offset: allocation_size,
-        })
+        }
     }
 
     /// Allocates a batch of upload ranges.
@@ -161,25 +167,13 @@ impl UploadRingAllocator {
             return Ok(Vec::new());
         }
 
-        let mut aligned_sizes = Vec::with_capacity(sizes.len());
-        for &size in sizes {
-            if size == 0 {
-                return Err(Error::InvalidInput(
-                    "upload allocation size must be greater than zero".to_string(),
-                ));
-            }
-            let aligned_size = align_to(size, self.desc.alignment)?;
-            aligned_sizes.push(aligned_size);
-        }
-
-        let mut planned = self.clone();
-        let mut allocations = Vec::with_capacity(sizes.len());
+        let mut allocations = self.plan_batch(sizes)?;
         let mut group_start = 0;
         while group_start < sizes.len() {
             let mut group_end = group_start;
             let mut group_size = 0_u64;
             while group_end < sizes.len() {
-                let aligned_size = aligned_sizes[group_end];
+                let aligned_size = allocations[group_end].end_offset;
                 let Some(candidate_size) = group_size.checked_add(aligned_size) else {
                     break;
                 };
@@ -193,34 +187,49 @@ impl UploadRingAllocator {
                 }
             }
 
-            let group = planned.allocate(group_size)?;
+            let group = self.allocate_aligned(group_size, group_size);
             let mut offset = group.offset;
-            for item_index in group_start..group_end {
-                let end_offset =
-                    offset
-                        .checked_add(aligned_sizes[item_index])
-                        .ok_or_else(|| {
-                            Error::InvalidInput("upload batch offset overflow".to_string())
-                        })?;
-                allocations.push(UploadAllocation {
-                    page_index: group.page_index,
-                    offset,
-                    size: sizes[item_index],
-                    end_offset,
-                });
-                offset = end_offset;
+            for allocation in &mut allocations[group_start..group_end] {
+                // The prefix sums fit inside the reserved group, whose end was checked above.
+                allocation.page_index = group.page_index;
+                allocation.offset = offset;
+                allocation.end_offset += offset;
+                offset = allocation.end_offset;
             }
             group_start = group_end;
         }
 
-        self.pages = planned.pages;
         Ok(allocations)
     }
 
-    /// Marks all pages with live data as unavailable until `fence_value` completes.
+    fn plan_batch(&self, sizes: &[u64]) -> Result<Vec<UploadAllocation>> {
+        // Preflight into the result storage. Until assigned a page, end_offset holds the aligned
+        // span. Invalid input cannot mutate pages, and valid reservations are infallible.
+        let mut allocations = Vec::with_capacity(sizes.len());
+        for &size in sizes {
+            if size == 0 {
+                return Err(Error::InvalidInput(
+                    "upload allocation size must be greater than zero".to_string(),
+                ));
+            }
+            allocations.push(UploadAllocation {
+                page_index: 0,
+                offset: 0,
+                size,
+                end_offset: align_to(size, self.desc.alignment)?,
+            });
+        }
+        Ok(allocations)
+    }
+
+    /// Retires pages containing allocations made since the previous retirement.
+    ///
+    /// Previously retired pages keep their own fence, since allocation never writes a busy page.
+    /// Submit each allocation's bytes once before calling this method; do not submit an already
+    /// retired range again. The backend must retain its native page until that fence completes.
     pub fn retire_used_pages(&mut self, fence_value: u64) {
         for page in &mut self.pages {
-            if page.offset > 0 {
+            if page.offset > 0 && page.retire_fence.is_none() {
                 page.retire_fence = Some(fence_value);
             }
         }
@@ -302,293 +311,4 @@ impl UploadRingAllocator {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn upload_ring_aligns_allocations() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 1024,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let first = ring.allocate(1).expect("first allocation should succeed");
-        let second = ring.allocate(1).expect("second allocation should succeed");
-
-        assert_eq!(first.offset, 0);
-        assert_eq!(second.offset, 256);
-    }
-
-    #[test]
-    fn upload_ring_supports_dx12_texture_placement_alignment() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 2048,
-            alignment: 512,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let first = ring.allocate(1).expect("first allocation should succeed");
-        let second = ring.allocate(1).expect("second allocation should succeed");
-        let third = ring.allocate(1).expect("third allocation should succeed");
-
-        assert_eq!(first.offset, 0);
-        assert_eq!(second.offset, 512);
-        assert_eq!(third.offset, 1024);
-    }
-
-    #[test]
-    fn pressure_trim_releases_all_completed_idle_pages() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 2,
-        })
-        .expect("ring descriptor should be valid");
-
-        ring.allocate(300).expect("allocation should succeed");
-        ring.retire_used_pages(1);
-        ring.complete_fence(1);
-
-        assert_eq!(ring.trim_idle_pages_to(0), 0);
-        assert_eq!(ring.stats().reserved_bytes, 0);
-    }
-
-    #[test]
-    fn pressure_trim_never_releases_busy_pages() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 2,
-        })
-        .expect("ring descriptor should be valid");
-
-        ring.allocate(300).expect("allocation should succeed");
-        ring.retire_used_pages(1);
-
-        assert_eq!(ring.trim_idle_pages_to(0), 1);
-        assert_eq!(ring.stats().busy_page_count, 1);
-    }
-
-    #[test]
-    fn upload_ring_keeps_busy_page_until_fence_completion() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let first = ring.allocate(300).expect("first allocation should succeed");
-        ring.retire_used_pages(7);
-        ring.complete_fence(6);
-        let second = ring
-            .allocate(128)
-            .expect("busy page should force a new page");
-        ring.complete_fence(7);
-        let third = ring
-            .allocate(128)
-            .expect("completed page should be reusable");
-
-        assert_eq!(first.page_index, 0);
-        assert_eq!(second.page_index, 1);
-        assert_eq!(third.page_index, 0);
-    }
-
-    #[test]
-    fn upload_ring_reserves_small_batch_contiguously() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 2048,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let allocations = ring
-            .allocate_batch(&[1, 257, 1])
-            .expect("batch allocation should succeed");
-
-        assert_eq!(allocations.len(), 3);
-        assert_eq!(allocations[0].offset, 0);
-        assert_eq!(allocations[1].offset, 256);
-        assert_eq!(allocations[2].offset, 768);
-        assert_eq!(allocations[0].end_offset, 256);
-        assert_eq!(allocations[1].end_offset, 768);
-        assert_eq!(allocations[2].end_offset, 1024);
-        assert_eq!(allocations[1].size, 257);
-        assert!(
-            allocations
-                .iter()
-                .all(|allocation| allocation.page_index == 0)
-        );
-        assert_eq!(ring.stats().used_bytes, 1024);
-    }
-
-    #[test]
-    fn upload_ring_empty_batch_is_noop() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())
-            .expect("ring descriptor should be valid");
-        ring.allocate(256)
-            .expect("initial allocation should succeed");
-        let before = ring.stats();
-
-        let allocations = ring
-            .allocate_batch(&[])
-            .expect("empty batch should succeed");
-
-        assert!(allocations.is_empty());
-        assert_eq!(ring.stats(), before);
-    }
-
-    #[test]
-    fn upload_ring_keeps_large_batch_page_sized() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let allocations = ring
-            .allocate_batch(&[300, 300])
-            .expect("batch allocation should succeed");
-
-        assert_eq!(allocations[0].page_index, 0);
-        assert_eq!(allocations[1].page_index, 1);
-        assert_eq!(ring.stats().reserved_bytes, 1024);
-    }
-
-    #[test]
-    fn upload_ring_rejects_invalid_batch_atomically() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())
-            .expect("ring descriptor should be valid");
-
-        let error = ring
-            .allocate_batch(&[128, 0])
-            .expect_err("zero-sized batch item should fail");
-
-        assert!(matches!(error, Error::InvalidInput(_)));
-        assert_eq!(ring.stats(), UploadStats::default());
-    }
-
-    #[test]
-    fn upload_ring_batch_continues_after_existing_allocation() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 2048,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-        ring.allocate(1).expect("initial allocation should succeed");
-
-        let allocations = ring
-            .allocate_batch(&[1, 257])
-            .expect("batch allocation should succeed");
-
-        assert_eq!(allocations[0].offset, 256);
-        assert_eq!(allocations[1].offset, 512);
-        assert_eq!(ring.stats().used_bytes, 1024);
-    }
-
-    #[test]
-    fn upload_ring_rejects_alignment_overflow_atomically() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())
-            .expect("ring descriptor should be valid");
-        let before = ring.stats();
-
-        let error = ring
-            .allocate_batch(&[128, u64::MAX])
-            .expect_err("alignment overflow should fail");
-
-        assert!(matches!(error, Error::InvalidInput(_)));
-        assert_eq!(ring.stats(), before);
-    }
-
-    #[test]
-    fn upload_ring_batch_only_oversizes_individual_pages() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        let allocations = ring
-            .allocate_batch(&[768, 1, 1])
-            .expect("batch allocation should succeed");
-
-        assert_eq!(ring.page_size(allocations[0].page_index), Some(768));
-        assert_eq!(ring.page_size(allocations[1].page_index), Some(512));
-        assert_eq!(allocations[1].page_index, allocations[2].page_index);
-    }
-
-    #[test]
-    fn upload_ring_batch_waits_for_busy_page_fence() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 512,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-        let first = ring.allocate(256).expect("allocation should succeed");
-        ring.retire_used_pages(7);
-
-        let busy_batch = ring
-            .allocate_batch(&[1, 1])
-            .expect("batch should use a new page");
-        assert_ne!(busy_batch[0].page_index, first.page_index);
-
-        ring.complete_fence(7);
-        let reused = ring
-            .allocate_batch(&[1])
-            .expect("completed page should be reusable");
-        assert_eq!(reused[0].page_index, first.page_index);
-    }
-
-    #[test]
-    fn upload_ring_trim_keeps_configured_idle_floor() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 256,
-            alignment: 256,
-            max_retained_idle_pages: 1,
-        })
-        .expect("ring descriptor should be valid");
-
-        ring.allocate(256).expect("allocation should succeed");
-        ring.retire_used_pages(1);
-        ring.allocate(256)
-            .expect("allocation should use another page");
-        ring.retire_used_pages(2);
-        ring.complete_fence(2);
-        let retained_page_count = ring.trim_idle_pages();
-
-        assert_eq!(retained_page_count, 1);
-        assert_eq!(ring.stats().page_count, 1);
-    }
-
-    #[test]
-    fn upload_ring_trim_preserves_non_trailing_page_indices() {
-        let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
-            page_size: 256,
-            alignment: 256,
-            max_retained_idle_pages: 0,
-        })
-        .expect("ring descriptor should be valid");
-
-        let first = ring.allocate(256).expect("first allocation should succeed");
-        ring.retire_used_pages(1);
-        let second = ring
-            .allocate(256)
-            .expect("busy first page should force a second page");
-        ring.complete_fence(1);
-        let retained_page_count = ring.trim_idle_pages();
-
-        assert_eq!(retained_page_count, 2);
-        assert_eq!(first.page_index, 0);
-        assert_eq!(second.page_index, 1);
-        assert_eq!(ring.page_size(first.page_index), Some(256));
-        assert_eq!(ring.page_size(second.page_index), Some(256));
-    }
-}
+mod tests;

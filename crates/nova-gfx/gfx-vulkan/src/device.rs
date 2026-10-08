@@ -2441,6 +2441,7 @@ impl VulkanDevice {
     }
 
     /// Releases completed staging/upload caches without touching live Vulkan resources.
+    /// Aggressive pressure also releases fully empty allocator blocks; live allocations stay put.
     pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         if matches!(level, MemoryTrimLevel::Light) {
             self.poll_cleanup();
@@ -2473,6 +2474,7 @@ impl VulkanDevice {
         if matches!(level, MemoryTrimLevel::Aggressive) {
             self.upload_pages.shrink_to_fit();
             self.upload_command_pool.shrink_to_fit();
+            self.allocator.trim();
         }
         Ok(())
     }

@@ -975,6 +975,28 @@ impl Allocator {
         }
     }
 
+    /// Releases completely empty cached memory blocks, including the last general block.
+    ///
+    /// Live allocations, offsets, and block indices remain valid. This is an explicit memory
+    /// pressure operation: subsequent allocations may need new native memory blocks. It does
+    /// not wait for GPU work; callers must obey the normal allocation-free lifetime contract.
+    pub fn trim(&mut self) {
+        for memory_type in &mut self.memory_types {
+            for slot in &mut memory_type.memory_blocks {
+                if slot
+                    .as_ref()
+                    .is_some_and(|block| block.sub_allocator.is_empty())
+                {
+                    let block = slot.take().expect("the empty block is present");
+                    if block.sub_allocator.supports_general_allocations() {
+                        memory_type.active_general_blocks -= 1;
+                    }
+                    block.destroy(&self.device);
+                }
+            }
+        }
+    }
+
     /// Current total capacity of memory blocks allocated on the device, in bytes
     pub fn capacity(&self) -> u64 {
         let mut total_capacity_bytes = 0;

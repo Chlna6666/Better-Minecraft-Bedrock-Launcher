@@ -140,6 +140,21 @@ impl MemoryAllocator {
         }
     }
 
+    /// Releases completely unused cached Vulkan memory blocks under explicit memory pressure.
+    ///
+    /// Live allocations and their mapped pointers remain valid. Resources must still obey the
+    /// normal fence-protected free contract; this method neither waits for GPU work nor moves
+    /// live allocations. Subsequent Vulkan allocation may create a new native memory block.
+    /// Other wrapped backends keep their existing cache policy.
+    pub fn trim(&mut self) {
+        match self {
+            #[cfg(feature = "vulkan")]
+            Self::Vulkan(allocator) => allocator.trim(),
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+
     /// Returns current allocator statistics.
     #[must_use]
     pub fn stats(&self) -> MemoryStats {

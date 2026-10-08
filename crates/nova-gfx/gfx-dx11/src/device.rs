@@ -128,13 +128,45 @@ impl Dx11Device {
         self.retire()?;
         Ok(!self.pending.is_empty())
     }
-    /// Retires completed query tracking; live resources remain owned by callers.
+    /// Retires completed queries and releases idle CPU tracking capacity under memory pressure.
+    ///
+    /// Light pressure preserves caches. Moderate pressure trims command storage and keeps one query;
+    /// aggressive pressure also compacts registries without changing live resource IDs.
+    /// Native resource placement and video-memory fragmentation are managed by the D3D11 driver.
     /// # Errors
     /// Returns an error if native completion queries fail.
-    pub fn trim_memory(&mut self, _level: MemoryTrimLevel) -> Result<()> {
+    pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         self.retire()?;
-        self.queries.clear();
+        if level == MemoryTrimLevel::Light {
+            return Ok(());
+        }
+        self.queries
+            .truncate(usize::from(level == MemoryTrimLevel::Moderate));
+        for commands in self.encoders.values_mut() {
+            commands.shrink_to_fit();
+        }
+        if level == MemoryTrimLevel::Aggressive {
+            self.trim_registries();
+            self.pending.shrink_to_fit();
+            self.queries.shrink_to_fit();
+        }
         Ok(())
+    }
+
+    fn trim_registries(&mut self) {
+        self.buffers.trim();
+        self.textures.trim();
+        self.views.trim();
+        self.samplers.trim();
+        self.layouts.trim();
+        self.sets.trim();
+        self.pipeline_layouts.trim();
+        self.shaders.trim();
+        self.passes.trim();
+        self.pipelines.trim();
+        self.encoders.trim();
+        self.surfaces.trim();
+        self.swapchains.trim();
     }
     pub(crate) fn signal(&mut self) -> Result<SubmissionId> {
         self.retire()?;

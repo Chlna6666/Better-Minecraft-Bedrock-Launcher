@@ -295,11 +295,41 @@ impl OpenGlDevice {
         self.retire()?;
         Ok(!self.pending.is_empty())
     }
-    /// Retires completion tracking without releasing application-owned resources.
+    /// Retires completed fences without releasing application-owned resources.
+    ///
+    /// Moderate pressure trims command storage. Aggressive pressure also compacts CPU registries
+    /// without changing
+    /// live resource IDs. Native storage placement and fragmentation remain driver-managed.
     /// # Errors
     /// Returns native completion errors.
-    pub fn trim_memory(&mut self, _level: MemoryTrimLevel) -> Result<()> {
-        self.retire()
+    pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
+        self.retire()?;
+        if level != MemoryTrimLevel::Light {
+            for commands in self.encoders.values_mut() {
+                commands.shrink_to_fit();
+            }
+        }
+        if level == MemoryTrimLevel::Aggressive {
+            self.trim_registries();
+            self.pending.shrink_to_fit();
+        }
+        Ok(())
+    }
+
+    fn trim_registries(&mut self) {
+        self.buffers.trim();
+        self.textures.trim();
+        self.views.trim();
+        self.samplers.trim();
+        self.layouts.trim();
+        self.sets.trim();
+        self.pipeline_layouts.trim();
+        self.shaders.trim();
+        self.passes.trim();
+        self.pipelines.trim();
+        self.encoders.trim();
+        self.surfaces.trim();
+        self.swapchains.trim();
     }
 }
 impl Backend for OpenGlDevice {

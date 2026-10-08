@@ -6,6 +6,69 @@ use gfx_core::{
 use gfx_vulkan::VulkanDevice;
 
 #[test]
+fn aggressive_trim_releases_empty_blocks_and_preserves_live_texture_pixels() {
+    let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
+        Ok(device) => device,
+        Err(Error::Unavailable(reason)) => {
+            eprintln!("NOVA_GFX_SKIP=vulkan unavailable: {reason}");
+            return;
+        }
+        Err(error) => panic!("Vulkan initialization failed: {error}"),
+    };
+    let descriptor = TextureDescriptor {
+        label: None,
+        size: Extent2d::new(2, 2).expect("extent"),
+        mip_level_count: 1,
+        format: Format::Rgba8Unorm,
+        usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
+        memory_location: MemoryLocation::GpuOnly,
+        dimension: TextureDimension::D2,
+    };
+    for _ in 0..2 {
+        let texture = device.create_texture(&descriptor).expect("texture after trim");
+        let pixels = [
+            11, 22, 33, 0, 44, 55, 66, 127, 77, 88, 99, 255, 12, 34, 56, 78,
+        ];
+        device
+            .write_texture(
+                TextureWriteDescriptor {
+                    texture,
+                    mip_level: 0,
+                    origin: Origin2d::ZERO,
+                    size: descriptor.size,
+                    layout: TextureDataLayout::new(0, 8, 2).expect("layout"),
+                },
+                &pixels,
+            )
+            .expect("upload");
+        device
+            .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
+            .expect("trim with live texture");
+        assert_eq!(
+            device.read_texture(texture).expect("live texture after trim").bytes,
+            pixels
+        );
+        device.destroy_texture(texture).expect("destroy texture");
+        device
+            .trim_memory(gfx_core::MemoryTrimLevel::Light)
+            .expect("light trim");
+        let cached = device.resource_stats();
+        assert_eq!(cached.allocated_bytes, 0);
+        assert!(cached.reserved_bytes > 0);
+        device
+            .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
+            .expect("trim empty blocks");
+        let trimmed = device.resource_stats();
+        assert_eq!(trimmed.allocated_bytes, 0);
+        assert_eq!(trimmed.reserved_bytes, 0);
+        eprintln!(
+            "VULKAN_EMPTY_BLOCK_TRIM reserved_bytes={} -> {}",
+            cached.reserved_bytes, trimmed.reserved_bytes
+        );
+    }
+}
+
+#[test]
 fn texture_write_round_trips_offset_and_row_padding() {
     let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
         Ok(device) => device,

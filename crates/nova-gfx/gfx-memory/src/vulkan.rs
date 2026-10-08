@@ -107,6 +107,10 @@ impl VulkanMemoryAllocator {
         self.stats
     }
 
+    pub(crate) fn trim(&mut self) {
+        self.allocator.trim();
+    }
+
     pub(crate) fn detailed_report(&self) -> MemoryStats {
         let report = self.allocator.generate_report();
         MemoryStats {
