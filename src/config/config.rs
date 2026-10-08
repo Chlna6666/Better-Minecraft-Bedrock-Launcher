@@ -439,6 +439,13 @@ pub(super) fn normalize_language_code(lang: &str) -> String {
 pub fn normalize_renderer_backend(renderer_backend: &str) -> String {
     match renderer_backend.trim().to_ascii_lowercase().as_str() {
         "" | "auto" | "default" => "auto".to_string(),
+        "gl" | "opengl" | "nova-opengl" | "nova_opengl" => {
+            if cfg!(any(target_os = "windows", target_os = "linux")) {
+                "opengl".to_string()
+            } else {
+                "auto".to_string()
+            }
+        }
         "vk" | "vulkan" | "nova" | "blade" | "nova-vulkan" | "nova_vulkan" => "vulkan".to_string(),
         "dx12" | "directx" | "directx12" | "d3d12" | "nova-dx12" | "nova_dx12" => {
             #[cfg(target_os = "linux")]
@@ -450,14 +457,14 @@ pub fn normalize_renderer_backend(renderer_backend: &str) -> String {
                 "dx12".to_string()
             }
         }
-        "dx11" | "directx11" | "d3d11" => {
-            #[cfg(target_os = "linux")]
+        "dx11" | "directx11" | "d3d11" | "nova-dx11" | "nova_dx11" => {
+            #[cfg(not(target_os = "windows"))]
             {
                 "auto".to_string()
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "windows")]
             {
-                "dx12".to_string()
+                "dx11".to_string()
             }
         }
         _ => "auto".to_string(),

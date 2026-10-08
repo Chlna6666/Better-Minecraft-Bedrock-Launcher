@@ -172,7 +172,7 @@ Detailed UI placement rules live in [`../src/ui/README.md`](../src/ui/README.md)
 | `crates/bmcbl-plugin-api` | Public plugin API types and pack metadata. |
 | `crates/bmcbl-plugin-macros` | Plugin derive and helper macros. |
 | `crates/bmcbl-plugin-tools` | Plugin packaging and validation tools when present. |
-| `crates/nova-gfx` | Cross-backend graphics abstraction and backend crates for DX12, Vulkan, Metal, OpenGL, WebGL, memory, shader, and examples. |
+| `crates/nova-gfx` | Cross-backend graphics abstraction and backend crates for DX11, DX12, Vulkan, Metal, OpenGL, WebGL, memory, shader, and examples. |
 
 Workspace crates should remain reusable. They may support BMCBL, but they
 should not directly depend on BMCBL page modules or launcher state.

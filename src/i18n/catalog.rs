@@ -33,6 +33,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn renderer_settings_have_translations_in_every_embedded_locale() {
+        let catalog = Catalog::read(EMBEDDED).expect("embedded catalog");
+        for locale in Locale::all() {
+            for key in [
+                "LauncherSettings.render_engine",
+                "LauncherSettings.render_engine_desc",
+                "LauncherSettings.render_engine.auto",
+                "LauncherSettings.render_engine.dx11",
+                "LauncherSettings.render_engine.dx12",
+                "LauncherSettings.render_engine.vulkan",
+                "LauncherSettings.render_engine.opengl",
+            ] {
+                let index = catalog.key_index(key).expect("renderer translation key");
+                let translation = catalog
+                    .translation(usize::from(locale.index()), index)
+                    .unwrap_or_else(|| panic!("missing {key} for {locale:?}"));
+                assert!(!translation.text.is_empty(), "empty {key} for {locale:?}");
+            }
+        }
+    }
+
+    #[test]
     fn missing_translation_falls_back_to_english_by_key() {
         let original = Catalog::read(EMBEDDED).expect("embedded catalog");
         let index = original.key_index("common.cancel").expect("embedded key");

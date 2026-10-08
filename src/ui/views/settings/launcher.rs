@@ -355,6 +355,8 @@ fn render_engine_label(_i18n: &I18n, renderer_backend: &SharedString) -> SharedS
     match crate::config::config::normalize_renderer_backend(renderer_backend.as_ref()).as_str() {
         "vulkan" => t!("LauncherSettings.render_engine.vulkan"),
         "dx12" => t!("LauncherSettings.render_engine.dx12"),
+        "dx11" => t!("LauncherSettings.render_engine.dx11"),
+        "opengl" => t!("LauncherSettings.render_engine.opengl"),
         _ => t!("LauncherSettings.render_engine.auto"),
     }
 }
@@ -366,15 +368,23 @@ fn launcher_render_engine_row(
 ) -> impl IntoElement {
     let section = t!("Settings.tabs.launcher");
 
-    let values = if cfg!(target_os = "linux") {
-        vec![SharedString::from("auto"), SharedString::from("vulkan")]
-    } else {
-        vec![
-            SharedString::from("auto"),
-            SharedString::from("vulkan"),
-            SharedString::from("dx12"),
-        ]
-    };
+    let values = vec![
+        SharedString::from("auto"),
+        #[cfg(target_os = "windows")]
+        SharedString::from("dx11"),
+        #[cfg(all(target_os = "windows", feature = "gpui-windows-dx12"))]
+        SharedString::from("dx12"),
+        #[cfg(any(
+            target_os = "linux",
+            all(target_os = "windows", feature = "gpui-windows-vulkan")
+        ))]
+        SharedString::from("vulkan"),
+        #[cfg(all(
+            feature = "gpui-opengl",
+            any(target_os = "windows", target_os = "linux")
+        ))]
+        SharedString::from("opengl"),
+    ];
 
     let current =
         crate::config::config::normalize_renderer_backend(state.renderer_backend.as_ref());

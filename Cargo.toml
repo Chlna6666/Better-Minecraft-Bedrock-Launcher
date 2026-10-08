@@ -116,12 +116,15 @@ secrecy = "0.10.3"
 gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-vulkan", "wayland", "x11"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-dx12", "nova-gfx-vulkan"] }
+gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-dx11"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { path = "crates/gpui", default-features = false, features = ["nova-gfx-metal"] }
 
 [features]
+default = ["gpui-windows-dx12", "gpui-windows-vulkan", "gpui-opengl"]
+gpui-opengl = ["gpui/nova-gfx-opengl"]
+gpui-windows-dx12 = ["gpui/nova-gfx-dx12"]
 preview-3d-dx12 = []
 gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 
@@ -148,6 +151,7 @@ members = [
     "crates/nova-gfx/gfx-memory",
     "crates/nova-gfx/gfx-shader",
     "crates/nova-gfx/gfx-shader-build",
+    "crates/nova-gfx/gfx-dx11",
     "crates/nova-gfx/gfx-dx12",
     "crates/nova-gfx/gfx-metal",
     "crates/nova-gfx/gfx-opengl",

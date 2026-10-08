@@ -19,7 +19,7 @@ Minecraft Bedrock Edition 桌面启动器。当前版本已经从 Tauri / WebVie
 | 主要平台 | Windows 10 / Windows 11（主要支持平台） |
 | Linux | 测试阶段：支持通过 Proton / Wine 运行 GDK 游戏；成就、在线状态等不完整 |
 | Minecraft 版本类型 | UWP、GDK，含正式版 / 预览版 / 教育版相关分支 |
-| 渲染后端 | GPUI nova-gfx 路径，Windows 默认 Nova DX12，可配置 Nova Vulkan |
+| 渲染后端 | GPUI nova-gfx 路径，Windows 提供 DX11、DX12、Vulkan、OpenGL 4.5，默认 DX11；Linux 提供 Vulkan、OpenGL 4.5，默认 Vulkan |
 | 插件系统 | WASM 沙箱插件，API 版本 `0.4` |
 | 许可证 | GPL-3.0 |
 | 变更记录 | [CHANGELOG.md](CHANGELOG.md) |
@@ -171,7 +171,7 @@ flowchart TD
 UI --> GPUI["crates/gpui\nnova-gfx 渲染、窗口、元素系统"]
 UI --> EGPUI["crates/egpui\n应用生命周期、后台运行时、UI bridge"]
 EGPUI --> GPUI
-    GPUI --> Nova["crates/nova-gfx\nDX12 / Vulkan / Metal / OpenGL / WebGL 抽象"]
+    GPUI --> Nova["crates/nova-gfx\nDX11 / DX12 / Vulkan / Metal / OpenGL / WebGL 抽象"]
 ```
 
 主要目录：
@@ -242,10 +242,18 @@ cargo run --bin BMCBL
 cargo build --release --bin BMCBL
 ```
 
-可选 feature：
+渲染 feature：
+
+Windows 默认编译 DX11、DX12、Vulkan 和 OpenGL 4.5，默认启动和回退顺序为
+DX11、DX12、Vulkan、OpenGL；可在设置中指定其它首选后端。Linux 默认使用 Vulkan，并提供
+OpenGL 4.5。`--no-default-features` 在 Windows 保留 DX11、在 Linux 保留 Vulkan；
+可按需重新开启 `gpui-windows-dx12`、`gpui-windows-vulkan` 和 `gpui-opengl`。
+指定 adapter 或禁用 renderer fallback 时保持严格选择。
 
 ```powershell
-cargo run --bin BMCBL --features gpui-windows-vulkan
+cargo run --bin BMCBL
+cargo run --bin BMCBL --no-default-features
+cargo run --bin BMCBL --no-default-features --features gpui-opengl
 cargo run --bin BMCBL --features preview-3d-dx12
 ```
 

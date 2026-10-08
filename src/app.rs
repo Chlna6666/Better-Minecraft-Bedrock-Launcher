@@ -121,6 +121,9 @@ fn renderer_backend_from_config(renderer_backend: &str) -> gpui::RendererBackend
         .unwrap_or_default();
 
     match configured {
+        #[cfg(target_os = "windows")]
+        gpui::RendererBackend::Auto => gpui::RendererBackend::NovaDx11,
+        #[cfg(not(target_os = "windows"))]
         gpui::RendererBackend::Auto => gpui::RendererBackend::platform_default(),
         backend => backend,
     }
@@ -496,8 +499,6 @@ fn build_app_state(cx: &mut App, bootstrap: &AppBootstrap) {
         )]);
         cx.on_action(|_: &OpenDebugWindow, cx: &mut App| open_debug_window(cx));
     }
-
-
 }
 
 fn open_main_window(bootstrap: &AppBootstrap, cx: &mut App) -> bool {

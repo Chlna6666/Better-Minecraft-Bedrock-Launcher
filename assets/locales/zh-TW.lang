@@ -819,6 +819,7 @@ LauncherSettings.render_engine=渲染引擎
 LauncherSettings.render_engine.auto=自動
 LauncherSettings.render_engine.dx11=DirectX 11
 LauncherSettings.render_engine.dx12=DirectX 12
+LauncherSettings.render_engine.opengl=OpenGL 4.5
 LauncherSettings.render_engine.vulkan=Vulkan
 LauncherSettings.render_engine_desc=選擇啟動時使用的 GPUI 渲染後端（需要重新啟動生效）。
 LauncherSettings.stats_upload=上傳資訊統計

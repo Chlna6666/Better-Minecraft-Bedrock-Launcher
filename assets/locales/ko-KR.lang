@@ -819,6 +819,7 @@ LauncherSettings.render_engine=렌더러
 LauncherSettings.render_engine.auto=자동
 LauncherSettings.render_engine.dx11=DirectX 11
 LauncherSettings.render_engine.dx12=DirectX 12
+LauncherSettings.render_engine.opengl=OpenGL 4.5
 LauncherSettings.render_engine.vulkan=Vulkan
 LauncherSettings.render_engine_desc=시작 시 사용할 GPUI 렌더러를 선택합니다(재시작 필요).
 LauncherSettings.stats_upload=통계 업로드

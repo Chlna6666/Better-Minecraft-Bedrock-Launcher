@@ -160,6 +160,8 @@ pub(super) fn render_engine_label(window: &Window) -> SharedString {
 
 fn gpui_backend_name() -> &'static str {
     match gpui::performance_metrics_snapshot().renderer_backend {
+        gpui::RendererBackend::NovaOpenGl => "OpenGL 4.5",
+        gpui::RendererBackend::NovaDx11 => "DirectX 11",
         gpui::RendererBackend::NovaDx12 => "DirectX 12",
         gpui::RendererBackend::NovaVulkan => "Vulkan",
         gpui::RendererBackend::NovaMetal => "Metal",
@@ -171,7 +173,7 @@ fn gpui_backend_name() -> &'static str {
 fn platform_backend_fallback_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
-        "DirectX 12"
+        "DirectX 11"
     }
 
     #[cfg(target_os = "macos")]

@@ -38,7 +38,12 @@ pub(super) fn default_appx_api() -> String {
 }
 
 pub(super) fn default_renderer_backend() -> String {
-    "auto".to_string()
+    if cfg!(target_os = "windows") {
+        "dx11"
+    } else {
+        "auto"
+    }
+    .to_string()
 }
 
 pub(super) fn default_proton_gdk_source() -> String {

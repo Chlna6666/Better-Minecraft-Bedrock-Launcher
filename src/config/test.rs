@@ -234,13 +234,14 @@ fn merge_json_values_inserts_new_fields() {
 }
 
 #[test]
-fn renderer_backend_normalization_migrates_legacy_dx11() {
-    #[cfg(not(target_os = "linux"))]
+fn renderer_backend_normalization_preserves_dx11_on_windows() {
+    #[cfg(target_os = "windows")]
     {
-        assert_eq!(normalize_renderer_backend("dx11"), "dx12");
-        assert_eq!(normalize_renderer_backend("directx11"), "dx12");
+        assert_eq!(normalize_renderer_backend("dx11"), "dx11");
+        assert_eq!(normalize_renderer_backend("directx11"), "dx11");
+        assert_eq!(normalize_renderer_backend("nova-dx11"), "dx11");
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "windows"))]
     {
         assert_eq!(normalize_renderer_backend("dx11"), "auto");
         assert_eq!(normalize_renderer_backend("directx11"), "auto");
