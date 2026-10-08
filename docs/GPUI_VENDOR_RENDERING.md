@@ -371,7 +371,8 @@ Renderer startup is configured with `RendererOptions`:
 
 | Option | Meaning |
 | --- | --- |
-| `backend` | `Auto`, `NovaVulkan`, `NovaDx12`, `NovaMetal`, or `HeadlessTest`. |
+| `backend` | `Auto`, `NovaDx11`, `NovaDx12`, `NovaVulkan`, `NovaOpenGl`, `NovaMetal`, or `HeadlessTest`. |
+| `fallback` | `Available` tries other compiled native backends after initialization failure; `Disabled` keeps the requested backend strict. A pinned adapter also disables fallback. |
 | `adapter_name` | Optional exact GPU adapter name. |
 | `power_preference` | Low-power or high-performance preference. |
 | `present_mode` | Vsync, mailbox, or immediate preference. |
@@ -381,11 +382,22 @@ Renderer startup is configured with `RendererOptions`:
 
 `RendererBackend::platform_default()` currently resolves to:
 
-- Windows: Nova DX12 when the DX12 feature is enabled, otherwise Nova Vulkan
-  if available;
-- Linux and FreeBSD: Nova Vulkan;
+- Windows: the first compiled backend in DX12, DX11, Vulkan, OpenGL order;
+- Linux: Vulkan, then OpenGL;
+- FreeBSD: Nova Vulkan;
 - macOS: Nova Metal;
 - otherwise: `Auto`.
+
+BMCBL's default Windows build enables DX11, DX12, Vulkan and OpenGL, with DX11 preferred by
+the application and fallback ordered DX11, DX12, Vulkan, OpenGL. The root renderer features remain
+individually selectable with `--no-default-features`; Windows then keeps DX11 only. Linux builds
+enable Vulkan plus the default `gpui-opengl` feature. OpenGL requires native
+desktop 4.5 core; version/context/pipeline failures participate in initialization
+fallback. Failed cold device/core entries are discarded before trying the next
+backend. The selected Windows window style is applied for each candidate and
+retained per window for later transparency changes, including changes made
+during initialization. DX11 supports opaque/premultiplied swapchain transitions
+and preserves the old chain if preparing a replacement fails.
 
 The configured backend is the only renderer selection input. Applications must
 pass it through `RendererOptions` or `new_with_renderer_backend`; GPUI does not
@@ -420,10 +432,17 @@ Major modules:
 Components declare their WGSL in a build script instead of compiling shaders at
 runtime. `gfx-shader-build` provides the reusable surface: `ShaderSet::new`,
 `Shader::wgsl_file`/`wgsl`/`entry`, `BackendSelection`, and `ShaderSet::emit`,
-which writes a generated table plus the backend payloads (`dxbc`, `spv`, `msl`)
+which writes a generated table plus the backend payloads (`dxbc`, `spv`, `msl`, `glsl`)
 into `OUT_DIR` and registers `cargo:rerun-if-changed`. Both `crates/gpui` and
 `crates/gpui-3d` use it, so a component adds shaders without reimplementing the
 pipeline.
+
+DX11 artifacts use Shader Model 5.0 and fixed resource registers; DX12 retains
+its existing shader path. OpenGL artifacts contain GLSL 4.50 and resource
+reflection. The OpenGL driver compiles/links GLSL at pipeline creation; WGSL
+translation remains a build-time operation. Sprite atlas texture binding 4 is
+visible to both vertex and fragment stages because sprite vertices query atlas
+dimensions; this applies to monochrome/subpixel text and images.
 
 `gfx_core::EmbeddedShader` is the runtime side. Each generated table exposes
 `{name}_{backend}_shader(entry_point) -> Option<EmbeddedShader>`, and

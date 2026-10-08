@@ -6,6 +6,12 @@ use crate::{
 use gfx_core::RenderStepDescriptor;
 use std::cell::Cell;
 
+#[cfg(all(
+    target_os = "windows",
+    any(feature = "nova-gfx-dx11", feature = "nova-gfx-opengl")
+))]
+mod sprite_gpu;
+
 fn force_atlas_full(atlas: &NovaAtlas) {
     let mut state = atlas.state.lock().expect("nova atlas lock poisoned");
     for texture_kind in [
@@ -1937,9 +1943,7 @@ fn nova_dx12_build_artifacts_are_precompiled_dxbc() {
                     "{entry_point} should contain a DXBC container"
                 );
             }
-            Some(other) => panic!(
-                "{entry_point} must be embedded as DX bytecode, got {other:?}"
-            ),
+            Some(other) => panic!("{entry_point} must be embedded as DX bytecode, got {other:?}"),
             None => panic!("missing build-generated DX12 shader {entry_point}"),
         }
     }

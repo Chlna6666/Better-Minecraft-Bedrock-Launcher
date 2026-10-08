@@ -39,8 +39,7 @@ impl NovaRenderer {
         } else {
             Extent2d::new(1, 1)?
         };
-        let path_mask_target_descriptor =
-            self.path_mask_target_descriptor(next_path_mask_size);
+        let path_mask_target_descriptor = self.path_mask_target_descriptor(next_path_mask_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
@@ -51,6 +50,97 @@ impl NovaRenderer {
             PathMaskTarget,
             Option<BackdropBlurTargets>,
         ) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                let next_path_mask_target = create_path_mask_target(
+                    device,
+                    "gpui nova opengl",
+                    path_mask_target_descriptor,
+                )?;
+                let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
+                    Some(create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova opengl",
+                        backdrop_blur_target_descriptor,
+                    )?)
+                } else {
+                    None
+                };
+                let (next_depth_texture, next_depth_texture_view) =
+                    create_depth_target(device, "gpui nova opengl", target_size)?;
+                // Keep the last presented swapchain valid while the expensive size-dependent
+                // targets are prepared. Replacing its buffers first exposes an unpresented
+                // surface to DWM for the remainder of this transaction during live resize.
+                let swapchain_started_at = Instant::now();
+                if let Err(error) = resize_opengl_swapchain(device, self.swapchain, surface_config)
+                {
+                    destroy_path_mask_target(device, next_path_mask_target, "OpenGL");
+                    if let Some(targets) = next_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(device, targets, "OpenGL");
+                    }
+                    destroy_depth_target(
+                        device,
+                        next_depth_texture,
+                        next_depth_texture_view,
+                        "OpenGL",
+                    );
+                    return Err(error);
+                }
+                swapchain_resize = swapchain_started_at.elapsed();
+                destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
+                }
+                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "OpenGL");
+                self.depth_texture = next_depth_texture;
+                self.depth_texture_view = next_depth_texture_view;
+                (next_path_mask_target, next_backdrop_blur_targets)
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                let next_path_mask_target =
+                    create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?;
+                let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
+                    Some(create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova dx11",
+                        backdrop_blur_target_descriptor,
+                    )?)
+                } else {
+                    None
+                };
+                let (next_depth_texture, next_depth_texture_view) =
+                    create_depth_target(device, "gpui nova dx11", target_size)?;
+                // Keep the last presented swapchain valid while the expensive size-dependent
+                // targets are prepared. Replacing its buffers first exposes an unpresented
+                // surface to DWM for the remainder of this transaction during live resize.
+                let swapchain_started_at = Instant::now();
+                if let Err(error) = resize_dx11_swapchain(device, self.swapchain, surface_config) {
+                    destroy_path_mask_target(device, next_path_mask_target, "DX11");
+                    if let Some(targets) = next_backdrop_blur_targets {
+                        destroy_backdrop_blur_target_chain(device, targets, "DX11");
+                    }
+                    destroy_depth_target(
+                        device,
+                        next_depth_texture,
+                        next_depth_texture_view,
+                        "DX11",
+                    );
+                    return Err(error);
+                }
+                swapchain_resize = swapchain_started_at.elapsed();
+                destroy_path_mask_target(device, old_path_mask_target, "DX11");
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
+                }
+                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX11");
+                self.depth_texture = next_depth_texture;
+                self.depth_texture_view = next_depth_texture_view;
+                (next_path_mask_target, next_backdrop_blur_targets)
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 let next_path_mask_target =
@@ -172,6 +262,11 @@ impl NovaRenderer {
                 (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -323,6 +418,13 @@ impl NovaRenderer {
     ) -> Result<SurfaceAlphaState> {
         let requested = Self::alpha_state_for_window_transparency(is_transparent);
         match &*lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(_) => Ok(requested),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(_) => Ok(requested),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(_) => Ok(requested),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -335,6 +437,11 @@ impl NovaRenderer {
                 device.resolve_surface_alpha_mode(self.surface, requested.swapchain_mode)?,
             )),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -373,8 +480,7 @@ impl NovaRenderer {
             alpha_mode: alpha.swapchain_mode,
         };
         let next_path_mask_size = self.path_texture_size;
-        let path_mask_target_descriptor =
-            self.path_mask_target_descriptor(next_path_mask_size);
+        let path_mask_target_descriptor = self.path_mask_target_descriptor(next_path_mask_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(config.size);
         let old_path_mask_target = self.current_path_mask_target();
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
@@ -384,6 +490,64 @@ impl NovaRenderer {
             PathMaskTarget,
             Option<BackdropBlurTargets>,
         ) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                self.swapchain =
+                    recreate_opengl_swapchain_for_config(device, self.swapchain, config)?;
+                let next_path_mask_target = create_path_mask_target(
+                    device,
+                    "gpui nova opengl",
+                    path_mask_target_descriptor,
+                )?;
+                let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
+                    Some(create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova opengl",
+                        backdrop_blur_target_descriptor,
+                    )?)
+                } else {
+                    None
+                };
+                let (next_depth_texture, next_depth_texture_view) =
+                    create_depth_target(device, "gpui nova opengl", config.size)?;
+                destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
+                }
+                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "OpenGL");
+                self.depth_texture = next_depth_texture;
+                self.depth_texture_view = next_depth_texture_view;
+                (next_path_mask_target, next_backdrop_blur_targets)
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                self.swapchain =
+                    recreate_dx11_swapchain_for_config(device, self.swapchain, config)?;
+                let next_path_mask_target =
+                    create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?;
+                let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
+                    Some(create_backdrop_blur_target_chain(
+                        device,
+                        "gpui nova dx11",
+                        backdrop_blur_target_descriptor,
+                    )?)
+                } else {
+                    None
+                };
+                let (next_depth_texture, next_depth_texture_view) =
+                    create_depth_target(device, "gpui nova dx11", config.size)?;
+                destroy_path_mask_target(device, old_path_mask_target, "DX11");
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
+                }
+                destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX11");
+                self.depth_texture = next_depth_texture;
+                self.depth_texture_view = next_depth_texture_view;
+                (next_path_mask_target, next_backdrop_blur_targets)
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 self.swapchain =
@@ -474,6 +638,11 @@ impl NovaRenderer {
                 (next_path_mask_target, next_backdrop_blur_targets)
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(

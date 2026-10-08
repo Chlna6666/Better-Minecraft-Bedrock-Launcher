@@ -13,6 +13,10 @@ pub enum RendererBackend {
     Auto,
     /// Prefer the nova-gfx Vulkan renderer.
     NovaVulkan,
+    /// Prefer the native OpenGL 4.5 renderer on Windows or Linux.
+    NovaOpenGl,
+    /// Prefer the native nova-gfx Direct3D 11 renderer.
+    NovaDx11,
     /// Prefer the nova-gfx DX12 renderer.
     NovaDx12,
     /// Prefer the nova-gfx Metal renderer.
@@ -116,10 +120,24 @@ impl RenderPolicy {
 }
 
 /// Renderer startup options.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RendererFallback {
+    /// Try other compiled platform backends after complete initialization fails.
+    /// A pinned adapter remains strict regardless of this policy.
+    #[default]
+    Available,
+    /// Initialize only the requested backend (or the platform default for `Auto`).
+    Disabled,
+}
+
+/// Renderer startup options.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RendererOptions {
     /// Backend preference for platform startup.
     pub backend: RendererBackend,
+    /// Controls initialization fallback. Existing serialized options allow fallback.
+    #[serde(default)]
+    pub fallback: RendererFallback,
     /// Exact adapter name to prefer when the backend can enumerate GPU adapters.
     pub adapter_name: Option<String>,
     /// GPU adapter preference when the backend can choose between adapters.
@@ -141,6 +159,7 @@ impl Default for RendererOptions {
     fn default() -> Self {
         Self {
             backend: RendererBackend::Auto,
+            fallback: RendererFallback::Available,
             adapter_name: None,
             power_preference: GpuPowerPreference::AutoLowPower,
             present_mode: PresentModePreference::AutoVsync,
@@ -159,6 +178,24 @@ impl RendererOptions {
             backend,
             ..Self::default()
         }
+    }
+
+    /// Ordered initialization candidates. Explicit adapter selection forbids fallback.
+    pub(crate) fn candidates(&self, resolved: RendererBackend) -> Vec<RendererBackend> {
+        let resolved = if resolved == RendererBackend::Auto {
+            RendererBackend::platform_default()
+        } else {
+            resolved
+        };
+        let mut candidates = vec![resolved];
+        if self.fallback == RendererFallback::Available && self.adapter_name.is_none() {
+            for backend in RendererBackend::available_backends() {
+                if !candidates.contains(backend) {
+                    candidates.push(*backend);
+                }
+            }
+        }
+        candidates
     }
 
     /// Resolves the backend against the environment override.
@@ -218,9 +255,13 @@ impl RendererBackend {
     pub const fn capabilities(self) -> RendererCapabilities {
         let text_rasterization = match self {
             #[cfg(target_os = "windows")]
-            Self::NovaVulkan | Self::NovaDx12 => TextRasterizationMode::RgbSubpixel,
+            Self::NovaOpenGl | Self::NovaVulkan | Self::NovaDx11 | Self::NovaDx12 => {
+                TextRasterizationMode::RgbSubpixel
+            }
             #[cfg(not(target_os = "windows"))]
-            Self::NovaVulkan | Self::NovaDx12 => TextRasterizationMode::Grayscale,
+            Self::NovaOpenGl | Self::NovaVulkan | Self::NovaDx11 | Self::NovaDx12 => {
+                TextRasterizationMode::Grayscale
+            }
             Self::Auto | Self::NovaMetal | Self::HeadlessTest => TextRasterizationMode::Grayscale,
         };
         RendererCapabilities { text_rasterization }
@@ -228,43 +269,32 @@ impl RendererBackend {
 
     /// Returns GPUI's platform default renderer backend.
     pub fn platform_default() -> Self {
-        #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
-        {
-            Self::NovaDx12
-        }
-        #[cfg(all(
-            target_os = "windows",
-            not(feature = "nova-gfx-dx12"),
-            feature = "nova-gfx-vulkan"
-        ))]
-        {
-            Self::NovaVulkan
-        }
-        #[cfg(all(
-            target_os = "windows",
-            not(feature = "nova-gfx-dx12"),
-            not(feature = "nova-gfx-vulkan")
-        ))]
-        {
-            Self::Auto
-        }
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        {
-            Self::NovaVulkan
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Self::NovaMetal
-        }
-        #[cfg(all(
-            not(target_os = "windows"),
-            not(target_os = "linux"),
-            not(target_os = "freebsd"),
-            not(target_os = "macos")
-        ))]
-        {
-            Self::Auto
-        }
+        Self::available_backends()
+            .first()
+            .copied()
+            .unwrap_or(Self::Auto)
+    }
+
+    /// Compiled native backends, in platform fallback order.
+    pub(crate) fn available_backends() -> &'static [Self] {
+        &[
+            #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
+            Self::NovaDx12,
+            #[cfg(all(target_os = "windows", feature = "nova-gfx-dx11"))]
+            Self::NovaDx11,
+            #[cfg(all(
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd"),
+                feature = "nova-gfx-vulkan"
+            ))]
+            Self::NovaVulkan,
+            #[cfg(all(
+                any(target_os = "windows", target_os = "linux"),
+                feature = "nova-gfx-opengl"
+            ))]
+            Self::NovaOpenGl,
+            #[cfg(all(target_os = "macos", feature = "nova-gfx-metal"))]
+            Self::NovaMetal,
+        ]
     }
 
     /// Reads [`Self::ENV_VAR`] and returns a parsed backend preference.
@@ -284,6 +314,8 @@ impl RendererBackend {
         match self {
             Self::Auto => "auto",
             Self::NovaVulkan => "nova-vulkan",
+            Self::NovaOpenGl => "nova-opengl",
+            Self::NovaDx11 => "nova-dx11",
             Self::NovaDx12 => "nova-dx12",
             Self::NovaMetal => "nova-metal",
             Self::HeadlessTest => "headless",
@@ -299,8 +331,10 @@ impl FromStr for RendererBackend {
             "" | "auto" | "default" => Ok(Self::Auto),
             "nova" | "blade" | "vk" | "vulkan" | "nova-vulkan" | "nova_vulkan" | "nova-vk"
             | "nova_vk" => Ok(Self::NovaVulkan),
-            "dx12" | "directx" | "directx12" | "d3d12" | "dx11" | "directx11" | "d3d11"
-            | "nova-dx12" | "nova_dx12" | "nova-directx12" | "nova-d3d12" => Ok(Self::NovaDx12),
+            "gl" | "opengl" | "nova-opengl" | "nova_opengl" => Ok(Self::NovaOpenGl),
+            "dx11" | "directx11" | "d3d11" | "nova-dx11" | "nova_dx11" => Ok(Self::NovaDx11),
+            "dx12" | "directx" | "directx12" | "d3d12" | "nova-dx12" | "nova_dx12"
+            | "nova-directx12" | "nova-d3d12" => Ok(Self::NovaDx12),
             "metal" | "mtl" | "nova-metal" | "nova_metal" | "nova-mtl" | "nova_mtl" => {
                 Ok(Self::NovaMetal)
             }
@@ -335,12 +369,59 @@ impl std::error::Error for RendererBackendParseError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opengl_aliases_and_disabled_fallback_are_unambiguous() {
+        for alias in ["gl", "opengl", "nova-opengl", "nova_opengl"] {
+            assert_eq!(
+                alias.parse::<RendererBackend>().unwrap(),
+                RendererBackend::NovaOpenGl
+            );
+        }
+        let options = RendererOptions {
+            fallback: RendererFallback::Disabled,
+            ..RendererOptions::with_backend(RendererBackend::NovaOpenGl)
+        };
+        assert_eq!(
+            options.candidates(RendererBackend::NovaOpenGl),
+            [RendererBackend::NovaOpenGl]
+        );
+    }
+
+    #[test]
+    fn preferred_backend_is_first_and_fallbacks_are_compiled_and_unique() {
+        let options = RendererOptions::with_backend(RendererBackend::NovaDx11);
+        let candidates = options.candidates(RendererBackend::NovaDx11);
+        assert_eq!(candidates[0], RendererBackend::NovaDx11);
+        for backend in &candidates[1..] {
+            assert!(RendererBackend::available_backends().contains(backend));
+        }
+        let mut unique = candidates.clone();
+        unique.sort_by_key(|backend| backend.as_str());
+        unique.dedup();
+        assert_eq!(unique.len(), candidates.len());
+        let pinned = RendererOptions {
+            adapter_name: Some("adapter".into()),
+            ..options
+        };
+        assert_eq!(
+            pinned.candidates(RendererBackend::NovaDx11),
+            [RendererBackend::NovaDx11]
+        );
+    }
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parse_and_display() {
+        for alias in ["dx11", "d3d11", "directx11", "nova-dx11", "nova_dx11"] {
+            assert_eq!(
+                alias.parse::<RendererBackend>().unwrap(),
+                RendererBackend::NovaDx11
+            );
+        }
+        assert_eq!(RendererBackend::NovaDx11.to_string(), "nova-dx11");
         assert_eq!(
             "auto".parse::<RendererBackend>().unwrap(),
             RendererBackend::Auto
@@ -387,14 +468,24 @@ mod tests {
     #[test]
     fn nova_backends_report_platform_text_rasterization() {
         #[cfg(target_os = "windows")]
-        for backend in [RendererBackend::NovaVulkan, RendererBackend::NovaDx12] {
+        for backend in [
+            RendererBackend::NovaOpenGl,
+            RendererBackend::NovaVulkan,
+            RendererBackend::NovaDx11,
+            RendererBackend::NovaDx12,
+        ] {
             assert_eq!(
                 backend.capabilities().text_rasterization,
                 TextRasterizationMode::RgbSubpixel
             );
         }
         #[cfg(not(target_os = "windows"))]
-        for backend in [RendererBackend::NovaVulkan, RendererBackend::NovaDx12] {
+        for backend in [
+            RendererBackend::NovaOpenGl,
+            RendererBackend::NovaVulkan,
+            RendererBackend::NovaDx11,
+            RendererBackend::NovaDx12,
+        ] {
             assert_eq!(
                 backend.capabilities().text_rasterization,
                 TextRasterizationMode::Grayscale
@@ -416,6 +507,13 @@ mod tests {
 
     #[test]
     fn platform_default_backend_is_expected_for_target() {
+        assert_eq!(
+            RendererBackend::platform_default(),
+            RendererBackend::available_backends()
+                .first()
+                .copied()
+                .unwrap_or(RendererBackend::Auto)
+        );
         #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
         assert_eq!(
             RendererBackend::platform_default(),
@@ -425,6 +523,17 @@ mod tests {
         #[cfg(all(
             target_os = "windows",
             not(feature = "nova-gfx-dx12"),
+            feature = "nova-gfx-dx11"
+        ))]
+        assert_eq!(
+            RendererBackend::platform_default(),
+            RendererBackend::NovaDx11
+        );
+
+        #[cfg(all(
+            target_os = "windows",
+            not(feature = "nova-gfx-dx12"),
+            not(feature = "nova-gfx-dx11"),
             feature = "nova-gfx-vulkan"
         ))]
         assert_eq!(
@@ -435,17 +544,22 @@ mod tests {
         #[cfg(all(
             target_os = "windows",
             not(feature = "nova-gfx-dx12"),
-            not(feature = "nova-gfx-vulkan")
+            not(feature = "nova-gfx-dx11"),
+            not(feature = "nova-gfx-vulkan"),
+            not(feature = "nova-gfx-opengl")
         ))]
         assert_eq!(RendererBackend::platform_default(), RendererBackend::Auto);
 
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        #[cfg(all(
+            any(target_os = "linux", target_os = "freebsd"),
+            feature = "nova-gfx-vulkan"
+        ))]
         assert_eq!(
             RendererBackend::platform_default(),
             RendererBackend::NovaVulkan
         );
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "nova-gfx-metal"))]
         assert_eq!(
             RendererBackend::platform_default(),
             RendererBackend::NovaMetal

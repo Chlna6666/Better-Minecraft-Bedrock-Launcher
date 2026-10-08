@@ -345,7 +345,10 @@ fn should_use_no_redirection_bitmap(
 ) -> bool {
     !disable_direct_composition
         && transparent_background
-        && resolved_backend == RendererBackend::NovaDx12
+        && matches!(
+            resolved_backend,
+            RendererBackend::NovaDx11 | RendererBackend::NovaDx12
+        )
 }
 
 fn renderer_backend_candidates(
@@ -353,22 +356,52 @@ fn renderer_backend_candidates(
     resolved_backend: RendererBackend,
     transparent: bool,
 ) -> Vec<RendererBackend> {
-    let mut candidates = vec![resolved_backend];
-    let should_try_fallbacks = renderer_options.adapter_name.is_none()
-        && (renderer_options.backend == RendererBackend::Auto
-            || (transparent
-                && matches!(
-                    renderer_options.backend,
-                    RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
-                )));
-    if should_try_fallbacks {
-        for backend in super::platform::windows_auto_renderer_backend_order() {
-            if !candidates.contains(backend) {
-                candidates.push(*backend);
+    let _ = transparent;
+    renderer_options.candidates(resolved_backend)
+}
+
+fn configure_renderer_window_style(
+    window: &impl rwh::HasWindowHandle,
+    no_redirection: bool,
+) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_NOREDIRECTIONBITMAP,
+    };
+    let rwh::RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
+        anyhow::bail!("Windows renderer requires HWND");
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    // SAFETY: the window retains the live HWND. Only the composition style changes,
+    // before initialization or before the matching swapchain alpha-mode transition.
+    unsafe {
+        let old = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let mask = WS_EX_NOREDIRECTIONBITMAP.0 as isize;
+        let next = if no_redirection {
+            old | mask
+        } else {
+            old & !mask
+        };
+        if next != old {
+            windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::ERROR_SUCCESS);
+            if SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next) == 0
+                && windows::Win32::Foundation::GetLastError()
+                    != windows::Win32::Foundation::ERROR_SUCCESS
+            {
+                return Err(windows::core::Error::from_thread().into());
             }
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )?;
         }
     }
-    candidates
+    Ok(())
 }
 
 fn system_backdrop(background_appearance: WindowBackgroundAppearance) -> DWM_SYSTEMBACKDROP_TYPE {
@@ -728,6 +761,7 @@ fn create_windows_renderer(initialization: WindowsRendererInitialization) -> Res
         window_id,
         transparent,
         atlas,
+        no_redirection_bitmap_for_transparency,
     } = initialization;
     let drawable_size = logical_size
         .to_device_pixels(scale_factor)
@@ -736,6 +770,10 @@ fn create_windows_renderer(initialization: WindowsRendererInitialization) -> Res
     let mut last_error = None;
 
     for (candidate_index, candidate) in renderer_backend_candidates.into_iter().enumerate() {
+        configure_renderer_window_style(
+            &window,
+            should_use_no_redirection_bitmap(disable_direct_composition, transparent, candidate),
+        )?;
         match NovaRenderer::with_atlas(
             &window,
             candidate,
@@ -746,6 +784,10 @@ fn create_windows_renderer(initialization: WindowsRendererInitialization) -> Res
             atlas.clone(),
         ) {
             Ok(renderer) => {
+                no_redirection_bitmap_for_transparency.store(
+                    should_use_no_redirection_bitmap(disable_direct_composition, true, candidate),
+                    Ordering::Release,
+                );
                 let gpu_specs = renderer.gpu_specs();
                 record_renderer_backend(candidate);
                 record_gpu_adapter_diagnostics(&gpu_specs.device_name, &gpu_specs.driver_name);
@@ -930,6 +972,7 @@ struct WindowsRendererInitialization {
     window_id: WindowId,
     transparent: bool,
     atlas: NovaRendererAtlas,
+    no_redirection_bitmap_for_transparency: Arc<AtomicBool>,
 }
 
 struct WindowsRendererWindowHandle {
@@ -981,6 +1024,7 @@ pub(crate) struct WindowsWindowInner {
     power_event: Rc<dyn Fn(WPARAM)>,
     end_session_event: Rc<dyn Fn() -> bool>,
     renderer: RefCell<WindowsRendererState>,
+    no_redirection_bitmap_for_transparency: Arc<AtomicBool>,
     renderer_atlas: NovaRendererAtlas,
     startup_background: RefCell<Option<StartupBackground>>,
     pub(crate) content_ready: Arc<AtomicBool>,
@@ -1283,6 +1327,7 @@ impl WindowsWindow {
         }
         let winit_window = Arc::new(winit_window);
         let renderer_atlas = NovaRendererAtlas::new();
+        let no_redirection_bitmap_for_transparency = Arc::new(AtomicBool::new(false));
         let renderer_initialization = WindowsRendererInitialization {
             window: WindowsRendererWindowHandle::new(winit_window.clone())?,
             logical_size: actual_logical_size,
@@ -1293,6 +1338,7 @@ impl WindowsWindow {
             window_id: handle.window_id(),
             transparent: transparent_background,
             atlas: renderer_atlas.clone(),
+            no_redirection_bitmap_for_transparency: no_redirection_bitmap_for_transparency.clone(),
         };
         let cell = OnceCell::new();
         cell.set(winit_window)
@@ -1318,6 +1364,7 @@ impl WindowsWindow {
             power_event,
             end_session_event,
             renderer: RefCell::new(WindowsRendererState::Initializing),
+            no_redirection_bitmap_for_transparency,
             renderer_atlas,
             startup_background: RefCell::new(None),
             content_ready: Arc::new(AtomicBool::new(false)),
@@ -1403,6 +1450,10 @@ impl WindowsWindow {
             Ok(mut renderer) => {
                 let transparent = self.0.state.borrow().background_appearance.get()
                     != WindowBackgroundAppearance::Opaque;
+                if let Err(error) = self.configure_renderer_transparency_style(transparent) {
+                    self.finish_renderer_initialization(Err(error));
+                    return;
+                }
                 renderer.update_transparency(transparent);
                 *self.0.renderer.borrow_mut() = WindowsRendererState::Ready(renderer);
                 self.request_first_presentable_frame();
@@ -1414,6 +1465,17 @@ impl WindowsWindow {
                 self.invoke_close();
             }
         }
+    }
+
+    fn configure_renderer_transparency_style(&self, transparent: bool) -> Result<()> {
+        configure_renderer_window_style(
+            self.window(),
+            transparent
+                && self
+                    .0
+                    .no_redirection_bitmap_for_transparency
+                    .load(Ordering::Acquire),
+        )
     }
 
     fn update_presentation_state(
@@ -1922,13 +1984,26 @@ impl PlatformWindow for WindowsWindow {
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let transparent = background_appearance != WindowBackgroundAppearance::Opaque;
+        let old_transparent = self.background_appearance() != WindowBackgroundAppearance::Opaque;
+        let renderer_ready = matches!(&*self.0.renderer.borrow(), WindowsRendererState::Ready(_));
+        self.window().set_transparent(transparent);
+        if renderer_ready
+            && let Err(error) = self.configure_renderer_transparency_style(transparent)
+        {
+            self.window().set_transparent(old_transparent);
+            if let Err(restore_error) = self.configure_renderer_transparency_style(old_transparent)
+            {
+                log::warn!("failed to restore Windows renderer style: {restore_error:#}");
+            }
+            log::warn!("failed to update Windows renderer transparency style: {error:#}");
+            return;
+        }
         if transparent {
             let had_startup_background = self.0.startup_background.borrow_mut().take().is_some();
             if had_startup_background {
                 self.update_presentation_state(WindowsWindowPresentationState::revoke_background);
             }
         }
-        self.window().set_transparent(transparent);
         self.0
             .state
             .borrow()
@@ -2275,9 +2350,9 @@ mod tests {
         should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
-        DevicePixels, MouseButton, PlatformFrameRequest, RendererBackend, RendererOptions,
-        TitlebarOptions, WindowBackgroundAppearance, WindowCornerPreference, WindowKind,
-        WindowParams, point,
+        DevicePixels, MouseButton, PlatformFrameRequest, RendererBackend, RendererFallback,
+        RendererOptions, TitlebarOptions, WindowBackgroundAppearance, WindowCornerPreference,
+        WindowKind, WindowParams, point,
     };
     use std::time::Duration;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -2424,8 +2499,11 @@ mod tests {
     }
 
     #[test]
-    fn explicit_dx12_opaque_renderer_candidates_do_not_fallback() {
-        let options = RendererOptions::with_backend(RendererBackend::NovaDx12);
+    fn disabled_dx12_fallback_has_one_candidate() {
+        let options = RendererOptions {
+            fallback: RendererFallback::Disabled,
+            ..RendererOptions::with_backend(RendererBackend::NovaDx12)
+        };
 
         assert_eq!(
             renderer_backend_candidates(&options, RendererBackend::NovaDx12, false),
@@ -2452,6 +2530,7 @@ mod tests {
             candidates.first().copied(),
             Some(RendererBackend::NovaVulkan)
         );
+        #[cfg(feature = "nova-gfx-dx12")]
         assert!(candidates.contains(&RendererBackend::NovaDx12));
     }
 

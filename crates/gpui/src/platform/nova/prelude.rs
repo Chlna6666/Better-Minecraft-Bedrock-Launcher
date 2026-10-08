@@ -18,26 +18,34 @@ pub(super) use crate::{
 
 pub(super) use gfx_core::{
     AddressMode, AsyncCapabilities, BackendPipelines, BackendPresentationCompat, BackendQueue,
-    BackendResources, BackendSurface, BlendMode, BufferBinding, BufferDescriptor, BufferId,
-    BufferUsage, ClearColor, ColorAttachmentDescriptor, CompareFunction, CompositeAlphaMode,
-    DepthAttachmentDescriptor, DepthState, DeviceDescriptor, DrawIndexedStepDescriptor,
-    DrawStepDescriptor, Extent2d, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
-    MemoryLocation, MemoryTrimLevel, Origin2d, PipelineLayoutDescriptor, PipelineLayoutId,
-    PowerPreference, PresentationDevice, PrimitiveTopology, RenderPassDepthAttachment,
-    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
-    RenderStepDescriptor, RenderStepList, ResourceBinding, BindingResource,
-    ResourceBindingType, ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor,
-    ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerBinding, SamplerDescriptor, SamplerId,
-    ScissorRect, ShaderModuleDescriptor, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus,
-    SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureBinding, TextureDataLayout,
-    TextureDescriptor, TextureDimension, TextureId, TextureUsage, TextureViewDescriptor,
-    TextureViewId, TextureWrite, TextureWriteDescriptor, resource_set_list,
+    BackendResources, BackendSurface, BindingResource, BlendMode, BufferBinding, BufferDescriptor,
+    BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor, CompareFunction,
+    CompositeAlphaMode, DepthAttachmentDescriptor, DepthState, DeviceDescriptor,
+    DrawIndexedStepDescriptor, DrawStepDescriptor, Extent2d, FilterMode, Format,
+    IndexBufferBinding, IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel, Origin2d,
+    PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentationDevice,
+    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId,
+    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
+    ResourceBinding, ResourceBindingType, ResourceSetDescriptor, ResourceSetId,
+    ResourceSetLayoutDescriptor, ResourceSetLayoutEntry, ResourceSetLayoutId, SamplerBinding,
+    SamplerDescriptor, SamplerId, ScissorRect, ShaderModuleDescriptor, ShaderStage, ShaderStages,
+    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId,
+    TextureBinding, TextureDataLayout, TextureDescriptor, TextureDimension, TextureId,
+    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+    resource_set_list,
 };
 
+#[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+pub(super) use gfx_dx11::Dx11Device;
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 pub(super) use gfx_dx12::Dx12Device;
 #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
 pub(super) use gfx_metal::MetalDevice;
+#[cfg(all(
+    feature = "nova-gfx-opengl",
+    any(target_os = "windows", target_os = "linux")
+))]
+pub(super) use gfx_opengl::OpenGlDevice;
 // Production shaders come from the artifacts `build.rs` embeds, so WGSL translation
 // is only reachable from tests that exercise the translator directly.
 #[cfg(all(test, feature = "nova-gfx-dx12", target_os = "windows"))]

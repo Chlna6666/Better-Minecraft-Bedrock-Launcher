@@ -30,6 +30,22 @@ pub fn enumerate_gpu_adapters(backend: RendererBackend) -> Vec<crate::GpuAdapter
         backend => backend,
     };
 
+    #[cfg(all(target_os = "windows", feature = "nova-gfx-dx11"))]
+    {
+        if _resolved_backend == RendererBackend::NovaDx11 {
+            match gfx_dx11::enumerate_adapter_info() {
+                Ok(adapters) => {
+                    return adapters
+                        .into_iter()
+                        .map(gpu_adapter_info_from_nova_dx11)
+                        .collect();
+                }
+                Err(error) => {
+                    log::warn!("failed to enumerate nova-dx11 adapters: {error}");
+                }
+            }
+        }
+    }
     #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
     {
         if _resolved_backend == RendererBackend::NovaDx12 {
@@ -100,6 +116,18 @@ pub fn enumerate_gpu_adapters(backend: RendererBackend) -> Vec<crate::GpuAdapter
     Vec::new()
 }
 
+#[cfg(all(target_os = "windows", feature = "nova-gfx-dx11"))]
+fn gpu_adapter_info_from_nova_dx11(info: gfx_core::AdapterInfo) -> crate::GpuAdapterInfo {
+    crate::GpuAdapterInfo {
+        name: info.name,
+        backend: RendererBackend::NovaDx11,
+        device_type: crate::GpuAdapterDeviceType::Other,
+        vendor: info.vendor_id,
+        device: info.device_id,
+        driver: "nova-dx11".to_string(),
+        driver_info: format!("{:?}", info.capabilities),
+    }
+}
 #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
 fn gpu_adapter_info_from_nova_dx12(info: gfx_core::AdapterInfo) -> crate::GpuAdapterInfo {
     crate::GpuAdapterInfo {

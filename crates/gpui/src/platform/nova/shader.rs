@@ -205,7 +205,11 @@ fn generated_nova_shader_binaries(
         poly_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_poly_sprite")?,
         poly_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_poly_sprite")?,
         underline_vertex: generated_shader_binary(resolve, ShaderStage::Vertex, "vs_underline")?,
-        underline_fragment: generated_shader_binary(resolve, ShaderStage::Fragment, "fs_underline")?,
+        underline_fragment: generated_shader_binary(
+            resolve,
+            ShaderStage::Fragment,
+            "fs_underline",
+        )?,
         backdrop_blur_pass_vertex: generated_shader_binary(
             resolve,
             ShaderStage::Vertex,
@@ -234,6 +238,31 @@ fn generated_nova_shader_binaries(
     })
 }
 
+#[cfg(all(
+    feature = "nova-gfx-opengl",
+    any(target_os = "windows", target_os = "linux")
+))]
+pub(super) fn cached_nova_opengl_shader_binaries() -> Result<ShaderBinaries> {
+    static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+
+    let binaries = cached_nova_shader_binaries(&CACHE, nova_opengl_shader)?;
+    REPORTED.call_once(|| {
+        log::info!("nova OpenGL shader artifacts: {NOVA_OPENGL_SHADER_ARTIFACT_KIND}");
+    });
+    Ok(binaries)
+}
+#[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+pub(super) fn cached_nova_dx11_shader_binaries() -> Result<ShaderBinaries> {
+    static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();
+    static REPORTED: std::sync::Once = std::sync::Once::new();
+
+    let binaries = cached_nova_shader_binaries(&CACHE, nova_dx11_shader)?;
+    REPORTED.call_once(|| {
+        log::info!("nova DX11 shader artifacts: {NOVA_DX11_SHADER_ARTIFACT_KIND}");
+    });
+    Ok(binaries)
+}
 #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
 pub(super) fn cached_nova_dx12_shader_binaries() -> Result<ShaderBinaries> {
     static CACHE: std::sync::OnceLock<ShaderCacheEntry> = std::sync::OnceLock::new();

@@ -50,6 +50,17 @@ impl NovaRenderer {
 
         let buffer = self.global_buffer;
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
@@ -66,6 +77,11 @@ impl NovaRenderer {
                 device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -91,6 +107,13 @@ impl NovaRenderer {
         }
         let buffer = self.animation_value_buffer;
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => device.write_buffer(buffer, 0, bytes)?,
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => device.write_buffer(buffer, 0, bytes)?,
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => device.write_buffer(buffer, 0, bytes)?,
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -101,6 +124,11 @@ impl NovaRenderer {
             ))]
             NovaBackend::Vulkan(device) => device.write_buffer(buffer, 0, bytes)?,
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(

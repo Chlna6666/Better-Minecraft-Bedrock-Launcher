@@ -6,10 +6,18 @@ mod chunk_upload;
 mod destroy;
 mod draw_step_scratch;
 mod draw_steps;
+mod drawable;
 mod extensions;
 mod filters;
+#[cfg(target_os = "windows")]
+use drawable::native_windows_hwnd;
+use drawable::resolve_initial_drawable_size;
 
 mod init;
+mod init_state;
+#[cfg(target_os = "windows")]
+mod preparation;
+use init_state::InitializedRenderer;
 mod present;
 mod retained_upload;
 mod submission;
@@ -52,7 +60,13 @@ pub(super) fn nova_present_mode_for_backend(
         // vblank after that wake can halve the display cadence. Mailbox maps to Present(0, 0),
         // without ALLOW_TEARING; DWM remains the pacing authority for the composed surface.
         PresentModePreference::AutoVsync
-            if cfg!(target_os = "windows") && backend == RendererBackend::NovaDx12 =>
+            if cfg!(target_os = "windows")
+                && matches!(
+                    backend,
+                    RendererBackend::NovaOpenGl
+                        | RendererBackend::NovaDx11
+                        | RendererBackend::NovaDx12
+                ) =>
         {
             gfx_core::PresentMode::Mailbox
         }
@@ -222,9 +236,7 @@ where
         Ok(resource_set) => Ok((buffer, resource_set)),
         Err(error) => {
             if let Err(destroy_error) = device.destroy_buffer(buffer) {
-                log::debug!(
-                    "failed to roll back {label} grown path buffer: {destroy_error}"
-                );
+                log::debug!("failed to roll back {label} grown path buffer: {destroy_error}");
             }
             Err(error)
         }
@@ -338,6 +350,17 @@ impl NovaRenderer {
         let descriptor = self.path_mask_target_descriptor(target_size);
         let old_target = self.current_path_mask_target();
         let next_target: PathMaskTarget = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                create_path_mask_target(device, "gpui nova opengl", descriptor)?
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                create_path_mask_target(device, "gpui nova dx11", descriptor)?
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 create_path_mask_target(device, "gpui nova dx12", descriptor)?
@@ -354,6 +377,11 @@ impl NovaRenderer {
                 create_path_mask_target(device, "gpui nova vulkan", descriptor)?
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -373,6 +401,13 @@ impl NovaRenderer {
         self.activate_frame_resources(self.current_frame_resource_index)?;
 
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => destroy_path_mask_target(device, old_target, "OpenGL"),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => destroy_path_mask_target(device, old_target, "DX11"),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => destroy_path_mask_target(device, old_target, "DX12"),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -383,6 +418,11 @@ impl NovaRenderer {
             ))]
             NovaBackend::Vulkan(device) => destroy_path_mask_target(device, old_target, "Vulkan"),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -417,6 +457,33 @@ impl NovaRenderer {
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
         let next_backdrop_blur_targets = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                let targets = create_backdrop_blur_target_chain(
+                    device,
+                    "gpui nova opengl",
+                    backdrop_blur_target_descriptor,
+                )?;
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
+                }
+                targets
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                let targets = create_backdrop_blur_target_chain(
+                    device,
+                    "gpui nova dx11",
+                    backdrop_blur_target_descriptor,
+                )?;
+                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
+                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
+                }
+                targets
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 let targets = create_backdrop_blur_target_chain(
@@ -457,6 +524,11 @@ impl NovaRenderer {
                 targets
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -693,6 +765,17 @@ impl NovaRenderer {
             return;
         };
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => {
+                destroy_backdrop_blur_target_chain(device, targets, "OpenGL");
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => {
+                destroy_backdrop_blur_target_chain(device, targets, "DX11");
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
                 destroy_backdrop_blur_target_chain(device, targets, "DX12");
@@ -709,6 +792,11 @@ impl NovaRenderer {
                 destroy_backdrop_blur_target_chain(device, targets, "Vulkan");
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -765,6 +853,25 @@ impl NovaRenderer {
         let layout = self.quad_resource_set_layout;
 
         let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => create_grown_quad_resources(
+                device,
+                "gpui nova opengl grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => create_grown_quad_resources(
+                device,
+                "gpui nova dx11 grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => create_grown_quad_resources(
                 device,
@@ -793,6 +900,11 @@ impl NovaRenderer {
                 new_capacity,
             )?,
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -815,6 +927,23 @@ impl NovaRenderer {
         self.retained_upload.invalidate_quad_slot(index);
 
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => retire_replaced_quad_resources(
+                device,
+                "gpui nova opengl",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => retire_replaced_quad_resources(
+                device,
+                "gpui nova dx11",
+                old_resource_set,
+                old_buffer,
+            ),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => retire_replaced_quad_resources(
                 device,
@@ -840,6 +969,11 @@ impl NovaRenderer {
                 old_buffer,
             ),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -864,8 +998,7 @@ impl NovaRenderer {
         if required_bytes == 0 {
             return Ok(());
         }
-        let required_vertices =
-            required_bytes.div_ceil(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
+        let required_vertices = required_bytes.div_ceil(PACKED_PATH_RASTERIZATION_VERTEX_BYTES);
         if required_vertices > MAX_PATH_VERTICES {
             anyhow::bail!(
                 "nova path vertex upload exceeds hard limit: required={} max={}",
@@ -894,6 +1027,25 @@ impl NovaRenderer {
         let layout = self.path_rasterization_resource_set_layout;
 
         let (new_buffer, new_resource_set) = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => create_grown_path_rasterization_resources(
+                device,
+                "gpui nova opengl grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => create_grown_path_rasterization_resources(
+                device,
+                "gpui nova dx11 grown",
+                layout,
+                current.buffers,
+                new_capacity,
+            )?,
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => create_grown_path_rasterization_resources(
                 device,
@@ -922,6 +1074,11 @@ impl NovaRenderer {
                 new_capacity,
             )?,
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -945,6 +1102,23 @@ impl NovaRenderer {
             .invalidate_path_rasterization_slot(index);
 
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => retire_replaced_path_rasterization_resources(
+                device,
+                "gpui nova opengl",
+                old_resource_set,
+                old_buffer,
+            ),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => retire_replaced_path_rasterization_resources(
+                device,
+                "gpui nova dx11",
+                old_resource_set,
+                old_buffer,
+            ),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => retire_replaced_path_rasterization_resources(
                 device,
@@ -970,6 +1144,11 @@ impl NovaRenderer {
                 old_buffer,
             ),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -1055,6 +1234,25 @@ impl NovaRenderer {
         }
         let descriptor = self.atlas_resource_descriptor();
         let result = match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => sync_gpu_atlas_textures(
+                &self.atlas,
+                &mut self.gpu_atlas_textures,
+                device,
+                "gpui nova opengl",
+                descriptor,
+            ),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => sync_gpu_atlas_textures(
+                &self.atlas,
+                &mut self.gpu_atlas_textures,
+                device,
+                "gpui nova dx11",
+                descriptor,
+            ),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => sync_gpu_atlas_textures(
                 &self.atlas,
@@ -1083,6 +1281,11 @@ impl NovaRenderer {
                 descriptor,
             ),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(

@@ -1,131 +1,6 @@
-#![expect(
-    unsafe_code,
-    reason = "renderer initialization creates native surfaces and queries window handles"
-)]
-
 use super::*;
 
-#[cfg(target_os = "windows")]
-fn native_windows_hwnd<W>(window: &W) -> Option<isize>
-where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
-{
-    use ::winit::raw_window_handle::RawWindowHandle;
-
-    let raw_window_handle = window.window_handle().ok()?.as_raw();
-    let RawWindowHandle::Win32(handle) = raw_window_handle else {
-        return None;
-    };
-    Some(handle.hwnd.get())
-}
-
-#[cfg(target_os = "windows")]
-fn native_windows_drawable_size<W>(window: &W) -> Option<Size<DevicePixels>>
-where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
-{
-    use windows::Win32::{
-        Foundation::{HWND, RECT},
-        UI::WindowsAndMessaging::GetClientRect,
-    };
-
-    let hwnd = HWND(native_windows_hwnd(window)? as *mut _);
-    let mut client_rect = RECT::default();
-    unsafe { GetClientRect(hwnd, &mut client_rect).ok()? };
-    let width = client_rect.right.saturating_sub(client_rect.left);
-    let height = client_rect.bottom.saturating_sub(client_rect.top);
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-
-    Some(Size {
-        width: DevicePixels(width),
-        height: DevicePixels(height),
-    })
-}
-
-fn resolve_initial_drawable_size<W>(window: &W, requested: Size<DevicePixels>) -> Size<DevicePixels>
-where
-    W: ::winit::raw_window_handle::HasWindowHandle + ?Sized,
-{
-    #[cfg(target_os = "windows")]
-    if let Some(native) = native_windows_drawable_size(window) {
-        if native != requested {
-            log::debug!(
-                "Nova renderer initial drawable size corrected from requested={}x{} to native-client={}x{}",
-                requested.width.0,
-                requested.height.0,
-                native.width.0,
-                native.height.0,
-            );
-        }
-        return native;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    let _ = window;
-
-    requested
-}
-
 impl NovaRenderer {
-    /// Prepares the shared device and BGRA renderer core on their GPU owner without a window.
-    ///
-    /// # Errors
-    ///
-    /// Returns device or pipeline initialization errors. Only successful cache entries are
-    /// retained, so regular window initialization can retry an unfinished preparation.
-    #[cfg(target_os = "windows")]
-    pub(crate) fn prepare_renderer(options: &RendererOptions) -> Result<()> {
-        let started_at = Instant::now();
-        let backend = shared_device(options.backend, options)?;
-        let device_elapsed = started_at.elapsed();
-        let mut backend = lock_backend(&backend);
-        // Core pipelines use dynamic viewport/scissor; only the attachment format is keyed.
-        // Window-sized textures and buffers are deliberately left to window initialization.
-        let config = SurfaceConfig::new(1, 1, Format::Bgra8Unorm)?;
-        let key = DeviceKey {
-            backend: options.backend,
-            adapter_name: options.adapter_name.clone(),
-            power_preference: nova_power_preference(options),
-            pipeline_cache_dir: options.pipeline_cache_dir.clone(),
-        };
-        let core_started_at = Instant::now();
-        match &mut *backend {
-            #[cfg(feature = "nova-gfx-dx12")]
-            NovaBackend::Dx12(device) => {
-                shared_renderer_core(key, config.format, || {
-                    create_renderer_core(
-                        device,
-                        config,
-                        "gpui nova dx12",
-                        cached_nova_dx12_shader_binaries()?,
-                    )
-                })?;
-            }
-            #[cfg(feature = "nova-gfx-vulkan")]
-            NovaBackend::Vulkan(device) => {
-                shared_renderer_core(key, config.format, || {
-                    create_renderer_core(
-                        device,
-                        config,
-                        "gpui nova vulkan",
-                        cached_nova_vulkan_shader_binaries()?,
-                    )
-                })?;
-            }
-            _ => anyhow::bail!("{} cannot prepare a Windows renderer", options.backend),
-        }
-        log::info!(
-            "GPUI renderer preparation: backend={} total_ms={} device_ms={} core_ms={}",
-            options.backend,
-            started_at.elapsed().as_millis(),
-            device_elapsed.as_millis(),
-            core_started_at.elapsed().as_millis(),
-        );
-        Ok(())
-    }
-
     #[cfg(not(target_os = "windows"))]
     pub(crate) fn new<W>(
         window: &W,
@@ -140,18 +15,64 @@ impl NovaRenderer {
             + ::winit::raw_window_handle::HasWindowHandle
             + 'static,
     {
-        Self::with_atlas(
+        let mut failures = Vec::new();
+        for candidate in renderer_options.candidates(backend) {
+            match Self::with_atlas(
+                window,
+                candidate,
+                renderer_options,
+                submission_mode,
+                drawable_size,
+                transparent,
+                NovaRendererAtlas::new(),
+            ) {
+                Ok(renderer) => {
+                    crate::diagnostics::performance_metrics::record_renderer_backend(candidate);
+                    return Ok(renderer);
+                }
+                Err(error) => {
+                    log::warn!("Nova {candidate} initialization failed: {error:#}");
+                    failures.push(format!("{candidate}: {error:#}"));
+                }
+            }
+        }
+        anyhow::bail!("no usable renderer: {}", failures.join("; "))
+    }
+
+    pub(crate) fn with_atlas<W>(
+        window: &W,
+        backend: RendererBackend,
+        renderer_options: &RendererOptions,
+        submission_mode: GpuSubmissionMode,
+        drawable_size: Size<DevicePixels>,
+        transparent: bool,
+        atlas: NovaRendererAtlas,
+    ) -> Result<Self>
+    where
+        W: ::winit::raw_window_handle::HasDisplayHandle
+            + ::winit::raw_window_handle::HasWindowHandle
+            + 'static,
+    {
+        let initialization = Self::initialize(
             window,
             backend,
             renderer_options,
             submission_mode,
             drawable_size,
             transparent,
-            NovaRendererAtlas::new(),
-        )
+            atlas,
+        );
+        if initialization.is_err() {
+            discard_unused_device(
+                backend,
+                renderer_options,
+                window.display_handle().ok().map(|handle| handle.as_raw()),
+            );
+        }
+        initialization
     }
 
-    pub(crate) fn with_atlas<W>(
+    fn initialize<W>(
         window: &W,
         backend: RendererBackend,
         renderer_options: &RendererOptions,
@@ -193,6 +114,157 @@ impl NovaRenderer {
         let rendering_parameters = RenderingParameters::from_env();
 
         match backend {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            RendererBackend::NovaOpenGl => {
+                let device_started_at = Instant::now();
+                let backend = shared_opengl_device(
+                    renderer_options,
+                    window.display_handle()?.as_raw(),
+                    window.window_handle()?.as_raw(),
+                )?;
+                let mut backend_guard = lock_backend(&backend);
+                let device = match &mut *backend_guard {
+                    NovaBackend::OpenGl(device) => device,
+                    _ => anyhow::bail!("shared nova backend is not a OpenGL device"),
+                };
+                let device_elapsed = device_started_at.elapsed();
+                let surface_started_at = Instant::now();
+                let surface = device
+                    .create_surface(window, &SurfaceDescriptor { label: None })
+                    .context("creating nova OpenGL surface")?;
+                let native_surface_elapsed = surface_started_at.elapsed();
+                let swapchain_started_at = Instant::now();
+                let swapchain = device
+                    .create_swapchain(surface, surface_config)
+                    .context("creating nova OpenGL swapchain")?;
+                let swapchain_elapsed = swapchain_started_at.elapsed();
+                let surface_elapsed = surface_started_at.elapsed();
+                let core_started_at = Instant::now();
+                let core = shared_renderer_core(
+                    DeviceKey {
+                        backend: RendererBackend::NovaOpenGl,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
+                        native_display: Some(window.display_handle()?.as_raw()),
+                    },
+                    surface_config.format,
+                    || {
+                        create_renderer_core(
+                            device,
+                            surface_config,
+                            "gpui nova opengl",
+                            cached_nova_opengl_shader_binaries()?,
+                        )
+                    },
+                )?;
+                let core_elapsed = core_started_at.elapsed();
+                let resources_started_at = Instant::now();
+                let resources =
+                    create_renderer_resources(device, surface_config, "gpui nova opengl", &core)
+                        .context("creating GPUI nova OpenGL render resources")?;
+                log::info!(
+                    "GPUI nova-gfx OpenGL startup: total_ms={} device_ms={} surface_swapchain_ms={} surface_ms={} swapchain_ms={} core_ms={} resources_ms={}",
+                    metrics_started_at.elapsed().as_millis(),
+                    device_elapsed.as_millis(),
+                    surface_elapsed.as_millis(),
+                    native_surface_elapsed.as_millis(),
+                    swapchain_elapsed.as_millis(),
+                    core_elapsed.as_millis(),
+                    resources_started_at.elapsed().as_millis(),
+                );
+                let backend_info = backend_guard.info();
+                drop(backend_guard);
+                Self::from_initialized(InitializedRenderer {
+                    backend,
+                    backend_info,
+                    surface,
+                    swapchain,
+                    surface_config,
+                    surface_alpha,
+                    resources,
+                    current_size,
+                    atlas,
+                    rendering_parameters,
+                    submission_mode,
+                    metrics_started_at,
+                })
+            }
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            RendererBackend::NovaDx11 => {
+                let device_started_at = Instant::now();
+                let backend = shared_device(RendererBackend::NovaDx11, renderer_options)?;
+                let mut backend_guard = lock_backend(&backend);
+                let device = match &mut *backend_guard {
+                    NovaBackend::Dx11(device) => device,
+                    _ => anyhow::bail!("shared nova backend is not a DX11 device"),
+                };
+                let device_elapsed = device_started_at.elapsed();
+                let surface_started_at = Instant::now();
+                let surface = device
+                    .create_surface(window, &SurfaceDescriptor { label: None })
+                    .context("creating nova DX11 surface")?;
+                let native_surface_elapsed = surface_started_at.elapsed();
+                let swapchain_started_at = Instant::now();
+                let swapchain = device
+                    .create_swapchain(surface, surface_config)
+                    .context("creating nova DX11 swapchain")?;
+                let swapchain_elapsed = swapchain_started_at.elapsed();
+                let surface_elapsed = surface_started_at.elapsed();
+                let core_started_at = Instant::now();
+                let core = shared_renderer_core(
+                    DeviceKey {
+                        backend: RendererBackend::NovaDx11,
+                        adapter_name: renderer_options.adapter_name.clone(),
+                        power_preference: nova_power_preference(renderer_options),
+                        pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
+                        native_display: None,
+                    },
+                    surface_config.format,
+                    || {
+                        create_renderer_core(
+                            device,
+                            surface_config,
+                            "gpui nova dx11",
+                            cached_nova_dx11_shader_binaries()?,
+                        )
+                    },
+                )?;
+                let core_elapsed = core_started_at.elapsed();
+                let resources_started_at = Instant::now();
+                let resources =
+                    create_renderer_resources(device, surface_config, "gpui nova dx11", &core)
+                        .context("creating GPUI nova DX11 render resources")?;
+                log::info!(
+                    "GPUI nova-gfx DX11 startup: total_ms={} device_ms={} surface_swapchain_ms={} surface_ms={} swapchain_ms={} core_ms={} resources_ms={}",
+                    metrics_started_at.elapsed().as_millis(),
+                    device_elapsed.as_millis(),
+                    surface_elapsed.as_millis(),
+                    native_surface_elapsed.as_millis(),
+                    swapchain_elapsed.as_millis(),
+                    core_elapsed.as_millis(),
+                    resources_started_at.elapsed().as_millis(),
+                );
+                let backend_info = backend_guard.info();
+                drop(backend_guard);
+                Self::from_initialized(InitializedRenderer {
+                    backend,
+                    backend_info,
+                    surface,
+                    swapchain,
+                    surface_config,
+                    surface_alpha,
+                    resources,
+                    current_size,
+                    atlas,
+                    rendering_parameters,
+                    submission_mode,
+                    metrics_started_at,
+                })
+            }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             RendererBackend::NovaDx12 => {
                 let device_started_at = Instant::now();
@@ -221,6 +293,7 @@ impl NovaRenderer {
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
+                        native_display: None,
                     },
                     surface_config.format,
                     || {
@@ -247,88 +320,21 @@ impl NovaRenderer {
                     core_elapsed.as_millis(),
                     resources_started_at.elapsed().as_millis(),
                 );
-                let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
-                let frame_resources = resources.frame_resources;
-                let current_frame_resources = frame_resources
-                    .first()
-                    .copied()
-                    .context("nova renderer resources should include at least one frame slot")?;
                 let backend_info = backend_guard.info();
                 drop(backend_guard);
-                Ok(Self {
+                Self::from_initialized(InitializedRenderer {
                     backend,
                     backend_info,
                     surface,
                     swapchain,
                     surface_config,
-                    surface_format: surface_config.format,
-                    present_mode,
                     surface_alpha,
-                    render_pass: resources.render_pass,
-                    pipelines: resources.pipelines,
-                    depth_texture: resources.depth_texture,
-                    depth_texture_view: resources.depth_texture_view,
-                    frame_resources,
-                    current_frame_resource_index: 0,
-                    global_buffer: current_frame_resources.buffers.global_buffer,
-                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
-                    quad_buffer: current_frame_resources.buffers.quad_buffer,
-                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
-                    path_rasterization_vertex_buffer: current_frame_resources
-                        .buffers
-                        .path_rasterization_vertex_buffer,
-                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
-                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
-                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    underline_buffer: current_frame_resources.buffers.underline_buffer,
-                    backdrop_blur_pass_buffer: current_frame_resources
-                        .buffers
-                        .backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
-                    quad_resource_set_layout: resources.quad_resource_set_layout,
-                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
-                    path_rasterization_resource_set: current_frame_resources
-                        .resource_sets
-                        .path_rasterization_resource_set,
-                    path_rasterization_resource_set_layout: resources
-                        .path_rasterization_resource_set_layout,
-                    path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: current_frame_resources.path_resource_set,
-                    mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
-                    poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
-                    gpu_atlas_textures,
-                    synced_atlas_texture_generation: None,
-                    underline_resource_set: current_frame_resources
-                        .resource_sets
-                        .underline_resource_set,
-                    backdrop_blur_pass_resource_set_layout: resources
-                        .backdrop_blur_pass_resource_set_layout,
-                    backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
-                    atlas_sampler: resources.atlas_sampler,
-                    path_texture: resources.path_texture,
-                    path_texture_view: resources.path_texture_view,
-                    path_texture_size: resources.path_texture_size,
-                    frame_upload: FrameUpload::default(),
-                    renderer_registry: extensions::RendererRegistry::default(),
-                    retained_upload: retained_upload::RetainedUpload::default(),
-                    draw_step_scratch: DrawStepScratch::default(),
+                    resources,
                     current_size,
-                    pending_drawable_size: None,
-                    atlas: atlas.0,
+                    atlas,
                     rendering_parameters,
-                    diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
-                    pending_submissions: Vec::new(),
                     metrics_started_at,
-                    first_frame_reported: false,
-                    submitted_frames: 0,
-                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
-                    active_presentation_packet: None,
-                    pending_animation_completions: SmallVec::new(),
-                    destroyed: false,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-dx12", target_os = "windows")))]
@@ -336,6 +342,10 @@ impl NovaRenderer {
                 anyhow::bail!(
                     "nova-gfx DX12 renderer requires the nova-gfx-dx12 feature on Windows"
                 )
+            }
+            #[cfg(not(all(feature = "nova-gfx-dx11", target_os = "windows")))]
+            RendererBackend::NovaDx11 => {
+                anyhow::bail!("nova-gfx DX11 renderer requires nova-gfx-dx11 on Windows")
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             RendererBackend::NovaMetal => {
@@ -357,6 +367,7 @@ impl NovaRenderer {
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
+                        native_display: None,
                     },
                     surface_config.format,
                     || {
@@ -371,88 +382,21 @@ impl NovaRenderer {
                 let resources =
                     create_renderer_resources(device, surface_config, "gpui nova metal", &core)
                         .context("creating GPUI nova Metal render resources")?;
-                let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
-                let frame_resources = resources.frame_resources;
-                let current_frame_resources = frame_resources
-                    .first()
-                    .copied()
-                    .context("nova renderer resources should include at least one frame slot")?;
                 let backend_info = backend_guard.info();
                 drop(backend_guard);
-                Ok(Self {
+                Self::from_initialized(InitializedRenderer {
                     backend,
                     backend_info,
                     surface,
                     swapchain,
                     surface_config,
-                    surface_format: surface_config.format,
-                    present_mode,
                     surface_alpha,
-                    render_pass: resources.render_pass,
-                    pipelines: resources.pipelines,
-                    depth_texture: resources.depth_texture,
-                    depth_texture_view: resources.depth_texture_view,
-                    frame_resources,
-                    current_frame_resource_index: 0,
-                    global_buffer: current_frame_resources.buffers.global_buffer,
-                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
-                    quad_buffer: current_frame_resources.buffers.quad_buffer,
-                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
-                    path_rasterization_vertex_buffer: current_frame_resources
-                        .buffers
-                        .path_rasterization_vertex_buffer,
-                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
-                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
-                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    underline_buffer: current_frame_resources.buffers.underline_buffer,
-                    backdrop_blur_pass_buffer: current_frame_resources
-                        .buffers
-                        .backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
-                    quad_resource_set_layout: resources.quad_resource_set_layout,
-                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
-                    path_rasterization_resource_set: current_frame_resources
-                        .resource_sets
-                        .path_rasterization_resource_set,
-                    path_rasterization_resource_set_layout: resources
-                        .path_rasterization_resource_set_layout,
-                    path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: current_frame_resources.path_resource_set,
-                    mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
-                    poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
-                    gpu_atlas_textures,
-                    synced_atlas_texture_generation: None,
-                    underline_resource_set: current_frame_resources
-                        .resource_sets
-                        .underline_resource_set,
-                    backdrop_blur_pass_resource_set_layout: resources
-                        .backdrop_blur_pass_resource_set_layout,
-                    backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
-                    atlas_sampler: resources.atlas_sampler,
-                    path_texture: resources.path_texture,
-                    path_texture_view: resources.path_texture_view,
-                    path_texture_size: resources.path_texture_size,
-                    frame_upload: FrameUpload::default(),
-                    renderer_registry: extensions::RendererRegistry::default(),
-                    retained_upload: retained_upload::RetainedUpload::default(),
-                    draw_step_scratch: DrawStepScratch::default(),
+                    resources,
                     current_size,
-                    pending_drawable_size: None,
-                    atlas: atlas.0,
+                    atlas,
                     rendering_parameters,
-                    diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
-                    pending_submissions: Vec::new(),
                     metrics_started_at,
-                    first_frame_reported: false,
-                    submitted_frames: 0,
-                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
-                    active_presentation_packet: None,
-                    pending_animation_completions: SmallVec::new(),
-                    destroyed: false,
                 })
             }
             #[cfg(not(all(feature = "nova-gfx-metal", target_os = "macos")))]
@@ -502,6 +446,7 @@ impl NovaRenderer {
                         adapter_name: renderer_options.adapter_name.clone(),
                         power_preference: nova_power_preference(renderer_options),
                         pipeline_cache_dir: renderer_options.pipeline_cache_dir.clone(),
+                        native_display: None,
                     },
                     surface_config.format,
                     || {
@@ -529,88 +474,21 @@ impl NovaRenderer {
                     core_elapsed.as_millis(),
                     resources_started_at.elapsed().as_millis(),
                 );
-                let gpu_atlas_textures = initial_gpu_atlas_textures(&resources);
-                let frame_resources = resources.frame_resources;
-                let current_frame_resources = frame_resources
-                    .first()
-                    .copied()
-                    .context("nova renderer resources should include at least one frame slot")?;
                 let backend_info = backend_guard.info();
                 drop(backend_guard);
-                Ok(Self {
+                Self::from_initialized(InitializedRenderer {
                     backend,
                     backend_info,
                     surface,
                     swapchain,
                     surface_config,
-                    surface_format: surface_config.format,
-                    present_mode,
                     surface_alpha,
-                    render_pass: resources.render_pass,
-                    pipelines: resources.pipelines,
-                    depth_texture: resources.depth_texture,
-                    depth_texture_view: resources.depth_texture_view,
-                    frame_resources,
-                    current_frame_resource_index: 0,
-                    global_buffer: current_frame_resources.buffers.global_buffer,
-                    text_raster_buffer: current_frame_resources.buffers.text_raster_buffer,
-                    quad_buffer: current_frame_resources.buffers.quad_buffer,
-                    shadow_buffer: current_frame_resources.buffers.shadow_buffer,
-                    path_rasterization_vertex_buffer: current_frame_resources
-                        .buffers
-                        .path_rasterization_vertex_buffer,
-                    path_sprite_buffer: current_frame_resources.buffers.path_sprite_buffer,
-                    mono_sprite_buffer: current_frame_resources.buffers.mono_sprite_buffer,
-                    poly_sprite_buffer: current_frame_resources.buffers.poly_sprite_buffer,
-                    underline_buffer: current_frame_resources.buffers.underline_buffer,
-                    backdrop_blur_pass_buffer: current_frame_resources
-                        .buffers
-                        .backdrop_blur_pass_buffer,
-                    backdrop_blur_buffer: current_frame_resources.buffers.backdrop_blur_buffer,
-                    animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
-                    quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
-                    quad_resource_set_layout: resources.quad_resource_set_layout,
-                    shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
-                    path_rasterization_resource_set: current_frame_resources
-                        .resource_sets
-                        .path_rasterization_resource_set,
-                    path_rasterization_resource_set_layout: resources
-                        .path_rasterization_resource_set_layout,
-                    path_resource_set_layout: resources.path_resource_set_layout,
-                    path_resource_set: current_frame_resources.path_resource_set,
-                    mono_sprite_resource_set_layout: resources.mono_sprite_resource_set_layout,
-                    poly_sprite_resource_set_layout: resources.poly_sprite_resource_set_layout,
-                    gpu_atlas_textures,
-                    synced_atlas_texture_generation: None,
-                    underline_resource_set: current_frame_resources
-                        .resource_sets
-                        .underline_resource_set,
-                    backdrop_blur_pass_resource_set_layout: resources
-                        .backdrop_blur_pass_resource_set_layout,
-                    backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
-                    filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
-                    atlas_sampler: resources.atlas_sampler,
-                    path_texture: resources.path_texture,
-                    path_texture_view: resources.path_texture_view,
-                    path_texture_size: resources.path_texture_size,
-                    frame_upload: FrameUpload::default(),
-                    renderer_registry: extensions::RendererRegistry::default(),
-                    retained_upload: retained_upload::RetainedUpload::default(),
-                    draw_step_scratch: DrawStepScratch::default(),
+                    resources,
                     current_size,
-                    pending_drawable_size: None,
-                    atlas: atlas.0,
+                    atlas,
                     rendering_parameters,
-                    diagnostics: NovaRenderDiagnostics::from_env(),
                     submission_mode,
-                    pending_submissions: Vec::new(),
                     metrics_started_at,
-                    first_frame_reported: false,
-                    submitted_frames: 0,
-                    swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
-                    active_presentation_packet: None,
-                    pending_animation_completions: SmallVec::new(),
-                    destroyed: false,
                 })
             }
             #[cfg(not(all(
@@ -621,6 +499,13 @@ impl NovaRenderer {
                 anyhow::bail!(
                     "nova-gfx Vulkan renderer requires the nova-gfx-vulkan feature on Windows/Linux"
                 )
+            }
+            #[cfg(not(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            )))]
+            RendererBackend::NovaOpenGl => {
+                anyhow::bail!("OpenGL requires nova-gfx-opengl on Windows or Linux")
             }
             RendererBackend::Auto | RendererBackend::HeadlessTest => {
                 anyhow::bail!("{backend} is not a concrete nova-gfx renderer")

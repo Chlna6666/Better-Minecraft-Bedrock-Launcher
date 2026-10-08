@@ -1,6 +1,13 @@
 use super::*;
 
 pub(super) enum NovaBackend {
+    #[cfg(all(
+        feature = "nova-gfx-opengl",
+        any(target_os = "windows", target_os = "linux")
+    ))]
+    OpenGl(OpenGlDevice),
+    #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+    Dx11(Dx11Device),
     #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
     Dx12(Dx12Device),
     #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -11,6 +18,11 @@ pub(super) enum NovaBackend {
     ))]
     Vulkan(VulkanDevice),
     #[cfg(not(any(
+        all(
+            feature = "nova-gfx-opengl",
+            any(target_os = "windows", target_os = "linux")
+        ),
+        all(feature = "nova-gfx-dx11", target_os = "windows"),
         all(feature = "nova-gfx-dx12", target_os = "windows"),
         all(feature = "nova-gfx-metal", target_os = "macos"),
         all(
@@ -71,6 +83,13 @@ impl NovaBackend {
 
     pub(super) fn extension_backend_kind(&self) -> Result<gfx_core::BackendKind> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(_) => Ok(gfx_core::BackendKind::OpenGl),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(_) => Ok(gfx_core::BackendKind::Dx11),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(_) => Ok(gfx_core::BackendKind::Dx12),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -81,6 +100,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(_) => Ok(gfx_core::BackendKind::Vulkan),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -97,6 +121,13 @@ impl NovaBackend {
         callback: impl FnOnce(&mut dyn gfx_core::ExtensionDevice) -> Result<T>,
     ) -> Result<T> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => callback(device),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => callback(device),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => callback(device),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -107,6 +138,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => callback(device),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -120,6 +156,13 @@ impl NovaBackend {
 
     pub(super) fn adapter_name(&self) -> &str {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => device.adapter_name(),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => device.adapter_name(),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => device.adapter_name(),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -130,6 +173,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => device.adapter_name(),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -144,6 +192,13 @@ impl NovaBackend {
     /// Returns whether the current swapchain can accept a presentation without blocking GPUI.
     pub(super) fn can_present_without_wait(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(_) => Ok(true),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.swapchain_frame_ready(swapchain)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.swapchain_frame_ready(swapchain)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -154,6 +209,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(_) => Ok(true),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -171,6 +231,13 @@ impl NovaBackend {
         callback: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<bool> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -181,6 +248,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => Ok(device.arm_swapchain_frame_ready(_swapchain, callback)?),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -200,6 +272,13 @@ impl NovaBackend {
         swapchain: SwapchainId,
     ) -> gfx_core::PresentationCapabilities {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => device.presentation_capabilities(swapchain),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => device.presentation_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => device.presentation_capabilities(swapchain),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -210,6 +289,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => device.presentation_capabilities(swapchain),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -228,6 +312,13 @@ impl NovaBackend {
         scale: Option<[f32; 2]>,
     ) -> Result<()> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(_) => Ok(()),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -238,6 +329,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(_) => Ok(()),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -251,6 +347,13 @@ impl NovaBackend {
 
     pub(super) fn label(&self) -> &'static str {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(_) => "nova-opengl",
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(_) => "nova-dx11",
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(_) => "nova-dx12",
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -261,6 +364,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(_) => "nova-vulkan",
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -274,6 +382,13 @@ impl NovaBackend {
 
     pub(super) fn async_capabilities(&self) -> AsyncCapabilities {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => device.async_capabilities(),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => device.async_capabilities(),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => device.async_capabilities(),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -284,6 +399,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => device.async_capabilities(),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -297,6 +417,13 @@ impl NovaBackend {
 
     pub(super) fn poll_submission(&mut self, submission: SubmissionId) -> Result<SubmissionStatus> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.poll_submission(submission)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.poll_submission(submission)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.poll_submission(submission)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -307,6 +434,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => Ok(device.poll_submission(submission)?),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -320,6 +452,13 @@ impl NovaBackend {
 
     pub(super) fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.wait_submission(submission)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.wait_submission(submission)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.wait_submission(submission)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -330,6 +469,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => Ok(device.wait_submission(submission)?),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -351,6 +495,13 @@ impl NovaBackend {
     /// global makes both backends coalesce resize events instead of blocking the UI thread.
     pub(super) fn has_pending_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.has_pending_gpu_work()?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.has_pending_gpu_work()?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.has_pending_gpu_work()?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -364,6 +515,11 @@ impl NovaBackend {
                 Ok(device.has_pending_gpu_work()?)
             }
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(
@@ -380,6 +536,13 @@ impl NovaBackend {
 
     pub(super) fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.trim_memory(level)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.trim_memory(level)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             Self::Dx12(device) => Ok(device.trim_memory(level)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -390,6 +553,11 @@ impl NovaBackend {
             ))]
             Self::Vulkan(device) => Ok(device.trim_memory(level)?),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(

@@ -28,6 +28,13 @@ impl NovaRenderer {
             surface: self.surface,
         };
         match &mut *lock_backend(&self.backend) {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            NovaBackend::OpenGl(device) => destroy_resources(device, resources, "OpenGL"),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            NovaBackend::Dx11(device) => destroy_resources(device, resources, "DX11"),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => destroy_resources(device, resources, "DX12"),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -38,6 +45,11 @@ impl NovaRenderer {
             ))]
             NovaBackend::Vulkan(device) => destroy_resources(device, resources, "Vulkan"),
             #[cfg(not(any(
+                all(
+                    feature = "nova-gfx-opengl",
+                    any(target_os = "windows", target_os = "linux")
+                ),
+                all(feature = "nova-gfx-dx11", target_os = "windows"),
                 all(feature = "nova-gfx-dx12", target_os = "windows"),
                 all(feature = "nova-gfx-metal", target_os = "macos"),
                 all(

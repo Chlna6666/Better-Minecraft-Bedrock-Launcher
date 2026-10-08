@@ -1,4 +1,6 @@
-use crate::{AssetSource, DevicePixels, IsZero, Result, SharedString, Size, size};
+use crate::{
+    AssetSource, DevicePixels, ImageRenderSize, IsZero, ObjectFit, Result, SharedString, Size, size,
+};
 use resvg::tiny_skia::Pixmap;
 use std::{
     hash::Hash,
@@ -96,6 +98,29 @@ impl SvgRenderer {
     /// Renders SVG bytes into a pixmap using the provided target size.
     pub fn render_pixmap(&self, bytes: &[u8], size: SvgSize) -> Result<Pixmap, usvg::Error> {
         let tree = usvg::Tree::from_data(bytes, &self.usvg_options)?;
+        Self::render_tree(&tree, size)
+    }
+
+    /// Fits and rasterizes an SVG using one parsed tree, returning its natural dimensions.
+    ///
+    /// Uses the same device-pixel rounding and object-fit rules as bounds-aware raster images.
+    ///
+    /// # Errors
+    /// Returns an error for invalid SVG data, invalid dimensions, or a failed pixmap allocation.
+    pub(crate) fn render_fitted_pixmap(
+        &self,
+        bytes: &[u8],
+        target: ImageRenderSize,
+        object_fit: ObjectFit,
+    ) -> Result<(Size<DevicePixels>, Pixmap), usvg::Error> {
+        let tree = usvg::Tree::from_data(bytes, &self.usvg_options)?;
+        let natural_size = tree_natural_size(&tree)?;
+        let fitted = target.fit(natural_size.map(u32::from), object_fit);
+        let pixmap = Self::render_tree(&tree, SvgSize::Size(fitted.size()))?;
+        Ok((natural_size, pixmap))
+    }
+
+    fn render_tree(tree: &usvg::Tree, size: SvgSize) -> Result<Pixmap, usvg::Error> {
         let svg_size = tree.size();
         let svg_width = svg_size.width();
         let svg_height = svg_size.height();
@@ -137,7 +162,7 @@ impl SvgRenderer {
         let mut pixmap = resvg::tiny_skia::Pixmap::new(pixmap_width, pixmap_height)
             .ok_or(usvg::Error::InvalidSize)?;
 
-        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        resvg::render(tree, transform, &mut pixmap.as_mut());
 
         Ok(pixmap)
     }
@@ -145,12 +170,16 @@ impl SvgRenderer {
     /// Returns the natural SVG size in device pixels.
     pub fn natural_size(&self, bytes: &[u8]) -> Result<Size<DevicePixels>, usvg::Error> {
         let tree = usvg::Tree::from_data(bytes, &self.usvg_options)?;
-        let svg_size = tree.size();
-        Ok(size(
-            DevicePixels(pixmap_dimension(svg_size.width())? as i32),
-            DevicePixels(pixmap_dimension(svg_size.height())? as i32),
-        ))
+        tree_natural_size(&tree)
     }
+}
+
+fn tree_natural_size(tree: &usvg::Tree) -> Result<Size<DevicePixels>, usvg::Error> {
+    let svg_size = tree.size();
+    Ok(size(
+        DevicePixels(pixmap_dimension(svg_size.width())? as i32),
+        DevicePixels(pixmap_dimension(svg_size.height())? as i32),
+    ))
 }
 
 fn is_valid_svg_dimension(dimension: f32) -> bool {
@@ -208,5 +237,32 @@ mod tests {
 
         assert_eq!(u32::from(size.width), 10);
         assert_eq!(u32::from(size.height), 20);
+    }
+
+    #[test]
+    fn fitted_raster_matches_separate_parse_and_render() {
+        let renderer = renderer();
+        let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10.5" height="20.25" viewBox="0 0 10 20"><rect width="7" height="13" fill="#c02d91" opacity="0.4"/></svg>"##;
+        let target = ImageRenderSize::new(31, 29).unwrap();
+        for object_fit in [
+            ObjectFit::Fill,
+            ObjectFit::Contain,
+            ObjectFit::Cover,
+            ObjectFit::ScaleDown,
+            ObjectFit::None,
+        ] {
+            let natural = renderer.natural_size(bytes).unwrap();
+            let fitted = target.fit(natural.map(u32::from), object_fit);
+            let reference = renderer
+                .render_pixmap(bytes, SvgSize::Size(fitted.size()))
+                .unwrap();
+            let (actual_natural, actual) = renderer
+                .render_fitted_pixmap(bytes, target, object_fit)
+                .unwrap();
+            assert_eq!(actual_natural, natural);
+            assert_eq!(actual.width(), reference.width());
+            assert_eq!(actual.height(), reference.height());
+            assert_eq!(actual.data(), reference.data());
+        }
     }
 }

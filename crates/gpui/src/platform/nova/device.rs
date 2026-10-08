@@ -20,6 +20,8 @@ pub(super) struct DeviceKey {
     pub(super) power_preference: PowerPreference,
     /// Pipeline-cache root; cache ownership is part of the shared-device identity.
     pub(super) pipeline_cache_dir: Option<PathBuf>,
+    /// Native GL display connection; other APIs select adapters without one.
+    pub(super) native_display: Option<::winit::raw_window_handle::RawDisplayHandle>,
 }
 
 /// A backend device shared by every window created on the same thread.
@@ -68,9 +70,12 @@ pub(super) fn shared_device(
         adapter_name: options.adapter_name.clone(),
         power_preference: nova_power_preference(options),
         pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        native_display: None,
     };
     shared_backend(key, || {
         let application_name = match backend {
+            RendererBackend::NovaOpenGl => "gpui nova opengl",
+            RendererBackend::NovaDx11 => "gpui nova dx11",
             RendererBackend::NovaDx12 => "gpui nova dx12",
             RendererBackend::NovaMetal => "gpui nova metal",
             RendererBackend::NovaVulkan => "gpui nova vulkan",
@@ -88,6 +93,10 @@ pub(super) fn shared_device(
 
 fn create_backend(backend: RendererBackend, descriptor: &DeviceDescriptor) -> Result<NovaBackend> {
     match backend {
+        #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+        RendererBackend::NovaDx11 => Ok(NovaBackend::Dx11(
+            Dx11Device::new(descriptor).context("creating nova DX11 device")?,
+        )),
         #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
         RendererBackend::NovaDx12 => Ok(NovaBackend::Dx12(
             Dx12Device::new(descriptor).context("creating nova DX12 device")?,
@@ -105,6 +114,72 @@ fn create_backend(backend: RendererBackend, descriptor: &DeviceDescriptor) -> Re
         )),
         _ => anyhow::bail!("{backend} is not an available nova-gfx backend"),
     }
+}
+
+/// Releases a failed initial candidate after its renderer locals have dropped.
+/// Active windows keep their shared device; failed cold starts retain no cache IDs.
+pub(super) fn discard_unused_device(
+    backend: RendererBackend,
+    options: &RendererOptions,
+    native_display: Option<::winit::raw_window_handle::RawDisplayHandle>,
+) {
+    let key = DeviceKey {
+        backend,
+        adapter_name: options.adapter_name.clone(),
+        power_preference: nova_power_preference(options),
+        pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        native_display: if backend == RendererBackend::NovaOpenGl {
+            native_display
+        } else {
+            None
+        },
+    };
+    DEVICES.with(|devices| {
+        let mut devices = devices.borrow_mut();
+        if devices
+            .get(&key)
+            .is_some_and(|device| Arc::strong_count(device) == 1)
+        {
+            resources::forget_device(&key);
+            devices.remove(&key);
+        }
+    });
+}
+
+#[cfg(all(
+    feature = "nova-gfx-opengl",
+    any(target_os = "windows", target_os = "linux")
+))]
+#[expect(
+    unsafe_code,
+    reason = "GL initialization borrows native handles retained by the platform owner"
+)]
+pub(super) fn shared_opengl_device(
+    options: &RendererOptions,
+    display: ::winit::raw_window_handle::RawDisplayHandle,
+    window: ::winit::raw_window_handle::RawWindowHandle,
+) -> Result<SharedBackend> {
+    let key = DeviceKey {
+        backend: RendererBackend::NovaOpenGl,
+        adapter_name: options.adapter_name.clone(),
+        power_preference: nova_power_preference(options),
+        pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        native_display: Some(display),
+    };
+    shared_backend(key, || {
+        let descriptor = DeviceDescriptor {
+            application_name: "gpui nova opengl".into(),
+            adapter_name: options.adapter_name.clone(),
+            power_preference: nova_power_preference(options),
+            pipeline_cache_dir: options.pipeline_cache_dir.clone(),
+        };
+        // SAFETY: the GPU owner is torn down before the native platform connection;
+        // initialization holds the window alive and WGL owns its bootstrap HWND.
+        Ok(NovaBackend::OpenGl(
+            unsafe { OpenGlDevice::new(&descriptor, display, window) }
+                .context("creating native OpenGL 4.5 context")?,
+        ))
+    })
 }
 
 /// Runs `create` once per [`DeviceKey`] on this thread and returns the shared handle.

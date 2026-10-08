@@ -1,5 +1,10 @@
 #![cfg_attr(
     not(any(
+        all(
+            feature = "nova-gfx-opengl",
+            any(target_os = "windows", target_os = "linux")
+        ),
+        all(feature = "nova-gfx-dx11", target_os = "windows"),
         all(feature = "nova-gfx-dx12", target_os = "windows"),
         all(feature = "nova-gfx-metal", target_os = "macos"),
         all(
@@ -21,8 +26,8 @@ mod atlas_resources;
 mod backend;
 mod blur_damage;
 mod composite_target;
-mod diagnostics;
 mod device;
+mod diagnostics;
 mod draw;
 mod frame_upload;
 mod limits;
@@ -47,16 +52,16 @@ use atlas::*;
 use atlas_resources::*;
 use backend::*;
 use blur_damage::*;
-use diagnostics::*;
 use device::*;
+use diagnostics::*;
 use draw::*;
 use frame_upload::*;
 use limits::*;
 use pipeline::*;
 use prelude::*;
+use renderer::DrawableSize;
 #[cfg(test)]
 use renderer::nova_present_mode_for_backend;
-use renderer::DrawableSize;
 pub(crate) use renderer::{NovaRenderer, NovaRendererAtlas};
 use rendering_parameters::*;
 use resource_bindings::*;

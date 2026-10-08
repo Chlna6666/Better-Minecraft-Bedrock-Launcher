@@ -131,7 +131,7 @@ where
                 ResourceSetLayoutEntry {
                     binding: 4,
                     binding_type: ResourceBindingType::SampledTexture,
-                    stages: ShaderStages::FRAGMENT,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
                 ResourceSetLayoutEntry {
                     binding: 5,
@@ -162,7 +162,7 @@ where
                 ResourceSetLayoutEntry {
                     binding: 4,
                     binding_type: ResourceBindingType::SampledTexture,
-                    stages: ShaderStages::FRAGMENT,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 },
                 ResourceSetLayoutEntry {
                     binding: 5,
@@ -259,41 +259,35 @@ where
                 },
             ],
         })?;
-    let quad_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} quad pipeline layout")),
-            resource_set_layouts: vec![quad_resource_set_layout],
-        })?;
-    let shadow_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} shadow pipeline layout")),
-            resource_set_layouts: vec![shadow_resource_set_layout],
-        })?;
+    let quad_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} quad pipeline layout")),
+        resource_set_layouts: vec![quad_resource_set_layout],
+    })?;
+    let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} shadow pipeline layout")),
+        resource_set_layouts: vec![shadow_resource_set_layout],
+    })?;
     let path_rasterization_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} path rasterization pipeline layout")),
             resource_set_layouts: vec![path_rasterization_resource_set_layout],
         })?;
-    let path_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} path pipeline layout")),
-            resource_set_layouts: vec![path_resource_set_layout],
-        })?;
-    let mono_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} mono sprite pipeline layout")),
-            resource_set_layouts: vec![mono_resource_set_layout],
-        })?;
-    let poly_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} poly sprite pipeline layout")),
-            resource_set_layouts: vec![poly_resource_set_layout],
-        })?;
-    let underline_pipeline_layout =
-        device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(format!("{label} underline pipeline layout")),
-            resource_set_layouts: vec![underline_resource_set_layout],
-        })?;
+    let path_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} path pipeline layout")),
+        resource_set_layouts: vec![path_resource_set_layout],
+    })?;
+    let mono_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} mono sprite pipeline layout")),
+        resource_set_layouts: vec![mono_resource_set_layout],
+    })?;
+    let poly_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} poly sprite pipeline layout")),
+        resource_set_layouts: vec![poly_resource_set_layout],
+    })?;
+    let underline_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some(format!("{label} underline pipeline layout")),
+        resource_set_layouts: vec![underline_resource_set_layout],
+    })?;
     let backdrop_blur_pass_pipeline_layout =
         device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some(format!("{label} backdrop blur pass pipeline layout")),

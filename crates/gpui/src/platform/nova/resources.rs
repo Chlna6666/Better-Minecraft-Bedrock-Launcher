@@ -9,6 +9,7 @@ mod resource_sets;
 mod shaders;
 
 pub(in crate::platform::nova) use buffers::FrameResourceBuffers;
+pub(in crate::platform::nova) use core::forget_device;
 pub(in crate::platform::nova) use core::shared_renderer_core;
 pub(super) use create::{create_renderer_core, create_renderer_resources};
 pub(super) use depth::create_depth_texture;

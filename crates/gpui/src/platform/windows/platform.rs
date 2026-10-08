@@ -72,11 +72,16 @@ use proxy::{SceneMailbox, WindowProxy};
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
 const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
 const STARTUP_WORKING_SET_TRIM_DELAY: Duration = Duration::from_secs(5);
-#[cfg(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan"))]
-const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] =
-    &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan];
-#[cfg(not(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan")))]
-const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[RendererBackend::NovaDx12];
+const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[
+    #[cfg(feature = "nova-gfx-dx12")]
+    RendererBackend::NovaDx12,
+    #[cfg(feature = "nova-gfx-dx11")]
+    RendererBackend::NovaDx11,
+    #[cfg(feature = "nova-gfx-vulkan")]
+    RendererBackend::NovaVulkan,
+    #[cfg(feature = "nova-gfx-opengl")]
+    RendererBackend::NovaOpenGl,
+];
 
 pub(super) fn windows_auto_renderer_backend_order() -> &'static [RendererBackend] {
     WINDOWS_AUTO_RENDERER_BACKEND_ORDER
@@ -593,6 +598,15 @@ impl WindowsPlatform {
             RendererBackend::Auto => {
                 resolve_auto_renderer_backend(WINDOWS_AUTO_RENDERER_BACKEND_ORDER, |backend| {
                     match backend {
+                        RendererBackend::NovaOpenGl => {
+                            // Context/version validation needs a native window and runs during initialization.
+                            if cfg!(feature = "nova-gfx-opengl") {
+                                Ok(())
+                            } else {
+                                Err(anyhow!("OpenGL feature is disabled"))
+                            }
+                        }
+                        RendererBackend::NovaDx11 => dx11_renderer_backend_is_available(),
                         RendererBackend::NovaDx12 => dx12_renderer_backend_is_available(),
                         RendererBackend::NovaVulkan => vulkan_renderer_backend_is_available(),
                         RendererBackend::Auto
@@ -603,7 +617,9 @@ impl WindowsPlatform {
                     }
                 })
             }
+            RendererBackend::NovaOpenGl => Ok(RendererBackend::NovaOpenGl),
             RendererBackend::NovaVulkan => Ok(RendererBackend::NovaVulkan),
+            RendererBackend::NovaDx11 => Ok(RendererBackend::NovaDx11),
             RendererBackend::NovaDx12 | RendererBackend::NovaMetal => Ok(RendererBackend::NovaDx12),
             RendererBackend::HeadlessTest => {
                 Err(anyhow!("headless test is not a Windows GPU backend"))
@@ -619,10 +635,7 @@ impl WindowsPlatform {
         Self::new_for_role(renderer_options, false)
     }
 
-    fn new_for_role(
-        renderer_options: RendererOptions,
-        native_owner_only: bool,
-    ) -> Result<Self> {
+    fn new_for_role(renderer_options: RendererOptions, native_owner_only: bool) -> Result<Self> {
         become_dpi_aware();
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
@@ -638,7 +651,9 @@ impl WindowsPlatform {
             match requested_renderer_backend {
                 RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
                 RendererBackend::Auto
+                | RendererBackend::NovaOpenGl
                 | RendererBackend::NovaVulkan
+                | RendererBackend::NovaDx11
                 | RendererBackend::NovaDx12
                 | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
             }
@@ -649,6 +664,7 @@ impl WindowsPlatform {
                 requested_renderer_backend,
                 RendererBackend::Auto
                     | RendererBackend::NovaVulkan
+                    | RendererBackend::NovaDx11
                     | RendererBackend::NovaDx12
                     | RendererBackend::NovaMetal
             )
@@ -793,6 +809,20 @@ fn resolve_auto_renderer_backend(
     );
 }
 
+fn dx11_renderer_backend_is_available() -> Result<()> {
+    #[cfg(feature = "nova-gfx-dx11")]
+    {
+        backend_has_adapters(
+            RendererBackend::NovaDx11,
+            gfx_dx11::enumerate_adapter_info(),
+        )
+    }
+    #[cfg(not(feature = "nova-gfx-dx11"))]
+    {
+        bail!("nova-gfx DX11 renderer was not compiled in");
+    }
+}
+
 fn dx12_renderer_backend_is_available() -> Result<()> {
     #[cfg(all(target_os = "windows", feature = "nova-gfx-dx12"))]
     {
@@ -824,6 +854,7 @@ fn vulkan_renderer_backend_is_available() -> Result<()> {
 }
 
 #[cfg(any(
+    all(target_os = "windows", feature = "nova-gfx-dx11"),
     all(target_os = "windows", feature = "nova-gfx-dx12"),
     all(target_os = "windows", feature = "nova-gfx-vulkan")
 ))]
@@ -2534,47 +2565,60 @@ mod tests {
     }
 
     #[test]
-    fn windows_auto_renderer_prefers_dx12_before_vulkan() {
-        #[cfg(not(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan")))]
+    fn windows_auto_renderer_orders_compiled_native_backends() {
         assert_eq!(
             WINDOWS_AUTO_RENDERER_BACKEND_ORDER,
-            &[RendererBackend::NovaDx12]
-        );
-
-        #[cfg(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan"))]
-        assert_eq!(
-            WINDOWS_AUTO_RENDERER_BACKEND_ORDER,
-            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan]
+            &[
+                #[cfg(feature = "nova-gfx-dx12")]
+                RendererBackend::NovaDx12,
+                #[cfg(feature = "nova-gfx-dx11")]
+                RendererBackend::NovaDx11,
+                #[cfg(any(feature = "nova-gfx-vulkan", feature = "windows-vulkan"))]
+                RendererBackend::NovaVulkan,
+                #[cfg(feature = "nova-gfx-opengl")]
+                RendererBackend::NovaOpenGl,
+            ]
         );
     }
 
     #[test]
     fn windows_auto_renderer_skips_unavailable_backend() {
         let resolved = super::resolve_auto_renderer_backend(
-            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan],
+            &[
+                RendererBackend::NovaDx12,
+                RendererBackend::NovaDx11,
+                RendererBackend::NovaVulkan,
+            ],
             |backend| match backend {
                 RendererBackend::NovaDx12 => Err(anyhow::anyhow!("DX12 driver unavailable")),
-                RendererBackend::NovaVulkan => Ok(()),
+                RendererBackend::NovaDx11 => Ok(()),
+                RendererBackend::NovaVulkan => Err(anyhow::anyhow!("Vulkan driver unavailable")),
                 RendererBackend::Auto
+                | RendererBackend::NovaOpenGl
                 | RendererBackend::NovaMetal
                 | RendererBackend::HeadlessTest => Err(anyhow::anyhow!("unexpected backend")),
             },
         )
         .unwrap();
 
-        assert_eq!(resolved, RendererBackend::NovaVulkan);
+        assert_eq!(resolved, RendererBackend::NovaDx11);
     }
 
     #[test]
     fn windows_auto_renderer_reports_all_unavailable_backends() {
         let error = super::resolve_auto_renderer_backend(
-            &[RendererBackend::NovaDx12, RendererBackend::NovaVulkan],
+            &[
+                RendererBackend::NovaDx12,
+                RendererBackend::NovaDx11,
+                RendererBackend::NovaVulkan,
+            ],
             |backend| Err(anyhow::anyhow!("{backend} unavailable")),
         )
         .unwrap_err()
         .to_string();
 
         assert!(error.contains("nova-dx12"));
+        assert!(error.contains("nova-dx11"));
         assert!(error.contains("nova-vulkan"));
     }
 

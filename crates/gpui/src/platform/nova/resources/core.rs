@@ -9,6 +9,10 @@ thread_local! {
     static CORES: RefCell<HashMap<(DeviceKey, Format), RendererCore>> = RefCell::new(HashMap::new());
 }
 
+pub(in crate::platform::nova) fn forget_device(key: &DeviceKey) {
+    CORES.with(|cores| cores.borrow_mut().retain(|(device, _), _| device != key));
+}
+
 /// Returns the renderer core for `key` and `format`, creating it on first use.
 ///
 /// The core carries the compiled shader modules and render pipelines, so a second window
