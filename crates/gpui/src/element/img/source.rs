@@ -22,7 +22,7 @@ impl ResourceImageBytes {
     pub(super) fn into_compressed_image_bytes(self) -> CompressedImageBytes {
         match self {
             Self::Static(bytes) => CompressedImageBytes::Static(bytes),
-            Self::Owned(bytes) => CompressedImageBytes::Shared(Arc::from(bytes)),
+            Self::Owned(bytes) => CompressedImageBytes::from(bytes),
         }
     }
 }
@@ -214,15 +214,34 @@ impl ImageSource {
 }
 
 /// Encoded image bytes that can be loaded through GPUI's image asset system.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub struct EncodedImageBytes {
     format: crate::ImageFormat,
-    bytes: Arc<[u8]>,
+    bytes: CompressedImageBytes,
+}
+
+impl PartialEq for EncodedImageBytes {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format && self.bytes.as_bytes() == other.bytes.as_bytes()
+    }
+}
+
+impl Eq for EncodedImageBytes {}
+
+impl std::hash::Hash for EncodedImageBytes {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.format, state);
+        std::hash::Hash::hash(self.bytes.as_bytes(), state);
+    }
 }
 
 impl EncodedImageBytes {
-    /// Creates an encoded image source from an image format and compressed bytes.
-    pub fn new(format: crate::ImageFormat, bytes: impl Into<Arc<[u8]>>) -> Self {
+    /// Creates an encoded source, retaining static, shared, or owned compressed storage.
+    ///
+    /// Owned vectors preserve their allocation and spare capacity. Clones share the payload;
+    /// equality and asset-cache hashing compare format and contents regardless of storage type.
+    /// Non-static borrowed input must first be copied into an owned vector or shared slice.
+    pub fn new(format: crate::ImageFormat, bytes: impl Into<CompressedImageBytes>) -> Self {
         Self {
             format,
             bytes: bytes.into(),
@@ -238,9 +257,10 @@ impl EncodedImageBytes {
             crate::ImageFormat::Svg => {
                 let pixmap = renderer
                     .render_pixmap(self.bytes.as_ref(), crate::SvgSize::ScaleFactor(1.0))?;
-                let buffer =
+                let mut buffer =
                     image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
                         .ok_or_else(|| anyhow::anyhow!("invalid SVG raster dimensions"))?;
+                crate::swap_rgba_pa_to_bgra_buffer(buffer.as_mut());
                 RenderImage::new(smallvec::SmallVec::from_elem(image::Frame::new(buffer), 1))
             }
             format => crate::EncodedImage::new(
@@ -262,7 +282,7 @@ impl EncodedImageBytes {
     /// Hashes a cheap identity for this source: the format plus the byte buffer's address and
     /// length rather than its contents.
     ///
-    /// This is stable across frames as long as the same `Arc` (or clones of it) is reused,
+    /// This is stable across frames as long as the same source (or clones of it) is reused,
     /// which is how element ids are expected to behave; two different allocations holding
     /// identical bytes hash differently, which is acceptable for id derivation and avoids
     /// re-hashing potentially megabytes of compressed data every frame.
@@ -270,7 +290,7 @@ impl EncodedImageBytes {
         use std::hash::Hash;
 
         self.format.hash(hasher);
-        (Arc::as_ptr(&self.bytes) as *const u8 as usize).hash(hasher);
+        (self.bytes.as_bytes().as_ptr() as usize).hash(hasher);
         self.bytes.len().hash(hasher);
     }
 }
@@ -349,6 +369,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn owned_resource_preserves_compressed_allocation() {
+        let bytes = vec![1, 2, 3, 4];
+        let pointer = bytes.as_ptr();
+        let compressed = ResourceImageBytes::Owned(bytes).into_compressed_image_bytes();
+        assert_eq!(compressed.as_bytes().as_ptr(), pointer);
+        assert!(matches!(compressed, CompressedImageBytes::Owned(_)));
+    }
+
+    #[test]
+    fn inline_owned_sources_preserve_allocation_and_content_cache_keys() {
+        static BYTES: &[u8] = &[1, 2, 3, 4];
+        let bytes = BYTES.to_vec();
+        let pointer = bytes.as_ptr();
+        let owned = EncodedImageBytes::new(crate::ImageFormat::Png, bytes);
+        assert_eq!(owned.bytes.as_bytes().as_ptr(), pointer);
+        let cloned = owned.clone();
+        assert_eq!(cloned.bytes.as_bytes().as_ptr(), pointer);
+        for bytes in [
+            CompressedImageBytes::Static(BYTES),
+            CompressedImageBytes::Shared(Arc::from(BYTES)),
+        ] {
+            let other = EncodedImageBytes::new(crate::ImageFormat::Png, bytes);
+            assert_eq!(owned, other);
+            assert_eq!(hash(&owned), hash(&other));
+        }
+    }
+
+    #[test]
     fn shared_encoded_svg_keeps_the_svg_decode_path() {
         let source = EncodedImageBytes::new(
             crate::ImageFormat::Svg,
@@ -362,7 +410,21 @@ mod tests {
             .expect("shared SVG should decode without the clipboard adapter");
         let frame = image.frame(0).expect("SVG should have a resident frame");
         assert_eq!(frame.bytes().len(), 16);
-        assert!(frame.bytes().chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert_eq!(frame.bytes(), &[0, 0, 255, 255].repeat(4));
+    }
+
+    #[test]
+    fn inline_svg_unpremultiplies_translucent_colors_in_place() {
+        let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red" opacity="0.5"/></svg>"#.to_vec();
+        let source = EncodedImageBytes::new(crate::ImageFormat::Svg, bytes);
+        let image = source
+            .render(
+                crate::SvgRenderer::new(Arc::new(())),
+                crate::AnimatedImageConfig::default(),
+            )
+            .unwrap();
+        // Match the resource SVG path's existing floating-point truncation exactly.
+        assert_eq!(image.as_bytes(0).unwrap(), &[0, 0, 254, 128].repeat(4));
     }
 
     #[test]

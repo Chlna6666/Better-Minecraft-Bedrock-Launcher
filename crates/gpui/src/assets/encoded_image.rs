@@ -13,12 +13,16 @@ use std::sync::Arc;
 ///
 /// Static assets keep their original storage; file and network payloads share owned storage.
 /// Cloning this value never copies the compressed payload.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum CompressedImageBytes {
     /// Statically embedded image bytes borrowed directly from the asset source.
     Static(&'static [u8]),
     /// Shared owned bytes retained for file or network-backed image resources.
     Shared(Arc<[u8]>),
+    /// An owned vector shared without reallocating or copying its payload.
+    ///
+    /// Its spare capacity is retained until the last strong owner drops it.
+    Owned(Arc<Vec<u8>>),
 }
 
 impl CompressedImageBytes {
@@ -27,6 +31,7 @@ impl CompressedImageBytes {
         match self {
             Self::Static(bytes) => bytes,
             Self::Shared(bytes) => bytes.as_ref(),
+            Self::Owned(bytes) => bytes.as_slice(),
         }
     }
 
@@ -38,6 +43,15 @@ impl CompressedImageBytes {
     /// Returns whether the compressed payload is empty.
     pub fn is_empty(&self) -> bool {
         self.as_bytes().is_empty()
+    }
+
+    /// Capacity owned by this payload; borrowed static storage does not consume a cache budget.
+    pub(crate) fn retained_capacity(&self) -> usize {
+        match self {
+            Self::Static(_) => 0,
+            Self::Shared(bytes) => bytes.len(),
+            Self::Owned(bytes) => bytes.capacity(),
+        }
     }
 }
 
@@ -55,7 +69,7 @@ impl From<Arc<[u8]>> for CompressedImageBytes {
 
 impl From<Vec<u8>> for CompressedImageBytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self::Shared(bytes.into())
+        Self::Owned(Arc::new(bytes))
     }
 }
 
@@ -75,8 +89,8 @@ pub struct EncodedImage {
 impl EncodedImage {
     /// Creates an encoded image source, preserving static or shared compressed storage.
     ///
-    /// Static slices and existing shared buffers are not copied. Owned vectors are converted
-    /// into shared storage once, so subsequent loads and animation workers reuse the payload.
+    /// Static slices, shared buffers, and owned vectors keep their payload allocation. Clones
+    /// and animation workers share it; owned vectors also retain their spare capacity.
     pub fn new(format: ImageFormat, bytes: impl Into<CompressedImageBytes>) -> Self {
         Self {
             bytes: bytes.into(),
@@ -137,6 +151,20 @@ impl EncodedImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_image_preserves_owned_payload_allocation_and_capacity() {
+        let mut bytes = Vec::with_capacity(256);
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        let pointer = bytes.as_ptr();
+        let source = EncodedImage::new(ImageFormat::Jpeg, bytes);
+        assert_eq!(source.bytes.as_bytes().as_ptr(), pointer);
+        assert_eq!(source.bytes.retained_capacity(), 256);
+        let cloned = source.clone();
+        drop(source);
+        assert_eq!(cloned.bytes.as_bytes().as_ptr(), pointer);
+        assert_eq!(cloned.bytes.as_bytes(), &[1, 2, 3, 4]);
+    }
 
     #[test]
     fn encoded_image_preserves_static_payload_storage() {

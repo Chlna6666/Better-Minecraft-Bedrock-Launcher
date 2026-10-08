@@ -40,7 +40,13 @@ fn fixture(format: ImageFormat) -> Arc<[u8]> {
         ])
     });
     let mut encoded = Cursor::new(Vec::new());
-    DynamicImage::ImageRgba8(pixels)
+    let image = DynamicImage::ImageRgba8(pixels);
+    let image = if format == ImageFormat::Jpeg {
+        DynamicImage::ImageRgb8(image.into_rgb8())
+    } else {
+        image
+    };
+    image
         .write_to(&mut encoded, format)
         .expect("the deterministic benchmark image can be encoded");
     encoded.into_inner().into()
@@ -122,6 +128,9 @@ fn images(criterion: &mut Criterion) {
     let fixtures = [
         (ImageFormat::Png, fixture(ImageFormat::Png)),
         (ImageFormat::WebP, fixture(ImageFormat::WebP)),
+        (ImageFormat::Jpeg, fixture(ImageFormat::Jpeg)),
+        (ImageFormat::Bmp, fixture(ImageFormat::Bmp)),
+        (ImageFormat::Gif, fixture(ImageFormat::Gif)),
     ];
     let source_pixels = u64::from(SOURCE_WIDTH) * u64::from(SOURCE_HEIGHT);
 
@@ -148,6 +157,9 @@ fn images(criterion: &mut Criterion) {
         );
     }
     full_size.finish();
+
+    ownership(criterion);
+    batch_png(criterion, &fixtures[0].1);
 
     let mut resized = criterion.benchmark_group("image_render/contain");
     resized.sample_size(20);
@@ -286,6 +298,98 @@ fn images(criterion: &mut Criterion) {
         );
     });
     failures.finish();
+}
+
+fn batch_png(criterion: &mut Criterion, bytes: &Arc<[u8]>) {
+    const IMAGE_COUNT: usize = 8;
+    let executor = gpui::background_executor();
+    let mut group = criterion.benchmark_group("image_render/png_batch_8");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(
+        u64::from(SOURCE_WIDTH) * u64::from(SOURCE_HEIGHT) * IMAGE_COUNT as u64,
+    ));
+    for concurrency in [0, 1, 2, 4] {
+        let label = if concurrency == 0 {
+            "caller_serial".to_owned()
+        } else {
+            format!("background_{concurrency}")
+        };
+        group.bench_function(label, |bencher| {
+            bencher.iter(|| {
+                if concurrency == 0 {
+                    for _ in 0..IMAGE_COUNT {
+                        black_box(
+                            EncodedImage::new(ImageFormat::Png, Arc::clone(bytes))
+                                .render(AnimatedImageConfig::default())
+                                .expect("the benchmark fixture is valid"),
+                        );
+                    }
+                } else {
+                    // Bound decode concurrency on the existing platform executor. Each worker
+                    // releases its decoded image before beginning the next; no new pool is created.
+                    let tasks = (0..concurrency).map(|_| {
+                        let bytes = Arc::clone(bytes);
+                        executor.spawn(async move {
+                            for _ in 0..IMAGE_COUNT / concurrency {
+                                black_box(
+                                    EncodedImage::new(ImageFormat::Png, Arc::clone(&bytes))
+                                        .render(AnimatedImageConfig::default())
+                                        .expect("the benchmark fixture is valid"),
+                                );
+                            }
+                        })
+                    });
+                    executor.block(futures::future::join_all(tasks));
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
+fn ownership(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("image_render/ownership");
+    group.sample_size(20);
+    for (width, height) in [(1, 1), (64, 64), (SOURCE_WIDTH, SOURCE_HEIGHT)] {
+        let pixels = vec![37; width as usize * height as usize * 4];
+        group.throughput(Throughput::Bytes(pixels.len() as u64));
+        for shared_copy in [true, false] {
+            let label = if shared_copy {
+                "arc_slice_copy"
+            } else {
+                "owned_pixels"
+            };
+            group.bench_function(
+                BenchmarkId::new(label, format!("{width}x{height}")),
+                |bencher| {
+                    bencher.iter_batched(
+                        || pixels.clone(),
+                        |pixels| {
+                            let image = if shared_copy {
+                                gpui::RenderImage::from_raw_pixel_bytes(
+                                    width,
+                                    height,
+                                    gpui::ImagePixelFormat::Rgba8,
+                                    Arc::<[u8]>::from(pixels),
+                                )
+                            } else {
+                                gpui::RenderImage::from_raw_pixels(
+                                    width,
+                                    height,
+                                    gpui::ImagePixelFormat::Rgba8,
+                                    pixels,
+                                )
+                            }
+                            .expect("valid benchmark pixels");
+                            black_box(image);
+                        },
+                        BatchSize::PerIteration,
+                    );
+                },
+            );
+        }
+    }
+    group.finish();
 }
 
 criterion_group!(gpui_images, images);

@@ -69,10 +69,11 @@ fn resident_byte_len_counts_all_frames() {
 #[test]
 fn raw_rgba_image_retains_rgba_bytes() {
     let pixels = vec![1, 2, 3, 255];
-    let image =
-        RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, pixels.clone()).unwrap();
+    let pointer = pixels.as_ptr();
+    let image = RenderImage::from_raw_pixels(1, 1, ImagePixelFormat::Rgba8, pixels).unwrap();
 
-    assert_eq!(image.as_bytes(0).unwrap(), pixels);
+    assert_eq!(image.as_bytes(0).unwrap(), &[1, 2, 3, 255]);
+    assert_eq!(image.as_bytes(0).unwrap().as_ptr(), pointer);
     assert_eq!(image.pixel_format(0), Some(ImagePixelFormat::Rgba8));
 }
 
@@ -87,6 +88,41 @@ fn raw_pixel_bytes_reuses_shared_storage() {
         pixels.as_ptr()
     ));
     assert_eq!(image.pixel_format(0), Some(ImagePixelFormat::Rgba8));
+}
+
+#[test]
+fn raw_owned_pixels_validate_dimensions_and_length() {
+    for format in [ImagePixelFormat::Bgra8, ImagePixelFormat::Rgba8] {
+        assert!(RenderImage::from_raw_pixels(1, 1, format, vec![0; 3]).is_err());
+        assert!(RenderImage::from_raw_pixels(u32::MAX, 2, format, Vec::new()).is_err());
+        let pixels = vec![3, 2, 1, 0, 6, 5, 4, 127];
+        let pointer = pixels.as_ptr();
+        let image = RenderImage::from_raw_pixels(2, 1, format, pixels).unwrap();
+        assert_eq!(image.as_bytes(0).unwrap().as_ptr(), pointer);
+        assert_eq!(image.as_bytes(0).unwrap(), &[3, 2, 1, 0, 6, 5, 4, 127]);
+        assert_eq!(image.pixel_format(0), Some(format));
+    }
+}
+
+#[test]
+fn decoded_animation_frames_keep_allocation_alpha_delay_and_simd_tails() {
+    let delay = Delay::from_saturating_duration(Duration::from_millis(37));
+    for width in [1, 3, 17, 67] {
+        let bytes: Vec<u8> = (0..width as usize * 3 * 4)
+            .map(|index| index.wrapping_mul(37) as u8)
+            .collect();
+        let pointer = bytes.as_ptr();
+        let mut expected = bytes.clone();
+        for pixel in expected.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let frame = Frame::from_parts(RgbaImage::from_raw(width, 3, bytes).unwrap(), 0, 0, delay);
+        let decoded = AnimatedFrame::from_rgba_frame(7, frame);
+        assert_eq!(decoded.bytes.as_slice().as_ptr(), pointer);
+        assert_eq!(decoded.bytes.as_slice(), expected);
+        assert_eq!(decoded.delay, delay);
+        assert_eq!(decoded.sequence, 7);
+    }
 }
 
 #[test]
@@ -164,6 +200,7 @@ fn gif_render_keeps_multiple_bgra_frames() {
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
     assert_eq!(image.as_bytes(0).unwrap(), &[0, 0, 255, 255]);
+    assert_eq!(image.as_bytes(1).unwrap(), &[0, 255, 0, 255]);
 }
 
 #[test]
@@ -173,6 +210,8 @@ fn apng_render_keeps_multiple_frames() {
 
     assert!(image.is_animated());
     assert_eq!(image.frame_count(), 2);
+    assert_eq!(image.as_bytes(0).unwrap(), &[0, 0, 255, 255]);
+    assert_eq!(image.as_bytes(1).unwrap(), &[0, 255, 0, 255]);
 }
 
 #[test]
@@ -241,7 +280,7 @@ fn jpeg_target_render_scales_before_resizing() {
 }
 
 #[test]
-fn bmp_target_render_samples_rows_without_retaining_original_size() {
+fn bmp_target_render_retains_only_the_sampled_frame() {
     let bytes = encoded_rgba_image(128, 96, |writer| {
         image::codecs::bmp::BmpEncoder::new(writer).write_image(
             &solid_rgba_pixels(128, 96),
@@ -263,7 +302,8 @@ fn bmp_target_render_samples_rows_without_retaining_original_size() {
     assert_eq!(image.size(0), target.size());
     assert_eq!(image.resident_byte_len(), 32 * 24 * 4);
     assert!(
-        metadata.render_path == "bmp_rect_sample" || metadata.render_path == "scaled_then_resized"
+        metadata.render_path == "bmp_decoded_sample"
+            || metadata.render_path == "scaled_then_resized"
     );
 }
 

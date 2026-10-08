@@ -166,9 +166,14 @@ pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     let output_len = reader
         .output_buffer_size()
         .ok_or_else(|| anyhow::anyhow!("PNG decoded buffer size overflowed"))?;
-    let mut pixels = vec![0; output_len];
+    let mut pixels = if reader.output_color_type().0 == png::ColorType::Rgba {
+        // Four-channel output becomes BitmapBytes directly and returns to this pool on drop.
+        crate::acquire_bitmap_buffer(output_len)
+    } else {
+        vec![0; output_len]
+    };
     let output_info = reader.next_frame(&mut pixels)?;
-    let pixels = &pixels[..output_info.buffer_size()];
+    pixels.truncate(output_info.buffer_size());
     let bgra = png_pixels_to_bgra_bytes(
         pixels,
         output_info.color_type,
@@ -183,16 +188,20 @@ pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
 }
 
 fn png_pixels_to_bgra_bytes(
-    pixels: &[u8],
+    mut pixels: Vec<u8>,
     color_type: png::ColorType,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
     let pixel_count = width as usize * height as usize;
-    let mut bgra = Vec::with_capacity(pixel_count * 4);
+    let mut bgra = if color_type == png::ColorType::Rgba {
+        Vec::new()
+    } else {
+        Vec::with_capacity(pixel_count * 4)
+    };
     match color_type {
         png::ColorType::Grayscale => {
-            for &luma in pixels {
+            for &luma in &pixels {
                 bgra.extend_from_slice(&[luma, luma, luma, 255]);
             }
         }
@@ -207,9 +216,10 @@ fn png_pixels_to_bgra_bytes(
             }
         }
         png::ColorType::Rgba => {
-            for pixel in pixels.chunks_exact(4) {
-                bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
-            }
+            crate::swap_rgba_to_bgra_rows(&mut pixels, width as usize * 4, height as usize);
+            // The decoder already owns the full four-channel output; retain it without a
+            // second image-sized allocation or copy. Alpha and source dimensions are unchanged.
+            bgra = pixels;
         }
         png::ColorType::Indexed => {
             anyhow::bail!("indexed PNG output was not expanded before static decode");
@@ -221,4 +231,62 @@ fn png_pixels_to_bgra_bytes(
         "PNG decoded buffer dimensions were invalid"
     );
     Ok(bgra)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod profile;
+
+    #[test]
+    fn rgba_conversion_reuses_decoder_storage_and_preserves_alpha() {
+        let pixels = vec![11, 22, 33, 0, 44, 55, 66, 127, 77, 88, 99, 255];
+        let address = pixels.as_ptr();
+        let output =
+            png_pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 3, 1).expect("valid pixels");
+        assert_eq!(output.as_ptr(), address);
+        assert_eq!(output, [33, 22, 11, 0, 66, 55, 44, 127, 99, 88, 77, 255]);
+    }
+
+    #[test]
+    fn rgba_conversion_preserves_simd_rows_and_scalar_tails() {
+        let pixels: Vec<u8> = (0..17 * 3 * 4).map(|index| (index * 37) as u8).collect();
+        let mut expected = pixels.clone();
+        for pixel in expected.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let address = pixels.as_ptr();
+        let output =
+            png_pixels_to_bgra_bytes(pixels, png::ColorType::Rgba, 17, 3).expect("valid pixels");
+        assert_eq!(output.as_ptr(), address);
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn static_rgba_decode_preserves_exact_pixels() {
+        let pixels = [11, 22, 33, 0, 44, 55, 66, 127, 77, 88, 99, 255];
+        let mut encoded = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut encoded, 3, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .expect("header")
+                .write_image_data(&pixels)
+                .expect("pixels");
+        }
+        let image = frame(&encoded).expect("decode");
+        assert_eq!(
+            image.bytes.as_slice(),
+            [33, 22, 11, 0, 66, 55, 44, 127, 99, 88, 77, 255]
+        );
+        assert_eq!(image.size, size(3.into(), 1.into()));
+    }
+
+    #[test]
+    fn rgba_conversion_rejects_invalid_dimensions() {
+        assert!(png_pixels_to_bgra_bytes(vec![1, 2, 3], png::ColorType::Rgba, 1, 1).is_err());
+    }
 }

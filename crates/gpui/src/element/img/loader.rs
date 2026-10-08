@@ -24,11 +24,32 @@ use std::{
 /// Metadata-only cache for compressed image bytes.
 ///
 /// The cache deliberately stores only `Weak` references. Active loaders and decode tasks own the
-/// compressed bytes; when their last strong owner disappears, the payload is released without
-/// waiting for a byte-budget eviction pass.
+/// compressed vectors; their allocation is released when the last strong owner disappears.
+/// Shared slices retain their Arc allocation until dead metadata is pruned.
 struct CompressedCache {
-    entries: HashMap<u64, Weak<[u8]>>,
+    entries: HashMap<u64, WeakCompressedBytes>,
     inserts_since_prune: usize,
+}
+
+enum WeakCompressedBytes {
+    Shared(Weak<[u8]>),
+    Owned(Weak<Vec<u8>>),
+}
+
+impl WeakCompressedBytes {
+    fn upgrade(&self) -> Option<CompressedImageBytes> {
+        match self {
+            Self::Shared(bytes) => bytes.upgrade().map(CompressedImageBytes::Shared),
+            Self::Owned(bytes) => bytes.upgrade().map(CompressedImageBytes::Owned),
+        }
+    }
+
+    fn strong_count(&self) -> usize {
+        match self {
+            Self::Shared(bytes) => bytes.strong_count(),
+            Self::Owned(bytes) => bytes.strong_count(),
+        }
+    }
 }
 
 const COMPRESSED_CACHE_PRUNE_INTERVAL: usize = 256;
@@ -41,16 +62,26 @@ impl CompressedCache {
         }
     }
 
-    fn get(&mut self, key: u64) -> Option<Arc<[u8]>> {
-        let bytes = self.entries.get(&key).and_then(Weak::upgrade);
+    fn get(&mut self, key: u64) -> Option<CompressedImageBytes> {
+        let bytes = self
+            .entries
+            .get(&key)
+            .and_then(WeakCompressedBytes::upgrade);
         if bytes.is_none() {
             self.entries.remove(&key);
         }
         bytes
     }
 
-    fn insert(&mut self, key: u64, bytes: &Arc<[u8]>) {
-        self.entries.insert(key, Arc::downgrade(bytes));
+    fn insert(&mut self, key: u64, bytes: &CompressedImageBytes) {
+        let weak = match bytes {
+            CompressedImageBytes::Static(_) => return,
+            CompressedImageBytes::Shared(bytes) => {
+                WeakCompressedBytes::Shared(Arc::downgrade(bytes))
+            }
+            CompressedImageBytes::Owned(bytes) => WeakCompressedBytes::Owned(Arc::downgrade(bytes)),
+        };
+        self.entries.insert(key, weak);
         self.inserts_since_prune = self.inserts_since_prune.saturating_add(1);
         if self.inserts_since_prune >= COMPRESSED_CACHE_PRUNE_INTERVAL {
             self.prune_dead();
@@ -72,7 +103,7 @@ impl CompressedCache {
         let mut retained_bytes = 0usize;
         self.entries.retain(|_, weak| {
             if let Some(bytes) = weak.upgrade() {
-                retained_bytes = retained_bytes.saturating_add(bytes.len());
+                retained_bytes = retained_bytes.saturating_add(bytes.retained_capacity());
                 true
             } else {
                 false
@@ -168,14 +199,12 @@ impl Asset for CompressedImageAssetLoader {
         async move {
             let cache_key = hash(&source);
             if let Some(bytes) = compressed_cache().lock().get(cache_key) {
-                return Ok(CompressedImageBytes::Shared(bytes));
+                return Ok(bytes);
             }
             let source_bytes =
                 load_image_resource_data(source.resource, client, asset_source).await?;
             let compressed = source_bytes.into_compressed_image_bytes();
-            if let CompressedImageBytes::Shared(bytes) = &compressed {
-                compressed_cache().lock().insert(cache_key, bytes);
-            }
+            compressed_cache().lock().insert(cache_key, &compressed);
             Ok(compressed)
         }
     }

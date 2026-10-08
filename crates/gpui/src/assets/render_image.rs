@@ -1,5 +1,7 @@
 use super::animation_stream::{FrameQueue, record_animation_queue_bytes};
-use super::{AnimatedFrame, AnimatedImageConfig, AnimationStream, EncodedImage, ImageRenderSize};
+use super::{
+    AnimatedFrame, AnimatedImageConfig, AnimationStream, BitmapBytes, EncodedImage, ImageRenderSize,
+};
 use crate::{DevicePixels, Result, Size, size};
 use image::{Delay, Frame};
 use linked_hash_map::LinkedHashMap;
@@ -22,7 +24,7 @@ const MAX_INTERNED_IMAGE_IDS: usize = 8_192;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ImageId(pub usize);
 
-/// Pixel format used by image frames uploaded to the renderer.
+/// Channel order of image pixels with straight (not premultiplied) alpha.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ImagePixelFormat {
     /// Blue, green, red, alpha byte order.
@@ -102,7 +104,10 @@ pub(crate) fn interned_render_image_id(loader: TypeId, source_hash: u64) -> Imag
 }
 
 impl RenderImage {
-    /// Create a new image from the given data.
+    /// Creates an image from frames whose buffers already contain straight-alpha BGRA pixels.
+    ///
+    /// Takes each frame's allocation without copying or converting its pixels. Use
+    /// [`Self::from_rgba_frames`] for frames containing RGBA pixels instead.
     pub fn new(frames: impl Into<SmallVec<[Frame; 1]>>) -> Self {
         Self {
             id: next_render_image_id(),
@@ -140,27 +145,52 @@ impl RenderImage {
         }
     }
 
-    /// Create a single-frame image from raw 4-byte-per-pixel data.
+    /// Creates a single-frame image by taking ownership of raw 4-byte-per-pixel data.
+    ///
+    /// The pixel allocation is preserved and freed after the last frame owner drops it.
+    /// Caller-provided buffers are not retained by the decoder pool. Dimensions and byte length
+    /// must agree; no channel conversion is applied.
+    ///
+    /// # Errors
+    /// Returns an error if dimensions overflow or the buffer does not contain exactly four
+    /// bytes per pixel.
     pub fn from_raw_pixels(
         width: u32,
         height: u32,
         pixel_format: ImagePixelFormat,
         bytes: Vec<u8>,
     ) -> Result<Self> {
-        Self::from_raw_pixel_bytes(width, height, pixel_format, bytes)
+        Self::from_bitmap_bytes(width, height, pixel_format, BitmapBytes::from_owned(bytes))
     }
 
     /// Create a single-frame image from shared raw pixel bytes.
     ///
     /// This constructor keeps an already shared pixel buffer without copying it.
     /// Use [`RenderImage::from_raw_pixels`] when the source is an owned `Vec<u8>`.
+    ///
+    /// # Errors
+    /// Returns an error if dimensions overflow or the buffer does not contain exactly four
+    /// bytes per pixel.
     pub fn from_raw_pixel_bytes(
         width: u32,
         height: u32,
         pixel_format: ImagePixelFormat,
         bytes: impl Into<Arc<[u8]>>,
     ) -> Result<Self> {
-        let bytes = bytes.into();
+        Self::from_bitmap_bytes(
+            width,
+            height,
+            pixel_format,
+            BitmapBytes::from_shared(bytes.into()),
+        )
+    }
+
+    fn from_bitmap_bytes(
+        width: u32,
+        height: u32,
+        pixel_format: ImagePixelFormat,
+        bytes: Arc<BitmapBytes>,
+    ) -> Result<Self> {
         let pixel_count = width
             .checked_mul(height)
             .ok_or_else(|| anyhow::anyhow!("image dimensions overflow: {width}x{height}"))?;
@@ -213,15 +243,18 @@ impl RenderImage {
         let (queue_sender, queue_receiver) = sync_channel(config.prefetch_frames);
         let mut next_source_index = first_frame.sequence().saturating_add(1);
         let mut queued_byte_len = 0usize;
+        let mut queued_capacity = 0usize;
         let mut queued_frame_count = 0usize;
         for frame in queued_frames {
             let next_frame_index = frame.sequence().saturating_add(1);
             let frame_byte_len = frame.byte_len();
+            let frame_capacity = frame.bytes.retained_capacity();
             if queue_sender.try_send(frame).is_err() {
                 break;
             }
             next_source_index = next_source_index.max(next_frame_index);
             queued_byte_len = queued_byte_len.saturating_add(frame_byte_len);
+            queued_capacity = queued_capacity.saturating_add(frame_capacity);
             queued_frame_count = queued_frame_count.saturating_add(1);
         }
         record_animation_queue_bytes(queued_byte_len);
@@ -240,6 +273,8 @@ impl RenderImage {
             queued_frame_count: AtomicUsize::new(queued_frame_count),
             queued_byte_len: AtomicUsize::new(queued_byte_len),
             delivered_byte_len: AtomicUsize::new(0),
+            queued_capacity: AtomicUsize::new(queued_capacity),
+            delivered_capacity: AtomicUsize::new(0),
             stream_task_running: AtomicBool::new(false),
             completed: AtomicBool::new(false),
             worker_index: AtomicUsize::new(usize::MAX),
@@ -336,12 +371,28 @@ impl RenderImage {
     }
 
     pub(crate) fn cache_cost_byte_len(&self) -> usize {
-        let decoded_bytes = self.resident_byte_len();
+        let decoded_bytes = self.resident_capacity();
         match &self.storage {
             RenderImageStorage::Resident(_) => decoded_bytes,
             RenderImageStorage::Streaming(state) => {
-                decoded_bytes.saturating_add(state.source.bytes.len())
+                decoded_bytes.saturating_add(state.source.bytes.retained_capacity())
             }
+        }
+    }
+
+    /// Capacity retained by the image's frame slots, including pooled buffers' spare capacity.
+    /// Decoder working memory and older frames held by external consumers are not cache-owned.
+    pub(crate) fn resident_capacity(&self) -> usize {
+        match &self.storage {
+            RenderImageStorage::Resident(frames) => frames.iter().fold(0usize, |total, frame| {
+                total.saturating_add(frame.bytes.retained_capacity())
+            }),
+            RenderImageStorage::Streaming(state) => state
+                .first_frame
+                .bytes
+                .retained_capacity()
+                .saturating_add(state.queued_capacity.load(Ordering::Relaxed))
+                .saturating_add(state.delivered_capacity.load(Ordering::Relaxed)),
         }
     }
 
@@ -403,16 +454,23 @@ impl RenderImage {
                 match queue.receiver.try_recv() {
                     Ok(frame) if frame.sequence > current_sequence => {
                         let frame_byte_len = frame.byte_len();
-                        state.release_queued_frame(frame_byte_len);
+                        let frame_capacity = frame.bytes.retained_capacity();
+                        state.release_queued_frame(frame_byte_len, frame_capacity);
                         state
                             .delivered_byte_len
                             .store(frame_byte_len, Ordering::Relaxed);
+                        state
+                            .delivered_capacity
+                            .store(frame_capacity, Ordering::Relaxed);
                         queue.last_delivered = Some(frame.clone());
                         next_frame = Some(frame);
                         break;
                     }
                     Ok(frame) => {
-                        state.release_queued_frame(frame.byte_len());
+                        state.release_queued_frame(
+                            frame.byte_len(),
+                            frame.bytes.retained_capacity(),
+                        );
                         stale_frame_count = stale_frame_count.saturating_add(1);
                     }
                     Err(TryRecvError::Empty) => break,

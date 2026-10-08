@@ -104,10 +104,10 @@ impl AnimatedFrame {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_rgba_image(sequence: usize, mut image: RgbaImage) -> Self {
-        for pixel in image.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
+        let (width, height) = image.dimensions();
+        crate::swap_rgba_to_bgra_rows(image.as_mut(), width as usize * 4, height as usize);
         Self::from_bgra_frame(sequence, Frame::new(image))
     }
 
@@ -133,13 +133,13 @@ impl AnimatedFrame {
         sequence: usize,
         size: Size<DevicePixels>,
         pixel_format: ImagePixelFormat,
-        bytes: impl Into<Arc<[u8]>>,
+        bytes: Arc<BitmapBytes>,
     ) -> Self {
         Self {
             sequence,
             size,
             delay: Delay::from_saturating_duration(Duration::ZERO),
-            bytes: BitmapBytes::from_shared(bytes.into()),
+            bytes,
             pixel_format,
         }
     }
@@ -147,10 +147,8 @@ impl AnimatedFrame {
     pub(crate) fn from_rgba_frame(sequence: usize, frame: Frame) -> Self {
         let delay = frame.delay();
         let mut data = frame.into_buffer();
-        for pixel in data.chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
         let (width, height) = data.dimensions();
+        crate::swap_rgba_to_bgra_rows(data.as_mut(), width as usize * 4, height as usize);
         Self {
             sequence,
             size: size(width.into(), height.into()),

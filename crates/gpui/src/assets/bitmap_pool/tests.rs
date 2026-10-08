@@ -5,6 +5,40 @@ use super::{
 use std::sync::Arc;
 
 #[test]
+fn caller_owned_storage_keeps_the_vec_without_entering_the_decoder_pool() {
+    let pixels = vec![1, 2, 3, 4];
+    let pointer = pixels.as_ptr();
+    let bytes = super::BitmapBytes::from_owned(pixels);
+    assert!(matches!(&bytes.storage, super::BitmapStorage::Owned(_)));
+    let weak = Arc::downgrade(&bytes);
+    let cloned = bytes.clone();
+    drop(bytes);
+    assert_eq!(cloned.as_slice().as_ptr(), pointer);
+    assert_eq!(cloned.as_slice(), &[1, 2, 3, 4]);
+    drop(cloned);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn exact_decoder_capacities_below_the_rounded_bucket_are_reused() {
+    let pool = BitmapPool::new(64 * 1024 * 1024);
+    for requested in [257, 65_537, 1_048_577, 1920 * 1080 * 4, 33_554_433] {
+        let buffer = Vec::with_capacity(requested);
+        let pointer = buffer.as_ptr();
+        pool.release(buffer);
+        for _ in 0..32 {
+            let buffer = pool.acquire_capacity(requested);
+            assert_eq!(buffer.as_ptr(), pointer);
+            assert_eq!(buffer.capacity(), requested);
+            assert_eq!(pool.snapshot().free_buffers, 0);
+            pool.release(buffer);
+        }
+        assert_eq!(pool.snapshot().retained_bytes, requested);
+        pool.trim_to(0);
+    }
+}
+
+#[test]
 fn small_requests_leave_disproportionate_buffers_idle() {
     let pool = BitmapPool::new(64 * 1024 * 1024);
     let large = Vec::with_capacity(1024 * 1024);
@@ -185,6 +219,7 @@ fn trim_releases_retained_capacity() {
 }
 
 #[test]
+#[ignore = "isolated global bitmap-pool accounting; run with --test-threads=1"]
 fn bitmap_bytes_returns_owned_vec_to_pool_on_last_arc_drop() {
     let pool = super::global_bitmap_pool();
     pool.trim_to(0);

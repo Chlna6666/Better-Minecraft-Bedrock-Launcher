@@ -1,5 +1,5 @@
 use crate::{ObjectFit, Result, size};
-use image::{ColorType, ImageDecoder as _, ImageDecoderRect as _, codecs::bmp::BmpDecoder};
+use image::{ColorType, ImageDecoder as _, codecs::bmp::BmpDecoder};
 use smallvec::SmallVec;
 use std::io::Cursor;
 
@@ -13,9 +13,13 @@ pub(super) fn frame(bytes: &[u8]) -> Result<AnimatedFrame> {
     let color_type = decoder.color_type();
     let byte_len = usize::try_from(decoder.total_bytes())
         .map_err(|_| anyhow::anyhow!("BMP decoded buffer size overflowed"))?;
-    let mut pixels = vec![0; byte_len];
+    let mut pixels = if color_type == ColorType::Rgba8 {
+        crate::acquire_bitmap_buffer(byte_len)
+    } else {
+        vec![0; byte_len]
+    };
     decoder.read_image(&mut pixels)?;
-    let bgra = image_pixels_to_bgra_bytes(&pixels, color_type, width, height)?;
+    let bgra = image_pixels_to_bgra_bytes(pixels, color_type, width, height)?;
     Ok(AnimatedFrame::from_bgra_bytes(
         0,
         size(width.into(), height.into()),
@@ -28,14 +32,14 @@ pub(super) fn render_sized(
     target: ImageRenderSize,
     object_fit: ObjectFit,
 ) -> Result<(RenderImage, ImageRenderInfo)> {
-    let mut decoder = BmpDecoder::new(Cursor::new(bytes))?;
+    let decoder = BmpDecoder::new(Cursor::new(bytes))?;
     let (original_width, original_height) = decoder.dimensions();
     let color_type = decoder.color_type();
     let original_size = size(original_width, original_height);
     let fitted_target = target.fit(original_size, object_fit);
     let sample_target = intermediate_sample_size(original_size, fitted_target);
     let output = sample_bmp_rows_to_bgra(
-        &mut decoder,
+        decoder,
         original_width,
         original_height,
         color_type,
@@ -45,11 +49,11 @@ pub(super) fn render_sized(
         let frame = AnimatedFrame::from_bgra_bytes(0, sample_target.size(), output);
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
-            "bmp_rect_sample",
+            "bmp_decoded_sample",
         )
     } else {
         let (frame, render_path) =
-            resize_bgra_bytes(output, sample_target, fitted_target, "bmp_rect_sample")?;
+            resize_bgra_bytes(output, sample_target, fitted_target, "bmp_decoded_sample")?;
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
             render_path,
@@ -67,7 +71,7 @@ pub(super) fn render_sized(
 }
 
 fn sample_bmp_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
-    decoder: &mut BmpDecoder<R>,
+    decoder: BmpDecoder<R>,
     source_width: u32,
     source_height: u32,
     color_type: ColorType,
@@ -76,41 +80,33 @@ fn sample_bmp_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
     let source_row_len = usize::from(color_type.bytes_per_pixel())
         .checked_mul(source_width as usize)
         .ok_or_else(|| anyhow::anyhow!("BMP source row size overflowed"))?;
-    let mut source_row = vec![0; source_row_len];
     let output_len = bgra_byte_len(sample_target)?;
+    let source_len = usize::try_from(decoder.total_bytes())
+        .map_err(|_| anyhow::anyhow!("BMP decoded buffer size overflowed"))?;
+    let mut source_pixels = crate::acquire_bitmap_buffer(source_len);
+    // image's BMP read_rect decodes a full frame for every call, even for a single row.
+    // Decode once; the former row path already allocated this full-frame scratch internally.
+    decoder.read_image(&mut source_pixels)?;
     let mut output = crate::acquire_bitmap_buffer(output_len);
-    let mut next_target_y = 0u32;
 
-    for source_y in 0..source_height {
-        decoder.read_rect(
-            0,
-            source_y,
+    for target_y in 0..sample_target.height {
+        let source_y = scaled_axis(target_y, source_height, sample_target.height) as usize;
+        let row_start = source_y * source_row_len;
+        let source_row = &source_pixels[row_start..row_start + source_row_len];
+        if let Err(error) = write_sampled_image_row(
+            source_row,
+            color_type,
             source_width,
-            1,
-            &mut source_row,
-            source_row_len,
-        )?;
-
-        while next_target_y < sample_target.height
-            && scaled_axis(next_target_y, source_height, sample_target.height) == source_y
-        {
-            write_sampled_image_row(
-                &source_row,
-                color_type,
-                source_width,
-                sample_target.width,
-                &mut output,
-                next_target_y,
-            )?;
-            next_target_y += 1;
+            sample_target.width,
+            &mut output,
+            target_y,
+        ) {
+            crate::release_bitmap_buffer(source_pixels);
+            crate::release_bitmap_buffer(output);
+            return Err(error);
         }
     }
-
-    anyhow::ensure!(
-        next_target_y == sample_target.height,
-        "BMP decoder ended before filling target image"
-    );
-
+    crate::release_bitmap_buffer(source_pixels);
     Ok(output)
 }
 
@@ -172,16 +168,24 @@ fn write_sampled_image_row(
 }
 
 fn image_pixels_to_bgra_bytes(
-    pixels: &[u8],
+    mut pixels: Vec<u8>,
     color_type: ColorType,
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>> {
     let pixel_count = width as usize * height as usize;
-    let mut bgra = Vec::with_capacity(pixel_count * 4);
+    anyhow::ensure!(
+        pixels.len() == pixel_count.saturating_mul(usize::from(color_type.bytes_per_pixel())),
+        "decoded image buffer dimensions were invalid"
+    );
+    if color_type == ColorType::Rgba8 {
+        crate::swap_rgba_to_bgra_rows(&mut pixels, width as usize * 4, height as usize);
+        return Ok(pixels);
+    }
+    let mut bgra = crate::acquire_bitmap_buffer_capacity(pixel_count * 4);
     match color_type {
         ColorType::L8 => {
-            for &luma in pixels {
+            for &luma in &pixels {
                 bgra.extend_from_slice(&[luma, luma, luma, 255]);
             }
         }
@@ -193,11 +197,6 @@ fn image_pixels_to_bgra_bytes(
         ColorType::Rgb8 => {
             for pixel in pixels.chunks_exact(3) {
                 bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
-            }
-        }
-        ColorType::Rgba8 => {
-            for pixel in pixels.chunks_exact(4) {
-                bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
             }
         }
         ColorType::L16 => {
@@ -231,4 +230,94 @@ fn image_pixels_to_bgra_bytes(
         "decoded image buffer dimensions were invalid"
     );
     Ok(bgra)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_colors_preserve_bgra_pixels() {
+        let cases = [
+            (ColorType::L8, vec![23], [23, 23, 23, 255]),
+            (ColorType::La8, vec![23, 79], [23, 23, 23, 79]),
+            (ColorType::Rgb8, vec![11, 23, 37], [37, 23, 11, 255]),
+            (ColorType::Rgba8, vec![11, 23, 37, 79], [37, 23, 11, 79]),
+            (ColorType::L16, vec![23, 127], [23, 23, 23, 255]),
+            (ColorType::La16, vec![23, 127, 79, 251], [23, 23, 23, 79]),
+            (
+                ColorType::Rgb16,
+                vec![11, 127, 23, 128, 37, 129],
+                [37, 23, 11, 255],
+            ),
+            (
+                ColorType::Rgba16,
+                vec![11, 127, 23, 128, 37, 129, 79, 251],
+                [37, 23, 11, 79],
+            ),
+        ];
+        for (color_type, input, expected) in cases {
+            assert_eq!(
+                image_pixels_to_bgra_bytes(input, color_type, 1, 1).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn rgba_conversion_reuses_the_decode_allocation_including_simd_tails() {
+        for width in [1, 3, 17, 67] {
+            let pixels: Vec<u8> = (0..width as usize * 3 * 4)
+                .map(|index| index.wrapping_mul(37) as u8)
+                .collect();
+            let pointer = pixels.as_ptr();
+            let mut expected = pixels.clone();
+            for pixel in expected.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            let output = image_pixels_to_bgra_bytes(pixels, ColorType::Rgba8, width, 3).unwrap();
+            assert_eq!(output.as_ptr(), pointer);
+            assert_eq!(output, expected);
+        }
+    }
+
+    #[test]
+    fn malformed_or_float_pixels_are_rejected() {
+        assert!(image_pixels_to_bgra_bytes(vec![1; 3], ColorType::Rgba8, 1, 1).is_err());
+        assert!(image_pixels_to_bgra_bytes(vec![1; 5], ColorType::Rgb8, 1, 1).is_err());
+        assert!(image_pixels_to_bgra_bytes(vec![0; 12], ColorType::Rgb32F, 1, 1).is_err());
+        assert!(frame(b"not a BMP").is_err());
+    }
+
+    #[test]
+    fn large_bmp_sampling_matches_full_decode_pixels() {
+        use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+        let pixels = RgbaImage::from_fn(1920, 1080, |x, y| {
+            Rgba([x as u8, y as u8, (x ^ y) as u8, 255])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut encoded, ImageFormat::Bmp)
+            .unwrap();
+        let reference = image::load_from_memory_with_format(encoded.get_ref(), ImageFormat::Bmp)
+            .unwrap()
+            .into_rgba8();
+        for (width, height) in [(320, 180), (17, 3)] {
+            let target = ImageRenderSize::new(width, height).unwrap();
+            let decoder = BmpDecoder::new(Cursor::new(encoded.get_ref())).unwrap();
+            let color_type = decoder.color_type();
+            let sampled = sample_bmp_rows_to_bgra(decoder, 1920, 1080, color_type, target).unwrap();
+            for y in 0..height {
+                for x in 0..width {
+                    let source = reference.get_pixel(x * 1920 / width, y * 1080 / height);
+                    let offset = (y as usize * width as usize + x as usize) * 4;
+                    assert_eq!(
+                        &sampled[offset..offset + 4],
+                        &[source[2], source[1], source[0], source[3]]
+                    );
+                }
+            }
+            crate::release_bitmap_buffer(sampled);
+        }
+    }
 }

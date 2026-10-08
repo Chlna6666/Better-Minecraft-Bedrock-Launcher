@@ -143,7 +143,7 @@ impl App {
                     snapshot.resource_count = snapshot.resource_count.saturating_add(1);
                     snapshot.resource_resident_bytes = snapshot
                         .resource_resident_bytes
-                        .saturating_add(image.resident_byte_len());
+                        .saturating_add(image.resident_capacity());
                 }
             } else if *type_id == inline_type || *type_id == inline_bytes_type {
                 if let Some(Ok(image)) =
@@ -152,7 +152,7 @@ impl App {
                     snapshot.inline_count = snapshot.inline_count.saturating_add(1);
                     snapshot.inline_resident_bytes = snapshot
                         .inline_resident_bytes
-                        .saturating_add(image.resident_byte_len());
+                        .saturating_add(image.resident_capacity());
                 }
             } else if *type_id == compressed_type {
                 if let Some(Ok(bytes)) = cached_asset_output::<
@@ -160,8 +160,9 @@ impl App {
                 >(entry.as_ref())
                 {
                     snapshot.compressed_count = snapshot.compressed_count.saturating_add(1);
-                    snapshot.compressed_bytes =
-                        snapshot.compressed_bytes.saturating_add(bytes.len());
+                    snapshot.compressed_bytes = snapshot
+                        .compressed_bytes
+                        .saturating_add(bytes.retained_capacity());
                 }
             } else if *type_id == target_type
                 && let Some(Ok(image)) =
@@ -170,7 +171,7 @@ impl App {
                 snapshot.sized_count = snapshot.sized_count.saturating_add(1);
                 snapshot.sized_resident_bytes = snapshot
                     .sized_resident_bytes
-                    .saturating_add(image.resident_byte_len());
+                    .saturating_add(image.resident_capacity());
             }
         }
 

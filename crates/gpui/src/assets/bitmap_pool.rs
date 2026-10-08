@@ -85,7 +85,8 @@ impl BitmapPool {
     /// returned buffer themselves; skipping the fill here avoids a redundant memset for
     /// callers that overwrite the whole buffer anyway.
     /// Retained buffers are reused only within the same size class and at most twice the
-    /// rounded request bucket; larger idle buffers remain available for larger requests.
+    /// rounded request bucket; exact-capacity decoder outputs are reusable as well. Larger
+    /// idle buffers remain available for larger requests.
     fn acquire_capacity(&self, capacity: usize) -> Vec<u8> {
         if capacity == 0 {
             return Vec::new();
@@ -95,7 +96,7 @@ impl BitmapPool {
         let mut state = self.state.lock();
         let available_capacity = state
             .free
-            .range(bucket..)
+            .range(capacity..)
             .next()
             // Capacity and class increase together; if the smallest candidate cannot fit,
             // later entries cannot fit either. Avoid scanning larger, unrelated classes.
@@ -274,6 +275,7 @@ pub(crate) struct BitmapBytes {
 
 enum BitmapStorage {
     Pooled(Option<Vec<u8>>),
+    Owned(Vec<u8>),
     Shared(Arc<[u8]>),
 }
 
@@ -290,16 +292,32 @@ impl BitmapBytes {
         })
     }
 
+    pub(crate) fn from_owned(bytes: Vec<u8>) -> Arc<Self> {
+        Arc::new(Self {
+            storage: BitmapStorage::Owned(bytes),
+        })
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         match &self.storage {
             BitmapStorage::Pooled(Some(bytes)) => bytes.as_slice(),
             BitmapStorage::Pooled(None) => &[],
+            BitmapStorage::Owned(bytes) => bytes.as_slice(),
             BitmapStorage::Shared(bytes) => bytes.as_ref(),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.as_slice().len()
+    }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        match &self.storage {
+            BitmapStorage::Pooled(Some(bytes)) => bytes.capacity(),
+            BitmapStorage::Pooled(None) => 0,
+            BitmapStorage::Owned(bytes) => bytes.capacity(),
+            BitmapStorage::Shared(bytes) => bytes.len(),
+        }
     }
 }
 

@@ -57,6 +57,8 @@ pub(in crate::assets) struct AnimationStream {
     pub(super) queued_frame_count: AtomicUsize,
     pub(super) queued_byte_len: AtomicUsize,
     pub(super) delivered_byte_len: AtomicUsize,
+    pub(super) queued_capacity: AtomicUsize,
+    pub(super) delivered_capacity: AtomicUsize,
     pub(in crate::assets) stream_task_running: AtomicBool,
     pub(super) completed: AtomicBool,
     pub(super) worker_index: AtomicUsize,
@@ -97,7 +99,7 @@ impl AnimationStream {
         self.queued_frame_count.load(Ordering::Acquire) < self.prefetch_frames
     }
 
-    fn reserve_queued_frame(&self, byte_len: usize) -> bool {
+    fn reserve_queued_frame(&self, byte_len: usize, capacity: usize) -> bool {
         if self
             .queued_frame_count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
@@ -108,13 +110,15 @@ impl AnimationStream {
             return false;
         }
         self.queued_byte_len.fetch_add(byte_len, Ordering::AcqRel);
+        self.queued_capacity.fetch_add(capacity, Ordering::AcqRel);
         record_animation_queue_bytes(byte_len);
         true
     }
 
-    pub(super) fn release_queued_frame(&self, byte_len: usize) {
+    pub(super) fn release_queued_frame(&self, byte_len: usize, capacity: usize) {
         atomic_saturating_sub(&self.queued_frame_count, 1);
         atomic_saturating_sub(&self.queued_byte_len, byte_len);
+        atomic_saturating_sub(&self.queued_capacity, capacity);
         release_animation_queue_bytes(byte_len);
     }
 }
@@ -301,7 +305,8 @@ impl AnimationWork {
         };
 
         let frame_byte_len = frame.byte_len();
-        if !state.reserve_queued_frame(frame_byte_len) {
+        let frame_capacity = frame.bytes.retained_capacity();
+        if !state.reserve_queued_frame(frame_byte_len, frame_capacity) {
             crate::diagnostics::performance_metrics::record_animation_queue_backpressure();
             self.pending_frame = Some(frame);
             return WorkProgress::Backpressured;
@@ -314,12 +319,12 @@ impl AnimationWork {
             }
             Err(TrySendError::Full(frame)) => {
                 crate::diagnostics::performance_metrics::record_animation_queue_backpressure();
-                state.release_queued_frame(frame_byte_len);
+                state.release_queued_frame(frame_byte_len, frame_capacity);
                 self.pending_frame = Some(frame);
                 WorkProgress::Backpressured
             }
             Err(TrySendError::Disconnected(_)) => {
-                state.release_queued_frame(frame_byte_len);
+                state.release_queued_frame(frame_byte_len, frame_capacity);
                 state.completed.store(true, Ordering::Release);
                 state.stream_task_running.store(false, Ordering::Release);
                 WorkProgress::Remove
