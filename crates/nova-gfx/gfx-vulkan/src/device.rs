@@ -26,22 +26,22 @@ use crate::registry::ResourceRegistry;
 use ash::{Entry, Instance, khr, vk};
 use gfx_core::{
     AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BeginRenderPassDescriptor,
-    BlendMode, BufferDescriptor, BufferId, BufferUsage, ClearColor, ColorAttachmentDescriptor,
-    CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction, CompositeAlphaMode,
-    DeviceDescriptor, DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor,
-    DrawTriangleDescriptor, Error, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
-    MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
-    PowerPreference, PresentMode, PresentationDevice, PresentationFrame, PresentationTimings,
-    PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId,
-    RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
-    RenderStepRef, RenderTarget, BindingResource, ResourceBindingType, ResourceDevice,
-    ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
-    ResourceStats, Result, SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode,
-    ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice,
-    SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
-    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureReadback,
-    TextureRenderStepList, TextureTransferDevice, TextureUsage, TextureViewDescriptor,
-    TextureViewId, TextureWrite, TextureWriteDescriptor, ThreadingMode, VertexFormat,
+    BindingResource, BlendMode, BufferDescriptor, BufferId, BufferUsage, ClearColor,
+    ColorAttachmentDescriptor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
+    CompareFunction, CompositeAlphaMode, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor,
+    DrawStepDescriptor, DrawTriangleDescriptor, Error, FilterMode, Format, IndexBufferBinding,
+    IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor,
+    PipelineLayoutId, PowerPreference, PresentMode, PresentationDevice, PresentationFrame,
+    PresentationTimings, PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor,
+    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
+    RenderStepRef, RenderTarget, ResourceBindingType, ResourceDevice, ResourceSetDescriptor,
+    ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result,
+    SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDescriptor,
+    ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus,
+    SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, TextureDataLayout,
+    TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureRenderStepList,
+    TextureTransferDevice, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite,
+    TextureWriteDescriptor, ThreadingMode, VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
@@ -149,7 +149,6 @@ pub struct VulkanDevice {
     incremental_presentation: bool,
 }
 
-
 fn vulkan_pipeline_cache_path(
     root: Option<&Path>,
     properties: &vk::PhysicalDeviceProperties,
@@ -190,20 +189,16 @@ fn create_pipeline_cache(
     initial_data: Option<&[u8]>,
     cache_path: Option<&Path>,
 ) -> Result<vk::PipelineCache> {
-    let info = initial_data.map_or_else(
-        vk::PipelineCacheCreateInfo::default,
-        |data| vk::PipelineCacheCreateInfo::default().initial_data(data),
-    );
+    let info = initial_data.map_or_else(vk::PipelineCacheCreateInfo::default, |data| {
+        vk::PipelineCacheCreateInfo::default().initial_data(data)
+    });
     // SAFETY: Initial data is borrowed for this call and the logical device is live.
     match unsafe { device.create_pipeline_cache(&info, None) } {
         Ok(cache) => Ok(cache),
         Err(error) if initial_data.is_some() => {
             log::debug!(
                 "nova-gfx Vulkan rejected pipeline cache; retrying empty: path={} error={error:?}",
-                cache_path.map_or_else(
-                    || "<none>".to_string(),
-                    |path| path.display().to_string()
-                )
+                cache_path.map_or_else(|| "<none>".to_string(), |path| path.display().to_string())
             );
             // SAFETY: Empty create info has no borrowed pointers and the device is live.
             let cache = unsafe {
@@ -216,11 +211,7 @@ fn create_pipeline_cache(
     }
 }
 
-fn persist_pipeline_cache(
-    device: &ash::Device,
-    cache: vk::PipelineCache,
-    path: Option<&Path>,
-) {
+fn persist_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache, path: Option<&Path>) {
     let Some(path) = path else {
         return;
     };
@@ -294,8 +285,11 @@ impl VulkanDevice {
         let pipeline_cache_data = pipeline_cache_path
             .as_deref()
             .and_then(read_pipeline_cache_data);
-        let pipeline_cache =
-            create_pipeline_cache(&device, pipeline_cache_data.as_deref(), pipeline_cache_path.as_deref())?;
+        let pipeline_cache = create_pipeline_cache(
+            &device,
+            pipeline_cache_data.as_deref(),
+            pipeline_cache_path.as_deref(),
+        )?;
 
         Ok(Self {
             entry,
@@ -2245,6 +2239,7 @@ impl VulkanDevice {
         config: SurfaceConfig,
         old_swapchain: vk::SwapchainKHR,
     ) -> Result<VulkanSwapchain> {
+        let started_at = Instant::now();
         let support = query_swapchain_support(self.physical_device, &self.surface_loader, surface)?;
         let surface_format = choose_surface_format(&support.formats, config.format);
         let present_mode = choose_present_mode(&support.present_modes, config.present_mode);
@@ -2288,9 +2283,13 @@ impl VulkanDevice {
             .clipped(true)
             .old_swapchain(old_swapchain);
 
+        let support_elapsed = started_at.elapsed();
+        let driver_started_at = Instant::now();
         // SAFETY: All inputs are valid for the selected physical device and surface.
         let swapchain = unsafe { self.swapchain_loader.create_swapchain(&create_info, None) }
             .map_err(VulkanError::from)?;
+        let driver_elapsed = driver_started_at.elapsed();
+        let resources_started_at = Instant::now();
         // SAFETY: Swapchain belongs to this device and is valid.
         let images = unsafe { self.swapchain_loader.get_swapchain_images(swapchain) }
             .map_err(VulkanError::from)?;
@@ -2321,6 +2320,20 @@ impl VulkanDevice {
             .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_objects(&self.device, images.len())?;
+        log::info!(
+            "nova-gfx Vulkan swapchain initialization: total_ms={} support_ms={} native_swapchain_ms={} image_resources_ms={} requested_images={} images={} format={:?} present_mode={:?} alpha={:?} extent={}x{}",
+            started_at.elapsed().as_millis(),
+            support_elapsed.as_millis(),
+            driver_elapsed.as_millis(),
+            resources_started_at.elapsed().as_millis(),
+            image_count,
+            images.len(),
+            surface_format.format,
+            present_mode,
+            alpha_mode,
+            extent.width,
+            extent.height,
+        );
         Ok(VulkanSwapchain {
             surface,
             swapchain,

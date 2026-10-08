@@ -67,6 +67,8 @@ mod platform {
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
     #[cfg(feature = "shader-compiler")]
     use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
+    #[cfg(feature = "shader-compiler")]
+    use windows::core::PCSTR;
     use windows::{
         Win32::Graphics::{
             Direct3D::{
@@ -160,8 +162,6 @@ mod platform {
         },
         core::{BOOL, Error as WindowsError, Interface, PCWSTR},
     };
-    #[cfg(feature = "shader-compiler")]
-    use windows::core::PCSTR;
     use windows_numerics::Matrix3x2;
 
     const BACK_BUFFER_COUNT: u32 = 3;
@@ -233,6 +233,7 @@ mod platform {
         ///
         /// Returns [`Error`] if Direct3D 12 initialization fails.
         pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
+            let started_at = Instant::now();
             enable_debug_layer_if_requested();
             let factory = create_factory()?;
             let allow_tearing = factory_supports_tearing(&factory);
@@ -245,12 +246,20 @@ mod platform {
                 adapter_description.name,
                 desc.power_preference
             );
+            let adapter_elapsed = started_at.elapsed();
+            let device_started_at = Instant::now();
             let device = create_device(&adapter)?;
+            let device_elapsed = device_started_at.elapsed();
+            let queue_started_at = Instant::now();
             let graphics_queue = create_command_queue(&device)?;
             // SAFETY: The queue is live and returns its timestamp tick frequency by value.
             let timestamp_frequency = unsafe { graphics_queue.GetTimestampFrequency() }
                 .ok()
                 .filter(|frequency| *frequency > 0);
+            let fence = create_fence(&device)?;
+            let fence_event = FenceEvent::new()?;
+            let queue_elapsed = queue_started_at.elapsed();
+            let heaps_started_at = Instant::now();
             let resource_heap = DescriptorHeapAllocator::new(
                 &device,
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
@@ -267,13 +276,24 @@ mod platform {
                 DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 256, false)?;
             let dsv_heap =
                 DescriptorHeapAllocator::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 256, false)?;
+            let heaps_elapsed = heaps_started_at.elapsed();
+            let upload_started_at = Instant::now();
             let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
                 alignment: DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
                 ..UploadRingAllocatorDesc::default()
             })?;
+            log::info!(
+                "nova-gfx DX12 device initialization: total_ms={} adapter_ms={} native_device_ms={} queue_fence_ms={} descriptor_heaps_ms={} upload_allocator_ms={}",
+                started_at.elapsed().as_millis(),
+                adapter_elapsed.as_millis(),
+                device_elapsed.as_millis(),
+                queue_elapsed.as_millis(),
+                heaps_elapsed.as_millis(),
+                upload_started_at.elapsed().as_millis(),
+            );
             Ok(Self {
-                fence: create_fence(&device)?,
-                fence_event: FenceEvent::new()?,
+                fence,
+                fence_event,
                 next_fence_value: 1,
                 factory,
                 _adapter: adapter,
@@ -1575,9 +1595,7 @@ mod platform {
                 }
                 ShaderCode::DxBytecode(bytecode) => Dx12ShaderBytecode::Owned(bytecode.clone()),
                 ShaderCode::DxBytecodeStatic(bytecode) => Dx12ShaderBytecode::Static(*bytecode),
-                ShaderCode::Spirv(_)
-                | ShaderCode::Msl(_)
-                | ShaderCode::MetallibStatic(_) => {
+                ShaderCode::Spirv(_) | ShaderCode::Msl(_) | ShaderCode::MetallibStatic(_) => {
                     return Err(Error::Shader(
                         "DX12 shader module requires precompiled D3D bytecode".to_string(),
                     ));
@@ -3915,9 +3933,10 @@ mod platform {
         adapter: &Dx12AdapterDescription,
     ) -> Option<PathBuf> {
         let root = root?;
-        let dir = root
-            .join("dx12")
-            .join(format!("{:04x}-{:04x}", adapter.vendor_id, adapter.device_id));
+        let dir = root.join("dx12").join(format!(
+            "{:04x}-{:04x}",
+            adapter.vendor_id, adapter.device_id
+        ));
         match fs::create_dir_all(&dir) {
             Ok(()) => Some(dir),
             Err(error) => {
@@ -3930,11 +3949,7 @@ mod platform {
         }
     }
 
-    fn shader_module_cache_key(
-        stage: ShaderStage,
-        entry_point: &str,
-        bytecode: &[u8],
-    ) -> u64 {
+    fn shader_module_cache_key(stage: ShaderStage, entry_point: &str, bytecode: &[u8]) -> u64 {
         let mut hash = FNV1A64_OFFSET;
         extend_stable_hash(
             &mut hash,
@@ -3963,10 +3978,7 @@ mod platform {
         extend_stable_hash(&mut hash, &fragment_shader.cache_key.to_le_bytes());
         extend_stable_hash(
             &mut hash,
-            format!(
-                "{color_format:?}|{blend_mode:?}|{depth_format:?}|{depth_state:?}"
-            )
-            .as_bytes(),
+            format!("{color_format:?}|{blend_mode:?}|{depth_format:?}|{depth_state:?}").as_bytes(),
         );
         hash
     }
@@ -3986,10 +3998,7 @@ mod platform {
         };
         // SAFETY: Blob pointer and size are valid for the duration of this read-only view.
         let bytes = unsafe {
-            std::slice::from_raw_parts(
-                blob.GetBufferPointer().cast::<u8>(),
-                blob.GetBufferSize(),
-            )
+            std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
         };
         if bytes.is_empty() || bytes.len() as u64 > MAX_PIPELINE_CACHE_BLOB_BYTES {
             return;
