@@ -1,4 +1,4 @@
-use super::animation_stream::record_animation_queue_bytes;
+use super::animation_stream::{FrameQueue, record_animation_queue_bytes};
 use super::{AnimatedFrame, AnimatedImageConfig, AnimationStream, EncodedImage, ImageRenderSize};
 use crate::{DevicePixels, Result, Size, size};
 use image::{Delay, Frame};
@@ -230,7 +230,10 @@ impl RenderImage {
             target,
             first_frame,
             queue_sender,
-            queue_receiver: Mutex::new(queue_receiver),
+            frame_queue: Mutex::new(FrameQueue {
+                receiver: queue_receiver,
+                last_delivered: None,
+            }),
             next_sequence: next_source_index,
             next_source_index,
             prefetch_frames: config.prefetch_frames,
@@ -388,15 +391,23 @@ impl RenderImage {
         let mut next_frame = None;
         let mut stale_frame_count = 0usize;
         {
-            let queue_receiver = state.queue_receiver.lock();
+            let mut queue = state.frame_queue.lock();
+            // Multiple elements share this stream. A lagging consumer can reuse the newest
+            // delivered frame without consuming another queued frame or copying its pixels.
+            if let Some(frame) = &queue.last_delivered
+                && frame.sequence > current_sequence
+            {
+                return Some(frame.clone());
+            }
             loop {
-                match queue_receiver.try_recv() {
+                match queue.receiver.try_recv() {
                     Ok(frame) if frame.sequence > current_sequence => {
                         let frame_byte_len = frame.byte_len();
                         state.release_queued_frame(frame_byte_len);
                         state
                             .delivered_byte_len
                             .store(frame_byte_len, Ordering::Relaxed);
+                        queue.last_delivered = Some(frame.clone());
                         next_frame = Some(frame);
                         break;
                     }
@@ -428,3 +439,6 @@ impl fmt::Debug for RenderImage {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests;

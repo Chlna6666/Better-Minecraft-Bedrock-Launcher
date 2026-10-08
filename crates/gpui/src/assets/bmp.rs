@@ -3,9 +3,7 @@ use image::{ColorType, ImageDecoder as _, ImageDecoderRect as _, codecs::bmp::Bm
 use smallvec::SmallVec;
 use std::io::Cursor;
 
-use super::resample::{
-    bgra_byte_len, intermediate_sample_size, resize_rgba_frame, rgba_image_from_bgra, scaled_axis,
-};
+use super::resample::{bgra_byte_len, intermediate_sample_size, resize_bgra_bytes, scaled_axis};
 use crate::assets::{AnimatedFrame, RenderImage};
 use crate::assets::{ImageRenderInfo, ImageRenderSize};
 
@@ -50,9 +48,8 @@ pub(super) fn render_sized(
             "bmp_rect_sample",
         )
     } else {
-        let rgba = rgba_image_from_bgra(output, sample_target)?;
-        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, "bmp_rect_sample")?;
-        let frame = AnimatedFrame::from_rgba_image(0, rgba);
+        let (frame, render_path) =
+            resize_bgra_bytes(output, sample_target, fitted_target, "bmp_rect_sample")?;
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
             render_path,
@@ -81,7 +78,7 @@ fn sample_bmp_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
         .ok_or_else(|| anyhow::anyhow!("BMP source row size overflowed"))?;
     let mut source_row = vec![0; source_row_len];
     let output_len = bgra_byte_len(sample_target)?;
-    let mut output = vec![0; output_len];
+    let mut output = crate::acquire_bitmap_buffer(output_len);
     let mut next_target_y = 0u32;
 
     for source_y in 0..source_height {

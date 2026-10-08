@@ -1,4 +1,4 @@
-use super::resample::resample_bgra_frame;
+use super::resample::resample_rgba_frame;
 use super::{AnimatedFrame, EncodedImage, ImageRenderSize};
 use crate::Result;
 use image::{
@@ -50,7 +50,7 @@ pub(in crate::assets) struct AnimationStream {
     pub(super) target: Option<ImageRenderSize>,
     pub(super) first_frame: AnimatedFrame,
     pub(super) queue_sender: SyncSender<AnimatedFrame>,
-    pub(super) queue_receiver: parking_lot::Mutex<std::sync::mpsc::Receiver<AnimatedFrame>>,
+    pub(super) frame_queue: parking_lot::Mutex<FrameQueue>,
     pub(super) next_sequence: usize,
     pub(super) next_source_index: usize,
     pub(super) prefetch_frames: usize,
@@ -60,6 +60,11 @@ pub(in crate::assets) struct AnimationStream {
     pub(in crate::assets) stream_task_running: AtomicBool,
     pub(super) completed: AtomicBool,
     pub(super) worker_index: AtomicUsize,
+}
+
+pub(in crate::assets) struct FrameQueue {
+    pub(super) receiver: std::sync::mpsc::Receiver<AnimatedFrame>,
+    pub(super) last_delivered: Option<AnimatedFrame>,
 }
 
 impl AnimationStream {
@@ -270,7 +275,7 @@ impl AnimationWork {
                 }
 
                 let frame = match frame {
-                    Ok(frame) => AnimatedFrame::from_rgba_frame(self.next_sequence, frame),
+                    Ok(frame) => frame,
                     Err(error) => {
                         log::debug!("animated image frame failed: {error}");
                         state.completed.store(true, Ordering::Release);
@@ -279,7 +284,7 @@ impl AnimationWork {
                     }
                 };
                 let frame = if let Some(target) = state.target {
-                    match resample_bgra_frame(frame, target) {
+                    match resample_rgba_frame(self.next_sequence, frame, target) {
                         Ok(frame) => frame,
                         Err(error) => {
                             log::debug!("animated image resize failed: {error}");
@@ -289,7 +294,7 @@ impl AnimationWork {
                         }
                     }
                 } else {
-                    frame
+                    AnimatedFrame::from_rgba_frame(self.next_sequence, frame)
                 };
                 break frame;
             }
@@ -361,7 +366,7 @@ fn animation_worker(receiver: mpsc::Receiver<Weak<AnimationStream>>) {
 }
 
 fn animation_frames(source: &EncodedImage) -> Result<Option<Frames<'static>>> {
-    let bytes = Arc::clone(&source.bytes);
+    let bytes = source.bytes.clone();
     match source.format {
         ImageFormat::Gif => {
             let decoder = GifDecoder::new(Cursor::new(bytes))?;

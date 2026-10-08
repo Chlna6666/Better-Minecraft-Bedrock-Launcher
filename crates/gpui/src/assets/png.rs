@@ -1,33 +1,27 @@
 use super::resample::{
     bgra_byte_len, intermediate_sample_size, render_sized as render_animated_image,
-    resize_rgba_frame, rgba_image_from_bgra, scaled_axis,
+    resize_bgra_bytes, scaled_axis,
 };
 use crate::assets::{AnimatedFrame, EncodedImage, RenderImage};
 use crate::assets::{AnimatedImageConfig, ImageRenderInfo, ImageRenderSize};
 use crate::{ObjectFit, Result, size};
-use image::ImageFormat;
 use smallvec::SmallVec;
 use std::io::Cursor;
-use std::sync::Arc;
 
 pub(super) fn render_sized(
-    bytes: &[u8],
+    source: EncodedImage,
     config: AnimatedImageConfig,
     target: ImageRenderSize,
     object_fit: ObjectFit,
 ) -> Result<(RenderImage, ImageRenderInfo)> {
-    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut decoder = png::Decoder::new(Cursor::new(source.bytes.as_bytes()));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info()?;
     let info = reader.info().clone();
 
     if info.animation_control.is_some() || info.interlaced {
-        return render_animated_image(
-            EncodedImage::new(ImageFormat::Png, Arc::<[u8]>::from(bytes)),
-            config,
-            target,
-            object_fit,
-        );
+        drop(reader);
+        return render_animated_image(source, config, target, object_fit);
     }
 
     let original_size = size(info.width, info.height);
@@ -53,9 +47,8 @@ pub(super) fn render_sized(
             "png_row_sample",
         )
     } else {
-        let rgba = rgba_image_from_bgra(output, sample_target)?;
-        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, "png_row_sample")?;
-        let frame = AnimatedFrame::from_rgba_image(0, rgba);
+        let (frame, render_path) =
+            resize_bgra_bytes(output, sample_target, fitted_target, "png_row_sample")?;
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
             render_path,
@@ -84,7 +77,7 @@ fn sample_png_rows_to_bgra<R: std::io::BufRead + std::io::Seek>(
         .ok_or_else(|| anyhow::anyhow!("PNG row size overflowed"))?;
     let output_len = bgra_byte_len(sample_target)?;
     let mut source_row = vec![0; source_row_len];
-    let mut output = vec![0; output_len];
+    let mut output = crate::acquire_bitmap_buffer(output_len);
     let mut next_target_y = 0u32;
 
     for source_y in 0..source_height {

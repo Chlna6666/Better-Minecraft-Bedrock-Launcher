@@ -22,7 +22,7 @@ pub(crate) use bitmap_pool::{
     configure_global_bitmap_pool, global_bitmap_pool, release_bitmap_buffer,
     trim_global_bitmap_pool, trim_global_bitmap_pool_to,
 };
-pub use encoded_image::EncodedImage;
+pub use encoded_image::{CompressedImageBytes, EncodedImage};
 pub use pipeline::{ImageBoundsPolicy, ImageMemoryTrimLevel, ImagePipelineConfig};
 pub use render_image::RenderImage;
 pub(crate) use render_image::RenderImageParams;

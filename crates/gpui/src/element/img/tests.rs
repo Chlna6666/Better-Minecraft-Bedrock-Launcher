@@ -48,7 +48,7 @@ fn select_animation_frame_advances_resident_frames() {
             max_fps: 240.0,
             ..crate::AnimatedImageConfig::default()
         },
-        &executor,
+        now,
     )
     .unwrap();
 
@@ -90,7 +90,7 @@ fn select_animation_frame_catches_up_ready_resident_frames() {
             max_fps: 240.0,
             ..crate::AnimatedImageConfig::default()
         },
-        &executor,
+        now,
     )
     .unwrap();
 

@@ -1,8 +1,8 @@
 use super::element::*;
 use super::error::ImageCacheError;
 use crate::{
-    AnyImageCache, App, Asset, AssetLocation, AssetLogger, ClipboardImage, RenderImage,
-    SharedString, SharedUri, Window, hash,
+    AnyImageCache, App, Asset, AssetLocation, AssetLogger, ClipboardImage, CompressedImageBytes,
+    RenderImage, SharedString, SharedUri, Window, hash,
 };
 use anyhow::Result;
 use futures::Future;
@@ -24,30 +24,6 @@ impl ResourceImageBytes {
             Self::Static(bytes) => CompressedImageBytes::Static(bytes),
             Self::Owned(bytes) => CompressedImageBytes::Shared(Arc::from(bytes)),
         }
-    }
-}
-
-/// Compressed image bytes retained by GPUI for bounds-aware decode reuse.
-#[derive(Clone)]
-pub enum CompressedImageBytes {
-    /// Statically embedded image bytes borrowed directly from the asset source.
-    Static(&'static [u8]),
-    /// Shared owned bytes retained for file or network-backed image resources.
-    Shared(Arc<[u8]>),
-}
-
-impl CompressedImageBytes {
-    /// Returns the compressed image bytes as a borrowed slice.
-    pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Static(bytes) => bytes,
-            Self::Shared(bytes) => bytes.as_ref(),
-        }
-    }
-
-    /// Returns the number of compressed bytes retained by this value.
-    pub fn len(&self) -> usize {
-        self.as_bytes().len()
     }
 }
 
@@ -253,6 +229,36 @@ impl EncodedImageBytes {
         }
     }
 
+    fn render(
+        &self,
+        renderer: crate::SvgRenderer,
+        config: crate::AnimatedImageConfig,
+    ) -> crate::Result<RenderImage> {
+        Ok(match self.format {
+            crate::ImageFormat::Svg => {
+                let pixmap = renderer
+                    .render_pixmap(self.bytes.as_ref(), crate::SvgSize::ScaleFactor(1.0))?;
+                let buffer =
+                    image::ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
+                        .ok_or_else(|| anyhow::anyhow!("invalid SVG raster dimensions"))?;
+                RenderImage::new(smallvec::SmallVec::from_elem(image::Frame::new(buffer), 1))
+            }
+            format => crate::EncodedImage::new(
+                match format {
+                    crate::ImageFormat::Png => image::ImageFormat::Png,
+                    crate::ImageFormat::Jpeg => image::ImageFormat::Jpeg,
+                    crate::ImageFormat::Webp => image::ImageFormat::WebP,
+                    crate::ImageFormat::Gif => image::ImageFormat::Gif,
+                    crate::ImageFormat::Bmp => image::ImageFormat::Bmp,
+                    crate::ImageFormat::Tiff => image::ImageFormat::Tiff,
+                    crate::ImageFormat::Svg => unreachable!("SVG was handled above"),
+                },
+                self.bytes.clone(),
+            )
+            .render(config)?,
+        })
+    }
+
     /// Hashes a cheap identity for this source: the format plus the byte buffer's address and
     /// length rather than its contents.
     ///
@@ -313,8 +319,18 @@ impl Asset for EncodedImageLoader {
         let renderer = cx.svg_renderer();
         let config = cx.image_pipeline_config().animated;
         async move {
-            let decoded = ClipboardImage::from_bytes(source.format, source.bytes.to_vec());
-            let mut image = decoded.to_render_image_with_config(renderer, config)?;
+            let processing_started = std::time::Instant::now();
+            let data = source.render(renderer, config)?;
+            let processing_duration = processing_started.elapsed();
+            crate::record_image_processing_metrics_with_threshold(
+                source.bytes.len(),
+                data.resident_byte_len(),
+                data.frame_count(),
+                processing_duration,
+                crate::ImagePipelineConfig::default().slow_image_threshold,
+            );
+            let mut image =
+                Arc::new(data.with_processing_metrics(source.bytes.len(), processing_duration));
             // The source hash covers the format and the encoded bytes, so a re-decode after
             // an eviction produces identical frames and can reuse the previous ImageId.
             if let Some(image) = Arc::get_mut(&mut image) {
@@ -325,5 +341,44 @@ impl Asset for EncodedImageLoader {
             }
             Ok(image)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_encoded_svg_keeps_the_svg_decode_path() {
+        let source = EncodedImageBytes::new(
+            crate::ImageFormat::Svg,
+            Arc::<[u8]>::from(br#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>"#.as_slice()),
+        );
+        let image = source
+            .render(
+                crate::SvgRenderer::new(Arc::new(())),
+                crate::AnimatedImageConfig::default(),
+            )
+            .expect("shared SVG should decode without the clipboard adapter");
+        let frame = image.frame(0).expect("SVG should have a resident frame");
+        assert_eq!(frame.bytes().len(), 16);
+        assert!(frame.bytes().chunks_exact(4).all(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn shared_encoded_png_keeps_the_raster_decode_path() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("test PNG should encode");
+        let source = EncodedImageBytes::new(crate::ImageFormat::Png, bytes.into_inner());
+        let image = source
+            .render(
+                crate::SvgRenderer::new(Arc::new(())),
+                crate::AnimatedImageConfig::default(),
+            )
+            .expect("shared PNG should decode without the clipboard adapter");
+        let frame = image.frame(0).expect("PNG should have a resident frame");
+        assert_eq!(frame.bytes(), &[0, 0, 255, 255].repeat(4));
     }
 }

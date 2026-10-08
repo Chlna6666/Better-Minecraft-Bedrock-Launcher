@@ -9,16 +9,75 @@ use image::ImageFormat;
 use smallvec::SmallVec;
 use std::sync::Arc;
 
+/// Compressed image bytes shared by resource loading and image decoding.
+///
+/// Static assets keep their original storage; file and network payloads share owned storage.
+/// Cloning this value never copies the compressed payload.
+#[derive(Clone)]
+pub enum CompressedImageBytes {
+    /// Statically embedded image bytes borrowed directly from the asset source.
+    Static(&'static [u8]),
+    /// Shared owned bytes retained for file or network-backed image resources.
+    Shared(Arc<[u8]>),
+}
+
+impl CompressedImageBytes {
+    /// Borrows the compressed payload without copying it.
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Static(bytes) => bytes,
+            Self::Shared(bytes) => bytes.as_ref(),
+        }
+    }
+
+    /// Returns the compressed payload size, including statically borrowed bytes.
+    pub fn len(&self) -> usize {
+        self.as_bytes().len()
+    }
+
+    /// Returns whether the compressed payload is empty.
+    pub fn is_empty(&self) -> bool {
+        self.as_bytes().is_empty()
+    }
+}
+
+impl AsRef<[u8]> for CompressedImageBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl From<Arc<[u8]>> for CompressedImageBytes {
+    fn from(bytes: Arc<[u8]>) -> Self {
+        Self::Shared(bytes)
+    }
+}
+
+impl From<Vec<u8>> for CompressedImageBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Shared(bytes.into())
+    }
+}
+
+impl From<&'static [u8]> for CompressedImageBytes {
+    fn from(bytes: &'static [u8]) -> Self {
+        Self::Static(bytes)
+    }
+}
+
 /// Encoded raster image bytes together with their container format.
 #[derive(Clone)]
 pub struct EncodedImage {
-    pub(in crate::assets) bytes: Arc<[u8]>,
+    pub(in crate::assets) bytes: CompressedImageBytes,
     pub(in crate::assets) format: ImageFormat,
 }
 
 impl EncodedImage {
-    /// Creates an encoded image source without copying already shared bytes.
-    pub fn new(format: ImageFormat, bytes: impl Into<Arc<[u8]>>) -> Self {
+    /// Creates an encoded image source, preserving static or shared compressed storage.
+    ///
+    /// Static slices and existing shared buffers are not copied. Owned vectors are converted
+    /// into shared storage once, so subsequent loads and animation workers reuse the payload.
+    pub fn new(format: ImageFormat, bytes: impl Into<CompressedImageBytes>) -> Self {
         Self {
             bytes: bytes.into(),
             format,
@@ -61,14 +120,37 @@ impl EncodedImage {
         config: AnimatedImageConfig,
     ) -> Result<(RenderImage, ImageRenderInfo)> {
         match self.format {
-            ImageFormat::Jpeg => jpeg::render_sized(&self.bytes, target, object_fit),
-            ImageFormat::Png => png::render_sized(&self.bytes, config, target, object_fit),
-            ImageFormat::WebP => match webp::render_sized(&self.bytes, target, object_fit) {
-                Ok(Some(image)) => Ok(image),
-                Ok(None) | Err(_) => resample::render_sized(self, config, target, object_fit),
-            },
-            ImageFormat::Bmp => bmp::render_sized(&self.bytes, target, object_fit),
+            ImageFormat::Jpeg => jpeg::render_sized(self.bytes.as_bytes(), target, object_fit),
+            ImageFormat::Png => png::render_sized(self, config, target, object_fit),
+            ImageFormat::WebP => {
+                match webp::render_sized(self.bytes.as_bytes(), target, object_fit) {
+                    Ok(Some(image)) => Ok(image),
+                    Ok(None) | Err(_) => resample::render_sized(self, config, target, object_fit),
+                }
+            }
+            ImageFormat::Bmp => bmp::render_sized(self.bytes.as_bytes(), target, object_fit),
             _ => resample::render_sized(self, config, target, object_fit),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoded_image_preserves_static_payload_storage() {
+        static BYTES: &[u8] = &[1, 2, 3, 4];
+        let source = EncodedImage::new(ImageFormat::Png, BYTES);
+        assert_eq!(source.bytes.as_bytes().as_ptr(), BYTES.as_ptr());
+        assert_eq!(source.clone().bytes.as_bytes().as_ptr(), BYTES.as_ptr());
+    }
+
+    #[test]
+    fn encoded_image_preserves_shared_payload_storage() {
+        let bytes: Arc<[u8]> = Arc::from(vec![1, 2, 3, 4]);
+        let source = EncodedImage::new(ImageFormat::Png, bytes.clone());
+        assert_eq!(source.bytes.as_bytes().as_ptr(), bytes.as_ptr());
+        assert_eq!(source.clone().bytes.as_bytes().as_ptr(), bytes.as_ptr());
     }
 }

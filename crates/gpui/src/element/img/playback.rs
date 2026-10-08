@@ -1,6 +1,6 @@
 use super::retained::ImageElementState;
-use crate::{AnimatedFrame, App, BackgroundExecutor, RenderImage, Window};
-use std::time::Duration;
+use crate::{AnimatedFrame, App, RenderImage, Window};
+use std::time::{Duration, Instant};
 
 fn frame_duration(delay: image::Delay, config: crate::AnimatedImageConfig) -> Duration {
     let duration = Duration::from(delay);
@@ -35,10 +35,9 @@ pub(super) fn select_animation_frame(
     state: &mut ImageElementState,
     render_image: &RenderImage,
     animation_config: crate::AnimatedImageConfig,
-    executor: &BackgroundExecutor,
+    current_time: Instant,
 ) -> Option<AnimatedFrame> {
     let animation_config = animation_config.clamped();
-    let current_time = executor.now();
     let mut current_frame = state
         .current_frame
         .clone()

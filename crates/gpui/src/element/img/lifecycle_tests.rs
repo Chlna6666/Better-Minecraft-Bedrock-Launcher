@@ -35,11 +35,18 @@ fn ordinary_image_survives_cache_eviction_between_layout_and_paint(cx: &mut Test
     window.update(|window, cx| {
         let mut image = Drawable::new(super::img("evicted.png").image_cache(&cache).size(px(20.)));
         window.invalidator.set_phase(DrawPhase::Prepaint);
-        image.layout_as_root(size(px(20.), px(20.)).into(), window, cx);
-        image.prepaint(window, cx);
+        let view_id = window
+            .root::<crate::Empty>()
+            .flatten()
+            .expect("test window should have an Empty root")
+            .entity_id();
+        window.with_rendered_view(view_id, |window| {
+            image.layout_as_root(size(px(20.), px(20.)).into(), window, cx)
+        });
+        window.with_rendered_view(view_id, |window| image.prepaint(window, cx));
         let before = window.next_frame.scene.len();
         window.invalidator.set_phase(DrawPhase::Paint);
-        image.paint(window, cx);
+        window.with_rendered_view(view_id, |window| image.paint(window, cx));
         assert!(
             window.next_frame.scene.len() > before,
             "the resolved image must still emit a sprite after cache eviction"
@@ -55,6 +62,81 @@ fn request(label: &'static str, size: u32) -> ImageRenderRequest {
         1.0,
         ObjectFit::Cover,
     )
+}
+
+#[gpui::test]
+fn sized_image_starts_loading_in_prepaint(cx: &mut TestAppContext) {
+    use crate::window::DrawPhase;
+    use crate::{Drawable, Styled, StyledImage, px, size};
+
+    let window = cx.add_empty_window();
+    window.update(|window, cx| {
+        let mut image = Drawable::new(
+            super::img("prepaint-icon.png")
+                .render_to_bounds()
+                .size(px(32.0)),
+        );
+        let initial_assets = cx.asset_entries.len();
+        window.invalidator.set_phase(DrawPhase::Prepaint);
+        let view_id = window
+            .root::<crate::Empty>()
+            .flatten()
+            .expect("test window should have an Empty root")
+            .entity_id();
+        window.with_rendered_view(view_id, |window| {
+            image.layout_as_root(size(px(32.0), px(32.0)).into(), window, cx)
+        });
+        assert_eq!(cx.asset_entries.len(), initial_assets);
+        window.with_rendered_view(view_id, |window| image.prepaint(window, cx));
+        let prepared_assets = cx.asset_entries.len();
+        assert!(
+            prepared_assets > initial_assets,
+            "prepaint must start visible image loading"
+        );
+        window.invalidator.set_phase(DrawPhase::Paint);
+        window.with_rendered_view(view_id, |window| image.paint(window, cx));
+        assert_eq!(
+            cx.asset_entries.len(),
+            prepared_assets,
+            "paint must reuse the prepared request"
+        );
+        window.invalidator.set_phase(DrawPhase::None);
+    });
+}
+
+#[gpui::test]
+fn clipped_sized_image_does_not_start_loading(cx: &mut TestAppContext) {
+    use crate::window::DrawPhase;
+    use crate::{Bounds, ContentMask, Drawable, Styled, StyledImage, point, px, size};
+
+    let window = cx.add_empty_window();
+    window.update(|window, cx| {
+        let mut image = Drawable::new(
+            super::img("clipped-icon.png")
+                .render_to_bounds()
+                .size(px(32.0)),
+        );
+        cx.image_pipeline_config.bounds_policy = crate::ImageBoundsPolicy::Visible;
+        let initial_assets = cx.asset_entries.len();
+        window.invalidator.set_phase(DrawPhase::Prepaint);
+        let view_id = window
+            .root::<crate::Empty>()
+            .flatten()
+            .expect("test window should have an Empty root")
+            .entity_id();
+        window.with_rendered_view(view_id, |window| {
+            image.layout_as_root(size(px(32.0), px(32.0)).into(), window, cx)
+        });
+        let mask = ContentMask::new(Bounds::new(
+            point(px(1000.0), px(1000.0)),
+            size(px(32.0), px(32.0)),
+        ));
+        window.with_rendered_view(view_id, |window| {
+            window.with_content_mask(Some(mask), |window| image.prepaint(window, cx))
+        });
+        assert_eq!(cx.asset_entries.len(), initial_assets);
+        window.invalidator.set_phase(DrawPhase::None);
+    });
 }
 
 #[test]

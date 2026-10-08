@@ -1,8 +1,8 @@
 use crate::{
-    AnyImageCache, App, AssetLease, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
-    Entity, GlobalElementId, Hitbox, ImageBoundsPolicy, ImageCache, InspectorElementId,
-    InteractiveElement, Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels,
-    RenderImage, StyleRefinement, Styled, Window, px,
+    AnyImageCache, App, AssetLease, AssetLogger, Bounds, CompressedImageBytes, DefiniteLength,
+    Element, ElementId, Entity, GlobalElementId, Hitbox, ImageBoundsPolicy, ImageCache,
+    InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId, Length,
+    ObjectFit, Pixels, RenderImage, StyleRefinement, Styled, Window, px,
 };
 use anyhow::Result;
 
@@ -359,6 +359,11 @@ impl Element for Img {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let render_to_bounds =
+            self.should_render_to_bounds(cx.image_pipeline_config().bounds_policy);
+        let source = self.source.clone();
+        let object_fit = self.style.object_fit;
+        let animation_policy = self.animation_policy;
         self.interactivity.prepaint(
             global_id,
             inspector_id,
@@ -367,6 +372,23 @@ impl Element for Img {
             window,
             cx,
             |_, _, hitbox, window, cx| {
+                // Start visible decode work as soon as final bounds and the inherited clip are
+                // known. Paint reuses this sample or checks the same pending request once more.
+                if render_to_bounds
+                    && let Some((image, frame)) = render_sized_image(
+                        source,
+                        object_fit,
+                        animation_policy,
+                        bounds,
+                        request_layout,
+                        global_id,
+                        window,
+                        cx,
+                    )
+                {
+                    request_layout.image = Some(image);
+                    request_layout.frame = Some(frame);
+                }
                 if let Some(replacement) = &mut request_layout.replacement {
                     replacement.prepaint(window, cx);
                 }
@@ -386,9 +408,9 @@ impl Element for Img {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let source = self.source.clone();
         let render_to_bounds =
             self.should_render_to_bounds(cx.image_pipeline_config().bounds_policy);
+        let source = &self.source;
         let object_fit = self.style.object_fit;
         let grayscale = self.style.grayscale;
         let animation_policy = self.animation_policy;
@@ -401,16 +423,23 @@ impl Element for Img {
             cx,
             |style, window, cx| {
                 if render_to_bounds {
-                    let Some((render_image, frame)) = render_sized_image(
-                        source,
-                        object_fit,
-                        animation_policy,
-                        bounds,
-                        layout_state,
-                        global_id,
-                        window,
-                        cx,
-                    ) else {
+                    let sample = layout_state
+                        .image
+                        .clone()
+                        .zip(layout_state.frame.clone())
+                        .or_else(|| {
+                            render_sized_image(
+                                source.clone(),
+                                object_fit,
+                                animation_policy,
+                                bounds,
+                                layout_state,
+                                global_id,
+                                window,
+                                cx,
+                            )
+                        });
+                    let Some((render_image, frame)) = sample else {
                         if let Some(replacement) = &mut layout_state.replacement {
                             replacement.paint(window, cx);
                         }
@@ -473,7 +502,7 @@ impl Element for Img {
                                     &mut state,
                                     &render_image,
                                     animation_config,
-                                    cx.background_executor(),
+                                    window.animation_time(),
                                 );
                                 schedule_next_frame(&state, window, cx, animation_config);
                                 (frame, state)

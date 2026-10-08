@@ -2,9 +2,9 @@ use super::element::*;
 use super::error::ImageCacheError;
 use super::source::*;
 use crate::{
-    AnimatedFrame, App, Asset, AssetLocation, Bounds, EncodedImage, ImageRenderRecord,
-    ImageRenderSize, ObjectFit, Pixels, RenderImage, SMOOTH_SVG_SCALE_FACTOR, SharedString, Size,
-    SvgSize, Window, hash, record_image_asset_retained,
+    AnimatedFrame, App, Asset, AssetLocation, Bounds, CompressedImageBytes, EncodedImage,
+    ImageRenderRecord, ImageRenderSize, ObjectFit, Pixels, RenderImage, SMOOTH_SVG_SCALE_FACTOR,
+    SharedString, Size, SvgSize, Window, hash, record_image_asset_retained,
     record_image_processing_metrics_with_threshold, swap_rgba_pa_to_bgra_buffer,
 };
 use anyhow::{Context as _, Result};
@@ -256,7 +256,7 @@ impl Asset for ImageAssetLoader {
 
             let processing_started = Instant::now();
             let mut data = if let Ok(format) = image::guess_format(&bytes) {
-                EncodedImage::new(format, Arc::<[u8]>::from(bytes)).render(image_config)?
+                EncodedImage::new(format, source_bytes).render(image_config)?
             } else {
                 let pixmap =
                     // TODO: Can we make svgs always rescale?
@@ -301,6 +301,10 @@ impl Asset for ImageAssetLoader {
 }
 
 /// Asset loader for resource images decoded to an element's current paint bounds.
+///
+/// Elements pin active requests. Successful small static images may remain in a bounded idle
+/// cache after their final element releases them; pending, animated and larger images retire.
+/// Memory trimming and explicit request removal also release idle images.
 #[derive(Clone)]
 pub enum SizedImageAssetLoader {}
 
@@ -385,7 +389,7 @@ async fn render_sized_input(
             let compressed_bytes = compressed_preload.wait().await?;
             let compressed_len = compressed_bytes.len();
             let (image, metadata) = render_sized_bytes(
-                compressed_bytes.as_bytes(),
+                compressed_bytes,
                 &svg_renderer,
                 image_config,
                 target,
@@ -397,26 +401,22 @@ async fn render_sized_input(
 }
 
 fn render_sized_bytes(
-    bytes: &[u8],
+    source: CompressedImageBytes,
     svg_renderer: &crate::SvgRenderer,
     image_config: crate::AnimatedImageConfig,
     target: ImageRenderSize,
     object_fit: ObjectFit,
 ) -> Result<(RenderImage, crate::ImageRenderInfo)> {
-    if let Ok(format) = image::guess_format(bytes) {
-        return EncodedImage::new(format, Arc::<[u8]>::from(bytes)).render_sized(
-            target,
-            object_fit,
-            image_config,
-        );
+    if let Ok(format) = image::guess_format(source.as_bytes()) {
+        return EncodedImage::new(format, source).render_sized(target, object_fit, image_config);
     }
 
-    let natural_size = svg_renderer.natural_size(bytes)?;
-    let fitted_target = target.fit(
-        natural_size.map(|dimension| u32::from(dimension)),
-        object_fit,
-    );
-    let pixmap = svg_renderer.render_pixmap(bytes, SvgSize::Size(fitted_target.size()))?;
+    let bytes = source.as_bytes();
+    let (natural_size, pixmap) = svg_renderer.render_fitted_pixmap(bytes, target, object_fit)?;
+    let fitted_target = ImageRenderSize {
+        width: pixmap.width(),
+        height: pixmap.height(),
+    };
     let mut buffer = ImageBuffer::from_raw(pixmap.width(), pixmap.height(), pixmap.take())
         .ok_or_else(|| anyhow::anyhow!("invalid SVG raster dimensions"))?;
     swap_rgba_pa_to_bgra_buffer(buffer.as_mut());
@@ -478,41 +478,4 @@ async fn load_image_resource_data(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn render_bounds_dimension_is_bucketed() {
-        assert_eq!(bucket_image_dimension(1), 16);
-        assert_eq!(bucket_image_dimension(38), 48);
-        assert_eq!(bucket_image_dimension(800), 800);
-    }
-
-    #[test]
-    fn compressed_cache_does_not_keep_payload_alive() {
-        let mut cache = CompressedCache::new();
-        let bytes: Arc<[u8]> = Arc::from(vec![1_u8; 8]);
-        cache.insert(1, &bytes);
-
-        let cached = cache.get(1).expect("live payload should be reusable");
-        assert_eq!(cached.len(), 8);
-        drop(cached);
-        drop(bytes);
-
-        assert!(cache.get(1).is_none());
-        assert!(cache.entries.is_empty());
-    }
-
-    #[test]
-    fn compressed_cache_prunes_dead_metadata_during_repeated_inserts() {
-        let mut cache = CompressedCache::new();
-
-        for key in 0..(COMPRESSED_CACHE_PRUNE_INTERVAL * 4 + 1) {
-            let bytes: Arc<[u8]> = Arc::from(vec![1_u8; 8]);
-            cache.insert(key as u64, &bytes);
-        }
-
-        assert!(cache.entries.len() <= COMPRESSED_CACHE_PRUNE_INTERVAL);
-        assert!(cache.entries.capacity() <= COMPRESSED_CACHE_PRUNE_INTERVAL * 2);
-    }
-}
+mod tests;

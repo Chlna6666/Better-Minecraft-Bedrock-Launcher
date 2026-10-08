@@ -4,7 +4,7 @@ use crate::assets::{
 };
 use crate::{DevicePixels, ObjectFit, Result, Size, acquire_bitmap_buffer, size};
 use image::{
-    AnimationDecoder, ImageFormat, Rgba, RgbaImage,
+    AnimationDecoder, Frame, ImageFormat, Rgba, RgbaImage,
     codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
 };
 use smallvec::SmallVec;
@@ -207,10 +207,10 @@ fn initial_frames_from_iter(
     let Some((_, first_frame)) = frames.next() else {
         return Err(anyhow::anyhow!("animated image did not contain any frames"));
     };
-    let first_frame = AnimatedFrame::from_rgba_frame(0, first_frame?);
-    let source_size = first_frame.size().map(|dimension| u32::from(dimension));
+    let first_frame = first_frame?;
+    let source_size = size(first_frame.buffer().width(), first_frame.buffer().height());
     let fitted_target = target.fit(source_size, object_fit);
-    let first_frame = resample_bgra_frame(first_frame, fitted_target)?;
+    let first_frame = resample_rgba_frame(0, first_frame, fitted_target)?;
     let mut remaining_frames = SmallVec::<[AnimatedFrame; 8]>::new();
 
     for (sequence, frame) in frames {
@@ -224,8 +224,7 @@ fn initial_frames_from_iter(
             });
         }
 
-        let frame = AnimatedFrame::from_rgba_frame(sequence, frame?);
-        remaining_frames.push(resample_bgra_frame(frame, fitted_target)?);
+        remaining_frames.push(resample_rgba_frame(sequence, frame?, fitted_target)?);
     }
 
     Ok(ImageFrames {
@@ -234,6 +233,41 @@ fn initial_frames_from_iter(
         is_complete: true,
         source_size,
         size: fitted_target,
+    })
+}
+
+pub(in crate::assets) fn resample_rgba_frame(
+    sequence: usize,
+    frame: Frame,
+    target: ImageRenderSize,
+) -> Result<AnimatedFrame> {
+    let source = frame.buffer();
+    let source_size = size(source.width(), source.height());
+    if source_size == size(target.width, target.height) {
+        return Ok(AnimatedFrame::from_rgba_frame(sequence, frame));
+    }
+    anyhow::ensure!(
+        source_size.width > 0 && source_size.height > 0,
+        "decoded image frame has invalid dimensions"
+    );
+    let mut output = acquire_bitmap_buffer(bgra_byte_len(target)?);
+    // Keep the existing nearest-neighbour coordinates, converting only pixels used by the
+    // target. The decoder's full RGBA buffer does not need a separate channel-conversion pass.
+    for target_y in 0..target.height {
+        let source_y = scaled_axis(target_y, source_size.height, target.height);
+        for target_x in 0..target.width {
+            let source_x = scaled_axis(target_x, source_size.width, target.width);
+            let pixel = source.get_pixel(source_x, source_y).0;
+            let offset = (target_y as usize * target.width as usize + target_x as usize) * 4;
+            output[offset..offset + 4].copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+        }
+    }
+    Ok(AnimatedFrame {
+        sequence,
+        size: target.size(),
+        delay: frame.delay(),
+        bytes: BitmapBytes::from_vec(output),
+        pixel_format: ImagePixelFormat::Bgra8,
     })
 }
 
@@ -299,6 +333,7 @@ pub(super) fn resize_rgba_frame(
         target.height,
         image::imageops::FilterType::Lanczos3,
     );
+    crate::assets::release_bitmap_buffer(rgba.into_raw());
     Ok((resized, "scaled_then_resized"))
 }
 
@@ -342,41 +377,19 @@ pub(super) fn intermediate_sample_size(
     }
 }
 
-pub(super) fn rgba_image_from_bgra(bytes: Vec<u8>, size: ImageRenderSize) -> Result<RgbaImage> {
-    let mut rgba = bytes;
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    RgbaImage::from_raw(size.width, size.height, rgba)
-        .ok_or_else(|| anyhow::anyhow!("decoded image buffer dimensions were invalid"))
+pub(super) fn resize_bgra_bytes(
+    bytes: Vec<u8>,
+    source: ImageRenderSize,
+    target: ImageRenderSize,
+    render_path: &'static str,
+) -> Result<(AnimatedFrame, &'static str)> {
+    // imageops::resize filters each channel independently and preserves its order. The
+    // RgbaImage container can therefore carry BGRA bytes through the same Lanczos filter.
+    let image = RgbaImage::from_raw(source.width, source.height, bytes)
+        .ok_or_else(|| anyhow::anyhow!("decoded image buffer dimensions were invalid"))?;
+    let (image, render_path) = resize_rgba_frame(image, target, render_path)?;
+    Ok((AnimatedFrame::from_bgra_image(0, image), render_path))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pooled_resize_preserves_bgra_pixels_and_sequence() {
-        for dimension in [2, 6] {
-            let frame = AnimatedFrame::from_bgra_bytes(
-                7,
-                size(3.into(), 3.into()),
-                [201, 93, 17, 255].repeat(9),
-            );
-            let target = ImageRenderSize::new(dimension, dimension).unwrap();
-            let resized = resample_bgra_frame(frame, target).unwrap();
-            assert_eq!(resized.sequence(), 7);
-            assert_eq!(resized.size(), target.size());
-            assert_eq!(
-                resized.bytes(),
-                [201, 93, 17, 255].repeat((dimension * dimension) as usize)
-            );
-        }
-    }
-
-    #[test]
-    fn pooled_resize_rejects_incomplete_source_pixels() {
-        let frame = AnimatedFrame::from_bgra_bytes(0, size(3.into(), 3.into()), vec![0; 35]);
-        assert!(resample_bgra_frame(frame, ImageRenderSize::new(2, 2).unwrap()).is_err());
-    }
-}
+mod tests;

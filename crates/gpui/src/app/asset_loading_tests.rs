@@ -1,4 +1,142 @@
 use crate::{AssetLocation, ObjectFit, SharedString, TestAppContext, px, size};
+use std::{
+    borrow::Cow,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+struct CountingImageAssets {
+    bytes: Vec<u8>,
+    loads: Arc<AtomicUsize>,
+}
+
+impl crate::AssetSource for CountingImageAssets {
+    fn load(&self, _: &str) -> crate::Result<Option<Cow<'static, [u8]>>> {
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(Cow::Owned(self.bytes.clone())))
+    }
+
+    fn list(&self, _: &str) -> crate::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
+
+fn image_assets(loads: Arc<AtomicUsize>) -> CountingImageAssets {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .expect("test PNG should encode");
+    CountingImageAssets {
+        bytes: bytes.into_inner(),
+        loads,
+    }
+}
+
+#[test]
+fn released_small_image_is_ready_when_element_remounts() {
+    let mut test = TestAppContext::single();
+    let loads = Arc::new(AtomicUsize::new(0));
+    let (request, pin) = test.update(|cx| {
+        cx.asset_source = Arc::new(image_assets(loads.clone()));
+        let request = cx
+            .image_render_request(
+                AssetLocation::Embedded("remounted-icon.png".into()),
+                size(px(32.0), px(32.0)),
+                1.0,
+                ObjectFit::Cover,
+            )
+            .expect("test target should be valid");
+        let pin = cx.pin_sized_image_request(&request);
+        (request, pin)
+    });
+    test.run_until_parked();
+    test.update(|cx| {
+        let image = cx
+            .cached_asset_lease::<crate::SizedImageLoader>(&request)
+            .unwrap()
+            .get()
+            .unwrap()
+            .unwrap();
+        cx.release_sized_image_element_pin(&request, pin, Some(image.clone()), None);
+        assert_eq!(cx.sized_image_element_ref_count_for_test(&request), 0);
+
+        let remounted = cx.pin_sized_image_request(&request);
+        let reused = cx
+            .cached_asset_lease::<crate::SizedImageLoader>(&request)
+            .unwrap()
+            .get()
+            .expect("remount must be ready without running the executor")
+            .unwrap();
+        assert!(Arc::ptr_eq(&image, &reused));
+        assert_eq!(loads.load(Ordering::Relaxed), 1);
+        cx.release_sized_image_element_pin(&request, remounted, None, None);
+    });
+}
+
+#[test]
+fn memory_trim_releases_idle_images_but_preserves_active_pins() {
+    let mut test = TestAppContext::single();
+    let (request, pin) = test.update(|cx| {
+        cx.asset_source = Arc::new(image_assets(Arc::new(AtomicUsize::new(0))));
+        let request = cx
+            .image_render_request(
+                AssetLocation::Embedded("trimmed-icon.png".into()),
+                size(px(32.0), px(32.0)),
+                1.0,
+                ObjectFit::Cover,
+            )
+            .expect("test target should be valid");
+        let pin = cx.pin_sized_image_request(&request);
+        (request, pin)
+    });
+    test.run_until_parked();
+    test.update(|cx| {
+        cx.trim_image_memory(crate::ImageMemoryTrimLevel::Aggressive);
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_some()
+        );
+        cx.release_sized_image_element_pin(&request, pin, None, None);
+        cx.trim_image_memory(crate::ImageMemoryTrimLevel::Moderate);
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn explicit_image_removal_retires_after_last_element_releases() {
+    let mut test = TestAppContext::single();
+    let (request, pin) = test.update(|cx| {
+        cx.asset_source = Arc::new(image_assets(Arc::new(AtomicUsize::new(0))));
+        let request = cx
+            .image_render_request(
+                AssetLocation::Embedded("removed-icon.png".into()),
+                size(px(32.0), px(32.0)),
+                1.0,
+                ObjectFit::Cover,
+            )
+            .expect("test target should be valid");
+        let pin = cx.pin_sized_image_request(&request);
+        (request, pin)
+    });
+    test.run_until_parked();
+    test.update(|cx| {
+        assert!(cx.remove_image_render_request_in(&request, None).is_some());
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_some()
+        );
+        cx.release_sized_image_element_pin(&request, pin, None, None);
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_none()
+        );
+    });
+}
 
 #[test]
 fn compressed_image_preload_reuses_and_removes_global_asset() {

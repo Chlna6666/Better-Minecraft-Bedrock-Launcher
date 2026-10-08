@@ -16,12 +16,16 @@ use super::App;
 
 type AssetId = (TypeId, u64);
 
+mod idle_images;
+pub(super) use idle_images::IdleImageCache;
+
 struct OwnedAssetEntry<T>
 where
     T: Clone + Send + 'static,
 {
     identity: Rc<()>,
     lease: AssetLease<T>,
+    retire_when_unpinned: bool,
 }
 
 impl<T> OwnedAssetEntry<T>
@@ -59,7 +63,11 @@ where
             .detach();
         }
 
-        Self { identity, lease }
+        Self {
+            identity,
+            lease,
+            retire_when_unpinned: false,
+        }
     }
 
     fn get(&self) -> Option<T> {
@@ -156,6 +164,10 @@ impl App {
             return;
         }
 
+        for asset_id in self.idle_sized_images.take_keys() {
+            self.retire_sized_image(asset_id, None, None);
+        }
+
         let resource_type = TypeId::of::<crate::ResourceImageLoader>();
         let inline_type = TypeId::of::<crate::AssetLogger<crate::ClipboardImageLoader>>();
         let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageLoader>>();
@@ -187,6 +199,7 @@ impl App {
         }
 
         for (asset_id, image) in evicted {
+            self.idle_sized_images.remove(asset_id);
             self.asset_entries.remove(&asset_id);
             self.drop_image(image, None);
             if asset_id.0 == target_type {
@@ -194,64 +207,6 @@ impl App {
             }
         }
         crate::trim_compressed_cache();
-    }
-
-    pub(crate) fn pin_sized_image_request(
-        &mut self,
-        request: &ImageRenderRequest,
-    ) -> crate::AssetPin<Result<Arc<RenderImage>, ImageCacheError>> {
-        self.fetch_asset::<crate::SizedImageLoader>(request).pin()
-    }
-
-    pub(crate) fn release_sized_image_element_pin(
-        &mut self,
-        request: &ImageRenderRequest,
-        pin: crate::AssetPin<Result<Arc<RenderImage>, ImageCacheError>>,
-        fallback_image: Option<Arc<RenderImage>>,
-        current_window: Option<&mut Window>,
-    ) {
-        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        let should_retire = self
-            .asset_entries
-            .get(&asset_id)
-            .and_then(|entry| {
-                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
-            })
-            .is_some_and(|entry| entry.shares_pin(&pin) && entry.pin_count() == 1);
-
-        if !should_retire {
-            return;
-        }
-
-        let cached_image = self
-            .asset_entries
-            .remove(&asset_id)
-            .and_then(|entry| {
-                entry
-                    .downcast::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
-                    .ok()
-            })
-            .and_then(|entry| entry.get())
-            .and_then(Result::ok);
-
-        if let Some(image) = fallback_image.or(cached_image) {
-            self.drop_image(image, current_window);
-        }
-        drop_image_asset_retained(asset_id.1);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sized_image_element_ref_count_for_test(
-        &self,
-        request: &ImageRenderRequest,
-    ) -> usize {
-        let asset_id = (TypeId::of::<crate::SizedImageLoader>(), hash(request));
-        self.asset_entries
-            .get(&asset_id)
-            .and_then(|entry| {
-                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
-            })
-            .map_or(0, OwnedAssetEntry::pin_count)
     }
 
     /// Remove an asset from GPUI's cache.
@@ -272,9 +227,17 @@ impl App {
                 .and_then(|entry| entry.downcast_ref::<OwnedAssetEntry<A::Output>>())
                 .is_some_and(|entry| entry.pin_count() != 0)
         {
+            if let Some(entry) = self
+                .asset_entries
+                .get_mut(&asset_id)
+                .and_then(|entry| entry.downcast_mut::<OwnedAssetEntry<A::Output>>())
+            {
+                entry.retire_when_unpinned = true;
+            }
             return self.cached_asset_lease::<A>(source);
         }
 
+        self.idle_sized_images.remove(asset_id);
         self.asset_entries
             .remove(&asset_id)
             .and_then(|entry| entry.downcast::<OwnedAssetEntry<A::Output>>().ok())

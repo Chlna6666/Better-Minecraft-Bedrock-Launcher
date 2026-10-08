@@ -7,9 +7,7 @@ use crate::{ObjectFit, Result, size};
 use smallvec::SmallVec;
 use std::mem::MaybeUninit;
 
-use super::resample::{
-    bgra_byte_len, intermediate_sample_size, resize_rgba_frame, rgba_image_from_bgra,
-};
+use super::resample::{bgra_byte_len, intermediate_sample_size, resize_bgra_bytes};
 use crate::assets::{
     AnimatedFrame, RenderImage, acquire_bitmap_buffer_capacity, release_bitmap_buffer,
 };
@@ -34,9 +32,8 @@ pub(super) fn render_sized(
             initial_render_path,
         )
     } else {
-        let rgba = rgba_image_from_bgra(output, decoded_target)?;
-        let (rgba, render_path) = resize_rgba_frame(rgba, fitted_target, initial_render_path)?;
-        let frame = AnimatedFrame::from_rgba_image(0, rgba);
+        let (frame, render_path) =
+            resize_bgra_bytes(output, decoded_target, fitted_target, initial_render_path)?;
         (
             RenderImage::from_resident_frames(SmallVec::from_elem(frame, 1)),
             render_path,

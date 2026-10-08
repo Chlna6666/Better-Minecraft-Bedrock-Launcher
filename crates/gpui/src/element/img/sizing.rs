@@ -102,7 +102,7 @@ pub(super) fn render_sized_image(
                                 &mut state.playback,
                                 &render_image,
                                 animation_config,
-                                cx.background_executor(),
+                                window.animation_time(),
                             );
                             schedule_next_frame(&state.playback, window, cx, animation_config);
                             frame
@@ -203,7 +203,7 @@ fn render_current_sized_image(
             &mut state.playback,
             &render_image,
             animation_config,
-            cx.background_executor(),
+            window.animation_time(),
         );
         schedule_next_frame(&state.playback, window, cx, animation_config);
         frame?
