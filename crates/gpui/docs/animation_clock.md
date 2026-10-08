@@ -84,6 +84,15 @@ animations or renders. A platform callback that arrives before the window's next
 merged with pending work and deferred, so all visible state is still sampled once from the actual
 `run_platform_frame` timestamp.
 
+X11 Nova's GPU owner waits to presentation deadlines using the native owner's XRandR interval.
+This is active only while retained damage or timelines need presentation; idle and hidden windows
+have no deadline. Readiness notifications wake this continuation without UI dispatch. Wayland uses
+actual surface frame callbacks on a connection-owned native event queue, with coalesced requests and
+visibility generations; output mode refresh values do not schedule its frames. The configured
+FrameClock remains an additional minimum interval. Neither path runs UI callbacks or rebuilds layout.
+Native input/configure dispatch still shares the Linux UI event loop. XRandR cadence is not proof of
+physical scanout/VRR timing. Windows uses its existing independent native DWM pacing.
+
 The interval is per window. Changing it updates that window's active Nova presentation packet on
 the GPU owner through an ordered control command and does not change other windows' pacing. The watchdog uses the configured
 interval when one is available and expands its timeout to match that window's recent native callback

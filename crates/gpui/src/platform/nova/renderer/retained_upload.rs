@@ -666,7 +666,10 @@ mod tests {
         );
         retained.mark_uploaded(0);
         assert!(!retained.needs_static_upload(0));
-        assert_eq!(retained.static_upload_mask(1).count(), 12);
+        assert_eq!(
+            retained.static_upload_mask(1).count(),
+            StaticUploadMask::STREAM_COUNT
+        );
 
         upload.quads.clear();
         upload.quads.extend_from_slice(b"quad-b");
@@ -689,7 +692,10 @@ mod tests {
         assert_eq!(slot_zero.count(), 1);
         // A frame-resource slot that never received the previous static scene still requires all
         // streams, independent of which streams changed relative to another slot.
-        assert_eq!(retained.static_upload_mask(1).count(), 12);
+        assert_eq!(
+            retained.static_upload_mask(1).count(),
+            StaticUploadMask::STREAM_COUNT
+        );
 
         retained.mark_uploaded(0);
         assert!(!retained.needs_static_upload(0));

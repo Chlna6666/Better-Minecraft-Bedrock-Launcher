@@ -310,6 +310,32 @@ mod tests {
     }
 
     #[test]
+    fn presentation_packet_deadline_tracks_successful_submission_and_frame_limit() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(20);
+        let mut packet = PresentationPacket::new(
+            Arc::new(Scene::default()),
+            [],
+            [],
+            now,
+            1.0,
+            DirtyRegion::empty(),
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        );
+        packet.set_frame_interval(Some(interval));
+        assert_eq!(packet.presentation_deadline(), None);
+        assert!(packet.presentation_is_due(now));
+        packet.record_presentation(now);
+        assert_eq!(packet.presentation_deadline(), Some(now + interval));
+        assert!(!packet.presentation_is_due(now + interval - Duration::from_nanos(1)));
+        assert!(packet.presentation_is_due(now + interval));
+        packet.set_frame_interval(None);
+        assert_eq!(packet.presentation_deadline(), None);
+        assert!(packet.presentation_is_due(now));
+    }
+
+    #[test]
     fn bounds_fragmented_damage_metadata() {
         let mut region = DirtyRegion::empty();
         for index in 0..=MAX_DIRTY_RECTS {
@@ -964,6 +990,12 @@ impl PresentationPacket {
         self.frame_interval
             .zip(self.last_presented_at)
             .is_none_or(|(interval, last_presented_at)| now >= last_presented_at + interval)
+    }
+
+    pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
+        self.frame_interval
+            .zip(self.last_presented_at)
+            .map(|(interval, last)| last + interval)
     }
 
     pub(crate) fn record_presentation(&mut self, presented_at: Instant) {

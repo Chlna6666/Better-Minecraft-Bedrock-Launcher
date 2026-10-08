@@ -9,7 +9,7 @@ use std::{
     os::fd::AsFd,
     path::PathBuf,
     rc::{Rc, Weak},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -197,6 +197,8 @@ fn set_ime_cursor_rectangle_after_done(
 
 #[derive(Clone)]
 pub struct Globals {
+    connection: Connection,
+    presentation_clock: Arc<OnceLock<Result<Arc<super::presentation_clock::Clock>, String>>>,
     pub qh: QueueHandle<WaylandClientStatePtr>,
     pub activation: Option<xdg_activation_v1::XdgActivationV1>,
     pub compositor: wl_compositor::WlCompositor,
@@ -225,6 +227,7 @@ impl Globals {
         executor: ForegroundExecutor,
         qh: QueueHandle<WaylandClientStatePtr>,
         seat: wl_seat::WlSeat,
+        connection: Connection,
     ) -> Self {
         let csd_compositor = CompositorState::bind(&globals, &qh).ok().map(Arc::new);
         let csd_subcompositor = csd_compositor.as_ref().and_then(|compositor| {
@@ -234,6 +237,8 @@ impl Globals {
         });
         let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         Globals {
+            connection,
+            presentation_clock: Arc::new(OnceLock::new()),
             activation: globals.bind(&qh, 1..=1, ()).ok(),
             compositor: globals
                 .bind(
@@ -257,7 +262,7 @@ impl Globals {
             csd_shm: Arc::new(Shm::from(shm.clone())),
             shm,
             seat,
-            wm_base: globals.bind(&qh, 2..=5, ()).unwrap(),
+            wm_base: globals.bind(&qh, 2..=6, ()).unwrap(),
             viewporter: globals.bind(&qh, 1..=1, ()).ok(),
             fractional_scale_manager: globals.bind(&qh, 1..=1, ()).ok(),
             decoration_manager: globals.bind(&qh, 1..=1, ()).ok(),
@@ -266,6 +271,19 @@ impl Globals {
             executor,
             qh,
         }
+    }
+
+    pub(super) fn presentation_clock(
+        &self,
+    ) -> anyhow::Result<Arc<super::presentation_clock::Clock>> {
+        self.presentation_clock
+            .get_or_init(|| {
+                super::presentation_clock::Clock::new(self.connection.clone())
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|error| anyhow::anyhow!("{error}"))
     }
 }
 
@@ -612,6 +630,7 @@ impl WaylandClient {
             common.foreground_executor.clone(),
             qh.clone(),
             seat.clone(),
+            conn.clone(),
         );
 
         let data_device = globals

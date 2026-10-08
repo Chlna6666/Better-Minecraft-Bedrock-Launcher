@@ -69,7 +69,15 @@ vsync
 
 Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
 
-On Windows, winit and Nova own the native event loop, surface, active scene, sampling, and present on the native thread. `Application::run_separate` constructs `App` and renders on the GPUI UI thread; scene packets and window commands cross to the native owner, while input and animation completion events return to UI. The blocked-Render lab distinguishes continued native animation sampling from nominal-refresh continuity; both require validation for the chosen backend and monitor before declaring the gate passed. Linux runtime validation remains outstanding; its owner implementation is described in `GPUI_VENDOR_RENDERING.md`.
+On Windows, winit owns native events and DWM pacing; Nova's GPU owner retains the scene, samples
+animations and submits frames. `Application::run_separate` constructs `App` and renders on the GPUI
+UI thread; packets cross through the native producer to the GPU owner, while input and animation
+completions return to UI. X11 Nova uses GPU-owner deadlines supplied by XRandR; Wayland uses actual
+surface frame callbacks on a dedicated native event queue. Both send retained animation ticks without
+waiting for UI dispatch. Input/configure dispatch
+remains shared with UI on Linux. The blocked-Render lab distinguishes animation progress from
+nominal-refresh continuity; both require backend/monitor validation. Linux runtime validation remains
+outstanding; details are in `GPUI_VENDOR_RENDERING.md`.
 
 Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `PresentationPacket` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably. The packet itself owns dynamic/dirty/blur metadata and shares only the immutable Scene through `Arc`, so presentation submission no longer borrows Window state.
 

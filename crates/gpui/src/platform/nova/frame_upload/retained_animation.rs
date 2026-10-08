@@ -86,6 +86,9 @@ impl FrameUpload {
             *previous = *value;
         }
 
+        if scene.blurs.is_empty() {
+            return;
+        }
         for batch in scene.prepared_batches() {
             let PreparedSceneBatch::Blurs(range) = batch else {
                 continue;
@@ -128,6 +131,9 @@ impl FrameUpload {
         // Keep the traversal identical to `encode_scene`: each child blur scene is encoded when its
         // `PreparedSceneBatch::Blurs` entry is encountered. This matters when callers construct
         // nested scenes with independent animation-value arrays.
+        if scene.blurs.is_empty() {
+            return;
+        }
         for batch in scene.prepared_batches() {
             let PreparedSceneBatch::Blurs(range) = batch else {
                 continue;

@@ -651,6 +651,12 @@ impl NovaRenderer {
         }
     }
 
+    pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
+        self.active_presentation_packet
+            .as_ref()
+            .and_then(PresentationPacket::presentation_deadline)
+    }
+
     pub(crate) fn take_animation_completions(
         &mut self,
     ) -> SmallVec<[crate::SceneAnimationCompletion; 4]> {

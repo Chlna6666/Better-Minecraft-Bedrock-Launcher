@@ -1020,6 +1020,13 @@ impl X11Window {
 }
 
 impl X11WindowStatePtr {
+    pub(crate) fn set_presentation_interval(&self, interval: Option<std::time::Duration>) {
+        self.state
+            .borrow()
+            .renderer
+            .set_presentation_interval(interval);
+    }
+
     pub fn should_close(&self) -> bool {
         let mut cb = self.callbacks.borrow_mut();
         if let Some(mut should_close) = cb.should_close.take() {

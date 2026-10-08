@@ -1,3 +1,5 @@
+#[cfg(any(test, not(target_os = "windows")))]
+use std::time::Duration;
 use std::{collections::VecDeque, sync::mpsc::SyncSender, time::Instant};
 
 use crate::{
@@ -17,22 +19,35 @@ pub(super) enum Command {
         reply: Option<SyncSender<Result<bool>>>,
     },
     Tick(Instant, Option<ActivePresentationTiming>),
+    Continue(Instant),
     Resize(Size<DevicePixels>),
     Transparency(bool),
+    #[cfg(any(test, not(target_os = "windows")))]
+    PresentationInterval(Option<Duration>),
+    #[cfg(not(target_os = "windows"))]
+    PresentationClock(std::sync::Arc<dyn Fn() + Send + Sync>),
+    #[cfg(not(target_os = "windows"))]
+    PresentationVisibility(bool),
     Call(Box<dyn FnOnce(&mut NovaRenderer) + Send>),
     Shutdown(SyncSender<()>),
 }
 
 impl Command {
     fn is_barrier(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Resize(_)
-                | Self::Transparency(_)
-                | Self::Call(_)
-                | Self::Shutdown(_)
-                | Self::Draw { reply: Some(_), .. }
-        )
+            | Self::Transparency(_)
+            | Self::Call(_)
+            | Self::Shutdown(_)
+            | Self::Draw { reply: Some(_), .. } => true,
+            #[cfg(any(test, not(target_os = "windows")))]
+            Self::PresentationInterval(_) => true,
+            #[cfg(not(target_os = "windows"))]
+            Self::PresentationClock(_) => true,
+            #[cfg(not(target_os = "windows"))]
+            Self::PresentationVisibility(_) => true,
+            _ => false,
+        }
     }
 }
 
@@ -86,11 +101,13 @@ impl Queue {
                     packet.merge_pending_damage_from(&previous);
                 }
             }
-            Command::Tick(..) => {
-                if let Some(index) = (barrier..state.commands.len())
-                    .rev()
-                    .find(|index| matches!(state.commands[*index], Command::Tick(..)))
-                {
+            Command::Tick(..) | Command::Continue(..) => {
+                if let Some(index) = (barrier..state.commands.len()).rev().find(|index| {
+                    matches!(
+                        state.commands[*index],
+                        Command::Tick(..) | Command::Continue(..)
+                    )
+                }) {
                     state.commands.remove(index);
                 }
             }
@@ -119,11 +136,17 @@ impl Queue {
     }
 
     pub(super) fn has_presentation(&self) -> bool {
-        self.0
-            .lock()
-            .commands
-            .iter()
-            .any(|command| matches!(command, Command::Draw { .. } | Command::Tick(..)))
+        self.0.lock().commands.iter().any(|command| {
+            matches!(
+                command,
+                Command::Draw { .. } | Command::Tick(..) | Command::Continue(..)
+            )
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn has_commands(&self) -> bool {
+        !self.0.lock().commands.is_empty()
     }
 
     pub(super) fn close(&self) {

@@ -212,16 +212,26 @@ impl RasterBoundsCache {
             return;
         }
 
-        let mut candidates = self
+        let remove_count = live_len - target_len;
+        let mut epochs = self
             .entries
-            .iter()
-            .map(|(params, entry)| (params.clone(), entry.last_used_epoch()))
+            .values()
+            .map(RasterBoundsEntry::last_used_epoch)
             .collect::<Vec<_>>();
-        candidates.sort_unstable_by_key(|(_, last_used_epoch)| *last_used_epoch);
-
-        for (params, _) in candidates.into_iter().take(live_len - target_len) {
-            self.entries.remove(&params);
-        }
+        let cutoff = *epochs.select_nth_unstable(remove_count - 1).1;
+        let mut tied_removals =
+            remove_count - epochs.iter().filter(|epoch| **epoch < cutoff).count();
+        // Only epochs need temporary storage. Retain live glyph keys in place and handle equal
+        // epochs explicitly so pressure always removes exactly the requested number of entries.
+        self.entries
+            .retain(|_, entry| match entry.last_used_epoch().cmp(&cutoff) {
+                cmp::Ordering::Less => false,
+                cmp::Ordering::Equal if tied_removals > 0 => {
+                    tied_removals -= 1;
+                    false
+                }
+                _ => true,
+            });
     }
 
     fn clear(&mut self) {
@@ -1259,6 +1269,7 @@ impl DerefMut for LineWrapperHandle {
 
 #[cfg(test)]
 mod tests {
+    mod profile;
     use super::*;
     use crate::{DevicePixels, FontId, GlyphId, GpuiMemoryTrimLevel, point, px, size};
 
@@ -1344,5 +1355,26 @@ mod tests {
         for glyph_id in 224..256 {
             assert_eq!(cache.get(&test_glyph_params(glyph_id)), Some(bounds));
         }
+    }
+
+    #[test]
+    fn raster_bounds_pressure_removes_exact_count_even_with_tied_epochs() {
+        let mut cache = RasterBoundsCache::default();
+        for glyph_id in 0..32 {
+            cache.entries.insert(
+                test_glyph_params(glyph_id),
+                RasterBoundsEntry::new(test_raster_bounds(), u64::from(glyph_id / 8)),
+            );
+        }
+        cache.evict_lru_to_len(13);
+        assert_eq!(cache.len(), 13);
+        for glyph_id in 24..32 {
+            assert!(cache.entries.contains_key(&test_glyph_params(glyph_id)));
+        }
+        for glyph_id in 0..16 {
+            assert!(!cache.entries.contains_key(&test_glyph_params(glyph_id)));
+        }
+        cache.evict_lru_to_len(0);
+        assert_eq!(cache.len(), 0);
     }
 }

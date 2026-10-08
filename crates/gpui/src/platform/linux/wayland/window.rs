@@ -131,6 +131,7 @@ pub struct WaylandWindowState {
     display: Option<(ObjectId, Output)>,
     globals: Globals,
     renderer: OwnedNovaRenderer,
+    presentation_clock: super::presentation_clock::FrameClock,
     bounds: Bounds<Pixels>,
     scale: f32,
     input_handler: Option<PlatformInputHandler>,
@@ -215,6 +216,10 @@ impl WaylandWindowState {
             .and_then(|titlebar| titlebar.title.as_ref())
             .map(ToString::to_string)
             .unwrap_or_default();
+        let presentation_clock = globals
+            .presentation_clock()?
+            .register(surface.clone(), renderer.presentation_tick_sender())?;
+        renderer.set_presentation_clock(presentation_clock.request_callback());
         let client_frame = match (
             options.titlebar.as_ref(),
             globals.csd_compositor.as_ref(),
@@ -265,6 +270,7 @@ impl WaylandWindowState {
             outputs: HashMap::default(),
             display: None,
             renderer,
+            presentation_clock,
             bounds: options.bounds,
             scale: 1.0,
             input_handler: None,
@@ -296,6 +302,7 @@ impl WaylandWindowState {
             decoration_mode_configured: false,
         };
         state.refresh_client_frame_title();
+        state.sync_presentation_visibility();
         Ok(state)
     }
 
@@ -320,6 +327,12 @@ impl WaylandWindowState {
         }
         self.display = current_output;
         scale
+    }
+
+    fn sync_presentation_visibility(&self) {
+        let visible = self.visibility == WindowVisibility::Visible;
+        self.renderer.set_presentation_visibility(visible);
+        self.presentation_clock.set_visible(visible);
     }
 
     pub fn inset(&self) -> Pixels {
@@ -473,6 +486,7 @@ impl Drop for WaylandWindow {
         let surface_id = state.surface.id();
         let client = state.client.clone();
 
+        state.presentation_clock.close();
         state.renderer.destroy();
         state.client_frame.take();
         if let Some(decoration) = &state.decoration {
@@ -1237,6 +1251,7 @@ impl WaylandWindowStatePtr {
     }
 
     fn report_visibility(&self, visibility: WindowVisibility) {
+        self.state.borrow().sync_presentation_visibility();
         let callback = self.callbacks.borrow_mut().visibility_change.take();
         if let Some(mut callback) = callback {
             callback(visibility);

@@ -3,6 +3,7 @@ mod client;
 mod clipboard;
 mod cursor;
 mod display;
+mod presentation_clock;
 mod serial;
 mod window;
 

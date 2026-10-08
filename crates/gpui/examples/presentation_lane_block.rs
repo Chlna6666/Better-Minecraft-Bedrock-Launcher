@@ -1,6 +1,7 @@
 //! Native presentation-lane gate: the renderer must advance while UI Render is blocked.
 //!
-//! Run with `--backend=nova-dx12` or `--backend=nova-vulkan`. The process exits with status 1
+//! Run with `--backend=nova-dx11`, `nova-dx12`, `nova-opengl`, or `nova-vulkan`.
+//! The process exits with status 1
 //! unless at least two distinct animation samples are presented during a 200 ms UI Render block.
 
 use std::{
@@ -109,14 +110,19 @@ fn main() {
             .strip_prefix("--backend=")
             .and_then(|value| value.parse().ok())
         {
-            Some(backend @ (RendererBackend::NovaDx12 | RendererBackend::NovaVulkan)) => backend,
+            Some(
+                backend @ (RendererBackend::NovaDx11
+                | RendererBackend::NovaDx12
+                | RendererBackend::NovaOpenGl
+                | RendererBackend::NovaVulkan),
+            ) => backend,
             _ => {
-                eprintln!("expected --backend=nova-dx12 or --backend=nova-vulkan");
+                eprintln!("expected --backend=nova-dx11, nova-dx12, nova-opengl, or nova-vulkan");
                 std::process::exit(2);
             }
         },
         None => {
-            eprintln!("expected --backend=nova-dx12 or --backend=nova-vulkan");
+            eprintln!("expected --backend=nova-dx11, nova-dx12, nova-opengl, or nova-vulkan");
             std::process::exit(2);
         }
     };

@@ -1842,6 +1842,15 @@ impl X11ClientState {
             }
         }
 
+        if let Some(window_ref) = self.windows.get(&x_window) {
+            let interval = match &window_ref.refresh_state {
+                Some(RefreshState::PeriodicRefresh { refresh_rate, .. }) => Some(*refresh_rate),
+                _ => None,
+            };
+            window_ref
+                .window
+                .set_presentation_interval(interval.filter(|_| is_visible));
+        }
         if is_visible {
             self.schedule_frame_request(x_window);
         }

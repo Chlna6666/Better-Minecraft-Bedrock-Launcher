@@ -26,6 +26,7 @@ use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
 
 mod queue;
+mod schedule;
 #[cfg(all(test, target_os = "windows"))]
 mod tests;
 mod worker;
@@ -37,6 +38,8 @@ use worker::{Entry, Worker};
 pub(crate) struct RenderOwnerFrame {
     pub(crate) submitted: bool,
     pub(crate) pending: bool,
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) autonomous: bool,
     pub(crate) failed: bool,
     pub(crate) ready_enqueued_at: Option<Instant>,
     pub(crate) completed_animations: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>,
@@ -65,11 +68,29 @@ fn sender() -> Result<&'static Sender<Job>> {
                 .name("gpui-gpu-owner".into())
                 .spawn(move || {
                     let mut worker = Worker::default();
-                    while let Ok(job) = receiver.recv() {
-                        job(&mut worker);
+                    loop {
+                        #[cfg(not(target_os = "windows"))]
+                        let received = match worker.next_deadline() {
+                            Some(deadline) => receiver
+                                .recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                            None => receiver
+                                .recv()
+                                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                        };
+                        #[cfg(target_os = "windows")]
+                        let received = receiver
+                            .recv()
+                            .map_err(|_| mpsc::RecvTimeoutError::Disconnected);
+                        match received {
+                            Ok(job) => job(&mut worker),
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
                         if worker.is_closing() {
                             break;
                         }
+                        #[cfg(not(target_os = "windows"))]
+                        worker.present_due();
                     }
                 })?;
             Ok(Executor {
@@ -302,6 +323,51 @@ impl RenderOwner {
     pub(super) fn set_frame_interval(&self, interval: Option<Duration>) {
         if let Err(error) = self.control(move |renderer| renderer.set_frame_interval(interval)) {
             log::error!("failed to queue GPU frame interval: {error:#}");
+        }
+    }
+
+    /// Supplies native display cadence, or pauses autonomous presentation while hidden.
+    /// Windows retains DWM-driven ticks; Linux native owners update this on display/visibility changes.
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn set_presentation_interval(&self, interval: Option<Duration>) {
+        if let Err(error) = self.enqueue(Command::PresentationInterval(interval)) {
+            log::error!("failed to queue GPU presentation cadence: {error:#}");
+        }
+    }
+
+    /// A native frame source can wake GPU sampling without borrowing any UI/native window state.
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let id = self.id;
+        let queue = self.queue.clone();
+        let sender = self.sender.clone();
+        let status = self.status.clone();
+        Arc::new(move || {
+            if !status.pending.load(Ordering::Acquire) {
+                return;
+            }
+            if let Err(error) = queue.enqueue(Command::Tick(Instant::now(), None), || {
+                sender
+                    .send(Box::new(move |worker| worker.drain(id)))
+                    .map_err(|_| anyhow!("GPU owner stopped"))
+            }) {
+                log::trace!("discarding native GPU tick after shutdown: {error:#}");
+            }
+        })
+    }
+
+    /// Arms the native frame callback before a buffer submission, without a separate surface commit.
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn set_presentation_clock(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        if let Err(error) = self.enqueue(Command::PresentationClock(callback)) {
+            log::error!("failed to queue native presentation clock: {error:#}");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn set_presentation_visibility(&self, visible: bool) {
+        if let Err(error) = self.enqueue(Command::PresentationVisibility(visible)) {
+            log::error!("failed to queue native presentation visibility: {error:#}");
         }
     }
 

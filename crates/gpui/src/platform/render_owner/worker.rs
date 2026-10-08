@@ -1,6 +1,7 @@
 use super::{
     RenderOwnerFrame, Status,
     queue::{Command, Queue},
+    schedule::Schedule,
 };
 use crate::{PresentationPacket, platform::NovaRenderer};
 use anyhow::Result;
@@ -29,7 +30,46 @@ impl Worker {
         self.closing = true;
     }
     pub(super) fn insert(&mut self, id: u64, entry: Entry) {
+        let mut entry = entry;
+        entry.id = id;
         self.entries.insert(id, entry);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn next_deadline(&self) -> Option<Instant> {
+        self.entries
+            .values()
+            .filter_map(|entry| {
+                entry
+                    .schedule
+                    .deadline()
+                    .filter(|_| !entry.queue.has_commands())
+            })
+            .min()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn present_due(&mut self) {
+        let now = Instant::now();
+        let due = self
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| {
+                entry
+                    .schedule
+                    .deadline()
+                    .filter(|deadline| *deadline <= now && !entry.queue.has_commands())
+                    .map(|deadline| (*id, deadline))
+            })
+            .min_by_key(|(_, deadline)| *deadline)
+            .map(|(id, _)| id);
+        // Check the command channel between windows, so overdue animations cannot delay a
+        // resize/shutdown barrier behind a burst of submissions for every window.
+        if let Some(id) = due
+            && let Some(entry) = self.entries.get_mut(&id)
+        {
+            entry.execute(Command::Continue(now));
+        }
     }
 
     pub(super) fn drain(&mut self, id: u64) {
@@ -62,6 +102,7 @@ impl Worker {
 }
 
 pub(super) struct Entry {
+    id: u64,
     renderer: NovaRenderer,
     queue: Arc<Queue>,
     status: Arc<Status>,
@@ -70,6 +111,9 @@ pub(super) struct Entry {
     scene: Option<(PresentationPacket, bool)>,
     ready_registration: Arc<AtomicU64>,
     next_ready_registration: u64,
+    schedule: Schedule,
+    #[cfg(not(target_os = "windows"))]
+    presentation_clock: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Entry {
@@ -81,6 +125,7 @@ impl Entry {
         report: Arc<dyn Fn(RenderOwnerFrame) + Send + Sync>,
     ) -> Self {
         Self {
+            id: 0,
             renderer,
             queue,
             status,
@@ -89,6 +134,9 @@ impl Entry {
             scene: None,
             ready_registration: Arc::new(AtomicU64::new(0)),
             next_ready_registration: 0,
+            schedule: Schedule::default(),
+            #[cfg(not(target_os = "windows"))]
+            presentation_clock: None,
         }
     }
 
@@ -111,36 +159,11 @@ impl Entry {
                     log::trace!("first-frame caller dropped");
                 }
             }
-            Command::Tick(now, timing) => {
-                let mut completions = smallvec::SmallVec::new();
-                let result = if self.scene.is_some() {
-                    self.present_scene()
-                } else {
-                    (|| {
-                        if !self.ready()? {
-                            return Ok(false);
-                        }
-                        let frame_time = Instant::now();
-                        if !self.renderer.active_presentation_is_due(frame_time) {
-                            return Ok(false);
-                        }
-                        let timing = timing.map(|mut timing| {
-                            timing.window_dispatch_delay +=
-                                frame_time.saturating_duration_since(now);
-                            timing.frame_started_at = frame_time;
-                            timing
-                        });
-                        if let Some(frame) =
-                            self.renderer.present_active_frame(frame_time, timing)?
-                        {
-                            completions = frame.completed_animations;
-                            Ok(true)
-                        } else {
-                            Ok(false)
-                        }
-                    })()
-                };
-                self.report(&result, completions);
+            Command::Tick(now, timing) => self.tick(now, timing),
+            Command::Continue(now) => {
+                if self.schedule.is_enabled() {
+                    self.tick(now, None);
+                }
             }
             Command::Resize(size) => {
                 // Target recreation may cancel the backend's old readiness registration.
@@ -153,8 +176,82 @@ impl Entry {
                 self.ready_registration.store(0, Ordering::Release);
                 self.renderer.update_transparency(transparent);
             }
+            #[cfg(any(test, not(target_os = "windows")))]
+            Command::PresentationInterval(interval) => {
+                self.ready_registration.store(0, Ordering::Release);
+                self.schedule.set_interval(interval);
+                self.report(&Ok(false), smallvec::SmallVec::new());
+            }
+            #[cfg(not(target_os = "windows"))]
+            Command::PresentationClock(callback) => {
+                self.presentation_clock = Some(callback);
+                self.schedule.set_native_callbacks();
+            }
+            #[cfg(not(target_os = "windows"))]
+            Command::PresentationVisibility(visible) => {
+                self.ready_registration.store(0, Ordering::Release);
+                self.schedule.set_native_visible(visible);
+            }
             Command::Shutdown(_) => unreachable!("shutdown is handled by the worker"),
         }
+    }
+
+    fn tick(
+        &mut self,
+        now: Instant,
+        timing: Option<crate::platform::frame::ActivePresentationTiming>,
+    ) {
+        #[cfg(not(target_os = "windows"))]
+        if self.presentation_clock.is_some() && !self.schedule.is_enabled() {
+            return;
+        }
+        let mut completions = smallvec::SmallVec::new();
+        let result = if self.scene.is_some() {
+            self.present_scene()
+        } else {
+            (|| {
+                if !self.ready()? {
+                    return Ok(false);
+                }
+                let eligibility_time = Instant::now();
+                if !self.renderer.active_presentation_is_due(eligibility_time) {
+                    return Ok(false);
+                }
+                #[cfg(not(target_os = "windows"))]
+                if let Some(callback) = &self.presentation_clock {
+                    callback();
+                }
+                // One visual timestamp after native arming, shared by sampling, damage and upload.
+                #[cfg(not(target_os = "windows"))]
+                let frame_time = Instant::now();
+                #[cfg(target_os = "windows")]
+                let frame_time = eligibility_time;
+                let timing = timing.map(|mut timing| {
+                    timing.window_dispatch_delay += frame_time.saturating_duration_since(now);
+                    timing.frame_started_at = frame_time;
+                    timing
+                });
+                if let Some(frame) = self.renderer.present_active_frame(frame_time, timing)? {
+                    completions = frame.completed_animations;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })()
+        };
+        self.report(&result, completions);
+    }
+
+    #[cfg(any(test, not(target_os = "windows")))]
+    fn update_schedule(&mut self, retry: bool, submitted: bool) {
+        let pending = self.scene.is_some() || self.renderer.has_active_presentation_animations();
+        self.schedule.after_frame(
+            Instant::now(),
+            pending && retry,
+            self.ready_registration.load(Ordering::Acquire) != 0,
+            self.renderer.presentation_deadline(),
+            submitted,
+        );
     }
 
     fn present_scene(&mut self) -> Result<bool> {
@@ -164,6 +261,10 @@ impl Entry {
         let Some((mut packet, framebuffer_only)) = self.scene.take() else {
             return Ok(false);
         };
+        #[cfg(not(target_os = "windows"))]
+        if let Some(callback) = &self.presentation_clock {
+            callback();
+        }
         // This is the GPU frame's single visual sample, after waiting in the producer queue.
         // UI layout stays immutable; retained timelines are sampled by Nova using this timestamp.
         packet.frame_time = Instant::now();
@@ -191,6 +292,9 @@ impl Entry {
             self.ready_registration.store(generation, Ordering::Release);
             let registration = self.ready_registration.clone();
             let report = self.report.clone();
+            let autonomous = self.schedule.is_enabled();
+            let queue = self.queue.clone();
+            let id = self.id;
             let callback = Box::new(move || {
                 if registration
                     .compare_exchange(generation, 0, Ordering::AcqRel, Ordering::Acquire)
@@ -198,9 +302,22 @@ impl Entry {
                 {
                     return;
                 }
+                if autonomous {
+                    let result = queue.enqueue(Command::Continue(Instant::now()), || {
+                        super::sender()?
+                            .send(Box::new(move |worker| worker.drain(id)))
+                            .map_err(|_| anyhow::anyhow!("GPU owner stopped"))
+                    });
+                    if let Err(error) = result {
+                        log::trace!("discarding GPU readiness after renderer shutdown: {error:#}");
+                    }
+                    return;
+                }
                 report(RenderOwnerFrame {
                     submitted: false,
                     pending: true,
+                    #[cfg(not(target_os = "windows"))]
+                    autonomous: false,
                     failed: false,
                     ready_enqueued_at: Some(Instant::now()),
                     completed_animations: smallvec::SmallVec::new(),
@@ -234,6 +351,8 @@ impl Entry {
             || self.renderer.has_active_presentation_animations()
             || self.queue.has_presentation();
         self.status.pending.store(pending, Ordering::Release);
+        #[cfg(any(test, not(target_os = "windows")))]
+        self.update_schedule(result.is_ok(), submitted);
         if let Err(error) = result {
             log::error!("GPU owner presentation failed: {error:#}");
         }
@@ -243,6 +362,8 @@ impl Entry {
         (self.report)(RenderOwnerFrame {
             submitted,
             pending,
+            #[cfg(not(target_os = "windows"))]
+            autonomous: self.schedule.is_enabled() || self.presentation_clock.is_some(),
             failed: result.is_err(),
             ready_enqueued_at: None,
             completed_animations,

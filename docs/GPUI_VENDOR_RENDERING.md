@@ -108,12 +108,27 @@ When a platform callback contains both a renderer-owned animation tick and dirty
 
 Windows and Linux/FreeBSD Nova windows share one dedicated GPU owner thread. It creates devices, swapchains, window targets and extension renderers, encodes scenes, submits GPU work and destroys window resources. The thread-local device and pipeline registries are shared across windows on this owner. The UI produces immutable packets; native window owners hold producer proxies and native handles, without owning a Nova renderer.
 
-Windows keeps winit windows, native input and DWM frame pacing on its native event loop. Wayland and X11 keep protocol objects, callbacks and native surfaces on their platform thread. Only owned handle descriptors cross to the GPU owner; the native surface remains alive until the window's GPU destruction barrier completes. macOS's native Metal renderer is outside this Nova owner path.
+Windows keeps winit windows, native input and DWM frame pacing on its native event loop. Wayland and X11 keep input, configure and native surface lifecycle on their platform thread. Wayland presentation callbacks use a separate connection-owned event queue. Only owned handle descriptors cross to the GPU owner; the native surface remains alive until the window's GPU destruction barrier completes. macOS's native Metal renderer is outside this Nova owner path.
 
-Linux/FreeBSD currently runs native protocol dispatch and GPUI UI work on the same event loop.
-The GPU owner consumes submitted work independently, but a synchronous UI Render block also
-delays new native presentation ticks. This GPU ownership split does not provide Windows's separate
-native/UI host behavior on Linux; that requires its own native event-loop separation and validation.
+Linux/FreeBSD still runs native protocol dispatch and GPUI UI work on the same event loop.
+X11 supplies its XRandR refresh interval to the GPU owner. While a packet has pending damage or
+timelines, the owner waits to the earliest eligible window deadline and samples without a native/UI
+Tick round trip. Explicit FrameClock limits remain minimum intervals. Completed or hidden windows
+have no deadline; backend readiness notifications wake the owner directly when available.
+
+Wayland uses actual `wl_surface.frame` callbacks on one dedicated native event queue per connection.
+The queue sleeps in calloop when idle and sends coalesced ticks directly to the GPU owner. Before
+submitting a buffer, the GPU owner waits for this queue to arm a frame callback. Wayland binds the
+request to the next surface commit, normally the following WSI buffer commit; a concurrent UI native
+commit may consume it first. The clock never makes an empty surface commit, which could prematurely
+apply pending UI scale/region/CSD state. Requests stay coalesced until completion; visibility
+generations reject callbacks from before hiding. An explicit frame limit that skips a callback tick
+waits to the packet's deadline without polling the UI. Window teardown removes its callback source
+before destroying GPU resources or the surface; connection teardown joins the native thread.
+Output mode refresh values are not used as a Wayland frame clock. Native input, configure and
+visibility dispatch still require the Linux UI event loop. Windows retains independent DWM/native
+pacing. Linux/FreeBSD full compilation and real-window blocked-Render, visibility and resize
+validation remain outstanding on this host; the isolated Wayland clock type check is not runtime proof.
 
 The default first visibility handshake waits for an actual submitted frame. Windows opaque
 windows may opt into `WindowOptions::initial_background`: a native solid fill makes the mapped
@@ -136,7 +151,19 @@ shaders, pipelines), surface/swapchain and window resources (buffers, textures, 
 Preparation and renderer first-frame logs have separate timing origins; compare process-to-visible
 time to measure the end-to-end benefit.
 
-Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI layout or rebuilding its committed display list. Animation completions are returned only after successful submission. Windows, Wayland and X11 declare scene-animation ownership through `owns_scene_animations()`; queued/deferred timelines wait for owner completion reports. Backend readiness wakes the native frame lane when supported. A pending frame continues through native pacing; a GPU error requests a fresh UI commit. A static completed scene schedules no continuous owner work.
+Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI
+layout or rebuilding its committed display list. Animation completions are returned only after
+successful submission. Windows, Wayland and X11 declare ownership through `owns_scene_animations()`;
+queued/deferred timelines wait for owner completion reports. Backend readiness wakes either the
+autonomous GPU continuation or the native frame lane when supported. Autonomous reports return
+completions without requesting another UI presentation frame; windows without a reported cadence
+retain native pacing. A GPU error requests a fresh UI commit. A static completed scene schedules
+no continuous owner work. X11 backends without readiness notifications retry pending work at the
+reported output interval. Wayland Vulkan can defer image acquisition without a readiness notification,
+even after its initial readiness check passes. Since no buffer commit means no new callback,
+outstanding work then retries on the existing GPU owner with 1/2/4/8/16 ms capped backoff. Successful
+submission returns to native callback pacing; idle or hidden windows stop retries. Readiness
+notifications, where supported, resume GPU work without UI dispatch.
 
 The blocked-Render lab checks whether animation presentation progresses while UI `Render` is blocked. This does not establish nominal-refresh continuity or physical scanout timing.
 
@@ -632,9 +659,10 @@ foreground animation.
 ## Presentation-Only Frames
 
 `present_framebuffer_only()` is used when GPUI needs presentation without a new
-layout or paint pass. Nova re-encodes the retained scene and presents it through
-the direct swapchain path because it no longer keeps a second full-size present
-cache.
+layout or paint pass. Nova reuses its packed upload while the scene/size/alpha/quality key stays
+stable, refreshes compact animation values, and presents through the direct swapchain path.
+Frame-resource slots retain unchanged static streams. The animation refresh skips prepared-batch
+traversal entirely for scenes without element blur; scenes with blur retain their recursive ordering.
 
 This path is important for event-driven rendering because it allows GPU output
 or platform presentation to happen without forcing a CPU scene rebuild.
@@ -670,6 +698,10 @@ submission retirement and draw-step cost validation before they become a
 production path.
 
 ## Retained Resources And Memory Trim
+
+The measured 2026-10-09 Nova upload/allocator, GPUI PNG and text-pressure changes are recorded in
+[`GPUI_NOVA_MEMORY_PERFORMANCE.md`](GPUI_NOVA_MEMORY_PERFORMANCE.md), including backend coverage,
+rejected candidates, native readback checks and validation limits.
 
 GPUI keeps renderer resources across frames:
 

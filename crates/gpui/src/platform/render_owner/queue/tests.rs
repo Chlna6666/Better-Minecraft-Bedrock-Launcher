@@ -154,6 +154,31 @@ fn draining_rearms_only_after_queue_becomes_empty() {
 }
 
 #[test]
+fn readiness_continuation_cannot_replace_a_tick_across_a_pause_barrier() {
+    let queue = Queue::default();
+    let now = Instant::now();
+    queue.enqueue(Command::Continue(now), || Ok(())).unwrap();
+    queue
+        .enqueue(Command::PresentationInterval(None), || {
+            panic!("duplicate wake")
+        })
+        .unwrap();
+    queue
+        .enqueue(Command::Tick(now, None), || panic!("duplicate wake"))
+        .unwrap();
+    queue
+        .enqueue(Command::Continue(now), || panic!("duplicate wake"))
+        .unwrap();
+    assert!(matches!(queue.take(), Some(Command::Continue(..))));
+    assert!(matches!(
+        queue.take(),
+        Some(Command::PresentationInterval(None))
+    ));
+    assert!(matches!(queue.take(), Some(Command::Continue(..))));
+    assert!(!queue.finish_dispatch());
+}
+
+#[test]
 fn closing_releases_a_waiting_first_frame_handshake() {
     let queue = Queue::default();
     let (reply, receiver) = std::sync::mpsc::sync_channel(1);

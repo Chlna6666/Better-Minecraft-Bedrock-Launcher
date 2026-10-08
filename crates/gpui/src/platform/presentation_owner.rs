@@ -11,12 +11,18 @@ use crate::{
 };
 use anyhow::Result;
 use parking_lot::Mutex;
-use std::{sync::Arc, time::Instant};
+use std::{
+    cell::Cell,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub(crate) struct OwnedNovaRenderer {
     owner: Option<RenderOwner>,
     frame_requests: Arc<Mutex<Option<PlatformFrameRequestSender>>>,
     animation_completions: Arc<Mutex<Option<SceneAnimationCompletionSender>>>,
+    presentation_interval: Cell<Option<Duration>>,
+    presentation_visible: Cell<bool>,
 }
 
 impl OwnedNovaRenderer {
@@ -38,7 +44,7 @@ impl OwnedNovaRenderer {
                     }
                 }
             }
-            if frame.pending || frame.failed {
+            if (frame.pending && !frame.autonomous) || frame.failed {
                 if let Some(sender) = requests.lock().clone()
                     && !sender.request(if frame.failed {
                         PlatformFrameRequest::ui_commit()
@@ -55,6 +61,8 @@ impl OwnedNovaRenderer {
             owner: Some(owner),
             frame_requests,
             animation_completions,
+            presentation_interval: Cell::new(None),
+            presentation_visible: Cell::new(false),
         })
     }
 
@@ -108,6 +116,27 @@ impl OwnedNovaRenderer {
 
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
         self.owner().set_frame_interval(interval);
+    }
+
+    /// Updates the native display cadence. `None` suspends deadline-driven continuation.
+    pub(crate) fn set_presentation_interval(&self, interval: Option<Duration>) {
+        if self.presentation_interval.replace(interval) != interval {
+            self.owner().set_presentation_interval(interval);
+        }
+    }
+
+    pub(crate) fn presentation_tick_sender(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.owner().presentation_tick_sender()
+    }
+
+    pub(crate) fn set_presentation_clock(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        self.owner().set_presentation_clock(callback);
+    }
+
+    pub(crate) fn set_presentation_visibility(&self, visible: bool) {
+        if self.presentation_visible.replace(visible) != visible {
+            self.owner().set_presentation_visibility(visible);
+        }
     }
 
     pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
