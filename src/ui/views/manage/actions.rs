@@ -128,6 +128,9 @@ impl ManagePageView {
         .detach();
     }
     pub(super) fn refresh_versions(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = crate::tasks::manage_service::invalidate_gdk_users() {
+            tracing::warn!(%error, "failed to invalidate GDK user cache for refresh");
+        }
         self.invalidate_version_dependent_data(cx);
         ensure_local_versions_loaded(true, cx);
         let message = t!("ManagePage.refreshing_versions");

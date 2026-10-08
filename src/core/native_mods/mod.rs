@@ -4,10 +4,11 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 mod install;
+mod releases;
+pub(crate) use releases::{Release, releases};
 
 pub use install::{
     NativeModImportItem, NativeModImportRequest, NativeModInstallRequest, start_import,
@@ -66,11 +67,6 @@ struct NativeModHeader {
     author: String,
     #[serde(default)]
     tags: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubLatestRelease {
-    tag_name: String,
 }
 
 /// Clears the native-mod catalog and its current disk cache so the next UI load fetches the index.
@@ -183,37 +179,17 @@ async fn fetch_index() -> Result<Vec<NativeModEntry>, String> {
     Ok(entries)
 }
 
-pub(crate) async fn resolve_file_url(
-    client: &Client,
-    repository: &str,
+pub(crate) fn resolve_file_url(
     template: &str,
+    release_tag: Option<&str>,
 ) -> Result<String, String> {
     if !template.contains("{{tag}}") {
         return Ok(template.to_string());
     }
-    let repository = github_repository(repository)
-        .ok_or_else(|| format!("原生 Mod 仓库不是 GitHub 地址：{repository}"))?;
-    let release_url = format!("https://api.github.com/repos/{repository}/releases/latest");
-    let response = client
-        .get(release_url)
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|error| format!("获取 GitHub Release 失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "GitHub Release 返回错误状态：{}",
-            response.status()
-        ));
-    }
-    let release = response
-        .json::<GithubLatestRelease>()
-        .await
-        .map_err(|error| format!("解析 GitHub Release 失败：{error}"))?;
-    if release.tag_name.trim().is_empty() {
-        return Err("GitHub Release 没有 tag_name".to_string());
-    }
-    Ok(template.replace("{{tag}}", &release.tag_name))
+    let tag = release_tag
+        .filter(|tag| !tag.trim().is_empty())
+        .ok_or_else(|| "请选择原生 Mod 发布版本".to_string())?;
+    Ok(template.replace("{{tag}}", tag))
 }
 
 fn github_repository(repository: &str) -> Option<String> {
@@ -257,16 +233,21 @@ mod tests {
         assert_eq!(github_repository("https://example.com/example/mod"), None);
     }
 
-    #[tokio::test]
-    async fn leaves_direct_file_urls_unchanged() {
-        let client = reqwest::Client::new();
-        let url = resolve_file_url(
-            &client,
-            "https://github.com/example/mod",
-            "https://example.com/mod.dll",
-        )
-        .await
-        .expect("direct URL should not need a release request");
+    #[test]
+    fn leaves_direct_file_urls_unchanged() {
+        let url = resolve_file_url("https://example.com/mod.dll", None)
+            .expect("direct URL should not need a release request");
         assert_eq!(url, "https://example.com/mod.dll");
+    }
+
+    #[test]
+    fn resolves_selected_release_without_falling_back_to_latest() {
+        let template = "https://github.com/example/mod/releases/download/{{tag}}/Mod.dll";
+        assert_eq!(
+            resolve_file_url(template, Some("v1.0")).expect("selected tag"),
+            "https://github.com/example/mod/releases/download/v1.0/Mod.dll"
+        );
+        assert!(resolve_file_url(template, None).is_err());
+        assert!(resolve_file_url(template, Some("")).is_err());
     }
 }

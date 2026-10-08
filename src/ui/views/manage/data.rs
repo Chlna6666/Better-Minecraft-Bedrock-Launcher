@@ -88,6 +88,7 @@ pub async fn load_gdk_users(
             has_worlds: user.has_worlds,
             has_screenshots: user.has_screenshots,
             has_servers: user.has_servers,
+            last_modified: user.last_modified,
         })
         .collect())
 }

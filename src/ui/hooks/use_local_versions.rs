@@ -290,10 +290,14 @@ fn take_pending_local_versions_refresh(state: &mut LocalVersionsState) -> bool {
 
 pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
-    let skip_without_mutation = cx.read_global(|state: &LocalVersionsState, _cx| {
-        let effective_force = force_refresh || state.catalog_generation < catalog_generation;
-        !effective_force && (state.loading || state.loaded)
-    });
+    let (skip_without_mutation, initial_load) =
+        cx.read_global(|state: &LocalVersionsState, _cx| {
+            let effective_force = force_refresh || state.catalog_generation < catalog_generation;
+            (
+                !effective_force && (state.loading || state.loaded),
+                !state.loaded,
+            )
+        });
     if skip_without_mutation {
         return;
     }
@@ -312,7 +316,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         force_refresh, catalog_generation, "local version refresh started"
     );
     sync_manage_page_state_from_local_versions(cx);
-    let load_task = gpui_tokio::Tokio::spawn_result(cx, async {
+    let load_task = gpui_tokio::Tokio::spawn_result(cx, async move {
         let mut versions = crate::core::version::api::get_version_list().await?;
         sort_launch_versions(&mut versions);
 
@@ -323,6 +327,19 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         .await
         {
             warn!(%error, "local-version isolation cache prime failed");
+        }
+
+        // The first sorted item is Home's startup selection. Schedule only after the
+        // catalog exists, so a slow initial catalog load cannot miss the warmup.
+        if initial_load
+            && let Some(version) = versions.first()
+            && version.kind.eq_ignore_ascii_case("gdk")
+            && let Err(error) = crate::tasks::manage_service::prewarm_gdk_users(
+                version.folder.to_string(),
+                version_edition(version),
+            )
+        {
+            warn!(%error, "startup GDK user warmup was not scheduled");
         }
 
         Ok::<_, anyhow::Error>(versions)

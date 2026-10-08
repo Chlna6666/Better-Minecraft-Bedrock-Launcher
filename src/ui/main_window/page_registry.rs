@@ -348,6 +348,7 @@ impl MainWindowView {
                 let versions_before = state.curseforge_versions.len();
                 let game_versions_before = state.versions.len();
                 state.release_curseforge_tab_state(cx);
+                state.release_native_mod_state();
                 state.search_input = None;
                 state.page_jump_input = None;
                 state.search_query = SharedString::from("");

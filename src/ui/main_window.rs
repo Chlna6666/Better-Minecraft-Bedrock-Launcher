@@ -1567,6 +1567,7 @@ impl MainWindowView {
                     |s: &crate::ui::views::download::state::DownloadPageState, _cx| {
                         s.game_dialog.is_some()
                             || s.levilauncher_modal_open
+                            || s.native_mod_modal_open
                             || (matches!(
                                 s.tab,
                                 crate::ui::views::download::state::DownloadTab::ResourcePack

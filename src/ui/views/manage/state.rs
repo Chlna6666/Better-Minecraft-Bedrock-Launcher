@@ -3,6 +3,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod gdk_users;
+pub use gdk_users::ManageGdkUser;
+pub(super) use gdk_users::preferred_gdk_user;
+
 use crate::core::minecraft::paths::{BuildType, Edition};
 use crate::ui::components::input::InputState;
 
@@ -93,38 +97,6 @@ impl Default for ManageVersionConfig {
             shortcut_silent_launch: true,
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct ManageGdkUser {
-    pub folder_name: SharedString,
-    pub has_worlds: bool,
-    pub has_screenshots: bool,
-    pub has_servers: bool,
-}
-
-impl ManageGdkUser {
-    fn has_data_for(&self, tab: ManageTab) -> bool {
-        match tab {
-            ManageTab::Map => self.has_worlds,
-            ManageTab::Screenshot => self.has_screenshots,
-            ManageTab::Server => self.has_servers,
-            _ => false,
-        }
-    }
-}
-
-pub(super) fn preferred_gdk_user(users: &[ManageGdkUser], tab: ManageTab) -> Option<SharedString> {
-    users
-        .iter()
-        .find(|user| user.has_data_for(tab))
-        .or_else(|| {
-            users
-                .iter()
-                .find(|user| !user.folder_name.as_ref().eq_ignore_ascii_case("shared"))
-        })
-        .or_else(|| users.first())
-        .map(|user| user.folder_name.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -445,10 +417,7 @@ pub(super) struct ManagedInstanceRevision {
 mod tests {
     use gpui::SharedString;
 
-    use super::{
-        ManageAssetEntry, ManageAssetKind, ManageGdkUser, ManagePageState, ManageScreenshotEntry,
-        ManageTab, preferred_gdk_user,
-    };
+    use super::{ManageAssetEntry, ManageAssetKind, ManagePageState, ManageScreenshotEntry};
     use std::sync::Arc;
 
     #[test]
@@ -561,41 +530,6 @@ mod tests {
         state.versions_revision = 8;
 
         assert_ne!(state.selected_instance_revision(), previous);
-    }
-
-    #[test]
-    fn preferred_gdk_user_has_data_for_active_tab() {
-        let users = [
-            ManageGdkUser {
-                folder_name: SharedString::from("100"),
-                has_worlds: false,
-                has_screenshots: false,
-                has_servers: false,
-            },
-            ManageGdkUser {
-                folder_name: SharedString::from("200"),
-                has_worlds: true,
-                has_screenshots: false,
-                has_servers: false,
-            },
-            ManageGdkUser {
-                folder_name: SharedString::from("Shared"),
-                has_worlds: false,
-                has_screenshots: true,
-                has_servers: false,
-            },
-        ];
-
-        let map_user = preferred_gdk_user(&users, ManageTab::Map);
-        let screenshot_user = preferred_gdk_user(&users, ManageTab::Screenshot);
-        let server_user = preferred_gdk_user(&users, ManageTab::Server);
-
-        assert_eq!(map_user.as_ref().map(SharedString::as_ref), Some("200"));
-        assert_eq!(
-            screenshot_user.as_ref().map(SharedString::as_ref),
-            Some("Shared")
-        );
-        assert_eq!(server_user.as_ref().map(SharedString::as_ref), Some("100"));
     }
 }
 

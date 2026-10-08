@@ -675,7 +675,12 @@ fn centered_status(colors: &ThemeColors, label: SharedString) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::{Duration, Instant};
+
+    use super::{
+        SKIN_PREVIEW_MAX_WHEEL_LINES_PER_EVENT, SKIN_PREVIEW_WHEEL_ZOOM_PER_LINE,
+        skin_preview_walk_time, skin_preview_wheel_zoom_factor,
+    };
 
     #[test]
     fn paused_walk_time_stays_neutral_during_pointer_rerenders() {

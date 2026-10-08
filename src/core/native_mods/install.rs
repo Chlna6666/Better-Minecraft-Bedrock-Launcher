@@ -11,6 +11,9 @@ pub struct NativeModInstallRequest {
     pub game_directory: PathBuf,
     pub mod_entry: NativeModEntry,
     pub file_name: String,
+    /// Exact GitHub release tag for `{{tag}}` catalog URLs; required for templated assets.
+    /// Direct URLs ignore this field. The workflow never substitutes the latest release.
+    pub release_tag: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -153,12 +156,11 @@ async fn install(
         .files
         .get(&request.file_name)
         .ok_or_else(|| format!("索引中不存在文件：{}", request.file_name))?;
-    let client = crate::http::proxy::get_download_client_for_proxy()
-        .map_err(|error| format!("构建下载客户端失败：{error}"))?;
-    let url = resolve_file_url(&client, &request.mod_entry.repository, &file.url).await?;
+    let url = resolve_file_url(&file.url, request.release_tag.as_deref())?;
     let cache_name = format!(
-        "{}-{}",
+        "{}-{}-{}",
         sanitize_component(&request.mod_entry.id),
+        sanitize_component(request.release_tag.as_deref().unwrap_or("direct")),
         sanitize_component(&request.file_name)
     );
     let download_task =
@@ -225,7 +227,7 @@ async fn install(
         "name": request.mod_entry.name,
         "entry": file_name,
         "type": manifest_type,
-        "version": request.mod_entry.id,
+        "version": request.release_tag.as_deref().unwrap_or(&request.mod_entry.id),
         "inject_delay_ms": 0,
     });
     let manifest_text = serde_json::to_string_pretty(&manifest)

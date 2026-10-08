@@ -276,6 +276,7 @@ pub struct DownloadPageState {
     pub native_mod_modal_open: bool,
     pub native_mod_selected: Option<crate::core::native_mods::NativeModEntry>,
     pub native_mod_selected_file: SharedString,
+    pub(crate) native_mod_versions: super::native::versions::VersionState,
     pub native_mod_target_path: Option<SharedString>,
     pub native_mod_target_version: SharedString,
     pub native_mod_install_busy: bool,
@@ -413,6 +414,7 @@ impl Default for DownloadPageState {
             native_mod_modal_open: false,
             native_mod_selected: None,
             native_mod_selected_file: SharedString::from(""),
+            native_mod_versions: Default::default(),
             native_mod_target_path: None,
             native_mod_target_version: SharedString::from(""),
             native_mod_install_busy: false,
@@ -426,8 +428,17 @@ impl Default for DownloadPageState {
 impl Global for DownloadPageState {}
 
 impl DownloadPageState {
+    /// Cancels native-mod release discovery and discards the closed modal's selection.
+    pub(crate) fn release_native_mod_state(&mut self) {
+        self.native_mod_versions.clear();
+        self.native_mod_modal_open = false;
+        self.native_mod_selected = None;
+        self.native_mod_install_error = None;
+    }
+
     pub fn has_releasable_route_state(&self) -> bool {
-        self.tab != DownloadTab::Game
+        self.native_mod_modal_open
+            || self.tab != DownloadTab::Game
             || self.force_refresh_next
             || self.search_input.is_some()
             || self.page_jump_input.is_some()

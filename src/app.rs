@@ -604,8 +604,8 @@ fn schedule_pending_diagnostics_load(cx: &mut App) {
 /// Opens the debug window automatically once the main window is actually on screen.
 ///
 /// The gate is [`Window::is_window_visible`] rather than "the main view finished a
-/// render pass": the platform only reports a window as visible after it has presented
-/// a completed frame, which is the point at which the user can see it. Creating the
+/// render pass": visibility and content readiness must both hold, so an early startup
+/// background does not release the gate before the first submitted GPU frame. Creating the
 /// debug window's second nova renderer before that competes with the main window's own
 /// first frame — the previous delay-and-first-render gate let the second renderer start
 /// roughly 280ms before the main window appeared.
@@ -635,7 +635,7 @@ fn schedule_debug_window_after_main_window_visible(cx: &mut App) {
     .detach();
 }
 
-/// Returns whether the main window exists and is currently presented on screen.
+/// Returns whether the main window is visible and its initial content handoff is complete.
 fn main_window_is_visible(cx: &mut App) -> bool {
     let main_window_id =
         cx.read_global(|state: &crate::ui::window::debug::DebugState, _cx| state.main_window_id);
@@ -646,7 +646,9 @@ fn main_window_is_visible(cx: &mut App) -> bool {
     };
 
     main_window
-        .update(cx, |_root, window, _cx| window.is_window_visible())
+        .update(cx, |_root, window, _cx| {
+            window.is_window_visible() && window.is_content_ready()
+        })
         .unwrap_or(false)
 }
 

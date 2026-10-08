@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::core::minecraft::paths::{GamePathOptions, GameTargetDir, get_game_root};
+use crate::core::minecraft::paths::GamePathOptions;
 use crate::core::minecraft::resource_packs::McPackInfo;
 use crate::core::minecraft::screenshots::McScreenshotInfo;
 use crate::core::minecraft::servers::ExternalServerEntry;
@@ -14,6 +14,9 @@ use crate::core::minecraft::worlds::WorldSummary;
 use crate::core::version::settings::{VersionConfig, get_version_config_blocking};
 
 use super::runtime::{BlockingTaskOptions, run_blocking};
+
+mod gdk_users;
+pub use gdk_users::{GdkUserDirectory, invalidate_gdk_users, load_gdk_users, prewarm_gdk_users};
 
 #[derive(Clone, Copy)]
 pub enum PackKind {
@@ -47,98 +50,12 @@ struct ModManifest {
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug)]
-pub struct GdkUserDirectory {
-    pub folder_name: String,
-    pub has_worlds: bool,
-    pub has_screenshots: bool,
-    pub has_servers: bool,
-}
-
 pub async fn load_version_config(folder_name: String) -> Result<VersionConfig, String> {
     run_blocking(
         BlockingTaskOptions::hidden("读取版本配置"),
         move || get_version_config_blocking(&folder_name),
     )
     .await
-}
-
-pub async fn load_gdk_users(options: GamePathOptions) -> Result<Vec<GdkUserDirectory>, String> {
-    run_blocking(
-        BlockingTaskOptions::hidden("读取 GDK 用户"),
-        move || {
-            let root =
-                get_game_root(&options).ok_or_else(|| "无法解析 Minecraft 根目录".to_string())?;
-            let users_dir = root.join("Users");
-            if !users_dir.exists() {
-                return Ok(Vec::new());
-            }
-
-            let entries = fs::read_dir(&users_dir)
-                .map_err(|error| format!("读取 GDK 用户目录失败: {error}"))?;
-            let mut users = entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    entry
-                        .file_type()
-                        .ok()
-                        .filter(std::fs::FileType::is_dir)
-                        .map(|_| {
-                            let com_mojang = entry.path().join("games").join("com.mojang");
-                            GdkUserDirectory {
-                                folder_name: entry.file_name().to_string_lossy().into_owned(),
-                                has_worlds: directory_contains_file(
-                                    &com_mojang.join(GameTargetDir::MinecraftWorlds.name()),
-                                ),
-                                has_screenshots: directory_contains_file(
-                                    &com_mojang.join(GameTargetDir::Screenshots.name()),
-                                ),
-                                has_servers: fs::metadata(
-                                    com_mojang
-                                        .join(GameTargetDir::MinecraftPe.name())
-                                        .join("external_servers.txt"),
-                                )
-                                .is_ok_and(|metadata| metadata.len() > 0),
-                            }
-                        })
-                })
-                .filter(|user| !user.folder_name.eq_ignore_ascii_case("public"))
-                .collect::<Vec<_>>();
-            sort_gdk_user_directories(&mut users);
-            Ok(users)
-        },
-    )
-    .await
-}
-
-fn sort_gdk_user_directories(users: &mut [GdkUserDirectory]) {
-    users.sort_by(|left, right| {
-        left.folder_name
-            .eq_ignore_ascii_case("shared")
-            .cmp(&right.folder_name.eq_ignore_ascii_case("shared"))
-            .then_with(|| left.folder_name.cmp(&right.folder_name))
-    });
-}
-
-fn directory_contains_file(root: &Path) -> bool {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_file() {
-                return true;
-            }
-            if file_type.is_dir() {
-                pending.push(entry.path());
-            }
-        }
-    }
-    false
 }
 
 pub async fn load_mods(version_folder: String) -> Result<Vec<ManagedModInfo>, String> {

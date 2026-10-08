@@ -7,6 +7,8 @@ use crate::ui::theme::colors::ThemeColors;
 use crate::ui::views::download::state::DownloadPageState;
 use gpui::*;
 
+pub(super) mod versions;
+
 type NativeModPanelRenderSignature = (usize, usize, SharedString, usize, usize);
 
 #[derive(Default)]
@@ -397,6 +399,7 @@ pub(super) fn open_modal(entry: NativeModEntry, cx: &mut App) {
     let first_file = entry.files.keys().next().cloned().unwrap_or_default();
     let target = install_targets(cx).first().cloned();
     cx.update_global(|state: &mut DownloadPageState, _| {
+        state.native_mod_versions.clear();
         state.native_mod_modal_open = true;
         state.native_mod_selected = Some(entry);
         state.native_mod_selected_file = SharedString::from(first_file);
@@ -406,6 +409,7 @@ pub(super) fn open_modal(entry: NativeModEntry, cx: &mut App) {
         state.native_mod_install_busy = false;
         state.native_mod_install_error = None;
     });
+    versions::load(cx);
 }
 
 fn install_targets(cx: &App) -> Vec<(SharedString, SharedString, SharedString)> {
@@ -435,9 +439,7 @@ fn install_targets(cx: &App) -> Vec<(SharedString, SharedString, SharedString)> 
 
 pub(super) fn dismiss_modal(cx: &mut App) {
     cx.update_global(|state: &mut DownloadPageState, _| {
-        state.native_mod_modal_open = false;
-        state.native_mod_selected = None;
-        state.native_mod_install_error = None;
+        state.release_native_mod_state();
     });
 }
 
@@ -522,6 +524,10 @@ pub(super) fn render_detail_modal_content(
             if let Some(file) = files_for_dropdown.get(index) {
                 cx.update_global(|state: &mut DownloadPageState, _| {
                     state.native_mod_selected_file = SharedString::from(file.clone());
+                    if let Some(entry) = &state.native_mod_selected {
+                        state.native_mod_versions.select_file(entry, file);
+                    }
+                    state.native_mod_install_error = None;
                 });
             }
         },
@@ -530,7 +536,15 @@ pub(super) fn render_detail_modal_content(
     .rounded(px(crate::ui::theme::tokens::radius::SM));
 
     let target_is_available = target_path.is_some() && !targets.is_empty();
-    let can_install = !install_busy && target_is_available && !files.is_empty();
+    let version_is_available = entry.files.get(selected_file.as_ref()).is_some_and(|file| {
+        !file.url.contains("{{tag}}")
+            || cx
+                .global::<DownloadPageState>()
+                .native_mod_versions
+                .selected_tag(entry, &selected_file)
+                .is_some()
+    });
+    let can_install = !install_busy && target_is_available && version_is_available;
     let entry_for_install = entry.clone();
     let selected_file_for_install = selected_file.to_string();
     div()
@@ -612,6 +626,7 @@ pub(super) fn render_detail_modal_content(
                         )
                         .child(file_select),
                 )
+                .child(versions::render(colors, cx, entry))
                 .child(
                     div()
                         .flex()
@@ -682,6 +697,9 @@ pub(super) fn render_detail_modal_content(
                         .text_color(colors.btn_primary_text)
                         .opacity(if can_install { 1.0 } else { 0.5 })
                         .on_click(move |_, _, cx| {
+                            if !can_install {
+                                return;
+                            }
                             start_install(
                                 cx,
                                 entry_for_install.clone(),
@@ -693,6 +711,18 @@ pub(super) fn render_detail_modal_content(
 }
 
 fn start_install(cx: &mut App, entry: NativeModEntry, file_name: String) {
+    let state = cx.global::<DownloadPageState>();
+    if state.native_mod_install_busy {
+        return;
+    }
+    let release_tag = state.native_mod_versions.selected_tag(&entry, &file_name);
+    if entry
+        .files
+        .get(&file_name)
+        .is_none_or(|file| file.url.contains("{{tag}}") && release_tag.is_none())
+    {
+        return;
+    }
     let target =
         cx.read_global(|state: &DownloadPageState, _| state.native_mod_target_path.clone());
     let Some(game_directory) = target else {
@@ -709,6 +739,7 @@ fn start_install(cx: &mut App, entry: NativeModEntry, file_name: String) {
         game_directory: std::path::PathBuf::from(game_directory.as_ref()),
         mod_entry: entry,
         file_name,
+        release_tag,
     };
     match crate::core::native_mods::start_install(request) {
         Ok(_) => dismiss_modal(cx),
