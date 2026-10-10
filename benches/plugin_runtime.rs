@@ -631,23 +631,23 @@ fn bench_wasm_execution(criterion: &mut Criterion) {
     }
     group.finish();
 
-    // 自检：失效后连续两次渲染必须返回不同的树，否则渲染组退化成缓存查找。
+    // 自检：失效后连续两次渲染必须返回不同的树，否则渲染组退化成缓存查找。两棵树必须同时存活，
+    // 否则上一棵树释放后分配器可能复用同一地址，指针比较会误报。
     if let Some((label, (registry, _dirs))) = fixtures.first() {
         let mut registry = registry.borrow_mut();
-        let mut previous: Option<usize> = None;
-        for _ in 0..2 {
-            registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
-            let tree = registry
-                .render_page(FIXTURE_PLUGIN_ID, "main")
-                .expect("fixture render");
-            let pointer = std::sync::Arc::as_ptr(&tree) as usize;
-            assert_ne!(
-                previous,
-                Some(pointer),
-                "plugin/wasm render_page/{label}: 失效后仍返回同一棵树，基准会退化为缓存查找"
-            );
-            previous = Some(pointer);
-        }
+        registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
+        let first = registry
+            .render_page(FIXTURE_PLUGIN_ID, "main")
+            .expect("fixture render");
+        registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
+        let second = registry
+            .render_page(FIXTURE_PLUGIN_ID, "main")
+            .expect("fixture render");
+        assert_ne!(
+            std::sync::Arc::as_ptr(&first),
+            std::sync::Arc::as_ptr(&second),
+            "plugin/wasm render_page/{label}: 失效后仍返回同一棵树，基准会退化为缓存查找"
+        );
     }
 
     for (_, (_, dirs)) in fixtures {
