@@ -367,6 +367,13 @@ impl Window {
             != self.rendered_frame.scene.backdrop_blurs.len()
             || self.next_frame.scene.has_backdrop_blurs()
                 != self.rendered_frame.scene.has_backdrop_blurs();
+        // Root backdrop blurs (for example titlebar glass) have a well-defined
+        // output clip in both scenes. A newly added/removed one only changes
+        // pixels inside those clips. Nested element-blur captures can change
+        // their composition dependencies, so they retain the full fallback.
+        let local_root_blur_topology = backdrop_blur_topology_changed
+            && self.next_frame.scene.blurs.is_empty()
+            && self.rendered_frame.scene.blurs.is_empty();
         let recovery_scene_uncovered = self.recovering_degraded_draw
             && [&self.rendered_frame, &self.next_frame]
                 .iter()
@@ -379,7 +386,7 @@ impl Window {
                 });
         let requires_full_redraw = force_full_redraw
             || scene_requires_full_redraw
-            || backdrop_blur_topology_changed
+            || (backdrop_blur_topology_changed && !local_root_blur_topology)
             || recovery_scene_uncovered;
 
         if requires_full_redraw {
@@ -388,6 +395,21 @@ impl Window {
             }
             dirty_region.mark_full(viewport);
         } else {
+            if local_root_blur_topology {
+                // Preserve the union of OLD and NEW output clips. Removal needs
+                // the old pixels restored; addition needs the new pixels filled.
+                // The Gaussian source halo remains the filter cache's separate
+                // responsibility via backdrop_blur_damage_plan.
+                for blur in self
+                    .rendered_frame
+                    .scene
+                    .backdrop_blurs
+                    .iter()
+                    .chain(&self.next_frame.scene.backdrop_blurs)
+                {
+                    dirty_region.push(blur.bounds.intersect(&blur.content_mask.bounds));
+                }
+            }
             // `dirty_views` contains the ancestor path needed to reach dirty descendants during
             // retained reconciliation. That is a traversal/cache semantic, not a pixel-damage
             // semantic: treating every ancestor RetainedSceneSegment as changed makes a dirty root
