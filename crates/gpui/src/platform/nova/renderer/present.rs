@@ -1,5 +1,6 @@
 use super::buffer_upload::{FrameBufferUpload, upload_frame_buffers};
 use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
+use super::filters::FilterRegistry;
 use super::*;
 use std::time::Duration;
 
