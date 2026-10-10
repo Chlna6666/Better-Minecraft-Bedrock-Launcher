@@ -162,25 +162,104 @@ impl DirtyRegion {
     }
 
     pub(crate) fn push(&mut self, bounds: Bounds<ScaledPixels>) {
-        let Some(mut rect) = DirtyRect::new(bounds) else {
+        let Some(rect) = DirtyRect::new(bounds) else {
             return;
         };
+        if self.full && !self.rects.is_empty() {
+            let combined = self.union_bounds().unwrap().union(&rect.bounds);
+            self.rects.clear();
+            self.rects.push(DirtyRect { bounds: combined });
+            return;
+        }
 
+        // Keep a disjoint rect union. A direct bounding-box merge turns a titlebar
+        // strip crossing a narrow dropdown into a window-sized dirty rectangle.
+        let mut pending = SmallVec::<[DirtyRect; 8]>::new();
+        pending.push(rect);
+        for existing in &self.rects {
+            let mut next = SmallVec::<[DirtyRect; 8]>::new();
+            for candidate in pending.drain(..) {
+                let overlap = candidate.bounds.intersect(&existing.bounds);
+                if overlap.is_empty() {
+                    next.push(candidate);
+                    continue;
+                }
+                let b = candidate.bounds;
+                let x0 = b.origin.x.0;
+                let y0 = b.origin.y.0;
+                let x1 = x0 + b.size.width.0;
+                let y1 = y0 + b.size.height.0;
+                let ox0 = overlap.origin.x.0;
+                let oy0 = overlap.origin.y.0;
+                let ox1 = ox0 + overlap.size.width.0;
+                let oy1 = oy0 + overlap.size.height.0;
+                // Horizontal strips above/below the overlap, then left/right
+                // strips within its vertical interval. Together these partition
+                // candidate minus existing exactly, without double counting.
+                for (left, top, right, bottom) in [
+                    (x0, y0, x1, oy0),
+                    (x0, oy1, x1, y1),
+                    (x0, oy0, ox0, oy1),
+                    (ox1, oy0, x1, oy1),
+                ] {
+                    if right > left && bottom > top {
+                        next.push(DirtyRect {
+                            bounds: Bounds::new(
+                                crate::Point {
+                                    x: ScaledPixels(left),
+                                    y: ScaledPixels(top),
+                                },
+                                crate::Size {
+                                    width: ScaledPixels(right - left),
+                                    height: ScaledPixels(bottom - top),
+                                },
+                            ),
+                        });
+                    }
+                }
+            }
+            pending = next;
+            if pending.is_empty() {
+                break;
+            }
+        }
+        self.rects.extend(pending);
+
+        // Coalesce only when the union stays rectangular. Never expand an L
+        // shape to its bounding box merely because two rectangles overlap.
         let mut index = 0;
         while index < self.rects.len() {
-            if self.rects[index].bounds.intersects(&rect.bounds) {
-                let existing = self.rects.swap_remove(index);
-                rect.bounds = rect.bounds.union(&existing.bounds);
+            let a = self.rects[index].bounds;
+            let mut next_index = index + 1;
+            let mut merged = false;
+            while next_index < self.rects.len() {
+                let b = self.rects[next_index].bounds;
+                let horizontal = a.origin.y == b.origin.y
+                    && a.size.height == b.size.height
+                    && (a.origin.x + a.size.width == b.origin.x
+                        || b.origin.x + b.size.width == a.origin.x);
+                let vertical = a.origin.x == b.origin.x
+                    && a.size.width == b.size.width
+                    && (a.origin.y + a.size.height == b.origin.y
+                        || b.origin.y + b.size.height == a.origin.y);
+                if horizontal || vertical {
+                    self.rects[index].bounds = a.union(&b);
+                    self.rects.swap_remove(next_index);
+                    merged = true;
+                    break;
+                }
+                next_index += 1;
+            }
+            if merged {
                 index = 0;
             } else {
                 index += 1;
             }
         }
-        self.rects.push(rect);
-
         if self.rects.len() > MAX_DIRTY_RECTS
             && let Some(bounds) = self.union_bounds()
         {
+            // The bounded fallback is conservative but never omits changed pixels.
             self.rects.clear();
             self.rects.push(DirtyRect { bounds });
         }
@@ -274,6 +353,35 @@ mod tests {
 
         assert_eq!(region.rect_count(), 1);
         assert_eq!(region.union_bounds(), Some(rect(0.0, 30.0)));
+    }
+
+    #[test]
+    fn overlapping_cross_damage_does_not_invalidate_bounding_box_corners() {
+        let mut region = DirtyRegion::empty();
+        region.push(bounds(
+            Point { x: ScaledPixels(0.0), y: ScaledPixels(40.0) },
+            size(ScaledPixels(100.0), ScaledPixels(20.0)),
+        ));
+        region.push(bounds(
+            Point { x: ScaledPixels(40.0), y: ScaledPixels(0.0) },
+            size(ScaledPixels(20.0), ScaledPixels(100.0)),
+        ));
+
+        assert_eq!(region.area(), 3600.0);
+        assert_eq!(region.rect_count(), 3);
+        assert_eq!(region.union_bounds(), Some(bounds(
+            Point { x: ScaledPixels(0.0), y: ScaledPixels(0.0) },
+            size(ScaledPixels(100.0), ScaledPixels(100.0)),
+        )));
+    }
+
+    #[test]
+    fn repeated_identical_damage_is_not_double_counted() {
+        let mut region = DirtyRegion::empty();
+        region.push(rect(12.0, 16.0));
+        region.push(rect(12.0, 16.0));
+        assert_eq!(region.area(), 160.0);
+        assert_eq!(region.rect_count(), 1);
     }
 
     #[test]
