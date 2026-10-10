@@ -372,6 +372,10 @@ impl Window {
         // pixels inside those clips. Nested element-blur captures can change
         // their composition dependencies, so they retain the full fallback.
         let local_root_blur_topology = backdrop_blur_topology_changed
+            // Keep the full redraw fallback when the final backdrop disappears:
+            // a transition to a blur-free scene may enable native partial present
+            // before every rotating swapchain image contains initialized pixels.
+            && self.next_frame.scene.has_backdrop_blurs()
             && self.next_frame.scene.blurs.is_empty()
             && self.rendered_frame.scene.blurs.is_empty();
         let recovery_scene_uncovered = self.recovering_degraded_draw
