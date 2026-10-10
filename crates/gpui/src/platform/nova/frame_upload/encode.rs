@@ -9,6 +9,36 @@ mod retained;
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
 /// before packing instead of being handed to the GPU.
+fn static_quad_run_visual_bounds(
+    quads: &[crate::Quad],
+) -> Option<crate::Bounds<crate::ScaledPixels>> {
+    let mut union: Option<crate::Bounds<crate::ScaledPixels>> = None;
+    for quad in quads {
+        // Translation/scale can happen later on the GPU without another
+        // static encode; static AABB culling would incorrectly drop it.
+        if quad.animation_id.is_some() {
+            return None;
+        }
+        // Include the SDF/antialias guard band around static geometry.
+        let visual = quad
+            .bounds
+            .intersect(&quad.content_mask.bounds)
+            .dilate(crate::ScaledPixels(2.0));
+        let values = [
+            visual.origin.x.0, visual.origin.y.0,
+            visual.size.width.0, visual.size.height.0,
+        ];
+        if !values.into_iter().all(f32::is_finite) {
+            return None;
+        }
+        union = Some(match union {
+            Some(previous) => previous.union(&visual),
+            None => visual,
+        });
+    }
+    union
+}
+
 fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
     mask.bounds.size.width <= crate::ScaledPixels(0.)
         || mask.bounds.size.height <= crate::ScaledPixels(0.)
@@ -81,8 +111,10 @@ impl FrameUpload {
         };
         write_paint_blur(&mut self.backdrop_blurs, &root_blur, drawable_size);
         self.batches.insert(0, UploadedBatch::BeginBlur { index: root_index });
+        self.batch_visual_bounds.insert(0, None);
         self.batches.push(UploadedBatch::EndBlur { index: root_index });
         self.batches.push(UploadedBatch::CompositeBlur { index: root_index });
+        self.batch_visual_bounds.extend([None, None]);
         self.retained_root_blur = Some(root_index);
         self.retained_root_clear_quad = Some(clear_index);
         summary.quad_count = summary.quad_count.saturating_add(1);
@@ -135,6 +167,7 @@ impl FrameUpload {
                 steps.clear();
             }
             self.batches.clear();
+            self.batch_visual_bounds.clear();
             self.resident_quad_spans.clear();
             self.globals.reserve(GLOBAL_UPLOAD_BYTES);
             self.text_raster_params.reserve(TEXT_RASTER_UPLOAD_BYTES);
@@ -185,6 +218,12 @@ impl FrameUpload {
         }
 
         for batch in scene.prepared_batches() {
+            let first_batch = self.batches.len();
+            let static_quad_bounds = if let PreparedSceneBatch::Quads(quad_run) = batch {
+                static_quad_run_visual_bounds(&scene.quads[quad_run.range.clone()])
+            } else {
+                None
+            };
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
                     self.encode_retained_quads(
@@ -274,6 +313,16 @@ impl FrameUpload {
                     });
                 }
             }
+            // Preserve metadata generated recursively by nested blur capture.
+            // Only static quad batches receive known bounds; all other
+            // batches conservatively continue through normal rendering.
+            let last_batch = self.batches.len();
+            self.batch_visual_bounds.resize(last_batch, None);
+            if let Some(bounds) = static_quad_bounds {
+                for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
+                    *slot = Some(bounds);
+                }
+            }
         }
         if reset {
             self.prune_retained_quads(scene);
@@ -345,6 +394,27 @@ mod retained_root_tests {
     use super::*;
 
     #[test]
+    fn static_batch_bounds_never_cull_gpu_animated_geometry() {
+        let area = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(50.0), crate::ScaledPixels(30.0)),
+        );
+        let mut quad = crate::Quad {
+            bounds: area,
+            content_mask: crate::ContentMask::new(area),
+            ..Default::default()
+        };
+        let bounds = static_quad_run_visual_bounds(&[quad.clone()])
+            .expect("non-animated batch has conservative bounds");
+        assert!(bounds.origin.x <= area.origin.x);
+        assert!(bounds.origin.y <= area.origin.y);
+        assert!(bounds.right() >= area.right());
+        assert!(bounds.bottom() >= area.bottom());
+        quad.animation_id = Some(crate::SceneAnimationId(42));
+        assert!(static_quad_run_visual_bounds(&[quad]).is_none());
+    }
+
+    #[test]
     fn synthetic_root_reuses_zero_filter_target_and_records_transparent_clear() {
         let mut upload = FrameUpload::default();
         let size = DrawableSize { width: 640, height: 480 };
@@ -359,6 +429,8 @@ mod retained_root_tests {
         assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { index: 0 }));
         assert!(matches!(upload.batches[1], UploadedBatch::EndBlur { index: 0 }));
         assert!(matches!(upload.batches[2], UploadedBatch::CompositeBlur { index: 0 }));
+        assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
+        assert!(upload.batch_visual_bounds.iter().all(Option::is_none));
         upload.refresh_blur_content_ranges();
         assert_eq!(upload.blur_content_ranges().len(), 1);
         assert_eq!(upload.blur_content_ranges()[0].index, 0);

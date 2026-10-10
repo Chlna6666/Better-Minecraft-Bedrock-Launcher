@@ -79,10 +79,33 @@ pub(super) fn draw_steps_for_upload_into(
     quad_resource_set: ResourceSetId,
     shadow_resource_set: ResourceSetId,
     path_resource_set: ResourceSetId,
+    sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
+    underline_resource_set: ResourceSetId,
+    backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
+    mode: DrawStepMode,
+    steps: &mut Vec<RenderStepDescriptor>,
+) {
+    draw_steps_for_upload_into_clipped(
+        upload, pipelines, blend_pipelines, quad_resource_set,
+        shadow_resource_set, path_resource_set, sprite_resource_set,
+        underline_resource_set, backdrop_blur_resource_set, mode, None, steps,
+    );
+}
+
+/// For a retained offscreen region, skip wholly disjoint STATIC draw batches
+/// before GPU submission. Animated/unknown batches remain conservative.
+pub(super) fn draw_steps_for_upload_into_clipped(
+    upload: &FrameUpload,
+    pipelines: &Pipelines,
+    blend_pipelines: BlendPipelines,
+    quad_resource_set: ResourceSetId,
+    shadow_resource_set: ResourceSetId,
+    path_resource_set: ResourceSetId,
     mut sprite_resource_set: impl FnMut(AtlasTextureId) -> Option<ResourceSetId>,
     underline_resource_set: ResourceSetId,
     mut backdrop_blur_resource_set: impl FnMut(BackdropBlurConfig) -> Option<ResourceSetId>,
     mode: DrawStepMode,
+    source_scissor: Option<ScissorRect>,
     steps: &mut Vec<RenderStepDescriptor>,
 ) {
     steps.clear();
@@ -93,6 +116,14 @@ pub(super) fn draw_steps_for_upload_into(
             break;
         }
         if !mode.includes_batch(batch_index) {
+            continue;
+        }
+        if source_scissor.is_some_and(|scissor| {
+            upload.batch_visual_bounds.get(batch_index)
+                .copied()
+                .flatten()
+                .is_some_and(|bounds| static_batch_misses_scissor(bounds, scissor))
+        }) {
             continue;
         }
         match *batch {
@@ -262,7 +293,7 @@ pub(super) fn draw_steps_for_upload_into(
             }
         }
     }
-    if steps.is_empty() {
+    if steps.is_empty() && source_scissor.is_none() {
         steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
             pipeline: blend_pipelines.solid_quads,
             resource_sets: resource_set_list([quad_resource_set]),
@@ -273,6 +304,24 @@ pub(super) fn draw_steps_for_upload_into(
             scissor: None,
         }));
     }
+}
+
+/// Bounds are in drawable/device pixels, as are the render-pass scissors.
+fn static_batch_misses_scissor(
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    scissor: ScissorRect,
+) -> bool {
+    let left = bounds.origin.x.0;
+    let top = bounds.origin.y.0;
+    let right = bounds.right().0;
+    let bottom = bounds.bottom().0;
+    if ![left, top, right, bottom].into_iter().all(f32::is_finite) {
+        return false;
+    }
+    right <= scissor.x as f32
+        || bottom <= scissor.y as f32
+        || left >= scissor.x.saturating_add(scissor.width) as f32
+        || top >= scissor.y.saturating_add(scissor.height) as f32
 }
 
 fn push_blur_composite_step(
@@ -572,4 +621,23 @@ fn path_mask_draw_steps_can_merge(
         && previous.first_instance == next.first_instance
         && previous.scissor == next.scissor
         && previous.first_vertex.checked_add(previous.vertex_count) == Some(next.first_vertex)
+}
+
+#[cfg(test)]
+mod static_batch_culling_tests {
+    use super::*;
+
+    #[test]
+    fn fully_disjoint_static_quad_batch_can_be_skipped() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(40.0), crate::ScaledPixels(30.0)),
+        );
+        assert!(static_batch_misses_scissor(bounds, ScissorRect {
+            x: 600, y: 400, width: 20, height: 20,
+        }));
+        assert!(!static_batch_misses_scissor(bounds, ScissorRect {
+            x: 20, y: 25, width: 20, height: 20,
+        }));
+    }
 }

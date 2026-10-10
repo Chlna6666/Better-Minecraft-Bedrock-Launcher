@@ -152,6 +152,10 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) renderer_extension_steps: Vec<Vec<RenderStepDescriptor>>,
     pub(in crate::platform::nova) renderer_extension_frame_id: u64,
     pub(in crate::platform::nova) batches: Vec<UploadedBatch>,
+    /// Conservative device-pixel bounds of static uploaded quad batches.
+    /// None means animated or unknown: these MUST NOT be culled.
+    pub(in crate::platform::nova) batch_visual_bounds:
+        Vec<Option<crate::Bounds<crate::ScaledPixels>>>,
     pub(in crate::platform::nova) path_rasterization_cache: PathRasterizationCache,
     pub(in crate::platform::nova) path_rasterization_cache_hits: u64,
     pub(in crate::platform::nova) path_rasterization_cache_misses: u64,

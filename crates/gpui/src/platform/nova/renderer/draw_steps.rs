@@ -261,7 +261,7 @@ impl NovaRenderer {
             .take(last_dirty_group.saturating_add(1))
         {
             let mut source_steps = Vec::new();
-            draw_steps_for_upload_into(
+            draw_steps_for_upload_into_clipped(
                 &self.frame_upload,
                 &self.pipelines,
                 blend_pipelines,
@@ -277,6 +277,7 @@ impl NovaRenderer {
                     batch_start,
                     batch_end,
                 },
+                source_scissor,
                 &mut source_steps,
             );
             if let Some(scissor) = source_scissor {
@@ -513,7 +514,7 @@ impl NovaRenderer {
             }
 
             let mut final_source_steps = Vec::new();
-            draw_steps_for_upload_into(
+            draw_steps_for_upload_into_clipped(
                 &self.frame_upload,
                 &self.pipelines,
                 blend_pipelines,
@@ -529,6 +530,7 @@ impl NovaRenderer {
                     batch_start: segment_start,
                     batch_end: range.content_end,
                 },
+                Some(source_scissor),
                 &mut final_source_steps,
             );
             apply_scissor_to_steps(&mut final_source_steps, source_scissor);
@@ -609,7 +611,7 @@ impl NovaRenderer {
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
         let mut source_steps = Vec::new();
-        draw_steps_for_upload_into(
+        draw_steps_for_upload_into_clipped(
             &self.frame_upload,
             &self.pipelines,
             blend_pipelines,
@@ -623,6 +625,7 @@ impl NovaRenderer {
                 batch_start,
                 batch_end,
             },
+            Some(source_scissor),
             &mut source_steps,
         );
         apply_scissor_to_steps(&mut source_steps, source_scissor);
