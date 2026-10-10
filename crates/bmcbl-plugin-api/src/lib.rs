@@ -8,6 +8,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -20,6 +21,10 @@ pub const API_VERSION: &str = "0.6";
 pub const HOST_MODULE: &str = "bmcbl";
 pub const HOST_CALL_NAME: &str = "bmcbl_host_call";
 pub const DEFAULT_HOST_BUFFER_CAPACITY: usize = 256;
+/// 文本类请求（配置、翻译、存储）的初始响应缓冲。
+const MEDIUM_HOST_BUFFER_CAPACITY: usize = 1024;
+/// 二进制/大文本类请求（资源读取、HTTP 文本）的初始响应缓冲上限。
+const LARGE_HOST_BUFFER_CAPACITY: usize = 16 * 1024;
 pub const MAX_HOST_BUFFER_CAPACITY: usize = 1024 * 1024;
 
 const OP_LOG: i32 = 0;
@@ -52,6 +57,8 @@ const OP_CREATE_TASK: i32 = 26;
 const OP_UPDATE_TASK: i32 = 27;
 const OP_FINISH_TASK: i32 = 28;
 const OP_APP_INFO: i32 = 29;
+const OP_REGISTER_SERVICE: i32 = 30;
+const OP_CALL_SERVICE: i32 = 31;
 const OP_SIDECAR_CALL: i32 = 33;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +94,8 @@ pub enum HostOp {
     UpdateTask = OP_UPDATE_TASK,
     FinishTask = OP_FINISH_TASK,
     AppInfo = OP_APP_INFO,
+    RegisterService = OP_REGISTER_SERVICE,
+    CallService = OP_CALL_SERVICE,
     SidecarCall = OP_SIDECAR_CALL,
 }
 
@@ -517,10 +526,16 @@ pub struct EventSubscription {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRegistration {
+    pub service_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Registration {
     Page(PageRegistration),
     Injection(InjectionRegistration),
     Subscription(EventSubscription),
+    Service(ServiceRegistration),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -583,63 +598,63 @@ pub struct ContainerNode {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextNode {
-    pub text: String,
+    pub text: Arc<str>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ButtonNode {
-    pub label: String,
-    pub action_id: String,
-    pub action_value: Option<String>,
+    pub label: Arc<str>,
+    pub action_id: Arc<str>,
+    pub action_value: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InputNode {
-    pub value: String,
-    pub placeholder: String,
-    pub action_id: String,
-    pub action_value: Option<String>,
+    pub value: Arc<str>,
+    pub placeholder: Arc<str>,
+    pub action_id: Arc<str>,
+    pub action_value: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CheckboxNode {
-    pub label: String,
+    pub label: Arc<str>,
     pub checked: bool,
-    pub action_id: String,
-    pub action_value: Option<String>,
+    pub action_id: Arc<str>,
+    pub action_value: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ToggleNode {
-    pub label: String,
+    pub label: Arc<str>,
     pub enabled: bool,
-    pub action_id: String,
-    pub action_value: Option<String>,
+    pub action_id: Arc<str>,
+    pub action_value: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SelectOption {
-    pub label: String,
-    pub value: String,
+    pub label: Arc<str>,
+    pub value: Arc<str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SelectNode {
-    pub label: String,
-    pub action_id: String,
+    pub label: Arc<str>,
+    pub action_id: Arc<str>,
     pub options: Vec<SelectOption>,
-    pub selected: Option<String>,
+    pub selected: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProgressNode {
-    pub label: String,
+    pub label: Arc<str>,
     pub value: u64,
     pub total: Option<u64>,
     pub style: ViewStyle,
@@ -647,9 +662,9 @@ pub struct ProgressNode {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinkNode {
-    pub label: String,
-    pub url: String,
-    pub tooltip: Option<String>,
+    pub label: Arc<str>,
+    pub url: Arc<str>,
+    pub tooltip: Option<Arc<str>>,
     pub style: ViewStyle,
 }
 
@@ -661,23 +676,23 @@ pub struct ListNode {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BadgeNode {
-    pub label: String,
+    pub label: Arc<str>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IconNode {
-    pub name: String,
+    pub name: Arc<str>,
     pub style: ViewStyle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageNode {
-    pub src: String,
-    pub alt: String,
-    pub caption: String,
-    pub placeholder: String,
-    pub fallback: String,
+    pub src: Arc<str>,
+    pub alt: Arc<str>,
+    pub caption: Arc<str>,
+    pub placeholder: Arc<str>,
+    pub fallback: Arc<str>,
     pub style: ViewStyle,
     pub height: Option<u16>,
     pub min_height: Option<u16>,
@@ -690,9 +705,9 @@ pub struct ImageNode {
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageOptions {
-    pub caption: String,
-    pub placeholder: String,
-    pub fallback: String,
+    pub caption: Arc<str>,
+    pub placeholder: Arc<str>,
+    pub fallback: Arc<str>,
     pub height: Option<u16>,
     pub min_height: Option<u16>,
     pub max_height: Option<u16>,
@@ -705,9 +720,9 @@ pub struct ImageOptions {
 impl Default for ImageOptions {
     fn default() -> Self {
         Self {
-            caption: String::new(),
-            placeholder: String::new(),
-            fallback: String::new(),
+            caption: Arc::from(""),
+            placeholder: Arc::from(""),
+            fallback: Arc::from(""),
             height: None,
             min_height: None,
             max_height: None,
@@ -726,19 +741,19 @@ impl ImageOptions {
     }
 
     #[must_use]
-    pub fn caption(mut self, caption: impl Into<String>) -> Self {
+    pub fn caption(mut self, caption: impl Into<Arc<str>>) -> Self {
         self.caption = caption.into();
         self
     }
 
     #[must_use]
-    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+    pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
     #[must_use]
-    pub fn fallback(mut self, fallback: impl Into<String>) -> Self {
+    pub fn fallback(mut self, fallback: impl Into<Arc<str>>) -> Self {
         self.fallback = fallback.into();
         self
     }
@@ -905,6 +920,20 @@ pub enum HostRequest {
         timeout_ms: u32,
         max_output_bytes: u32,
     },
+    RegisterService {
+        name: String,
+    },
+    CallService {
+        request: ServiceCallRequest,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceCallRequest {
+    pub target_plugin: Option<String>,
+    pub service_name: String,
+    pub method: String,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -938,6 +967,10 @@ pub trait Plugin {
 
     fn render_injection(_request: InjectionRequest) -> PluginResult<Option<ViewTree>> {
         Ok(None)
+    }
+
+    fn call_service(_request: ServiceCallRequest) -> PluginResult<Vec<u8>> {
+        Err(PluginError::new("service-not-found", "service call not implemented by this plugin"))
     }
 
     fn shutdown(_reason: ShutdownReason) -> PluginResult<()> {
@@ -1077,6 +1110,15 @@ impl Registrations {
         self.items
             .push(Registration::Subscription(EventSubscription {
                 event: event.into(),
+            }));
+        self
+    }
+
+    #[must_use]
+    pub fn service(mut self, service_name: impl Into<String>) -> Self {
+        self.items
+            .push(Registration::Service(ServiceRegistration {
+                service_name: service_name.into(),
             }));
         self
     }
@@ -1361,78 +1403,78 @@ impl View {
     }
 
     #[must_use]
-    pub fn text(value: impl Into<String>) -> Self {
+    pub fn text(value: impl Into<Arc<str>>) -> Self {
         Self::node(crate::text(value))
     }
 
     #[must_use]
-    pub fn title(text: impl Into<String>) -> Self {
+    pub fn title(text: impl Into<Arc<str>>) -> Self {
         Self::node(title(text))
     }
 
     #[must_use]
-    pub fn badge(label: impl Into<String>) -> Self {
+    pub fn badge(label: impl Into<Arc<str>>) -> Self {
         Self::node(badge(label))
     }
 
     #[must_use]
-    pub fn badge_with_style(label: impl Into<String>, style: ViewStyle) -> Self {
+    pub fn badge_with_style(label: impl Into<Arc<str>>, style: ViewStyle) -> Self {
         Self::node(badge_with_style(label, style))
     }
 
     #[must_use]
-    pub fn button(label: impl Into<String>, action_id: impl Into<String>) -> Self {
+    pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> Self {
         Self::node(button(label, action_id))
     }
 
     #[must_use]
     pub fn button_with_value(
-        label: impl Into<String>,
-        action_id: impl Into<String>,
-        action_value: impl Into<String>,
+        label: impl Into<Arc<str>>,
+        action_id: impl Into<Arc<str>>,
+        action_value: impl Into<Arc<str>>,
     ) -> Self {
         Self::node(button_with_value(label, action_id, action_value))
     }
 
     #[must_use]
-    pub fn checkbox(label: impl Into<String>, checked: bool, action_id: impl Into<String>) -> Self {
+    pub fn checkbox(label: impl Into<Arc<str>>, checked: bool, action_id: impl Into<Arc<str>>) -> Self {
         Self::node(checkbox(label, checked, action_id))
     }
 
     #[must_use]
-    pub fn toggle(label: impl Into<String>, enabled: bool, action_id: impl Into<String>) -> Self {
+    pub fn toggle(label: impl Into<Arc<str>>, enabled: bool, action_id: impl Into<Arc<str>>) -> Self {
         Self::node(toggle(label, enabled, action_id))
     }
 
     #[must_use]
     pub fn select(
-        label: impl Into<String>,
-        action_id: impl Into<String>,
+        label: impl Into<Arc<str>>,
+        action_id: impl Into<Arc<str>>,
         options: impl IntoIterator<Item = SelectOption>,
-        selected: Option<impl Into<String>>,
+        selected: Option<impl Into<Arc<str>>>,
     ) -> Self {
         Self::node(select(label, action_id, options, selected))
     }
 
     #[must_use]
-    pub fn progress(label: impl Into<String>, value: u64, total: Option<u64>) -> Self {
+    pub fn progress(label: impl Into<Arc<str>>, value: u64, total: Option<u64>) -> Self {
         Self::node(progress(label, value, total))
     }
 
     #[must_use]
-    pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
+    pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> Self {
         Self::node(link(label, url))
     }
 
     #[must_use]
-    pub fn image(src: impl Into<String>, alt: impl Into<String>) -> Self {
+    pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> Self {
         Self::node(image(src, alt))
     }
 
     #[must_use]
     pub fn image_with_style(
-        src: impl Into<String>,
-        alt: impl Into<String>,
+        src: impl Into<Arc<str>>,
+        alt: impl Into<Arc<str>>,
         height: Option<u16>,
         aspect_ratio: Option<(u16, u16)>,
         fit: ImageFit,
@@ -1450,8 +1492,8 @@ impl View {
 
     #[must_use]
     pub fn image_with_options(
-        src: impl Into<String>,
-        alt: impl Into<String>,
+        src: impl Into<Arc<str>>,
+        alt: impl Into<Arc<str>>,
         options: ImageOptions,
     ) -> Self {
         Self::node(image_with_options(src, alt, options))
@@ -1569,7 +1611,7 @@ pub fn card(children: impl IntoIterator<Item = View>) -> View {
 }
 
 #[must_use]
-pub fn section(title_text: impl Into<String>, children: impl IntoIterator<Item = View>) -> View {
+pub fn section(title_text: impl Into<Arc<str>>, children: impl IntoIterator<Item = View>) -> View {
     let mut container = View::column()
         .padding(0)
         .gap(10)
@@ -1686,7 +1728,7 @@ pub fn container(children: Vec<u32>) -> ViewNode {
 }
 
 #[must_use]
-pub fn text(text: impl Into<String>) -> ViewNode {
+pub fn text(text: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Text(TextNode {
         text: text.into(),
         style: default_style(),
@@ -1694,7 +1736,7 @@ pub fn text(text: impl Into<String>) -> ViewNode {
 }
 
 #[must_use]
-pub fn title(text: impl Into<String>) -> ViewNode {
+pub fn title(text: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Text(TextNode {
         text: text.into(),
         style: title_style(),
@@ -1702,7 +1744,7 @@ pub fn title(text: impl Into<String>) -> ViewNode {
 }
 
 #[must_use]
-pub fn badge(label: impl Into<String>) -> ViewNode {
+pub fn badge(label: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Badge(BadgeNode {
         label: label.into(),
         style: default_style(),
@@ -1710,7 +1752,7 @@ pub fn badge(label: impl Into<String>) -> ViewNode {
 }
 
 #[must_use]
-pub fn badge_with_style(label: impl Into<String>, style: ViewStyle) -> ViewNode {
+pub fn badge_with_style(label: impl Into<Arc<str>>, style: ViewStyle) -> ViewNode {
     ViewNode::Badge(BadgeNode {
         label: label.into(),
         style,
@@ -1718,7 +1760,7 @@ pub fn badge_with_style(label: impl Into<String>, style: ViewStyle) -> ViewNode 
 }
 
 #[must_use]
-pub fn button(label: impl Into<String>, action_id: impl Into<String>) -> ViewNode {
+pub fn button(label: impl Into<Arc<str>>, action_id: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Button(ButtonNode {
         label: label.into(),
         action_id: action_id.into(),
@@ -1729,9 +1771,9 @@ pub fn button(label: impl Into<String>, action_id: impl Into<String>) -> ViewNod
 
 #[must_use]
 pub fn button_with_value(
-    label: impl Into<String>,
-    action_id: impl Into<String>,
-    action_value: impl Into<String>,
+    label: impl Into<Arc<str>>,
+    action_id: impl Into<Arc<str>>,
+    action_value: impl Into<Arc<str>>,
 ) -> ViewNode {
     ViewNode::Button(ButtonNode {
         label: label.into(),
@@ -1742,33 +1784,33 @@ pub fn button_with_value(
 }
 
 #[must_use]
-pub fn checkbox(label: impl Into<String>, checked: bool, action_id: impl Into<String>) -> ViewNode {
+pub fn checkbox(label: impl Into<Arc<str>>, checked: bool, action_id: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Checkbox(CheckboxNode {
         label: label.into(),
         checked,
         action_id: action_id.into(),
-        action_value: Some((!checked).to_string()),
+        action_value: Some(Arc::from(if checked { "false" } else { "true" })),
         style: default_style(),
     })
 }
 
 #[must_use]
-pub fn toggle(label: impl Into<String>, enabled: bool, action_id: impl Into<String>) -> ViewNode {
+pub fn toggle(label: impl Into<Arc<str>>, enabled: bool, action_id: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Toggle(ToggleNode {
         label: label.into(),
         enabled,
         action_id: action_id.into(),
-        action_value: Some((!enabled).to_string()),
+        action_value: Some(Arc::from(if enabled { "false" } else { "true" })),
         style: default_style(),
     })
 }
 
 #[must_use]
 pub fn select(
-    label: impl Into<String>,
-    action_id: impl Into<String>,
+    label: impl Into<Arc<str>>,
+    action_id: impl Into<Arc<str>>,
     options: impl IntoIterator<Item = SelectOption>,
-    selected: Option<impl Into<String>>,
+    selected: Option<impl Into<Arc<str>>>,
 ) -> ViewNode {
     ViewNode::Select(SelectNode {
         label: label.into(),
@@ -1780,7 +1822,7 @@ pub fn select(
 }
 
 #[must_use]
-pub fn option(label: impl Into<String>, value: impl Into<String>) -> SelectOption {
+pub fn option(label: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> SelectOption {
     SelectOption {
         label: label.into(),
         value: value.into(),
@@ -1788,7 +1830,7 @@ pub fn option(label: impl Into<String>, value: impl Into<String>) -> SelectOptio
 }
 
 #[must_use]
-pub fn progress(label: impl Into<String>, value: u64, total: Option<u64>) -> ViewNode {
+pub fn progress(label: impl Into<Arc<str>>, value: u64, total: Option<u64>) -> ViewNode {
     ViewNode::Progress(ProgressNode {
         label: label.into(),
         value,
@@ -1798,7 +1840,7 @@ pub fn progress(label: impl Into<String>, value: u64, total: Option<u64>) -> Vie
 }
 
 #[must_use]
-pub fn link(label: impl Into<String>, url: impl Into<String>) -> ViewNode {
+pub fn link(label: impl Into<Arc<str>>, url: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Link(LinkNode {
         label: label.into(),
         url: url.into(),
@@ -1812,9 +1854,9 @@ pub fn link(label: impl Into<String>, url: impl Into<String>) -> ViewNode {
 
 #[must_use]
 pub fn link_with_tooltip(
-    label: impl Into<String>,
-    url: impl Into<String>,
-    tooltip: impl Into<String>,
+    label: impl Into<Arc<str>>,
+    url: impl Into<Arc<str>>,
+    tooltip: impl Into<Arc<str>>,
 ) -> ViewNode {
     ViewNode::Link(LinkNode {
         label: label.into(),
@@ -1828,7 +1870,7 @@ pub fn link_with_tooltip(
 }
 
 #[must_use]
-pub fn icon(name: impl Into<String>) -> ViewNode {
+pub fn icon(name: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Icon(IconNode {
         name: name.into(),
         style: default_style(),
@@ -1836,13 +1878,13 @@ pub fn icon(name: impl Into<String>) -> ViewNode {
 }
 
 #[must_use]
-pub fn image(src: impl Into<String>, alt: impl Into<String>) -> ViewNode {
+pub fn image(src: impl Into<Arc<str>>, alt: impl Into<Arc<str>>) -> ViewNode {
     ViewNode::Image(ImageNode {
         src: src.into(),
         alt: alt.into(),
-        caption: String::new(),
-        placeholder: String::new(),
-        fallback: String::new(),
+        caption: Arc::from(""),
+        placeholder: Arc::from(""),
+        fallback: Arc::from(""),
         style: default_style(),
         height: None,
         min_height: None,
@@ -1856,8 +1898,8 @@ pub fn image(src: impl Into<String>, alt: impl Into<String>) -> ViewNode {
 
 #[must_use]
 pub fn image_with_style(
-    src: impl Into<String>,
-    alt: impl Into<String>,
+    src: impl Into<Arc<str>>,
+    alt: impl Into<Arc<str>>,
     height: Option<u16>,
     aspect_ratio: Option<(u16, u16)>,
     fit: ImageFit,
@@ -1873,8 +1915,8 @@ pub fn image_with_style(
 
 #[must_use]
 pub fn image_with_options(
-    src: impl Into<String>,
-    alt: impl Into<String>,
+    src: impl Into<Arc<str>>,
+    alt: impl Into<Arc<str>>,
     options: ImageOptions,
 ) -> ViewNode {
     ViewNode::Image(ImageNode {
@@ -2403,6 +2445,45 @@ pub fn sidecar_call(
     }
 }
 
+pub fn register_service(name: impl Into<String>) -> PluginResult<()> {
+    host_call_unit(
+        HostOp::RegisterService,
+        &HostRequest::RegisterService {
+            name: name.into(),
+        },
+    )
+}
+
+pub fn call_service(
+    service_name: impl Into<String>,
+    method: impl Into<String>,
+    payload: impl Into<Vec<u8>>,
+) -> PluginResult<Vec<u8>> {
+    call_plugin_service(None, service_name, method, payload)
+}
+
+pub fn call_plugin_service(
+    target_plugin: Option<String>,
+    service_name: impl Into<String>,
+    method: impl Into<String>,
+    payload: impl Into<Vec<u8>>,
+) -> PluginResult<Vec<u8>> {
+    match host_call(
+        HostOp::CallService,
+        &HostRequest::CallService {
+            request: ServiceCallRequest {
+                target_plugin,
+                service_name: service_name.into(),
+                method: method.into(),
+                payload: payload.into(),
+            },
+        },
+    )? {
+        HostResponse::Bytes(data) => Ok(data),
+        other => unexpected_host_response(other, "call-service"),
+    }
+}
+
 pub fn theme_snapshot() -> PluginResult<ThemeSnapshot> {
     match host_call(HostOp::ThemeSnapshot, &HostRequest::ThemeSnapshot)? {
         HostResponse::ThemeSnapshot(snapshot) => Ok(snapshot),
@@ -2521,8 +2602,27 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
     }
 }
 
-fn initial_host_response_capacity(_request: &HostRequest) -> usize {
-    DEFAULT_HOST_BUFFER_CAPACITY
+/// 按请求预估初始响应缓冲，减少“容量不足 → 重新调用宿主”的往返。
+///
+/// 宿主在响应放不下时不会写入任何字节，只回报所需长度；插件随后必须重新发起同一次
+/// 调用，而宿主会重新执行该动作（重新读取资源、重新编码响应）。因此容量估算直接影响
+/// 读取资源、读取配置、HTTP 文本等热路径的调用次数。
+fn initial_host_response_capacity(request: &HostRequest) -> usize {
+    match request {
+        HostRequest::ReadResourceBytes { .. } | HostRequest::CallService { .. } => {
+            LARGE_HOST_BUFFER_CAPACITY
+        }
+        HostRequest::HttpGetText { max_bytes, .. } => usize::try_from(*max_bytes)
+            .unwrap_or(LARGE_HOST_BUFFER_CAPACITY)
+            .clamp(DEFAULT_HOST_BUFFER_CAPACITY, LARGE_HOST_BUFFER_CAPACITY),
+        HostRequest::ReadResourceText { .. }
+        | HostRequest::ReadConfig
+        | HostRequest::Translate { .. }
+        | HostRequest::StorageGet { .. }
+        | HostRequest::StorageList { .. } => MEDIUM_HOST_BUFFER_CAPACITY,
+        HostRequest::AppInfo | HostRequest::ThemeSnapshot => 512,
+        _ => DEFAULT_HOST_BUFFER_CAPACITY,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2719,6 +2819,22 @@ macro_rules! export_plugin {
             reason = "plugin entrypoint decodes host-provided guest memory"
         )]
         #[unsafe(no_mangle)]
+        pub extern "C" fn bmcbl_call_service(ptr: u32, len: u32) -> u64 {
+            let request = match unsafe {
+                $crate::decode_request::<$crate::ServiceCallRequest>(ptr, len)
+            } {
+                Ok(request) => request,
+                Err(error) => return $crate::encode_plugin_result::<Vec<u8>>(Err(error)),
+            };
+            $crate::encode_plugin_result(<$plugin as $crate::Plugin>::call_service(request))
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        #[expect(
+            unsafe_code,
+            reason = "plugin entrypoint decodes host-provided guest memory"
+        )]
+        #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_shutdown(ptr: u32, len: u32) -> u64 {
             let reason = match unsafe { $crate::decode_request::<$crate::ShutdownReason>(ptr, len) }
             {
@@ -2805,6 +2921,12 @@ macro_rules! registrations {
     (subscribe $event:expr; $($rest:tt)*) => {
         $crate::Registrations::new()
             .subscribe($event)
+            .extend($crate::registrations!($($rest)*))
+            .finish()
+    };
+    (service $name:expr; $($rest:tt)*) => {
+        $crate::Registrations::new()
+            .service($name)
             .extend($crate::registrations!($($rest)*))
             .finish()
     };
@@ -2911,17 +3033,18 @@ pub mod prelude {
         InjectionLayout, InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal,
         ModalRequest, Nav, Page, PageRegistration, PageRenderRequest, Plugin, PluginContext,
         PluginError, PluginMetadata, PluginResult, Registration, Registrations, SelectOption,
-        ShutdownReason, StorageEntry, TaskCreateRequest, TaskFinishRequest, TaskUpdateRequest,
-        TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot, ThemeToken, ToastKind, View, ViewNode,
-        ViewStyle, ViewTree, ViewTreeBuilder, Window, app_info, badge, badge_with_style,
-        bmcbl_plugin, button, button_with_value, card, checkbox, config_read, config_write,
-        create_task, current_locale, current_unix_ms, default_style, emit_event, finish_task,
-        http_get_text, icon, image, image_with_options, image_with_style, invalidate,
-        invalidate_all, invalidate_injection, invalidate_page, is_dark_mode, link,
-        link_with_tooltip, log, log_debug, log_error, log_info, log_warn, navigate, navigate_page,
-        navigate_path, open_external_url, open_modal, open_window, option, plugin_actions,
-        plugin_error, plugin_metadata, progress, read_clipboard_text, read_config,
-        read_resource_bytes, read_resource_text, registrations, section, select, session_get,
+        ServiceCallRequest, ServiceRegistration, ShutdownReason, StorageEntry, TaskCreateRequest,
+        TaskFinishRequest, TaskUpdateRequest, TextSizeToken, ThemeColor, ThemeMode, ThemeSnapshot,
+        ThemeToken, ToastKind, View, ViewNode, ViewStyle, ViewTree, ViewTreeBuilder, Window,
+        app_info, badge, badge_with_style, bmcbl_plugin, button, button_with_value,
+        call_plugin_service, call_service, card, checkbox, config_read, config_write, create_task,
+        current_locale, current_unix_ms, default_style, emit_event, finish_task, http_get_text,
+        icon, image, image_with_options, image_with_style, invalidate, invalidate_all,
+        invalidate_injection, invalidate_page, is_dark_mode, link, link_with_tooltip, log,
+        log_debug, log_error, log_info, log_warn, navigate, navigate_page, navigate_path,
+        open_external_url, open_modal, open_window, option, plugin_actions, plugin_error,
+        plugin_metadata, progress, read_clipboard_text, read_config, read_resource_bytes,
+        read_resource_text, register_service, registrations, section, select, session_get,
         session_set, show_toast, sidecar_call, spacer, storage_delete, storage_get, storage_list,
         storage_set, text, theme_accent, theme_snapshot, title, toast, toggle, tr, tr_arg, tr_args,
         update_task, view, write_clipboard_text,
@@ -3056,9 +3179,9 @@ mod tests {
         let ViewNode::Image(image) = node else {
             panic!("node should be an image");
         };
-        assert_eq!(image.caption, "Caption");
-        assert_eq!(image.placeholder, "Loading");
-        assert_eq!(image.fallback, "Unavailable");
+        assert_eq!(&*image.caption, "Caption");
+        assert_eq!(&*image.placeholder, "Loading");
+        assert_eq!(&*image.fallback, "Unavailable");
         assert_eq!(image.height, Some(180));
         assert_eq!(image.min_height, Some(120));
         assert_eq!(image.max_height, Some(240));
@@ -3066,6 +3189,28 @@ mod tests {
         assert_eq!(image.aspect_ratio_y, Some(9));
         assert_eq!(image.corner_radius, Some(12));
         assert_eq!(image.fit, ImageFit::Contain);
+    }
+
+    #[test]
+    fn service_registration_and_call_request_roundtrip() {
+        let registration = Registration::Service(ServiceRegistration {
+            service_name: "test-service".to_string(),
+        });
+        let bytes = postcard::to_allocvec(&registration).expect("service reg should encode");
+        let decoded = postcard::from_bytes::<Registration>(&bytes).expect("service reg should decode");
+        assert_eq!(decoded, registration);
+
+        let request = HostRequest::CallService {
+            request: ServiceCallRequest {
+                target_plugin: Some("calc".to_string()),
+                service_name: "math".to_string(),
+                method: "add".to_string(),
+                payload: vec![1, 2, 3],
+            },
+        };
+        let bytes = postcard::to_allocvec(&request).expect("service call request should encode");
+        let decoded = postcard::from_bytes::<HostRequest>(&bytes).expect("service call request should decode");
+        assert_eq!(decoded, request);
     }
 
     #[test]
@@ -3116,5 +3261,34 @@ mod tests {
 
         assert_eq!(decoded, response);
         assert!(snapshot.is_dark());
+    }
+
+    #[test]
+    fn host_response_capacity_hint_reduces_retries_for_large_reads() {
+        assert_eq!(
+            initial_host_response_capacity(&HostRequest::ReadResourceBytes {
+                path: "assets/data.bin".to_string(),
+            }),
+            LARGE_HOST_BUFFER_CAPACITY
+        );
+        assert_eq!(
+            initial_host_response_capacity(&HostRequest::ReadConfig),
+            MEDIUM_HOST_BUFFER_CAPACITY
+        );
+        assert_eq!(
+            initial_host_response_capacity(&HostRequest::CurrentUnixMs),
+            DEFAULT_HOST_BUFFER_CAPACITY
+        );
+
+        // HTTP 初始容量跟随请求上限，但被夹在默认值与上限之间，避免按 512 KiB 预分配。
+        let http = HostRequest::HttpGetText {
+            url: "https://example.com/data.json".to_string(),
+            ttl_seconds: 0,
+            max_bytes: 512 * 1024,
+        };
+        assert_eq!(
+            initial_host_response_capacity(&http),
+            LARGE_HOST_BUFFER_CAPACITY
+        );
     }
 }

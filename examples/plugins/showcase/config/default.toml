@@ -1,0 +1,15 @@
+# BMCBL Showcase 示例插件的默认配置。
+# 首次加载时宿主会把这份默认值复制成 config.toml；设置页会用 config/schema.toml 生成表单。
+
+# 是否在示例页面显示高级选项（该值由插件的「高级选项」开关写回）。
+show_overlay_badge = true
+
+# 显示模式预设，对应插件里的模式下拉框。
+# 可选值："balanced"、"quiet"、"verbose"。
+display_mode = "balanced"
+
+# 示例整数项：状态条最多显示多少条。
+max_status_items = 5
+
+# 可选的自定义状态文本，留空表示使用本地化默认值。
+custom_status = ""

@@ -102,6 +102,54 @@ pub struct ServiceRpcResponse {
     pub error: Option<String>,
 }
 
+pub const MAX_RPC_DEPTH: usize = 8;
+
+/// 防重入与循环调用 RPC 栈
+#[derive(Clone, Debug, Default)]
+pub struct PluginRpcCallStack {
+    active_calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl PluginRpcCallStack {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 尝试进入一个插件的 RPC 调用上下文，若超出深度或检测到环路则报错。
+    pub fn enter(&self, target_plugin_id: &str) -> Result<CallStackGuard> {
+        let mut calls = self.active_calls.borrow_mut();
+        if calls.len() >= MAX_RPC_DEPTH {
+            bail!("maximum RPC recursion depth ({MAX_RPC_DEPTH}) exceeded");
+        }
+        if calls.iter().any(|id| id == target_plugin_id) {
+            bail!(
+                "detected circular RPC call dependency: {:?} -> {}",
+                *calls,
+                target_plugin_id
+            );
+        }
+        calls.push(target_plugin_id.to_string());
+        Ok(CallStackGuard {
+            stack: self.active_calls.clone(),
+        })
+    }
+
+    pub fn current_depth(&self) -> usize {
+        self.active_calls.borrow().len()
+    }
+}
+
+#[derive(Debug)]
+pub struct CallStackGuard {
+    stack: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl Drop for CallStackGuard {
+    fn drop(&mut self) {
+        self.stack.borrow_mut().pop();
+    }
+}
+
 /// 插件服务注册表与总线
 #[derive(Clone, Debug, Default)]
 pub struct PluginServiceRegistry {
@@ -192,5 +240,46 @@ mod tests {
         );
         registry.unregister_by_plugin("audio_plugin");
         assert!(registry.find_service("audio_service").is_none());
+    }
+
+    #[test]
+    fn test_rpc_call_stack_guard_and_cycle_prevention() {
+        let stack = PluginRpcCallStack::new();
+        assert_eq!(stack.current_depth(), 0);
+
+        {
+            let _g1 = stack.enter("plugin_a").expect("enter A");
+            assert_eq!(stack.current_depth(), 1);
+
+            {
+                let _g2 = stack.enter("plugin_b").expect("enter B");
+                assert_eq!(stack.current_depth(), 2);
+
+                // Circular call: B -> A
+                let err = stack.enter("plugin_a").unwrap_err();
+                assert!(err.to_string().contains("circular RPC"));
+
+                // Self call: B -> B
+                let err = stack.enter("plugin_b").unwrap_err();
+                assert!(err.to_string().contains("circular RPC"));
+            }
+            assert_eq!(stack.current_depth(), 1);
+        }
+        assert_eq!(stack.current_depth(), 0);
+    }
+
+    #[test]
+    fn test_rpc_call_stack_max_depth() {
+        let stack = PluginRpcCallStack::new();
+        let mut guards = Vec::new();
+
+        for i in 0..MAX_RPC_DEPTH {
+            guards.push(stack.enter(&format!("plugin_{i}")).expect("within depth"));
+        }
+        assert_eq!(stack.current_depth(), MAX_RPC_DEPTH);
+
+        // Exceeds max depth
+        let err = stack.enter("overflow_plugin").unwrap_err();
+        assert!(err.to_string().contains("maximum RPC recursion depth"));
     }
 }

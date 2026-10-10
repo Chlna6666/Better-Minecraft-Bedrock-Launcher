@@ -1,0 +1,72 @@
+[package]
+name = "bmcbl-showcase"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+build = "build.rs"
+authors = ["BMCBL"]
+description = "BMCBL 插件功能全集示例。"
+license = "GPL-3.0"
+
+# 示例插件独立于 launcher 的 workspace，按需单独构建。
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api" }
+
+[build-dependencies]
+bmcbl_plugin_api = { path = "../../../crates/bmcbl-plugin-api", features = ["pack"] }
+
+[package.metadata.bmcbl-plugin]
+id = "bmcbl-showcase"
+name = "BMCBL Showcase"
+website = "https://bmcbl.com"
+tags = ["example", "showcase", "wasm", "ui", "storage"]
+capabilities = [
+    "ui.page",
+    "ui.window",
+    "ui.hook",
+    "event.global",
+    "toast",
+    "network.http",
+    "clipboard.read",
+    "clipboard.write",
+    "external.open",
+    "resource.read",
+    "storage.kv",
+    "task.progress",
+    "config.read",
+    "config.write",
+]
+readme = "README.md"
+readme_locales = { "zh-CN" = "README.zh-CN.md", "en-US" = "README.md" }
+lang_dir = "lang"
+config_default = "config/default.toml"
+config_schema = "config/schema.toml"
+icon = "assets/logo.svg"
+
+[package.metadata.bmcbl-plugin.permissions.network]
+allow = ["https://bmcbl.com/"]
+
+[package.metadata.bmcbl-plugin.permissions.resource]
+allow = ["assets/notice.txt", "assets/logo.svg"]
+
+[package.metadata.bmcbl-plugin.permissions.external]
+allow = ["https://bmcbl.com/"]
+
+[package.metadata.bmcbl-plugin.limits]
+max_http_bytes = 262144
+max_resource_bytes = 65536
+max_storage_bytes = 1048576
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

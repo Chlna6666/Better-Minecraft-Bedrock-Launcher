@@ -1,0 +1,59 @@
+# BMCBL 插件设置页的表单 schema。
+# `label_key` / `description_key` 指向 lang/ 下的翻译键，宿主会按当前语言解析。
+
+[[fields]]
+key = "show_overlay_badge"
+label = "Show overlay badge"
+label_key = "showcase.config.show_overlay_badge.label"
+description = "Toggles the advanced section in the showcase page."
+description_key = "showcase.config.show_overlay_badge.description"
+type = "bool"
+default = true
+restart_required = false
+
+[[fields]]
+key = "display_mode"
+label = "Display mode"
+label_key = "showcase.config.display_mode.label"
+description = "Behaviour preset written back by the plugin."
+description_key = "showcase.config.display_mode.description"
+type = "select"
+default = "balanced"
+restart_required = false
+
+[[fields.options]]
+value = "balanced"
+label = "Balanced"
+label_key = "showcase.config.display_mode.balanced"
+
+[[fields.options]]
+value = "quiet"
+label = "Quiet"
+label_key = "showcase.config.display_mode.quiet"
+
+[[fields.options]]
+value = "verbose"
+label = "Verbose"
+label_key = "showcase.config.display_mode.verbose"
+
+[[fields]]
+key = "max_status_items"
+label = "Max status items"
+label_key = "showcase.config.max_status_items.label"
+description = "Example integer option rendered by the plugin manager."
+description_key = "showcase.config.max_status_items.description"
+type = "integer"
+default = 5
+min = 1
+max = 20
+restart_required = false
+
+[[fields]]
+key = "custom_status"
+label = "Custom status"
+label_key = "showcase.config.custom_status.label"
+description = "Optional custom status text written by the plugin."
+description_key = "showcase.config.custom_status.description"
+type = "string"
+default = ""
+restart_required = false

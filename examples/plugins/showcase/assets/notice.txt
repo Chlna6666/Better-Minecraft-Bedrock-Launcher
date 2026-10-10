@@ -1,0 +1,3 @@
+BMCBL Showcase 示例资源
+这个文件通过 read_resource_text("assets/notice.txt") 读取，
+路径必须在 Cargo.toml 的 permissions.resource.allow 中声明。

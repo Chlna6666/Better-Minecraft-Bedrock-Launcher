@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Result, bail};
 use gpui::{
     AnyElement, App, FontWeight, Hsla, ImageSource, InteractiveElement, IntoElement, MouseButton,
@@ -89,52 +91,52 @@ pub enum ViewNode {
         children: Vec<ViewNode>,
     },
     Text {
-        text: String,
+        text: Arc<str>,
         style: ViewStyle,
     },
     Button {
-        label: String,
-        action_id: String,
-        action_value: Option<String>,
+        label: Arc<str>,
+        action_id: Arc<str>,
+        action_value: Option<Arc<str>>,
         style: ViewStyle,
     },
     Input {
-        value: String,
-        placeholder: String,
-        action_id: String,
+        value: Arc<str>,
+        placeholder: Arc<str>,
+        action_id: Arc<str>,
         style: ViewStyle,
     },
     Checkbox {
-        label: String,
+        label: Arc<str>,
         checked: bool,
-        action_id: String,
-        action_value: Option<String>,
+        action_id: Arc<str>,
+        action_value: Option<Arc<str>>,
         style: ViewStyle,
     },
     Toggle {
-        label: String,
+        label: Arc<str>,
         enabled: bool,
-        action_id: String,
-        action_value: Option<String>,
+        action_id: Arc<str>,
+        action_value: Option<Arc<str>>,
         style: ViewStyle,
     },
     Select {
-        label: String,
-        action_id: String,
+        label: Arc<str>,
+        action_id: Arc<str>,
         options: Vec<SelectOption>,
-        selected: Option<String>,
+        selected: Option<Arc<str>>,
         style: ViewStyle,
     },
     Progress {
-        label: String,
+        label: Arc<str>,
         value: u64,
         total: Option<u64>,
         style: ViewStyle,
     },
     Link {
-        label: String,
-        url: String,
-        tooltip: Option<String>,
+        label: Arc<str>,
+        url: Arc<str>,
+        tooltip: Option<Arc<str>>,
         style: ViewStyle,
     },
     List {
@@ -143,19 +145,19 @@ pub enum ViewNode {
     },
     Separator,
     Badge {
-        label: String,
+        label: Arc<str>,
         style: ViewStyle,
     },
     Icon {
-        name: String,
+        name: Arc<str>,
         style: ViewStyle,
     },
     Image {
-        src: String,
-        alt: String,
-        caption: String,
-        placeholder: String,
-        fallback: String,
+        src: Arc<str>,
+        alt: Arc<str>,
+        caption: Arc<str>,
+        placeholder: Arc<str>,
+        fallback: Arc<str>,
         style: ViewStyle,
         height: Option<u16>,
         min_height: Option<u16>,
@@ -172,8 +174,8 @@ pub enum ViewNode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectOption {
-    pub label: String,
-    pub value: String,
+    pub label: Arc<str>,
+    pub value: Arc<str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,7 +223,7 @@ fn estimated_style_bytes(_style: &ViewStyle) -> usize {
 }
 
 fn estimated_string_bytes(value: &str) -> usize {
-    std::mem::size_of::<String>().saturating_add(value.len())
+    std::mem::size_of::<Arc<str>>().saturating_add(value.len())
 }
 
 fn estimated_node_bytes(node: &ViewNode) -> usize {
@@ -550,15 +552,15 @@ fn render_node(
             }
             element.into_any_element()
         }
-        ViewNode::Text { text, style } => styled_text(text, style, &colors).into_any_element(),
+        ViewNode::Text { text, style } => styled_text(text.clone(), style, &colors).into_any_element(),
         ViewNode::Button {
             label,
             action_id,
             action_value,
             style,
         } => {
-            let action_id = action_id.clone();
-            let action_value = action_value.clone();
+            let action_id = action_id.to_string();
+            let action_value = action_value.as_ref().map(|v| v.to_string());
             let plugin_id = plugin_id.to_string();
             let page_id = page_id.map(str::to_string);
             let accent = token_color(ThemeToken::Accent, &colors);
@@ -604,7 +606,7 @@ fn render_node(
             placeholder,
             action_id,
             style,
-        } => styled_text(&format!("{placeholder}{value}"), style, &colors)
+        } => styled_text(format!("{placeholder}{value}"), style, &colors)
             .px(px(12.0))
             .py(px(8.0))
             .rounded(px(8.0))
@@ -626,9 +628,10 @@ fn render_node(
         } => {
             let plugin_id = plugin_id.to_string();
             let page_id = page_id.map(str::to_string);
-            let action_id = action_id.clone();
+            let action_id = action_id.to_string();
             let action_value = action_value
-                .clone()
+                .as_ref()
+                .map(|v| v.to_string())
                 .or_else(|| Some((!*checked).to_string()));
             let marker = if *checked { "✓" } else { "" };
             styled_container(style, &colors)
@@ -654,7 +657,7 @@ fn render_node(
                         .text_size(px(12.0))
                         .child(marker),
                 )
-                .child(styled_text(label, style, &colors).p_0())
+                .child(styled_text(label.clone(), style, &colors).p_0())
                 .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
                     crate::plugins::runtime::dispatch_plugin_action(
                         cx,
@@ -675,9 +678,10 @@ fn render_node(
         } => {
             let plugin_id = plugin_id.to_string();
             let page_id = page_id.map(str::to_string);
-            let action_id = action_id.clone();
+            let action_id = action_id.to_string();
             let action_value = action_value
-                .clone()
+                .as_ref()
+                .map(|v| v.to_string())
                 .or_else(|| Some((!*enabled).to_string()));
             let knob_offset = if *enabled { 18.0 } else { 2.0 };
             styled_container(style, &colors)
@@ -706,7 +710,7 @@ fn render_node(
                                 .bg(colors.btn_primary_text),
                         ),
                 )
-                .child(styled_text(label, style, &colors).p_0())
+                .child(styled_text(label.clone(), style, &colors).p_0())
                 .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
                     crate::plugins::runtime::dispatch_plugin_action(
                         cx,
@@ -727,14 +731,14 @@ fn render_node(
         } => {
             let mut element = styled_container(style, &colors)
                 .gap(px(6.0))
-                .child(styled_text(label, style, &colors).p_0());
+                .child(styled_text(label.clone(), style, &colors).p_0());
             let mut row = div().flex().flex_row().flex_wrap().gap(px(6.0));
             for option in options {
                 let plugin_id = plugin_id.to_string();
                 let page_id = page_id.map(str::to_string);
-                let action_id = action_id.clone();
-                let option_value = option.value.clone();
-                let is_selected = selected.as_deref() == Some(option.value.as_str());
+                let action_id = action_id.to_string();
+                let option_value = option.value.to_string();
+                let is_selected = selected.as_deref() == Some(&*option.value);
                 row = row.child(
                     div()
                         .px(px(10.0))
@@ -782,7 +786,7 @@ fn render_node(
             let width_percent = (ratio * 100.0) as f32;
             styled_container(style, &colors)
                 .gap(px(6.0))
-                .child(styled_text(label, style, &colors).p_0())
+                .child(styled_text(label.clone(), style, &colors).p_0())
                 .child(
                     div()
                         .w_full()
@@ -806,8 +810,8 @@ fn render_node(
             style,
         } => {
             let plugin_id = plugin_id.to_string();
-            let url = url.clone();
-            styled_text(label, style, &colors)
+            let url = url.to_string();
+            styled_text(label.clone(), style, &colors)
                 .cursor_pointer()
                 .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
                     if let Err(error) =
@@ -830,7 +834,7 @@ fn render_node(
             .w_full()
             .bg(token_color(ThemeToken::Border, &colors))
             .into_any_element(),
-        ViewNode::Badge { label, style } => styled_text(label, style, &colors)
+        ViewNode::Badge { label, style } => styled_text(label.clone(), style, &colors)
             .px(px(8.0))
             .py(px(3.0))
             .rounded(px(8.0))
@@ -886,7 +890,7 @@ fn render_node(
                 .overflow_hidden()
                 .bg(token_color(ThemeToken::Surface, &colors))
                 .child(
-                    img(ImageSource::from(src.clone()))
+                    img(ImageSource::from(SharedString::from(src.clone())))
                         .absolute()
                         .inset_0()
                         .size_full()
@@ -966,14 +970,14 @@ fn styled_container(style: &ViewStyle, colors: &ThemeColors) -> gpui::Div {
     element
 }
 
-fn styled_text(text: &str, style: &ViewStyle, colors: &ThemeColors) -> gpui::Div {
+fn styled_text(text: impl Into<SharedString>, style: &ViewStyle, colors: &ThemeColors) -> gpui::Div {
     let mut element = styled_container(style, colors)
         .text_color(token_color(
             style.color.unwrap_or(ThemeToken::PrimaryText),
             colors,
         ))
         .text_size(text_size(style.text_size))
-        .child(SharedString::from(text.to_string()));
+        .child(text.into());
 
     if style.emphasis {
         element = element.font_weight(FontWeight::SEMIBOLD);
@@ -1114,7 +1118,7 @@ mod tests {
 
     fn text_node(text: &str) -> ViewNode {
         ViewNode::Text {
-            text: text.to_string(),
+            text: Arc::from(text),
             style: ViewStyle::default(),
         }
     }
@@ -1152,8 +1156,8 @@ mod tests {
     fn rejects_invalid_action_id() {
         let tree = ViewTree {
             root: ViewNode::Button {
-                label: "Run".to_string(),
-                action_id: "Run Now!".to_string(),
+                label: Arc::from("Run"),
+                action_id: Arc::from("Run Now!"),
                 action_value: None,
                 style: ViewStyle::default(),
             },
