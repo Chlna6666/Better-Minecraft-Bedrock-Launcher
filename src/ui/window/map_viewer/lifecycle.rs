@@ -399,6 +399,7 @@ impl MapViewerWindowView {
             },
         ));
         let mut this = Self {
+            owner_window: window.window_handle(),
             version: init.version,
             asset: init.asset,
             world_path,
@@ -3009,6 +3010,7 @@ impl MapViewerWindowView {
             "map_viewer render_batch_start"
         );
 
+        let owner_window = self.owner_window;
         cx.spawn(async move |handle, cx| {
             let render_task = cx.background_spawn(async move {
                 let _render_batch_permit = render_batch_permit;
@@ -3388,7 +3390,7 @@ impl MapViewerWindowView {
                     tracing::warn!(?error, "failed to merge map tile event");
                 }
                 if should_refresh_window {
-                    if let Err(error) = cx.refresh() {
+                    if let Err(error) = cx.update_window(owner_window, |_, window, _| window.refresh()) {
                         tracing::debug!(?error, "failed to refresh map tile window");
                     }
                 }

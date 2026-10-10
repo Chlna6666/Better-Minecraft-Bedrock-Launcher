@@ -1782,6 +1782,7 @@ pub(super) struct TileLayerSnapshotKey {
 }
 
 pub struct MapViewerWindowView {
+    pub(super) owner_window: AnyWindowHandle,
     pub(super) version: ManagedVersionEntry,
     pub(super) asset: ManageAssetEntry,
     pub(super) world_path: PathBuf,

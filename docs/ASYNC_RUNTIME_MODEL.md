@@ -275,6 +275,18 @@ Render methods must not:
 Initial snapshot reads and lag recovery are allowed in lifecycle or event
 consumer code outside render.
 
+Plugin UI follows the same rule. `plugins::runtime::render_injections` and
+`plugins::runtime::request_page_render` may be called from render, but they only
+project cached plugin view trees and register one deferred request. Plugin Wasm
+instantiation, `bmcbl_init`, and page/injection rendering run in the deferred step
+outside the frame, and every completed injection (including an empty one) is written
+to the render cache so render cannot re-request the same slot every frame.
+
+Plugin entry calls run under a wall-clock budget that the interpreter enforces between
+instructions, and cascaded plugin events (`emit_event`) share one `EventCascade` budget
+per top-level dispatch. Cascaded events are applied from an explicit queue, never by
+recursive dispatch.
+
 ## Cancellation, Shutdown, And Errors
 
 - A task that supports cancellation registers its `AbortHandle` or cooperative
