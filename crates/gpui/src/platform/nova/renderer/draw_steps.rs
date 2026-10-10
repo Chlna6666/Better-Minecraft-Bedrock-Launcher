@@ -719,6 +719,9 @@ fn sprite_resource_set(
 /// AFTER all accumulated source steps.
 fn coalesce_source_groups(groups: &mut Vec<PreparedBackdropBlurGroup>) {
     if groups.len() < 2 {
+        if let Some(group) = groups.first_mut() {
+            coalesce_adjacent_instanced_draws(&mut group.source_steps);
+        }
         return;
     }
     let original = std::mem::take(groups);
@@ -734,6 +737,43 @@ fn coalesce_source_groups(groups: &mut Vec<PreparedBackdropBlurGroup>) {
             groups.push(next);
         }
     }
+    for group in groups {
+        coalesce_adjacent_instanced_draws(&mut group.source_steps);
+    }
+}
+
+/// Collapse consecutive instance draws with the same pipeline, resources
+/// and scissor into a single GPU command without changing painter order.
+/// The GPU instance index still refers to the same contiguous packed record.
+fn coalesce_adjacent_instanced_draws(steps: &mut Vec<RenderStepDescriptor>) {
+    let mut written = 0usize;
+    for read in 0..steps.len() {
+        if written != 0 {
+            let (prefix, suffix) = steps.split_at_mut(read);
+            if let (RenderStepDescriptor::Draw(previous), RenderStepDescriptor::Draw(next)) =
+                (&mut prefix[written - 1], &suffix[0])
+            {
+                if previous.pipeline == next.pipeline
+                    && previous.resource_sets == next.resource_sets
+                    && previous.scissor == next.scissor
+                    && previous.vertex_count == next.vertex_count
+                    && previous.first_vertex == next.first_vertex
+                    && previous.first_instance.checked_add(previous.instance_count)
+                        == Some(next.first_instance)
+                    && let Some(merged_count) =
+                        previous.instance_count.checked_add(next.instance_count)
+                {
+                    previous.instance_count = merged_count;
+                    continue;
+                }
+            }
+        }
+        if written != read {
+            steps.swap(written, read);
+        }
+        written += 1;
+    }
+    steps.truncate(written);
 }
 
 /// A zero-radius retained root may replay disconnected source rectangles
@@ -1067,6 +1107,38 @@ mod tests {
         assert_eq!(parts[0].rect_count(), 1);
         assert_eq!(parts[1].rect_count(), 1);
         assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
+    }
+
+    #[test]
+    fn adjacent_instance_draws_merge_without_reordering_primitives() {
+        fn draw(first: u32, count: u32) -> RenderStepDescriptor {
+            RenderStepDescriptor::Draw(DrawStepDescriptor {
+                pipeline: RenderPipelineId::new(1),
+                resource_sets: gfx_core::resource_set_list_empty(),
+                vertex_count: 4,
+                first_vertex: 0,
+                instance_count: count,
+                first_instance: first,
+                scissor: Some(ScissorRect {
+                    x: 8,
+                    y: 6,
+                    width: 24,
+                    height: 20,
+                }),
+            })
+        }
+        let mut steps = vec![draw(0, 2), draw(2, 3), draw(5, 1)];
+        coalesce_adjacent_instanced_draws(&mut steps);
+        assert_eq!(steps.len(), 1);
+        let RenderStepDescriptor::Draw(merged) = &steps[0] else {
+            panic!("non-indexed draw expected");
+        };
+        assert_eq!(merged.first_instance, 0);
+        assert_eq!(merged.instance_count, 6);
+
+        let mut gap = vec![draw(0, 1), draw(3, 1)];
+        coalesce_adjacent_instanced_draws(&mut gap);
+        assert_eq!(gap.len(), 2);
     }
 
     #[test]
