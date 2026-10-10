@@ -105,6 +105,12 @@ where
     Ok(device.render_step_lists_to_textures_compat(&passes)?)
 }
 
+/// A preserved source with no draw steps has no render attachment work.
+/// Ordinary isolated sources must still clear their first pass.
+fn source_pass_required(first: bool, preserved: bool, has_steps: bool) -> bool {
+    has_steps || (first && !preserved)
+}
+
 fn render_element_blur_layers<D>(
     device: &mut D,
     render_pass: RenderPassId,
@@ -121,8 +127,13 @@ where
                 .source_groups
                 .iter()
                 .enumerate()
-                .map(|(index, group)| usize::from(index == 0 || !group.source_steps.is_empty())
-                    + group.filter_passes.len())
+                .map(|(index, group)| {
+                    usize::from(source_pass_required(
+                        index == 0,
+                        layer.preserve_retained_source,
+                        !group.source_steps.is_empty(),
+                    )) + group.filter_passes.len()
+                })
                 .sum::<usize>()
                 + layer.filter_passes.len()
         })
@@ -142,7 +153,11 @@ where
                     LoadOp::Load
                 },
             };
-            if group_index == 0 || !group.source_steps.is_empty() {
+            if source_pass_required(
+                group_index == 0,
+                layer.preserve_retained_source,
+                !group.source_steps.is_empty(),
+            ) {
                 passes.push(gfx_core::TextureRenderStepList {
                     texture_view: layer.source_texture_view,
                     render_pass,
@@ -564,8 +579,12 @@ impl NovaRenderer {
                 0usize,
                 |total, (index, group)| {
                     total.saturating_add(
-                        usize::from(index == 0 || !group.source_steps.is_empty())
-                            .saturating_add(group.filter_passes.len()),
+                        usize::from(source_pass_required(
+                            index == 0,
+                            layer.preserve_retained_source,
+                            !group.source_steps.is_empty(),
+                        ))
+                        .saturating_add(group.filter_passes.len()),
                     )
                 },
             );
@@ -1569,5 +1588,18 @@ impl NovaRenderer {
         let _ = (self.surface, self.atlas_sampler, self.path_texture);
         packet.consume_submitted_damage();
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod root_cached_source_pass_tests {
+    use super::source_pass_required;
+
+    #[test]
+    fn retained_root_without_new_pixels_does_not_submit_an_empty_load_pass() {
+        assert!(!source_pass_required(true, true, false));
+        assert!(!source_pass_required(false, true, false));
+        assert!(source_pass_required(true, true, true));
+        assert!(source_pass_required(true, false, false));
     }
 }
