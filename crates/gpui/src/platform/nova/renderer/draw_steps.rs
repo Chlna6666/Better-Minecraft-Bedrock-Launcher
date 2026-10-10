@@ -408,8 +408,20 @@ impl NovaRenderer {
             let can_split_root = is_retained_root
                 && !force_full
                 && !damage.is_full()
-                && self.frame_upload.element_blur_inputs.is_empty()
-                && self.frame_upload.backdrop_blur_configs().len() == 1;
+                // A changed child filter can expand its visible output beyond
+                // the original element damage; keep the union/halo path then.
+                && dirty_indices.iter().all(|index| *index == range.index)
+                // Painter-ordered root backdrop filters may change their
+                // source between segment barriers. Do not split across them.
+                && direct_backdrop_barriers(
+                    &self.frame_upload,
+                    range.content_start,
+                    range.content_end,
+                )
+                .is_empty();
+            // Unchanged nested element filters are safe: their retained GPU
+            // outputs are sampled by the root just like cached images, with
+            // no Gaussian pass or source recapture for either dirty patch.
             let damage_patches = retained_source_damage_patches(damage, can_split_root);
             for damage in &damage_patches {
             let preserve_root = is_retained_root && !force_full && !damage.is_full();
@@ -992,6 +1004,26 @@ mod tests {
         coalesce_source_groups(&mut groups);
         assert_eq!(groups.len(), 1);
         assert!(groups[0].filter_passes.is_empty());
+    }
+
+    #[test]
+    fn disconnected_damage_remains_independent_when_nested_effect_is_cached() {
+        let mut damage = DirtyRegion::empty();
+        damage.push(crate::bounds(
+            crate::point(crate::ScaledPixels(20.0), crate::ScaledPixels(30.0)),
+            crate::size(crate::ScaledPixels(12.0), crate::ScaledPixels(14.0)),
+        ));
+        damage.push(crate::bounds(
+            crate::point(crate::ScaledPixels(680.0), crate::ScaledPixels(440.0)),
+            crate::size(crate::ScaledPixels(18.0), crate::ScaledPixels(12.0)),
+        ));
+        // Eligibility is checked separately using the actual source barrier
+        // and dirty filter lists; the patcher itself preserves exact regions.
+        let parts = retained_source_damage_patches(&damage, true);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].rect_count(), 1);
+        assert_eq!(parts[1].rect_count(), 1);
+        assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
     }
 
     #[test]
