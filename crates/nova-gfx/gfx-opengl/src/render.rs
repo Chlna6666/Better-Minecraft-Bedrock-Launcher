@@ -112,7 +112,15 @@ impl OpenGlDevice {
             for step in steps.iter() {
                 self.draw_step(step, size, format, depth_view.is_some())?;
             }
-            self.check()
+            // A blur frame executes many short offscreen passes. glGetError after each
+            // pass forces a driver query in the hottest loop. Keep per-pass diagnostics
+            // in debug builds; release builds check accumulated GL errors once during
+            // the final swapchain present, after the blit.
+            if cfg!(debug_assertions) {
+                self.check()
+            } else {
+                Ok(())
+            }
         })();
         // SAFETY: detach transient targets before they are sampled, resized or destroyed.
         unsafe {
