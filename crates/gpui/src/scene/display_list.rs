@@ -634,6 +634,79 @@ impl Scene {
         plan
     }
 
+    /// Derive pixel damage from the actual presentation animation samples,
+    /// independently of UI element invalidation and layout rerenders.
+    ///
+    /// The engine can promote Quad/Sprite/Blur animation values straight into
+    /// GPU buffers without rebuilding the Scene. A compositor that only uses
+    /// dirty views would see no damage and reuse stale colors. Track the swept
+    /// OLD and NEW visible bounds of every changed animation operation.
+    ///
+    /// For a captured layer also damage its containing composite output: a
+    /// child change invalidates the parent texture even if the parent itself
+    /// has no animation binding.
+    pub(crate) fn presentation_animation_damage(
+        &self,
+        previous_values: &[SceneAnimationValue],
+        current_values: &[SceneAnimationValue],
+    ) -> SmallVec<[Bounds<ScaledPixels>; 8]> {
+        let mut output = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
+        let mut changed_operations = SmallVec::<[usize; 8]>::new();
+        for (index, operation) in self.paint_operations.iter().enumerate() {
+            let animation_id = match operation {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartBlur(blur) => blur.animation_id,
+                PaintOperation::StartLayer(_)
+                | PaintOperation::EndLayer
+                | PaintOperation::EndBlur => None,
+            };
+            if !animation_value_changed(
+                self,
+                self,
+                animation_id,
+                current_values,
+                previous_values,
+            ) {
+                continue;
+            }
+            let bounds = match operation {
+                PaintOperation::Primitive(primitive) => animation_swept_bounds(
+                    self,
+                    self,
+                    primitive,
+                    current_values,
+                    previous_values,
+                ),
+                PaintOperation::StartBlur(blur) => blur_capture_animation_swept_bounds(
+                    self,
+                    self,
+                    blur,
+                    current_values,
+                    previous_values,
+                ),
+                PaintOperation::StartLayer(_)
+                | PaintOperation::EndLayer
+                | PaintOperation::EndBlur => continue,
+            };
+            if !bounds.is_empty() {
+                output.push(bounds);
+                changed_operations.push(index);
+            }
+        }
+        if !changed_operations.is_empty() {
+            self.for_each_element_blur_group(|range, bounds| {
+                if changed_operations
+                    .iter()
+                    .any(|index| range.start <= *index && *index < range.end)
+                    && !bounds.is_empty()
+                {
+                    output.push(bounds);
+                }
+            });
+        }
+        output
+    }
+
     /// Computes per-backdrop source damage for an animation-only retained-scene frame.
     pub(crate) fn backdrop_blur_animation_damage_plan(
         &self,
@@ -2247,6 +2320,64 @@ fn paint_operations_match_for_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renderer_owned_opacity_tick_marks_pixels_without_ui_relayout() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(50.0), ScaledPixels(40.0)),
+            crate::size(ScaledPixels(25.0), ScaledPixels(10.0)),
+        );
+        let mut scene = Scene::default();
+        let animation_id = SceneAnimationId(1 << 31);
+        scene.insert_animated_primitive(
+            Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        let sample = |progress| SceneAnimationValue {
+            animation_id,
+            property: TransitionProperty::Opacity,
+            progress,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        };
+        assert!(scene.presentation_animation_damage(&[sample(0.1)], &[sample(0.1)]).is_empty());
+        let dirty = scene.presentation_animation_damage(&[sample(0.1)], &[sample(0.7)]);
+        assert_eq!(dirty.as_slice(), &[bounds]);
+    }
+
+    #[test]
+    fn renderer_owned_translation_marks_union_of_old_and_new_pixel_bounds() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(20.0), ScaledPixels(30.0)),
+            crate::size(ScaledPixels(40.0), ScaledPixels(20.0)),
+        );
+        let mut scene = Scene::default();
+        let animation_id = SceneAnimationId(1 << 31);
+        scene.insert_animated_primitive(
+            Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        let sample = |progress| SceneAnimationValue {
+            animation_id,
+            property: TransitionProperty::Translation,
+            progress,
+            from: [0.0; 4],
+            to: [80.0, 0.0, 0.0, 0.0],
+        };
+        let dirty = scene.presentation_animation_damage(&[sample(0.0)], &[sample(0.5)]);
+        assert_eq!(dirty.as_slice(), &[Bounds::new(
+            crate::point(ScaledPixels(20.0), ScaledPixels(30.0)),
+            crate::size(ScaledPixels(80.0), ScaledPixels(20.0)),
+        )]);
+    }
 
     #[test]
     fn scale_damage_uses_unclipped_primitive_center() {

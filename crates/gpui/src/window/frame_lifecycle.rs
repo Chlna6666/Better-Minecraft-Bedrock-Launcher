@@ -960,20 +960,24 @@ impl Window {
                     .invalidate_retained_path(view_id, Some(retained_id), true);
             }
         }
-        {
+        let presentation_animation_damage = {
             let presentation_scene = self
                 .presentation_state
                 .active_scene()
                 .unwrap_or(&self.rendered_frame.scene);
+            let previous_values = self.presentation_state.active_engine_animation_values();
+            let pixel_damage = presentation_scene
+                .presentation_animation_damage(previous_values, &tick.scene_values);
             let mut tick_blur_damage = presentation_scene.backdrop_blur_animation_damage_plan(
-                self.presentation_state.active_engine_animation_values(),
+                previous_values,
                 &tick.scene_values,
             );
             if preserve_unpresented_damage {
                 tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
             }
             self.backdrop_blur_damage_plan = tick_blur_damage;
-        }
+            pixel_damage
+        };
         self.presentation_state
             .replace_active_engine_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
@@ -982,6 +986,16 @@ impl Window {
         }
         for bounds in tick.dirty_bounds {
             self.record_animation_tick_dirty_bounds(bounds, viewport);
+        }
+        // Presentation-owned animation changes do not necessarily invalidate
+        // a UI view. Carry their exact swept pixels into the compositor damage
+        // before deciding whether a retained GPU layer may be reused.
+        let drawable_viewport = viewport.scale(self.scale_factor);
+        for bounds in presentation_animation_damage {
+            let clipped = bounds.intersect(&drawable_viewport);
+            if !clipped.is_empty() {
+                self.render_dirty_region.push(clipped);
+            }
         }
         let backdrop_output_damage = self
             .presentation_state
