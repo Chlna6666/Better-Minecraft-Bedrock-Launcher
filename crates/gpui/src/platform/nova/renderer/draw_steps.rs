@@ -6,6 +6,9 @@ pub(super) struct PreparedBackdropBlurGroup {
     /// group's exact source state. The previous blur batch itself is included in the next segment,
     /// so its filtered result is composited once into the accumulated scene color.
     pub(super) source_steps: Vec<RenderStepDescriptor>,
+    /// Exact source-capture footprint; empty source geometry still needs
+    /// transparent pixels inside the filter sampling halo.
+    pub(super) source_clear_region: Option<ScissorRect>,
     pub(super) filter_passes: Vec<BackdropBlurRenderPass>,
     /// Partial refreshes preserve pixels outside every filter-pass scissor. Full invalidations
     /// clear the retained targets before recomputing them.
@@ -307,6 +310,7 @@ impl NovaRenderer {
 
             groups.push(PreparedBackdropBlurGroup {
                 source_steps,
+                source_clear_region: source_scissor,
                 filter_passes,
                 preserve_filtered_pixels: !group_force_full,
             });
@@ -559,6 +563,7 @@ impl NovaRenderer {
             }
             source_groups.push(PreparedBackdropBlurGroup {
                 source_steps: final_source_steps,
+                source_clear_region: Some(source_scissor),
                 filter_passes: Vec::new(),
                 preserve_filtered_pixels: !force_full,
             });
@@ -654,6 +659,7 @@ impl NovaRenderer {
         }
         PreparedBackdropBlurGroup {
             source_steps,
+            source_clear_region: Some(source_scissor),
             filter_passes,
             preserve_filtered_pixels: !force_full,
         }
@@ -1080,6 +1086,7 @@ mod tests {
         let mut groups = (0..4)
             .map(|_| PreparedBackdropBlurGroup {
                 source_steps: Vec::new(),
+                source_clear_region: None,
                 filter_passes: Vec::new(),
                 preserve_filtered_pixels: true,
             })

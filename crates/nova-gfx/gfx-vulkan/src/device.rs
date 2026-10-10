@@ -1362,6 +1362,7 @@ impl VulkanDevice {
             pass,
             steps,
             depth_attachment,
+            None,
         )
     }
 
@@ -1372,6 +1373,7 @@ impl VulkanDevice {
         pass: BeginRenderPassDescriptor,
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
+        clear_region: Option<ScissorRect>,
     ) -> Result<()> {
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
@@ -1509,6 +1511,7 @@ impl VulkanDevice {
             color_load_op: pass.color_load_op,
             depth_load_op: depth_view.map(|(_, load_op)| load_op),
             render_target_transition,
+            clear_region,
         });
         if result.is_ok() {
             if let Some(texture_id) = render_target_texture {
@@ -1800,6 +1803,7 @@ impl VulkanDevice {
             render_pass: render_pass_id,
             steps,
             color_load_op,
+            clear_region: None,
             depth_attachment,
         }])
     }
@@ -1836,6 +1840,7 @@ impl VulkanDevice {
                 },
                 pass.steps,
                 pass.depth_attachment,
+                pass.clear_region,
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -5129,6 +5134,7 @@ struct CommandRecordInfo<'a> {
     color_load_op: LoadOp<ClearColor>,
     depth_load_op: Option<LoadOp<f32>>,
     render_target_transition: Option<CommandRenderTargetTransition>,
+    clear_region: Option<ScissorRect>,
 }
 
 #[derive(Clone, Copy)]
@@ -5295,6 +5301,42 @@ fn retained_offscreen_render_area(
     clippy::too_many_lines,
     reason = "Vulkan command recording keeps render-pass state transitions adjacent for auditability"
 )]
+/// A bounded source capture clears the same rectangle on color and depth.
+/// The caller clips every draw to that footprint. If any step could write
+/// outside it, use a full attachment clear instead.
+fn scoped_offscreen_clear_area(
+    extent: vk::Extent2D,
+    offscreen: bool,
+    color_load_op: LoadOp<ClearColor>,
+    clear_region: Option<ScissorRect>,
+    scissors: impl IntoIterator<Item = Option<ScissorRect>>,
+) -> Option<vk::Rect2D> {
+    let region = clear_region?;
+    if !offscreen || !matches!(color_load_op, LoadOp::Clear(_)) {
+        return None;
+    }
+    let target = vk_rect_for_scissor(region, extent).ok()?;
+    if target.extent.width == 0 || target.extent.height == 0 {
+        return None;
+    }
+    let end_x = u32::try_from(target.offset.x).ok()?.checked_add(target.extent.width)?;
+    let end_y = u32::try_from(target.offset.y).ok()?.checked_add(target.extent.height)?;
+    for scissor in scissors {
+        let scissor = scissor?;
+        let clipped = vk_rect_for_scissor(scissor, extent).ok()?;
+        let left = u32::try_from(clipped.offset.x).ok()?;
+        let top = u32::try_from(clipped.offset.y).ok()?;
+        if left < u32::try_from(target.offset.x).ok()?
+            || top < u32::try_from(target.offset.y).ok()?
+            || left.saturating_add(clipped.extent.width) > end_x
+            || top.saturating_add(clipped.extent.height) > end_y
+        {
+            return None;
+        }
+    }
+    Some(target)
+}
+
 fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     let begin_info = vk::CommandBufferBeginInfo::default();
     // SAFETY: Command buffer is allocated from this context's command pool and resettable.
@@ -5342,13 +5384,21 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
         });
     }
-    let render_area = retained_offscreen_render_area(
+    let render_area = scoped_offscreen_clear_area(
         info.extent,
         info.render_target_transition.is_some(),
         info.color_load_op,
-        info.depth_load_op,
+        info.clear_region,
         info.steps.iter().map(|step| step.scissor),
-    );
+    ).unwrap_or_else(|| {
+        retained_offscreen_render_area(
+            info.extent,
+            info.render_target_transition.is_some(),
+            info.color_load_op,
+            info.depth_load_op,
+            info.steps.iter().map(|step| step.scissor),
+        )
+    });
     let render_pass_info = vk::RenderPassBeginInfo::default()
         .render_pass(info.render_pass)
         .framebuffer(info.framebuffer)
@@ -5875,6 +5925,50 @@ mod tests {
             }
         );
         assert_eq!(region.layer, 0);
+    }
+
+    #[test]
+    fn clear_only_offscreen_pass_limits_color_and_depth_clear_to_source_halo() {
+        let extent = vk::Extent2D { width: 1500, height: 900 };
+        let region = ScissorRect { x: 4, y: 20, width: 900, height: 65 };
+        let area = scoped_offscreen_clear_area(
+            extent,
+            true,
+            LoadOp::Clear(ClearColor::default()),
+            Some(region),
+            [Some(region)],
+        ).expect("known filter halo must limit attachment clear");
+        assert_eq!(area.offset, vk::Offset2D { x: 4, y: 20 });
+        assert_eq!(area.extent, vk::Extent2D { width: 900, height: 65 });
+        assert_eq!(
+            scoped_offscreen_clear_area(
+                extent,
+                true,
+                LoadOp::Clear(ClearColor::default()),
+                Some(region),
+                std::iter::empty(),
+            ),
+            Some(area),
+            "a transparent source with no draw still needs the filter halo cleared"
+        );
+    }
+
+    #[test]
+    fn unknown_or_outside_draw_does_not_shrink_vulkan_clear() {
+        let extent = vk::Extent2D { width: 1500, height: 900 };
+        let region = ScissorRect { x: 4, y: 20, width: 900, height: 65 };
+        assert!(scoped_offscreen_clear_area(
+            extent, true, LoadOp::Clear(ClearColor::default()), Some(region),
+            [None],
+        ).is_none());
+        assert!(scoped_offscreen_clear_area(
+            extent, true, LoadOp::Clear(ClearColor::default()), Some(region),
+            [Some(ScissorRect { x: 0, y: 0, width: 1500, height: 900 })],
+        ).is_none());
+        assert!(scoped_offscreen_clear_area(
+            extent, false, LoadOp::Clear(ClearColor::default()), Some(region),
+            [Some(region)],
+        ).is_none());
     }
 
     #[test]

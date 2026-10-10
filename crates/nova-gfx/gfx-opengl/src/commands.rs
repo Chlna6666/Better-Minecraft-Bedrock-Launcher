@@ -55,6 +55,23 @@ impl OpenGlDevice {
 }
 
 impl PresentationDevice for OpenGlDevice {
+    fn render_step_lists_to_textures_compat(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<()> {
+        for pass in passes {
+            self.render_target_with_clear_region(
+                RenderTarget::TextureView(pass.texture_view),
+                pass.render_pass,
+                pass.steps,
+                pass.color_load_op,
+                pass.depth_attachment,
+                pass.clear_region,
+            )?;
+        }
+        Ok(())
+    }
+
     fn draw_steps_to_texture(
         &mut self,
         view: TextureViewId,

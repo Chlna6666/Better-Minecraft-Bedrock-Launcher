@@ -80,6 +80,7 @@ where
                 render_pass,
                 steps: RenderStepList::from_render_steps(&group.source_steps),
                 color_load_op: source_load_op,
+                clear_region: if first_group { group.source_clear_region } else { None },
                 depth_attachment: Some(source_depth_attachment),
             });
         }
@@ -98,6 +99,7 @@ where
                 render_pass,
                 steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 color_load_op: filter_load_op,
+                clear_region: None,
                 depth_attachment: Some(filter_depth_attachment),
             });
         }
@@ -167,6 +169,11 @@ where
                     } else {
                         LoadOp::Load
                     },
+                    clear_region: if group_index == 0 && !layer.preserve_retained_source {
+                        group.source_clear_region
+                    } else {
+                        None
+                    },
                     depth_attachment: Some(source_depth_attachment),
                 });
             }
@@ -181,6 +188,7 @@ where
                     render_pass,
                     steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                     color_load_op: filter_load_op,
+                    clear_region: None,
                     depth_attachment: Some(filter_depth_attachment),
                 });
             }
@@ -196,6 +204,7 @@ where
                 render_pass,
                 steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 color_load_op: filter_load_op,
+                clear_region: None,
                 depth_attachment: Some(filter_depth_attachment),
             });
         }

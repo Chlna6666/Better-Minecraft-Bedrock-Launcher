@@ -2029,6 +2029,7 @@ mod platform {
                 render_pass,
                 steps,
                 color_load_op,
+                clear_region: None,
                 depth_attachment,
             }])
         }
@@ -2070,6 +2071,7 @@ mod platform {
                             pass.steps,
                             pass.color_load_op,
                             pass.depth_attachment,
+                            pass.clear_region,
                         )?;
                     }
                     Ok(())
@@ -3225,6 +3227,7 @@ mod platform {
                 RenderStepList::from_draw_steps(steps),
                 color_load_op,
                 None,
+                None,
             )
         }
 
@@ -3244,6 +3247,7 @@ mod platform {
                 RenderStepList::from_render_steps(steps),
                 color_load_op,
                 depth_attachment,
+                None,
             )
         }
 
@@ -3259,6 +3263,7 @@ mod platform {
             steps: RenderStepList<'_>,
             color_load_op: LoadOp<ClearColor>,
             depth_attachment: Option<RenderPassDepthAttachment>,
+            clear_region: Option<ScissorRect>,
         ) -> Result<()> {
             // Empty render-step lists are valid for attachment clears. Do not
             // reject the pass before recording its ClearRenderTargetView.
@@ -3328,6 +3333,11 @@ mod platform {
                     Error::InvalidInput(format!("texture height overflow: {error}"))
                 })?,
             };
+            // Restrict color/depth clears to the filter dependency region.
+            let clear_rect = clear_region
+                .filter(|region| !region.is_empty())
+                .and_then(|region| dx12_rect_for_scissor(region, texture_desc.size).ok())
+                .map(|rect| [rect]);
             let rtv_handle_pointer = &raw const rtv_handle;
             let dsv_handle_pointer = depth_handle
                 .as_ref()
@@ -3354,7 +3364,11 @@ mod platform {
                         clear_color.blue,
                         clear_color.alpha,
                     ];
-                    command_list.ClearRenderTargetView(rtv_handle, &clear, None);
+                    command_list.ClearRenderTargetView(
+                        rtv_handle,
+                        &clear,
+                        clear_rect.as_ref().map(|rects| rects.as_slice()),
+                    );
                 }
                 if let Some((dsv_handle, depth_load_op)) = depth_handle {
                     if let LoadOp::Clear(depth) = depth_load_op {
@@ -3363,7 +3377,7 @@ mod platform {
                             D3D12_CLEAR_FLAG_DEPTH,
                             depth,
                             0,
-                            None,
+                            clear_rect.as_ref().map(|rects| rects.as_slice()),
                         );
                     }
                 }

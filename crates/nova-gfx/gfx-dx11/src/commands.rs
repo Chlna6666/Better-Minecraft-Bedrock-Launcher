@@ -73,6 +73,18 @@ impl Dx11Device {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
+        self.render_target_with_clear_region(target, pass, steps, load, depth, None)
+    }
+
+    pub(crate) fn render_target_with_clear_region(
+        &mut self,
+        target: RenderTarget,
+        pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        load: LoadOp<ClearColor>,
+        depth: Option<RenderPassDepthAttachment>,
+        clear_region: Option<ScissorRect>,
+    ) -> Result<()> {
         let pass = self.passes.get(pass)?;
         let (rtv, size, target_format) = match target {
             RenderTarget::TextureView(id) => {
@@ -122,6 +134,23 @@ impl Dx11Device {
         if depth_view.is_some_and(|view| view.size != size) {
             return Err(Error::InvalidInput("depth extent mismatch".into()));
         }
+        // D3D11.1 ClearView accepts a rectangle unlike ClearRenderTargetView.
+        // Clamp the optional source-capture halo before using it for color/depth.
+        let clear_rect = clear_region.and_then(|scissor| {
+            let left = scissor.x.min(size.width());
+            let top = scissor.y.min(size.height());
+            let right = scissor.x.saturating_add(scissor.width).min(size.width());
+            let bottom = scissor.y.saturating_add(scissor.height).min(size.height());
+            if right <= left || bottom <= top {
+                return None;
+            }
+            Some([RECT {
+                left: i32::try_from(left).ok()?,
+                top: i32::try_from(top).ok()?,
+                right: i32::try_from(right).ok()?,
+                bottom: i32::try_from(bottom).ok()?,
+            }])
+        });
         // SAFETY: the immediate context is owned by this device. Clear all SRV slots
         // actually populated by earlier draws before rebinding an RTV, but avoid two
         // 128-entry native calls for every offscreen/blur pass.
@@ -154,13 +183,22 @@ impl Dx11Device {
                 ..Default::default()
             }]));
             if let LoadOp::Clear(color) = load {
-                self.context
-                    .ClearRenderTargetView(rtv, &[color.red, color.green, color.blue, color.alpha]);
+                let rgba = [color.red, color.green, color.blue, color.alpha];
+                if let Some(rects) = clear_rect.as_ref() {
+                    self.context.ClearView(rtv, &rgba, Some(rects));
+                } else {
+                    self.context.ClearRenderTargetView(rtv, &rgba);
+                }
             }
             if let (Some(depth), Some(dsv)) = (depth, dsv) {
                 if let LoadOp::Clear(value) = depth.depth_load_op {
-                    self.context
-                        .ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH.0 as u32, value, 0);
+                    if let Some(rects) = clear_rect.as_ref() {
+                        // GPUI uses a depth-only attachment for its blur passes.
+                        self.context.ClearView(dsv, &[value, 0.0, 0.0, 0.0], Some(rects));
+                    } else {
+                        self.context
+                            .ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH.0 as u32, value, 0);
+                    }
                 }
             }
         }
@@ -372,6 +410,23 @@ impl Dx11Device {
 }
 
 impl PresentationDevice for Dx11Device {
+    fn render_step_lists_to_textures_compat(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<()> {
+        for pass in passes {
+            self.render_target_with_clear_region(
+                RenderTarget::TextureView(pass.texture_view),
+                pass.render_pass,
+                pass.steps,
+                pass.color_load_op,
+                pass.depth_attachment,
+                pass.clear_region,
+            )?;
+        }
+        Ok(())
+    }
+
     fn render_steps_to_texture_compat(
         &mut self,
         view: TextureViewId,

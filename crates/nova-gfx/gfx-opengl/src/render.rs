@@ -19,6 +19,18 @@ impl OpenGlDevice {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
+        self.render_target_with_clear_region(target, pass, steps, load, depth, None)
+    }
+
+    pub(crate) fn render_target_with_clear_region(
+        &self,
+        target: RenderTarget,
+        pass: RenderPassId,
+        steps: RenderStepList<'_>,
+        load: LoadOp<ClearColor>,
+        depth: Option<RenderPassDepthAttachment>,
+        clear_region: Option<ScissorRect>,
+    ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
         let (texture, framebuffer, size, format) = match target {
@@ -66,6 +78,23 @@ impl OpenGlDevice {
                 "OpenGL depth extent/usage mismatch".into(),
             ));
         }
+        // Follow the same framebuffer-coordinate convention as draw_step.
+        // A Clear outside the source-capture region need not touch the texture.
+        let clear_scissor = clear_region.and_then(|scissor| {
+            let x = scissor.x.min(size.width());
+            let y = scissor.y.min(size.height());
+            let width = scissor.width.min(size.width() - x);
+            let height = scissor.height.min(size.height() - y);
+            if width == 0 || height == 0 {
+                return None;
+            }
+            Some((
+                i32::try_from(x).ok()?,
+                i32::try_from(y).ok()?,
+                i32::try_from(width).ok()?,
+                i32::try_from(height).ok()?,
+            ))
+        });
         // SAFETY: live texture views are attached to one owner FBO. Scissor/depth writes
         // are reset before clears so previous draw state cannot limit this pass.
         unsafe {
@@ -104,6 +133,10 @@ impl OpenGlDevice {
             } else {
                 self.gl.disable(glow::FRAMEBUFFER_SRGB);
             }
+            if let Some((x, y, width, height)) = clear_scissor {
+                self.gl.enable(glow::SCISSOR_TEST);
+                self.gl.scissor(x, y, width, height);
+            }
             if let LoadOp::Clear(color) = load {
                 self.gl
                     .clear_color(color.red, color.green, color.blue, color.alpha);
@@ -115,6 +148,8 @@ impl OpenGlDevice {
                     self.gl.clear(glow::DEPTH_BUFFER_BIT);
                 }
             }
+            // Draw-step scissor setup starts from a known state on every pass.
+            self.gl.disable(glow::SCISSOR_TEST);
         }
         let result = (|| {
             let mut state = GlPassState::default();

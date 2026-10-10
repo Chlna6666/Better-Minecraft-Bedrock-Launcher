@@ -2132,6 +2132,11 @@ pub struct TextureRenderStepList<'a> {
     pub steps: RenderStepList<'a>,
     /// Color target load behavior.
     pub color_load_op: LoadOp<ClearColor>,
+    /// Optional rectangle limiting attachment Clear operations. A backend may
+    /// conservatively clear the entire target when the optimization is unsupported.
+    /// The caller must guarantee that pixels outside this region are not read
+    /// from the cleared attachment before being initialized.
+    pub clear_region: Option<ScissorRect>,
     /// Optional depth target and load behavior.
     pub depth_attachment: Option<RenderPassDepthAttachment>,
 }
