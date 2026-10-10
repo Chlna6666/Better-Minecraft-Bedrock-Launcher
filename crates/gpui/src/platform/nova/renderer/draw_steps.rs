@@ -420,7 +420,7 @@ impl NovaRenderer {
                 continue;
             };
 
-            let (source_texture_view, source_resource_set) = if let Some(target) =
+            let (source_texture_view, source_resource_set) = if let Some(ref target) =
                 direct_composite_target
             {
                 (target.texture_view, target.source_resource_set)
