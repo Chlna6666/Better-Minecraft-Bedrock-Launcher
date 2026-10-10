@@ -11,10 +11,11 @@ use glutin::{
     context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, Version},
     display::{Display, DisplayApiPreference},
     prelude::*,
-    surface::{PbufferSurface, Surface, SurfaceAttributesBuilder},
+    surface::{PbufferSurface, Surface, SurfaceAttributesBuilder, WindowSurface},
 };
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::{
+    cell::Cell,
     collections::VecDeque,
     ffi::CString,
     num::NonZeroU32,
@@ -45,6 +46,9 @@ pub struct OpenGlDevice {
     pub(crate) gl: glow::Context,
     pub(crate) context: PossiblyCurrentContext,
     pub(crate) parking: Surface<PbufferSurface>,
+    // The graphics-owner context remains bound to this pbuffer between window presents.
+    // Rebinding an already-current native EGL/WGL context for every blur pass is expensive.
+    parking_is_current: Cell<bool>,
     pub(crate) display: Display,
     pub(crate) config: Config,
     pub(crate) view_texture: unsafe extern "system" fn(u32, u32, u32, u32, u32, u32, u32, u32),
@@ -193,6 +197,7 @@ impl OpenGlDevice {
             gl,
             context,
             parking,
+            parking_is_current: Cell::new(true),
             display,
             config,
             view_texture,
@@ -250,7 +255,18 @@ impl OpenGlDevice {
         }
     }
     pub(crate) fn park(&self) -> Result<()> {
-        self.context.make_current(&self.parking).map_err(native)
+        if self.parking_is_current.get() {
+            return Ok(());
+        }
+        self.context.make_current(&self.parking).map_err(native)?;
+        self.parking_is_current.set(true);
+        Ok(())
+    }
+
+    pub(crate) fn make_window_current(&self, window: &Surface<WindowSurface>) -> Result<()> {
+        self.context.make_current(window).map_err(native)?;
+        self.parking_is_current.set(false);
+        Ok(())
     }
     pub(crate) fn signal(&mut self) -> Result<SubmissionId> {
         self.retire()?;

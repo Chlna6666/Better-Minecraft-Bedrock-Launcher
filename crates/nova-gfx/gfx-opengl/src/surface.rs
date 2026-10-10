@@ -73,7 +73,7 @@ impl SurfaceDevice for OpenGlDevice {
                 .create_window_surface(&self.config, &attributes)
         }
         .map_err(native)?;
-        self.context.make_current(&window).map_err(native)?;
+        self.make_window_current(&window)?;
         window
             .set_swap_interval(
                 &self.context,
@@ -206,7 +206,7 @@ impl OpenGlDevice {
         }
         self.resize_swapchain(id, config.size.width(), config.size.height())?;
         let chain = self.swapchains.get_mut(id)?;
-        self.context.make_current(&chain.window).map_err(native)?;
+        self.make_window_current(&chain.window)?;
         chain
             .window
             .set_swap_interval(
@@ -241,7 +241,7 @@ impl OpenGlDevice {
             depth,
         )?;
         let chain = self.swapchains.get(id)?;
-        self.context.make_current(&chain.window).map_err(native)?;
+        self.make_window_current(&chain.window)?;
         let width = chain.config.size.width() as i32;
         let height = chain.config.size.height() as i32;
         // SAFETY: both source and native backbuffer belong to this current context. A
