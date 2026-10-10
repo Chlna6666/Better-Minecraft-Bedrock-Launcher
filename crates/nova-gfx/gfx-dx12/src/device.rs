@@ -2054,13 +2054,13 @@ mod platform {
             }
 
             let encoder = self.create_command_encoder(&CommandEncoderDescriptor { label: None })?;
-            let result = passes[0]
-                .steps
-                .first()
-                .ok_or_else(|| {
-                    Error::InvalidInput("DX12 draw step list must not be empty".to_string())
-                })
-                .and_then(|first_step| self.begin_texture_command_encoder(encoder, first_step))
+            // A Clear-only texture pass is valid. The first pass may have no
+            // draws (for example, an isolated blur source clear); find the
+            // first real PSO, or reset the list without a PSO when all passes
+            // consist solely of attachment clears.
+            let initial_step = passes.iter().find_map(|pass| pass.steps.first());
+            let result = self
+                .begin_texture_command_encoder(encoder, initial_step)
                 .and_then(|()| {
                     for pass in passes {
                         self.record_render_step_list_texture(
@@ -2092,7 +2092,7 @@ mod platform {
         fn begin_texture_command_encoder(
             &mut self,
             encoder_id: CommandEncoderId,
-            first_step: RenderStepRef<'_>,
+            first_step: Option<RenderStepRef<'_>>,
         ) -> Result<()> {
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
@@ -2104,19 +2104,24 @@ mod platform {
                 })?;
                 (allocator, command_list)
             };
-            let pipeline_state = self
-                .render_pipelines
-                .get(first_step.pipeline())?
-                .pipeline_state
-                .clone()
-                .ok_or_else(|| {
-                    Error::Backend("DX12 pipeline has no native pipeline state".to_string())
-                })?;
+            let pipeline_state = first_step
+                .map(|step| {
+                    self.render_pipelines
+                        .get(step.pipeline())?
+                        .pipeline_state
+                        .clone()
+                        .ok_or_else(|| {
+                            Error::Backend("DX12 pipeline has no native pipeline state".to_string())
+                        })
+                })
+                .transpose()?;
 
             // SAFETY: This new allocator is not referenced by an in-flight command list.
             unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
-            // SAFETY: The command list is closed and reset with this encoder's live allocator/PSO.
-            unsafe { command_list.Reset(&allocator, &pipeline_state) }
+            // D3D12 permits a null initial PSO. Draws bind their own PSO in
+            // record_render_step_list_texture, so a Clear-only batch needs none.
+            // SAFETY: The command list is closed and the allocator is fence-safe.
+            unsafe { command_list.Reset(&allocator, pipeline_state.as_ref()) }
                 .map_err(|error| Error::Backend(error.to_string()))?;
             Ok(())
         }
@@ -3255,11 +3260,8 @@ mod platform {
             color_load_op: LoadOp<ClearColor>,
             depth_attachment: Option<RenderPassDepthAttachment>,
         ) -> Result<()> {
-            if steps.is_empty() {
-                return Err(Error::InvalidInput(
-                    "DX12 draw step list must not be empty".to_string(),
-                ));
-            }
+            // Empty render-step lists are valid for attachment clears. Do not
+            // reject the pass before recording its ClearRenderTargetView.
             let command_list = self
                 .command_encoders
                 .get(encoder_id)?

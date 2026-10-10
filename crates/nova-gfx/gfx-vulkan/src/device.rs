@@ -5222,6 +5222,75 @@ fn full_render_area(extent: vk::Extent2D) -> vk::Rect2D {
     }
 }
 
+/// Restrict Vulkan attachment LOAD/STORE traffic to the actual dirty drawing
+/// footprint, not the full backing texture. GPUI's retained blur targets can
+/// be much larger than the scissored portion being updated. A draw scissor
+/// alone does not limit the render pass attachment renderArea.
+///
+/// Never shrink a swapchain pass, a color/depth Clear, or a pass with even one
+/// unbounded draw. Those cases can legitimately affect pixels outside the
+/// known scissors, including depth relied on by a later pass.
+fn retained_offscreen_render_area(
+    extent: vk::Extent2D,
+    offscreen: bool,
+    color_load: LoadOp<ClearColor>,
+    depth_load: Option<LoadOp<f32>>,
+    scissors: impl IntoIterator<Item = Option<ScissorRect>>,
+) -> vk::Rect2D {
+    let full = full_render_area(extent);
+    if !offscreen
+        || !matches!(color_load, LoadOp::Load)
+        || matches!(depth_load, Some(LoadOp::Clear(_)))
+    {
+        return full;
+    }
+
+    let mut union: Option<(u32, u32, u32, u32)> = None;
+    for scissor in scissors {
+        let Some(scissor) = scissor else {
+            return full;
+        };
+        // The draw recorder falls back to a full scissor if native Vulkan
+        // coordinate conversion fails. Match that behavior here, otherwise
+        // a narrow renderArea could exclude pixels the draw will touch.
+        if vk_rect_for_scissor(scissor, extent).is_err() {
+            return full;
+        }
+        let left = scissor.x.min(extent.width);
+        let top = scissor.y.min(extent.height);
+        let right = scissor.x.saturating_add(scissor.width).min(extent.width);
+        let bottom = scissor.y.saturating_add(scissor.height).min(extent.height);
+        if right <= left || bottom <= top {
+            continue;
+        }
+        union = Some(match union {
+            Some((min_x, min_y, max_x, max_y)) => (
+                min_x.min(left),
+                min_y.min(top),
+                max_x.max(right),
+                max_y.max(bottom),
+            ),
+            None => (left, top, right, bottom),
+        });
+    }
+
+    let Some((left, top, right, bottom)) = union else {
+        // An empty or fully clipped sequence does not prove that the attachment
+        // may be discarded. Keep the established behavior.
+        return full;
+    };
+    let (Ok(x), Ok(y)) = (i32::try_from(left), i32::try_from(top)) else {
+        return full;
+    };
+    vk::Rect2D {
+        offset: vk::Offset2D { x, y },
+        extent: vk::Extent2D {
+            width: right - left,
+            height: bottom - top,
+        },
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "Vulkan command recording keeps render-pass state transitions adjacent for auditability"
@@ -5273,7 +5342,13 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             depth_stencil: vk::ClearDepthStencilValue { depth, stencil: 0 },
         });
     }
-    let render_area = full_render_area(info.extent);
+    let render_area = retained_offscreen_render_area(
+        info.extent,
+        info.render_target_transition.is_some(),
+        info.color_load_op,
+        info.depth_load_op,
+        info.steps.iter().map(|step| step.scissor),
+    );
     let render_pass_info = vk::RenderPassBeginInfo::default()
         .render_pass(info.render_pass)
         .framebuffer(info.framebuffer)
@@ -5800,6 +5875,105 @@ mod tests {
             }
         );
         assert_eq!(region.layer, 0);
+    }
+
+    #[test]
+    fn retained_offscreen_render_area_limits_attachment_load_store_to_damage() {
+        let extent = vk::Extent2D {
+            width: 1458,
+            height: 900,
+        };
+        let rect = retained_offscreen_render_area(
+            extent,
+            true,
+            LoadOp::Load,
+            Some(LoadOp::Load),
+            [
+                Some(ScissorRect {
+                    x: 10,
+                    y: 20,
+                    width: 30,
+                    height: 40,
+                }),
+                Some(ScissorRect {
+                    x: 80,
+                    y: 50,
+                    width: 10,
+                    height: 20,
+                }),
+            ],
+        );
+        assert_eq!(rect.offset, vk::Offset2D { x: 10, y: 20 });
+        assert_eq!(rect.extent, vk::Extent2D { width: 80, height: 50 });
+    }
+
+    #[test]
+    fn retained_offscreen_render_area_preserves_full_clear_and_unknown_coverage() {
+        let extent = vk::Extent2D {
+            width: 1458,
+            height: 900,
+        };
+        let scissor = Some(ScissorRect {
+            x: 4,
+            y: 5,
+            width: 8,
+            height: 9,
+        });
+        let full = full_render_area(extent);
+        assert_eq!(
+            retained_offscreen_render_area(
+                extent,
+                true,
+                LoadOp::Clear(ClearColor::default()),
+                None,
+                [scissor],
+            ),
+            full,
+        );
+        assert_eq!(
+            retained_offscreen_render_area(
+                extent,
+                true,
+                LoadOp::Load,
+                Some(LoadOp::Clear(1.0)),
+                [scissor],
+            ),
+            full,
+        );
+        assert_eq!(
+            retained_offscreen_render_area(extent, false, LoadOp::Load, None, [scissor]),
+            full,
+        );
+        assert_eq!(
+            retained_offscreen_render_area(
+                extent,
+                true,
+                LoadOp::Load,
+                None,
+                [scissor, None],
+            ),
+            full,
+        );
+    }
+
+    #[test]
+    fn retained_offscreen_render_area_clamps_damage_to_texture() {
+        let extent = vk::Extent2D {
+            width: 100,
+            height: 80,
+        };
+        let rect = retained_offscreen_render_area(
+            extent,
+            true,
+            LoadOp::Load,
+            None,
+            [
+                Some(ScissorRect { x: 90, y: 70, width: 40, height: 40 }),
+                Some(ScissorRect { x: 200, y: 200, width: 10, height: 10 }),
+            ],
+        );
+        assert_eq!(rect.offset, vk::Offset2D { x: 90, y: 70 });
+        assert_eq!(rect.extent, vk::Extent2D { width: 10, height: 10 });
     }
 
     #[test]
