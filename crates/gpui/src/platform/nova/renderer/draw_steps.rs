@@ -313,6 +313,11 @@ impl NovaRenderer {
             // draw samples its retained filtered texture rather than recomputing the Gaussian pass.
             batch_start = batch_end;
         }
+        // Cached filter outputs leave gaps with no GPU filtering work.
+        // Adjacent source segments always target the same color attachment
+        // and can be submitted as one render pass when there is no filter
+        // pass between them. Preserve painter order and depth contents.
+        coalesce_source_groups(&mut groups);
         groups
     }
 
@@ -558,6 +563,12 @@ impl NovaRenderer {
                     );
                 }
             }
+            // Multiple nested backdrop barriers may all sample already
+            // retained Gaussian results. Splitting each barrier into a
+            // separate Load/Store render pass is unnecessary (and particularly
+            // expensive on Vulkan). Merge contiguous source-only segments
+            // without crossing a real filter execution barrier.
+            coalesce_source_groups(&mut source_groups);
             layers.push(PreparedElementBlurLayer {
                 index: range.index,
                 source_texture_view,
@@ -680,6 +691,30 @@ fn sprite_resource_set(
         };
         resource_sets.get(frame_resource_index).copied()
     })
+}
+
+/// Fuse source-only segments between real filter executions. The source
+/// texture, render pass and depth attachment are identical for all groups of
+/// one layer. No Gaussian output is read or written at an empty boundary, so
+/// preserving draw order is sufficient. The final group's filter passes stay
+/// AFTER all accumulated source steps.
+fn coalesce_source_groups(groups: &mut Vec<PreparedBackdropBlurGroup>) {
+    if groups.len() < 2 {
+        return;
+    }
+    let original = std::mem::take(groups);
+    groups.reserve(original.len());
+    for mut next in original {
+        if let Some(last) = groups.last_mut()
+            && last.filter_passes.is_empty()
+        {
+            last.source_steps.append(&mut next.source_steps);
+            last.filter_passes.append(&mut next.filter_passes);
+            last.preserve_filtered_pixels = next.preserve_filtered_pixels;
+        } else {
+            groups.push(next);
+        }
+    }
 }
 
 fn backdrop_damage_for_configs(
@@ -945,6 +980,20 @@ fn downsample_scissor(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_filter_barriers_do_not_force_empty_source_render_passes() {
+        let mut groups = (0..4)
+            .map(|_| PreparedBackdropBlurGroup {
+                source_steps: Vec::new(),
+                filter_passes: Vec::new(),
+                preserve_filtered_pixels: true,
+            })
+            .collect::<Vec<_>>();
+        coalesce_source_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].filter_passes.is_empty());
+    }
+
     #[test]
     fn retained_gpu_color_patches_keep_disconnected_damage_independent() {
         let mut damage = DirtyRegion::empty();
