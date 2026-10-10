@@ -53,7 +53,7 @@ impl BufferContentToken {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct StaticStreamToken {
+pub(super) struct StaticStreamToken {
     content: BufferContentToken,
     animation_topology: BufferContentToken,
 }
@@ -387,6 +387,48 @@ mod capacity_tests {
     use super::*;
 
     #[test]
+    fn mask_residency_uses_path_content_not_other_static_streams() {
+        let original = StaticUploadSignature {
+            path_rasterization_vertex: StaticStreamToken::from_bytes(&[1, 2, 3]),
+            ..Default::default()
+        };
+        let mut retained = RetainedUpload {
+            static_signature: Some(original),
+            ..Default::default()
+        };
+        let token = retained.path_mask_token().expect("packed content");
+        let mut residency = super::super::path_mask::Residency::default();
+        let key = super::super::path_mask::Key {
+            content: Some(token),
+            texture_view: TextureViewId::new(1),
+            target_size: Extent2d::new(64, 64).expect("extent"),
+            viewport: DrawableSize {
+                width: 64,
+                height: 64,
+            },
+            format: Format::Bgra8Unorm,
+            pipeline: RenderPipelineId::new(2),
+        };
+        residency.commit(key);
+        retained.static_signature = Some(StaticUploadSignature {
+            quad: StaticStreamToken::from_bytes(&[4]),
+            ..original
+        });
+        assert!(!residency.begin(super::super::path_mask::Key {
+            content: retained.path_mask_token(),
+            ..key
+        }));
+        retained.static_signature = Some(StaticUploadSignature {
+            path_rasterization_vertex: StaticStreamToken::from_bytes(&[1, 2, 4]),
+            ..original
+        });
+        assert!(residency.begin(super::super::path_mask::Key {
+            content: retained.path_mask_token(),
+            ..key
+        }));
+    }
+
+    #[test]
     fn replaced_slot_uploads_every_stream_without_invalidating_the_other_slot() {
         let signature = StaticUploadSignature::default();
         let mut retained = RetainedUpload {
@@ -406,6 +448,11 @@ mod capacity_tests {
 }
 
 impl RetainedUpload {
+    pub(super) fn path_mask_token(&self) -> Option<StaticStreamToken> {
+        self.static_signature
+            .map(|signature| signature.path_rasterization_vertex)
+    }
+
     pub(super) fn invalidate_slot(&mut self, slot: usize) {
         if let Some(signature) = self.uploaded_slots.get_mut(slot) {
             *signature = None;

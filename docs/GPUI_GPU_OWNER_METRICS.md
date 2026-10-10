@@ -55,11 +55,14 @@ that observation gap. These cumulative ratios are not instantaneous utilization.
 
 ## Interpreting Multi-Window Evidence
 
-`gpui_perf_lab` JSON schema 4 exports `gpu_owner` and `gpu_owner_samples` alongside
+`gpui_perf_lab` JSON schema 5 exports `gpu_owner` and `gpu_owner_samples` alongside
 the existing frame report. These are separate diagnostic reads; raw jobs are capped
 at each snapshot's completed-job cursor, but history eviction or window teardown
 between reads can leave fewer records. The lab currently opens one window, so its
 report validates collection and does not establish multi-window contention.
+
+Schema 5 also exports process-wide `text_metrics`; these have no WindowId and must
+not be joined to the last owner job as if they were that window's measurements.
 
 Collect snapshots and raw jobs for the main window, map viewer and auxiliary
 window in one workload. Compare queue wait and pending age against other windows'

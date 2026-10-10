@@ -63,6 +63,60 @@ impl Render for FullWindowRootView {
 }
 
 #[gpui::test]
+fn async_owner_refresh_preserves_sibling_window_caches(cx: &mut TestAppContext) {
+    let windows: [AnyWindowHandle; 2] = cx.update(|app| {
+        std::array::from_fn(|_| {
+            app.open_window(
+                WindowOptions {
+                    focus: false,
+                    ..WindowOptions::default()
+                },
+                |_, app| app.new(|_| AnimationTickView { renders: 0 }),
+            )
+            .expect("test window")
+            .into()
+        })
+    });
+    for handle in windows {
+        cx.update_window(handle, |_, window, app| {
+            window.draw(app).clear();
+            window.test_complete_frame(None, app);
+            assert!(!window.invalidator.is_dirty());
+            assert!(!window.force_view_cache_refresh());
+        })
+        .expect("initial draw");
+    }
+    cx.run_until_parked();
+    let owner = windows[0];
+    let sibling = windows[1];
+    let task = cx.update(|app| {
+        app.spawn(async move |mut app| {
+            app.update(|app| {
+                app.update_window(sibling, |_, window, _| {
+                    assert!(!window.invalidator.is_dirty());
+                    assert!(!window.force_view_cache_refresh());
+                })
+                .expect("clean sibling baseline");
+                app.update_window(owner, |_, window, _| {
+                    window.refresh();
+                    assert!(window.invalidator.is_dirty());
+                    assert!(window.force_view_cache_refresh());
+                })
+                .expect("owner window still exists");
+                app.update_window(sibling, |_, window, _| {
+                    assert!(!window.invalidator.is_dirty());
+                    assert!(!window.force_view_cache_refresh());
+                })
+                .expect("sibling cache remains clean before frame processing");
+            })
+            .expect("application still exists");
+        })
+    });
+    cx.run_until_parked();
+    drop(task);
+}
+
+#[gpui::test]
 fn child_notify_damages_child_without_promoting_root_bounds(cx: &mut TestAppContext) {
     let (child, root, window) = cx.update(|cx| {
         let child = cx.new(|_| LocalDamageView { revision: 0 });

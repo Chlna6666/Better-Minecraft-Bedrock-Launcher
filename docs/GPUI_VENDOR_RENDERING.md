@@ -929,8 +929,8 @@ RenderImage identity total. CPU frame capacity excludes map/scene metadata and
 draw-step scratch, so this profile is not a full heap census. On UMA, OS process
 and GPU observations may overlap physically.
 
-`gpui_perf_lab` JSON schema 4 exports `gpu_owner`, `gpu_owner_samples`,
-`memory`, `process_memory` and
+`gpui_perf_lab` JSON schema 5 exports `gpu_owner`, `gpu_owner_samples`,
+process-wide `text_metrics` ([contract](GPUI_TEXT_METRICS.md)), `memory`, `process_memory` and
 `process_memory_error` alongside its existing frame samples. Capture stdout for
 static-idle, effects and image workloads on each backend. This phase changes
 observability only; smaller buffers, residency policy and target reuse belong

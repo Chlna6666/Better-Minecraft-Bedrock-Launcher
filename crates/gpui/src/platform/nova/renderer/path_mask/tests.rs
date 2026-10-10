@@ -2,7 +2,7 @@ use super::*;
 
 fn key() -> Key {
     Key {
-        scene_revision: 7,
+        content: Some(super::super::retained_upload::StaticStreamToken::default()),
         texture_view: TextureViewId::new(1),
         target_size: Extent2d::new(64, 64).expect("extent"),
         viewport: DrawableSize {
@@ -25,10 +25,10 @@ fn static_pixels_are_reused_without_per_slot_identity() {
 }
 
 #[test]
-fn geometry_target_viewport_format_and_pipeline_changes_require_rasterization() {
+fn missing_identity_target_viewport_format_and_pipeline_changes_require_rasterization() {
     let original = key();
     let mut candidates = [original; 6];
-    candidates[0].scene_revision += 1;
+    candidates[0].content = None;
     candidates[1].texture_view = TextureViewId::new(3);
     candidates[2].target_size = Extent2d::new(128, 64).expect("extent");
     candidates[3].viewport.width += 1;
@@ -54,10 +54,10 @@ fn failed_or_unsubmitted_pass_cannot_become_resident() {
 }
 
 #[test]
-fn unversioned_scenes_always_rasterize() {
+fn missing_content_identity_always_rasterizes() {
     let mut residency = Residency::default();
     let mut key = key();
-    key.scene_revision = 0;
+    key.content = None;
     for _ in 0..4 {
         assert!(residency.begin(key));
         residency.commit(key);

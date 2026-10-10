@@ -1,11 +1,12 @@
 //! Pixel residency is independent of frame-slot draw-step descriptor caches.
 
+use super::retained_upload::StaticStreamToken;
 use super::*;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Key {
-    pub(super) scene_revision: u64,
+    pub(super) content: Option<StaticStreamToken>,
     pub(super) texture_view: TextureViewId,
     pub(super) target_size: Extent2d,
     pub(super) viewport: DrawableSize,
@@ -20,7 +21,7 @@ pub(super) struct Residency {
 
 impl Residency {
     pub(super) fn begin(&mut self, key: Key) -> bool {
-        if key.scene_revision != 0 && self.resident == Some(key) {
+        if key.content.is_some() && self.resident == Some(key) {
             return false;
         }
         // Clear can change the texture before a later pass or presentation fails.
@@ -29,7 +30,7 @@ impl Residency {
     }
 
     pub(super) fn commit(&mut self, key: Key) {
-        self.resident = (key.scene_revision != 0).then_some(key);
+        self.resident = key.content.is_some().then_some(key);
     }
 
     pub(super) fn invalidate(&mut self) {

@@ -19,7 +19,7 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
     .expect("native renderer");
     let target = target(&renderer);
     let window_id = u64::MAX - 100;
-    let red = scene(0xff0000);
+    let red = scene(0xff0000, 0x0000ff);
     present(&mut renderer, &red, window_id);
     let first = pixels(&renderer, target);
     assert_eq!(&first[(4 * 16 + 4) * 4..][..4], &[0, 0, 255, 255]);
@@ -28,14 +28,23 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         present(&mut renderer, &red, window_id);
         assert_eq!(pixels(&renderer, target), first, "resident mask pixels");
     }
+    let unrelated_update = scene(0xff0000, 0xffff00);
+    assert_ne!(red.revision, unrelated_update.revision);
+    present(&mut renderer, &unrelated_update, window_id);
+    let updated = pixels(&renderer, target);
+    assert_eq!(&updated[(4 * 16 + 4) * 4..][..4], &[0, 0, 255, 255]);
+    assert_ne!(
+        updated, first,
+        "quad pixels changed without rerasterizing the mask"
+    );
     let metrics = crate::window_metrics_snapshot()
         .into_iter()
         .find(|metrics| metrics.window_id == window_id)
         .expect("window mask metrics");
     assert_eq!(metrics.path_mask.rendered_frames, 1);
-    assert_eq!(metrics.path_mask.skipped_frames, 5);
+    assert_eq!(metrics.path_mask.skipped_frames, 6);
 
-    present(&mut renderer, &scene(0x00ff00), window_id);
+    present(&mut renderer, &scene(0x00ff00, 0xffff00), window_id);
     let changed = pixels(&renderer, target);
     assert_eq!(&changed[(4 * 16 + 4) * 4..][..4], &[0, 255, 0, 255]);
     assert_ne!(changed, first);
@@ -44,7 +53,21 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         .find(|metrics| metrics.window_id == window_id)
         .expect("updated mask metrics");
     assert_eq!(metrics.path_mask.rendered_frames, 2);
-    assert_eq!(metrics.path_mask.skipped_frames, 5);
+    assert_eq!(metrics.path_mask.skipped_frames, 6);
+    for (index, variant) in [PathChange::Geometry, PathChange::Clip, PathChange::Scale]
+        .into_iter()
+        .enumerate()
+    {
+        let scene = changed_scene(0x00ff00, 0xffff00, variant);
+        present(&mut renderer, &scene, window_id);
+        assert_ne!(pixels(&renderer, target), changed, "path pixels changed");
+        let metrics = crate::window_metrics_snapshot()
+            .into_iter()
+            .find(|metrics| metrics.window_id == window_id)
+            .expect("changed path metrics");
+        assert_eq!(metrics.path_mask.rendered_frames, 3 + index as u64);
+        assert_eq!(metrics.path_mask.skipped_frames, 6);
+    }
     let mut backend = lock_backend(&renderer.backend);
     let NovaBackend::Dx12(device) = &mut *backend else {
         panic!("DX12 fixture");
@@ -57,10 +80,26 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         .expect("destroy scratch texture");
 }
 
-fn scene(color: u32) -> Arc<crate::Scene> {
+fn scene(color: u32, quad_color: u32) -> Arc<crate::Scene> {
+    changed_scene(color, quad_color, PathChange::None)
+}
+
+enum PathChange {
+    None,
+    Geometry,
+    Clip,
+    Scale,
+}
+
+fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::Scene> {
     let mut path = crate::Path::new(crate::point(crate::px(2.0), crate::px(2.0)));
     path.line_to(crate::point(crate::px(14.0), crate::px(2.0)));
-    path.line_to(crate::point(crate::px(2.0), crate::px(14.0)));
+    let end_x = if matches!(change, PathChange::Geometry) {
+        10.0
+    } else {
+        2.0
+    };
+    path.line_to(crate::point(crate::px(end_x), crate::px(14.0)));
     path.color = crate::rgb(color).into();
     let bounds = crate::bounds(
         crate::point(crate::px(0.0), crate::px(0.0)),
@@ -71,9 +110,31 @@ fn scene(color: u32) -> Arc<crate::Scene> {
         corner_bounds: bounds,
         ..Default::default()
     };
+    if matches!(change, PathChange::Clip) {
+        path.content_mask.bounds.size.width = crate::px(4.0);
+    }
     let mut scene = crate::Scene::default();
     scene.push_layer(bounds.scale(1.0));
-    scene.insert_primitive(path.scale(1.0));
+    let scale = if matches!(change, PathChange::Scale) {
+        0.5
+    } else {
+        1.0
+    };
+    scene.insert_primitive(path.scale(scale));
+    let quad_bounds = crate::bounds(
+        crate::point(crate::px(0.0), crate::px(0.0)),
+        crate::size(crate::px(1.0), crate::px(1.0)),
+    )
+    .scale(1.0);
+    scene.insert_primitive(crate::Quad {
+        bounds: quad_bounds,
+        content_mask: crate::ContentMask {
+            bounds: quad_bounds,
+            ..Default::default()
+        },
+        background: crate::rgb(quad_color).into(),
+        ..Default::default()
+    });
     scene.finish();
     Arc::new(scene)
 }

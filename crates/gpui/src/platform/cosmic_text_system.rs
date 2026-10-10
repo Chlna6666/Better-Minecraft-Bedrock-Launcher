@@ -18,6 +18,7 @@ use cosmic_text::{
     fontdb::{Query, Source, Stretch, Style as FontDbStyle, Weight},
 };
 
+use crate::diagnostics::text::{self, TextBackend, TextOperation};
 use parking_lot::RwLock;
 use smallvec::SmallVec;
 #[cfg(target_os = "linux")]
@@ -170,6 +171,26 @@ struct StableVerticalRasterFrame {
 }
 
 impl CosmicTextSystem {
+    fn with_state<R>(
+        &self,
+        operation: TextOperation,
+        work: impl FnOnce(&mut CosmicTextSystemState) -> R,
+    ) -> R {
+        let started = std::time::Instant::now();
+        let mut state = self.0.write();
+        let acquired = std::time::Instant::now();
+        let result = work(&mut state);
+        let completed = std::time::Instant::now();
+        drop(state);
+        text::record(
+            TextBackend::Cosmic,
+            operation,
+            acquired.duration_since(started),
+            completed.duration_since(acquired),
+        );
+        result
+    }
+
     pub(crate) fn new() -> Self {
         let (mut font_system, system_fonts_loaded) = minimal_startup_font_system();
         let platform_font_family: SharedString = startup_platform_font_name(&font_system).into();
@@ -338,7 +359,9 @@ impl PlatformTextSystem for CosmicTextSystem {
     }
 
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        self.0.write().raster_bounds(params)
+        self.with_state(TextOperation::RasterBounds, |state| {
+            state.raster_bounds(params)
+        })
     }
 
     fn rasterize_glyph(
@@ -346,11 +369,15 @@ impl PlatformTextSystem for CosmicTextSystem {
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<GlyphRasterization> {
-        self.0.write().rasterize_glyph(params, raster_bounds)
+        self.with_state(TextOperation::Rasterize, |state| {
+            state.rasterize_glyph(params, raster_bounds)
+        })
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
-        self.0.write().layout_line(text, font_size, runs)
+        self.with_state(TextOperation::Shape, |state| {
+            state.layout_line(text, font_size, runs)
+        })
     }
 }
 
@@ -3171,6 +3198,43 @@ mod tests {
             state.raster_bounds(&params).expect("glyph raster bounds"),
             exact_bounds
         );
+    }
+
+    #[test]
+    fn text_metrics_record_calls_after_state_lock_release() {
+        use crate::{TextBackend, TextOperation};
+
+        let text_system = CosmicTextSystem::new();
+        let calls_before = crate::text_metrics_snapshot()
+            .iter()
+            .filter(|row| {
+                row.backend == TextBackend::Cosmic && row.operation == TextOperation::Shape
+            })
+            .map(|row| row.calls)
+            .sum::<u64>();
+        let guard = text_system.0.write();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                started_tx.send(()).expect("start observer");
+                text_system.with_state(TextOperation::Shape, |_| ());
+                completed_tx.send(()).expect("completion observer");
+            });
+            started_rx.recv().expect("worker started");
+            assert!(completed_rx.try_recv().is_err());
+            drop(guard);
+            completed_rx
+                .recv()
+                .expect("worker completes after lock release");
+        });
+        assert!(text_system.0.try_write().is_some());
+        let row = crate::text_metrics_snapshot()
+            .into_iter()
+            .find(|row| row.backend == TextBackend::Cosmic && row.operation == TextOperation::Shape)
+            .expect("observed operation");
+        assert!(row.calls > calls_before);
+        assert!(row.lock_wait.sample_count > 0);
     }
 
     #[test]

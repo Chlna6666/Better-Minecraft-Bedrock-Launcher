@@ -485,8 +485,21 @@ impl NovaRenderer {
         let draw_step_cache_hit = self.draw_step_scratch.draw_step_cache_hit;
         let path_mask_step_count = self.draw_step_scratch.path_steps().len();
         let path_mask_cache_hit = self.draw_step_scratch.path_mask_cache_hit;
+        let single_full_path_step = matches!(
+            self.draw_step_scratch.path_steps(),
+            [step] if step.first_vertex == 0
+                && step.vertex_count == upload.path_vertex_count
+                && usize::try_from(step.vertex_count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(PACKED_PATH_RASTERIZATION_VERTEX_BYTES))
+                    == Some(self.frame_upload.path_rasterization_vertices.len())
+        );
         let path_mask_key = path_mask::Key {
-            scene_revision: packet.scene.revision,
+            // Packed path bytes include ordered geometry, paint and clip. Multiple draws
+            // need an additional command-order identity before their pixels can be reused.
+            content: single_full_path_step
+                .then(|| self.retained_upload.path_mask_token())
+                .flatten(),
             texture_view: self.path_texture_view,
             target_size: self.path_texture_size,
             viewport: self.current_size,

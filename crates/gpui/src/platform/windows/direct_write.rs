@@ -12,6 +12,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::diagnostics::text::{self, TextBackend, TextOperation};
 use crate::*;
 use ::util::{ResultExt, maybe};
 use anyhow::{Context, Result};
@@ -141,6 +142,26 @@ struct DirectWriteState {
 }
 
 impl DirectWriteTextSystem {
+    fn with_state<R>(
+        &self,
+        operation: TextOperation,
+        work: impl FnOnce(&DirectWriteState) -> R,
+    ) -> R {
+        let started = std::time::Instant::now();
+        let state = self.state.read();
+        let acquired = std::time::Instant::now();
+        let result = work(&state);
+        let completed = std::time::Instant::now();
+        drop(state);
+        text::record(
+            TextBackend::DirectWrite,
+            operation,
+            acquired.duration_since(started),
+            completed.duration_since(acquired),
+        );
+        result
+    }
+
     pub(crate) fn new(renderer_capabilities: RendererCapabilities) -> Result<Self> {
         let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         // The `IDWriteInMemoryFontFileLoader` here is supported starting from
@@ -257,10 +278,9 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         &self,
         params: &RenderGlyphParams,
     ) -> anyhow::Result<Bounds<DevicePixels>> {
-        let (analysis, bounds) = self
-            .state
-            .read()
-            .glyph_analysis_and_bounds(&self.components, params)?;
+        let (analysis, bounds) = self.with_state(TextOperation::RasterBounds, |state| {
+            state.glyph_analysis_and_bounds(&self.components, params)
+        })?;
         self.pending_glyph_analysis.lock().insert(params, analysis);
         Ok(bounds)
     }
@@ -271,12 +291,14 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         raster_bounds: Bounds<DevicePixels>,
     ) -> anyhow::Result<GlyphRasterization> {
         let pending = self.pending_glyph_analysis.lock().get(params);
-        let result = self.state.read().rasterize_glyph(
-            &self.components,
-            params,
-            raster_bounds,
-            pending.as_ref().map(|(_, analysis)| analysis),
-        );
+        let result = self.with_state(TextOperation::Rasterize, |state| {
+            state.rasterize_glyph(
+                &self.components,
+                params,
+                raster_bounds,
+                pending.as_ref().map(|(_, analysis)| analysis),
+            )
+        });
         if result.is_ok()
             && let Some((generation, _)) = pending
         {
@@ -288,14 +310,22 @@ impl PlatformTextSystem for DirectWriteTextSystem {
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
-        self.state
-            .write()
-            .layout_line(&self.components, text, font_size, runs)
-            .log_err()
-            .unwrap_or(LineLayout {
-                font_size,
-                ..Default::default()
-            })
+        let started = std::time::Instant::now();
+        let mut state = self.state.write();
+        let acquired = std::time::Instant::now();
+        let result = state.layout_line(&self.components, text, font_size, runs);
+        let completed = std::time::Instant::now();
+        drop(state);
+        text::record(
+            TextBackend::DirectWrite,
+            TextOperation::Shape,
+            acquired.duration_since(started),
+            completed.duration_since(acquired),
+        );
+        result.log_err().unwrap_or(LineLayout {
+            font_size,
+            ..Default::default()
+        })
     }
 }
 
@@ -2223,6 +2253,48 @@ mod tests {
         text_system.add_font_paths(vec![font_path])?;
 
         assert!(text_system.state.read().font_to_font_id.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn text_metrics_record_calls_after_state_lock_release() -> anyhow::Result<()> {
+        use crate::{TextBackend, TextOperation};
+
+        let text_system = DirectWriteTextSystem::new(RendererCapabilities::default())?;
+        let calls_before = crate::text_metrics_snapshot()
+            .iter()
+            .filter(|row| {
+                row.backend == TextBackend::DirectWrite
+                    && row.operation == TextOperation::RasterBounds
+            })
+            .map(|row| row.calls)
+            .sum::<u64>();
+        let guard = text_system.state.write();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                started_tx.send(()).expect("start observer");
+                text_system.with_state(TextOperation::RasterBounds, |_| ());
+                completed_tx.send(()).expect("completion observer");
+            });
+            started_rx.recv().expect("worker started");
+            assert!(completed_rx.try_recv().is_err());
+            drop(guard);
+            completed_rx
+                .recv()
+                .expect("worker completes after lock release");
+        });
+        assert!(text_system.state.try_write().is_some());
+        let row = crate::text_metrics_snapshot()
+            .into_iter()
+            .find(|row| {
+                row.backend == TextBackend::DirectWrite
+                    && row.operation == TextOperation::RasterBounds
+            })
+            .expect("observed operation");
+        assert!(row.calls > calls_before);
+        assert!(row.lock_wait.sample_count > 0);
         Ok(())
     }
 

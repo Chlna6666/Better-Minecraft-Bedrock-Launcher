@@ -152,6 +152,7 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
 #[derive(Serialize)]
 struct LabReport {
     window_metrics: Vec<gpui::WindowMetricsSnapshot>,
+    text_metrics: Vec<gpui::TextOperationMetricsSnapshot>,
     gpu_owner: gpui::GpuOwnerMetricsSnapshot,
     gpu_owner_samples: Vec<gpui::GpuOwnerJobSample>,
     memory: gpui::GpuiMemorySnapshot,
@@ -743,7 +744,8 @@ fn print_report(
     };
     let report = LabReport {
         window_metrics: gpui::window_metrics_snapshot(),
-        schema_version: 4,
+        text_metrics: gpui::text_metrics_snapshot(),
+        schema_version: 5,
         gpu_owner,
         gpu_owner_samples,
         memory,
