@@ -653,8 +653,29 @@ impl Scene {
                 presentation_values,
                 previous_presentation_values,
             ) {
-                plan.mark_full(blur.order);
-                continue;
+                // A backdrop's own OPACITY animation affects only its final
+                // composite. The already-filtered Gaussian texture still has
+                // identical source pixels and sigma. Reuse the result even
+                // while the overlay fades at display refresh rate.
+                //
+                // This does NOT suppress opacity changes of a backdrop that
+                // appears before ANOTHER blur: the source loop below still
+                // reports its changing pixels to that later filter.
+                let composite_opacity_only = blur.animation_id.is_some_and(|animation_id| {
+                    matches!(
+                        (
+                            animation_value_for(self, animation_id, presentation_values),
+                            animation_value_for(previous_scene, animation_id, previous_presentation_values),
+                        ),
+                        (Some(current), Some(previous))
+                            if current.property == TransitionProperty::Opacity
+                                && previous.property == TransitionProperty::Opacity
+                    )
+                });
+                if !composite_opacity_only {
+                    plan.mark_full(blur.order);
+                    continue;
+                }
             }
             let source_region = backdrop_blur_source_region(blur);
             if source_region.is_empty() {

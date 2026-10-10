@@ -500,6 +500,46 @@ fn retained_element_filter_source_tracks_sampled_animations() {
 }
 
 #[test]
+fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
+    let animation_id = SceneAnimationId(1 << 31);
+    let mut scene = Scene::default();
+    let mut first_blur = backdrop_blur(1);
+    first_blur.animation_id = Some(animation_id);
+    scene.insert_primitive(first_blur);
+    scene.insert_primitive(backdrop_blur(2));
+
+    let opacity = |progress| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    let plan = scene.backdrop_blur_animation_damage_plan(
+        &[opacity(0.25)],
+        &[opacity(0.75)],
+    );
+    let first_order = scene.backdrop_blurs[0].order;
+    let next_order = scene.backdrop_blurs[1].order;
+    let (first_full, first_damage) =
+        plan.source_damage_for_orders(first_order, first_order);
+    let (next_full, next_damage) =
+        plan.source_damage_for_orders(next_order, next_order);
+    assert!(!first_full);
+    assert_eq!(first_damage.count(), 0);
+    assert!(!next_full);
+    assert!(next_damage.count() > 0);
+
+    let mut only_self = Scene::default();
+    let mut blur = backdrop_blur(1);
+    blur.animation_id = Some(animation_id);
+    only_self.insert_primitive(blur);
+    assert!(!only_self
+        .backdrop_blur_animation_damage_plan(&[opacity(0.25)], &[opacity(0.75)])
+        .refresh_required());
+}
+
+#[test]
 fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     let mut previous = Scene::default();
     previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
