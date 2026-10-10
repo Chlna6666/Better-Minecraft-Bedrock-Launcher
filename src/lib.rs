@@ -13,6 +13,12 @@ mod i18n;
 mod launch;
 mod plugins;
 mod result;
+
+/// 插件系统性能基准使用的入口。
+///
+/// 只在 `cargo bench --features bench-support` 下存在，正常构建不会暴露这些 re-export。
+#[cfg(feature = "bench-support")]
+pub mod bench_support;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod startup;
 mod tasks;
