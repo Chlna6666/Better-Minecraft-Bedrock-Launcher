@@ -171,6 +171,8 @@ mod platform {
     // Keep rendering overlapped with presentation while bounding the queue below buffer count.
     const DX12_MAX_FRAME_LATENCY: u32 = 2;
     const DX12_UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
+    // Command allocators/lists are only reusable after the submitting fence completes.
+    const DX12_FRAME_COMMAND_POOL_CAPACITY: usize = 16;
     const DX12_TEXTURE_DATA_PLACEMENT_ALIGNMENT: u64 = 512;
     const DX12_TEXTURE_DATA_PITCH_ALIGNMENT: u64 = 256;
     const DX12_RESOURCE_DESCRIPTOR_HEAP_CAPACITY: u32 = 4096;
@@ -219,6 +221,7 @@ mod platform {
         upload_ring: UploadRingAllocator,
         upload_pages: Vec<Option<Dx12UploadPage>>,
         deferred_command_encoders: Vec<DeferredDx12CommandEncoder>,
+        free_command_encoders: Vec<Dx12CommandEncoder>,
         pending_texture_uploads: DeferredFreeQueue<Dx12SubmittedCommandList>,
         upload_command_pool: Vec<Dx12UploadCommands>,
         timestamp_frequency: Option<u64>,
@@ -324,6 +327,7 @@ mod platform {
                 upload_ring,
                 upload_pages: Vec::new(),
                 deferred_command_encoders: Vec::new(),
+                free_command_encoders: Vec::with_capacity(DX12_FRAME_COMMAND_POOL_CAPACITY),
                 pending_texture_uploads: DeferredFreeQueue::new(),
                 upload_command_pool: Vec::new(),
                 timestamp_frequency,
@@ -1713,10 +1717,40 @@ mod platform {
             &mut self,
             _desc: &CommandEncoderDescriptor,
         ) -> Result<CommandEncoderId> {
-            let allocator = create_command_allocator(&self.device)?;
-            let command_list = create_command_list(&self.device, &allocator)?;
-            // SAFETY: Newly created command lists start open; close it so frame recording can reset it.
-            unsafe { command_list.Close() }.map_err(|error| Error::Backend(error.to_string()))?;
+            // Only poll when the idle cache is empty; a completed fence gives us
+            // exclusive command-allocator ownership without stalling the CPU.
+            if self.free_command_encoders.is_empty() && !self.deferred_command_encoders.is_empty() {
+                self.poll_cleanup();
+            }
+
+            let (allocator, command_list) = if let Some(mut retired) = self.free_command_encoders.pop() {
+                let allocator = retired.allocator.take().ok_or_else(|| {
+                    Error::Backend("retired DX12 encoder is missing its allocator".to_string())
+                })?;
+                let command_list = retired.command_list.take().ok_or_else(|| {
+                    Error::Backend("retired DX12 encoder is missing its command list".to_string())
+                })?;
+                // SAFETY: poll_cleanup only places encoders here when their queue
+                // fence has completed. Reset clears every previous command so even
+                // the legacy submit path cannot accidentally replay an old frame.
+                unsafe { allocator.Reset() }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                unsafe { command_list.Reset(&allocator, None) }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                // New encoders are initially closed; the recording paths reset them
+                // again with their actual pipeline state before recording.
+                unsafe { command_list.Close() }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                (allocator, command_list)
+            } else {
+                let allocator = create_command_allocator(&self.device)?;
+                let command_list = create_command_list(&self.device, &allocator)?;
+                // SAFETY: Newly created command lists start open; close it so frame recording can reset it.
+                unsafe { command_list.Close() }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                (allocator, command_list)
+            };
+
             Ok(self.command_encoders.insert(Dx12CommandEncoder {
                 allocator: Some(allocator),
                 command_list: Some(command_list),
@@ -2490,8 +2524,23 @@ mod platform {
                     return;
                 }
             };
-            self.deferred_command_encoders
-                .retain(|encoder| encoder.fence_value > completed_fence);
+            // Command lists submitted on this queue cannot be reset until
+            // their fence has completed. Recycle both native COM objects as a
+            // unit, with bounded residency under GPU memory pressure.
+            let free_encoders = &mut self.free_command_encoders;
+            self.deferred_command_encoders.retain_mut(|pending| {
+                if pending.fence_value > completed_fence {
+                    return true;
+                }
+                if free_encoders.len() < DX12_FRAME_COMMAND_POOL_CAPACITY {
+                    free_encoders.push(Dx12CommandEncoder {
+                        allocator: pending._encoder.allocator.take(),
+                        command_list: pending._encoder.command_list.take(),
+                        submitted: false,
+                    });
+                }
+                false
+            });
             let completed_uploads = self
                 .pending_texture_uploads
                 .collect_completed(completed_fence);
@@ -2550,9 +2599,11 @@ mod platform {
                 0
             };
             self.upload_command_pool.truncate(retained_upload_commands);
+            self.free_command_encoders.truncate(retained_upload_commands);
             if matches!(level, MemoryTrimLevel::Aggressive) {
                 self.upload_pages.shrink_to_fit();
                 self.upload_command_pool.shrink_to_fit();
+                self.free_command_encoders.shrink_to_fit();
                 self.deferred_command_encoders.shrink_to_fit();
             }
             Ok(())
