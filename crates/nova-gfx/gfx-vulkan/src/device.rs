@@ -154,6 +154,9 @@ pub struct VulkanDevice {
     upload_pages: Vec<Option<VulkanBuffer>>,
     upload_command_pool: Vec<VulkanUploadCommands>,
     timestamp_clock: Option<VulkanTimestampClock>,
+    /// Opt-in hardware timestamps for main/offscreen draw, not CPU command encoding.
+    gpu_trace_enabled: bool,
+    gpu_trace_totals: VulkanGpuTraceTotals,
     last_texture_transfer_time: Option<Duration>,
     deferred_destroys: DeferredFreeQueue<DeferredResource>,
     next_upload_fence_value: u64,
@@ -349,6 +352,9 @@ impl VulkanDevice {
             upload_pages: Vec::new(),
             upload_command_pool: Vec::with_capacity(UPLOAD_COMMAND_POOL_CAPACITY),
             timestamp_clock,
+            gpu_trace_enabled: timestamp_clock.is_some()
+                && std::env::var("NOVA_GFX_VULKAN_GPU_TRACE").is_ok_and(|value| value == "1"),
+            gpu_trace_totals: VulkanGpuTraceTotals::default(),
             last_texture_transfer_time: None,
             deferred_destroys: DeferredFreeQueue::new(),
             next_upload_fence_value: 1,
@@ -1289,12 +1295,33 @@ impl VulkanDevice {
                     return Err(error);
                 }
             };
+        let gpu_trace_query_pool = if self.gpu_trace_enabled {
+            let query_count = buffer_count.checked_mul(2).ok_or_else(|| {
+                Error::InvalidInput("Vulkan GPU trace query count overflow".into())
+            })?;
+            let info = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::TIMESTAMP)
+                .query_count(query_count);
+            // SAFETY: Query pool is owned by this encoder and released only after GPU completion.
+            match unsafe { self.device.create_query_pool(&info, None) } {
+                Ok(pool) => Some(pool),
+                Err(error) => {
+                    // SAFETY: No command buffers in this pool have been submitted.
+                    unsafe { self.device.destroy_command_pool(command_pool, None) };
+                    return Err(VulkanError::from(error).into());
+                }
+            }
+        } else {
+            None
+        };
         Ok(self.command_encoders.insert(VulkanCommandEncoder {
             command_pool,
+            gpu_trace_passes: vec![VulkanGpuPass::Unused; command_buffers.len()],
             command_buffers,
             transient_framebuffers: Vec::new(),
             fence: vk::Fence::null(),
             owns_fence: false,
+            gpu_trace_query_pool,
         }))
     }
 
@@ -1378,6 +1405,19 @@ impl VulkanDevice {
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
         let mut render_target_transition = None;
+        let (gpu_trace, gpu_trace_slot) = {
+            let encoder = self.command_encoders.get(encoder_id)?;
+            let slot = encoder
+                .command_buffers
+                .iter()
+                .position(|&buffer| buffer == command_buffer);
+            let trace = encoder.gpu_trace_query_pool.and_then(|pool| {
+                let index = u32::try_from(slot?).ok()?;
+                Some((pool, index.checked_mul(2)?))
+            });
+            let traced_slot = if trace.is_some() { slot } else { None };
+            (trace, traced_slot)
+        };
         let render_pass_record = *self.render_passes.get(pass.render_pass)?;
         let depth_view =
             self.depth_attachment_view_for_render_pass(&render_pass_record, depth_attachment)?;
@@ -1512,8 +1552,17 @@ impl VulkanDevice {
             depth_load_op: depth_view.map(|(_, load_op)| load_op),
             render_target_transition,
             clear_region,
+            gpu_trace,
         });
         if result.is_ok() {
+            if let Some(slot) = gpu_trace_slot {
+                self.command_encoders.get_mut(encoder_id)?.gpu_trace_passes[slot] =
+                    if render_target_transition.is_some() {
+                        VulkanGpuPass::Offscreen
+                    } else {
+                        VulkanGpuPass::Main
+                    };
+            }
             if let Some(texture_id) = render_target_texture {
                 self.textures.get_mut(texture_id)?.layout =
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
@@ -3101,6 +3150,36 @@ impl VulkanDevice {
 
     fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
         // The deferred-queue completion predicate verified the submission fence.
+        // Read native GPU timestamps only AFTER completion; never stall the rendering lane.
+        if let (Some(pool), Some(clock)) = (encoder.gpu_trace_query_pool, self.timestamp_clock) {
+            for (index, pass) in encoder.gpu_trace_passes.iter_mut().enumerate() {
+                if *pass == VulkanGpuPass::Unused {
+                    continue;
+                }
+                let Some(first_query) = u32::try_from(index)
+                    .ok()
+                    .and_then(|index| index.checked_mul(2))
+                else {
+                    continue;
+                };
+                let mut ticks = [0_u64; 2];
+                // SAFETY: This encoder's fence completed and the query slots are exclusive.
+                let result = unsafe {
+                    self.device.get_query_pool_results(
+                        pool,
+                        first_query,
+                        &mut ticks,
+                        vk::QueryResultFlags::TYPE_64,
+                    )
+                };
+                if result.is_ok() {
+                    let gpu_us = clock.elapsed_nanoseconds(ticks[0], ticks[1]) / 1000.0;
+                    self.gpu_trace_totals.record(*pass, gpu_us);
+                }
+                *pass = VulkanGpuPass::Unused;
+            }
+            self.gpu_trace_totals.log_if_due();
+        }
         // Destroy transient render targets before resetting the command pool, then
         // keep only bounded, fully idle native pools for subsequent frame submissions.
         for framebuffer in encoder.transient_framebuffers.drain(..) {
@@ -3115,7 +3194,10 @@ impl VulkanDevice {
         encoder.owns_fence = false;
 
         if self.free_command_encoders.len() >= COMMAND_ENCODER_POOL_CAPACITY {
-            // SAFETY: all command buffers in this pool have finished executing.
+            // SAFETY: all command buffers and their timestamp queries have finished executing.
+            if let Some(query_pool) = encoder.gpu_trace_query_pool {
+                unsafe { self.device.destroy_query_pool(query_pool, None) };
+            }
             unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
             return Ok(());
         }
@@ -3127,6 +3209,9 @@ impl VulkanDevice {
             )
         } {
             // Do not cache a pool that could not be reset to the initial state.
+            if let Some(query_pool) = encoder.gpu_trace_query_pool {
+                unsafe { self.device.destroy_query_pool(query_pool, None) };
+            }
             unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
             return Err(VulkanError::from(error).into());
         }
@@ -3142,6 +3227,10 @@ impl VulkanDevice {
         if encoder.owns_fence && encoder.fence != vk::Fence::null() {
             // SAFETY: Fence was created for this command encoder and is destroyed once here.
             unsafe { self.device.destroy_fence(encoder.fence, None) };
+        }
+        // SAFETY: The GPU is idle or this encoder never submitted its timestamp queries.
+        if let Some(query_pool) = encoder.gpu_trace_query_pool {
+            unsafe { self.device.destroy_query_pool(query_pool, None) };
         }
         // SAFETY: Command pool was created by this device and owns the command buffer.
         unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
@@ -4160,6 +4249,69 @@ struct VulkanCommandEncoder {
     transient_framebuffers: Vec<vk::Framebuffer>,
     fence: vk::Fence,
     owns_fence: bool,
+    /// One timestamp pair per command buffer; retained until its fence completes.
+    gpu_trace_query_pool: Option<vk::QueryPool>,
+    gpu_trace_passes: Vec<VulkanGpuPass>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VulkanGpuPass {
+    Unused,
+    Main,
+    Offscreen,
+}
+
+#[derive(Default)]
+struct VulkanGpuTraceTotals {
+    started: Option<Instant>,
+    main_count: u32,
+    offscreen_count: u32,
+    main_total_us: f64,
+    offscreen_total_us: f64,
+    main_max_us: f64,
+    offscreen_max_us: f64,
+}
+
+impl VulkanGpuTraceTotals {
+    fn record(&mut self, pass: VulkanGpuPass, microseconds: f64) {
+        let (count, total, max) = match pass {
+            VulkanGpuPass::Main => (
+                &mut self.main_count,
+                &mut self.main_total_us,
+                &mut self.main_max_us,
+            ),
+            VulkanGpuPass::Offscreen => (
+                &mut self.offscreen_count,
+                &mut self.offscreen_total_us,
+                &mut self.offscreen_max_us,
+            ),
+            VulkanGpuPass::Unused => return,
+        };
+        *count = count.saturating_add(1);
+        *total += microseconds;
+        *max = (*max).max(microseconds);
+    }
+
+    fn log_if_due(&mut self) {
+        let now = Instant::now();
+        let started = self.started.get_or_insert(now);
+        if now.duration_since(*started) < Duration::from_secs(5) {
+            return;
+        }
+        log::info!(
+            "nova Vulkan GPU timestamp trace (5s, completed submissions): main_passes={} main_gpu_us_avg={:.1} main_gpu_us_max={:.1} offscreen_passes={} offscreen_gpu_us_avg={:.1} offscreen_gpu_us_max={:.1} note=GPU_command_execution_excludes_WSI_present_wait",
+            self.main_count,
+            self.main_total_us / f64::from(self.main_count.max(1)),
+            self.main_max_us,
+            self.offscreen_count,
+            self.offscreen_total_us / f64::from(self.offscreen_count.max(1)),
+            self.offscreen_max_us,
+        );
+        *self = Self {
+            started: Some(now),
+            ..Self::default()
+        };
+    }
 }
 
 struct VulkanUploadCommands {
@@ -5135,6 +5287,8 @@ struct CommandRecordInfo<'a> {
     depth_load_op: Option<LoadOp<f32>>,
     render_target_transition: Option<CommandRenderTargetTransition>,
     clear_region: Option<ScissorRect>,
+    /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
+    gpu_trace: Option<(vk::QueryPool, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -5351,6 +5505,19 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
             .begin_command_buffer(info.command_buffer, &begin_info)
     }
     .map_err(VulkanError::from)?;
+    if let Some((query_pool, first_query)) = info.gpu_trace {
+        // SAFETY: This command buffer is recording and owns this unique timestamp pair.
+        unsafe {
+            info.device
+                .cmd_reset_query_pool(info.command_buffer, query_pool, first_query, 2);
+            info.device.cmd_write_timestamp(
+                info.command_buffer,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                query_pool,
+                first_query,
+            );
+        }
+    }
     if let Some(transition) = info.render_target_transition {
         transition_image_layout(
             info.device,
@@ -5498,6 +5665,14 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 transition.image,
                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+        }
+        if let Some((query_pool, first_query)) = info.gpu_trace {
+            info.device.cmd_write_timestamp(
+                info.command_buffer,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                query_pool,
+                first_query + 1,
             );
         }
         info.device.end_command_buffer(info.command_buffer)
@@ -6127,6 +6302,30 @@ mod tests {
             attachment.final_layout,
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         );
+    }
+
+    #[test]
+    fn vulkan_gpu_trace_separates_main_from_offscreen_and_ignores_unused() {
+        let mut totals = VulkanGpuTraceTotals::default();
+        totals.record(VulkanGpuPass::Main, 100.0);
+        totals.record(VulkanGpuPass::Offscreen, 250.0);
+        totals.record(VulkanGpuPass::Main, 400.0);
+        totals.record(VulkanGpuPass::Unused, 999.0);
+        assert_eq!(totals.main_count, 2);
+        assert_eq!(totals.offscreen_count, 1);
+        assert_eq!(totals.main_total_us, 500.0);
+        assert_eq!(totals.main_max_us, 400.0);
+        assert_eq!(totals.offscreen_total_us, 250.0);
+        assert_eq!(totals.offscreen_max_us, 250.0);
+    }
+
+    #[test]
+    fn vulkan_gpu_timestamp_clock_wraps_valid_bits() {
+        let clock = VulkanTimestampClock {
+            period_ns: 2.0,
+            valid_bits: 8,
+        };
+        assert_eq!(clock.elapsed_nanoseconds(250, 5), 22.0);
     }
 
     #[test]

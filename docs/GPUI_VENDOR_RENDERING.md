@@ -777,6 +777,38 @@ Useful diagnostics include:
 When changing renderer code, record what metric proves the change works. Do
 not weaken rendering correctness to hit an arbitrary memory or CPU number.
 
+### Vulkan GPU timestamps for main/offscreen scene work (P0)
+
+Set `NOVA_GFX_VULKAN_GPU_TRACE=1` before starting a Vulkan Nova-GFX process.
+The backend creates two Vulkan TIMESTAMP queries per native render command
+buffer, writing one pair around its entire GPU command stream (including
+attachment layout transitions). Query results are read only after the owning
+submission fence completes and are reported as an `INFO` log every five
+seconds:
+
+- `main_gpu_us_avg` / `main_gpu_us_max`: actual GPU time for the main
+  Swapchain command buffer, including its scene draws and layout commands.
+- `offscreen_gpu_us_avg` / `offscreen_gpu_us_max`: actual GPU time for each
+  offscreen command buffer (blur, layer capture, retained filter or other pass).
+- `main_passes` / `offscreen_passes`: counts of *completed, successfully
+  sampled* GPU command buffers, not CPU DrawStep cache hits.
+
+The GPU clock uses the graphics queue's `timestampValidBits` and the device
+`timestampPeriod`. If timestamps are unsupported, tracing is not enabled.
+No timestamp query pools are allocated unless explicitly requested. The
+backend does **not** force a GPU wait for profiling; QueryPools follow
+normal command-encoder/fence retirement and recycling.
+
+This measures *command-buffer GPU execution*, **not** Present queue time,
+WSI image availability, GPU idle intervals, or overall GPU occupancy.
+Offscreen numbers are per pass; sum pass work separately if comparing entire
+frame submissions. For the high-frequency dropdown/page-switch regression,
+compare the same resolution/refresh rate across: idle no blur, repeatedly
+toggle one dropdown with no blur, animated navigation with no blur, and blur
+enabled. GPU p95 and finer per-filter pass timings still require a dedicated
+capture (RenderDoc/Radeon GPU Profiler) or Render Graph instrumentation.
+Do not infer GPU rasterization reuse from retained CPU buffers/DrawStep caches.
+
 ### Buffer upload batches (P0-C)
 
 See [the performance worklist](GPUI_RENDER_PERFORMANCE_WORKLIST.md) for completed scope,
