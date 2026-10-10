@@ -2,6 +2,14 @@ use crate::device::{OpenGlDevice, native};
 use gfx_core::*;
 use glow::HasContext as _;
 
+// State is valid for one native render pass only. Never carry it across context
+// changes, pass boundaries or external GL calls.
+#[derive(Default)]
+struct GlPassState {
+    pipeline: Option<u64>,
+    scissor: Option<(i32, i32, i32, i32)>,
+}
+
 impl OpenGlDevice {
     pub(crate) fn render_target(
         &self,
@@ -109,8 +117,9 @@ impl OpenGlDevice {
             }
         }
         let result = (|| {
+            let mut state = GlPassState::default();
             for step in steps.iter() {
-                self.draw_step(step, size, format, depth_view.is_some())?;
+                self.draw_step(step, size, format, depth_view.is_some(), &mut state)?;
             }
             // A blur frame executes many short offscreen passes. glGetError after each
             // pass forces a driver query in the hottest loop. Keep per-pass diagnostics
@@ -150,6 +159,7 @@ impl OpenGlDevice {
         size: Extent2d,
         format: Format,
         depth: bool,
+        state: &mut GlPassState,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
         if pipeline.desc.color_format != format || (pipeline.desc.depth_state.is_some() && !depth) {
@@ -187,48 +197,64 @@ impl OpenGlDevice {
         });
         let x = scissor.x.min(size.width());
         let y = scissor.y.min(size.height());
-        // SAFETY: state belongs to the current context. Native slots come from linked
-        // reflection; logical resources are validated again before every binding.
+        // SAFETY: the graphics owner holds the current context throughout this pass.
+        // Reuse program/VAO/depth/blend state between successive draws of one pipeline.
+        // Resource bindings still run for every draw (they may include GPU mirror copies).
         unsafe {
-            self.gl.use_program(Some(pipeline.native));
-            self.gl.bind_vertex_array(Some(self.vao));
-            self.gl.disable(glow::CULL_FACE);
-            self.gl.enable(glow::SCISSOR_TEST);
-            self.gl.scissor(
+            let pipeline_key = step.pipeline().raw();
+            if state.pipeline.is_none() {
+                self.gl.bind_vertex_array(Some(self.vao));
+                self.gl.disable(glow::CULL_FACE);
+                self.gl.enable(glow::SCISSOR_TEST);
+            }
+            if state.pipeline != Some(pipeline_key) {
+                self.gl.use_program(Some(pipeline.native));
+                if let Some(depth) = pipeline.desc.depth_state {
+                    self.gl.enable(glow::DEPTH_TEST);
+                    self.gl.depth_func(comparison(depth.compare));
+                    self.gl.depth_mask(depth.write_enabled);
+                } else {
+                    self.gl.disable(glow::DEPTH_TEST);
+                    self.gl.depth_mask(false);
+                }
+                if pipeline.desc.blend_mode == BlendMode::Replace {
+                    self.gl.disable(glow::BLEND);
+                } else {
+                    self.gl.enable(glow::BLEND);
+                    self.gl.blend_equation(glow::FUNC_ADD);
+                    let (source, destination) = match pipeline.desc.blend_mode {
+                        BlendMode::Alpha => (glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA),
+                        #[cfg(windows)]
+                        BlendMode::SubpixelDualSource => (glow::SRC1_COLOR, glow::ONE_MINUS_SRC1_COLOR),
+                        _ => (glow::ONE, glow::ONE_MINUS_SRC_ALPHA),
+                    };
+                    self.gl.blend_func_separate(
+                        source,
+                        destination,
+                        glow::ONE,
+                        if pipeline.desc.blend_mode == BlendMode::AdditiveAlpha {
+                            glow::ONE
+                        } else {
+                            glow::ONE_MINUS_SRC_ALPHA
+                        },
+                    );
+                }
+                state.pipeline = Some(pipeline_key);
+            }
+            let clamped_scissor = (
                 x as i32,
                 y as i32,
                 scissor.width.min(size.width() - x) as i32,
                 scissor.height.min(size.height() - y) as i32,
             );
-            if let Some(depth) = pipeline.desc.depth_state {
-                self.gl.enable(glow::DEPTH_TEST);
-                self.gl.depth_func(comparison(depth.compare));
-                self.gl.depth_mask(depth.write_enabled);
-            } else {
-                self.gl.disable(glow::DEPTH_TEST);
-                self.gl.depth_mask(false);
-            }
-            if pipeline.desc.blend_mode == BlendMode::Replace {
-                self.gl.disable(glow::BLEND);
-            } else {
-                self.gl.enable(glow::BLEND);
-                self.gl.blend_equation(glow::FUNC_ADD);
-                let (source, destination) = match pipeline.desc.blend_mode {
-                    BlendMode::Alpha => (glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA),
-                    #[cfg(windows)]
-                    BlendMode::SubpixelDualSource => (glow::SRC1_COLOR, glow::ONE_MINUS_SRC1_COLOR),
-                    _ => (glow::ONE, glow::ONE_MINUS_SRC_ALPHA),
-                };
-                self.gl.blend_func_separate(
-                    source,
-                    destination,
-                    glow::ONE,
-                    if pipeline.desc.blend_mode == BlendMode::AdditiveAlpha {
-                        glow::ONE
-                    } else {
-                        glow::ONE_MINUS_SRC_ALPHA
-                    },
+            if state.scissor != Some(clamped_scissor) {
+                self.gl.scissor(
+                    clamped_scissor.0,
+                    clamped_scissor.1,
+                    clamped_scissor.2,
+                    clamped_scissor.3,
                 );
+                state.scissor = Some(clamped_scissor);
             }
             self.bind_resources(pipeline, set)?;
             let topology = if pipeline.desc.primitive_topology == PrimitiveTopology::TriangleList {
