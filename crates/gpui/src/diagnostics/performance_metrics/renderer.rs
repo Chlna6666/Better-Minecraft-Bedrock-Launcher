@@ -133,6 +133,10 @@ pub fn record_gpu_surface_metrics(
 pub fn record_direct_present() {
     let metrics = shared_metrics();
     metrics.direct_present_count.fetch_add(1, Ordering::Relaxed);
+    // This is a last-present diagnostic, not a startup allocation bit.
+    // Vulkan/DX backbuffers rotate; a direct frame has no retained root
+    // color attachment even if other windows cache their own layers.
+    metrics.has_retained_frame_target.store(0, Ordering::Relaxed);
     metrics.retained_copy_pixels.store(0, Ordering::Relaxed);
     metrics
         .retained_copy_estimated_bytes
@@ -184,6 +188,11 @@ pub fn record_retained_present(pixels: usize, estimated_bytes: usize) {
     metrics
         .retained_present_count
         .fetch_add(1, Ordering::Relaxed);
+    // The zero-radius root retained color texture is stored in the blur
+    // target chain, not in an older dedicated retained-target allocation.
+    // Report the actual current render path rather than the permanently
+    // false legacy resource flag.
+    metrics.has_retained_frame_target.store(1, Ordering::Relaxed);
     metrics
         .retained_copy_pixels
         .store(pixels as u64, Ordering::Relaxed);
@@ -196,7 +205,10 @@ pub fn record_retained_present(pixels: usize, estimated_bytes: usize) {
 pub fn record_backdrop_blur_frame(source_pixels: usize, level_pixels: [usize; 6]) {
     let metrics = shared_metrics();
     let target_pixels = level_pixels.iter().copied().sum::<usize>();
-    if source_pixels != 0 || target_pixels != 0 {
+    // A zero-radius retained scene-color compositor can repaint its source
+    // without executing a single Gaussian pass. Such frames must not inflate
+    // the "blur_frames" metric (the source work is tracked separately).
+    if target_pixels != 0 {
         metrics
             .backdrop_blur_frame_count
             .fetch_add(1, Ordering::Relaxed);
