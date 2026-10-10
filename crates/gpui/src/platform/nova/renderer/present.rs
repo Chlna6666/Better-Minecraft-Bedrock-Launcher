@@ -49,7 +49,9 @@ where
 {
     let pass_count = groups
         .iter()
-        .map(|group| 1 + group.filter_passes.len())
+        .enumerate()
+        .map(|(index, group)| usize::from(index == 0 || !group.source_steps.is_empty())
+            + group.filter_passes.len())
         .sum();
     let mut passes = Vec::with_capacity(pass_count);
     for (group_index, group) in groups.iter().enumerate() {
@@ -67,13 +69,19 @@ where
                 LoadOp::Load
             },
         };
-        passes.push(gfx_core::TextureRenderStepList {
-            texture_view: source_texture_view,
-            render_pass,
-            steps: RenderStepList::from_render_steps(&group.source_steps),
-            color_load_op: source_load_op,
-            depth_attachment: Some(source_depth_attachment),
-        });
+        // An empty continuation with Load/Load changes no pixels. Do not
+        // submit a native offscreen render pass (and its layout transitions)
+        // just to preserve the existing source. The first pass must still
+        // clear the source even if it contains no geometry.
+        if first_group || !group.source_steps.is_empty() {
+            passes.push(gfx_core::TextureRenderStepList {
+                texture_view: source_texture_view,
+                render_pass,
+                steps: RenderStepList::from_render_steps(&group.source_steps),
+                color_load_op: source_load_op,
+                depth_attachment: Some(source_depth_attachment),
+            });
+        }
         let filter_depth_attachment = RenderPassDepthAttachment {
             target: depth_attachment.target,
             depth_load_op: LoadOp::Load,
@@ -111,7 +119,9 @@ where
             layer
                 .source_groups
                 .iter()
-                .map(|group| 1 + group.filter_passes.len())
+                .enumerate()
+                .map(|(index, group)| usize::from(index == 0 || !group.source_steps.is_empty())
+                    + group.filter_passes.len())
                 .sum::<usize>()
                 + layer.filter_passes.len()
         })
@@ -131,17 +141,19 @@ where
                     LoadOp::Load
                 },
             };
-            passes.push(gfx_core::TextureRenderStepList {
-                texture_view: layer.source_texture_view,
-                render_pass,
-                steps: RenderStepList::from_render_steps(&group.source_steps),
-                color_load_op: if group_index == 0 && !layer.preserve_retained_source {
-                    LoadOp::Clear(clear_color())
-                } else {
-                    LoadOp::Load
-                },
-                depth_attachment: Some(source_depth_attachment),
-            });
+            if group_index == 0 || !group.source_steps.is_empty() {
+                passes.push(gfx_core::TextureRenderStepList {
+                    texture_view: layer.source_texture_view,
+                    render_pass,
+                    steps: RenderStepList::from_render_steps(&group.source_steps),
+                    color_load_op: if group_index == 0 && !layer.preserve_retained_source {
+                        LoadOp::Clear(clear_color())
+                    } else {
+                        LoadOp::Load
+                    },
+                    depth_attachment: Some(source_depth_attachment),
+                });
+            }
             let filter_load_op = if group.preserve_filtered_pixels {
                 LoadOp::Load
             } else {
@@ -519,13 +531,25 @@ impl NovaRenderer {
         let main_pass_count = 1;
         let backdrop_blur_refreshed: bool;
         let element_blur_refreshed: bool;
-        let blur_group_pass_count = backdrop_blur_groups.iter().fold(0usize, |total, group| {
-            total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
-        });
+        let blur_group_pass_count = backdrop_blur_groups.iter().enumerate().fold(
+            0usize,
+            |total, (index, group)| {
+                total.saturating_add(
+                    usize::from(index == 0 || !group.source_steps.is_empty())
+                        .saturating_add(group.filter_passes.len()),
+                )
+            },
+        );
         let element_blur_pass_count = element_blur_layers.iter().fold(0usize, |total, layer| {
-            let source_passes = layer.source_groups.iter().fold(0usize, |total, group| {
-                total.saturating_add(1usize.saturating_add(group.filter_passes.len()))
-            });
+            let source_passes = layer.source_groups.iter().enumerate().fold(
+                0usize,
+                |total, (index, group)| {
+                    total.saturating_add(
+                        usize::from(index == 0 || !group.source_steps.is_empty())
+                            .saturating_add(group.filter_passes.len()),
+                    )
+                },
+            );
             total
                 .saturating_add(source_passes)
                 .saturating_add(layer.filter_passes.len())
