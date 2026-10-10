@@ -391,6 +391,22 @@ impl NovaRenderer {
             // The synthetic ROOT compositor is special: keep its previous color and
             // reconstruct only the dirty source rectangle from the full painter list.
             let is_retained_root = self.frame_upload.retained_root_blur == Some(range.index);
+            // Chromium-style paint invalidation: keep spatially disconnected
+            // damage disconnected all the way to the retained GPU color target.
+            // Combining a left-hand label and a right-hand cursor into one
+            // bounding scissor can turn two tiny changes into a full-window
+            // redraw. Multiple rects need separate Load/clear/repaint passes.
+            //
+            // A normal element filter or a root with nested painter barriers
+            // still follows the established one-pass path; its captured source
+            // is not a single independently preserved scene-color layer.
+            let can_split_root = is_retained_root
+                && !force_full
+                && !damage.is_full()
+                && self.frame_upload.element_blur_inputs.is_empty()
+                && self.frame_upload.backdrop_blur_configs().len() == 1;
+            let damage_patches = retained_source_damage_patches(damage, can_split_root);
+            for damage in &damage_patches {
             let preserve_root = is_retained_root && !force_full && !damage.is_full();
             let outer_source_scissor = if direct_composite && !is_retained_root {
                 blur_full_source_scissor(config, self.current_size)
@@ -550,6 +566,7 @@ impl NovaRenderer {
                 preserve_filtered_pixels: !force_full,
                 preserve_retained_source: preserve_root,
             });
+            } // independent GPU dirty rectangles for this retained color layer
         }
         layers
     }
@@ -687,6 +704,27 @@ fn backdrop_damage_for_configs(
         region.push(bounds);
     }
     (full_refresh, region)
+}
+
+/// Preserve exact disjoint dirty rectangles instead of submitting the
+/// bounding box as one large GPU raster region. Cap the number of passes:
+/// command overhead can outweigh saved fill when a layer is fragmented.
+fn retained_source_damage_patches(
+    damage: &DirtyRegion,
+    can_split: bool,
+) -> Vec<DirtyRegion> {
+    if !can_split || damage.rect_count() < 2 || damage.rect_count() > 8 {
+        return vec![damage.clone()];
+    }
+    damage
+        .rects()
+        .iter()
+        .map(|rect| {
+            let mut patch = DirtyRegion::empty();
+            patch.push(rect.bounds);
+            patch
+        })
+        .collect()
 }
 
 fn blur_configs_for_refresh(
@@ -895,6 +933,26 @@ fn downsample_scissor(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_gpu_color_patches_keep_disconnected_damage_independent() {
+        let mut damage = DirtyRegion::empty();
+        let a = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        );
+        let b = crate::bounds(
+            crate::point(crate::ScaledPixels(900.0), crate::ScaledPixels(20.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        );
+        damage.push(a);
+        damage.push(b);
+        let patches = retained_source_damage_patches(&damage, true);
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches.iter().map(DirtyRegion::area).sum::<f32>(), 200.0);
+        assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
+    }
+
+
     use super::*;
 
     fn dirty_region(x: f32, y: f32, width: f32, height: f32) -> DirtyRegion {
