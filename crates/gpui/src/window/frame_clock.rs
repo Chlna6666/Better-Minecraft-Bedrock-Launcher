@@ -107,6 +107,21 @@ pub(super) enum ReceivedPlatformFrame {
 }
 
 impl FrameClockState {
+    /// Even with a native display clock, only one platform callback should be
+    /// outstanding. Merge additional UI/animation demands with that callback.
+    pub(super) fn queue_unpaced_request(
+        &mut self,
+        request: PlatformFrameRequest,
+    ) -> FrameClockRequest {
+        self.cancel_timer();
+        if self.platform_request_pending {
+            self.merge_pending_request(request);
+            FrameClockRequest::Coalesced
+        } else {
+            FrameClockRequest::Dispatch(self.take_merged_request(request))
+        }
+    }
+
     pub(super) fn queue_request(
         &mut self,
         request: PlatformFrameRequest,
@@ -185,5 +200,39 @@ impl FrameClockState {
         self.pending_request
             .take()
             .map_or(request, |pending| pending.merge(request))
+    }
+}
+
+#[cfg(test)]
+mod unpaced_tests {
+    use super::*;
+
+    #[test]
+    fn system_clock_merges_ui_work_into_the_in_flight_native_frame() {
+        let mut state = FrameClockState::default();
+        assert!(matches!(
+            state.queue_unpaced_request(PlatformFrameRequest::animation_tick()),
+            FrameClockRequest::Dispatch(_)
+        ));
+        state.platform_request_pending = true;
+        assert!(matches!(
+            state.queue_unpaced_request(PlatformFrameRequest::ui_commit()),
+            FrameClockRequest::Coalesced
+        ));
+        let ReceivedPlatformFrame::Ready(merged) = state.receive_frame(
+            PlatformFrameRequest::animation_tick(),
+            Instant::now(),
+            None,
+        ) else {
+            panic!("native callback should deliver immediately");
+        };
+        assert!(merged.needs_ui_commit());
+        assert!(merged.needs_presentation());
+        assert!(!state.platform_request_pending);
+        assert!(state.pending_request.is_none());
+        assert!(matches!(
+            state.queue_unpaced_request(PlatformFrameRequest::animation_tick()),
+            FrameClockRequest::Dispatch(_)
+        ));
     }
 }

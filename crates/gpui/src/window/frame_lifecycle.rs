@@ -499,15 +499,17 @@ impl Window {
         );
 
         let Some(frame_interval) = self.frame_clock.interval() else {
-            let request = {
-                let mut state = self.frame_clock_state.borrow_mut();
-                state.cancel_timer();
-                state
-                    .pending_request
-                    .take()
-                    .map_or(options, |pending| pending.merge(options))
-            };
-            self.dispatch_platform_frame(request);
+            // Drop RefCell's mutable borrow before dispatch_platform_frame
+            // reacquires the same clock state to track the outstanding request.
+            let action = self
+                .frame_clock_state
+                .borrow_mut()
+                .queue_unpaced_request(options);
+            match action {
+                FrameClockRequest::Coalesced => record_coalesced_refresh(),
+                FrameClockRequest::Dispatch(request) => self.dispatch_platform_frame(request),
+                FrameClockRequest::Wait { .. } => unreachable!("system clock has no timer"),
+            }
             return;
         };
 
