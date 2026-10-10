@@ -1918,7 +1918,14 @@ impl VulkanDevice {
         // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
         let fence_wait_started = Instant::now();
         if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
-            return Ok(None);
+            // A zero-timeout probe used to discard a complete UI frame while the previous
+            // GPU submission was still running. Bound the wait to avoid both busy-loop
+            // redraws and unbounded WSI stalls when a surface becomes occluded.
+            match unsafe { self.device.wait_for_fences(&[fence], true, 1_000_000) } {
+                Ok(()) => {}
+                Err(vk::Result::TIMEOUT) => return Ok(None),
+                Err(error) => return Err(VulkanError::from(error).into()),
+            }
         }
         let acquire_fence_wait = fence_wait_started.elapsed();
         self.submissions
@@ -1928,7 +1935,7 @@ impl VulkanDevice {
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
-                0,
+                1_000_000, // 1 ms: absorb transient compositor backpressure without an indefinite wait.
                 image_available,
                 vk::Fence::null(),
             )
@@ -1938,7 +1945,7 @@ impl VulkanDevice {
             Ok((image_index, false)) => image_index,
             // No image was acquired and the semaphore is unchanged. Keep this frame slot for
             // the next native presentation request; only submission resets its fence.
-            Err(vk::Result::NOT_READY) => return Ok(None),
+            Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => return Ok(None),
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 return Err(Error::SurfaceOutdated);

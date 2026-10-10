@@ -320,7 +320,12 @@ fn run(
         let mut event_loop = EventLoop::<State>::try_new()?;
         let queue = connection.new_event_queue::<State>();
         let qh = queue.handle();
-        WaylandSource::new(connection, queue).insert(event_loop.handle())?;
+        // InsertError owns a WaylandSource (and raw wl_display pointers), so it is
+        // not Send + Sync and cannot be converted directly into anyhow::Error.
+        // Preserve the diagnostic without moving the Wayland source across threads.
+        WaylandSource::new(connection, queue)
+            .insert(event_loop.handle())
+            .map_err(|error| anyhow!("failed to register Wayland presentation source: {error}"))?;
         event_loop
             .handle()
             .insert_source(receiver, |event, _, state| match event {

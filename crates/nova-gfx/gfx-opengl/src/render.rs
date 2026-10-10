@@ -79,7 +79,12 @@ impl OpenGlDevice {
             );
             self.gl.draw_buffer(glow::COLOR_ATTACHMENT0);
             self.gl.read_buffer(glow::COLOR_ATTACHMENT0);
-            if self.gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE {
+            // Validation forces a driver-side framebuffer completeness query. Blur uses
+            // many short-lived attachments per frame, so check in debug builds only;
+            // attachment format, extent and usage were validated above in all builds.
+            if cfg!(debug_assertions)
+                && self.gl.check_framebuffer_status(glow::FRAMEBUFFER) != glow::FRAMEBUFFER_COMPLETE
+            {
                 return Err(Error::Backend("OpenGL pass framebuffer incomplete".into()));
             }
             self.gl

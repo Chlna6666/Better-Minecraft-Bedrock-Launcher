@@ -362,10 +362,26 @@ impl SubmissionDevice for OpenGlDevice {
         })
     }
     fn wait_submission(&mut self, id: SubmissionId) -> Result<()> {
-        while SubmissionDevice::poll_submission(self, id)? == SubmissionStatus::Pending {
-            std::thread::yield_now();
+        if id.generation() != self.generation || id.index() == 0 || id.index() > self.submitted {
+            return Err(Error::InvalidInput(
+                "unknown or foreign OpenGL submission".into(),
+            ));
         }
-        Ok(())
+        loop {
+            self.retire()?;
+            if id.index() <= self.completed {
+                return Ok(());
+            }
+            let (_, fence) = self.pending.front().ok_or_else(|| {
+                Error::Backend("OpenGL pending submission fence missing".into())
+            })?;
+            // Block in the driver for at most 1 ms instead of busy-polling with yield_now.
+            // signal() already flushed the commands that produce this fence.
+            let status = unsafe { self.gl.client_wait_sync(*fence, 0, 1_000_000) };
+            if status == glow::WAIT_FAILED {
+                return Err(Error::Backend("OpenGL GPU fence wait failed".into()));
+            }
+        }
     }
 }
 impl DiagnosticsDevice for OpenGlDevice {
