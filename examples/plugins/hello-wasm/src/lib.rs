@@ -21,7 +21,7 @@ impl Plugin for EssentialsPlugin {
         })
     }
 
-    fn handle_event(event: HostEvent) -> PluginResult<()> {
+    fn handle_event(event: PluginEvent) -> PluginResult<()> {
         if event.action_is(EssentialsAction::OpenWindow.as_str()) {
             log_info!("open-window action received");
             toast!(success, tr!("essentials.toast.opened"))?;

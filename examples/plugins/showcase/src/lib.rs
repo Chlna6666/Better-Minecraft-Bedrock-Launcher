@@ -66,7 +66,7 @@ impl Plugin for ShowcasePlugin {
         })
     }
 
-    fn handle_event(event: HostEvent) -> PluginResult<()> {
+    fn handle_event(event: PluginEvent) -> PluginResult<()> {
         actions::handle(event)
     }
 

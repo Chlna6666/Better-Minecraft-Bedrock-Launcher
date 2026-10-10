@@ -48,7 +48,7 @@ impl Plugin for BedrockNotesPlugin {
         })
     }
 
-    fn handle_event(event: HostEvent) -> PluginResult<()> {
+    fn handle_event(event: PluginEvent) -> PluginResult<()> {
         if event.action_is(NotesAction::OpenList.as_str()) {
             PLUGIN
                 .modal(LIST_PAGE_ID)
@@ -59,7 +59,7 @@ impl Plugin for BedrockNotesPlugin {
         }
 
         if event.action_is(NotesAction::OpenDetail.as_str())
-            && let HostEventKind::Action(action) = &event.kind
+            && let PluginEventKind::Action(action) = &event.kind
             && let Some(content_path) = action.value.clone()
         {
             session_set(SESSION_SELECTED_NOTE_PATH, Some(content_path))?;
@@ -148,9 +148,9 @@ fn detail_page(state: HttpCacheState, error: Option<&str>, notes: &[PatchNote]) 
     let detail_response = match http_get_text(&detail_url, CACHE_TTL_SECONDS, MAX_PATCH_NOTES_BYTES)
     {
         Ok(detail) => detail,
-        Err(host_error) => {
+        Err(app_error) => {
             return root
-                .child(text(tr!("notes.error", "error" => host_error.message)))
+                .child(text(tr!("notes.error", "error" => app_error.message)))
                 .into();
         }
     };

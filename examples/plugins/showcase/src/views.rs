@@ -45,10 +45,16 @@ fn status_badges() -> View {
     View::row()
         .gap(8)
         .align(Align::Start)
-        .child(badge(tr!("showcase.badge.counter", "value" => state::counter())))
+        .child(badge(
+            tr!("showcase.badge.counter", "value" => state::counter()),
+        ))
         .child(badge(tr!("showcase.badge.mode", "value" => state::mode())))
-        .child(badge(tr!("showcase.badge.route", "value" => state::route())))
-        .child(badge(tr!("showcase.badge.ping", "value" => state::ping_count())))
+        .child(badge(
+            tr!("showcase.badge.route", "value" => state::route()),
+        ))
+        .child(badge(
+            tr!("showcase.badge.ping", "value" => state::ping_count()),
+        ))
         .child(badge(tr!("showcase.badge.theme", "value" => theme_label())))
         .finish_view()
 }
@@ -90,9 +96,15 @@ fn state_section() -> View {
                 ShowcaseAction::SaveNotes.as_str(),
                 format!("{} {}", state::notes(), state::counter()),
             ),
-            View::button(tr!("showcase.button.load_notes"), ShowcaseAction::LoadNotes.as_str()),
+            View::button(
+                tr!("showcase.button.load_notes"),
+                ShowcaseAction::LoadNotes.as_str(),
+            ),
             View::text(tr!("showcase.config", "value" => config_preview())),
-            View::button(tr!("showcase.button.save_config"), ShowcaseAction::SaveConfig.as_str()),
+            View::button(
+                tr!("showcase.button.save_config"),
+                ShowcaseAction::SaveConfig.as_str(),
+            ),
             View::button(
                 tr!("showcase.button.reload_config"),
                 ShowcaseAction::ReloadConfig.as_str(),
@@ -136,13 +148,22 @@ fn io_section() -> View {
             View::text(tr!("showcase.remote", "value" => remote_preview())),
             View::text(tr!("showcase.clipboard", "value" => clipboard_preview())),
             View::text(tr!("showcase.notice", "value" => notice_preview())),
-            View::button(tr!("showcase.button.fetch"), ShowcaseAction::FetchSite.as_str()),
-            View::button(tr!("showcase.button.copy"), ShowcaseAction::CopySummary.as_str()),
+            View::button(
+                tr!("showcase.button.fetch"),
+                ShowcaseAction::FetchSite.as_str(),
+            ),
+            View::button(
+                tr!("showcase.button.copy"),
+                ShowcaseAction::CopySummary.as_str(),
+            ),
             View::button(
                 tr!("showcase.button.paste"),
                 ShowcaseAction::PasteClipboard.as_str(),
             ),
-            View::button(tr!("showcase.button.notice"), ShowcaseAction::ReadNotice.as_str()),
+            View::button(
+                tr!("showcase.button.notice"),
+                ShowcaseAction::ReadNotice.as_str(),
+            ),
         ],
     )
 }
@@ -178,9 +199,17 @@ fn task_section() -> View {
         tr!("showcase.section.task"),
         vec![
             View::progress(tr!("showcase.progress.task"), done, Some(TASK_TOTAL)),
-            View::text(tr!("showcase.task.stage", "stage" => stage, "done" => done, "total" => TASK_TOTAL)),
-            View::button(tr!("showcase.button.task_start"), ShowcaseAction::StartTask.as_str()),
-            View::button(tr!("showcase.button.task_step"), ShowcaseAction::StepTask.as_str()),
+            View::text(
+                tr!("showcase.task.stage", "stage" => stage, "done" => done, "total" => TASK_TOTAL),
+            ),
+            View::button(
+                tr!("showcase.button.task_start"),
+                ShowcaseAction::StartTask.as_str(),
+            ),
+            View::button(
+                tr!("showcase.button.task_step"),
+                ShowcaseAction::StepTask.as_str(),
+            ),
             View::button(
                 tr!("showcase.button.task_finish"),
                 ShowcaseAction::FinishTask.as_str(),
@@ -193,14 +222,26 @@ fn navigation_section() -> View {
     section(
         tr!("showcase.section.navigation"),
         vec![
-            View::button(tr!("showcase.button.window"), ShowcaseAction::OpenWindow.as_str()),
-            View::button(tr!("showcase.button.modal"), ShowcaseAction::OpenModal.as_str()),
-            View::button(tr!("showcase.button.docs"), ShowcaseAction::OpenDocs.as_str()),
+            View::button(
+                tr!("showcase.button.window"),
+                ShowcaseAction::OpenWindow.as_str(),
+            ),
+            View::button(
+                tr!("showcase.button.modal"),
+                ShowcaseAction::OpenModal.as_str(),
+            ),
+            View::button(
+                tr!("showcase.button.docs"),
+                ShowcaseAction::OpenDocs.as_str(),
+            ),
             View::button(
                 tr!("showcase.button.settings"),
                 ShowcaseAction::GoSettings.as_str(),
             ),
-            View::button(tr!("showcase.button.ping"), ShowcaseAction::EmitPing.as_str()),
+            View::button(
+                tr!("showcase.button.ping"),
+                ShowcaseAction::EmitPing.as_str(),
+            ),
             View::button(
                 tr!("showcase.button.invalidate"),
                 ShowcaseAction::InvalidateAll.as_str(),
@@ -293,4 +334,3 @@ fn sidebar() -> ViewTree {
         }
     }
 }
-

@@ -55,11 +55,14 @@ const ACTIONS: &[(&str, ActionHandler)] = &[
     (ShowcaseAction::OpenDocs.as_str(), open_docs),
     (ShowcaseAction::GoSettings.as_str(), go_settings),
     (ShowcaseAction::EmitPing.as_str(), emit_ping),
-    (ShowcaseAction::InvalidateAll.as_str(), invalidate_everything),
+    (
+        ShowcaseAction::InvalidateAll.as_str(),
+        invalidate_everything,
+    ),
 ];
 
 /// 处理宿主事件：全局事件、路由变化与动作。
-pub fn handle(event: HostEvent) -> PluginResult<()> {
+pub fn handle(event: PluginEvent) -> PluginResult<()> {
     if let Some((name, payload)) = event.global_event() {
         return handle_global(name, payload);
     }
@@ -70,8 +73,8 @@ pub fn handle(event: HostEvent) -> PluginResult<()> {
     }
     let action_id = event.action_id().unwrap_or_default().to_string();
     let action_value = match &event.kind {
-        HostEventKind::Action(action) => action.value.clone(),
-        HostEventKind::RouteChanged(_) | HostEventKind::Global(_) => None,
+        PluginEventKind::Action(action) => action.value.clone(),
+        PluginEventKind::RouteChanged(_) | PluginEventKind::Global(_) => None,
     };
 
     for &(action, handler) in ACTIONS {
