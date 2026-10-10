@@ -135,7 +135,7 @@ where
                 texture_view: layer.source_texture_view,
                 render_pass,
                 steps: RenderStepList::from_render_steps(&group.source_steps),
-                color_load_op: if group_index == 0 {
+                color_load_op: if group_index == 0 && !layer.preserve_retained_source {
                     LoadOp::Clear(clear_color())
                 } else {
                     LoadOp::Load
@@ -455,7 +455,13 @@ impl NovaRenderer {
                     * PARTIAL_PRESENT_MAX_DAMAGE_AREA_RECIPROCAL
                     <= drawable_pixels as u64
         });
-        if present_damage.is_some() {
+        // Native dirty-rect presentation and retained scene-color damage are
+        // independent. Vulkan cannot trust rotating backbuffer contents, but
+        // it can still scissor the retained offscreen scene before a full present.
+        let retained_partial = self.frame_upload.retained_root_blur.is_some()
+            && !packet.dirty_region.is_full()
+            && !packet.dirty_region.is_empty();
+        if present_damage.is_some() || retained_partial {
             crate::diagnostics::performance_metrics::record_partial_redraw();
         } else if packet.partial_present_mode == PartialPresentMode::Partial {
             crate::diagnostics::performance_metrics::record_full_redraw_fallback();
@@ -1396,7 +1402,15 @@ impl NovaRenderer {
             self.invalidate_backdrop_blur_cache();
         }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
-        crate::diagnostics::performance_metrics::record_direct_present();
+        if self.frame_upload.retained_root_blur.is_some() {
+            let pixels = self.drawable_pixels();
+            crate::diagnostics::performance_metrics::record_retained_present(
+                pixels,
+                pixels.saturating_mul(self.surface_format.bytes_per_pixel() as usize),
+            );
+        } else {
+            crate::diagnostics::performance_metrics::record_direct_present();
+        }
         crate::diagnostics::performance_metrics::record_backdrop_blur_frame(
             blur_source_pixels,
             blur_level_pixels,

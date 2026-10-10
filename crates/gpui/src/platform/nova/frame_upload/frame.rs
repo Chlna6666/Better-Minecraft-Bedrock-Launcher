@@ -102,6 +102,10 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
+    /// Synthetic zero-filter root compositor, stored in the existing retained blur targets.
+    pub(in crate::platform::nova) retained_root_blur: Option<u32>,
+    /// One immutable transparent quad used as a Replace-blend rect clear.
+    pub(in crate::platform::nova) retained_root_clear_quad: Option<u32>,
     pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
     pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
     pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:

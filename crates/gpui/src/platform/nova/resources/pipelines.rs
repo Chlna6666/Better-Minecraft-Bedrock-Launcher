@@ -126,6 +126,25 @@ where
             surface_config.size,
         )
         .context("creating nova backdrop blur upsample render pipeline")?;
+    let retained_clear = device
+        .create_render_pipeline(
+            &RenderPipelineDescriptor {
+                label: Some(format!("{label} retained color rect clear")),
+                vertex_shader: shaders.solid_vertex,
+                vertex_entry_point: "vs_solid_quad".to_string(),
+                fragment_shader: shaders.solid_fragment,
+                fragment_entry_point: "fs_solid_quad".to_string(),
+                vertex_buffers: Vec::new(),
+                render_pass,
+                pipeline_layout: Some(layouts.quad_pipeline_layout),
+                color_format: surface_config.format,
+                blend_mode: BlendMode::Replace,
+                primitive_topology: PrimitiveTopology::TriangleStrip,
+                depth_state: None,
+            },
+            surface_config.size,
+        )
+        .context("creating retained color rect clear pipeline")?;
     let path_rasterization = device
         .create_render_pipeline(
             &RenderPipelineDescriptor {
@@ -168,6 +187,7 @@ where
         alpha,
         premultiplied,
         path_rasterization,
+        retained_clear,
         paths,
         backdrop_blur_downsample,
         backdrop_blur_upsample,

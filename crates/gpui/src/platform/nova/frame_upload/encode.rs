@@ -35,6 +35,65 @@ impl FrameUpload {
         )
     }
 
+    /// Wraps an already-encoded frame in a zero-radius, full-viewport retained layer.
+    /// The normal blur texture and composite shaders also implement scene-color retention;
+    /// no backend-specific swapchain contents or image-copy extension is required.
+    pub(in crate::platform::nova) fn append_retained_root(
+        &mut self,
+        drawable_size: DrawableSize,
+        summary: &mut FrameUploadSummary,
+    ) -> bool {
+        if self.retained_root_blur.is_some()
+            || self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES >= MAX_BACKDROP_BLURS
+            || self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS
+            || drawable_size.width == 0
+            || drawable_size.height == 0
+        {
+            return false;
+        }
+        let root_index = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
+        let clear_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+        let bounds = crate::Bounds::new(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(
+                crate::ScaledPixels(drawable_size.width as f32),
+                crate::ScaledPixels(drawable_size.height as f32),
+            ),
+        );
+        // Clear coverage is expanded to avoid SDF antialiasing leaving stale
+        // pixels at the outermost viewport edge on partial redraws.
+        let clear_bounds = bounds.dilate(crate::ScaledPixels(2.0));
+        let clear_quad = crate::Quad {
+            bounds: clear_bounds,
+            content_mask: crate::ContentMask::new(clear_bounds),
+            background: crate::Hsla::transparent_black().into(),
+            ..Default::default()
+        };
+        self.quads.write(|bytes| write_quad(bytes, &clear_quad));
+        let root_blur = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        write_paint_blur(&mut self.backdrop_blurs, &root_blur, drawable_size);
+        self.batches.insert(0, UploadedBatch::BeginBlur { index: root_index });
+        self.batches.push(UploadedBatch::EndBlur { index: root_index });
+        self.batches.push(UploadedBatch::CompositeBlur { index: root_index });
+        self.retained_root_blur = Some(root_index);
+        self.retained_root_clear_quad = Some(clear_index);
+        summary.quad_count = summary.quad_count.saturating_add(1);
+        summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
+        // The original encode already built the filter configs. Add this
+        // new compositor without re-encoding scene primitives.
+        self.refresh_backdrop_blur_configs();
+        self.rebuild_backdrop_blur_passes();
+        true
+    }
+
     fn encode_scene(
         &mut self,
         scene: &crate::Scene,
@@ -59,6 +118,8 @@ impl FrameUpload {
             self.backdrop_blur_passes.clear();
             self.backdrop_blurs.clear();
             self.backdrop_blur_configs.clear();
+            self.retained_root_blur = None;
+            self.retained_root_clear_quad = None;
             #[cfg(test)]
             self.animation_bindings.clear();
             self.animation_values.clear();
@@ -275,4 +336,41 @@ fn write_scene_animation_value(
     );
     summary.animation_value_count = summary.animation_value_count.saturating_add(1);
     upload.sampled_animation_values.push(*value);
+}
+
+#[cfg(test)]
+mod retained_root_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_root_reuses_zero_filter_target_and_records_transparent_clear() {
+        let mut upload = FrameUpload::default();
+        let size = DrawableSize { width: 640, height: 480 };
+        let mut summary = FrameUploadSummary::default();
+        assert!(upload.append_retained_root(size, &mut summary));
+        assert_eq!(upload.retained_root_blur, Some(0));
+        assert_eq!(upload.retained_root_clear_quad, Some(0));
+        assert_eq!(upload.quads.len(), PACKED_QUAD_BYTES);
+        assert_eq!(upload.backdrop_blurs.len(), PACKED_BACKDROP_BLUR_BYTES);
+        assert_eq!(summary.quad_count, 1);
+        assert_eq!(summary.backdrop_blur_count, 1);
+        assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { index: 0 }));
+        assert!(matches!(upload.batches[1], UploadedBatch::EndBlur { index: 0 }));
+        assert!(matches!(upload.batches[2], UploadedBatch::CompositeBlur { index: 0 }));
+        upload.refresh_blur_content_ranges();
+        assert_eq!(upload.blur_content_ranges().len(), 1);
+        assert_eq!(upload.blur_content_ranges()[0].index, 0);
+        assert_eq!(upload.backdrop_blur_configs().len(), 1);
+        assert_eq!(upload.backdrop_blur_configs()[0].radius(), 0.0);
+    }
+
+    #[test]
+    fn retained_root_never_overruns_filter_or_quad_buffers() {
+        let mut upload = FrameUpload::default();
+        upload.backdrop_blurs.resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
+        let mut summary = FrameUploadSummary::default();
+        assert!(!upload.append_retained_root(DrawableSize { width: 8, height: 8 }, &mut summary));
+        assert_eq!(summary.backdrop_blur_count, 0);
+        assert!(upload.retained_root_blur.is_none());
+    }
 }

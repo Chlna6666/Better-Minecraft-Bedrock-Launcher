@@ -21,6 +21,8 @@ pub(super) struct PreparedElementBlurLayer {
     /// compositor layers render source pixels directly into the final retained target and submit
     /// no filter passes at all.
     pub(super) preserve_filtered_pixels: bool,
+    /// First source pass loads previously completed root color instead of clearing it.
+    pub(super) preserve_retained_source: bool,
 }
 
 impl NovaRenderer {
@@ -378,11 +380,12 @@ impl NovaRenderer {
             let direct_composite_target =
                 targets.direct_composite_target(config, frame_resource_index);
             let direct_composite = direct_composite_target.is_some();
-            // A zero-filter layer is itself the retained pixel cache. Whenever its child pixels are
-            // genuinely dirty, rebuild the complete tight layer in-place. This deliberately avoids
-            // partial source preservation complexity while keeping the animation hot path at zero
-            // offscreen work.
-            let outer_source_scissor = if direct_composite {
+            // Ordinary element filters keep their established clear/full-layer path.
+            // The synthetic ROOT compositor is special: keep its previous color and
+            // reconstruct only the dirty source rectangle from the full painter list.
+            let is_retained_root = self.frame_upload.retained_root_blur == Some(range.index);
+            let preserve_root = is_retained_root && !force_full && !damage.is_full();
+            let outer_source_scissor = if direct_composite && !is_retained_root {
                 blur_full_source_scissor(config, self.current_size)
             } else {
                 blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
@@ -513,12 +516,32 @@ impl NovaRenderer {
                 filter_passes: Vec::new(),
                 preserve_filtered_pixels: !force_full,
             });
+            if preserve_root {
+                if let Some(clear_index) = self.frame_upload.retained_root_clear_quad {
+                    // Replace (not alpha blend) with transparent black before
+                    // replaying ALL intersecting primitives in painter order.
+                    // This prevents transparent shadows from accumulating.
+                    source_groups[0].source_steps.insert(
+                        0,
+                        RenderStepDescriptor::Draw(DrawStepDescriptor {
+                            pipeline: self.pipelines.retained_clear,
+                            resource_sets: resource_set_list([self.quad_resource_set]),
+                            vertex_count: 4,
+                            first_vertex: 0,
+                            instance_count: 1,
+                            first_instance: clear_index,
+                            scissor: Some(source_scissor),
+                        }),
+                    );
+                }
+            }
             layers.push(PreparedElementBlurLayer {
                 index: range.index,
                 source_texture_view,
                 source_groups,
                 filter_passes,
                 preserve_filtered_pixels: !force_full,
+                preserve_retained_source: preserve_root,
             });
         }
         layers

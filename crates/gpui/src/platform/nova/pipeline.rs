@@ -9,6 +9,7 @@ pub(super) struct Pipelines {
     pub(super) alpha: BlendPipelines,
     pub(super) premultiplied: BlendPipelines,
     pub(super) path_rasterization: RenderPipelineId,
+    pub(super) retained_clear: RenderPipelineId,
     pub(super) paths: RenderPipelineId,
     pub(super) backdrop_blur_downsample: RenderPipelineId,
     pub(super) backdrop_blur_upsample: RenderPipelineId,

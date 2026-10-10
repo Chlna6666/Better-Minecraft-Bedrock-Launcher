@@ -624,6 +624,19 @@ impl NovaRenderer {
             // CompositeBlur record receives the promoted visual animation binding.
             self.frame_upload
                 .register_element_blur_animations(scene, &mut summary);
+            // Only CPU/GPU-native ordinary primitives can be replayed inside
+            // a retained root target. Native surfaces/extensions use the old
+            // full-redraw path until they expose their own damage semantics.
+            if !scene.requires_full_redraw_fallback()
+                && self.frame_upload.renderer_extensions.is_empty()
+                && summary.unsupported_batches.total() == 0
+                // An emergency escape hatch for backend-specific driver regressions.
+                // The retained path is otherwise enabled across all Nova backends.
+                && std::env::var_os("BMCBL_DISABLE_RETAINED_COLOR").is_none()
+            {
+                self.frame_upload
+                    .append_retained_root(self.current_size, &mut summary);
+            }
             // BeginBlur/EndBlur topology is a pure function of the static flattened batch stream.
             // Parse it once here and reuse the retained slice throughout target planning, present
             // damage and draw-step construction instead of rebuilding temporary Vecs per consumer.
