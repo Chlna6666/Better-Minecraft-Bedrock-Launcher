@@ -55,6 +55,9 @@ mod buffer_upload;
 mod relocation;
 
 const FRAMES_IN_FLIGHT: usize = 2;
+// A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
+// Bound the wait so a hidden/occluded window cannot block the GPU owner indefinitely.
+const PRESENT_BACKPRESSURE_TIMEOUT_NS: u64 = 8_000_000;
 const UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
 const MAX_PIPELINE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -1901,6 +1904,18 @@ impl VulkanDevice {
         Ok(())
     }
 
+    // Offscreen blur/path passes may already have been submitted before WSI acquisition.
+    // A skipped present has no swapchain fence in GPUI's in-flight slot table, so let
+    // those submissions finish before the caller may reuse or overwrite their buffers.
+    // This slow path is only used after bounded acquisition timeouts.
+    fn drain_unpresented_graphics_work(&mut self) -> Result<()> {
+        // SAFETY: the queue belongs to this live device; all earlier offscreen submissions
+        // are ordered on this graphics queue and must finish before frame slot reuse.
+        unsafe { self.device.queue_wait_idle(self.graphics_queue) }.map_err(VulkanError::from)?;
+        self.poll_cleanup();
+        Ok(())
+    }
+
     fn acquire_present_frame(
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
@@ -1918,12 +1933,17 @@ impl VulkanDevice {
         // SAFETY: Fence belongs to this device and is not destroyed until swapchain destroy.
         let fence_wait_started = Instant::now();
         if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
-            // A zero-timeout probe used to discard a complete UI frame while the previous
-            // GPU submission was still running. Bound the wait to avoid both busy-loop
-            // redraws and unbounded WSI stalls when a surface becomes occluded.
-            match unsafe { self.device.wait_for_fences(&[fence], true, 1_000_000) } {
+            // Do not discard a complete compositor frame on a transient frame-slot
+            // fence miss. A bounded wait absorbs a normal display refresh interval.
+            match unsafe {
+                self.device
+                    .wait_for_fences(&[fence], true, PRESENT_BACKPRESSURE_TIMEOUT_NS)
+            } {
                 Ok(()) => {}
-                Err(vk::Result::TIMEOUT) => return Ok(None),
+                Err(vk::Result::TIMEOUT) => {
+                    self.drain_unpresented_graphics_work()?;
+                    return Ok(None);
+                }
                 Err(error) => return Err(VulkanError::from(error).into()),
             }
         }
@@ -1935,7 +1955,7 @@ impl VulkanDevice {
         let acquire_result = unsafe {
             self.swapchain_loader.acquire_next_image(
                 swapchain,
-                1_000_000, // 1 ms: absorb transient compositor backpressure without an indefinite wait.
+                PRESENT_BACKPRESSURE_TIMEOUT_NS,
                 image_available,
                 vk::Fence::null(),
             )
@@ -1945,7 +1965,11 @@ impl VulkanDevice {
             Ok((image_index, false)) => image_index,
             // No image was acquired and the semaphore is unchanged. Keep this frame slot for
             // the next native presentation request; only submission resets its fence.
-            Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => return Ok(None),
+            Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => {
+                // No present fence will guard the already-queued offscreen draws.
+                self.drain_unpresented_graphics_work()?;
+                return Ok(None);
+            },
             Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 return Err(Error::SurfaceOutdated);
