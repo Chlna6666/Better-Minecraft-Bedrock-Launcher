@@ -9,21 +9,22 @@ mod retained;
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
 /// before packing instead of being handed to the GPU.
-fn static_quad_run_visual_bounds(
-    quads: &[crate::Quad],
+fn static_raster_run_visual_bounds(
+    primitives: impl IntoIterator<Item = (
+        crate::Bounds<crate::ScaledPixels>,
+        crate::Bounds<crate::ScaledPixels>,
+        Option<crate::SceneAnimationId>,
+    )>,
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
     let mut union: Option<crate::Bounds<crate::ScaledPixels>> = None;
-    for quad in quads {
-        // Translation/scale can happen later on the GPU without another
-        // static encode; static AABB culling would incorrectly drop it.
-        if quad.animation_id.is_some() {
+    for (bounds, mask, animation_id) in primitives {
+        // A GPU indexed transition may move the primitive without a new
+        // static upload. Its original AABB cannot be used for command culling.
+        if animation_id.is_some() {
             return None;
         }
-        // Include the SDF/antialias guard band around static geometry.
-        let visual = quad
-            .bounds
-            .intersect(&quad.content_mask.bounds)
-            .dilate(crate::ScaledPixels(2.0));
+        // The guard band accounts for SDF and sprite sampling at the edges.
+        let visual = bounds.intersect(&mask).dilate(crate::ScaledPixels(2.0));
         let values = [
             visual.origin.x.0, visual.origin.y.0,
             visual.size.width.0, visual.size.height.0,
@@ -37,6 +38,18 @@ fn static_quad_run_visual_bounds(
         });
     }
     union
+}
+
+fn static_quad_run_visual_bounds(
+    quads: &[crate::Quad],
+) -> Option<crate::Bounds<crate::ScaledPixels>> {
+    static_raster_run_visual_bounds(
+        quads.iter().map(|quad| (
+            quad.bounds,
+            quad.content_mask.bounds,
+            quad.animation_id,
+        )),
+    )
 }
 
 fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
@@ -219,10 +232,49 @@ impl FrameUpload {
 
         for batch in scene.prepared_batches() {
             let first_batch = self.batches.len();
-            let static_quad_bounds = if let PreparedSceneBatch::Quads(quad_run) = batch {
-                static_quad_run_visual_bounds(&scene.quads[quad_run.range.clone()])
-            } else {
-                None
+            let static_quad_bounds = match batch {
+                PreparedSceneBatch::Quads(run) => {
+                    static_quad_run_visual_bounds(&scene.quads[run.range.clone()])
+                }
+                PreparedSceneBatch::MonochromeSprites { range, .. } => {
+                    let sprites = &scene.monochrome_sprites[range.clone()];
+                    // A transformed glyph may rotate outside its rectangle.
+                    // Keep such batches uncullable until transformed corners
+                    // are precomputed conservatively during scene encode.
+                    if sprites.iter().all(|sprite| {
+                        sprite.transformation == crate::TransformationMatrix::unit()
+                    }) {
+                        static_raster_run_visual_bounds(sprites.iter().map(|sprite| (
+                            sprite.bounds,
+                            sprite.content_mask.bounds,
+                            sprite.animation_id,
+                        )))
+                    } else {
+                        None
+                    }
+                }
+                PreparedSceneBatch::PolychromeSprites { range, .. } => {
+                    static_raster_run_visual_bounds(
+                        scene.polychrome_sprites[range.clone()].iter().map(|sprite| (
+                            sprite.bounds,
+                            sprite.content_mask.bounds,
+                            sprite.animation_id,
+                        )),
+                    )
+                }
+                PreparedSceneBatch::Underlines(range) => {
+                    static_raster_run_visual_bounds(
+                        scene.underlines[range.clone()].iter().map(|line| (
+                            line.bounds,
+                            line.content_mask.bounds,
+                            line.animation_id,
+                        )),
+                    )
+                }
+                // Shadows have kernel support extending beyond their logical
+                // bounds. Paths may have geometry/clip expansion. Until both
+                // provide conservative visibility regions, do not cull them.
+                _ => None,
             };
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
@@ -412,6 +464,29 @@ mod retained_root_tests {
         assert!(bounds.bottom() >= area.bottom());
         quad.animation_id = Some(crate::SceneAnimationId(42));
         assert!(static_quad_run_visual_bounds(&[quad]).is_none());
+    }
+
+    #[test]
+    fn static_sprite_batches_conservatively_union_visible_content() {
+        let bounds_a = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+            crate::size(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
+        );
+        let bounds_b = crate::bounds(
+            crate::point(crate::ScaledPixels(40.0), crate::ScaledPixels(40.0)),
+            crate::size(crate::ScaledPixels(6.0), crate::ScaledPixels(7.0)),
+        );
+        let bounds = static_raster_run_visual_bounds([
+            (bounds_a, bounds_a, None),
+            (bounds_b, bounds_b, None),
+        ]).expect("static sprite coverage");
+        assert!(bounds.origin.x <= bounds_a.origin.x);
+        assert!(bounds.right() >= bounds_b.right());
+        assert!(bounds.bottom() >= bounds_b.bottom());
+        assert!(static_raster_run_visual_bounds([
+            (bounds_a, bounds_a, Some(crate::SceneAnimationId(1))),
+            (bounds_b, bounds_b, None),
+        ]).is_none());
     }
 
     #[test]
