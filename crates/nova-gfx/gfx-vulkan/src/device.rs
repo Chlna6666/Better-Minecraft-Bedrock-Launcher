@@ -1937,6 +1937,11 @@ impl VulkanDevice {
     ) -> Result<Option<VulkanPresentFrame>> {
         let (swapchain, frame_index, image_available, fence) = {
             let swapchain = self.swapchains.get(swapchain_id)?;
+            // A temporarily zero-sized surface has no drawable Vulkan images.
+            // Let the window resize path rebuild the swapchain before acquisition.
+            if swapchain.extent.width == 0 || swapchain.extent.height == 0 {
+                return Ok(None);
+            }
             let frame_index = swapchain.frame_index;
             (
                 swapchain.swapchain,
