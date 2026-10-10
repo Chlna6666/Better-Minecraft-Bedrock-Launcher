@@ -554,6 +554,22 @@ impl Scene {
             if !current.visually_eq(old) {
                 return false;
             }
+            // A nested filtered child can have a dynamic GPU-sampled source
+            // even when its own composite primitive and the enclosing scene
+            // retain identical static bytes. Traverse it before deciding to
+            // reuse the parent filter result.
+            if let (
+                PaintOperation::Primitive(Primitive::Blur(current_blur)),
+                PaintOperation::Primitive(Primitive::Blur(previous_blur)),
+            ) = (current, old)
+                && !current_blur.content.retained_filter_source_matches(
+                    &previous_blur.content,
+                    presentation_values,
+                    previous_presentation_values,
+                )
+            {
+                return false;
+            }
             let animation_id = match current {
                 PaintOperation::Primitive(primitive) => primitive.animation_id(),
                 PaintOperation::StartBlur(blur) => blur.animation_id,

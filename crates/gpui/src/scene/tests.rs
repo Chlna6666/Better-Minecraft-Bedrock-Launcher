@@ -500,6 +500,52 @@ fn retained_element_filter_source_tracks_sampled_animations() {
 }
 
 #[test]
+fn nested_filter_dynamic_child_invalidates_parent_source() {
+    let rect = bounds(
+        point(ScaledPixels(10.0), ScaledPixels(20.0)),
+        size(ScaledPixels(80.0), ScaledPixels(40.0)),
+    );
+    let animation_id = SceneAnimationId(1 << 31);
+    let build = || {
+        let mut child = Scene::default();
+        child.insert_animated_primitive(
+            Quad {
+                bounds: rect,
+                content_mask: ContentMask::new(rect),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        let mut outer = Scene::default();
+        outer.insert_primitive(PaintBlur {
+            order: 0,
+            animation_id: None,
+            bounds: rect,
+            content_mask: ContentMask::new(rect),
+            radius: ScaledPixels(2.0),
+            opacity: 1.0,
+            content: Arc::new(child),
+        });
+        outer
+    };
+    let previous = build();
+    let current = build();
+    let sample = |progress| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    assert!(current.retained_filter_source_matches(
+        &previous, &[sample(0.5)], &[sample(0.5)]
+    ));
+    assert!(!current.retained_filter_source_matches(
+        &previous, &[sample(0.75)], &[sample(0.5)]
+    ));
+}
+
+#[test]
 fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     let animation_id = SceneAnimationId(1 << 31);
     let mut scene = Scene::default();
