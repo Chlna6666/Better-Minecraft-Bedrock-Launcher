@@ -205,8 +205,10 @@ impl OpenGlDevice {
             ));
         }
         self.resize_swapchain(id, config.size.width(), config.size.height())?;
+        // Bind the native window while only an immutable swapchain borrow is held.
+        // Acquiring get_mut first would overlap with make_window_current(&self).
+        self.make_window_current(&self.swapchains.get(id)?.window)?;
         let chain = self.swapchains.get_mut(id)?;
-        self.make_window_current(&chain.window)?;
         chain
             .window
             .set_swap_interval(
