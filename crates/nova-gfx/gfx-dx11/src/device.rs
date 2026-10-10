@@ -6,6 +6,7 @@ use crate::{
 };
 use gfx_core::*;
 use std::{
+    cell::Cell,
     collections::VecDeque,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
@@ -40,6 +41,10 @@ pub struct Dx11Device {
     pub(crate) surfaces: Registry<windows::Win32::Foundation::HWND>,
     pub(crate) swapchains: Registry<Swapchain>,
     pub(crate) draw_constants: ID3D11Buffer,
+    // Exact SRV register masks for the current immediate context. Explicitly unbind
+    // only registers that were populated instead of clearing all 128 on each blur pass.
+    pub(crate) vs_srv_slots: Cell<u128>,
+    pub(crate) ps_srv_slots: Cell<u128>,
     pending: VecDeque<(u32, ID3D11Query)>,
     queries: Vec<ID3D11Query>,
     submission_generation: u32,
@@ -106,6 +111,8 @@ impl Dx11Device {
             surfaces: Registry::default(),
             swapchains: Registry::default(),
             draw_constants: required(constants)?,
+            vs_srv_slots: Cell::new(0),
+            ps_srv_slots: Cell::new(0),
             pending: VecDeque::new(),
             queries: Vec::new(),
             submission_generation: NEXT_DEVICE.fetch_add(1, Ordering::Relaxed),

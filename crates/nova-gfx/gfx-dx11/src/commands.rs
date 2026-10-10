@@ -114,13 +114,28 @@ impl Dx11Device {
         if depth_view.is_some_and(|view| view.size != size) {
             return Err(Error::InvalidInput("depth extent mismatch".into()));
         }
-        // SAFETY: each native target is owned by this device and lives through the pass.
-        // Unbind SRVs before target binding to prevent read/write hazards between filter passes.
+        // SAFETY: the immediate context is owned by this device. Clear all SRV slots
+        // actually populated by earlier draws before rebinding an RTV, but avoid two
+        // 128-entry native calls for every offscreen/blur pass.
         unsafe {
-            self.context
-                .VSSetShaderResources(0, Some(&[const { None }; 128]));
-            self.context
-                .PSSetShaderResources(0, Some(&[const { None }; 128]));
+            let none: [Option<ID3D11ShaderResourceView>; 128] = [const { None }; 128];
+            for (mask, vertex) in [
+                (&self.vs_srv_slots, true),
+                (&self.ps_srv_slots, false),
+            ] {
+                let occupied = mask.replace(0);
+                if occupied == 0 {
+                    continue;
+                }
+                let first = occupied.trailing_zeros();
+                let end = u128::BITS - occupied.leading_zeros();
+                let empty_span = &none[..(end - first) as usize];
+                if vertex {
+                    self.context.VSSetShaderResources(first, Some(empty_span));
+                } else {
+                    self.context.PSSetShaderResources(first, Some(empty_span));
+                }
+            }
             self.context
                 .OMSetRenderTargets(Some(&[Some(rtv.clone())]), dsv);
             self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
@@ -313,10 +328,12 @@ impl Dx11Device {
                     if stages.contains(ShaderStages::VERTEX) {
                         self.context
                             .VSSetShaderResources(slot, Some(&[Some(view.clone())]));
+                        self.vs_srv_slots.set(self.vs_srv_slots.get() | (1_u128 << slot));
                     }
                     if stages.contains(ShaderStages::FRAGMENT) {
                         self.context
                             .PSSetShaderResources(slot, Some(&[Some(view.clone())]));
+                        self.ps_srv_slots.set(self.ps_srv_slots.get() | (1_u128 << slot));
                     }
                 }
                 Bound::Sampler(sampler) => {
