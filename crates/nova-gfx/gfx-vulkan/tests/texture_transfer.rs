@@ -1,12 +1,12 @@
 use gfx_core::{
-    DeviceDescriptor, Extent2d, Format, DiagnosticsDevice, Error, ResourceDevice,
-    TextureTransferDevice, MemoryLocation, Origin2d, TextureDataLayout, TextureDescriptor,
-    TextureDimension, TextureUsage, TextureWrite, TextureWriteDescriptor,
+    DeviceDescriptor, DiagnosticsDevice, Error, Extent2d, Format, MemoryLocation, Origin2d,
+    ResourceDevice, TextureDataLayout, TextureDescriptor, TextureDimension, TextureTransferDevice,
+    TextureUsage, TextureWrite, TextureWriteDescriptor,
 };
 use gfx_vulkan::VulkanDevice;
 
 #[test]
-fn aggressive_trim_releases_empty_blocks_and_preserves_live_texture_pixels() {
+fn moderate_and_aggressive_trim_preserve_live_pixels_and_release_empty_blocks() {
     let mut device = match VulkanDevice::new(&DeviceDescriptor::default()) {
         Ok(device) => device,
         Err(Error::Unavailable(reason)) => {
@@ -24,8 +24,13 @@ fn aggressive_trim_releases_empty_blocks_and_preserves_live_texture_pixels() {
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
     };
-    for _ in 0..2 {
-        let texture = device.create_texture(&descriptor).expect("texture after trim");
+    for empty_trim in [
+        gfx_core::MemoryTrimLevel::Moderate,
+        gfx_core::MemoryTrimLevel::Aggressive,
+    ] {
+        let texture = device
+            .create_texture(&descriptor)
+            .expect("texture after trim");
         let pixels = [
             11, 22, 33, 0, 44, 55, 66, 127, 77, 88, 99, 255, 12, 34, 56, 78,
         ];
@@ -42,10 +47,23 @@ fn aggressive_trim_releases_empty_blocks_and_preserves_live_texture_pixels() {
             )
             .expect("upload");
         device
+            .trim_memory(gfx_core::MemoryTrimLevel::Moderate)
+            .expect("moderate trim with live texture");
+        assert_eq!(
+            device
+                .read_texture(texture)
+                .expect("pixels after moderate trim")
+                .bytes,
+            pixels
+        );
+        device
             .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
             .expect("trim with live texture");
         assert_eq!(
-            device.read_texture(texture).expect("live texture after trim").bytes,
+            device
+                .read_texture(texture)
+                .expect("live texture after trim")
+                .bytes,
             pixels
         );
         device.destroy_texture(texture).expect("destroy texture");
@@ -55,9 +73,7 @@ fn aggressive_trim_releases_empty_blocks_and_preserves_live_texture_pixels() {
         let cached = device.resource_stats();
         assert_eq!(cached.allocated_bytes, 0);
         assert!(cached.reserved_bytes > 0);
-        device
-            .trim_memory(gfx_core::MemoryTrimLevel::Aggressive)
-            .expect("trim empty blocks");
+        device.trim_memory(empty_trim).expect("trim empty blocks");
         let trimmed = device.resource_stats();
         assert_eq!(trimmed.allocated_bytes, 0);
         assert_eq!(trimmed.reserved_bytes, 0);
@@ -145,7 +161,11 @@ fn managed_texture_memory_reports_live_and_reserved_bytes() {
         Err(error) => panic!("Vulkan initialization failed: {error}"),
     };
     let baseline = device.resource_stats();
-    let size = Extent2d::new(64, 64).expect("fixture extent should be valid");
+    assert_eq!(
+        baseline.reserved_bytes, 0,
+        "allocator construction must not allocate blocks"
+    );
+    let size = Extent2d::new(256, 256).expect("fixture extent should be valid");
     let mut textures = Vec::with_capacity(64);
     for index in 0..64 {
         textures.push(
@@ -161,11 +181,34 @@ fn managed_texture_memory_reports_live_and_reserved_bytes() {
                 })
                 .expect("managed texture creation should succeed"),
         );
+        if index == 0 {
+            assert!(
+                device.resource_stats().reserved_bytes <= 8 * 1024 * 1024,
+                "one small texture must not allocate the old 256 MiB pool"
+            );
+        }
     }
 
     let populated = device.resource_stats();
+    assert_eq!(
+        populated.memory_accounting,
+        gfx_core::MemoryAccounting::Allocator
+    );
+    assert_eq!(populated.textures, baseline.textures + 64);
+    if let Some(budget) = device.memory_budget().expect("supported budget query") {
+        assert!(budget.local.is_some() || budget.non_local.is_some());
+        eprintln!("NOVA_GFX_MEMORY_BUDGET={budget:?}");
+    }
     assert!(populated.allocated_bytes > baseline.allocated_bytes);
     assert!(populated.reserved_bytes >= populated.allocated_bytes);
+    assert!(
+        populated.reserved_bytes < 64 * 1024 * 1024,
+        "16 MiB of textures should grow the pool in demand-sized blocks"
+    );
+    eprintln!(
+        "VULKAN_DEMAND_SIZED_MEMORY allocated={} reserved={}",
+        populated.allocated_bytes, populated.reserved_bytes
+    );
     assert!(populated.reserved_memory_utilization().is_some());
 
     for texture in textures {

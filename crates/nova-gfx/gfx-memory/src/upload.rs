@@ -235,6 +235,18 @@ impl UploadRingAllocator {
         }
     }
 
+    /// Discards allocations that have not been submitted or assigned a retire fence.
+    ///
+    /// The owner must ensure no GPU command references these unretired ranges. Previously
+    /// retired pages remain untouched, including pages whose fence has not yet completed.
+    pub fn discard_unsubmitted(&mut self) {
+        for page in &mut self.pages {
+            if page.retire_fence.is_none() {
+                page.offset = 0;
+            }
+        }
+    }
+
     /// Releases pages whose retire fence has completed back to the allocator.
     pub fn complete_fence(&mut self, completed_fence: u64) {
         for page in &mut self.pages {

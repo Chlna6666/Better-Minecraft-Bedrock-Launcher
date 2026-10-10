@@ -137,6 +137,8 @@ fn viewport_scissor_fragment_coordinates_and_texture_rows_share_top_origin() {
 #[test]
 #[ignore = "requires Windows native OpenGL 4.5 driver"]
 fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
+    use gfx_core::{BufferUploadStats, BufferWrite, BufferWriteDescriptor, ResourceDevice};
+
     let mut device = open_device();
     println!("OpenGL pixel gate adapter: {}", device.adapter_name());
     let (target, view) = texture(
@@ -297,12 +299,35 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         &result.bytes[..16]
     );
     // A partial uniform update must retain the previously uploaded depth field.
-    device
-        .write_buffer(constants, 272, &floats(&[0.1]))
-        .expect("partial depth update");
-    device
-        .write_buffer(constants, 256, &floats(&[0.0, 0.0, 1.0, 0.5]))
-        .expect("partial color update");
+    let depth_bytes = floats(&[0.1]);
+    let color_bytes = floats(&[0.0, 0.0, 1.0, 0.5]);
+    let stats = ResourceDevice::write_buffer_batch(
+        &mut device,
+        [
+            BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: constants,
+                    offset: 272,
+                },
+                data: &depth_bytes,
+            },
+            BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: constants,
+                    offset: 256,
+                },
+                data: &color_bytes,
+            },
+        ],
+    )
+    .expect("partial uniform batch");
+    assert_eq!(
+        stats,
+        BufferUploadStats {
+            calls: 2,
+            bytes: 20
+        }
+    );
     device
         .render_steps_to_texture_compat(
             view,

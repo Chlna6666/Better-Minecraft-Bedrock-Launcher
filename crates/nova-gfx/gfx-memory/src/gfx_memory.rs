@@ -40,4 +40,4 @@ pub use dx12::Dx12MemoryAllocatorDesc;
 #[cfg(feature = "metal")]
 pub use metal::MetalMemoryAllocatorDesc;
 #[cfg(feature = "vulkan")]
-pub use vulkan::VulkanMemoryAllocatorDesc;
+pub use vulkan::{VulkanMemoryAllocatorDesc, VulkanRelocationDescriptor};

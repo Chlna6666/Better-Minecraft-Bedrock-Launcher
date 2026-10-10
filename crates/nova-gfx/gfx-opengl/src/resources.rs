@@ -17,7 +17,7 @@ impl Texture {
             .map(|mip| {
                 u64::from((self.desc.size.width() >> mip).max(1))
                     * u64::from((self.desc.size.height() >> mip).max(1))
-                    * 4
+                    * u64::from(self.desc.format.bytes_per_pixel())
             })
             .sum()
     }
@@ -29,6 +29,7 @@ pub(crate) struct View {
     pub(crate) usage: TextureUsage,
 }
 pub(crate) struct Mirror {
+    pub(crate) size: u64,
     pub(crate) binding: u32,
     pub(crate) native: glow::NativeBuffer,
 }
@@ -38,6 +39,7 @@ pub(crate) struct ResourceSet {
 }
 pub(crate) fn format(value: Format) -> (u32, u32, u32) {
     match value {
+        Format::R8Unorm => (glow::R8, glow::RED, glow::UNSIGNED_BYTE),
         Format::Bgra8Unorm => (glow::RGBA8, glow::BGRA, glow::UNSIGNED_BYTE),
         Format::Bgra8UnormSrgb => (glow::SRGB8_ALPHA8, glow::BGRA, glow::UNSIGNED_BYTE),
         Format::Rgba8Unorm => (glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE),
@@ -47,6 +49,41 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
 }
 
 impl ResourceDevice for OpenGlDevice {
+    fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
+        for copy in copies {
+            copy.validate(
+                &self.textures.get(copy.source)?.desc,
+                &self.textures.get(copy.destination)?.desc,
+            )?;
+        }
+        self.park()?;
+        for copy in copies {
+            let source = self.textures.get(copy.source)?.native;
+            let destination = self.textures.get(copy.destination)?.native;
+            // SAFETY: Current owner context, distinct same-format immutable textures and validated
+            // mip-zero rectangles. GL command ordering/lifetime rules protect prior draws.
+            unsafe {
+                self.gl.copy_image_sub_data(
+                    source,
+                    glow::TEXTURE_2D,
+                    0,
+                    copy.source_origin.x as i32,
+                    copy.source_origin.y as i32,
+                    0,
+                    destination,
+                    glow::TEXTURE_2D,
+                    0,
+                    copy.destination_origin.x as i32,
+                    copy.destination_origin.y as i32,
+                    0,
+                    copy.size.width() as i32,
+                    copy.size.height() as i32,
+                    1,
+                );
+            }
+        }
+        self.check()
+    }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         desc.validate()?;
         if desc.memory_location == MemoryLocation::GpuToCpu {
@@ -110,6 +147,42 @@ impl ResourceDevice for OpenGlDevice {
         }
         self.check()
     }
+    fn write_buffer_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+    ) -> Result<BufferUploadStats> {
+        let mut stats = BufferUploadStats::default();
+        let mut bound = None;
+        for write in writes {
+            if write.data.is_empty() {
+                continue;
+            }
+            let buffer = self.buffers.get(write.descriptor.buffer)?;
+            if write.descriptor.offset.checked_add(write.data.len() as u64)
+                .is_none_or(|end| end > buffer.desc.size)
+            {
+                return Err(Error::InvalidInput("OpenGL buffer write out of bounds".into()));
+            }
+            if bound.is_none() {
+                self.park()?;
+            }
+            // SAFETY: The owner context is current and GL consumes each validated source slice.
+            unsafe {
+                if bound != Some(write.descriptor.buffer) {
+                    self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(buffer.native));
+                }
+                self.gl.buffer_sub_data_u8_slice(glow::COPY_WRITE_BUFFER,
+                    write.descriptor.offset as i32, write.data);
+            }
+            bound = Some(write.descriptor.buffer);
+            stats.calls = stats.calls.saturating_add(1);
+            stats.bytes = stats.bytes.saturating_add(write.data.len() as u64);
+        }
+        if bound.is_some() {
+            self.check()?;
+        }
+        Ok(stats)
+    }
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;
         let (width, height) = native_extent(desc.size)?;
@@ -148,7 +221,7 @@ impl ResourceDevice for OpenGlDevice {
         let texture = self.textures.get(desc.texture)?;
         desc.validate_against(&texture.desc, bytes.len())?;
         if !texture.desc.usage.contains(TextureUsage::COPY_DST)
-            || desc.layout.bytes_per_row.get() % 4 != 0
+            || desc.layout.bytes_per_row.get() % texture.desc.format.bytes_per_pixel() != 0
         {
             return Err(Error::InvalidInput(
                 "OpenGL texture upload requires COPY_DST and pixel-aligned row pitch".into(),
@@ -162,7 +235,7 @@ impl ResourceDevice for OpenGlDevice {
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.pixel_store_i32(
                 glow::UNPACK_ROW_LENGTH,
-                (desc.layout.bytes_per_row.get() / 4) as i32,
+                (desc.layout.bytes_per_row.get() / texture.desc.format.bytes_per_pixel()) as i32,
             );
             self.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
@@ -395,7 +468,11 @@ impl OpenGlDevice {
                 // SAFETY: this owner allocates native GPU copies for otherwise
                 // unaligned public buffer ranges. Draw refreshes each live source.
                 let native = unsafe { self.gl.create_buffer() }.map_err(native)?;
-                mirrors.push(Mirror { binding, native });
+                mirrors.push(Mirror {
+                    binding,
+                    native,
+                    size: size.div_ceil(16) * 16,
+                });
                 unsafe {
                     self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(native));
                     self.gl.buffer_data_size(
@@ -429,7 +506,7 @@ impl OpenGlDevice {
         self.park()?;
         let (_, external, kind) = format(texture.desc.format);
         let size = texture.desc.size;
-        let row = size.width() * 4;
+        let row = size.width() * texture.desc.format.bytes_per_pixel();
         let mut bytes = vec![0; row as usize * size.height() as usize];
         // SAFETY: temporary FBO attaches this live mip zero; readback destination covers the
         // tightly packed full image. ReadPixels synchronizes prior GPU writes.

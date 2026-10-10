@@ -167,6 +167,8 @@ pub struct Allocation {
     name: Option<Box<str>>,
 }
 
+mod relocation;
+
 impl Allocation {
     /// Tries to borrow the CPU-mapped memory that backs this allocation as a [`presser::Slab`], which you can then
     /// use to safely copy data into the raw, potentially-uninitialized buffer.
@@ -476,11 +478,8 @@ impl MemoryType {
             .memory_properties
             .contains(vk::MemoryPropertyFlags::HOST_VISIBLE);
         let is_readback = desc.location == MemoryLocation::GpuToCpu;
-        let memblock_size = allocation_sizes.get_memblock_size(
-            is_host,
-            is_readback,
-            self.active_general_blocks,
-        );
+        let memblock_size =
+            allocation_sizes.get_memblock_size(is_host, is_readback, self.active_general_blocks);
 
         let size = desc.requirements.size;
         let alignment = desc.requirements.alignment;

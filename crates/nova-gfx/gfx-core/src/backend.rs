@@ -1,8 +1,8 @@
 //! Backend capability traits for nova-gfx.
 //!
 //! These traits are the public contract implemented by concrete nova-gfx
-//! backends. They keep backend users generic over Vulkan, Direct3D 12, and
-//! Metal while preserving static dispatch for hot rendering paths.
+//! backends. They keep backend users generic over Direct3D 11/12, Vulkan, OpenGL,
+//! and Metal while preserving static dispatch for hot rendering paths.
 
 use std::{
     sync::{Arc, Mutex},
@@ -10,12 +10,12 @@ use std::{
 };
 
 use crate::{
-    AsyncCapabilities, BackendKind, BoxFuture, BufferDescriptor, BufferId, ClearColor,
-    CommandEncoderDescriptor, CommandEncoderId, DrawDescriptor, DrawStepDescriptor, Error, LoadOp,
-    MemoryTrimLevel, PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
-    RenderPassDepthAttachment,
-    RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor, RenderPipelineId,
-    RenderStepDescriptor, RenderStepList, ResourceSetDescriptor, ResourceSetId,
+    AsyncCapabilities, BackendKind, BoxFuture, BufferDescriptor, BufferId, BufferUploadStats,
+    BufferWrite, ClearColor, CommandEncoderDescriptor, CommandEncoderId, DeviceMemoryBudget,
+    DrawDescriptor, DrawStepDescriptor, Error, LoadOp, MemoryArchitecture, MemoryTrimLevel,
+    PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
+    RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+    RenderPipelineId, RenderStepDescriptor, RenderStepList, ResourceSetDescriptor, ResourceSetId,
     ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
     SamplerId, ScissorRect, ShaderModuleDescriptor, ShaderModuleId, SubmissionId, SubmissionStatus,
     SurfaceConfig, SurfaceDescriptor, SurfaceId, SwapchainId, TextureDescriptor, TextureId,
@@ -205,6 +205,22 @@ impl<T> BackendSurface for T where T: SurfaceDevice {}
 /// should validate descriptors before creating native resources and report bad
 /// inputs with [`Error::InvalidInput`].
 pub trait ResourceDevice {
+    /// Queues GPU pixel copies, ordered before subsequent draws on this device.
+    /// Source/destination lifetimes must cover completion; destruction obeys normal submission
+    /// retirement. This method does not imply GPU completion and never reads pixels to the CPU.
+    /// All rectangles are validated before recording the batch.
+    ///
+    /// # Errors
+    /// Returns InvalidInput for invalid handles/rectangles, Backend for recording failure, or
+    /// Unavailable when native texture copying is not implemented.
+    fn copy_texture_batch(&mut self, copies: &[crate::TextureCopy]) -> Result<()> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        Err(Error::Unavailable(
+            "GPU texture copy is not implemented".into(),
+        ))
+    }
     /// Creates a buffer resource.
     ///
     /// # Errors
@@ -223,6 +239,33 @@ pub trait ResourceDevice {
     /// Returns [`Error`] if the handle is invalid, the write is out of bounds,
     /// or the backend cannot map or stage the upload.
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()>;
+
+    /// Writes borrowed buffer updates in order on the device's owning thread.
+    ///
+    /// Empty writes are ignored. Before returning successfully, source bytes must have been
+    /// consumed or copied into backend-owned staging, and uploads must be ordered before
+    /// subsequent draws using those destinations. This does not mean GPU work has completed:
+    /// destination/staging retirement remains governed by the backend's submission fences.
+    /// It does not permit overwriting a buffer still read by an earlier submission; callers
+    /// must use the existing resource-slot/fence rules. The default uses the single-write path;
+    /// backends may batch native work and must account for any expanded destination writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first validation or upload error. The operation is not transactional:
+    /// earlier writes may have taken effect, so a failed plan must not be marked resident.
+    fn write_buffer_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+    ) -> Result<BufferUploadStats> {
+        crate::buffer_upload::execute_buffer_batch(writes, |write| {
+            self.write_buffer(write.descriptor.buffer, write.descriptor.offset, write.data)?;
+            Ok(BufferUploadStats {
+                calls: 1,
+                bytes: write.data.len() as u64,
+            })
+        })
+    }
 
     /// Creates a texture resource.
     ///
@@ -484,6 +527,14 @@ pub trait ExtensionDevice {
     /// Returns [`Error`] if the buffer is invalid, the write is out of bounds, or upload fails.
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()>;
 
+    /// Writes an ordered buffer batch with the ownership and fence contract of
+    /// [`ResourceDevice::write_buffer_batch`], returning destination upload accounting.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first validation or upload error; earlier writes may already have taken effect.
+    fn write_buffer_batch(&mut self, writes: &[BufferWrite<'_>]) -> Result<BufferUploadStats>;
+
     /// Creates a GPU texture.
     ///
     /// # Errors
@@ -653,6 +704,10 @@ where
 
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
         ResourceDevice::write_buffer(self, buffer, offset, data)
+    }
+
+    fn write_buffer_batch(&mut self, writes: &[BufferWrite<'_>]) -> Result<BufferUploadStats> {
+        ResourceDevice::write_buffer_batch(self, writes.iter().copied())
     }
 
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -1484,9 +1539,43 @@ fn compatible_draw_steps(steps: &[RenderStepDescriptor]) -> Result<Vec<DrawStepD
 
 /// Provides backend resource diagnostics.
 pub trait DiagnosticsDevice {
+    /// Relocates live resources during explicit owner-thread memory maintenance, retaining public
+    /// resource IDs and contents. Implementations may wait at this maintenance boundary; callers
+    /// must not run this on the ordinary draw hot path. Unsubmitted encoders prohibit relocation.
+    /// Driver-managed backends return an empty report: they cannot relocate driver heaps.
+    ///
+    /// # Errors
+    /// Returns a backend error for allocation, GPU copy or synchronization failure. Implementations
+    /// must preserve old resources when preparing replacement allocations fails.
+    fn compact_memory(&mut self) -> Result<crate::MemoryCompactReport> {
+        Ok(crate::MemoryCompactReport::default())
+    }
     /// Returns the current live resource counts known to the backend.
     #[must_use]
     fn resource_stats(&self) -> ResourceStats;
+
+    /// Queries the physical memory architecture on the device owner thread.
+    ///
+    /// Unsupported queries return `Unknown`. This does not describe the heap
+    /// selected for a buffer or establish a preferred placement policy.
+    ///
+    /// # Errors
+    /// Returns a backend error when a supported native query fails.
+    fn memory_architecture(&self) -> Result<MemoryArchitecture> {
+        Ok(MemoryArchitecture::Unknown)
+    }
+
+    /// Queries current driver usage and budget on the device owner thread.
+    ///
+    /// `None` means unsupported. This does not wait for GPU work, enforce a
+    /// budget, or describe only Nova-owned resources. Callers should sample it
+    /// periodically during existing owner work rather than on every draw.
+    ///
+    /// # Errors
+    /// Returns a backend error when a supported driver query fails.
+    fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+        Ok(None)
+    }
 }
 
 /// Compatibility name for backend diagnostics and memory-pressure hooks.
@@ -2049,12 +2138,22 @@ impl<D> ResourceDevice for SharedDevice<D>
 where
     D: ResourceDevice,
 {
+    fn copy_texture_batch(&mut self, copies: &[crate::TextureCopy]) -> Result<()> {
+        self.with_device(|device| device.copy_texture_batch(copies))
+    }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         self.with_device(|device| device.create_buffer(desc))
     }
 
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
         self.with_device(|device| device.write_buffer(buffer, offset, data))
+    }
+
+    fn write_buffer_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+    ) -> Result<BufferUploadStats> {
+        self.with_device(|device| device.write_buffer_batch(writes))
     }
 
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -2367,10 +2466,21 @@ impl<D> DiagnosticsDevice for SharedDevice<D>
 where
     D: DiagnosticsDevice,
 {
+    fn compact_memory(&mut self) -> Result<crate::MemoryCompactReport> {
+        self.with_device(|device| device.compact_memory())
+    }
     fn resource_stats(&self) -> ResourceStats {
         let Ok(device) = self.inner.lock() else {
             return ResourceStats::default();
         };
         device.resource_stats()
+    }
+
+    fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+        self.with_device(|device| device.memory_budget())
+    }
+
+    fn memory_architecture(&self) -> Result<MemoryArchitecture> {
+        self.with_device(|device| device.memory_architecture())
     }
 }

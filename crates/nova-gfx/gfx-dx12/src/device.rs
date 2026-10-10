@@ -28,6 +28,8 @@ mod frame_pacing;
 
 #[cfg(windows)]
 mod platform {
+    mod buffer_upload;
+    mod relocation;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -43,22 +45,23 @@ mod platform {
     use crate::registry::ResourceRegistry;
     use gfx_core::{
         AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindingResource,
-        BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUsage, ClearColor,
+        BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
+        BufferWrite, ClearColor,
         CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction,
-        CompositeAlphaMode, DepthState, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor,
-        DrawStepDescriptor, FilterMode, Format, IndexBufferBinding, IndexFormat, LoadOp,
-        MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor,
-        PipelineLayoutId, PowerPreference, PresentMode, PresentationDevice, PrimitiveTopology,
-        RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
-        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
-        ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, SamplerDescriptor,
-        SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage,
-        ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
-        SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor,
-        TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
-        TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
-        ThreadingMode, resource_set_list,
+        CompositeAlphaMode, DepthState, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice,
+        DrawDescriptor, DrawStepDescriptor, FilterMode, Format, IndexBufferBinding, IndexFormat,
+        LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
+        PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentMode,
+        PresentationDevice, PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor,
+        RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
+        RenderStepList, RenderStepRef, RenderTarget, ResourceBindingType, ResourceDevice,
+        ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
+        ResourceStats, SamplerDescriptor, SamplerId, ScissorRect, ShaderCode,
+        ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice,
+        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
+        SwapchainId, TextureDescriptor, TextureDimension, TextureId, TextureReadback,
+        TextureRenderStepList, TextureTransferDevice, TextureUsage, TextureViewDescriptor,
+        TextureViewId, TextureWrite, TextureWriteDescriptor, ThreadingMode, resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -2593,7 +2596,34 @@ mod platform {
         /// Returns live resource statistics.
         #[must_use]
         fn resource_stats(&self) -> ResourceStats {
+            let upload_capacity_bytes = self
+                .upload_pages
+                .iter()
+                .flatten()
+                .map(|page| page.size)
+                .sum::<u64>();
+            let resource_bytes =
+                self.buffers
+                    .values()
+                    .map(|buffer| buffer.desc.size)
+                    .sum::<u64>()
+                    .saturating_add(
+                        self.textures
+                            .values()
+                            .map(|texture| texture.desc.byte_size())
+                            .sum::<u64>(),
+                    )
+                    .saturating_add(self.deferred_releases.pending_bytes(
+                        |resource| match resource {
+                            DeferredDx12Release::Buffer(buffer) => buffer.desc.size,
+                            DeferredDx12Release::Texture(texture) => texture.desc.byte_size(),
+                            _ => 0,
+                        },
+                    ));
             ResourceStats {
+                memory_accounting: MemoryAccounting::ResourceSizes,
+                upload_used_bytes: self.upload_ring.stats().used_bytes,
+                upload_capacity_bytes,
                 buffers: self.buffers.live_len(),
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),
@@ -2608,13 +2638,9 @@ mod platform {
                 submissions: self.submissions.live_len(),
                 surfaces: self.surfaces.live_len(),
                 swapchains: self.swapchains.live_len(),
-                allocated_bytes: self.upload_ring.stats().used_bytes,
-                reserved_bytes: self
-                    .upload_pages
-                    .iter()
-                    .flatten()
-                    .map(|page| page.size)
-                    .fold(0_u64, u64::saturating_add),
+                allocated_bytes: resource_bytes.saturating_add(upload_capacity_bytes),
+                reserved_bytes: resource_bytes.saturating_add(upload_capacity_bytes),
+                ..ResourceStats::default()
             }
         }
 
@@ -4465,12 +4491,23 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
+            self.copy_texture_regions(copies)
+        }
+
         fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             Self::create_buffer(self, desc)
         }
 
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
             Self::write_buffer(self, buffer, offset, data)
+        }
+
+        fn write_buffer_batch<'a>(
+            &mut self,
+            writes: impl IntoIterator<Item = BufferWrite<'a>>,
+        ) -> Result<BufferUploadStats> {
+            self.upload_buffer_batch(writes)
         }
 
         fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -4916,6 +4953,56 @@ mod platform {
     impl DiagnosticsDevice for Dx12Device {
         fn resource_stats(&self) -> ResourceStats {
             Self::resource_stats(self)
+        }
+
+        fn memory_architecture(&self) -> Result<gfx_core::MemoryArchitecture> {
+            use windows::Win32::Graphics::Direct3D12::{
+                D3D12_FEATURE_ARCHITECTURE, D3D12_FEATURE_DATA_ARCHITECTURE,
+            };
+            let mut architecture = D3D12_FEATURE_DATA_ARCHITECTURE::default();
+            // SAFETY: Node zero belongs to this live device; the output struct matches the feature
+            // and size.
+            unsafe {
+                self.device.CheckFeatureSupport(
+                    D3D12_FEATURE_ARCHITECTURE,
+                    (&raw mut architecture).cast(),
+                    std::mem::size_of_val(&architecture) as u32,
+                )
+            }
+            .map_err(|error| Error::Backend(error.to_string()))?;
+            Ok(if architecture.UMA.as_bool() {
+                gfx_core::MemoryArchitecture::Unified
+            } else {
+                gfx_core::MemoryArchitecture::Discrete
+            })
+        }
+
+        fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+            let Ok(adapter) = self
+                ._adapter
+                .cast::<windows::Win32::Graphics::Dxgi::IDXGIAdapter3>()
+            else {
+                return Ok(None);
+            };
+            let query = |segment| {
+                let mut info =
+                    windows::Win32::Graphics::Dxgi::DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                // SAFETY: the selected adapter is live; this query does not wait on a fence.
+                unsafe { adapter.QueryVideoMemoryInfo(0, segment, &mut info) }
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                Ok::<_, Error>(MemoryBudget {
+                    usage_bytes: info.CurrentUsage,
+                    budget_bytes: info.Budget,
+                })
+            };
+            Ok(Some(DeviceMemoryBudget {
+                local: Some(query(
+                    windows::Win32::Graphics::Dxgi::DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+                )?),
+                non_local: Some(query(
+                    windows::Win32::Graphics::Dxgi::DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+                )?),
+            }))
         }
     }
 
@@ -5752,13 +5839,7 @@ mod platform {
     }
 
     const fn format_bytes_per_pixel(format: Format) -> u32 {
-        match format {
-            Format::Bgra8Unorm
-            | Format::Bgra8UnormSrgb
-            | Format::Rgba8Unorm
-            | Format::Rgba8UnormSrgb
-            | Format::Depth32Float => 4,
-        }
+        format.bytes_per_pixel()
     }
 
     fn required_texture_upload_len(
@@ -6110,9 +6191,10 @@ mod platform {
     ) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT,
-            DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
         };
         match format {
+            Format::R8Unorm => DXGI_FORMAT_R8_UNORM,
             Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
             Format::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
             Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -7029,6 +7111,10 @@ mod platform {
     }
 
     impl ResourceDevice for Dx12Device {
+        fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
+            self.copy_texture_regions(copies)
+        }
+
         fn create_buffer(&mut self, _desc: &BufferDescriptor) -> Result<BufferId> {
             unavailable()
         }

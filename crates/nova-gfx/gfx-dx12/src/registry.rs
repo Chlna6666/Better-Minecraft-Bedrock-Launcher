@@ -87,6 +87,10 @@ impl<T> ResourceRegistry<T> {
             .count()
     }
 
+    pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
+        self.slots.iter().filter_map(|slot| slot.value.as_ref())
+    }
+
     fn valid_slot<R>(&self, id: ResourceId<R>) -> Result<&ResourceSlot<T>> {
         let slot = self
             .slots

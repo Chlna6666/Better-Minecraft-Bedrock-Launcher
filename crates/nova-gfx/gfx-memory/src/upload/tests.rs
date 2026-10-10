@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn discarded_unsubmitted_ranges_do_not_release_in_flight_pages() {
+    let mut ring = UploadRingAllocator::new(UploadRingAllocatorDesc {
+        page_size: 256,
+        alignment: 256,
+        max_retained_idle_pages: 2,
+    })
+    .expect("descriptor");
+    let busy = ring.allocate(256).expect("in-flight page");
+    ring.retire_used_pages(7);
+    let unsubmitted = ring.allocate(256).expect("unsubmitted page");
+    ring.discard_unsubmitted();
+    assert_eq!(ring.stats().busy_page_count, 1);
+    let reused = ring.allocate(256).expect("discarded page reused");
+    assert_eq!(reused.page_index, unsubmitted.page_index);
+    assert_ne!(reused.page_index, busy.page_index);
+    ring.retire_used_pages(9);
+    ring.complete_fence(7);
+    assert_eq!(ring.stats().busy_page_count, 1);
+}
+
+#[test]
 fn overlapping_submissions_keep_page_growth_bounded_by_in_flight_work() {
     let mut ring =
         UploadRingAllocator::new(UploadRingAllocatorDesc::default()).expect("descriptor");

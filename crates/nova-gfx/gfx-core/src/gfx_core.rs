@@ -25,6 +25,15 @@
 //! ```
 
 mod backend;
+mod buffer_upload;
+mod memory;
+mod texture_copy;
+pub use texture_copy::TextureCopy;
+
+pub use buffer_upload::{BufferUploadBatch, BufferUploadStats, BufferWrite};
+pub use memory::{
+    DeviceMemoryBudget, MemoryAccounting, MemoryArchitecture, MemoryBudget, MemoryCompactReport,
+};
 
 use std::{
     borrow::Cow,
@@ -473,6 +482,9 @@ pub struct QueueDescriptor {
 /// Color formats supported by the phase-1 API.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Format {
+    /// Single 8-bit unsigned normalized red channel, sampled in the range 0..=1.
+    /// Suitable for coverage masks without allocating unused color channels.
+    R8Unorm,
     /// 8-bit BGRA unsigned normalized format.
     Bgra8Unorm,
     /// 8-bit BGRA unsigned normalized sRGB format.
@@ -496,6 +508,7 @@ impl Format {
     #[must_use]
     pub const fn bytes_per_pixel(self) -> u32 {
         match self {
+            Self::R8Unorm => 1,
             Self::Bgra8Unorm
             | Self::Bgra8UnormSrgb
             | Self::Rgba8Unorm
@@ -921,6 +934,18 @@ pub struct TextureDescriptor {
 }
 
 impl TextureDescriptor {
+    /// Logical texel bytes across all mip levels, excluding native tiling,
+    /// alignment, metadata and driver overhead. Use only with a valid descriptor.
+    #[must_use]
+    pub fn byte_size(&self) -> u64 {
+        (0..self.mip_level_count).fold(0_u64, |total, mip| {
+            total.saturating_add(
+                u64::from((self.size.width() >> mip).max(1))
+                    .saturating_mul(u64::from((self.size.height() >> mip).max(1)))
+                    .saturating_mul(u64::from(self.format.bytes_per_pixel())),
+            )
+        })
+    }
     /// Validates the descriptor.
     ///
     /// # Errors
@@ -2114,6 +2139,17 @@ pub struct TextureRenderStepList<'a> {
 /// Backend resource statistics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ResourceStats {
+    /// Native buffer copies allocated to satisfy binding alignment, included
+    /// in GPU allocation bytes. This does not count copy commands.
+    pub binding_mirror_bytes: u64,
+    /// Origin and scope of the GPU byte counts; these are not driver residency.
+    pub memory_accounting: MemoryAccounting,
+    /// CPU capacity retained by backend buffer mirrors, separately from GPU bytes.
+    pub cpu_shadow_bytes: u64,
+    /// Upload ring bytes currently occupied by pending data.
+    pub upload_used_bytes: u64,
+    /// Capacity of allocated upload pages, already included in GPU byte counts.
+    pub upload_capacity_bytes: u64,
     /// Live buffers.
     pub buffers: usize,
     /// Live textures.
@@ -2208,6 +2244,20 @@ mod tests {
         assert_eq!(stats.unused_reserved_bytes(), 1);
         assert_eq!(stats.reserved_memory_utilization(), Some(75));
         assert_eq!(ResourceStats::default().reserved_memory_utilization(), None);
+    }
+
+    #[test]
+    fn texture_byte_size_counts_all_mips() {
+        let descriptor = TextureDescriptor {
+            label: None,
+            size: Extent2d::new(4, 2).expect("fixture size"),
+            mip_level_count: 3,
+            format: Format::Rgba8Unorm,
+            usage: TextureUsage::SAMPLED,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+        };
+        assert_eq!(descriptor.byte_size(), (4 * 2 + 2 + 1) * 4);
     }
 
     #[test]
@@ -2319,6 +2369,19 @@ mod tests {
             .validate_against(&texture)
             .is_err()
         );
+    }
+
+    #[test]
+    fn r8_texture_write_uses_single_byte_texels_and_odd_row_pitch() {
+        let mut texture = texture_desc(7, 5);
+        texture.format = Format::R8Unorm;
+        let descriptor = texture_write_desc(0, 0, 7, 5, 9, 5, 4);
+        assert_eq!(texture.format.bytes_per_pixel(), 1);
+        assert_eq!(texture.byte_size(), 35);
+        assert!(descriptor.validate_against(&texture, 47).is_ok());
+        assert!(descriptor.validate_against(&texture, 46).is_err());
+        texture.format = Format::Bgra8Unorm;
+        assert!(descriptor.validate_against(&texture, 47).is_err());
     }
 
     #[test]

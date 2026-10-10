@@ -20,6 +20,19 @@ use crate::{
 /// Vulkan allocation backed by `gpu-allocator`.
 pub type VulkanAllocation = gpu_allocator::vulkan::Allocation;
 
+/// Requirements for an existing-block relocation reservation. Recreate the native resource
+/// with identical requirements before binding this allocation; mapped addresses may change.
+pub struct VulkanRelocationDescriptor<'a> {
+    /// Allocation diagnostic name.
+    pub name: &'a str,
+    /// Requirements queried from the replacement VkBuffer or VkImage.
+    pub requirements: vk::MemoryRequirements,
+    /// Original resource memory location; relocation keeps the source memory type.
+    pub location: MemoryLocation,
+    /// Buffer/linear-image granularity class; false for optimal-tiled images.
+    pub linear: bool,
+}
+
 /// Vulkan memory allocator creation descriptor.
 #[derive(Clone)]
 pub struct VulkanMemoryAllocatorDesc {
@@ -45,7 +58,12 @@ impl VulkanMemoryAllocator {
             physical_device: desc.physical_device,
             debug_settings: AllocatorDebugSettings::default(),
             buffer_device_address: false,
-            allocation_sizes: AllocationSizes::default(),
+            // Allocate only on demand. Small workloads start with small blocks;
+            // each memory type grows geometrically when its existing blocks fill.
+            allocation_sizes: AllocationSizes::new(4 * 1024 * 1024, 1024 * 1024)
+                .with_max_device_memblock_size(256 * 1024 * 1024)
+                .with_max_host_memblock_size(64 * 1024 * 1024)
+                .with_max_readback_memblock_size(64 * 1024 * 1024),
         })
         .map_err(MemoryError::from)?;
         Ok(Self {
@@ -124,6 +142,57 @@ impl VulkanMemoryAllocator {
 }
 
 impl MemoryAllocator {
+    /// Selects one sparse block with at most 8 MiB / 128 allocations and an existing destination.
+    /// Returns None when relocation cannot release a block within that work budget.
+    pub fn vulkan_relocation_candidate(&self) -> Option<vk::DeviceMemory> {
+        #[allow(unreachable_patterns)]
+        match self {
+            Self::Vulkan(allocator) => allocator
+                .allocator
+                .relocation_candidate(8 * 1024 * 1024, 128),
+            _ => None,
+        }
+    }
+
+    /// Reserves space outside the source block without allocating new native backing memory.
+    /// The reservation is temporary until the caller copies contents and replaces the resource.
+    ///
+    /// Returns None when existing holes cannot satisfy the requirements. Callers must
+    /// cancel their pass and free its temporary reservations; ordinary allocation fallback would
+    /// defeat the peak-memory guarantee.
+    /// # Errors
+    /// Returns InvalidInput for another backend, or a backend error for invalid requirements.
+    pub fn allocate_vulkan_relocation(
+        &mut self,
+        source: vk::DeviceMemory,
+        desc: VulkanRelocationDescriptor<'_>,
+    ) -> Result<Option<MemoryAllocation>> {
+        #[allow(unreachable_patterns)]
+        match self {
+            Self::Vulkan(allocator) => {
+                let reservation = allocator.allocator.allocate_in_existing_blocks(
+                    &VulkanAllocationCreateDesc {
+                        name: desc.name,
+                        requirements: desc.requirements,
+                        location: memory_location_to_allocator(desc.location),
+                        linear: desc.linear,
+                        allocation_scheme: VulkanAllocationScheme::GpuAllocatorManaged,
+                    },
+                    source,
+                );
+                let allocation = match reservation {
+                    Ok(allocation) => allocation,
+                    Err(gpu_allocator::AllocationError::OutOfMemory) => return Ok(None),
+                    Err(error) => return Err(MemoryError::from(error).into()),
+                };
+                track_allocation(&mut allocator.stats, allocation.size());
+                Ok(Some(MemoryAllocation::Vulkan(allocation)))
+            }
+            _ => Err(gfx_core::Error::InvalidInput(
+                "relocation requires a Vulkan allocator".into(),
+            )),
+        }
+    }
     /// Creates a Vulkan memory allocator.
     ///
     /// # Errors

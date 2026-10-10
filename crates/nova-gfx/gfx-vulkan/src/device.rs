@@ -26,28 +26,33 @@ use crate::registry::ResourceRegistry;
 use ash::{Entry, Instance, khr, vk};
 use gfx_core::{
     AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BeginRenderPassDescriptor,
-    BindingResource, BlendMode, BufferDescriptor, BufferId, BufferUsage, ClearColor,
+    BindingResource, BlendMode, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
+    BufferWrite, ClearColor,
     ColorAttachmentDescriptor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
-    CompareFunction, CompositeAlphaMode, DeviceDescriptor, DiagnosticsDevice, DrawDescriptor,
-    DrawStepDescriptor, DrawTriangleDescriptor, Error, FilterMode, Format, IndexBufferBinding,
-    IndexFormat, LoadOp, MemoryLocation, MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor,
-    PipelineLayoutId, PowerPreference, PresentMode, PresentationDevice, PresentationFrame,
-    PresentationTimings, PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor,
-    RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor, RenderStepList,
-    RenderStepRef, RenderTarget, ResourceBindingType, ResourceDevice, ResourceSetDescriptor,
-    ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result,
-    SamplerDescriptor, SamplerId, ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDescriptor,
-    ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus,
-    SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId, TextureDataLayout,
-    TextureDescriptor, TextureDimension, TextureId, TextureReadback, TextureRenderStepList,
-    TextureTransferDevice, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite,
-    TextureWriteDescriptor, ThreadingMode, VertexFormat,
+    CompareFunction, CompositeAlphaMode, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice,
+    DrawDescriptor, DrawStepDescriptor, DrawTriangleDescriptor, Error, FilterMode, Format,
+    IndexBufferBinding, IndexFormat, LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation,
+    MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference,
+    PresentMode, PresentationDevice, PresentationFrame, PresentationTimings, PrimitiveTopology,
+    RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+    RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
+    ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
+    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
+    SamplerId, ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDescriptor, ShaderModuleId,
+    ShaderStage, ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
+    SurfaceDescriptor, SurfaceDevice, SurfaceId, TextureDataLayout, TextureDescriptor,
+    TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
+    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+    ThreadingMode, VertexFormat,
 };
 use gfx_memory::{
     DeferredFreeQueue, MemoryAllocation, MemoryAllocator, UploadAllocation, UploadRingAllocator,
     UploadRingAllocatorDesc, VulkanMemoryAllocatorDesc,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+mod compact;
+mod buffer_upload;
+mod relocation;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 const UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
@@ -108,6 +113,7 @@ pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
 
 /// Generic Vulkan device and resource owner.
 pub struct VulkanDevice {
+    memory_properties_loader: Option<khr::get_physical_device_properties2::Instance>,
     entry: Entry,
     instance: Instance,
     surface_loader: khr::surface::Instance,
@@ -242,6 +248,7 @@ impl VulkanDevice {
     pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
         let entry = load_entry()?;
         let instance = create_instance(&entry, &desc.application_name)?;
+        let properties2_supported = supports_memory_properties2(&entry)?;
         let surface_loader = khr::surface::Instance::new(&entry, &instance);
         let physical_device = pick_physical_device_without_surface(&instance, desc)?;
         // SAFETY: The selected physical device belongs to this live instance.
@@ -265,7 +272,15 @@ impl VulkanDevice {
             present_queue,
             incremental_presentation,
             supports_sampler_anisotropy,
-        ) = create_device(&instance, physical_device, queue_families)?;
+            memory_budget_supported,
+        ) = create_device(
+            &instance,
+            physical_device,
+            queue_families,
+            properties2_supported,
+        )?;
+        let memory_properties_loader = memory_budget_supported
+            .then(|| khr::get_physical_device_properties2::Instance::new(&entry, &instance));
         let max_sampler_anisotropy = if supports_sampler_anisotropy {
             adapter_properties.limits.max_sampler_anisotropy.max(1.0)
         } else {
@@ -292,6 +307,7 @@ impl VulkanDevice {
         )?;
 
         Ok(Self {
+            memory_properties_loader,
             entry,
             instance,
             surface_loader,
@@ -529,7 +545,11 @@ impl VulkanDevice {
         desc.validate()?;
         let create_info = vk::BufferCreateInfo::default()
             .size(desc.size)
-            .usage(buffer_usage_to_vk(desc.usage))
+            .usage(
+                buffer_usage_to_vk(desc.usage)
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         // SAFETY: Device is valid and create info is self-contained.
         let buffer =
@@ -618,7 +638,11 @@ impl VulkanDevice {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(texture_usage_to_vk(desc.usage))
+            .usage(
+                texture_usage_to_vk(desc.usage)
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         // SAFETY: Device is valid and image create info is self-contained.
@@ -657,7 +681,7 @@ impl VulkanDevice {
             desc.validate_against(&texture.desc, data.len())?;
             (texture.image, texture.layout, texture.desc.mip_level_count)
         };
-        validate_texture_staging_layout(desc)?;
+        validate_texture_staging_layout(desc, self.textures.get(desc.texture)?.desc.format)?;
         let upload = self.write_upload_data(data)?;
         let staging_buffer = self.upload_page_buffer(upload.page_index)?;
         self.copy_buffer_to_texture(
@@ -689,7 +713,10 @@ impl VulkanDevice {
                 descriptor.validate_against(&texture.desc, write.data.len())?;
                 (texture.image, texture.layout, texture.desc.mip_level_count)
             };
-            validate_texture_staging_layout(descriptor)?;
+            validate_texture_staging_layout(
+                descriptor,
+                self.textures.get(descriptor.texture)?.desc.format,
+            )?;
             plans.push(VulkanTextureWritePlan {
                 write,
                 image,
@@ -873,6 +900,7 @@ impl VulkanDevice {
         Ok(self.texture_views.insert(VulkanTextureView {
             view,
             texture: desc.texture,
+            desc: desc.clone(),
         }))
     }
 
@@ -1065,6 +1093,7 @@ impl VulkanDevice {
         Ok(self.resource_sets.insert(VulkanResourceSet {
             descriptor_set,
             layout: desc.layout,
+            desc: desc.clone(),
         }))
     }
 
@@ -2206,6 +2235,9 @@ impl VulkanDevice {
     fn resource_stats(&self) -> ResourceStats {
         let memory = self.allocator.detailed_report();
         ResourceStats {
+            memory_accounting: MemoryAccounting::Allocator,
+            upload_used_bytes: self.upload_ring.stats().used_bytes,
+            upload_capacity_bytes: self.upload_ring.stats().reserved_bytes,
             buffers: self.buffers.live_len(),
             textures: self.textures.live_len(),
             texture_views: self.texture_views.live_len(),
@@ -2222,6 +2254,7 @@ impl VulkanDevice {
             swapchains: self.swapchains.live_len(),
             allocated_bytes: memory.allocated_bytes,
             reserved_bytes: memory.reserved_bytes,
+            ..ResourceStats::default()
         }
     }
 
@@ -2441,7 +2474,8 @@ impl VulkanDevice {
     }
 
     /// Releases completed staging/upload caches without touching live Vulkan resources.
-    /// Aggressive pressure also releases fully empty allocator blocks; live allocations stay put.
+    /// Moderate and aggressive pressure release fully empty allocator blocks;
+    /// live allocations stay put, including the moderate trim's retained upload page.
     pub fn trim_memory(&mut self, level: MemoryTrimLevel) -> Result<()> {
         if matches!(level, MemoryTrimLevel::Light) {
             self.poll_cleanup();
@@ -2474,12 +2508,17 @@ impl VulkanDevice {
         if matches!(level, MemoryTrimLevel::Aggressive) {
             self.upload_pages.shrink_to_fit();
             self.upload_command_pool.shrink_to_fit();
-            self.allocator.trim();
         }
+        self.allocator.trim();
         Ok(())
     }
 
     fn retire_deferred_upload(&mut self, commands: VulkanUploadCommands, fence: vk::Fence) {
+        self.enqueue_deferred_upload(commands, fence);
+        self.poll_cleanup();
+    }
+
+    fn enqueue_deferred_upload(&mut self, commands: VulkanUploadCommands, fence: vk::Fence) {
         let fence_value = self.next_upload_fence_value;
         self.next_upload_fence_value = self.next_upload_fence_value.saturating_add(1);
         self.upload_ring.retire_used_pages(fence_value);
@@ -2491,7 +2530,6 @@ impl VulkanDevice {
                 commands,
             },
         );
-        self.poll_cleanup();
     }
 
     fn signal_cleanup_fence(&self) -> Result<vk::Fence> {
@@ -2580,7 +2618,11 @@ impl VulkanDevice {
         desc.validate()?;
         let create_info = vk::BufferCreateInfo::default()
             .size(desc.size)
-            .usage(buffer_usage_to_vk(desc.usage))
+            .usage(
+                buffer_usage_to_vk(desc.usage)
+                    | vk::BufferUsageFlags::TRANSFER_SRC
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         // SAFETY: Device is valid and buffer create info is self-contained.
         let buffer =
@@ -2741,7 +2783,29 @@ impl VulkanDevice {
             vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             group.mip_level_count,
         );
-        for upload in &group.uploads {
+        let mut synchronized = 0;
+        for (index, upload) in group.uploads.iter().enumerate() {
+            if group.uploads[synchronized..index]
+                .iter()
+                .any(|previous| texture_uploads_overlap(previous, upload))
+            {
+                let barrier = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+                // SAFETY: Recording on the owning queue. Order overlapping copies without a host wait.
+                unsafe {
+                    self.device.cmd_pipeline_barrier(
+                        command_buffer,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[barrier],
+                        &[],
+                        &[],
+                    );
+                }
+                synchronized = index;
+            }
             self.record_buffer_to_texture_copy(command_buffer, upload)?;
         }
         transition_image_layout_levels(
@@ -2760,9 +2824,15 @@ impl VulkanDevice {
         command_buffer: vk::CommandBuffer,
         upload: &VulkanTextureUpload,
     ) -> Result<()> {
+        let bytes_per_pixel = self
+            .textures
+            .get(upload.texture)?
+            .desc
+            .format
+            .bytes_per_pixel();
         let region = vk::BufferImageCopy::default()
             .buffer_offset(upload.layout.offset)
-            .buffer_row_length(upload.layout.bytes_per_row.get() / 4)
+            .buffer_row_length(upload.layout.bytes_per_row.get() / bytes_per_pixel)
             .buffer_image_height(upload.layout.rows_per_image.get())
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
@@ -2801,6 +2871,15 @@ impl VulkanDevice {
 
     fn destroy_deferred_now(&mut self, resource: DeferredResource) -> Result<()> {
         match resource {
+            DeferredResource::HeapReplacement {
+                fence,
+                commands,
+                mut replacement,
+            } => {
+                destroy_fence_if_needed(&self.device, fence);
+                destroy_upload_commands(&self.device, &commands);
+                self.discard_heap_replacement(&mut replacement)
+            }
             DeferredResource::Buffer { fence, buffer } => {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_buffer_now(buffer)
@@ -3024,12 +3103,22 @@ impl SurfaceDevice for VulkanDevice {
 }
 
 impl ResourceDevice for VulkanDevice {
+    fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
+        self.copy_texture_regions(copies)
+    }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         Self::create_buffer(self, desc)
     }
 
     fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
         Self::write_buffer(self, buffer, offset, data)
+    }
+
+    fn write_buffer_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+    ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch(writes)
     }
 
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -3417,8 +3506,40 @@ impl PresentationDevice for VulkanDevice {
 }
 
 impl DiagnosticsDevice for VulkanDevice {
+    fn compact_memory(&mut self) -> Result<gfx_core::MemoryCompactReport> {
+        self.compact_heap()
+    }
+
     fn resource_stats(&self) -> ResourceStats {
         Self::resource_stats(self)
+    }
+
+    fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+        let Some(loader) = &self.memory_properties_loader else {
+            return Ok(None);
+        };
+        let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+        let mut properties = vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+        // SAFETY: both extensions were enabled, the physical device and output chain are live.
+        unsafe {
+            loader.get_physical_device_memory_properties2(self.physical_device, &mut properties)
+        };
+        let heaps = properties.memory_properties;
+        let mut result = DeviceMemoryBudget::default();
+        for index in 0..heaps.memory_heap_count as usize {
+            let segment = if heaps.memory_heaps[index]
+                .flags
+                .contains(vk::MemoryHeapFlags::DEVICE_LOCAL)
+            {
+                &mut result.local
+            } else {
+                &mut result.non_local
+            };
+            let total = segment.get_or_insert_with(MemoryBudget::default);
+            total.usage_bytes = total.usage_bytes.saturating_add(budget.heap_usage[index]);
+            total.budget_bytes = total.budget_bytes.saturating_add(budget.heap_budget[index]);
+        }
+        Ok(Some(result))
     }
 }
 
@@ -3705,6 +3826,14 @@ struct VulkanTextureWritePlan<'a> {
     mip_level_count: u32,
 }
 
+fn texture_uploads_overlap(first: &VulkanTextureUpload, second: &VulkanTextureUpload) -> bool {
+    first.mip_level == second.mip_level
+        && u64::from(first.origin.x) < u64::from(second.origin.x) + u64::from(second.size.width())
+        && u64::from(second.origin.x) < u64::from(first.origin.x) + u64::from(first.size.width())
+        && u64::from(first.origin.y) < u64::from(second.origin.y) + u64::from(second.size.height())
+        && u64::from(second.origin.y) < u64::from(first.origin.y) + u64::from(first.size.height())
+}
+
 struct VulkanTextureUploadGroup<'a> {
     texture: TextureId,
     image: vk::Image,
@@ -3752,25 +3881,28 @@ fn texture_staging_layout(
     )
 }
 
-fn validate_texture_staging_layout(descriptor: TextureWriteDescriptor) -> Result<()> {
-    const TEXEL_BYTES: u64 = 4;
-    if descriptor.layout.offset % TEXEL_BYTES != 0 {
+fn validate_texture_staging_layout(
+    descriptor: TextureWriteDescriptor,
+    format: Format,
+) -> Result<()> {
+    if descriptor.layout.offset % 4 != 0 {
         return Err(Error::InvalidInput(
             "Vulkan texture upload offset must be a multiple of 4 bytes".to_string(),
         ));
     }
-    if u64::from(descriptor.layout.bytes_per_row.get()) % TEXEL_BYTES != 0 {
+    if descriptor.layout.bytes_per_row.get() % format.bytes_per_pixel() != 0 {
         return Err(Error::InvalidInput(
-            "Vulkan texture upload bytes_per_row must be a multiple of 4 bytes".to_string(),
+            "Vulkan texture upload bytes_per_row must contain whole texels".to_string(),
         ));
     }
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct VulkanTextureView {
     view: vk::ImageView,
     texture: TextureId,
+    desc: TextureViewDescriptor,
 }
 
 #[derive(Clone, Copy)]
@@ -3784,10 +3916,11 @@ struct VulkanResourceSetLayout {
     desc: ResourceSetLayoutDescriptor,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct VulkanResourceSet {
     descriptor_set: vk::DescriptorSet,
     layout: ResourceSetLayoutId,
+    desc: ResourceSetDescriptor,
 }
 
 #[derive(Clone)]
@@ -3980,6 +4113,11 @@ struct VulkanSwapchain {
 }
 
 enum DeferredResource {
+    HeapReplacement {
+        fence: vk::Fence,
+        commands: VulkanUploadCommands,
+        replacement: compact::HeapReplacement,
+    },
     Buffer {
         fence: vk::Fence,
         buffer: VulkanBuffer,
@@ -3998,7 +4136,8 @@ enum DeferredResource {
 
 fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) -> bool {
     let fence = match resource {
-        DeferredResource::Buffer { fence, .. }
+        DeferredResource::HeapReplacement { fence, .. }
+        | DeferredResource::Buffer { fence, .. }
         | DeferredResource::Texture { fence, .. }
         | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
@@ -4008,7 +4147,11 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
 
 fn fence_is_complete(device: &ash::Device, fence: vk::Fence) -> bool {
     // SAFETY: Fence belongs to this device and remains live until deferred resource destroy.
-    unsafe { device.get_fence_status(fence) }.unwrap_or(true)
+    match unsafe { device.get_fence_status(fence) } {
+        Ok(complete) => complete,
+        Err(vk::Result::ERROR_DEVICE_LOST) => true,
+        Err(_) => false,
+    }
 }
 
 fn destroy_fence_if_needed(device: &ash::Device, fence: vk::Fence) {
@@ -4041,13 +4184,27 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
         .engine_name(&engine_name)
         .engine_version(vk::make_api_version(0, 0, 1, 0))
         .api_version(vk::API_VERSION_1_0);
-    let extension_names = instance_extension_names();
+    let mut extension_names = instance_extension_names();
+    if supports_memory_properties2(entry)? {
+        extension_names.push(khr::get_physical_device_properties2::NAME.as_ptr());
+    }
     let create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
         .enabled_extension_names(&extension_names);
     // SAFETY: Create info references live CStrings and static extension names.
     unsafe { entry.create_instance(&create_info, None) }
         .map_err(|error| VulkanError::from(error).into())
+}
+
+fn supports_memory_properties2(entry: &Entry) -> Result<bool> {
+    // SAFETY: querying loader extension properties needs no instance or GPU commands.
+    let extensions = unsafe { entry.enumerate_instance_extension_properties(None) }
+        .map_err(VulkanError::from)?;
+    Ok(extensions.iter().any(|extension| {
+        // SAFETY: Vulkan extension names are null-terminated within this fixed array.
+        (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) })
+            == khr::get_physical_device_properties2::NAME
+    }))
 }
 
 fn instance_extension_names() -> Vec<*const i8> {
@@ -4176,7 +4333,8 @@ fn create_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
-) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool)> {
+    properties2_supported: bool,
+) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool, bool)> {
     let priorities = [1.0_f32];
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
@@ -4201,6 +4359,15 @@ fn create_device(
         name == khr::incremental_present::NAME
     });
     let mut device_extensions = vec![khr::swapchain::NAME.as_ptr()];
+    let memory_budget_supported = properties2_supported
+        && available_extensions.iter().any(|extension| {
+            // SAFETY: Vulkan extension names are null-terminated within this fixed array.
+            (unsafe { CStr::from_ptr(extension.extension_name.as_ptr()) })
+                == ash::ext::memory_budget::NAME
+        });
+    if memory_budget_supported {
+        device_extensions.push(ash::ext::memory_budget::NAME.as_ptr());
+    }
     if incremental_presentation {
         device_extensions.push(khr::incremental_present::NAME.as_ptr());
     }
@@ -4237,6 +4404,7 @@ fn create_device(
         present_queue,
         incremental_presentation,
         supports_sampler_anisotropy,
+        memory_budget_supported,
     ))
 }
 
@@ -5297,6 +5465,7 @@ fn transition_image_layout_levels(
 
 fn format_to_vk(format: Format) -> vk::Format {
     match format {
+        Format::R8Unorm => vk::Format::R8_UNORM,
         Format::Bgra8Unorm => vk::Format::B8G8R8A8_UNORM,
         Format::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
         Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
@@ -5308,7 +5477,8 @@ fn format_to_vk(format: Format) -> vk::Format {
 fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
     match format {
         Format::Depth32Float => vk::ImageAspectFlags::DEPTH,
-        Format::Bgra8Unorm
+        Format::R8Unorm
+        | Format::Bgra8Unorm
         | Format::Bgra8UnormSrgb
         | Format::Rgba8Unorm
         | Format::Rgba8UnormSrgb => vk::ImageAspectFlags::COLOR,
@@ -5718,6 +5888,46 @@ mod tests {
     }
 
     #[test]
+    fn texture_upload_overlap_requires_shared_mip_and_intersecting_rectangles() {
+        let first = VulkanTextureUpload {
+            texture: TextureId::from_parts(0, 0),
+            source: vk::Buffer::null(),
+            image: vk::Image::null(),
+            old_layout: vk::ImageLayout::UNDEFINED,
+            mip_level_count: 2,
+            layout: TextureDataLayout::new(0, 7, 5).unwrap(),
+            mip_level: 0,
+            origin: gfx_core::Origin2d::ZERO,
+            size: gfx_core::Extent2d::new(7, 5).unwrap(),
+        };
+        let mut second = VulkanTextureUpload {
+            origin: gfx_core::Origin2d { x: 2, y: 1 },
+            size: gfx_core::Extent2d::new(3, 3).unwrap(),
+            ..first
+        };
+        assert!(texture_uploads_overlap(&first, &second));
+        second.origin.x = 7;
+        assert!(!texture_uploads_overlap(&first, &second));
+        second.origin.x = 2;
+        second.mip_level = 1;
+        assert!(!texture_uploads_overlap(&first, &second));
+    }
+
+    #[test]
+    fn r8_staging_accepts_odd_pitch_but_requires_aligned_source_offset() {
+        let mut descriptor = TextureWriteDescriptor {
+            texture: TextureId::from_parts(0, 0),
+            mip_level: 0,
+            layout: TextureDataLayout::new(4, 9, 5).unwrap(),
+            origin: gfx_core::Origin2d::ZERO,
+            size: gfx_core::Extent2d::new(7, 5).unwrap(),
+        };
+        assert!(validate_texture_staging_layout(descriptor, Format::R8Unorm).is_ok());
+        descriptor.layout.offset = 1;
+        assert!(validate_texture_staging_layout(descriptor, Format::R8Unorm).is_err());
+    }
+
+    #[test]
     fn texture_staging_layout_preserves_source_offset() {
         let descriptor = TextureWriteDescriptor {
             texture: TextureId::from_parts(0, 0),
@@ -5751,7 +5961,7 @@ mod tests {
             size: gfx_core::Extent2d::new(2, 2).expect("extent should be valid"),
         };
 
-        let error = validate_texture_staging_layout(descriptor)
+        let error = validate_texture_staging_layout(descriptor, Format::Bgra8Unorm)
             .expect_err("partial texel stride should be rejected");
 
         assert!(matches!(error, Error::InvalidInput(_)));
@@ -5767,7 +5977,7 @@ mod tests {
             size: gfx_core::Extent2d::new(2, 2).expect("extent should be valid"),
         };
 
-        let error = validate_texture_staging_layout(descriptor)
+        let error = validate_texture_staging_layout(descriptor, Format::Bgra8Unorm)
             .expect_err("partial texel offset should be rejected");
 
         assert!(matches!(error, Error::InvalidInput(_)));

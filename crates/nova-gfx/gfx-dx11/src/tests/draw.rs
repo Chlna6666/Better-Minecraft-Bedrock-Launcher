@@ -80,8 +80,13 @@ fn command_storage_survives_submission_errors_and_pressure_reclaims_it() {
 #[test]
 #[ignore = "requires Windows hardware D3D11 feature level 11.0"]
 fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
+    use gfx_core::{
+        BufferWrite, BufferWriteDescriptor, DiagnosticsDevice, MemoryAccounting, ResourceDevice,
+    };
+
     let mut device = Dx11Device::new(&DeviceDescriptor::default()).expect("hardware DX11 device");
     println!("DX11 pixel gate adapter: {}", device.adapter_name());
+    let baseline = device.resource_stats();
     let (target, view) = texture(
         &mut device,
         Format::Rgba8Unorm,
@@ -149,6 +154,16 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         )
         .expect("indices");
     let constants = buffer(&mut device, 512, BufferUsage::UNIFORM);
+    let populated = device.resource_stats();
+    assert_eq!(populated.memory_accounting, MemoryAccounting::ResourceSizes);
+    assert_eq!(populated.buffers, baseline.buffers + 3);
+    assert_eq!(populated.textures, baseline.textures + 2);
+    assert!(populated.allocated_bytes > baseline.allocated_bytes);
+    assert!(populated.cpu_shadow_bytes >= baseline.cpu_shadow_bytes + 512);
+    if let Some(budget) = device.memory_budget().expect("driver budget query") {
+        assert!(budget.local.is_some() || budget.non_local.is_some());
+        println!("DX11 memory budget: {budget:?}");
+    }
     let set = device
         .create_resource_set(&ResourceSetDescriptor {
             label: None,
@@ -240,12 +255,39 @@ fn indexed_offsets_uniform_ranges_depth_and_alpha_reach_native_pixels() {
         &result.bytes[..16]
     );
     // A partial uniform update must retain the previously uploaded depth field.
-    device
-        .write_buffer(constants, 272, &floats(&[0.1]))
-        .expect("partial depth update");
-    device
-        .write_buffer(constants, 256, &floats(&[0.0, 0.0, 1.0, 0.5]))
-        .expect("partial color update");
+    let depth_bytes = floats(&[0.1]);
+    let color_bytes = floats(&[0.0, 0.0, 1.0, 0.5]);
+    let stats = ResourceDevice::write_buffer_batch(
+        &mut device,
+        [
+            BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: constants,
+                    offset: 272,
+                },
+                data: &depth_bytes,
+            },
+            BufferWrite {
+                descriptor: BufferWriteDescriptor {
+                    buffer: constants,
+                    offset: 256,
+                },
+                data: &color_bytes,
+            },
+        ],
+    )
+    .expect("partial uniform batch");
+    assert_eq!(stats.calls, 1);
+    assert_eq!(
+        stats.bytes,
+        u64::from(
+            device
+                .buffers
+                .get(constants)
+                .expect("uniform buffer")
+                .native_size
+        )
+    );
     device
         .render_steps_to_texture_compat(
             view,

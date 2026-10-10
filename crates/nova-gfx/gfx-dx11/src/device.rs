@@ -402,6 +402,8 @@ impl DiagnosticsDevice for Dx11Device {
                 .map(|value| value.bytes())
                 .sum::<u64>();
         ResourceStats {
+            memory_accounting: MemoryAccounting::ResourceSizes,
+            cpu_shadow_bytes: self.buffers.values().map(Buffer::cpu_shadow_bytes).sum(),
             buffers: self.buffers.len(),
             textures: self.textures.len(),
             texture_views: self.views.len(),
@@ -418,7 +420,31 @@ impl DiagnosticsDevice for Dx11Device {
             swapchains: self.swapchains.len(),
             allocated_bytes,
             reserved_bytes: allocated_bytes,
+            ..ResourceStats::default()
         }
+    }
+
+    fn memory_budget(&self) -> Result<Option<DeviceMemoryBudget>> {
+        let Ok(device) = self.native.cast::<IDXGIDevice>() else {
+            return Ok(None);
+        };
+        // SAFETY: the adapter belongs to this live device; no GPU wait is performed.
+        let adapter = unsafe { device.GetAdapter() }.map_err(backend)?;
+        let Ok(adapter) = adapter.cast::<IDXGIAdapter3>() else {
+            return Ok(None);
+        };
+        let query = |segment| {
+            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+            unsafe { adapter.QueryVideoMemoryInfo(0, segment, &mut info) }.map_err(backend)?;
+            Ok(MemoryBudget {
+                usage_bytes: info.CurrentUsage,
+                budget_bytes: info.Budget,
+            })
+        };
+        Ok(Some(DeviceMemoryBudget {
+            local: Some(query(DXGI_MEMORY_SEGMENT_GROUP_LOCAL)?),
+            non_local: Some(query(DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL)?),
+        }))
     }
 }
 impl TextureTransferDevice for Dx11Device {

@@ -416,6 +416,13 @@ impl SubAllocator for FreeListAllocator {
         }
     }
 
+    fn allocation_count(&self) -> usize {
+        self.chunks
+            .values()
+            .filter(|chunk| chunk.allocation_type != AllocationType::Free)
+            .count()
+    }
+
     fn report_allocations(&self) -> Vec<AllocationReport> {
         self.chunks
             .iter()

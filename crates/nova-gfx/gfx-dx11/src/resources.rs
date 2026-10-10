@@ -3,11 +3,20 @@ use gfx_core::*;
 use windows::Win32::Graphics::Direct3D::{D3D_SRV_DIMENSION_BUFFEREX, D3D_SRV_DIMENSION_TEXTURE2D};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
+mod buffer_upload;
+
 pub(crate) struct Buffer {
     pub(crate) native: ID3D11Buffer,
     pub(crate) desc: BufferDescriptor,
     pub(crate) native_size: u32,
     uniform_bytes: Option<Vec<u8>>,
+}
+impl Buffer {
+    pub(crate) fn cpu_shadow_bytes(&self) -> u64 {
+        self.uniform_bytes
+            .as_ref()
+            .map_or(0, |bytes| bytes.capacity() as u64)
+    }
 }
 pub(crate) struct Texture {
     pub(crate) native: ID3D11Texture2D,
@@ -47,6 +56,7 @@ pub(crate) struct ResourceSet {
 
 pub(crate) fn format(value: Format) -> DXGI_FORMAT {
     match value {
+        Format::R8Unorm => DXGI_FORMAT_R8_UNORM,
         Format::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
         Format::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
         Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -56,6 +66,41 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
 }
 
 impl ResourceDevice for Dx11Device {
+    fn copy_texture_batch(&mut self, copies: &[TextureCopy]) -> Result<()> {
+        for copy in copies {
+            copy.validate(
+                &self.textures.get(copy.source)?.desc,
+                &self.textures.get(copy.destination)?.desc,
+            )?;
+        }
+        for copy in copies {
+            let source = &self.textures.get(copy.source)?.native;
+            let destination = &self.textures.get(copy.destination)?.native;
+            let region = D3D11_BOX {
+                left: copy.source_origin.x,
+                top: copy.source_origin.y,
+                front: 0,
+                right: copy.source_origin.x + copy.size.width(),
+                bottom: copy.source_origin.y + copy.size.height(),
+                back: 1,
+            };
+            // SAFETY: Both same-format resources and rectangles were validated above. The owner
+            // immediate context orders this copy after previous draws and before subsequent draws.
+            unsafe {
+                self.context.CopySubresourceRegion(
+                    destination,
+                    0,
+                    copy.destination_origin.x,
+                    copy.destination_origin.y,
+                    0,
+                    source,
+                    0,
+                    Some(&region),
+                );
+            }
+        }
+        Ok(())
+    }
     fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
         desc.validate()?;
         let uniform = desc.usage.contains(BufferUsage::UNIFORM);
@@ -171,6 +216,12 @@ impl ResourceDevice for Dx11Device {
             }
         }
         Ok(())
+    }
+    fn write_buffer_batch<'a>(
+        &mut self,
+        writes: impl IntoIterator<Item = BufferWrite<'a>>,
+    ) -> Result<BufferUploadStats> {
+        self.upload_buffer_batch(writes)
     }
     fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
         desc.validate()?;

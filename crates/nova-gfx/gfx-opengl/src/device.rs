@@ -370,13 +370,22 @@ impl SubmissionDevice for OpenGlDevice {
 }
 impl DiagnosticsDevice for OpenGlDevice {
     fn resource_stats(&self) -> ResourceStats {
+        let binding_mirror_bytes = self
+            .sets
+            .values()
+            .flat_map(|set| &set.mirrors)
+            .map(|mirror| mirror.size)
+            .sum::<u64>();
         let bytes = self
             .buffers
             .values()
-            .map(|buffer| buffer.desc.size)
+            .map(|buffer| buffer.native_size as u64)
             .sum::<u64>()
-            + self.textures.values().map(Texture::bytes).sum::<u64>();
+            + self.textures.values().map(Texture::bytes).sum::<u64>()
+            + binding_mirror_bytes;
         ResourceStats {
+            memory_accounting: MemoryAccounting::ResourceSizes,
+            binding_mirror_bytes,
             buffers: self.buffers.len(),
             textures: self.textures.len(),
             texture_views: self.views.len(),
@@ -393,6 +402,7 @@ impl DiagnosticsDevice for OpenGlDevice {
             swapchains: self.swapchains.len(),
             allocated_bytes: bytes,
             reserved_bytes: bytes,
+            ..ResourceStats::default()
         }
     }
 }

@@ -83,6 +83,18 @@ impl<T> ResourceRegistry<T> {
             .count()
     }
 
+    pub(crate) fn live_ids<R>(&self) -> Vec<ResourceId<R>> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                slot.value
+                    .as_ref()
+                    .map(|_| ResourceId::from_parts(index as u32, slot.generation))
+            })
+            .collect()
+    }
+
     pub(crate) fn for_each_live(&self, mut visitor: impl FnMut(&T)) {
         for slot in &self.slots {
             if let Some(value) = slot.value.as_ref() {

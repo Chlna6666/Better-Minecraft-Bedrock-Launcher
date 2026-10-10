@@ -1,9 +1,10 @@
 #![cfg(target_os = "windows")]
 
 use gfx_core::{
-    DeviceDescriptor, Extent2d, Format, Error, ResourceDevice, TextureTransferDevice,
-    MemoryLocation, Origin2d, TextureDataLayout, TextureDescriptor, TextureDimension, TextureUsage,
-    TextureWrite, TextureWriteDescriptor,
+    BufferDescriptor, BufferUsage, DeviceDescriptor, DiagnosticsDevice, Error, Extent2d, Format,
+    MemoryAccounting, MemoryLocation, Origin2d, ResourceDevice, TextureDataLayout,
+    TextureDescriptor, TextureDimension, TextureTransferDevice, TextureUsage, TextureWrite,
+    TextureWriteDescriptor,
 };
 use gfx_dx12::Dx12Device;
 
@@ -18,6 +19,15 @@ fn texture_write_round_trips_offset_and_row_padding() {
         Err(error) => panic!("DX12 initialization failed: {error}"),
     };
     eprintln!("NOVA_GFX_ADAPTER=dx12:{}", device.adapter_name());
+    let baseline = device.resource_stats();
+    let _buffer = device
+        .create_buffer(&BufferDescriptor {
+            label: Some("memory profile fixture".into()),
+            size: 256,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            memory_location: MemoryLocation::CpuToGpu,
+        })
+        .expect("buffer creation should succeed");
     let size = Extent2d::new(2, 2).expect("fixture extent should be valid");
     let texture = device
         .create_texture(&TextureDescriptor {
@@ -30,6 +40,18 @@ fn texture_write_round_trips_offset_and_row_padding() {
             dimension: TextureDimension::D2,
         })
         .expect("texture creation should succeed");
+    let populated = device.resource_stats();
+    assert_eq!(populated.memory_accounting, MemoryAccounting::ResourceSizes);
+    assert_eq!(populated.buffers, baseline.buffers + 1);
+    assert_eq!(populated.textures, baseline.textures + 1);
+    assert!(populated.allocated_bytes >= baseline.allocated_bytes + 256 + 20);
+    let budget = device
+        .memory_budget()
+        .expect("supported driver budget query should succeed");
+    if let Some(budget) = budget {
+        assert!(budget.local.is_some() || budget.non_local.is_some());
+        eprintln!("NOVA_GFX_MEMORY_BUDGET={budget:?}");
+    }
     let source = [
         0xee, 0xee, 0xee, 0xee, 1, 2, 3, 4, 5, 6, 7, 8, 0xaa, 0xaa, 0xaa, 0xaa, 9, 10, 11, 12, 13,
         14, 15, 16,

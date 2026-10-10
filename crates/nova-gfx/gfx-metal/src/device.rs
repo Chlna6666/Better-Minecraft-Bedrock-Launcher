@@ -48,6 +48,8 @@ use gfx_core::{
 
 #[cfg(target_vendor = "apple")]
 mod platform {
+    mod buffer_upload;
+    mod relocation;
     use super::*;
     use crate::registry::ResourceRegistry;
     use core::ffi::c_void;
@@ -709,7 +711,27 @@ mod platform {
 
         #[must_use]
         fn resource_stats(&self) -> ResourceStats {
+            let allocated_bytes = self
+                .buffers
+                .values()
+                .filter(|buffer| buffer.resource.is_some())
+                .map(|buffer| buffer.desc.size)
+                .sum::<u64>()
+                .saturating_add(
+                    self.textures
+                        .values()
+                        .filter(|texture| texture.resource.is_some())
+                        .map(|texture| texture.desc.byte_size())
+                        .sum::<u64>(),
+                );
             ResourceStats {
+                memory_accounting: gfx_core::MemoryAccounting::ResourceSizes,
+                cpu_shadow_bytes: self
+                    .buffers
+                    .values()
+                    .filter_map(|buffer| buffer.data.as_ref())
+                    .map(|bytes| bytes.capacity() as u64)
+                    .sum(),
                 buffers: self.buffers.live_len(),
                 textures: self.textures.live_len(),
                 texture_views: self.texture_views.live_len(),
@@ -724,8 +746,9 @@ mod platform {
                 submissions: 0,
                 surfaces: self.surfaces.live_len(),
                 swapchains: self.swapchains.live_len(),
-                allocated_bytes: 0,
-                reserved_bytes: 0,
+                allocated_bytes,
+                reserved_bytes: allocated_bytes,
+                ..ResourceStats::default()
             }
         }
     }
@@ -763,12 +786,23 @@ mod platform {
     }
 
     impl ResourceDevice for MetalDevice {
+        fn copy_texture_batch(&mut self, copies: &[gfx_core::TextureCopy]) -> Result<()> {
+            self.copy_texture_regions(copies)
+        }
+
         fn create_buffer(&mut self, desc: &BufferDescriptor) -> Result<BufferId> {
             Self::create_buffer(self, desc)
         }
 
         fn write_buffer(&mut self, buffer: BufferId, offset: u64, data: &[u8]) -> Result<()> {
             Self::write_buffer(self, buffer, offset, data)
+        }
+
+        fn write_buffer_batch<'a>(
+            &mut self,
+            writes: impl IntoIterator<Item = gfx_core::BufferWrite<'a>>,
+        ) -> Result<gfx_core::BufferUploadStats> {
+            self.upload_buffer_batch(writes)
         }
 
         fn create_texture(&mut self, desc: &TextureDescriptor) -> Result<TextureId> {
@@ -993,6 +1027,14 @@ mod platform {
     impl DiagnosticsDevice for MetalDevice {
         fn resource_stats(&self) -> ResourceStats {
             Self::resource_stats(self)
+        }
+
+        fn memory_architecture(&self) -> Result<gfx_core::MemoryArchitecture> {
+            Ok(if self.device.hasUnifiedMemory() {
+                gfx_core::MemoryArchitecture::Unified
+            } else {
+                gfx_core::MemoryArchitecture::Discrete
+            })
         }
     }
 
@@ -1400,6 +1442,7 @@ mod platform {
 
     fn format_to_metal(format: Format) -> MTLPixelFormat {
         match format {
+            Format::R8Unorm => MTLPixelFormat::R8Unorm,
             Format::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
             Format::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
             Format::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,

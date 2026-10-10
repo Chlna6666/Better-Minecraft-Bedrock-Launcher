@@ -134,6 +134,10 @@ impl SubAllocator for DedicatedBlockAllocator {
         );
     }
 
+    fn allocation_count(&self) -> usize {
+        usize::from(self.allocated != 0)
+    }
+
     fn report_allocations(&self) -> Vec<AllocationReport> {
         vec![AllocationReport {
             name: self
