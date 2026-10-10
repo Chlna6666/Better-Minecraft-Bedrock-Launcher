@@ -1,6 +1,8 @@
+pub mod budget;
 pub mod events;
 pub mod manifest;
 pub mod runtime;
+pub mod services;
 pub mod state;
 pub mod ui_dsl;
 pub mod watcher;

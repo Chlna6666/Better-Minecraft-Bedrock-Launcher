@@ -15,6 +15,7 @@ pub struct PluginWindowView {
 
 impl PluginWindowView {
     pub fn new(plugin_id: String, page_id: String, title: String, cx: &mut Context<Self>) -> Self {
+        crate::plugins::runtime::request_page_render(cx, &plugin_id, &page_id);
         Self {
             plugin_id,
             page_id,
@@ -33,14 +34,15 @@ impl PluginWindowView {
 
 impl Render for PluginWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match crate::plugins::runtime::render_page(cx, &self.plugin_id, &self.page_id) {
-            Ok(tree) => {
-                render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
-                    .into_any_element()
-            }
-            Err(error) => {
-                crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
-            }
+        let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
+        if let Some(tree) = registry.cached_page(&self.plugin_id, &self.page_id) {
+            render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
+                .into_any_element()
+        } else if let Some(error) = registry.cached_page_error(&self.plugin_id, &self.page_id) {
+            crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
+        } else {
+            crate::plugins::runtime::request_page_render(cx, &self.plugin_id, &self.page_id);
+            crate::plugins::ui_dsl::loading_panel("正在加载插件窗口...").into_any_element()
         }
     }
 }

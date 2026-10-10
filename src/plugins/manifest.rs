@@ -138,6 +138,8 @@ struct RawPluginManifest {
     #[serde(default)]
     limits: RawPluginLimits,
     #[serde(default)]
+    dependencies: BTreeMap<String, String>,
+    #[serde(default)]
     capabilities: Vec<String>,
 }
 
@@ -216,6 +218,7 @@ pub struct PluginManifest {
     pub network_allowlist: Vec<String>,
     pub permissions: PluginPermissions,
     pub limits: PluginLimits,
+    pub dependencies: BTreeMap<String, String>,
     pub capabilities: BTreeSet<PluginCapability>,
     pub root_dir: PathBuf,
     pub pending_backup_dir: Option<PathBuf>,
@@ -335,6 +338,7 @@ impl PluginManifest {
             network_allowlist: permissions.network_allow.clone(),
             permissions,
             limits,
+            dependencies: raw.dependencies,
             capabilities,
             root_dir,
             pending_backup_dir,

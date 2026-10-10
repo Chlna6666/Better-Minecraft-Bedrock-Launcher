@@ -96,7 +96,7 @@ pulldown-cmark = "0.13.0"
 scraper = "0.27.0"
 ego-tree = "0.11.0"
 csscolorparser = "0.8.0"
-tinywasm = { version = "0.10.0", default-features = false, features = ["std", "parser", "archive"] }
+tinywasm = { version = "0.11.0", default-features = false, features = ["std", "parser", "archive"] }
 notify = "8.2.0"
 bmcbl_plugin_api = { path = "crates/bmcbl-plugin-api" }
 

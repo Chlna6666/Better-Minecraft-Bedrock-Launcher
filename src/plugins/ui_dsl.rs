@@ -1087,6 +1087,27 @@ pub fn fallback_panel(message: impl Into<SharedString>) -> gpui::Div {
         )
 }
 
+pub fn loading_panel(message: impl Into<SharedString>) -> gpui::Div {
+    let colors = LightColors::colors();
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0))
+        .p(px(24.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(token_color(ThemeToken::Border, &colors))
+        .bg(token_color(ThemeToken::Surface, &colors))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(token_color(ThemeToken::SecondaryText, &colors))
+                .child(message.into()),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

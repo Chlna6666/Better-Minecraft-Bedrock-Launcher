@@ -12,6 +12,7 @@ pub struct PluginPageView {
 
 impl PluginPageView {
     pub fn new(plugin_id: String, page_id: String, cx: &mut Context<Self>) -> Self {
+        crate::plugins::runtime::request_page_render(cx, &plugin_id, &page_id);
         Self {
             plugin_id,
             page_id,
@@ -38,14 +39,14 @@ impl Render for PluginPageView {
             theme.accent,
         );
 
-        let content = match crate::plugins::runtime::render_page(cx, &self.plugin_id, &self.page_id)
-        {
-            Ok(tree) => {
-                render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
-            }
-            Err(error) => {
-                crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
-            }
+        let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
+        let content = if let Some(tree) = registry.cached_page(&self.plugin_id, &self.page_id) {
+            render_validated_view_tree(&tree, &self.plugin_id, Some(&self.page_id), window, cx)
+        } else if let Some(error) = registry.cached_page_error(&self.plugin_id, &self.page_id) {
+            crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
+        } else {
+            crate::plugins::runtime::request_page_render(cx, &self.plugin_id, &self.page_id);
+            crate::plugins::ui_dsl::loading_panel("正在加载插件页面...").into_any_element()
         };
 
         page_frame(

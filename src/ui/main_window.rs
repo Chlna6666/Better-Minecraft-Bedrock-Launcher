@@ -844,17 +844,21 @@ impl MainWindowView {
         let close = Rc::new(|cx: &mut App| {
             crate::plugins::runtime::close_modal(cx);
         });
-        let page = match crate::plugins::runtime::render_page(cx, &modal.plugin_id, &modal.page_id)
-        {
-            Ok(tree) => crate::plugins::ui_dsl::render_validated_view_tree(
-                &tree,
-                &modal.plugin_id,
-                Some(&modal.page_id),
-                window,
-                cx,
-            ),
-            Err(error) => {
+        let page = {
+            let registry = cx.global::<crate::plugins::runtime::PluginRegistry>();
+            if let Some(tree) = registry.cached_page(&modal.plugin_id, &modal.page_id) {
+                crate::plugins::ui_dsl::render_validated_view_tree(
+                    &tree,
+                    &modal.plugin_id,
+                    Some(&modal.page_id),
+                    window,
+                    cx,
+                )
+            } else if let Some(error) = registry.cached_page_error(&modal.plugin_id, &modal.page_id) {
                 crate::plugins::ui_dsl::fallback_panel(error.to_string()).into_any_element()
+            } else {
+                crate::plugins::runtime::request_page_render(cx, &modal.plugin_id, &modal.page_id);
+                crate::plugins::ui_dsl::loading_panel("正在加载对话框...").into_any_element()
             }
         };
         let title = modal.title.clone();

@@ -8014,11 +8014,12 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
 name = "portable-atomic-util"
-version = "0.2.5"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9db96d7fa8782dd8c15ce32ffe8680bbd1e978a43bf51a34d39483540495f5"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
+ "serde",
 ]
 
 [[package]]
@@ -10818,9 +10819,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tinywasm"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7538e9f33dacf28c86c6bbf08f589b56779ae6b3daf0c827b36ba54ec1853bfb"
+checksum = "37a41f21be55cc0355ef8214b7ef0073bfcbb278e167b34c00c8871a3ddb2aab"
 dependencies = [
  "libm",
  "tinywasm-parser",
@@ -10829,20 +10830,21 @@ dependencies = [
 
 [[package]]
 name = "tinywasm-parser"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0de44d1c3a3285d6b7c37dd4532b2d45fe8227d2f75aa5d3e82ee1c6000ec58"
+checksum = "2d5bc5ee2c23a13719229d44c4d29fc7ab05afbe681e93321706c38cbabe30a6"
 dependencies = [
  "tinywasm-types",
- "wasmparser 0.254.0",
+ "wasmparser 0.259.0",
 ]
 
 [[package]]
 name = "tinywasm-types"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "259e431d6b611539164312c3190d4e1e2d1c28516ac2739f00f9fefe5e3e7b4d"
+checksum = "7b3d3028b2a4a53ba573d1d10490b5eae5e3db28566d8a154c92d91c1b1e6113"
 dependencies = [
+ "portable-atomic-util",
  "postcard",
  "serde",
 ]
@@ -11824,9 +11826,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.254.0"
+version = "0.259.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5769a29f799fbab136aaf65b4fe5384cd7d93fe6fc9ba0dcb6c8382a1f16e27"
+checksum = "0f7c12eac7bb587801590f6a67ff0bc84d0748513864b71108e4b311cc3df694"
 dependencies = [
  "bitflags 2.13.1",
  "indexmap",

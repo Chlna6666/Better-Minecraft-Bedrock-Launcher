@@ -21,7 +21,7 @@ use std::sync::{
     mpsc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tinywasm::engine::{Config as TinyConfig, FuelPolicy, MemoryBackend, StackConfig};
+use tinywasm::engine::{Config as TinyConfig, FuelPolicy, StackConfig};
 use tinywasm::types::{MemoryArch, WasmType, WasmValue};
 use tinywasm::{
     Engine, FuncContext, Function, HostFunction, Imports, Module, ModuleInstance, Store,
@@ -410,6 +410,7 @@ struct RenderCache {
     pages: BTreeMap<PageRenderCacheKey, Arc<ViewTree>>,
     page_errors: BTreeMap<PageRenderCacheKey, Arc<str>>,
     injections: BTreeMap<InjectionRenderCacheKey, Vec<RenderedInjection>>,
+    pending_pages: BTreeSet<PageRenderCacheKey>,
 }
 
 #[derive(Debug)]
@@ -922,7 +923,7 @@ impl PluginRegistry {
         self.active_modal.clone()
     }
 
-    fn cached_page(&self, plugin_id: &str, page_id: &str) -> Option<Arc<ViewTree>> {
+    pub fn cached_page(&self, plugin_id: &str, page_id: &str) -> Option<Arc<ViewTree>> {
         self.render_cache
             .pages
             .get(&PageRenderCacheKey {
@@ -932,7 +933,7 @@ impl PluginRegistry {
             .cloned()
     }
 
-    fn cached_page_error(&self, plugin_id: &str, page_id: &str) -> Option<Arc<str>> {
+    pub fn cached_page_error(&self, plugin_id: &str, page_id: &str) -> Option<Arc<str>> {
         self.render_cache
             .page_errors
             .get(&PageRenderCacheKey {
@@ -942,7 +943,16 @@ impl PluginRegistry {
             .cloned()
     }
 
-    fn cached_injections(
+    pub fn is_page_pending(&self, plugin_id: &str, page_id: &str) -> bool {
+        self.render_cache
+            .pending_pages
+            .contains(&PageRenderCacheKey {
+                plugin_id: plugin_id.to_string(),
+                page_id: page_id.to_string(),
+            })
+    }
+
+    pub fn cached_injections(
         &self,
         slot: InjectionSlot,
         page: Option<&str>,
@@ -967,12 +977,12 @@ impl PluginRegistry {
             return Ok(());
         }
 
+        let limiter = crate::plugins::budget::PluginResourceLimiter::default();
         let config = TinyConfig::new()
             .with_fuel_policy(FuelPolicy::Weighted)
-            .with_memory_backend(MemoryBackend::vec())
             .with_call_stack(StackConfig::fixed(256))
             .with_value_stack(StackConfig::dynamic(1024, 16 * 1024))
-            .with_trap_on_oom(true);
+            .with_resource_limiter(limiter);
         self.engine = Some(Engine::new(config));
         Ok(())
     }
@@ -1321,6 +1331,65 @@ impl PluginRegistry {
         }
     }
 
+    /// 安全休眠指定插件：触发 unload 并 drop Store，将 Wasm 线性内存归还操作系统
+    pub fn hibernate_plugin(&mut self, plugin_id: &str) -> Result<bool> {
+        let Some(instance) = self.plugins.get_mut(plugin_id) else {
+            return Ok(false);
+        };
+        if instance.runtime.is_none() {
+            return Ok(false);
+        }
+        let _ = instance.shutdown(abi::ShutdownReason::Unload);
+        instance.runtime = None;
+        instance.state = PluginLoadState::Unloaded;
+        self.render_cache.invalidate_plugin(plugin_id);
+        info!(plugin_id, "plugin hibernated; Store and Wasm linear memory released");
+        Ok(true)
+    }
+
+    /// 检查指定插件是否处于休眠状态（已启用但尚未物化 Store）
+    pub fn is_hibernated(&self, plugin_id: &str) -> bool {
+        self.plugins
+            .get(plugin_id)
+            .map(|inst| inst.enabled && inst.runtime.is_none())
+            .unwrap_or(false)
+    }
+
+    /// 清理指定插件在宿主侧的渲染缓存与冷数据
+    pub fn trim_plugin_caches(&mut self, plugin_id: &str) {
+        self.render_cache.invalidate_plugin(plugin_id);
+    }
+
+    /// 评估所有插件归属内存，执行 8 MiB 软预算自适应回收策略（清理冷缓存或安全休眠）
+    pub fn enforce_memory_budgets(&mut self, system_memory_pressure: bool) {
+        let budget = crate::plugins::budget::PluginMemoryBudget::default();
+        let report = self.memory_report();
+        for snapshot in report.plugins {
+            if !snapshot.loaded {
+                continue;
+            }
+            let is_idle = !self
+                .active_modal
+                .as_ref()
+                .is_some_and(|m| m.plugin_id == snapshot.plugin_id);
+            let evaluation = crate::plugins::budget::evaluate_plugin_budget(
+                &budget,
+                snapshot.total_estimated_bytes,
+                is_idle,
+                system_memory_pressure,
+            );
+            match evaluation {
+                crate::plugins::budget::BudgetEvaluation::Normal => {}
+                crate::plugins::budget::BudgetEvaluation::TrimCaches => {
+                    self.trim_plugin_caches(&snapshot.plugin_id);
+                }
+                crate::plugins::budget::BudgetEvaluation::Hibernate => {
+                    let _ = self.hibernate_plugin(&snapshot.plugin_id);
+                }
+            }
+        }
+    }
+
     fn instantiate_plugin(
         &mut self,
         manifest: &PluginManifest,
@@ -1361,8 +1430,8 @@ impl PluginRegistry {
             prepared_resources.sidecar_files.clone(),
         )));
         let mut store = Store::new(engine.clone());
-        let imports = host_imports(&mut store, host_state.clone());
-        let instance = ModuleInstance::instantiate(&mut store, &module, Some(imports))
+        let imports = host_imports(host_state.clone());
+        let instance = ModuleInstance::instantiate(&mut store, &module, Some(&imports))
             .map_err(|error| anyhow!("instantiate plugin module failed: {error}"))?;
         let memory = instance
             .memory(ABI_EXPORT_MEMORY)
@@ -1898,8 +1967,9 @@ impl PluginExecution {
                 (request_ptr as i32).into(),
                 (request_bytes.len() as i32).into(),
             ];
+            let mut results = [WasmValue::I64(0)];
             let mut execution = function
-                .call_resumable(&mut self.store, &args)
+                .call_resumable(&mut self.store, &args, &mut results)
                 .map_err(|error| anyhow!("start plugin call failed: {error}"))?;
             let started = Instant::now();
             loop {
@@ -1907,11 +1977,8 @@ impl PluginExecution {
                     .resume_with_fuel(fuel)
                     .map_err(|error| anyhow!("resume plugin call failed: {error}"))?
                 {
-                    tinywasm::ExecProgress::Completed(result) => {
-                        let Some(WasmValue::I64(packed)) = result.first().copied() else {
-                            bail!("plugin call returned unexpected result shape");
-                        };
-                        return self.read_plugin_result::<R>(packed);
+                    tinywasm::ExecProgress::Completed(()) => {
+                        break;
                     }
                     tinywasm::ExecProgress::Suspended => {
                         if started.elapsed() > timeout {
@@ -1920,6 +1987,11 @@ impl PluginExecution {
                     }
                 }
             }
+            drop(execution);
+            let Some(&WasmValue::I64(packed)) = results.first() else {
+                bail!("plugin call returned unexpected result shape");
+            };
+            self.read_plugin_result::<R>(packed)
         })();
 
         self.deallocate(request_ptr, request_bytes.len())?;
@@ -1927,14 +1999,15 @@ impl PluginExecution {
     }
 
     fn alloc_bytes(&mut self, bytes: &[u8]) -> Result<u32> {
-        let ptr = self
-            .alloc
+        let mut results = [WasmValue::I32(0)];
+        self.alloc
             .call(
                 &mut self.store,
                 &[(bytes.len() as i32).into(), 1_i32.into()],
+                &mut results,
             )
             .map_err(|error| anyhow!("plugin alloc failed: {error}"))?;
-        let Some(WasmValue::I32(ptr)) = ptr.first().copied() else {
+        let Some(&WasmValue::I32(ptr)) = results.first() else {
             bail!("plugin alloc returned unexpected value");
         };
         self.memory
@@ -1951,6 +2024,7 @@ impl PluginExecution {
             .call(
                 &mut self.store,
                 &[(ptr as i32).into(), (len as i32).into(), 1_i32.into()],
+                &mut [],
             )
             .map_err(|error| anyhow!("plugin dealloc failed: {error}"))?;
         Ok(())
@@ -2154,10 +2228,9 @@ fn is_supported_host_import(module: &str, name: &str) -> bool {
     name == ABI_IMPORT_NAME && (module == ABI_IMPORT_MODULE || module == ABI_LEGACY_IMPORT_MODULE)
 }
 
-fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Imports {
+fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
     let mut imports = Imports::new();
     let host_call = HostFunction::from_untyped(
-        store,
         &tinywasm::types::FuncType::new(
             &[
                 WasmType::I32,
@@ -2168,8 +2241,8 @@ fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Import
             ],
             &[WasmType::I64],
         ),
-        move |mut ctx: FuncContext<'_>, args| {
-            let [
+        move |mut ctx: FuncContext<'_>, args: &[WasmValue], results: &mut [WasmValue]| {
+            let &[
                 WasmValue::I32(op),
                 WasmValue::I32(req_ptr),
                 WasmValue::I32(req_len),
@@ -2182,7 +2255,7 @@ fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Import
 
             let memory = ctx.memory(ABI_EXPORT_MEMORY)?;
             let request = memory
-                .read_vec(ctx.store(), *req_ptr as usize, *req_len as usize)
+                .read_vec(ctx.store(), req_ptr as usize, req_len as usize)
                 .map_err(|error| {
                     tinywasm::Error::Other(format!("read host request failed: {error}"))
                 })?;
@@ -2195,21 +2268,27 @@ fn host_imports(store: &mut Store, host_state: Rc<RefCell<HostState>>) -> Import
             let request = postcard::from_bytes::<abi::HostRequest>(&request).map_err(|error| {
                 tinywasm::Error::Other(format!("decode host request failed: {error}"))
             })?;
-            let response = handle_host_request(&host_state, *op, request);
+            let response = handle_host_request(&host_state, op, request);
             let response_bytes = postcard::to_allocvec(&response).map_err(|error| {
                 tinywasm::Error::Other(format!("encode host response failed: {error}"))
             })?;
 
-            if response_bytes.len() > *resp_cap as usize {
-                return Ok(vec![WasmValue::I64(-(response_bytes.len() as i64))]);
+            if response_bytes.len() > resp_cap as usize {
+                if !results.is_empty() {
+                    results[0] = WasmValue::I64(-(response_bytes.len() as i64));
+                }
+                return Ok(());
             }
 
             memory
-                .write(ctx.store_mut(), *resp_ptr as usize, &response_bytes)
+                .write(ctx.store_mut(), resp_ptr as usize, &response_bytes)
                 .map_err(|error| {
                     tinywasm::Error::Other(format!("write host response failed: {error}"))
                 })?;
-            Ok(vec![WasmValue::I64(response_bytes.len() as i64)])
+            if !results.is_empty() {
+                results[0] = WasmValue::I64(response_bytes.len() as i64);
+            }
+            Ok(())
         },
     );
     imports.define(ABI_IMPORT_MODULE, ABI_IMPORT_NAME, host_call.clone());
@@ -3074,6 +3153,7 @@ impl RenderCache {
         self.pages.clear();
         self.page_errors.clear();
         self.injections.clear();
+        self.pending_pages.clear();
     }
 
     fn invalidate_plugin(&mut self, plugin_id: &str) {
@@ -3081,6 +3161,8 @@ impl RenderCache {
             .retain(|key, _tree| key.plugin_id.as_str() != plugin_id);
         self.page_errors
             .retain(|key, _error| key.plugin_id.as_str() != plugin_id);
+        self.pending_pages
+            .retain(|key| key.plugin_id.as_str() != plugin_id);
         for trees in self.injections.values_mut() {
             trees.retain(|tree| tree.plugin_id.as_str() != plugin_id);
         }
@@ -3100,6 +3182,12 @@ impl RenderCache {
             }
             page_id.is_some_and(|page_id| key.page_id.as_str() != page_id)
         });
+        self.pending_pages.retain(|key| {
+            if key.plugin_id.as_str() != plugin_id {
+                return true;
+            }
+            page_id.is_some_and(|page_id| key.page_id.as_str() != page_id)
+        });
         self.injections.clear();
     }
 
@@ -3112,6 +3200,9 @@ impl RenderCache {
             key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
         });
         self.page_errors.retain(|key, _error| {
+            key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
+        });
+        self.pending_pages.retain(|key| {
             key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
         });
         self.invalidate_plugin_injections(plugin_id);
@@ -4092,6 +4183,34 @@ fn prepare_plugin_manifests(
         });
     }
 
+    // 根据 DependencyGraph 拓扑排序插件加载顺序
+    let mut graph = crate::plugins::services::DependencyGraph::new();
+    for plugin in &plugins {
+        let deps: BTreeSet<String> = plugin.manifest.dependencies.keys().cloned().collect();
+        graph.add_plugin(plugin.manifest.id.clone(), deps);
+    }
+    match graph.compute_load_order() {
+        Ok(order) => {
+            let mut ordered_plugins = Vec::with_capacity(plugins.len());
+            let mut plugin_map: BTreeMap<String, PreparedPluginManifest> = plugins
+                .into_iter()
+                .map(|p| (p.manifest.id.clone(), p))
+                .collect();
+            for id in order {
+                if let Some(p) = plugin_map.remove(&id) {
+                    ordered_plugins.push(p);
+                }
+            }
+            for (_, p) in plugin_map {
+                ordered_plugins.push(p);
+            }
+            plugins = ordered_plugins;
+        }
+        Err(err) => {
+            warn!(error = %err, "plugin dependency resolution failed, preserving default order");
+        }
+    }
+
     PreparedPluginReload { plugins }
 }
 
@@ -4446,6 +4565,50 @@ pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<V
     })
 }
 
+/// 异步请求页面渲染并更新缓存，避免在 UI 渲染帧中同步阻塞主线程
+pub fn request_page_render(cx: &mut App, plugin_id: &str, page_id: &str) {
+    ensure_loaded(cx);
+    drain_async_host_refreshes(cx);
+
+    let key = PageRenderCacheKey {
+        plugin_id: plugin_id.to_string(),
+        page_id: page_id.to_string(),
+    };
+
+    let already_handled = {
+        let registry = cx.global::<PluginRegistry>();
+        registry.cached_page(plugin_id, page_id).is_some()
+            || registry.cached_page_error(plugin_id, page_id).is_some()
+            || registry.is_page_pending(plugin_id, page_id)
+    };
+
+    if already_handled {
+        return;
+    }
+
+    cx.update_global(|registry: &mut PluginRegistry, _cx| {
+        registry.render_cache.pending_pages.insert(key);
+    });
+
+    let plugin_id = plugin_id.to_string();
+    let page_id = page_id.to_string();
+    let theme_snapshot = current_theme_snapshot(cx);
+
+    cx.spawn(async move |cx| {
+        let _ = cx.update(|cx| {
+            cx.update_global(|registry: &mut PluginRegistry, _cx| {
+                registry.render_cache.pending_pages.remove(&PageRenderCacheKey {
+                    plugin_id: plugin_id.clone(),
+                    page_id: page_id.clone(),
+                });
+                registry.set_theme_snapshot(theme_snapshot);
+                let _ = registry.render_page(&plugin_id, &page_id);
+            });
+        });
+    })
+    .detach();
+}
+
 pub fn render_injections(
     cx: &mut App,
     slot: InjectionSlot,
@@ -4540,7 +4703,10 @@ pub fn close_modal(cx: &mut App) {
 }
 
 fn open_modal(cx: &mut App, request: abi::ModalRequest) -> Result<()> {
+    let plugin_id = request.plugin_id.clone();
+    let page_id = request.page_id.clone();
     cx.update_global(|registry: &mut PluginRegistry, _cx| registry.open_modal(request))?;
+    request_page_render(cx, &plugin_id, &page_id);
     cx.refresh_windows();
     Ok(())
 }
