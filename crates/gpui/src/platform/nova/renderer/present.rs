@@ -509,6 +509,11 @@ impl NovaRenderer {
             Vec::new()
         };
         let element_blur_layers = self.prepare_element_blur_layers(&dirty_element_indices);
+        let root_scene_color_cached = self.frame_upload.retained_root_blur.is_some();
+        let root_scene_color_refreshes = element_blur_layers
+            .iter()
+            .filter(|layer| Some(layer.index) == self.frame_upload.retained_root_blur)
+            .count();
         let (blur_source_pixels, blur_level_pixels) =
             self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
@@ -633,7 +638,8 @@ impl NovaRenderer {
                     "path_vertices={} mono_sprites={} poly_sprites={} underlines={} ",
                     "draw_steps={} draw_step_cache_hit={} path_mask_steps={} path_mask_cache_hit={} gpu_passes={} upload_bytes={} ",
                     "async_submission={} async_wait={} async_presentation={} ",
-                    "native_partial_presentation={} ",
+                    "native_partial_presentation={} retained_root={} ",
+                    "retained_root_refreshes={} main_swapchain_steps={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
@@ -665,6 +671,9 @@ impl NovaRenderer {
                 async_capabilities.async_wait,
                 async_capabilities.async_presentation,
                 native_partial_presentation,
+                root_scene_color_cached,
+                root_scene_color_refreshes,
+                draw_step_count,
                 present_damage,
                 packet.partial_present_mode,
                 packet.dirty_region.is_full(),

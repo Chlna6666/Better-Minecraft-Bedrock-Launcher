@@ -5,26 +5,37 @@ use super::*;
 use std::hash::Hasher;
 use std::time::Duration;
 
-// Reuse the original retained GPU scene-color target only when many stable
-// primitives justify an additional offscreen color attachment + final blit.
-// Small UIs and painter-ordered blur chains still use direct rendering.
-// The threshold is deliberately conservative until per-layer GPU timestamps
-// and adaptive cost feedback are available.
+// Retain the already implemented scene-color target for complex unfiltered
+// scenes, and for multi-layer/effect scenes that otherwise repeatedly submit
+// the whole main painter stream at display refresh rate.
+//
+// Painter-order backdrop barriers remain INSIDE the synthetic zero-radius
+// capture. Their existing ping/final filter caches are still refreshed by
+// their own source-damage dependency graph, not by whole-window invalidation.
+// Keeping this decision at the flattened scene boundary works on all Nova
+// backends without relying on swapchain backbuffer persistence.
 const AUTO_RETAINED_COLOR_MIN_PRIMITIVES: usize = 384;
+const AUTO_RETAINED_EFFECT_SCENE_MIN_PRIMITIVES: usize = 40;
+const AUTO_RETAINED_EFFECT_SCENE_MIN_LAYERS: usize = 2;
 
 fn should_retain_complex_scene_color(
     scene: &crate::Scene,
     summary: &FrameUploadSummary,
 ) -> bool {
-    if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
-        return false;
-    }
     let primitives = summary.quad_count as usize
         + summary.shadow_count as usize
         + summary.path_sprite_count as usize
         + summary.mono_sprite_count as usize
         + summary.poly_sprite_count as usize
         + summary.underline_count as usize;
+    if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
+        // A single small effect rarely offsets an extra fullscreen blit.
+        // Multiple independently filtered or composited layers have a
+        // higher repeated-raster cost even when the ordinary primitive count
+        // is modest (for example the 48-primitive animated page).
+        return primitives >= AUTO_RETAINED_EFFECT_SCENE_MIN_PRIMITIVES
+            && (summary.backdrop_blur_count as usize) >= AUTO_RETAINED_EFFECT_SCENE_MIN_LAYERS;
+    }
     primitives >= AUTO_RETAINED_COLOR_MIN_PRIMITIVES
 }
 
@@ -653,12 +664,12 @@ impl NovaRenderer {
             if !scene.requires_full_redraw_fallback()
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
-                // The complete window color texture is NOT free: on a
-                // lightweight 48-primitive animated page it doubles memory
-                // bandwidth. Reuse it automatically only for complex scenes
-                // without painter-ordered Gaussian barriers. Smaller scenes
-                // retain direct presentation, and the explicit 1/0 overrides
-                // support reproducible A/B GPU measurements.
+                // Never add the extra full-surface texture for every window.
+                // Small static pages use direct rendering; busy scenes with
+                // nested filters/composites can reuse the retained root color
+                // texture and only repaint the damaged source pixels. Exact
+                // filter-order barriers are preserved inside the root capture.
+                // The explicit 1/0 switch enables repeatable driver A/B tests.
                 && std::env::var_os("BMCBL_DISABLE_RETAINED_COLOR").is_none()
                 && match std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref() {
                     Ok("1") => true,
@@ -780,8 +791,8 @@ mod tests {
         summary.mono_sprite_count = 500;
         assert!(should_retain_complex_scene_color(&scene, &summary));
 
-        // A blur chain cannot use the opaque root color shortcut: it has
-        // painter-ordered source dependencies and separate cached targets.
+        // The synthetic root surrounds the existing ordered filter barriers,
+        // so multi-effect scenes are now eligible for GPU scene-color reuse.
         let mut scene_with_blur = crate::Scene::default();
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -801,6 +812,13 @@ mod tests {
             tint: None,
             recompute_overlap: false,
         });
+        summary.quad_count = 47;
+        summary.mono_sprite_count = 0;
+        summary.backdrop_blur_count = 1;
+        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        summary.backdrop_blur_count = 3;
+        assert!(should_retain_complex_scene_color(&scene_with_blur, &summary));
+        summary.quad_count = 8;
         assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
     }
 
