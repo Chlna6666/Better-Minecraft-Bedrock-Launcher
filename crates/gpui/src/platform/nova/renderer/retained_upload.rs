@@ -630,8 +630,16 @@ impl NovaRenderer {
             if !scene.requires_full_redraw_fallback()
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
-                // An emergency escape hatch for backend-specific driver regressions.
-                // The retained path is otherwise enabled across all Nova backends.
+                // An unconditional root color target adds a full-window offscreen draw
+                // and full-screen texture composite to EVERY presented frame, even when
+                // no Gaussian blur exists. At high refresh rates that overhead can cost
+                // more than the saved primitive draws. Keep the experimental retained
+                // compositor explicitly opt-in until GPU pass timing demonstrates a win.
+                // Ordinary per-effect backdrop and element blur caches remain enabled.
+                && matches!(
+                    std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref(),
+                    Ok("1")
+                )
                 && std::env::var_os("BMCBL_DISABLE_RETAINED_COLOR").is_none()
             {
                 self.frame_upload
