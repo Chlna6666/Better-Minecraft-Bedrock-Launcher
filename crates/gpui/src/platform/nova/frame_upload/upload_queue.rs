@@ -27,9 +27,18 @@ pub(in crate::platform::nova) struct PendingAtlasUpload {
 }
 
 #[derive(Default)]
-struct AtlasUploadBatch {
+pub(in crate::platform::nova) struct AtlasUploadBatch {
     bytes: Vec<u8>,
     uploads: Vec<PendingAtlasUpload>,
+    // Captured under the SAME lock as the queued writes. New pages created
+    // after this point belong to the next batch, not the current GPU upload.
+    texture_infos: Vec<NovaAtlasTextureInfo>,
+}
+
+impl AtlasUploadBatch {
+    pub(in crate::platform::nova) fn texture_infos(&self) -> &[NovaAtlasTextureInfo] {
+        &self.texture_infos
+    }
 }
 
 #[cfg(feature = "bench-support")]
@@ -83,10 +92,19 @@ impl AtlasUploadBenchmarkCore {
 impl NovaAtlas {
     pub(in crate::platform::nova) fn upload_pending_rgba_pixels(
         &self,
+        resolve_texture: impl FnMut(AtlasTextureId) -> Result<TextureId>,
+        upload: impl FnMut(&[TextureWrite<'_>]) -> Result<()>,
+    ) -> Result<AtlasUploadStats> {
+        let batch = self.take_pending_uploads();
+        self.upload_taken_rgba_pixels(batch, resolve_texture, upload)
+    }
+
+    pub(in crate::platform::nova) fn upload_taken_rgba_pixels(
+        &self,
+        batch: AtlasUploadBatch,
         mut resolve_texture: impl FnMut(AtlasTextureId) -> Result<TextureId>,
         mut upload: impl FnMut(&[TextureWrite<'_>]) -> Result<()>,
     ) -> Result<AtlasUploadStats> {
-        let batch = self.take_pending_uploads();
         let mut stats = AtlasUploadStats {
             arena_used_bytes: batch.bytes.len(),
             arena_capacity: batch.bytes.capacity(),
@@ -149,11 +167,31 @@ impl NovaAtlas {
             .any(|upload| texture_ids.contains(&upload.texture_id))
     }
 
-    fn take_pending_uploads(&self) -> AtlasUploadBatch {
+    pub(in crate::platform::nova) fn take_pending_uploads(&self) -> AtlasUploadBatch {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        let pending_ids: FxHashSet<_> = state
+            .pending_uploads
+            .iter()
+            .map(|upload| upload.texture_id)
+            .collect();
+        let texture_infos = if pending_ids.is_empty() {
+            Vec::new()
+        } else {
+            state
+                .texture_lists
+                .iter()
+                .flat_map(|list| list.textures.iter().flatten())
+                .filter(|texture| pending_ids.contains(&texture.id))
+                .map(|texture| NovaAtlasTextureInfo {
+                    id: texture.id,
+                    size: texture.size,
+                })
+                .collect()
+        };
         AtlasUploadBatch {
             bytes: std::mem::take(&mut state.upload_bytes),
             uploads: std::mem::take(&mut state.pending_uploads),
+            texture_infos,
         }
     }
 
@@ -176,7 +214,7 @@ impl NovaAtlas {
         }
     }
 
-    fn restore_upload_batch(&self, batch: AtlasUploadBatch) {
+    pub(in crate::platform::nova) fn restore_upload_batch(&self, batch: AtlasUploadBatch) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         let base_offset = state.upload_bytes.len();
         state.upload_bytes.extend_from_slice(&batch.bytes);
@@ -330,5 +368,24 @@ impl NovaAtlasState {
         });
         self.content_generation = self.content_generation.wrapping_add(1);
         true
+    }
+}
+
+#[cfg(test)]
+mod upload_texture_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn pending_atlas_texture_snapshot_covers_queued_uploads() {
+        let atlas = NovaAtlas::new();
+        let batch = atlas.take_pending_uploads();
+        // Fallback tiles are already queued by NovaAtlas::new(). Every
+        // pending texture must have an allocation snapshot from the same lock.
+        assert!(!batch.uploads.is_empty());
+        for upload in &batch.uploads {
+            assert!(batch.texture_infos().iter().any(|info| info.id == upload.texture_id));
+        }
+        atlas.restore_upload_batch(batch);
+        assert!(atlas.pending_upload_count_for_test() > 0);
     }
 }

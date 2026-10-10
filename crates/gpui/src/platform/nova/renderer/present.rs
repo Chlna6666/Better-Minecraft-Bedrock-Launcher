@@ -778,6 +778,7 @@ impl NovaRenderer {
         let atlas_texture_region_count: usize;
         let atlas_texture_upload_bytes: usize;
         let backend_work_started = Instant::now();
+        let atlas_resource_descriptor = self.atlas_resource_descriptor();
 
         let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
             match &mut *lock_backend(&self.backend) {
@@ -807,18 +808,13 @@ impl NovaRenderer {
                     }
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
-                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                        self.gpu_atlas_textures
-                            .get(&atlas_id)
-                            .map(|texture| texture.texture)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "missing nova atlas texture {:?}/{}",
-                                    atlas_id.kind,
-                                    atlas_id.index
-                                )
-                            })
-                    })?;
+                    let atlas_stats = upload_pending_atlas(
+                        &self.atlas,
+                        device,
+                        &mut self.gpu_atlas_textures,
+                        backend_label,
+                        &atlas_resource_descriptor,
+                    )?;
                     let atlas_upload_elapsed = atlas_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.atlas_upload = atlas_upload_elapsed;
@@ -939,18 +935,13 @@ impl NovaRenderer {
                     }
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
-                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                        self.gpu_atlas_textures
-                            .get(&atlas_id)
-                            .map(|texture| texture.texture)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "missing nova atlas texture {:?}/{}",
-                                    atlas_id.kind,
-                                    atlas_id.index
-                                )
-                            })
-                    })?;
+                    let atlas_stats = upload_pending_atlas(
+                        &self.atlas,
+                        device,
+                        &mut self.gpu_atlas_textures,
+                        backend_label,
+                        &atlas_resource_descriptor,
+                    )?;
                     let atlas_upload_elapsed = atlas_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.atlas_upload = atlas_upload_elapsed;
@@ -1071,18 +1062,13 @@ impl NovaRenderer {
                     }
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
-                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                        self.gpu_atlas_textures
-                            .get(&atlas_id)
-                            .map(|texture| texture.texture)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "missing nova atlas texture {:?}/{}",
-                                    atlas_id.kind,
-                                    atlas_id.index
-                                )
-                            })
-                    })?;
+                    let atlas_stats = upload_pending_atlas(
+                        &self.atlas,
+                        device,
+                        &mut self.gpu_atlas_textures,
+                        backend_label,
+                        &atlas_resource_descriptor,
+                    )?;
                     let atlas_upload_elapsed = atlas_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.atlas_upload = atlas_upload_elapsed;
@@ -1196,18 +1182,13 @@ impl NovaRenderer {
                             quad_upload_plan: &quad_upload_plan,
                         },
                     )?;
-                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                        self.gpu_atlas_textures
-                            .get(&atlas_id)
-                            .map(|texture| texture.texture)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "missing nova atlas texture {:?}/{}",
-                                    atlas_id.kind,
-                                    atlas_id.index
-                                )
-                            })
-                    })?;
+                    let atlas_stats = upload_pending_atlas(
+                        &self.atlas,
+                        device,
+                        &mut self.gpu_atlas_textures,
+                        backend_label,
+                        &atlas_resource_descriptor,
+                    )?;
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
@@ -1297,18 +1278,13 @@ impl NovaRenderer {
                     }
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
-                    let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
-                        self.gpu_atlas_textures
-                            .get(&atlas_id)
-                            .map(|texture| texture.texture)
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "missing nova atlas texture {:?}/{}",
-                                    atlas_id.kind,
-                                    atlas_id.index
-                                )
-                            })
-                    })?;
+                    let atlas_stats = upload_pending_atlas(
+                        &self.atlas,
+                        device,
+                        &mut self.gpu_atlas_textures,
+                        backend_label,
+                        &atlas_resource_descriptor,
+                    )?;
                     let atlas_upload_elapsed = atlas_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.atlas_upload = atlas_upload_elapsed;
