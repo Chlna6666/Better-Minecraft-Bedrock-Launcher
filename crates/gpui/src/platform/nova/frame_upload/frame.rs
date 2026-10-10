@@ -2,7 +2,7 @@ use super::*;
 use std::ops::Range;
 
 pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
-    pub(in crate::platform::nova) bytes: Vec<u8>,
+    pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
     pub(in crate::platform::nova) byte_hash: u64,
     pub(in crate::platform::nova) quad_count: u32,
     pub(in crate::platform::nova) is_solid: bool,
@@ -89,9 +89,10 @@ impl FrameUploadSummary {
 
 #[derive(Default)]
 pub(in crate::platform::nova) struct FrameUpload {
+    pub(in crate::platform::nova) atlas_placements: FxHashMap<crate::TileId, AtlasTile>,
     pub(in crate::platform::nova) globals: Vec<u8>,
     pub(in crate::platform::nova) text_raster_params: Vec<u8>,
-    pub(in crate::platform::nova) quads: Vec<u8>,
+    pub(in crate::platform::nova) quads: PackedQuadStream,
     pub(in crate::platform::nova) shadows: Vec<u8>,
     pub(in crate::platform::nova) path_rasterization_vertices: Vec<u8>,
     pub(in crate::platform::nova) path_sprites: Vec<u8>,

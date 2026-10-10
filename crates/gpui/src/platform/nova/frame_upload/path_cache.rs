@@ -30,6 +30,16 @@ pub(in crate::platform::nova) struct PathRasterizationCache {
 }
 
 impl PathRasterizationCache {
+    pub(in crate::platform::nova) fn payload_bytes(&self) -> u64 {
+        let mut seen = FxHashSet::default();
+        self.entries
+            .values()
+            .filter_map(|(entry, _)| {
+                seen.insert(Arc::as_ptr(&entry.bytes) as *const u8 as usize)
+                    .then_some(entry.bytes.len() as u64)
+            })
+            .sum()
+    }
     #[inline]
     fn next_stamp(&mut self) -> u64 {
         self.next_stamp = self.next_stamp.wrapping_add(1);

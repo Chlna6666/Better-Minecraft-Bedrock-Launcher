@@ -8,16 +8,15 @@ pub(super) struct AtlasResourceDescriptor {
 }
 
 pub(super) fn path_resource_bindings(
-    global_buffer: BufferId,
+    buffers: &FrameResourceBuffers,
     path_texture_view: TextureViewId,
     sampler: SamplerId,
-    path_sprite_buffer: BufferId,
 ) -> Vec<ResourceBinding> {
     vec![
         ResourceBinding {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: global_buffer,
+                buffer: buffers.global_buffer,
                 offset: 0,
                 size: GLOBAL_UPLOAD_BYTES as u64,
                 stride: None,
@@ -36,9 +35,9 @@ pub(super) fn path_resource_bindings(
         ResourceBinding {
             binding: 6,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: path_sprite_buffer,
+                buffer: buffers.path_sprite_buffer,
                 offset: 0,
-                size: (MAX_PATH_SPRITES * PACKED_PATH_SPRITE_BYTES) as u64,
+                size: (buffers.path_sprite_capacity * PACKED_PATH_SPRITE_BYTES) as u64,
                 stride: Some(PACKED_PATH_SPRITE_BYTES as u32),
             }),
         },
@@ -46,10 +45,9 @@ pub(super) fn path_resource_bindings(
 }
 
 pub(super) fn backdrop_blur_pass_resource_bindings(
+    buffers: &FrameResourceBuffers,
     source_texture_view: TextureViewId,
     sampler: SamplerId,
-    pass_buffer: BufferId,
-    animation_buffer: BufferId,
 ) -> Vec<ResourceBinding> {
     vec![
         ResourceBinding {
@@ -65,7 +63,7 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
         ResourceBinding {
             binding: 15,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: pass_buffer,
+                buffer: buffers.backdrop_blur_pass_buffer,
                 offset: 0,
                 size: (MAX_BACKDROP_BLURS * 2 * BACKDROP_BLUR_PASS_BYTES) as u64,
                 stride: Some(BACKDROP_BLUR_PASS_BYTES as u32),
@@ -74,9 +72,9 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
         ResourceBinding {
             binding: 17,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: animation_buffer,
+                buffer: buffers.animation_value_buffer,
                 offset: 0,
-                size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+                size: (buffers.animation_value_capacity * PACKED_ANIMATION_VALUE_BYTES) as u64,
                 stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
             }),
         },
@@ -84,17 +82,15 @@ pub(super) fn backdrop_blur_pass_resource_bindings(
 }
 
 pub(super) fn backdrop_blur_resource_bindings(
-    global_buffer: BufferId,
+    buffers: &FrameResourceBuffers,
     source_texture_view: TextureViewId,
     sampler: SamplerId,
-    blur_buffer: BufferId,
-    animation_buffer: BufferId,
 ) -> Vec<ResourceBinding> {
     vec![
         ResourceBinding {
             binding: 0,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: global_buffer,
+                buffer: buffers.global_buffer,
                 offset: 0,
                 size: GLOBAL_UPLOAD_BYTES as u64,
                 stride: None,
@@ -113,7 +109,7 @@ pub(super) fn backdrop_blur_resource_bindings(
         ResourceBinding {
             binding: 16,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: blur_buffer,
+                buffer: buffers.backdrop_blur_buffer,
                 offset: 0,
                 size: (MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES) as u64,
                 stride: Some(PACKED_BACKDROP_BLUR_BYTES as u32),
@@ -122,9 +118,9 @@ pub(super) fn backdrop_blur_resource_bindings(
         ResourceBinding {
             binding: 17,
             resource: BindingResource::Buffer(BufferBinding {
-                buffer: animation_buffer,
+                buffer: buffers.animation_value_buffer,
                 offset: 0,
-                size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+                size: (buffers.animation_value_capacity * PACKED_ANIMATION_VALUE_BYTES) as u64,
                 stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
             }),
         },

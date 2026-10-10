@@ -594,7 +594,7 @@ reported hardware capability.
 5. Records GPU pass metrics.
 6. Uploads frame buffers.
 7. Uploads pending atlas pages.
-8. Runs offscreen path-mask passes and refreshes backdrop blur only when its source changed.
+8. Rasterizes path masks only when their pixel-residency key is invalid, and refreshes backdrop blur only when its source changed.
 9. Renders the main scene directly to the swapchain.
 10. Presents the frame through the swapchain.
 11. Records diagnostics.
@@ -632,6 +632,22 @@ The nova path may run these GPU passes:
 | Backdrop source pass | Captures source content for blur sampling. |
 | Backdrop blur passes | Builds downsampled and blurred textures for backdrop blur primitives. |
 | Main pass | Draws GPUI quads, shadows, paths, sprites, text, underlines, and composited blur. Renderer extensions submit their own draw work through the generic extension lifecycle. |
+
+The shared path-mask texture has pixel residency separate from per-slot DrawStep caching.
+Its key covers a nonzero scene revision, target view identity/generation, target extent,
+drawable viewport, format and rasterization pipeline. Frame-slot rotation does not invalidate
+the texture; geometry, clipping, paint, CPU transforms and DPI changes represented by a new
+scene revision do. A new clear invalidates the old token before rendering. Only a successful
+presentation publishes the new token; failed or deferred frames invalidate it. Unversioned
+scenes always rasterize. Unrelated scene changes can conservatively cause extra rasterization;
+this key does not yet implement a path-only content revision.
+
+`window_metrics_snapshot().path_mask` records rendered/skipped submitted frames and CPU
+pass-call durations, with p50/p95/p99 over the most recent 256 rasterizations. Skips do not
+add zero samples. These times can include synchronous backend waits and are not GPU shader
+times or display scanout measurements. Existing `path_mask_cache_hit` continues to mean
+DrawStep descriptor reuse; it is not a pixel-residency guarantee.
+
 Nova keeps every rotating back buffer coherent by rendering directly to the
 swapchain. It does not allocate a full-size retained present texture and does
 not run a second full-screen present-copy pass.
@@ -678,7 +694,11 @@ The first production slice promotes a span only when it contains at least 32
 static quads, has an exclusive draw-order interval, and contains no layer, blur,
 surface, renderer-extension, animation, or mixed-pipeline barrier. On a partial dirty
 frame, a replayed chunk with the same identity and generation reuses its packed
-quad bytes. Static signature construction combines the cached chunk token and
+quad bytes through a shared `Arc<Vec<u8>>`, without copying them into whole-frame staging.
+Cache misses encode directly into that backing; writable gaps retain separate staging.
+Logical byte offsets preserve the contiguous GPU instance layout. Dirty uploads borrow the
+intersecting source segments through `BufferUploadBatch::push_at`, without CPU flattening.
+Static signature construction combines the cached chunk token and
 hashes only uncached byte spans. A generation change, reordered/nonexclusive
 draw order, or any barrier uses normal encoding and whole-stream fallback.
 
@@ -689,6 +709,12 @@ resident chunk. A generation change dirties that chunk; a changed position,
 invalid range, or uninitialized slot conservatively falls back to the complete
 quad stream. Slot selection waits for the submission that owns the slot before
 any range is overwritten, so DX12 and Vulkan share the same fence-safe rule.
+
+The same version and submission rule covers DX11, DX12, Vulkan, OpenGL and the Nova Metal
+code path. New Buffer versions require a complete segmented first fill, even when chunks
+matched the old layout. CPU memory counts shared payload backings once across cache and frame
+references; trimming a cache does not release payloads needed by the current presentation.
+See [`GPUI_PACKED_CHUNK_UPLOAD.md`](GPUI_PACKED_CHUNK_UPLOAD.md) for P2-B boundaries and validation.
 
 This fixed-layout residency is the first GPU slab slice. It avoids uploading a
 clean chunk when a sibling changes without changing draw offsets or painter
@@ -735,6 +761,9 @@ trim hook. Trim must not change application state.
 
 ## Diagnostics
 
+GPU-owner queue latency, per-window service histories and CPU/wait accounting are
+defined in [GPUI_GPU_OWNER_METRICS.md](GPUI_GPU_OWNER_METRICS.md).
+
 Useful diagnostics include:
 
 - `performance_metrics_snapshot()` for frame decisions, draw/present/skip
@@ -747,6 +776,73 @@ Useful diagnostics include:
 
 When changing renderer code, record what metric proves the change works. Do
 not weaken rendering correctness to hit an arbitrary memory or CPU number.
+
+### Buffer upload batches (P0-C)
+
+See [the performance worklist](GPUI_RENDER_PERFORMANCE_WORKLIST.md) for completed scope,
+RAF/refresh candidates and measurement gates for the remaining P1/P2 items.
+
+P0-C covers DX11, DX12, Vulkan, OpenGL and future Nova Metal integration. Its target is to
+remove unnecessary CPU/GPU synchronization during uploads; saturated GPUs and exhausted
+upload pages still require bounded backpressure. Asynchronous draw submission alone does
+not establish asynchronous buffer uploads.
+
+`gfx_core::BufferUploadBatch` plans borrowed ranges from complete immutable snapshots.
+Only touching or overlapping consecutive ranges with the same destination and source
+snapshot merge; clean gaps and writes from different snapshots remain ordered. It copies
+no payload bytes. `ResourceDevice::write_buffer_batch` consumes sources on the owning device
+thread before returning or retains backend-owned staging, orders uploads before later draws,
+and leaves resource retirement to existing submission fences. A failure may leave earlier
+writes applied; GPUI must not mark a failed upload plan resident. Callers must still wait for
+the destination frame slot to become reusable before writing it.
+
+All five native backend implementations now override the batch operation:
+
+| Backend | Batch behavior |
+| --- | --- |
+| DX11 | Consecutive patches to one constant buffer update its CPU shadow in order, then issue one full `UpdateSubresource`. Other buffers retain byte-range updates. |
+| DX12 | Reuses the mapping for consecutive CPU-visible writes. Device-local writes share one staging allocation, one command list and one fence wait; staging and commands are registered for retirement before execution. |
+| Vulkan | CPU-visible allocations are already mapped. Device-local writes use batch upload-ring allocation and one command buffer/fence wait, with transfer barriers for overlapping destinations and later readers. Failed setup discards only unsubmitted ranges; retired pages remain protected. |
+| OpenGL | Makes the owner context current once and avoids consecutive duplicate buffer binds. Each dirty range still uses `BufferSubData`; no unsafe whole-buffer discard is introduced. |
+| Metal | Reuses the shared-storage contents pointer for consecutive writes and preserves the compaction CPU shadow. GPU-only staging remains unsupported. |
+
+`BufferUploadStats.calls` counts destination updates/copies, not command-list submissions,
+mapping calls or fence waits. DX12/Vulkan therefore still count multiple destination copies
+even when they share one submission. DX12 staging capacity for a device-local batch is its
+total payload size, not its largest individual write; this is a transient memory tradeoff.
+GPUI frame buffers currently use `CpuToGpu`, so the eliminated device-local waits alone do
+not demonstrate a reduction in ordinary-frame latency. This change does not switch buffer
+placement, introduce asynchronous buffer writes, add persistent local caches, or enable
+Metal Private/Blit. Native Windows tests cover DX11/DX12/Vulkan/OpenGL; the Apple-specific
+Metal path requires macOS compilation and runtime validation.
+
+The staging and overlap rules follow the native contracts:
+[D3D12 resource states](https://learn.microsoft.com/en-us/windows/win32/direct3d12/using-resource-barriers-to-synchronize-resource-states-in-direct3d-12)
+and [Vulkan buffer copies](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyBuffer.html).
+
+`performance_metrics_snapshot()` reports accepted work for the latest frame:
+
+| Metric | Meaning |
+| --- | --- |
+| `buffer_upload_batches` | Nonempty successful frame and presentation-state batches. |
+| `buffer_upload_requested_writes` / `buffer_upload_requested_bytes` | Dirty ranges before merging, including repeated overlaps. |
+| `buffer_upload_writes` / `buffer_upload_bytes` | Logical writes and bytes after merging. |
+| `buffer_upload_backend_calls` / `buffer_upload_backend_bytes` | Destination update/copy operations and bytes, including DX11 uniform expansion; excludes CPU shadows and map/bind/barrier calls. |
+| `buffer_upload_time` | Accumulated CPU wall time planning and writing buffer batches, including clock and indexed animation table writes. |
+
+These counters exclude atlas/texture uploads and do not measure GPU copy time or GPU
+completion. Failed batches do not produce success accounting. The existing total and per-stream
+upload bytes remain logical planning metrics. Existing frame-slot and submission wait metrics
+remain separate. Compare upload bytes/calls and CPU p50/p95/p99 on each backend; keep GPU
+copy timing, ring residency, forced in-flight updates, resize/atlas rebuild and real-window
+visual checks as gates for the subsequent asynchronous-upload stages.
+
+`gpui_perf_lab` includes all seven counters in raw frame samples and p50/p95/p99/max
+summaries alongside `buffer_upload_us`. They establish a measurement path, not a measured
+improvement; compare the same scene/backend/hardware and report visual validation separately.
+Its CLI accepts `nova-dx11`, `nova-dx12`, `nova-vulkan` and `nova-opengl`; build with the
+matching `nova-gfx-*` feature and run on a supported platform/driver. Native Nova Metal
+validation still requires macOS and is not covered by this Windows lab gate.
 
 ### GPUI performance lab
 
@@ -777,6 +873,112 @@ reused chunk token. `retained_chunk_hits`, `retained_chunk_misses`, and
 must remain stable across before/after reports. `quad_upload_bytes` records bytes
 actually written after fixed-layout retained ranges are removed, rather than the
 full logical quad stream length.
+
+## P0-A Memory Profile and Budgets
+
+`App::gpui_memory_snapshot()` includes CPU image/cache observations and a cached
+`renderer` profile. `memory_profile_snapshot()` reads that renderer profile
+without graphics calls. `process_memory_snapshot()` explicitly samples Windows
+working set, private committed bytes and commit charge outside render paths;
+unsupported platforms return `None`, and query failures return an error.
+
+Nova owners sample at most once per second after existing draw attempts, with an
+initial sample, a sample after the first submitted frame and a forced refresh
+after trimming. There is no idle sampling timer. Window and device observations
+include `sample_age_ms`; idle observations
+can be stale. `submitted_frames == 0` does not establish successful workload
+rendering; inspect `render_error` and the sample age. Failed draws also refresh
+allocation observations, because resources allocated/uploaded before a failure
+still consume memory. Their observations never imply successful GPU execution.
+Renderer destruction removes its entry, and removes the device entry after the
+last registered window is gone. Device totals are deduplicated
+by the shared backend identity.
+
+The per-window breakdown includes twelve packed streams' used CPU bytes and
+Vec capacity, their requested GPU capacity across both frame slots, retained
+quad chunks, path-cache payloads, atlas upload bytes, actual native atlas pages
+by kind, depth/path targets and blur/composite targets. Monochrome pages use
+`R8Unorm` (one byte per texel); subpixel and color pages use BGRA (four bytes).
+All kinds share allocation, batching and submission-safe retirement. Text tint
+and opacity update sprite/animation values while reusing the same R8 coverage.
+Atlas tile bytes include padding, fallback tiles
+and pending removals; `atlas_unused_bytes` is page bytes minus these rectangles,
+not allocator free space or a fragmentation measurement.
+
+Device `accounting` distinguishes `resource-sizes`, `allocator` and
+`unavailable`. DX11/OpenGL/DX12/Metal report known native resource size estimates;
+these exclude driver overhead, swapchain images and untracked internal
+resources. DX12 includes live and fence-retired buffers/textures plus complete
+upload pages. OpenGL includes alignment padding and binding mirror buffers.
+Metal counts only resources actually backed by native objects. Vulkan reports
+allocator live bytes and reserved blocks. Upload-ring capacity is a breakdown
+already included in device bytes, not another allocation to add.
+
+DX11/DX12 query DXGI local/non-local process usage and budgets. Vulkan enables
+`VK_KHR_get_physical_device_properties2` and `VK_EXT_memory_budget` only when
+available, preserving the existing Vulkan 1.0 requirement. OpenGL/Metal currently
+report no driver budget. Missing segments are `null`; a driver-reported zero
+budget stays zero, with no utilization percentage. Usage above budget produces
+an over-budget byte count and utilization above 100 percent. Query errors are
+reported separately, without failing a frame or triggering eviction.
+
+Window breakdowns, device allocation counts and driver budgets have different
+scopes and must not be summed. CPU image/bitmap/compressed bytes never enter GPU
+totals. CPU cache views can overlap; global decoded assets also expose a unique
+RenderImage identity total. CPU frame capacity excludes map/scene metadata and
+draw-step scratch, so this profile is not a full heap census. On UMA, OS process
+and GPU observations may overlap physically.
+
+`gpui_perf_lab` JSON schema 4 exports `gpu_owner`, `gpu_owner_samples`,
+`memory`, `process_memory` and
+`process_memory_error` alongside its existing frame samples. Capture stdout for
+static-idle, effects and image workloads on each backend. This phase changes
+observability only; smaller buffers, residency policy and target reuse belong
+to later roadmap phases.
+
+## P0-B Demand-Sized Buffers and Vulkan Blocks
+
+Each frame slot starts with small, non-zero storage bindings. Shadow capacity is
+64 entries, path sprites 64, monochrome sprites 256, color sprites 64 and indexed
+animation values 64. The previous hard limits remain unchanged. Quad and path
+vertex buffers retain their existing growth policies.
+
+The five affected streams request 56,832 bytes per slot at initialization,
+instead of 4,096,000 bytes. Across two slots this reduces logical startup Buffer
+capacity by 8,078,336 bytes; this is not a measured RSS or driver-residency saving.
+The full twelve-stream startup capacity is 2,882,672 bytes before workload growth.
+
+After submission preparation selects a fence-safe slot, required payload sizes
+grow its buffers geometrically, bounded by the existing hard limits. Growth
+happens before writing the indexed animation table. All dependent bindings in
+that slot (including existing atlas pages and blur targets) are replaced together;
+creation failure preserves the previous buffers/bindings. Replaced buffers force
+the slot's retained streams to upload again and invalidate cached draw steps.
+The other slot remains untouched while its submission is pending. Buffers retain
+their high-water capacity until renderer destruction; no per-frame shrinking is
+introduced. `gpu_slot_capacity_bytes` exposes each slot separately.
+
+Vulkan allocator pools now start on demand with 4 MiB device blocks and 1 MiB
+host/readback blocks. Additional blocks grow according to pressure within each
+memory type, up to the existing 256/64 MiB limits. Requests larger than the current
+block size use request-sized dedicated allocations. This replaces the previous
+fixed 256 MiB device and 64 MiB host block defaults; it does not impose a limit
+on total device memory. Moderate and Aggressive trims release completely empty
+blocks after existing submission completion handling. Light trim preserves hot
+caches; blocks containing live allocations remain allocated. Moderate trim also
+keeps its existing one-page upload cache.
+
+`gpui_perf_lab --scenario=buffer-growth` alternates 16 and 192 visible cards and
+paths. Cards include shadows, text, a predecoded image and retained opacity
+animations, so the workload exercises all five streams. Validate successful submissions and
+per-slot capacities on each backend; a report alone does not prove pixel quality
+or that another slot was pending at the exact growth instant. Slot selection keeps
+the existing first-free policy: a fast-completing queue may use only slot zero,
+in which case slot one correctly retains its initial capacity.
+
+The P1-A static Buffer placement baseline and its native-path/measurement limits
+are documented in [`GPUI_NOVA_BUFFER_RESIDENCY.md`](GPUI_NOVA_BUFFER_RESIDENCY.md).
+It uses a standalone native example and leaves production Buffer placement unchanged.
 
 ## BMCBL Change Rules
 

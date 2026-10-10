@@ -80,7 +80,7 @@ fn promotion_benchmark_upload(
 
     let mut upload = FrameUpload {
         globals: vec![0; GLOBAL_UPLOAD_BYTES],
-        quads: vec![0; quad_count.saturating_mul(PACKED_QUAD_BYTES)],
+        quads: vec![0; quad_count.saturating_mul(PACKED_QUAD_BYTES)].into(),
         sampled_animation_values,
         ..Default::default()
     };
@@ -101,7 +101,9 @@ fn promotion_benchmark_upload(
 
 fn packed_promotion_checksum(upload: &FrameUpload) -> u64 {
     let mut checksum = upload.gpu_indexed_animation_slots.len() as u64;
-    for quad in upload.quads.chunks_exact(PACKED_QUAD_BYTES) {
+    for index in 0..upload.quads.len() / PACKED_QUAD_BYTES {
+        let offset = index * PACKED_QUAD_BYTES;
+        let quad = upload.quads.slice(offset..offset + PACKED_QUAD_BYTES);
         checksum = checksum.rotate_left(5) ^ u64::from(read_u32(quad, 0));
     }
     for blur in upload

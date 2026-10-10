@@ -3,6 +3,7 @@ use super::{
     queue::{Command, Queue},
     schedule::Schedule,
 };
+use crate::diagnostics::gpu_owner::{self, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample};
 use crate::{PresentationPacket, platform::NovaRenderer};
 use anyhow::Result;
 use std::{
@@ -32,6 +33,7 @@ impl Worker {
     pub(super) fn insert(&mut self, id: u64, entry: Entry) {
         let mut entry = entry;
         entry.id = id;
+        gpu_owner::register(id);
         self.entries.insert(id, entry);
     }
 
@@ -61,14 +63,14 @@ impl Worker {
                     .filter(|deadline| *deadline <= now && !entry.queue.has_commands())
                     .map(|deadline| (*id, deadline))
             })
-            .min_by_key(|(_, deadline)| *deadline)
-            .map(|(id, _)| id);
+            .min_by_key(|(_, deadline)| *deadline);
         // Check the command channel between windows, so overdue animations cannot delay a
         // resize/shutdown barrier behind a burst of submissions for every window.
-        if let Some(id) = due
+        if let Some((id, deadline)) = due
             && let Some(entry) = self.entries.get_mut(&id)
         {
-            entry.execute(Command::Continue(now));
+            let _dispatch = gpu_owner::Dispatch::start();
+            entry.execute_timed(Command::Continue(now), None, Some(deadline));
         }
     }
 
@@ -76,15 +78,23 @@ impl Worker {
         let Some(entry) = self.entries.get_mut(&id) else {
             return;
         };
-        if let Some(command) = entry.queue.take() {
-            if let Command::Shutdown(reply) = command {
+        if let Some(queued) = entry.queue.take_timed() {
+            if let Command::Shutdown(reply) = queued.command {
                 self.entries.remove(&id);
                 if reply.send(()).is_err() {
                     log::trace!("renderer shutdown caller dropped");
                 }
                 return;
             }
-            entry.execute(command);
+            entry.execute_timed(
+                queued.command,
+                Some((
+                    queued.enqueued_at,
+                    queued.first_enqueued_at,
+                    queued.coalesced_count,
+                )),
+                None,
+            );
         }
         // One command per dispatch lets another window initialize/present even under a steady
         // stream of commits. There is at most one global wake queued for each window.
@@ -112,6 +122,7 @@ pub(super) struct Entry {
     ready_registration: Arc<AtomicU64>,
     next_ready_registration: u64,
     schedule: Schedule,
+    job_outcome: GpuOwnerJobOutcome,
     #[cfg(not(target_os = "windows"))]
     presentation_clock: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -135,9 +146,65 @@ impl Entry {
             ready_registration: Arc::new(AtomicU64::new(0)),
             next_ready_registration: 0,
             schedule: Schedule::default(),
+            job_outcome: GpuOwnerJobOutcome::Control,
             #[cfg(not(target_os = "windows"))]
             presentation_clock: None,
         }
+    }
+
+    fn execute_timed(
+        &mut self,
+        command: Command,
+        queued: Option<(Instant, Instant, u64)>,
+        deadline: Option<Instant>,
+    ) {
+        if let Command::Draw { packet, .. } = &command {
+            gpu_owner::bind_window(self.id, packet.window_id);
+        }
+        let kind = match &command {
+            Command::Draw { .. } => GpuOwnerJobKind::Draw,
+            Command::Tick(..) => GpuOwnerJobKind::Tick,
+            Command::Continue(..) => GpuOwnerJobKind::Continue,
+            Command::Resize(..) => GpuOwnerJobKind::Resize,
+            _ => GpuOwnerJobKind::Control,
+        };
+        let started_at = Instant::now(); // Command service time, not visual animation time.
+        let previous_wait = gpu_owner::blocking_wait();
+        self.job_outcome = GpuOwnerJobOutcome::Control;
+        self.execute(command);
+        let completed_at = Instant::now();
+        gpu_owner::record_job(
+            GpuOwnerJobSample {
+                owner_id: self.id,
+                window_id: None,
+                job_id: 0,
+                kind,
+                outcome: if matches!(kind, GpuOwnerJobKind::Control | GpuOwnerJobKind::Resize) {
+                    GpuOwnerJobOutcome::Control
+                } else {
+                    self.job_outcome
+                },
+                started_at_us: 0,
+                completed_at_us: 0,
+                queue_wait_us: queued.map(|(time, _, _)| {
+                    gpu_owner::micros(started_at.saturating_duration_since(time))
+                }),
+                pending_age_us: queued.map(|(_, time, _)| {
+                    gpu_owner::micros(started_at.saturating_duration_since(time))
+                }),
+                coalesced_count: queued.map_or(0, |(_, _, count)| count),
+                owner_job_duration_us: gpu_owner::micros(
+                    completed_at.saturating_duration_since(started_at),
+                ),
+                owner_blocking_wait_us: gpu_owner::micros(
+                    gpu_owner::blocking_wait().saturating_sub(previous_wait),
+                ),
+                schedule_lateness_us: deadline
+                    .map(|time| gpu_owner::micros(started_at.saturating_duration_since(time))),
+            },
+            started_at,
+            completed_at,
+        );
     }
 
     fn execute(&mut self, command: Command) {
@@ -342,6 +409,11 @@ impl Entry {
         result: &Result<bool>,
         mut completed_animations: smallvec::SmallVec<[crate::SceneAnimationCompletion; 4]>,
     ) {
+        self.job_outcome = match result {
+            Ok(true) => GpuOwnerJobOutcome::Submitted,
+            Ok(false) => GpuOwnerJobOutcome::Deferred,
+            Err(_) => GpuOwnerJobOutcome::Failed,
+        };
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
             self.ready_registration.store(0, Ordering::Release);
@@ -376,5 +448,6 @@ impl Drop for Entry {
         self.queue.close();
         self.ready_registration.store(0, Ordering::Release);
         self.renderer.destroy();
+        gpu_owner::unregister(self.id);
     }
 }

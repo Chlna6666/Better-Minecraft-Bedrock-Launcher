@@ -53,7 +53,7 @@ impl Command {
 
 #[derive(Default)]
 struct State {
-    commands: VecDeque<Command>,
+    commands: VecDeque<QueuedCommand>,
     scheduled: bool,
     closing: bool,
 }
@@ -61,12 +61,31 @@ struct State {
 #[derive(Default)]
 pub(super) struct Queue(Mutex<State>);
 
+pub(super) struct QueuedCommand {
+    pub(super) command: Command,
+    pub(super) enqueued_at: Instant,
+    pub(super) first_enqueued_at: Instant,
+    pub(super) coalesced_count: u64,
+}
+
 impl Queue {
     pub(super) fn enqueue(
         &self,
-        mut command: Command,
+        command: Command,
         wake: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
+        self.enqueue_at(command, wake, Instant::now())
+    }
+
+    fn enqueue_at(
+        &self,
+        mut command: Command,
+        wake: impl FnOnce() -> Result<()>,
+        enqueued_at: Instant,
+    ) -> Result<()> {
+        // Profiling includes producer lock contention, while replacement keeps backlog age.
+        let mut first_enqueued_at = enqueued_at;
+        let mut coalesced_count = 0;
         let mut state = self.0.lock();
         if state.closing {
             return Err(anyhow!("GPU renderer is closing"));
@@ -78,7 +97,7 @@ impl Queue {
         let barrier = state
             .commands
             .iter()
-            .rposition(Command::is_barrier)
+            .rposition(|queued| queued.command.is_barrier())
             .map_or(0, |index| index + 1);
         match &mut command {
             Command::Draw {
@@ -87,14 +106,20 @@ impl Queue {
                 ..
             } => {
                 if let Some(index) = (barrier..state.commands.len()).rev().find(|index| {
-                    matches!(state.commands[*index], Command::Draw { reply: None, .. })
+                    matches!(
+                        state.commands[*index].command,
+                        Command::Draw { reply: None, .. }
+                    )
                 }) {
-                    let Command::Draw {
-                        packet: previous, ..
-                    } = state
+                    let previous = state
                         .commands
                         .remove(index)
-                        .expect("index was obtained from the queue")
+                        .expect("index was obtained from the queue");
+                    first_enqueued_at = previous.first_enqueued_at;
+                    coalesced_count = previous.coalesced_count.saturating_add(1);
+                    let Command::Draw {
+                        packet: previous, ..
+                    } = previous.command
                     else {
                         unreachable!()
                     };
@@ -104,16 +129,26 @@ impl Queue {
             Command::Tick(..) | Command::Continue(..) => {
                 if let Some(index) = (barrier..state.commands.len()).rev().find(|index| {
                     matches!(
-                        state.commands[*index],
+                        state.commands[*index].command,
                         Command::Tick(..) | Command::Continue(..)
                     )
                 }) {
-                    state.commands.remove(index);
+                    let previous = state
+                        .commands
+                        .remove(index)
+                        .expect("index was obtained from the queue");
+                    first_enqueued_at = previous.first_enqueued_at;
+                    coalesced_count = previous.coalesced_count.saturating_add(1);
                 }
             }
             _ => {}
         }
-        state.commands.push_back(command);
+        state.commands.push_back(QueuedCommand {
+            command,
+            enqueued_at,
+            first_enqueued_at,
+            coalesced_count,
+        });
         if !state.scheduled {
             wake()?;
             state.scheduled = true;
@@ -121,8 +156,13 @@ impl Queue {
         Ok(())
     }
 
-    pub(super) fn take(&self) -> Option<Command> {
+    pub(super) fn take_timed(&self) -> Option<QueuedCommand> {
         self.0.lock().commands.pop_front()
+    }
+
+    #[cfg(test)]
+    pub(super) fn take(&self) -> Option<Command> {
+        self.take_timed().map(|queued| queued.command)
     }
 
     pub(super) fn finish_dispatch(&self) -> bool {
@@ -138,7 +178,7 @@ impl Queue {
     pub(super) fn has_presentation(&self) -> bool {
         self.0.lock().commands.iter().any(|command| {
             matches!(
-                command,
+                command.command,
                 Command::Draw { .. } | Command::Tick(..) | Command::Continue(..)
             )
         })

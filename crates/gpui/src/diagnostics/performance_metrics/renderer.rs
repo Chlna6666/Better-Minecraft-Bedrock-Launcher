@@ -214,6 +214,7 @@ pub fn record_backdrop_blur_frame(source_pixels: usize, level_pixels: [usize; 6]
 
 /// Records a blocking wait for a GPU submission.
 pub fn record_gpu_submission_wait(elapsed: Duration) {
+    crate::diagnostics::gpu_owner::record_blocking_wait(elapsed);
     let metrics = shared_metrics();
     let elapsed_micros = elapsed.as_micros().min(u64::MAX as u128) as u64;
     metrics

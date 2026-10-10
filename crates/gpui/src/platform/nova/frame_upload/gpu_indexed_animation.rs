@@ -339,7 +339,11 @@ impl FrameUpload {
             self.gpu_indexed_source_animation_ids
                 .insert(primitive.animation_id);
             let (bytes, stride) = match primitive.kind {
-                AnimatedPrimitiveKind::Quad => (&mut self.quads, PACKED_QUAD_BYTES),
+                AnimatedPrimitiveKind::Quad => {
+                    let offset = primitive.index as usize * PACKED_QUAD_BYTES;
+                    write_u32(self.quads.slice_mut(offset..offset + 4), 0, slot_plus_one);
+                    continue;
+                }
                 AnimatedPrimitiveKind::Shadow => (&mut self.shadows, PACKED_SHADOW_BYTES),
                 AnimatedPrimitiveKind::MonochromeSprite => {
                     (&mut self.mono_sprites, PACKED_MONO_SPRITE_BYTES)
@@ -451,7 +455,7 @@ mod tests {
         };
         let mut upload = FrameUpload {
             globals: vec![0; GLOBAL_UPLOAD_BYTES],
-            quads: vec![0; 2 * PACKED_QUAD_BYTES],
+            quads: vec![0; 2 * PACKED_QUAD_BYTES].into(),
             animated_primitives: vec![primitive(0), primitive(1)],
             ..Default::default()
         };
@@ -459,8 +463,14 @@ mod tests {
         upload.promote_gpu_indexed_animations();
 
         assert_eq!(upload.gpu_indexed_animation_slots.len(), 1);
-        assert_eq!(read_u32(&upload.quads, 0), 1);
-        assert_eq!(read_u32(&upload.quads, PACKED_QUAD_BYTES), 1);
+        assert_eq!(read_u32(upload.quads.slice(0..4), 0), 1);
+        assert_eq!(
+            read_u32(
+                upload.quads.slice(PACKED_QUAD_BYTES..PACKED_QUAD_BYTES + 4),
+                0
+            ),
+            1
+        );
         assert!(upload.animated_primitives.is_empty());
         assert_eq!(
             read_u32(&upload.globals, INDEXED_ANIMATION_ENABLED_OFFSET),

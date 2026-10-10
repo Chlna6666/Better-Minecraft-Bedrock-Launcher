@@ -20,6 +20,9 @@ impl NovaRenderer {
             frames: std::mem::take(&mut self.frame_resources),
             atlas: std::mem::take(&mut self.gpu_atlas_textures),
             depth: RenderTarget {
+                byte_size: u64::from(self.current_size.width)
+                    * u64::from(self.current_size.height)
+                    * 4,
                 texture: self.depth_texture,
                 texture_view: self.depth_texture_view,
             },
@@ -74,8 +77,16 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     for (atlas_id, texture) in resources.atlas {
         destroy_gpu_atlas_texture(device, texture, backend, atlas_id);
     }
+    let buffers: FxHashSet<_> = resources
+        .frames
+        .iter()
+        .flat_map(|frame| frame.buffers.ids())
+        .collect();
     for frame in resources.frames {
         destroy_frame(device, frame);
+    }
+    for buffer in buffers {
+        release(device.destroy_buffer(buffer), "frame buffer");
     }
     release(
         device.destroy_texture_view(resources.depth.texture_view),
@@ -110,23 +121,6 @@ fn destroy_frame<D: BackendResources>(device: &mut D, frame: FrameResources) {
         );
     }
     // Path and sprite sets are owned by the path/atlas targets, not duplicated here.
-    let buffers = frame.buffers;
-    for buffer in [
-        buffers.global_buffer,
-        buffers.text_raster_buffer,
-        buffers.quad_buffer,
-        buffers.shadow_buffer,
-        buffers.path_rasterization_vertex_buffer,
-        buffers.path_sprite_buffer,
-        buffers.mono_sprite_buffer,
-        buffers.poly_sprite_buffer,
-        buffers.underline_buffer,
-        buffers.backdrop_blur_pass_buffer,
-        buffers.backdrop_blur_buffer,
-        buffers.animation_value_buffer,
-    ] {
-        release(device.destroy_buffer(buffer), "frame buffer");
-    }
 }
 
 fn release(result: gfx_core::Result<()>, resource: &str) {

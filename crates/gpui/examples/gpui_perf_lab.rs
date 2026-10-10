@@ -20,6 +20,7 @@ use std::{
 };
 
 const DEFAULT_FRAMES: usize = 600;
+mod gpui_perf_lab_buffer_growth;
 const DEFAULT_REFRESH_RATE: f32 = 120.0;
 const DEFAULT_WARMUP_FRAMES: usize = 120;
 
@@ -36,6 +37,7 @@ enum Scenario {
     Effects,
     Animation,
     TraversalAncestor,
+    BufferGrowth,
 }
 
 impl Scenario {
@@ -51,6 +53,7 @@ impl Scenario {
             "effects" => Ok(Self::Effects),
             "animation" => Ok(Self::Animation),
             "traversal-ancestor" => Ok(Self::TraversalAncestor),
+            "buffer-growth" => Ok(Self::BufferGrowth),
             _ => Err(format!("unknown scenario: {value}").into()),
         }
     }
@@ -93,6 +96,13 @@ struct FrameSample {
     encode_us: u64,
     signature_us: u64,
     buffer_upload_us: u64,
+    buffer_upload_batches: usize,
+    buffer_upload_requested_writes: usize,
+    buffer_upload_requested_bytes: usize,
+    buffer_upload_writes: usize,
+    buffer_upload_bytes: usize,
+    buffer_upload_backend_calls: usize,
+    buffer_upload_backend_bytes: usize,
     frame_slot_wait_us: u64,
     gpu_submission_wait_us: u64,
     hashed_bytes: usize,
@@ -118,6 +128,13 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
             encode_us: duration_us(snapshot.scene_encode_time),
             signature_us: duration_us(snapshot.scene_signature_time),
             buffer_upload_us: duration_us(snapshot.buffer_upload_time),
+            buffer_upload_batches: snapshot.buffer_upload_batches,
+            buffer_upload_requested_writes: snapshot.buffer_upload_requested_writes,
+            buffer_upload_requested_bytes: snapshot.buffer_upload_requested_bytes,
+            buffer_upload_writes: snapshot.buffer_upload_writes,
+            buffer_upload_bytes: snapshot.buffer_upload_bytes,
+            buffer_upload_backend_calls: snapshot.buffer_upload_backend_calls,
+            buffer_upload_backend_bytes: snapshot.buffer_upload_backend_bytes,
             frame_slot_wait_us: duration_us(snapshot.frame_slot_wait_time),
             gpu_submission_wait_us: duration_us(snapshot.gpu_submission_wait_time),
             hashed_bytes: snapshot.scene_hashed_bytes,
@@ -134,6 +151,12 @@ impl From<&PerformanceMetricsSnapshot> for FrameSample {
 
 #[derive(Serialize)]
 struct LabReport {
+    window_metrics: Vec<gpui::WindowMetricsSnapshot>,
+    gpu_owner: gpui::GpuOwnerMetricsSnapshot,
+    gpu_owner_samples: Vec<gpui::GpuOwnerJobSample>,
+    memory: gpui::GpuiMemorySnapshot,
+    process_memory: Option<gpui::ProcessMemorySnapshot>,
+    process_memory_error: Option<String>,
     schema_version: u32,
     backend: &'static str,
     host: Host,
@@ -253,6 +276,7 @@ impl PerfLab {
             Scenario::TextureStress => texture_grid(),
             Scenario::OverdrawModal => overdraw_modal(),
             Scenario::Effects => effects(),
+            Scenario::BufferGrowth => gpui_perf_lab_buffer_growth::workload(self.rendered_frames),
             Scenario::Animation => {
                 let elapsed = window
                     .animation_time()
@@ -282,7 +306,12 @@ impl PerfLab {
 
     fn finish(&mut self, cx: &mut Context<Self>) {
         self.finished = true;
-        print_report(&self.config, std::mem::take(&mut self.samples), None);
+        print_report(
+            &self.config,
+            std::mem::take(&mut self.samples),
+            None,
+            cx.gpui_memory_snapshot(),
+        );
         cx.spawn(async move |_view, cx| {
             let _ = cx.update(|cx| cx.quit());
         })
@@ -347,7 +376,12 @@ fn schedule_traversal_frame(
             }
         };
         if let Some((samples, render_counts)) = report {
-            print_report(&config, samples, Some(render_counts));
+            print_report(
+                &config,
+                samples,
+                Some(render_counts),
+                cx.gpui_memory_snapshot(),
+            );
             cx.quit();
             return;
         }
@@ -621,9 +655,15 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
 
     if !matches!(
         config.backend,
-        RendererBackend::Auto | RendererBackend::NovaDx12 | RendererBackend::NovaVulkan
+        RendererBackend::Auto
+            | RendererBackend::NovaDx11
+            | RendererBackend::NovaDx12
+            | RendererBackend::NovaVulkan
+            | RendererBackend::NovaOpenGl
     ) {
-        return Err("--backend must be auto, nova-dx12, or nova-vulkan".into());
+        return Err(
+            "--backend must be auto, nova-dx11, nova-dx12, nova-vulkan, or nova-opengl".into(),
+        );
     }
     if !config.refresh_rate.is_finite() || config.refresh_rate <= 0.0 {
         return Err("--refresh-rate must be a positive finite number".into());
@@ -683,11 +723,32 @@ fn print_report(
     config: &Config,
     samples: Vec<FrameSample>,
     traversal_render_counts: Option<TraversalRenderCounts>,
+    memory: gpui::GpuiMemorySnapshot,
 ) {
     let snapshot = performance_metrics_snapshot();
+    let gpu_owner = gpui::gpu_owner_metrics_snapshot();
+    let gpu_owner_samples = gpu_owner
+        .windows
+        .iter()
+        .flat_map(|window| {
+            gpui::gpu_owner_samples_since(window.owner_id, 0)
+                .into_iter()
+                .filter(|sample| sample.job_id <= window.completed_jobs)
+        })
+        .collect();
     let summary = summarize(&samples);
+    let (process_memory, process_memory_error) = match gpui::process_memory_snapshot() {
+        Ok(sample) => (sample, None),
+        Err(error) => (None, Some(error.to_string())),
+    };
     let report = LabReport {
-        schema_version: 2,
+        window_metrics: gpui::window_metrics_snapshot(),
+        schema_version: 4,
+        gpu_owner,
+        gpu_owner_samples,
+        memory,
+        process_memory,
+        process_memory_error,
         backend: backend_label(snapshot.renderer_backend),
         host: config.host,
         requested_present_mode: config.present_mode,
@@ -715,8 +776,10 @@ fn print_report(
 fn backend_label(backend: RendererBackend) -> &'static str {
     match backend {
         RendererBackend::Auto => "auto",
+        RendererBackend::NovaDx11 => "nova-dx11",
         RendererBackend::NovaDx12 => "nova-dx12",
         RendererBackend::NovaVulkan => "nova-vulkan",
+        RendererBackend::NovaOpenGl => "nova-opengl",
         _ => "unsupported",
     }
 }
@@ -733,6 +796,19 @@ fn summarize(samples: &[FrameSample]) -> BTreeMap<String, PercentileSummary> {
     }
     insert!("backend_draw_us", backend_draw_us);
     insert!("buffer_upload_us", buffer_upload_us);
+    insert!("buffer_upload_batches", buffer_upload_batches);
+    insert!(
+        "buffer_upload_requested_writes",
+        buffer_upload_requested_writes
+    );
+    insert!(
+        "buffer_upload_requested_bytes",
+        buffer_upload_requested_bytes
+    );
+    insert!("buffer_upload_writes", buffer_upload_writes);
+    insert!("buffer_upload_bytes", buffer_upload_bytes);
+    insert!("buffer_upload_backend_calls", buffer_upload_backend_calls);
+    insert!("buffer_upload_backend_bytes", buffer_upload_backend_bytes);
     insert!("build_us", build_us);
     insert!("encode_us", encode_us);
     insert!("frame_slot_wait_us", frame_slot_wait_us);
@@ -773,9 +849,9 @@ fn percentile(values: &[u64], percentile: usize) -> u64 {
 
 fn print_help() {
     println!(
-        "gpui_perf_lab --backend=auto|nova-dx12|nova-vulkan \
+        "gpui_perf_lab --backend=auto|nova-dx11|nova-dx12|nova-vulkan|nova-opengl \
          --host=single|separate --present-mode=auto-vsync|mailbox|immediate \
-         --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor \
+         --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor|buffer-growth \
          --refresh-rate=120 --frames=600"
     );
 }

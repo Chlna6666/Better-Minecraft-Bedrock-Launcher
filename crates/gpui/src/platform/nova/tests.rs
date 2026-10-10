@@ -8,9 +8,14 @@ use std::cell::Cell;
 
 #[cfg(all(
     target_os = "windows",
-    any(feature = "nova-gfx-dx11", feature = "nova-gfx-opengl")
+    any(
+        feature = "nova-gfx-dx11",
+        feature = "nova-gfx-dx12",
+        feature = "nova-gfx-vulkan",
+        feature = "nova-gfx-opengl"
+    )
 ))]
-mod sprite_gpu;
+pub(super) mod sprite_gpu;
 
 fn force_atlas_full(atlas: &NovaAtlas) {
     let mut state = atlas.state.lock().expect("nova atlas lock poisoned");
@@ -283,6 +288,45 @@ fn image_atlas_preserves_existing_tiles_when_full() {
 }
 
 #[test]
+fn atlas_memory_profile_keeps_pending_tiles_until_retirement() {
+    let atlas = NovaAtlas::new();
+    let (baseline_upload, baseline_keys, baseline_tiles) = atlas.memory_profile();
+    assert_eq!(baseline_keys, 0);
+    assert!(baseline_upload.used_bytes > 0);
+    assert!(baseline_upload.capacity_bytes >= baseline_upload.used_bytes);
+    let pages = atlas.texture_infos();
+    assert_eq!(pages.len(), NOVA_ATLAS_KIND_COUNT);
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.size.width.0 == NOVA_STARTUP_ATLAS_SIZE as i32)
+    );
+    let key = AtlasKey::Image(RenderImageParams {
+        image_id: ImageId(55),
+        frame_slot: 0,
+        pixel_format: ImagePixelFormat::Rgba8,
+    });
+    atlas
+        .ensure_tile_with(key.clone(), &mut || {
+            Ok(Some((
+                size(DevicePixels(2), DevicePixels(2)),
+                Cow::Owned(vec![255; 16]),
+            )))
+        })
+        .expect("tile construction")
+        .expect("tile allocation");
+    let (_, keys, tiles) = atlas.memory_profile();
+    assert_eq!(keys, 1);
+    assert_eq!(tiles, baseline_tiles + 4 * 4 * 4);
+    atlas.remove(&key);
+    let (_, keys, pending_tiles) = atlas.memory_profile();
+    assert_eq!(keys, 0);
+    assert_eq!(pending_tiles, tiles);
+    atlas.apply_pending_removals();
+    assert_eq!(atlas.memory_profile().2, baseline_tiles);
+}
+
+#[test]
 fn atlas_fallback_tiles_are_not_deallocated_through_cached_keys() {
     let atlas = NovaAtlas::new();
     atlas.clear_pending_uploads_for_test();
@@ -369,9 +413,9 @@ fn full_color_atlas_does_not_starve_monochrome_glyphs() {
 
 #[test]
 fn monochrome_atlas_upload_uses_red_channel_coverage() {
-    let mut pixels = [0_u8; 12];
+    let mut pixels = [0_u8; 3];
 
-    encode_bgra_upload(
+    encode_atlas_upload(
         &mut pixels,
         size(DevicePixels(3), DevicePixels(1)),
         &[0, 128, 255],
@@ -379,14 +423,14 @@ fn monochrome_atlas_upload_uses_red_channel_coverage() {
     )
     .expect("monochrome upload should encode");
 
-    assert_eq!(pixels, [0, 0, 0, 255, 0, 0, 128, 255, 0, 0, 255, 255]);
+    assert_eq!(pixels, [0, 128, 255]);
 }
 
 #[test]
 fn subpixel_atlas_upload_preserves_premultiplied_rgb_coverage() {
     let mut pixels = [0_u8; 8];
 
-    encode_bgra_upload(
+    encode_atlas_upload(
         &mut pixels,
         size(DevicePixels(2), DevicePixels(1)),
         &[255, 0, 0, 255, 0, 255, 255, 128],
@@ -401,7 +445,7 @@ fn subpixel_atlas_upload_preserves_premultiplied_rgb_coverage() {
 fn monochrome_atlas_upload_rejects_short_source_data() {
     let mut pixels = [0_u8; 8];
 
-    let encoded = encode_bgra_upload(
+    let encoded = encode_atlas_upload(
         &mut pixels,
         size(DevicePixels(2), DevicePixels(1)),
         &[255],
@@ -879,6 +923,15 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     assert_eq!(upload.retained_quad_chunks.len(), 1);
     assert_eq!(first_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
+    assert_eq!(
+        upload.quads.owned_len(),
+        0,
+        "chunk miss packs directly into shared storage"
+    );
+    assert_eq!(
+        upload.retained_quad_memory().used_bytes,
+        (32 * PACKED_QUAD_BYTES) as u64
+    );
     assert!(upload.active_retained_chunk_ids_scratch.is_empty());
     let active_chunk_scratch_capacity = upload.active_retained_chunk_ids_scratch.capacity();
     assert!(
@@ -893,6 +946,10 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         .expect("retained chunk cache should contain the encoded chunk")
         .bytes
         .as_ptr();
+    assert_eq!(
+        upload.quads.shared_bytes().next().unwrap().as_ptr(),
+        cached_bytes_ptr
+    );
     let same_generation = retained_quad_scene(1);
     let same_generation_summary = upload.encode(
         &same_generation,
@@ -940,6 +997,25 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     );
     assert_eq!(replay_summary.retained_chunk_hits, 1);
     assert_eq!(
+        upload.quads.owned_len(),
+        PACKED_QUAD_BYTES,
+        "replay holds only the dirty gap in staging"
+    );
+    assert_eq!(
+        upload.quads.shared_bytes().next().unwrap().as_ptr(),
+        cached_bytes_ptr
+    );
+    let shared = Arc::downgrade(upload.quads.shared_bytes().next().unwrap());
+    upload.retained_quad_chunks.clear();
+    assert!(
+        shared.upgrade().is_some(),
+        "current presentation retains trimmed chunk payloads"
+    );
+    assert_eq!(
+        upload.retained_quad_memory().used_bytes,
+        (32 * PACKED_QUAD_BYTES) as u64
+    );
+    assert_eq!(
         upload.resident_quad_spans[0].range.len(),
         32 * PACKED_QUAD_BYTES
     );
@@ -957,6 +1033,10 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     assert_eq!(changed_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
     assert_eq!(upload.retained_quad_chunks.len(), 1);
+    assert!(
+        shared.upgrade().is_none(),
+        "reset releases the previous frame's segment references"
+    );
 }
 
 #[test]
@@ -1342,7 +1422,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 
     assert_eq!(summary.quad_count, 1);
     assert_eq!(upload.backdrop_blurs.len(), 0);
-    assert_eq!(read_f32_at(&upload.quads, 92), 0.2);
+    assert_eq!(read_f32_at(upload.quads.slice(92..96), 0), 0.2);
     assert!(matches!(
         upload.batches.as_slice(),
         [UploadedBatch::Quads { first: 0, count: 1 }]
@@ -1827,6 +1907,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let config = test_backdrop_blur_config(2, 3);
     let targets = BackdropBlurTargets {
         source: RenderTarget {
+            byte_size: 0,
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },
@@ -1836,11 +1917,13 @@ fn backdrop_blur_render_passes_blur_each_axis() {
             config,
             levels: vec![
                 BackdropBlurLevelTarget {
+                    byte_size: 0,
                     texture: test_texture_id(2),
                     texture_view: test_texture_view_id(2),
                     pass_resource_sets: vec![test_resource_set_id(12)],
                 },
                 BackdropBlurLevelTarget {
+                    byte_size: 0,
                     texture: test_texture_id(3),
                     texture_view: test_texture_view_id(3),
                     pass_resource_sets: vec![test_resource_set_id(13)],
@@ -1888,6 +1971,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
         source: RenderTarget {
+            byte_size: 0,
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
         },

@@ -1,14 +1,52 @@
 # GPUI / Nova 内存与性能验证（2026-10-09）
 
+两帧槽静态版本共享与 Fence 边界见 [P2-A 实现说明](GPUI_STATIC_BUFFER_SHARING.md)。
+Retained chunk 分段持有与上传见 [P2-B 实现说明](GPUI_PACKED_CHUNK_UPLOAD.md)。
+
 本批先修改 Nova 资源生命周期，再修改 GPUI 的呈现、静态 PNG 解码和文字缓存压力回收。
 保留工作区已有的 compositor 修改；没有升级依赖、改变画质、引入运行时配置开关或新线程池。
 
 ## 实现与边界
 
+### P1-B / P1-C：R8 字形与全局图片驻留
+
+单色字形保留单通道 coverage，直接写入 `R8Unorm` Atlas；彩色字形、图片和
+Subpixel 掩码继续采用四通道 BGRA。各类型共用 tile 分配、padding、批量上传队列、
+GPU owner 和 Fence 退休机制，按类型创建纹理并计算行距与内存指标。
+同面积 Mono 页的逻辑纹理字节与上传 payload 为原来的四分之一；原生分配仍可能有
+对齐或 allocator 开销，不能据此宣称应用 RSS 或总显存降低 75%。
+
+文字变色和透明度由 sprite/animation 值在 shader 中乘以 R8 coverage 完成，
+不会转换字形格式、复制 Atlas 或重新上传字形。初次上传仍需写入可靠的 staging
+并填充 tile padding，因此这里的零拷贝指颜色/透明度变化时的纹理复用。
+Vulkan 同批次对同一 mip 的重叠区域写入增加 transfer-write barrier，确保后写覆盖
+先写；不增加 CPU Fence 等待，互不相交的 tile 不增加该 barrier。
+
+`BoundedImageCache` 改为 App 共享解码的弱查找，普通图片元素也使用同一资源请求。
+同一来源的 pending decode 和 ready `RenderImage` 不再按缓存实例重复持有。
+`ImagePipelineConfig::idle_image_bytes` 默认 128 MiB，作用于 App 内所有解码缓存的
+唯一分配成本；实例 `max_items/max_bytes` 只约束本地查找 working set。
+全局 LRU 在加载完成、缓存/元素释放和 trim 时检查；元素释放通知按 App 合并，
+等待当前窗口更新完成后再检查。热路径只更新 recency，避免每帧扫描
+完整图片集。可见元素、pin、显式预加载租约和外部图片引用可以超过这个软预算。
+诊断分别报告预算、唯一缓存成本和超额字节。
+
+全局淘汰将退休通知交给各窗口；当前 Scene 仍引用的 tile 和 GPU 尚在使用的资源
+继续由现有 Scene/Fence 管理。GPU Atlas 仍属于各窗口/device，本批不把共享 CPU
+预算描述为跨设备物理 VRAM 硬上限，也没有实现活跃 Atlas compact/defrag。
+Metal 已写入 R8 格式映射，按要求不编译、不测试；现有 Metal 原生纹理上传尚未
+实现，这一限制保留。
+
+Windows 原生像素验证通过 DX11、DX12、Vulkan、OpenGL 四后端：R8 奇数行距、
+带 offset 的整图与重叠部分更新、Mono/Subpixel/BGRA/RGBA glyph/image shader、
+相同 R8 纹理的红色/半透明绿色/全透明文字。缓存测试覆盖共享解码、过期重载、
+全局 LRU、可见元素和显式租约保护。日志位于 `target/p1bc-memory/`；没有量化
+BMCBL 连续页面切换的 RSS、显存峰值或帧时间改善。
+
 | 路径 | 本批实现 | 边界 |
 | --- | --- | --- |
 | DX12 / Vulkan 上传页 | 新提交只退休本次使用的页，旧 busy 页保留自己的 fence；批量分配预检写入结果数组，消除 allocator 深拷贝和 aligned-size 临时数组 | 不复用尚未完成的页；错误输入仍在改变状态前拒绝 |
-| Vulkan allocator | aggressive trim 释放完全空闲的原生内存块，包括最后一个缓存块 | 不移动活跃 allocation、不改变 offset；普通帧和 light/moderate trim 保留原有块缓存策略 |
+| Vulkan allocator | moderate/aggressive trim 释放完全空闲的原生内存块，包括最后一个缓存块；P0-B 改为按需小块起步与增长 | 不移动活跃 allocation、不改变 offset；普通帧和 light trim 保留块缓存，moderate 仍保留一个上传页 |
 | DX11 / OpenGL 命令 | 成功或失败的提交都归还 CPU 命令数组以便复用 | 消费语义不变；moderate/aggressive trim 收缩空闲命令容量，aggressive 另收缩资源 registry，live ID 保持有效 |
 | DX11 查询池 | light trim 保留查询；moderate 保留一个，aggressive 释放缓存 | pending 查询继续等待原生完成 |
 | GPUI Windows 呈现 | 编译时跳过 Windows 不会启用的独立 deadline schedule 更新 | DWM / native tick、damage 与提交语义不变 |
@@ -17,7 +55,7 @@
 
 Vulkan 空闲块回收沿用仓库现有 `vendor/gpu-allocator` patch 边界，复用其 native block
 destroy 路径。`active_general_blocks` 随释放更新，保留 block slot 索引；后续 allocation
-可以重新建立原生块。GPU backend 先完成 pending work，再做 aggressive trim。
+可以重新建立原生块。GPU backend 先完成 pending work，再做 moderate/aggressive trim。
 
 空闲块回收并不等于搬迁活跃资源或消除所有显存碎片。DX12 实际 backend 仍使用 committed
 resource；DX11 / OpenGL 的 native storage 由运行时/驱动管理。本批不创建另一套自定义 GPU
@@ -40,6 +78,10 @@ dedicated VRAM、应用 RSS 或物理显存碎片率。
 - Vulkan 回收：活跃 2×2 RGBA texture 在 aggressive trim 后回读像素完全一致。
   销毁资源并 light trim 后，allocated=0、reserved=335544320；aggressive trim 后
   reserved=0。两次创建/上传/回读/释放循环都通过，确认回收后可以重新分配。
+  以上为固定 256/64 MiB 块策略的历史结果。P0-B 改为 4 MiB device、1 MiB
+  host/readback 起步并按每个 memory type 的压力增长；64 张 256×256 RGBA
+  texture 的后续测试 allocated=16 MiB、reserved=28 MiB。Moderate 与 Aggressive
+  空块回收均从 5 MiB 到 0，存活纹理在两种 trim 后像素读回一致。
 - 静态 PNG：确定性 1920×1080 RGBA fixture，Criterion release、20 samples、1 秒
   warmup、2 秒 measurement。before 45.699–47.473 ms，after 31.406–32.301 ms；
   Criterion 报告耗时变化 -33.231% 至 -30.028%，中心估计 -31.605%。存在 2 个 mild
@@ -235,6 +277,8 @@ fast path 在部分就绪场景也有回退。两者都已撤回，队列实现�
 没有缩小 Vulkan 默认共享块：小块会使更大的资源进入 personal allocation 路径，
 需要额外的大纹理 churn 对照才能决定。也没有把 DX12 buffer 上传强行改为保留 4 MiB
 staging page 的方案，以免小 buffer 工作负载增加长期驻留量。
+
+Atlas/Heap 活跃整理的策略、参考实现和限制见 [Nova GPU 整理](GPUI_GPU_COMPACTION.md)。
 
 ## 复现入口与验证限制
 

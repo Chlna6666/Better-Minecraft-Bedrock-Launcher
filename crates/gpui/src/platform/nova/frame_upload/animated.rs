@@ -142,17 +142,18 @@ impl FrameUpload {
             let sample = primitive.sample_resolved(values, size, &mut staging);
             samples.filter_parameters_changed |= sample.filter_parameters_changed;
             samples.visual_bounds.push(sample.visual_bounds);
-            let buffer = match primitive.kind {
-                AnimatedPrimitiveKind::Quad => &mut self.quads,
-                AnimatedPrimitiveKind::Shadow => &mut self.shadows,
-                AnimatedPrimitiveKind::MonochromeSprite => &mut self.mono_sprites,
-                AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites,
-                AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs,
-            };
             let byte_len = primitive.bytes.len();
             let offset = primitive.index as usize * byte_len;
             debug_assert_eq!(staging.len(), byte_len);
-            buffer[offset..offset + byte_len].copy_from_slice(&staging);
+            let range = offset..offset + byte_len;
+            let bytes = match primitive.kind {
+                AnimatedPrimitiveKind::Quad => self.quads.slice_mut(range),
+                AnimatedPrimitiveKind::Shadow => &mut self.shadows[range],
+                AnimatedPrimitiveKind::MonochromeSprite => &mut self.mono_sprites[range],
+                AnimatedPrimitiveKind::PolychromeSprite => &mut self.poly_sprites[range],
+                AnimatedPrimitiveKind::BackdropBlur => &mut self.backdrop_blurs[range],
+            };
+            bytes.copy_from_slice(&staging);
             if let Some(sample) = sample.backdrop_blur {
                 samples.blur_samples.push(sample);
             }

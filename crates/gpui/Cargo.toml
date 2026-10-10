@@ -175,6 +175,10 @@ name = "gpui_perf_lab"
 path = "examples/gpui_perf_lab.rs"
 
 [[example]]
+name = "buffer_residency_lab"
+path = "examples/buffer_residency.rs"
+
+[[example]]
 name = "presentation_lane_block"
 path = "examples/presentation_lane_block.rs"
 
@@ -895,6 +899,11 @@ features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+# Native residency lab compiles experimental SM5 shaders; production shaders remain precompiled.
+[target.'cfg(target_os = "windows")'.dev-dependencies.windows]
+version = "0.62.2"
+features = ["Win32_Graphics_Direct3D_Fxc"]
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-core]
 version = "0.62.2"

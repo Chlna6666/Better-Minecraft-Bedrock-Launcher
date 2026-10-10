@@ -207,7 +207,7 @@ impl AtlasPixelEncodingBenchmark {
         }
     }
 
-    /// Creates a coverage-mask-to-BGRA glyph workload with edge padding.
+    /// Copies single-channel R8 glyph coverage with edge padding, without color conversion.
     pub fn monochrome(width: u32, height: u32, padding: u32) -> Self {
         Self {
             core: AtlasPixelEncodingBenchmarkCore::monochrome(width, height, padding),

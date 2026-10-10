@@ -1,4 +1,4 @@
-use super::upload_encoding::encode_bgra_upload_with_padding;
+use super::upload_encoding::encode_atlas_upload_with_padding;
 use super::*;
 use crate::size;
 
@@ -11,7 +11,8 @@ fn expected_upload(
 ) -> Vec<u8> {
     let upload_width = width + padding * 2;
     let upload_height = height + padding * 2;
-    let mut expected = Vec::with_capacity(upload_width * upload_height * 4);
+    let mut expected =
+        Vec::with_capacity(upload_width * upload_height * atlas_bytes_per_pixel(texture_kind));
     for upload_y in 0..upload_height {
         let source_y = upload_y.saturating_sub(padding).min(height - 1);
         for upload_x in 0..upload_width {
@@ -34,7 +35,7 @@ fn append_expected_pixel(
     texture_kind: AtlasTextureKind,
 ) {
     if texture_kind == AtlasTextureKind::Monochrome {
-        expected.extend_from_slice(&[0, 0, source[source_pixel], 255]);
+        expected.push(source[source_pixel]);
         return;
     }
     let index = source_pixel * 4;
@@ -67,8 +68,13 @@ fn atlas_padding_replicates_converted_edge_pixels() {
                 let source = (0..width * height * source_bytes_per_pixel)
                     .map(|index| u8::try_from(index % 251).expect("modulo 251 must fit u8"))
                     .collect::<Vec<_>>();
-                let mut destination = vec![0; (width + padding * 2) * (height + padding * 2) * 4];
-                encode_bgra_upload_with_padding(
+                let mut destination = vec![
+                    0;
+                    (width + padding * 2)
+                        * (height + padding * 2)
+                        * atlas_bytes_per_pixel(texture_kind)
+                ];
+                encode_atlas_upload_with_padding(
                     &mut destination,
                     size(
                         DevicePixels(i32::try_from(width).expect("test width must fit i32")),

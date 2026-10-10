@@ -1,4 +1,4 @@
-use super::upload_encoding::{atlas_source_byte_len, encode_bgra_upload_with_padding};
+use super::upload_encoding::{atlas_source_byte_len, encode_atlas_upload_with_padding};
 use super::*;
 #[cfg(feature = "bench-support")]
 use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
@@ -18,7 +18,7 @@ pub(in crate::platform::nova) struct AtlasUploadStats {
 
 #[derive(Clone, Copy)]
 pub(in crate::platform::nova) struct PendingAtlasUpload {
-    texture_id: AtlasTextureId,
+    pub(in crate::platform::nova) texture_id: AtlasTextureId,
     origin: Origin2d,
     size: Extent2d,
     bytes_per_row: u32,
@@ -250,7 +250,8 @@ impl NovaAtlasState {
         let Ok(extent) = Extent2d::new(upload_width, upload_height) else {
             return false;
         };
-        let Some(bytes_per_row) = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL as u32)
+        let Some(bytes_per_row) =
+            upload_width.checked_mul(atlas_bytes_per_pixel(texture_kind) as u32)
         else {
             return false;
         };
@@ -292,7 +293,7 @@ impl NovaAtlasState {
                 return false;
             };
             let encoded =
-                encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding)
+                encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding)
                     .is_some();
             if encoded {
                 self.content_generation = self.content_generation.wrapping_add(1);
@@ -307,7 +308,7 @@ impl NovaAtlasState {
             self.upload_bytes = crate::assets::acquire_bitmap_buffer_capacity(len);
         }
         self.upload_bytes.resize(end, 0);
-        if encode_bgra_upload_with_padding(
+        if encode_atlas_upload_with_padding(
             &mut self.upload_bytes[offset..end],
             size,
             bytes,

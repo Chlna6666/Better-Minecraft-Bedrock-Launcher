@@ -1,5 +1,55 @@
+use super::buffer_upload::upload_buffer_batch;
 use super::*;
-use gfx_core::ResourceDevice;
+use gfx_core::BufferUploadBatch;
+
+fn presentation_clock_snapshot(frame_time: Instant) -> [u8; 24] {
+    let seconds = crate::animation::presentation_clock_seconds_at(frame_time);
+    let tick_60hz = ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
+    let mut clock = [0; 24];
+    clock[16..20].copy_from_slice(&seconds.to_ne_bytes());
+    clock[20..24].copy_from_slice(&tick_60hz.to_ne_bytes());
+    clock
+}
+
+fn submit_presentation_buffers(
+    backend: &SharedBackend,
+    batch: &BufferUploadBatch<'_>,
+) -> Result<()> {
+    match &mut *lock_backend(backend) {
+        #[cfg(all(
+            feature = "nova-gfx-opengl",
+            any(target_os = "windows", target_os = "linux")
+        ))]
+        NovaBackend::OpenGl(device) => upload_buffer_batch(device, batch),
+        #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+        NovaBackend::Dx11(device) => upload_buffer_batch(device, batch),
+        #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+        NovaBackend::Dx12(device) => upload_buffer_batch(device, batch),
+        #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+        NovaBackend::Metal(device) => upload_buffer_batch(device, batch),
+        #[cfg(all(
+            feature = "nova-gfx-vulkan",
+            any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+        ))]
+        NovaBackend::Vulkan(device) => upload_buffer_batch(device, batch),
+        #[cfg(not(any(
+            all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ),
+            all(feature = "nova-gfx-dx11", target_os = "windows"),
+            all(feature = "nova-gfx-dx12", target_os = "windows"),
+            all(feature = "nova-gfx-metal", target_os = "macos"),
+            all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            )
+        )))]
+        NovaBackend::Unavailable => {
+            anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
+        }
+    }
+}
 
 impl NovaRenderer {
     pub(super) fn prepare_for_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
@@ -13,8 +63,7 @@ impl NovaRenderer {
                 );
             }
             self.activate_frame_resources(0)?;
-            self.upload_presentation_clock(frame_time)?;
-            self.upload_gpu_indexed_animation_values()?;
+            self.upload_presentation_buffers(frame_time)?;
             return Ok(());
         }
         self.poll_pending_submissions()?;
@@ -23,124 +72,29 @@ impl NovaRenderer {
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
         self.activate_frame_resources(frame_resource_index)?;
-        self.upload_presentation_clock(frame_time)?;
-        self.upload_gpu_indexed_animation_values()?;
+        self.upload_presentation_buffers(frame_time)?;
         Ok(())
     }
 
-    /// Upload the renderer presentation clock into the currently active frame-resource slot.
-    ///
-    /// The first 16 bytes of GlobalParams remain static scene state. Only the final 8 bytes change
-    /// on presentation-only frames, so custom retained GPU effects can advance without rebuilding
-    /// scene primitives, layout, or View state.
-    fn upload_presentation_clock(&mut self, frame_time: Instant) -> Result<()> {
-        const CLOCK_OFFSET: usize = 16;
-        const CLOCK_BYTES: usize = 8;
-
-        let seconds = crate::animation::presentation_clock_seconds_at(frame_time);
-        let tick_60hz = ((seconds as f64 * 60.0).floor() as u64 & u64::from(u32::MAX)) as u32;
-        let mut bytes = [0_u8; CLOCK_BYTES];
-        bytes[..4].copy_from_slice(&seconds.to_ne_bytes());
-        bytes[4..].copy_from_slice(&tick_60hz.to_ne_bytes());
-
-        if self.frame_upload.globals.len() >= CLOCK_OFFSET + CLOCK_BYTES {
-            self.frame_upload.globals[CLOCK_OFFSET..CLOCK_OFFSET + CLOCK_BYTES]
-                .copy_from_slice(&bytes);
+    /// Writes dynamic presentation state only after activating a fence-safe resource slot.
+    fn upload_presentation_buffers(&mut self, frame_time: Instant) -> Result<()> {
+        let plan_started = Instant::now(); // CPU upload planning, separate from frame_time.
+        let clock = presentation_clock_snapshot(frame_time);
+        if self.frame_upload.globals.len() >= clock.len() {
+            self.frame_upload.globals[16..24].copy_from_slice(&clock[16..24]);
         }
-
-        let buffer = self.global_buffer;
-        match &mut *lock_backend(&self.backend) {
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => {
-                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
-            }
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => {
-                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
-            }
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => {
-                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
-            }
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => {
-                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
-            }
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => {
-                device.write_buffer(buffer, CLOCK_OFFSET as u64, &bytes)?
-            }
-            #[cfg(not(any(
-                all(
-                    feature = "nova-gfx-opengl",
-                    any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        }
-        Ok(())
-    }
-
-    /// Upload one dense timeline table after the destination frame-resource slot is activated.
-    /// Quad/glyph/image primitive bytes stay resident; hundreds of glyphs sharing one animation
-    /// therefore cost one 64-byte timeline record instead of hundreds of primitive rewrites.
-    fn upload_gpu_indexed_animation_values(&mut self) -> Result<()> {
         self.frame_upload.rebuild_indexed_animation_values();
-        let bytes = &self.frame_upload.gpu_indexed_animation_values;
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        let buffer = self.animation_value_buffer;
-        match &mut *lock_backend(&self.backend) {
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => device.write_buffer(buffer, 0, bytes)?,
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => device.write_buffer(buffer, 0, bytes)?,
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => device.write_buffer(buffer, 0, bytes)?,
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => device.write_buffer(buffer, 0, bytes)?,
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => device.write_buffer(buffer, 0, bytes)?,
-            #[cfg(not(any(
-                all(
-                    feature = "nova-gfx-opengl",
-                    any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {
-                anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
-            }
-        }
-        Ok(())
+        self.prepare_static_buffers()?;
+        // The selected slot is fence-safe; grow and rebind before writing its table.
+        self.ensure_stream_capacity()?;
+        let values = &self.frame_upload.gpu_indexed_animation_values;
+        let mut batch = BufferUploadBatch::default();
+        batch.push(self.global_buffer, &clock, 16..24)?;
+        batch.push(self.animation_value_buffer, values, 0..values.len())?;
+        crate::diagnostics::performance_metrics::record_nova_buffer_upload_time(
+            plan_started.elapsed(),
+        );
+        submit_presentation_buffers(&self.backend, &batch)
     }
 
     fn poll_pending_submissions(&mut self) -> Result<()> {
@@ -278,9 +232,12 @@ impl NovaRenderer {
         if !use_deferred_submission {
             if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {
                 let wait_started = Instant::now();
-                gfx_core::SubmissionDevice::wait_submission(device, submission)?;
+                let result = gfx_core::SubmissionDevice::wait_submission(device, submission);
+                let elapsed = wait_started.elapsed();
+                crate::diagnostics::gpu_owner::record_blocking_wait(elapsed);
+                result?;
                 if let Some(timings) = frame.as_mut().and_then(|frame| frame.timings.as_mut()) {
-                    timings.submission_wait = wait_started.elapsed();
+                    timings.submission_wait = elapsed;
                 }
             }
         } else if let Some(submission) = frame.as_mut().and_then(|frame| frame.submission) {

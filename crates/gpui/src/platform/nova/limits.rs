@@ -17,6 +17,12 @@ pub(super) const MAX_ANIMATION_BINDINGS: usize = MAX_QUADS
     + MAX_UNDERLINES
     + MAX_BACKDROP_BLURS;
 pub(super) const MAX_ANIMATION_VALUES: usize = MAX_ANIMATION_BINDINGS;
+// Small non-zero ranges keep every shader binding valid before its first draw.
+pub(super) const INITIAL_SHADOWS: usize = 64;
+pub(super) const INITIAL_PATH_SPRITES: usize = 64;
+pub(super) const INITIAL_MONO_SPRITES: usize = 256;
+pub(super) const INITIAL_POLY_SPRITES: usize = 64;
+pub(super) const INITIAL_ANIMATION_VALUES: usize = 64;
 // CPU-visible frame upload buffers are rewritten every frame. Keep one
 // buffer/resource-set slot per deferred submission so the CPU can upload the
 // next frame without overwriting data still referenced by the GPU queue.

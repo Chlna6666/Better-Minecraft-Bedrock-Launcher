@@ -37,10 +37,9 @@ impl FrameUpload {
     pub(super) fn encode_monochrome_sprites(
         &mut self,
         sprites: &[crate::MonochromeSprite],
-        texture_id: crate::AtlasTextureId,
+        _texture_id: crate::AtlasTextureId,
         summary: &mut FrameUploadSummary,
     ) {
-        let first = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
         let mut count = 0_u32;
         for sprite in sprites {
             if self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES >= MAX_MONO_SPRITES {
@@ -49,25 +48,38 @@ impl FrameUpload {
             if clip_is_degenerate(&sprite.content_mask) {
                 continue;
             }
+            let mut sprite = *sprite;
+            if let Some(tile) = self.atlas_placements.get(&sprite.tile.tile_id) {
+                sprite.tile = *tile;
+            }
             let primitive_index = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
-            write_monochrome_sprite(&mut self.mono_sprites, sprite);
+            write_monochrome_sprite(&mut self.mono_sprites, &sprite);
             register_scene_animated_primitive(
                 self,
                 summary,
                 sprite
                     .animation_id
-                    .map(|_| crate::Primitive::MonochromeSprite(*sprite)),
+                    .map(|_| crate::Primitive::MonochromeSprite(sprite)),
                 AnimatedPrimitiveKind::MonochromeSprite,
                 primitive_index,
             );
+            match self.batches.last_mut() {
+                Some(UploadedBatch::MonoSprites {
+                    texture_id: id,
+                    first,
+                    count,
+                }) if *id == sprite.tile.texture_id && *first + *count == primitive_index => {
+                    *count += 1;
+                }
+                _ => self.batches.push(UploadedBatch::MonoSprites {
+                    texture_id: sprite.tile.texture_id,
+                    first: primitive_index,
+                    count: 1,
+                }),
+            }
             count = count.saturating_add(1);
         }
         if count > 0 {
-            self.batches.push(UploadedBatch::MonoSprites {
-                texture_id,
-                first,
-                count,
-            });
             summary.mono_sprite_count = summary.mono_sprite_count.saturating_add(count);
         }
     }
@@ -75,10 +87,9 @@ impl FrameUpload {
     pub(super) fn encode_polychrome_sprites(
         &mut self,
         sprites: &[crate::PolychromeSprite],
-        texture_id: crate::AtlasTextureId,
+        _texture_id: crate::AtlasTextureId,
         summary: &mut FrameUploadSummary,
     ) {
-        let first = (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
         let mut count = 0_u32;
         for sprite in sprites {
             if self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES >= MAX_POLY_SPRITES {
@@ -87,25 +98,38 @@ impl FrameUpload {
             if clip_is_degenerate(&sprite.content_mask) {
                 continue;
             }
+            let mut sprite = *sprite;
+            if let Some(tile) = self.atlas_placements.get(&sprite.tile.tile_id) {
+                sprite.tile = *tile;
+            }
             let primitive_index = (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
-            write_polychrome_sprite(&mut self.poly_sprites, sprite);
+            write_polychrome_sprite(&mut self.poly_sprites, &sprite);
             register_scene_animated_primitive(
                 self,
                 summary,
                 sprite
                     .animation_id
-                    .map(|_| crate::Primitive::PolychromeSprite(*sprite)),
+                    .map(|_| crate::Primitive::PolychromeSprite(sprite)),
                 AnimatedPrimitiveKind::PolychromeSprite,
                 primitive_index,
             );
+            match self.batches.last_mut() {
+                Some(UploadedBatch::PolySprites {
+                    texture_id: id,
+                    first,
+                    count,
+                }) if *id == sprite.tile.texture_id && *first + *count == primitive_index => {
+                    *count += 1;
+                }
+                _ => self.batches.push(UploadedBatch::PolySprites {
+                    texture_id: sprite.tile.texture_id,
+                    first: primitive_index,
+                    count: 1,
+                }),
+            }
             count = count.saturating_add(1);
         }
         if count > 0 {
-            self.batches.push(UploadedBatch::PolySprites {
-                texture_id,
-                first,
-                count,
-            });
             summary.poly_sprite_count = summary.poly_sprite_count.saturating_add(count);
         }
     }

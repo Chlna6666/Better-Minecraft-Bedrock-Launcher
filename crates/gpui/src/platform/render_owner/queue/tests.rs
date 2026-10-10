@@ -35,6 +35,71 @@ fn draw(packet: PresentationPacket) -> Command {
 }
 
 #[test]
+fn replacement_preserves_backlog_age_and_uses_latest_enqueue_time() {
+    let queue = Queue::default();
+    let first = Instant::now();
+    for offset in [0, 10, 20] {
+        queue
+            .enqueue_at(
+                Command::Tick(first, None),
+                || Ok(()),
+                first + Duration::from_millis(offset),
+            )
+            .unwrap();
+    }
+    let queued = queue.take_timed().expect("coalesced tick");
+    assert_eq!(queued.enqueued_at, first + Duration::from_millis(20));
+    assert_eq!(queued.first_enqueued_at, first);
+    assert_eq!(queued.coalesced_count, 2);
+    assert!(queue.take_timed().is_none());
+}
+
+#[test]
+fn scene_replacement_and_control_barrier_keep_separate_wait_origins() {
+    let queue = Queue::default();
+    let first = Instant::now();
+    for (offset, command) in [
+        (0, draw(packet(Arc::new(Scene::default()), 0.0))),
+        (5, draw(packet(Arc::new(Scene::default()), 10.0))),
+        (10, Command::Call(Box::new(|_| {}))),
+        (15, draw(packet(Arc::new(Scene::default()), 20.0))),
+    ] {
+        queue
+            .enqueue_at(command, || Ok(()), first + Duration::from_millis(offset))
+            .unwrap();
+    }
+    let replaced = queue.take_timed().expect("first draw");
+    assert_eq!(replaced.first_enqueued_at, first);
+    assert_eq!(replaced.coalesced_count, 1);
+    let barrier = queue.take_timed().expect("control barrier");
+    assert_eq!(barrier.coalesced_count, 0);
+    let later = queue.take_timed().expect("later draw");
+    assert_eq!(later.first_enqueued_at, first + Duration::from_millis(15));
+    assert_eq!(later.coalesced_count, 0);
+}
+
+#[test]
+fn another_windows_service_is_visible_in_queue_wait() {
+    let busy = Queue::default();
+    let waiting = Queue::default();
+    let enqueued = Instant::now();
+    busy.enqueue_at(Command::Tick(enqueued, None), || Ok(()), enqueued)
+        .unwrap();
+    waiting
+        .enqueue_at(Command::Tick(enqueued, None), || Ok(()), enqueued)
+        .unwrap();
+    busy.take_timed().expect("busy window dispatch");
+    // A deterministic owner clock: the first window consumes twenty milliseconds.
+    let second_started = enqueued + Duration::from_millis(20);
+    let queued = waiting.take_timed().expect("waiting window dispatch");
+    assert_eq!(
+        second_started.duration_since(queued.enqueued_at),
+        Duration::from_millis(20)
+    );
+    assert_eq!(queued.coalesced_count, 0);
+}
+
+#[test]
 fn latest_scene_keeps_unsubmitted_damage_and_one_wake() {
     let queue = Queue::default();
     let first = Arc::new(Scene::default());

@@ -3,6 +3,9 @@ use super::*;
 use crate::element::{RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey};
 use std::borrow::Borrow;
 
+mod retained_scene_index;
+use retained_scene_index::Entry;
+
 pub(crate) struct DeferredDraw {
     pub(super) current_view: EntityId,
     pub(super) priority: usize,
@@ -226,6 +229,8 @@ pub(crate) struct Frame {
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
+    pub(super) retained_scene_index: FxHashMap<EntityId, Entry>,
+    retained_scene_index_spill_capacity: usize,
     pub(crate) retained_element_ranges: FxHashMap<ReconcileKey, RetainedElementRange>,
     pub(crate) retained_element_order: Vec<ReconcileKey>,
     /// Reusable transfer buffer for retained metadata migration. It is intentionally not trimmed
@@ -395,6 +400,8 @@ impl Frame {
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
             retained_scene_segments: Vec::new(),
+            retained_scene_index: FxHashMap::default(),
+            retained_scene_index_spill_capacity: 0,
             retained_element_ranges: FxHashMap::default(),
             retained_element_order: Vec::new(),
             retained_replay_scratch: Vec::new(),
@@ -433,6 +440,8 @@ impl Frame {
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.retained_scene_segments.clear();
+        self.retained_scene_index.clear();
+        self.retained_scene_index_spill_capacity = 0;
         self.retained_element_ranges.clear();
         self.retained_element_order.clear();
         self.retained_replay_scratch.clear();
@@ -516,6 +525,13 @@ impl Frame {
     }
 
     pub(crate) fn finish(&mut self, prev_frame: &mut Self) {
+        debug_assert!(
+            self.retained_scene_index
+                .values()
+                .map(Entry::len)
+                .sum::<usize>()
+                == self.retained_scene_segments.len()
+        );
         for element_state_key in &self.accessed_element_states {
             if let Some((element_state_key, element_state)) =
                 prev_frame.element_states.remove_entry(element_state_key)
@@ -544,6 +560,8 @@ impl Frame {
             + self.tooltip_requests.capacity()
             + self.cursor_styles.capacity()
             + self.retained_scene_segments.capacity()
+            + self.retained_scene_index.capacity()
+            + self.retained_scene_index_spill_capacity
             + self.retained_element_ranges.capacity()
             + self.retained_element_order.capacity()
             + self.retained_replay_scratch.capacity()
@@ -614,6 +632,12 @@ impl Frame {
             FRAME_MIN_RETAINED_CAPACITY,
             FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
+        let index_target = FRAME_MIN_RETAINED_CAPACITY.max(self.retained_scene_index.len());
+        if self.retained_scene_index.capacity()
+            > index_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_scene_index.shrink_to(index_target);
+        }
         trim_frame_vec_capacity(
             &mut self.retained_element_order,
             FRAME_MIN_RETAINED_CAPACITY,
@@ -675,6 +699,12 @@ impl Frame {
         trim_vec_against!(tooltip_requests);
         trim_vec_against!(cursor_styles);
         trim_vec_against!(retained_scene_segments);
+        let index_target = FRAME_MIN_RETAINED_CAPACITY.max(current.retained_scene_index.len());
+        if self.retained_scene_index.capacity()
+            > index_target.saturating_mul(FRAME_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.retained_scene_index.shrink_to(index_target);
+        }
         trim_vec_against!(retained_element_order);
 
         let ranges_target = FRAME_MIN_RETAINED_CAPACITY.max(current.retained_element_ranges.len());
@@ -717,6 +747,7 @@ impl Frame {
                 self.tooltip_requests.shrink_to(floor);
                 self.cursor_styles.shrink_to(floor);
                 self.retained_scene_segments.shrink_to(floor);
+                self.trim_retained_scene_index(floor);
                 self.retained_element_ranges
                     .shrink_to(floor.max(self.retained_element_ranges.len()));
                 self.retained_element_order.shrink_to(floor);

@@ -135,12 +135,44 @@ pub(crate) fn record_frame_slot_wait(duration: Duration) {
     );
 }
 
-/// Records CPU time spent queueing Nova frame-buffer writes.
+/// Adds CPU time spent in Nova buffer batches for the latest frame.
 pub(crate) fn record_nova_buffer_upload_time(duration: Duration) {
-    shared_metrics().buffer_upload_micros.store(
+    shared_metrics().buffer_upload_micros.fetch_add(
         duration.as_micros().min(u64::MAX as u128) as u64,
         Ordering::Relaxed,
     );
+}
+
+/// Upload accounting for a successful Nova buffer batch, excluding textures and atlases.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct BufferUploadMetrics {
+    pub requested_writes: u64,
+    pub requested_bytes: u64,
+    pub writes: u64,
+    pub bytes: u64,
+    pub backend_calls: u64,
+    pub backend_bytes: u64,
+}
+
+pub(crate) fn record_nova_buffer_upload_metrics(upload: BufferUploadMetrics) {
+    let metrics = shared_metrics();
+    for (counter, value) in [
+        (&metrics.buffer_upload_batches, u64::from(upload.writes > 0)),
+        (
+            &metrics.buffer_upload_requested_writes,
+            upload.requested_writes,
+        ),
+        (
+            &metrics.buffer_upload_requested_bytes,
+            upload.requested_bytes,
+        ),
+        (&metrics.buffer_upload_writes, upload.writes),
+        (&metrics.buffer_upload_bytes, upload.bytes),
+        (&metrics.buffer_upload_backend_calls, upload.backend_calls),
+        (&metrics.buffer_upload_backend_bytes, upload.backend_bytes),
+    ] {
+        counter.fetch_add(value, Ordering::Relaxed);
+    }
 }
 
 /// Records upload bytes for the latest frame.
@@ -174,6 +206,17 @@ pub fn reset_frame_upload_metrics() {
     metrics.static_stream_misses.store(0, Ordering::Relaxed);
     metrics.frame_slot_wait_micros.store(0, Ordering::Relaxed);
     metrics.buffer_upload_micros.store(0, Ordering::Relaxed);
+    for counter in [
+        &metrics.buffer_upload_batches,
+        &metrics.buffer_upload_requested_writes,
+        &metrics.buffer_upload_requested_bytes,
+        &metrics.buffer_upload_writes,
+        &metrics.buffer_upload_bytes,
+        &metrics.buffer_upload_backend_calls,
+        &metrics.buffer_upload_backend_bytes,
+    ] {
+        counter.store(0, Ordering::Relaxed);
+    }
     metrics.atlas_upload_bytes.store(0, Ordering::Relaxed);
     metrics.atlas_upload_tiles.store(0, Ordering::Relaxed);
     metrics.atlas_upload_micros.store(0, Ordering::Relaxed);

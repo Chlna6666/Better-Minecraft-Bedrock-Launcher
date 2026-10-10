@@ -69,7 +69,7 @@ impl FrameUpload {
                 corner_radii: blur.corner_radii,
                 border_widths: Default::default(),
             };
-            write_quad(&mut self.quads, &quad);
+            self.quads.write(|bytes| write_quad(bytes, &quad));
             register_scene_animated_primitive(
                 self,
                 summary,

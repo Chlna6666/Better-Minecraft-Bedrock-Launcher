@@ -26,6 +26,23 @@ pub(super) struct BackdropBlurTargets {
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
 }
 
+impl BackdropBlurTargets {
+    pub(super) fn byte_size(&self) -> u64 {
+        self.isolated_sources
+            .iter()
+            .fold(self.source.byte_size, |total, source| {
+                total.saturating_add(source.target.byte_size)
+            })
+            .saturating_add(
+                self.variants
+                    .iter()
+                    .flat_map(|variant| &variant.levels)
+                    .map(|level| level.byte_size)
+                    .sum::<u64>(),
+            )
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct IsolatedBlurSource {
     pub(super) index: u32,
@@ -47,6 +64,7 @@ pub(super) struct BackdropBlurVariantTargets {
 
 #[derive(Clone)]
 pub(super) struct BackdropBlurLevelTarget {
+    pub(super) byte_size: u64,
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
     pub(super) pass_resource_sets: Vec<ResourceSetId>,
@@ -65,6 +83,7 @@ pub(super) struct BackdropBlurTargetDescriptor {
 
 #[derive(Clone, Copy)]
 pub(super) struct RenderTarget {
+    pub(super) byte_size: u64,
     pub(super) texture: TextureId,
     pub(super) texture_view: TextureViewId,
 }
@@ -167,12 +186,7 @@ where
         resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
             label: Some(format!("{label} path mask frame {index} resource set")),
             layout: descriptor.resource_set_layout,
-            bindings: path_resource_bindings(
-                buffers.global_buffer,
-                texture_view,
-                descriptor.sampler,
-                buffers.path_sprite_buffer,
-            ),
+            bindings: path_resource_bindings(&buffers, texture_view, descriptor.sampler),
         })?);
     }
     Ok(PathMaskTarget {
@@ -236,12 +250,7 @@ where
                 "{label} backdrop scene color frame {index} resource set"
             )),
             layout: descriptor.pass_resource_set_layout,
-            bindings: backdrop_blur_pass_resource_bindings(
-                source.texture_view,
-                descriptor.sampler,
-                buffers.backdrop_blur_pass_buffer,
-                buffers.animation_value_buffer,
-            ),
+            bindings: backdrop_blur_pass_resource_bindings(&buffers, source.texture_view, descriptor.sampler),
         })?);
     }
 
@@ -264,12 +273,7 @@ where
                     "{label} element blur {index} scene color frame {frame_index} resource set"
                 )),
                 layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
-                    target.texture_view,
-                    descriptor.sampler,
-                    buffers.backdrop_blur_pass_buffer,
-                    buffers.animation_value_buffer,
-                ),
+                bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
             })?);
         }
         isolated_sources.push(IsolatedBlurSource {
@@ -317,15 +321,11 @@ where
                         "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
                     )),
                     layout: descriptor.pass_resource_set_layout,
-                    bindings: backdrop_blur_pass_resource_bindings(
-                        target.texture_view,
-                        descriptor.sampler,
-                        buffers.backdrop_blur_pass_buffer,
-                    buffers.animation_value_buffer,
-                    ),
+                    bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
                 })?);
             }
             levels.push(BackdropBlurLevelTarget {
+                byte_size: target.byte_size,
                 texture: target.texture,
                 texture_view: target.texture_view,
                 pass_resource_sets,
@@ -342,13 +342,7 @@ where
                     "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
                 )),
                 layout: descriptor.blur_resource_set_layout,
-                bindings: backdrop_blur_resource_bindings(
-                    buffers.global_buffer,
-                    source_texture_view,
-                    descriptor.sampler,
-                    buffers.backdrop_blur_buffer,
-                    buffers.animation_value_buffer,
-                ),
+                bindings: backdrop_blur_resource_bindings(&buffers, source_texture_view, descriptor.sampler),
             })?);
         }
 
@@ -410,6 +404,7 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
             destroy_render_texture_target(
                 device,
                 RenderTarget {
+                    byte_size: target.byte_size,
                     texture: target.texture,
                     texture_view: target.texture_view,
                 },
@@ -481,6 +476,9 @@ where
         format,
     })?;
     Ok(RenderTarget {
+        byte_size: u64::from(size.width())
+            * u64::from(size.height())
+            * u64::from(format.bytes_per_pixel()),
         texture,
         texture_view,
     })

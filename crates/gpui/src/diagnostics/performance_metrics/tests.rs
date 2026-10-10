@@ -138,6 +138,16 @@ fn records_extended_gpu_metrics() {
     record_frame_slot_wait(Duration::from_micros(13));
     record_nova_buffer_upload_time(Duration::from_micros(17));
     record_atlas_upload_metrics(64, 1, Duration::from_micros(2));
+    record_nova_buffer_upload_time(Duration::from_micros(3));
+    record_nova_buffer_upload_metrics(BufferUploadMetrics {
+        requested_writes: 4,
+        requested_bytes: 32,
+        writes: 2,
+        bytes: 24,
+        backend_calls: 2,
+        backend_bytes: 512,
+    });
+    record_nova_buffer_upload_metrics(BufferUploadMetrics::default());
     record_atlas_upload_metrics(32, 2, Duration::from_micros(3));
     record_prepared_command_count(32);
     record_upload_bytes(1024);
@@ -206,7 +216,14 @@ fn records_extended_gpu_metrics() {
         snapshot.frame_slot_wait_time,
         Some(Duration::from_micros(13))
     );
-    assert_eq!(snapshot.buffer_upload_time, Some(Duration::from_micros(17)));
+    assert_eq!(snapshot.buffer_upload_time, Some(Duration::from_micros(20)));
+    assert_eq!(snapshot.buffer_upload_batches, 1);
+    assert_eq!(snapshot.buffer_upload_requested_writes, 4);
+    assert_eq!(snapshot.buffer_upload_requested_bytes, 32);
+    assert_eq!(snapshot.buffer_upload_writes, 2);
+    assert_eq!(snapshot.buffer_upload_bytes, 24);
+    assert_eq!(snapshot.buffer_upload_backend_calls, 2);
+    assert_eq!(snapshot.buffer_upload_backend_bytes, 512);
     assert_eq!(snapshot.atlas_upload_time, Some(Duration::from_micros(5)));
     assert_eq!(snapshot.upload_bytes, 1280);
     assert_eq!(snapshot.encoded_scene_primitives, 23);
@@ -317,6 +334,14 @@ fn resets_latest_nova_scene_prepare_metrics() {
     );
     record_frame_slot_wait(Duration::from_micros(13));
     record_nova_buffer_upload_time(Duration::from_micros(17));
+    record_nova_buffer_upload_metrics(BufferUploadMetrics {
+        requested_writes: 4,
+        requested_bytes: 32,
+        writes: 2,
+        bytes: 24,
+        backend_calls: 2,
+        backend_bytes: 512,
+    });
 
     reset_frame_upload_metrics();
     let snapshot = performance_metrics_snapshot();
@@ -331,6 +356,13 @@ fn resets_latest_nova_scene_prepare_metrics() {
     assert_eq!(snapshot.static_stream_misses, 0);
     assert_eq!(snapshot.frame_slot_wait_time, None);
     assert_eq!(snapshot.buffer_upload_time, None);
+    assert_eq!(snapshot.buffer_upload_batches, 0);
+    assert_eq!(snapshot.buffer_upload_requested_writes, 0);
+    assert_eq!(snapshot.buffer_upload_requested_bytes, 0);
+    assert_eq!(snapshot.buffer_upload_writes, 0);
+    assert_eq!(snapshot.buffer_upload_bytes, 0);
+    assert_eq!(snapshot.buffer_upload_backend_calls, 0);
+    assert_eq!(snapshot.buffer_upload_backend_bytes, 0);
 }
 
 #[test]

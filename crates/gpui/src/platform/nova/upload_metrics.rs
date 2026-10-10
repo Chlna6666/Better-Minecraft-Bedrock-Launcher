@@ -26,12 +26,9 @@ where
 }
 
 pub(super) fn record_nova_upload_metrics(
-    frame_bytes: (usize, usize),
+    frame_upload_bytes: usize,
     atlas_stats: AtlasUploadStats,
 ) {
-    let (frame_upload_bytes, frame_retained_bytes) = frame_bytes;
-    let atlas_texture_bytes =
-        NOVA_ATLAS_SIZE as usize * NOVA_ATLAS_SIZE as usize * NOVA_ATLAS_BYTES_PER_PIXEL;
     let upload_bytes = frame_upload_bytes;
     crate::diagnostics::performance_metrics::record_upload_bytes(
         upload_bytes.saturating_add(atlas_stats.uploaded_bytes),
@@ -41,16 +38,5 @@ pub(super) fn record_nova_upload_metrics(
         atlas_stats.arena_capacity,
         upload_bytes,
         atlas_stats.arena_used_bytes,
-    );
-    crate::diagnostics::performance_metrics::record_gpu_resource_breakdown(
-        atlas_texture_bytes,
-        false,
-        false,
-        false,
-        false,
-        0,
-    );
-    crate::diagnostics::performance_metrics::record_gpu_retained_bytes(
-        atlas_texture_bytes.saturating_add(frame_retained_bytes),
     );
 }

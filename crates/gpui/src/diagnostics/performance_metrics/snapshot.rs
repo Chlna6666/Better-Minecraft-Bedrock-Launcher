@@ -136,8 +136,23 @@ pub struct PerformanceMetricsSnapshot {
     pub static_stream_misses: usize,
     /// CPU time blocked waiting for a reusable Nova frame-resource slot.
     pub frame_slot_wait_time: Option<Duration>,
-    /// CPU time spent queueing Nova frame-buffer writes in the latest submission.
+    /// CPU time planning and writing Nova buffer batches, including clock/timeline uploads.
     pub buffer_upload_time: Option<Duration>,
+    /// Nonempty buffer batches accepted during the latest Nova frame upload.
+    pub buffer_upload_batches: usize,
+    /// Nonempty dirty ranges requested before snapshot-range merging.
+    pub buffer_upload_requested_writes: usize,
+    /// Requested dirty bytes before merging, including repeated overlaps.
+    pub buffer_upload_requested_bytes: usize,
+    /// Buffer writes after merging; excludes texture/atlas uploads.
+    pub buffer_upload_writes: usize,
+    /// Logical destination bytes after merging; excludes texture/atlas uploads.
+    pub buffer_upload_bytes: usize,
+    /// Native updates, mapped destination copies, or staging-to-destination copy operations.
+    pub buffer_upload_backend_calls: usize,
+    /// Destination bytes including backend expansion, such as full DX11 uniform writes.
+    /// This is CPU-side accounting, not a GPU completion measurement.
+    pub buffer_upload_backend_bytes: usize,
     /// Time spent queueing platform atlas upload commands during the latest reported frame.
     pub atlas_upload_time: Option<Duration>,
     /// Compressed bytes in the most recently decoded image.
@@ -190,11 +205,11 @@ pub struct PerformanceMetricsSnapshot {
     pub atlas_polychrome_bytes: usize,
     /// Number of live atlas keys known to renderer metrics.
     pub atlas_live_keys: usize,
-    /// Estimated unused bytes inside retained atlas textures.
+    /// Atlas page bytes minus padded tile rectangles; not allocator free space.
     pub atlas_unused_bytes: usize,
-    /// Estimated bytes retained by window surface and retained-frame resources.
+    /// Logical depth/path/blur target bytes; excludes swapchain images and buffers.
     pub gpu_surface_texture_bytes: usize,
-    /// Aggregate GPUI-owned retained bytes visible to diagnostics.
+    /// Shared-device known GPU bytes; CPU caches are excluded.
     pub gpu_estimated_total_retained_bytes: usize,
     /// Recent size-aware image processing records.
     pub recent_image_processings: Vec<ImageRenderRecord>,

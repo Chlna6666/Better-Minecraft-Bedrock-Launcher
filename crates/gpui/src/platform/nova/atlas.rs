@@ -1,13 +1,15 @@
 use super::*;
 
 use etagere::{AllocId, BucketedAtlasAllocator};
+mod compact;
+pub(super) use compact::AtlasCompactPlan;
 use std::sync::{
     Weak,
     atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
 };
 
 #[cfg(test)]
-pub(super) use super::upload_encoding::encode_bgra_upload;
+pub(super) use super::upload_encoding::encode_atlas_upload;
 use super::upload_encoding::{atlas_kind_index, fallback_atlas_bytes};
 pub(super) use super::upload_queue::AtlasUploadStats;
 use super::upload_queue::PendingAtlasUpload;
@@ -20,6 +22,18 @@ pub(super) const NOVA_LARGE_IMAGE_ATLAS_SIZE: u32 = 4096;
 pub(super) const NOVA_MAX_ATLAS_SIZE: u32 = 16_384;
 pub(super) const NOVA_ATLAS_SIZE: u32 = NOVA_DEFAULT_ATLAS_SIZE;
 pub(super) const NOVA_ATLAS_BYTES_PER_PIXEL: usize = 4;
+pub(super) const fn atlas_texture_format(kind: AtlasTextureKind) -> Format {
+    match kind {
+        AtlasTextureKind::Monochrome => Format::R8Unorm,
+        AtlasTextureKind::Bgra | AtlasTextureKind::Rgba | AtlasTextureKind::Subpixel => {
+            Format::Bgra8Unorm
+        }
+    }
+}
+
+pub(super) const fn atlas_bytes_per_pixel(kind: AtlasTextureKind) -> usize {
+    atlas_texture_format(kind).bytes_per_pixel() as usize
+}
 pub(super) const NOVA_ATLAS_TILE_PADDING: u32 = 1;
 pub(super) const NOVA_ATLAS_KIND_COUNT: usize = 4;
 const NOVA_DEDICATED_IMAGE_AXIS_THRESHOLD: u32 = 1536;
@@ -44,12 +58,16 @@ pub(super) struct NovaAtlas {
     /// Lock-free mirror of atlas pixel content changes. Blur source caching uses this to avoid
     /// reusing a filtered texture after an image or glyph upload changed sampled pixels.
     content_generation: AtomicU64,
+    placement_generation: AtomicU64,
     /// Lock-free mirror of whether [`NovaAtlasState::pending_removals`] is non-empty.
     pending_removals_flag: AtomicBool,
 }
 
 pub(super) struct NovaAtlasState {
     pub(super) next_tile_id: u32,
+    // Nova tile IDs are logical identities; etagere IDs belong to physical pages.
+    placements: FxHashMap<crate::TileId, (AtlasTile, AllocId)>,
+    placement_generation: u64,
     pub(super) texture_lists: [NovaAtlasTextureList; NOVA_ATLAS_KIND_COUNT],
     tiles: FxHashMap<AtlasKey, AtlasTile>,
     pending_removals: Vec<PendingAtlasRemoval>,
@@ -69,6 +87,8 @@ impl Default for NovaAtlasState {
     fn default() -> Self {
         Self {
             next_tile_id: 0,
+            placements: FxHashMap::default(),
+            placement_generation: 0,
             texture_lists: std::array::from_fn(|_| NovaAtlasTextureList::default()),
             tiles: FxHashMap::default(),
             pending_removals: Vec::new(),
@@ -95,6 +115,7 @@ pub(super) struct NovaAtlasTexture {
     pub(super) size: Size<DevicePixels>,
     allocator: BucketedAtlasAllocator,
     live_tile_count: usize,
+    dedicated: bool,
 }
 
 struct PendingAtlasRemoval {
@@ -115,12 +136,36 @@ pub(super) struct NovaAtlasTextureInfo {
 }
 
 impl NovaAtlas {
+    pub(super) fn memory_profile(&self) -> (crate::MemoryUsage, usize, u64) {
+        let state = self.state.lock().expect("nova atlas lock poisoned");
+        let tile_bytes = state
+            .tiles
+            .values()
+            .chain(state.fallback_tiles.iter().flatten())
+            .chain(state.pending_removals.iter().map(|removal| &removal.tile))
+            .map(|tile| {
+                let padding = u64::from(tile.padding) * 2;
+                (tile.bounds.size.width.0.max(0) as u64 + padding)
+                    * (tile.bounds.size.height.0.max(0) as u64 + padding)
+                    * atlas_bytes_per_pixel(tile.texture_id.kind) as u64
+            })
+            .sum();
+        (
+            crate::MemoryUsage {
+                used_bytes: state.upload_bytes.len() as u64,
+                capacity_bytes: state.upload_bytes.capacity() as u64,
+            },
+            state.tiles.len(),
+            tile_bytes,
+        )
+    }
     pub(super) fn new() -> Self {
         let state = NovaAtlasState::with_fallback_tiles();
         Self {
             build_entries: Mutex::new(FxHashMap::default()),
             texture_set_generation: AtomicU64::new(state.texture_set_generation),
             content_generation: AtomicU64::new(state.content_generation),
+            placement_generation: AtomicU64::new(state.placement_generation),
             pending_removals_flag: AtomicBool::new(!state.pending_removals.is_empty()),
             state: Mutex::new(state),
         }
@@ -133,6 +178,8 @@ impl NovaAtlas {
             .store(state.texture_set_generation, AtomicOrdering::Release);
         self.content_generation
             .store(state.content_generation, AtomicOrdering::Release);
+        self.placement_generation
+            .store(state.placement_generation, AtomicOrdering::Release);
         self.pending_removals_flag
             .store(!state.pending_removals.is_empty(), AtomicOrdering::Release);
     }
@@ -227,7 +274,14 @@ impl NovaAtlas {
             GpuiMemoryTrimLevel::Aggressive => {
                 let previous_generation = state.texture_set_generation;
                 let previous_content_generation = state.content_generation;
-                *state = NovaAtlasState::with_fallback_tiles();
+                let next_tile_id = state.next_tile_id;
+                let placement_generation = state.placement_generation;
+                *state = NovaAtlasState {
+                    next_tile_id,
+                    ..Default::default()
+                };
+                state.initialize_fallback_tiles();
+                state.placement_generation = placement_generation.wrapping_add(1);
                 // Keep the generation monotonic across the reset so a renderer that synced
                 // before the reset can never observe a stale-but-equal value.
                 state.texture_set_generation = previous_generation
@@ -268,10 +322,11 @@ impl NovaAtlas {
         live_tiles: &FxHashSet<(AtlasTextureId, u32)>,
     ) -> bool {
         let state = self.state.lock().expect("nova atlas lock poisoned");
-        state
-            .pending_removals
-            .iter()
-            .any(|pending| !live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0)))
+        state.pending_removals.iter().any(|pending| {
+            !live_tiles
+                .iter()
+                .any(|(_, id)| *id == pending.tile.tile_id.0)
+        })
     }
 
     /// Applies queued atlas retirements except for allocations referenced by the Scene that is
@@ -287,9 +342,10 @@ impl NovaAtlas {
         live_tiles: &FxHashSet<(AtlasTextureId, u32)>,
     ) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
+        let live_ids: FxHashSet<_> = live_tiles.iter().map(|(_, id)| *id).collect();
         let pending_removals = std::mem::take(&mut state.pending_removals);
         for pending in pending_removals {
-            if live_tiles.contains(&(pending.tile.texture_id, pending.tile.tile_id.0)) {
+            if live_ids.contains(&pending.tile.tile_id.0) {
                 state.pending_removals.push(pending);
             } else {
                 state.deallocate_tile(pending.tile);
@@ -629,8 +685,7 @@ impl NovaAtlasState {
             }
 
             let bytes = fallback_atlas_bytes(texture_kind);
-            self.fallback_tiles[index] =
-                self.allocate_and_upload_kind(texture_kind, size, bytes);
+            self.fallback_tiles[index] = self.allocate_and_upload_kind(texture_kind, size, bytes);
         }
     }
 
@@ -708,13 +763,18 @@ impl NovaAtlasState {
             self.deallocate_texture_allocation(texture_id, allocation_id);
             return None;
         }
-        self.next_tile_id = self.next_tile_id.saturating_add(1);
+        let tile_id = crate::TileId(self.next_tile_id);
+        self.next_tile_id = self
+            .next_tile_id
+            .checked_add(1)
+            .expect("Nova logical tile IDs exhausted");
         let tile = AtlasTile {
             texture_id,
-            tile_id: allocation_id.into(),
+            tile_id,
             padding: NOVA_ATLAS_TILE_PADDING,
             bounds: Bounds { origin, size },
         };
+        self.placements.insert(tile_id, (tile, allocation_id));
         self.full_kinds_logged.remove(&texture_kind);
         Some(tile)
     }
@@ -728,7 +788,10 @@ impl NovaAtlasState {
     ) -> Option<(AtlasTextureId, AllocId, i32, i32)> {
         if !dedicated {
             let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
-            for texture in list.textures.iter_mut().flatten().rev() {
+            for texture in list.textures.iter_mut().flatten() {
+                if texture.dedicated {
+                    continue;
+                }
                 if let Some(allocation) = texture.allocator.allocate(allocation_size) {
                     texture.live_tile_count = texture.live_tile_count.saturating_add(1);
                     return Some((
@@ -755,6 +818,7 @@ impl NovaAtlasState {
         self.texture_set_generation = self.texture_set_generation.wrapping_add(1);
         let list = &mut self.texture_lists[atlas_kind_index(texture_kind)];
         let texture = Self::push_texture_with_size(texture_kind, width, height, list)?;
+        texture.dedicated = dedicated;
         let allocation = texture.allocator.allocate(allocation_size)?;
         texture.live_tile_count = texture.live_tile_count.saturating_add(1);
         Some((
@@ -787,6 +851,7 @@ impl NovaAtlasState {
                 i32::try_from(height).ok()?,
             )),
             live_tile_count: 0,
+            dedicated: false,
         };
 
         if let Some(index) = index {
@@ -802,7 +867,9 @@ impl NovaAtlasState {
         if self.is_fallback_tile(tile) {
             return;
         }
-        self.deallocate_texture_allocation(tile.texture_id, tile.tile_id.into());
+        if let Some((placement, allocation)) = self.placements.remove(&tile.tile_id) {
+            self.deallocate_texture_allocation(placement.texture_id, allocation);
+        }
     }
 
     fn deallocate_texture_allocation(
@@ -918,7 +985,7 @@ mod tests {
 
         assert_eq!(state.pending_uploads.len(), 1);
 
-        state.deallocate_texture_allocation(tile.texture_id, tile.tile_id.into());
+        state.deallocate_tile(tile);
 
         assert!(state.pending_uploads.is_empty());
         assert!(

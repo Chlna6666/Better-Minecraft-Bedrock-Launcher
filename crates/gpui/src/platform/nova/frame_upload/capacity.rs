@@ -1,12 +1,31 @@
 use super::*;
 
 impl FrameUpload {
-    #[cfg(feature = "bench-support")]
+    /// Counts cache and frame references by their shared backing, including trimmed cache entries
+    /// still needed by the current presentation. Packed bytes never count twice.
+    pub(in crate::platform::nova) fn retained_quad_memory(&self) -> crate::MemoryUsage {
+        let mut seen = FxHashSet::default();
+        let mut usage = crate::MemoryUsage::default();
+        for bytes in self
+            .retained_quad_chunks
+            .values()
+            .map(|chunk| &chunk.bytes)
+            .chain(self.quads.shared_bytes())
+        {
+            if seen.insert(Arc::as_ptr(bytes)) {
+                usage.used_bytes = usage.used_bytes.saturating_add(bytes.len() as u64);
+                usage.capacity_bytes = usage.capacity_bytes.saturating_add(bytes.capacity() as u64);
+            }
+        }
+        usage
+    }
+
     pub(in crate::platform::nova) fn retained_byte_capacity(&self) -> usize {
         let stream_capacity = [
             self.globals.capacity(),
             self.text_raster_params.capacity(),
             self.quads.capacity(),
+            self.quads.metadata_capacity(),
             self.shadows.capacity(),
             self.path_rasterization_vertices.capacity(),
             self.path_sprites.capacity(),
@@ -35,11 +54,7 @@ impl FrameUpload {
         ]
         .into_iter()
         .fold(0, usize::saturating_add);
-        let chunk_capacity = self
-            .retained_quad_chunks
-            .values()
-            .map(|chunk| chunk.bytes.capacity())
-            .fold(0, usize::saturating_add);
+        let chunk_capacity = self.retained_quad_memory().capacity_bytes as usize;
         stream_capacity
             .saturating_add(chunk_capacity)
             .saturating_add(
@@ -63,7 +78,7 @@ impl FrameUpload {
             TEXT_RASTER_UPLOAD_BYTES,
             multiplier,
         );
-        trim_upload_vec(&mut self.quads, 64 * PACKED_QUAD_BYTES, multiplier);
+        self.quads.trim(64 * PACKED_QUAD_BYTES, multiplier);
         trim_upload_vec(&mut self.shadows, 64 * PACKED_SHADOW_BYTES, multiplier);
         trim_upload_vec(
             &mut self.path_rasterization_vertices,
@@ -300,7 +315,7 @@ impl FrameUpload {
 
     fn encoded_primitive_count(&self) -> usize {
         [
-            packed_item_count(&self.quads, PACKED_QUAD_BYTES),
+            self.quads.len() / PACKED_QUAD_BYTES,
             packed_item_count(&self.shadows, PACKED_SHADOW_BYTES),
             packed_item_count(&self.path_sprites, PACKED_PATH_SPRITE_BYTES),
             packed_item_count(&self.mono_sprites, PACKED_MONO_SPRITE_BYTES),

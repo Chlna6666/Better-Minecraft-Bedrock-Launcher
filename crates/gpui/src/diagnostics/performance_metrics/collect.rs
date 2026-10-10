@@ -8,6 +8,22 @@ use super::{AllocatorBucketMetricsSnapshot, PerformanceMetricsSnapshot};
 
 /// Returns a point-in-time snapshot of GPUI performance metrics.
 pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
+    let memory = crate::diagnostics::memory_profile_totals();
+    let gpu_bytes = if memory.windows > 0 {
+        memory.gpu_bytes
+    } else {
+        shared_metrics().gpu_retained_bytes.load(Ordering::Relaxed)
+    };
+    let atlas_bytes = if memory.windows > 0 {
+        memory
+            .mono_bytes
+            .saturating_add(memory.color_bytes)
+            .saturating_add(memory.subpixel_bytes)
+    } else {
+        shared_metrics()
+            .atlas_retained_bytes
+            .load(Ordering::Relaxed)
+    };
     let renderer_backend = shared_metrics()
         .renderer_backend
         .lock()
@@ -179,7 +195,11 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         renderer_backend,
         image_cache_items,
         image_cache_bytes,
-        atlas_textures: shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize,
+        atlas_textures: if memory.windows > 0 {
+            memory.atlas_pages
+        } else {
+            shared_metrics().atlas_textures.load(Ordering::Relaxed) as usize
+        },
         last_draw_time: (last_draw_micros > 0).then(|| Duration::from_micros(last_draw_micros)),
         present_fps,
         dirty_to_present_average: (dirty_to_present_count > 0)
@@ -311,6 +331,25 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
             .then(|| Duration::from_micros(frame_slot_wait_micros)),
         buffer_upload_time: (buffer_upload_micros > 0)
             .then(|| Duration::from_micros(buffer_upload_micros)),
+        buffer_upload_batches: shared_metrics()
+            .buffer_upload_batches
+            .load(Ordering::Relaxed) as usize,
+        buffer_upload_requested_writes: shared_metrics()
+            .buffer_upload_requested_writes
+            .load(Ordering::Relaxed) as usize,
+        buffer_upload_requested_bytes: shared_metrics()
+            .buffer_upload_requested_bytes
+            .load(Ordering::Relaxed) as usize,
+        buffer_upload_writes: shared_metrics()
+            .buffer_upload_writes
+            .load(Ordering::Relaxed) as usize,
+        buffer_upload_bytes: shared_metrics().buffer_upload_bytes.load(Ordering::Relaxed) as usize,
+        buffer_upload_backend_calls: shared_metrics()
+            .buffer_upload_backend_calls
+            .load(Ordering::Relaxed) as usize,
+        buffer_upload_backend_bytes: shared_metrics()
+            .buffer_upload_backend_bytes
+            .load(Ordering::Relaxed) as usize,
         atlas_upload_time: (atlas_upload_micros > 0)
             .then(|| Duration::from_micros(atlas_upload_micros)),
         last_image_processing_compressed_bytes: shared_metrics()
@@ -352,28 +391,31 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         image_asset_total_resident_bytes: image_cache_bytes
             .saturating_add(image_asset_resident_bytes),
         render_image_cpu_bytes: image_cache_bytes,
-        render_image_gpu_texture_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
+        render_image_gpu_texture_bytes: if memory.windows > 0 {
+            memory.color_bytes as usize
+        } else {
+            atlas_bytes as usize
+        },
         icon_cache_entries: 0,
         icon_cache_resident_bytes: 0,
-        atlas_monochrome_bytes: 0,
-        atlas_polychrome_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
-        atlas_live_keys: 0,
-        atlas_unused_bytes: 0,
-        gpu_surface_texture_bytes: shared_metrics()
-            .gpu_retained_bytes
-            .load(Ordering::Relaxed)
-            .saturating_sub(
-                shared_metrics()
-                    .atlas_retained_bytes
-                    .load(Ordering::Relaxed),
-            ) as usize,
-        gpu_estimated_total_retained_bytes: image_cache_bytes
-            .saturating_add(image_asset_resident_bytes)
-            .saturating_add(shared_metrics().gpu_retained_bytes.load(Ordering::Relaxed) as usize),
+        atlas_monochrome_bytes: memory.mono_bytes as usize,
+        atlas_polychrome_bytes: if memory.windows > 0 {
+            memory.color_bytes as usize
+        } else {
+            atlas_bytes as usize
+        },
+        atlas_live_keys: memory.live_keys,
+        atlas_unused_bytes: if memory.windows > 0 {
+            atlas_bytes.saturating_sub(memory.tile_bytes) as usize
+        } else {
+            0
+        },
+        gpu_surface_texture_bytes: if memory.windows > 0 {
+            memory.target_bytes as usize
+        } else {
+            gpu_bytes.saturating_sub(atlas_bytes) as usize
+        },
+        gpu_estimated_total_retained_bytes: gpu_bytes as usize,
         recent_image_processings,
         first_frame_build_time: (first_frame_build_micros > 0)
             .then(|| Duration::from_micros(first_frame_build_micros)),
@@ -440,10 +482,8 @@ pub fn performance_metrics_snapshot() -> PerformanceMetricsSnapshot {
         full_redraw_fallback_count: shared_metrics()
             .full_redraw_fallback_count
             .load(Ordering::Relaxed) as usize,
-        gpu_retained_bytes: shared_metrics().gpu_retained_bytes.load(Ordering::Relaxed) as usize,
-        atlas_retained_bytes: shared_metrics()
-            .atlas_retained_bytes
-            .load(Ordering::Relaxed) as usize,
+        gpu_retained_bytes: gpu_bytes as usize,
+        atlas_retained_bytes: atlas_bytes as usize,
         has_retained_frame_target: shared_metrics()
             .has_retained_frame_target
             .load(Ordering::Relaxed)

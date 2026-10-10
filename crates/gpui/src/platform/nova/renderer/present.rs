@@ -1,245 +1,7 @@
-use super::chunk_upload::QuadUploadPlan;
+use super::buffer_upload::{FrameBufferUpload, upload_frame_buffers};
 use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
-use super::retained_upload::StaticUploadMask;
 use super::*;
-
-#[derive(Clone, Copy)]
-struct FrameBufferTargets {
-    global: BufferId,
-    text_raster: BufferId,
-    quad: BufferId,
-    shadow: BufferId,
-    path_rasterization_vertex: BufferId,
-    path_sprite: BufferId,
-    mono_sprite: BufferId,
-    poly_sprite: BufferId,
-    underline: BufferId,
-    backdrop_blur_pass: BufferId,
-    backdrop_blur: BufferId,
-}
-
-impl NovaRenderer {
-    fn frame_buffer_targets(&self) -> FrameBufferTargets {
-        FrameBufferTargets {
-            global: self.global_buffer,
-            text_raster: self.text_raster_buffer,
-            quad: self.quad_buffer,
-            shadow: self.shadow_buffer,
-            path_rasterization_vertex: self.path_rasterization_vertex_buffer,
-            path_sprite: self.path_sprite_buffer,
-            mono_sprite: self.mono_sprite_buffer,
-            poly_sprite: self.poly_sprite_buffer,
-            underline: self.underline_buffer,
-            backdrop_blur_pass: self.backdrop_blur_pass_buffer,
-            backdrop_blur: self.backdrop_blur_buffer,
-        }
-    }
-}
-
-fn upload_frame_buffers<D>(
-    device: &mut D,
-    buffers: FrameBufferTargets,
-    frame_upload: &FrameUpload,
-    has_backdrop_blurs: bool,
-    static_uploads: StaticUploadMask,
-    quad_upload_plan: &QuadUploadPlan,
-) -> Result<()>
-where
-    D: BackendResources,
-{
-    let started_at = Instant::now();
-    if static_uploads.global {
-        device.write_buffer(buffers.global, 0, &frame_upload.globals)?;
-    }
-    if static_uploads.text_raster {
-        device.write_buffer(buffers.text_raster, 0, &frame_upload.text_raster_params)?;
-    }
-    upload_quad_buffer(device, buffers.quad, &frame_upload.quads, quad_upload_plan)?;
-    if static_uploads.shadow && !frame_upload.shadows.is_empty() {
-        device.write_buffer(buffers.shadow, 0, &frame_upload.shadows)?;
-    }
-    if static_uploads.path_rasterization_vertex
-        && !frame_upload.path_rasterization_vertices.is_empty()
-    {
-        device.write_buffer(
-            buffers.path_rasterization_vertex,
-            0,
-            &frame_upload.path_rasterization_vertices,
-        )?;
-    }
-    if static_uploads.path_sprite && !frame_upload.path_sprites.is_empty() {
-        device.write_buffer(buffers.path_sprite, 0, &frame_upload.path_sprites)?;
-    }
-    if static_uploads.mono_sprite && !frame_upload.mono_sprites.is_empty() {
-        device.write_buffer(buffers.mono_sprite, 0, &frame_upload.mono_sprites)?;
-    }
-    if static_uploads.poly_sprite && !frame_upload.poly_sprites.is_empty() {
-        device.write_buffer(buffers.poly_sprite, 0, &frame_upload.poly_sprites)?;
-    }
-    if static_uploads.underline && !frame_upload.underlines.is_empty() {
-        device.write_buffer(buffers.underline, 0, &frame_upload.underlines)?;
-    }
-    if has_backdrop_blurs && static_uploads.backdrop_blur_pass {
-        device.write_buffer(
-            buffers.backdrop_blur_pass,
-            0,
-            &frame_upload.backdrop_blur_passes,
-        )?;
-    }
-    if has_backdrop_blurs && static_uploads.backdrop_blur {
-        device.write_buffer(buffers.backdrop_blur, 0, &frame_upload.backdrop_blurs)?;
-    }
-    // A partial static refresh may leave other primitive streams resident. Those clean streams can
-    // still contain active animations, so refresh only their animated ranges. Streams uploaded in
-    // full above already contain the sampled bytes and deliberately skip duplicate range writes.
-    upload_animated_buffers(device, buffers, frame_upload, static_uploads)?;
-    crate::diagnostics::performance_metrics::record_nova_buffer_upload_time(started_at.elapsed());
-    Ok(())
-}
-
-fn upload_quad_buffer<D: BackendResources>(
-    device: &mut D,
-    buffer: BufferId,
-    source: &[u8],
-    plan: &QuadUploadPlan,
-) -> Result<()> {
-    match plan {
-        QuadUploadPlan::None => {}
-        QuadUploadPlan::Full => device.write_buffer(buffer, 0, source)?,
-        QuadUploadPlan::Ranges(ranges) => {
-            for range in ranges {
-                device.write_buffer(buffer, range.start as u64, &source[range.clone()])?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn upload_animated_buffer_kind<D: BackendResources>(
-    device: &mut D,
-    buffer: BufferId,
-    source: &[u8],
-    frame_upload: &FrameUpload,
-    kind: AnimatedPrimitiveKind,
-) -> Result<()> {
-    let mut range_start = None::<usize>;
-    let mut range_end = 0usize;
-
-    for primitive in frame_upload
-        .animated_primitives
-        .iter()
-        .filter(|primitive| primitive.kind == kind)
-    {
-        let start = usize::try_from(primitive.offset()).map_err(|_| {
-            anyhow::anyhow!(
-                "nova animated buffer offset does not fit usize: kind={kind:?} offset={}",
-                primitive.offset()
-            )
-        })?;
-        let end = start.checked_add(primitive.bytes.len()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "nova animated buffer range overflow: kind={kind:?} start={start} len={}",
-                primitive.bytes.len()
-            )
-        })?;
-        if end > source.len() {
-            anyhow::bail!(
-                "nova animated buffer range out of bounds: kind={kind:?} range={start}..{end} source_len={}",
-                source.len()
-            );
-        }
-
-        match range_start {
-            Some(_start_of_range) if start == range_end => {
-                range_end = end;
-            }
-            Some(start_of_range) => {
-                device.write_buffer(
-                    buffer,
-                    start_of_range as u64,
-                    &source[start_of_range..range_end],
-                )?;
-                range_start = Some(start);
-                range_end = end;
-            }
-            None => {
-                range_start = Some(start);
-                range_end = end;
-            }
-        }
-    }
-
-    if let Some(start) = range_start {
-        device.write_buffer(buffer, start as u64, &source[start..range_end])?;
-    }
-    Ok(())
-}
-
-fn upload_animated_buffers<D: BackendResources>(
-    device: &mut D,
-    buffers: FrameBufferTargets,
-    frame_upload: &FrameUpload,
-    static_uploads: StaticUploadMask,
-) -> Result<()> {
-    if frame_upload.has_animated_backdrop_blurs() && !static_uploads.backdrop_blur_pass {
-        device.write_buffer(
-            buffers.backdrop_blur_pass,
-            0,
-            &frame_upload.backdrop_blur_passes,
-        )?;
-    }
-
-    // Animated primitives are registered in scene order and each primitive kind has a monotonically
-    // increasing buffer index. Walk each kind independently so physically adjacent records can be
-    // uploaded as one range without widening across static gaps. Text runs benefit the most: a run
-    // of hundreds of glyph sprites becomes one backend write instead of one write per glyph.
-    if !static_uploads.quad {
-        upload_animated_buffer_kind(
-            device,
-            buffers.quad,
-            &frame_upload.quads,
-            frame_upload,
-            AnimatedPrimitiveKind::Quad,
-        )?;
-    }
-    if !static_uploads.shadow {
-        upload_animated_buffer_kind(
-            device,
-            buffers.shadow,
-            &frame_upload.shadows,
-            frame_upload,
-            AnimatedPrimitiveKind::Shadow,
-        )?;
-    }
-    if !static_uploads.mono_sprite {
-        upload_animated_buffer_kind(
-            device,
-            buffers.mono_sprite,
-            &frame_upload.mono_sprites,
-            frame_upload,
-            AnimatedPrimitiveKind::MonochromeSprite,
-        )?;
-    }
-    if !static_uploads.poly_sprite {
-        upload_animated_buffer_kind(
-            device,
-            buffers.poly_sprite,
-            &frame_upload.poly_sprites,
-            frame_upload,
-            AnimatedPrimitiveKind::PolychromeSprite,
-        )?;
-    }
-    if !static_uploads.backdrop_blur {
-        upload_animated_buffer_kind(
-            device,
-            buffers.backdrop_blur,
-            &frame_upload.backdrop_blurs,
-            frame_upload,
-            AnimatedPrimitiveKind::BackdropBlur,
-        )?;
-    }
-    Ok(())
-}
+use std::time::Duration;
 
 struct MainPresentDescriptor<'a> {
     submission_mode: GpuSubmissionMode,
@@ -592,6 +354,27 @@ impl NovaRenderer {
         backdrop_blur_quality: BackdropBlurQuality,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
+        let result =
+            self.draw_present_inner(upload, packet, backdrop_blur_quality, presentation_timing);
+        // Failed/declined presentation can follow a partial write into a uniquely owned version.
+        // Do not advertise its previous content token to another slot on the next scene switch.
+        if !matches!(result, Ok(true)) {
+            self.retained_upload
+                .invalidate_slot(self.current_frame_resource_index);
+        } else if let Err(error) = self.coalesce_idle_static_buffers() {
+            // This frame is already submitted; a failed rebind retains the old idle version.
+            log::debug!("failed to coalesce idle nova static buffers: {error}");
+        }
+        result
+    }
+
+    fn draw_present_inner(
+        &mut self,
+        upload: FrameUploadSummary,
+        packet: &mut PresentationPacket,
+        backdrop_blur_quality: BackdropBlurQuality,
+        presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
+    ) -> Result<bool> {
         if let Some(timing) = presentation_timing.as_mut() {
             timing.renderer_scene_prepare =
                 Instant::now().saturating_duration_since(timing.frame_started_at);
@@ -702,7 +485,18 @@ impl NovaRenderer {
         let draw_step_cache_hit = self.draw_step_scratch.draw_step_cache_hit;
         let path_mask_step_count = self.draw_step_scratch.path_steps().len();
         let path_mask_cache_hit = self.draw_step_scratch.path_mask_cache_hit;
-        let mask_pass_count = usize::from(path_mask_step_count != 0);
+        let path_mask_key = path_mask::Key {
+            scene_revision: packet.scene.revision,
+            texture_view: self.path_texture_view,
+            target_size: self.path_texture_size,
+            viewport: self.current_size,
+            format: self.surface_format,
+            pipeline: self.pipelines.path_rasterization,
+        };
+        let render_path_mask =
+            path_mask_step_count != 0 && self.path_mask_residency.begin(path_mask_key);
+        let mut path_mask_cpu_elapsed = Duration::ZERO;
+        let mask_pass_count = usize::from(render_path_mask);
         let main_pass_count = 1;
         let backdrop_blur_refreshed: bool;
         let element_blur_refreshed: bool;
@@ -890,11 +684,13 @@ impl NovaRenderer {
                     let upload_started = Instant::now();
                     upload_frame_buffers(
                         device,
-                        frame_buffers,
-                        &self.frame_upload,
-                        has_backdrop_blurs,
-                        static_uploads,
-                        &quad_upload_plan,
+                        FrameBufferUpload {
+                            buffers: frame_buffers,
+                            source: &self.frame_upload,
+                            has_backdrop_blurs,
+                            static_uploads,
+                            quad_upload_plan: &quad_upload_plan,
+                        },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
@@ -921,18 +717,18 @@ impl NovaRenderer {
                     let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                    record_nova_upload_metrics(
-                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                        atlas_stats,
-                    );
+                    record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if path_mask_step_count != 0 {
-                        device.render_step_list_to_texture(
-                            self.path_texture_view,
-                            self.render_pass,
-                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
+                    if render_path_mask {
+                        path_mask::render(
+                            device,
+                            path_mask::Pass {
+                                texture_view: self.path_texture_view,
+                                render_pass: self.render_pass,
+                                steps: self.draw_step_scratch.path_steps(),
+                                depth_attachment,
+                            },
+                            &mut path_mask_cpu_elapsed,
                         )?;
                     }
                     backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
@@ -1020,11 +816,13 @@ impl NovaRenderer {
                     let upload_started = Instant::now();
                     upload_frame_buffers(
                         device,
-                        frame_buffers,
-                        &self.frame_upload,
-                        has_backdrop_blurs,
-                        static_uploads,
-                        &quad_upload_plan,
+                        FrameBufferUpload {
+                            buffers: frame_buffers,
+                            source: &self.frame_upload,
+                            has_backdrop_blurs,
+                            static_uploads,
+                            quad_upload_plan: &quad_upload_plan,
+                        },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
@@ -1051,18 +849,18 @@ impl NovaRenderer {
                     let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                    record_nova_upload_metrics(
-                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                        atlas_stats,
-                    );
+                    record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if path_mask_step_count != 0 {
-                        device.render_step_list_to_texture(
-                            self.path_texture_view,
-                            self.render_pass,
-                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
+                    if render_path_mask {
+                        path_mask::render(
+                            device,
+                            path_mask::Pass {
+                                texture_view: self.path_texture_view,
+                                render_pass: self.render_pass,
+                                steps: self.draw_step_scratch.path_steps(),
+                                depth_attachment,
+                            },
+                            &mut path_mask_cpu_elapsed,
                         )?;
                     }
                     backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
@@ -1150,11 +948,13 @@ impl NovaRenderer {
                     let upload_started = Instant::now();
                     upload_frame_buffers(
                         device,
-                        frame_buffers,
-                        &self.frame_upload,
-                        has_backdrop_blurs,
-                        static_uploads,
-                        &quad_upload_plan,
+                        FrameBufferUpload {
+                            buffers: frame_buffers,
+                            source: &self.frame_upload,
+                            has_backdrop_blurs,
+                            static_uploads,
+                            quad_upload_plan: &quad_upload_plan,
+                        },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
@@ -1181,18 +981,18 @@ impl NovaRenderer {
                     let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                    record_nova_upload_metrics(
-                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                        atlas_stats,
-                    );
+                    record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if path_mask_step_count != 0 {
-                        device.render_step_list_to_texture(
-                            self.path_texture_view,
-                            self.render_pass,
-                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
+                    if render_path_mask {
+                        path_mask::render(
+                            device,
+                            path_mask::Pass {
+                                texture_view: self.path_texture_view,
+                                render_pass: self.render_pass,
+                                steps: self.draw_step_scratch.path_steps(),
+                                depth_attachment,
+                            },
+                            &mut path_mask_cpu_elapsed,
                         )?;
                     }
                     backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
@@ -1279,11 +1079,13 @@ impl NovaRenderer {
                     }
                     upload_frame_buffers(
                         device,
-                        frame_buffers,
-                        &self.frame_upload,
-                        has_backdrop_blurs,
-                        static_uploads,
-                        &quad_upload_plan,
+                        FrameBufferUpload {
+                            buffers: frame_buffers,
+                            source: &self.frame_upload,
+                            has_backdrop_blurs,
+                            static_uploads,
+                            quad_upload_plan: &quad_upload_plan,
+                        },
                     )?;
                     let atlas_stats = upload_pending_atlas(&self.atlas, device, |atlas_id| {
                         self.gpu_atlas_textures
@@ -1299,17 +1101,17 @@ impl NovaRenderer {
                     })?;
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                    record_nova_upload_metrics(
-                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                        atlas_stats,
-                    );
-                    if path_mask_step_count != 0 {
-                        device.render_step_list_to_texture(
-                            self.path_texture_view,
-                            self.render_pass,
-                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
+                    record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
+                    if render_path_mask {
+                        path_mask::render(
+                            device,
+                            path_mask::Pass {
+                                texture_view: self.path_texture_view,
+                                render_pass: self.render_pass,
+                                steps: self.draw_step_scratch.path_steps(),
+                                depth_attachment,
+                            },
+                            &mut path_mask_cpu_elapsed,
                         )?;
                     }
                     backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
@@ -1372,11 +1174,13 @@ impl NovaRenderer {
                     let upload_started = Instant::now();
                     upload_frame_buffers(
                         device,
-                        frame_buffers,
-                        &self.frame_upload,
-                        has_backdrop_blurs,
-                        static_uploads,
-                        &quad_upload_plan,
+                        FrameBufferUpload {
+                            buffers: frame_buffers,
+                            source: &self.frame_upload,
+                            has_backdrop_blurs,
+                            static_uploads,
+                            quad_upload_plan: &quad_upload_plan,
+                        },
                     )?;
                     let buffer_upload_elapsed = upload_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
@@ -1403,18 +1207,18 @@ impl NovaRenderer {
                     let atlas_upload_elapsed_ms = atlas_upload_elapsed.as_millis();
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
-                    record_nova_upload_metrics(
-                        (mapped_upload_bytes, self.frame_upload.uploaded_bytes()),
-                        atlas_stats,
-                    );
+                    record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if path_mask_step_count != 0 {
-                        device.render_step_list_to_texture(
-                            self.path_texture_view,
-                            self.render_pass,
-                            RenderStepList::from_draw_steps(self.draw_step_scratch.path_steps()),
-                            LoadOp::Clear(clear_color()),
-                            Some(depth_attachment),
+                    if render_path_mask {
+                        path_mask::render(
+                            device,
+                            path_mask::Pass {
+                                texture_view: self.path_texture_view,
+                                render_pass: self.render_pass,
+                                steps: self.draw_step_scratch.path_steps(),
+                                depth_attachment,
+                            },
+                            &mut path_mask_cpu_elapsed,
                         )?;
                     }
                     backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
@@ -1512,7 +1316,10 @@ impl NovaRenderer {
             };
 
         let frame_elapsed_ms = frame_started.elapsed().as_millis();
+        // Resource ownership is observable after the attempt even when a draw
+        // fails or presentation is skipped. The backend guard is released here.
         if let Err(error) = &render_result {
+            self.path_mask_residency.invalidate();
             log::error!(
                 concat!(
                     "nova-gfx frame render failed: backend={} alpha_swapchain={:?} ",
@@ -1538,7 +1345,16 @@ impl NovaRenderer {
         }
         let (did_present, backend_presentation_timings) = render_result?;
         if !did_present {
+            self.path_mask_residency.invalidate();
             return Ok(false);
+        }
+        if path_mask_step_count != 0 {
+            self.path_mask_residency.commit(path_mask_key);
+            crate::diagnostics::performance_metrics::record_window_path_mask(
+                packet.window_id,
+                render_path_mask,
+                path_mask_cpu_elapsed,
+            );
         }
         let presentation_finished_at = Instant::now();
         // A composition swapchain may still be stretching the last old-size frame while its

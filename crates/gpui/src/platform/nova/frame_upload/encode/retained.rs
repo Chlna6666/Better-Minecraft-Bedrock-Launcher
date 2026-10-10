@@ -31,57 +31,88 @@ impl FrameUpload {
             );
             if !self.reuse_retained_quad_chunk(chunk, summary) {
                 summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
-                let byte_start = self.quads.len();
-                let count = self.encode_quad_range(
-                    &scene.quads[chunk.quad_range.clone()],
-                    is_solid,
-                    summary,
-                );
-                if count == chunk.quad_range.len() as u32 {
-                    let byte_end = self.quads.len();
-                    self.cache_retained_quad_chunk(chunk, is_solid, byte_start..byte_end, count);
-                }
+                self.encode_retained_quad_chunk(scene, chunk, summary);
             }
             cursor = chunk.quad_range.end;
         }
         self.encode_quad_range(&scene.quads[cursor..range.end], is_solid, summary);
     }
 
-    fn cache_retained_quad_chunk(
+    fn encode_retained_quad_chunk(
         &mut self,
+        scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
-        is_solid: bool,
-        range: Range<usize>,
-        quad_count: u32,
+        summary: &mut FrameUploadSummary,
     ) {
-        let encoded_bytes = &self.quads[range.clone()];
-        let mut hasher = collections::FxHasher::default();
-        hasher.write(encoded_bytes);
-        let byte_hash = hasher.finish();
-        self.resident_quad_spans.push(RetainedResidentSpan {
-            id: chunk.id.clone(),
-            range,
-            byte_hash,
-        });
-
-        let byte_target = PACKED_QUAD_BYTES.max(encoded_bytes.len());
-        let cached = self
-            .retained_quad_chunks
-            .entry(chunk.id.clone())
-            .or_insert_with(|| PackedRetainedQuadChunk {
-                bytes: Vec::with_capacity(encoded_bytes.len()),
-                byte_hash,
-                quad_count,
-                is_solid,
-            });
-        cached.bytes.clear();
-        if cached.bytes.capacity() > byte_target.saturating_mul(WORKING_SET_TRIM_MULTIPLIER) {
-            cached.bytes.shrink_to(byte_target);
+        let (bytes, count) = self.encode_chunk_bytes(scene, chunk);
+        if count == 0 {
+            return;
         }
-        cached.bytes.extend_from_slice(encoded_bytes);
-        cached.byte_hash = byte_hash;
-        cached.quad_count = quad_count;
-        cached.is_solid = is_solid;
+        let mut hasher = collections::FxHasher::default();
+        hasher.write(&bytes);
+        let byte_hash = hasher.finish();
+        let bytes = Arc::new(bytes);
+        let start = self.quads.len();
+        self.quads.append_shared(Arc::clone(&bytes), byte_hash);
+        self.append_quad_batch(
+            (start / PACKED_QUAD_BYTES) as u32,
+            count,
+            chunk.is_solid,
+            summary,
+        );
+        if count == chunk.quad_range.len() as u32 {
+            self.resident_quad_spans.push(RetainedResidentSpan {
+                id: chunk.id.clone(),
+                range: start..self.quads.len(),
+                byte_hash,
+            });
+            self.retained_quad_chunks.insert(
+                chunk.id.clone(),
+                PackedRetainedQuadChunk {
+                    bytes,
+                    byte_hash,
+                    quad_count: count,
+                    is_solid: chunk.is_solid,
+                },
+            );
+        }
+    }
+
+    fn encode_chunk_bytes(
+        &mut self,
+        scene: &crate::Scene,
+        chunk: &crate::PreparedRetainedQuadChunk,
+    ) -> (Vec<u8>, u32) {
+        // Reset cleared the previous frame's segment references. Reuse a uniquely-owned backing
+        // for dirty content, but never copy an Arc still held by another occurrence.
+        let mut bytes = self
+            .retained_quad_chunks
+            .remove(&chunk.id)
+            .and_then(|cached| Arc::try_unwrap(cached.bytes).ok())
+            .unwrap_or_default();
+        bytes.clear();
+        let available = MAX_QUADS - self.quads.len() / PACKED_QUAD_BYTES;
+        let byte_target =
+            PACKED_QUAD_BYTES.max(chunk.quad_range.len().min(available) * PACKED_QUAD_BYTES);
+        if bytes.capacity() > byte_target.saturating_mul(WORKING_SET_TRIM_MULTIPLIER) {
+            bytes.shrink_to(byte_target);
+        }
+        bytes.reserve(byte_target);
+        let mut count = 0_u32;
+        for quad in &scene.quads[chunk.quad_range.clone()] {
+            if count as usize == available {
+                break;
+            }
+            if !clip_is_degenerate(&quad.content_mask) {
+                debug_assert!(
+                    quad.animation_id.is_none(),
+                    "retained chunks must be static"
+                );
+                write_quad(&mut bytes, quad);
+                count += 1;
+            }
+        }
+        (bytes, count)
     }
 
     fn reuse_retained_quad_chunk(
@@ -102,7 +133,8 @@ impl FrameUpload {
         }
         let byte_start = self.quads.len();
         let first = (byte_start / PACKED_QUAD_BYTES) as u32;
-        self.quads.extend_from_slice(&cached.bytes);
+        self.quads
+            .append_shared(Arc::clone(&cached.bytes), cached.byte_hash);
         self.resident_quad_spans.push(RetainedResidentSpan {
             id: chunk.id.clone(),
             range: byte_start..self.quads.len(),
@@ -143,7 +175,7 @@ impl FrameUpload {
                 continue;
             }
             let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-            write_quad(&mut self.quads, quad);
+            self.quads.write(|bytes| write_quad(bytes, quad));
             register_scene_animated_primitive(
                 self,
                 summary,
@@ -162,6 +194,21 @@ impl FrameUpload {
             summary.quad_count = summary.quad_count.saturating_add(count);
         }
         count
+    }
+
+    fn append_quad_batch(
+        &mut self,
+        first: u32,
+        count: u32,
+        is_solid: bool,
+        summary: &mut FrameUploadSummary,
+    ) {
+        self.batches.push(if is_solid {
+            UploadedBatch::SolidQuads { first, count }
+        } else {
+            UploadedBatch::Quads { first, count }
+        });
+        summary.quad_count = summary.quad_count.saturating_add(count);
     }
 
     pub(super) fn prune_retained_quads(&mut self, scene: &crate::Scene) {

@@ -20,6 +20,30 @@ fn dx11_production_glyphs_and_images_reach_native_pixels() {
 }
 
 #[test]
+#[cfg(feature = "nova-gfx-dx12")]
+#[ignore = "requires Windows hardware D3D12"]
+fn dx12_production_glyphs_and_images_reach_native_pixels() {
+    let mut device = Dx12Device::new(&DeviceDescriptor::default()).expect("DX12 device");
+    println!("GPUI DX12 sprite adapter: {}", device.adapter_name());
+    verify_sprite_pixels(
+        &mut device,
+        cached_nova_dx12_shader_binaries().expect("DX12 artifacts"),
+    );
+}
+
+#[test]
+#[cfg(feature = "nova-gfx-vulkan")]
+#[ignore = "requires Windows hardware Vulkan"]
+fn vulkan_production_glyphs_and_images_reach_native_pixels() {
+    let mut device = VulkanDevice::new(&DeviceDescriptor::default()).expect("Vulkan device");
+    println!("GPUI Vulkan sprite adapter: {}", device.adapter_name());
+    verify_sprite_pixels(
+        &mut device,
+        cached_nova_vulkan_shader_binaries().expect("Vulkan artifacts"),
+    );
+}
+
+#[test]
 #[cfg(feature = "nova-gfx-opengl")]
 #[ignore = "requires Windows hardware OpenGL 4.5"]
 fn opengl_production_glyphs_and_images_reach_native_pixels() {
@@ -41,8 +65,14 @@ fn opengl_production_glyphs_and_images_reach_native_pixels() {
 
 fn verify_sprite_pixels<D>(device: &mut D, shaders: ShaderBinaries)
 where
-    D: BackendResources + BackendPipelines + BackendPresentationCompat + TextureTransferDevice,
+    D: gfx_core::Device
+        + BackendResources
+        + BackendPipelines
+        + BackendPresentationCompat
+        + TextureTransferDevice,
 {
+    verify_r8_transfers(device);
+    relocation::verify_texture_copies(device);
     let config = SurfaceConfig::new(16, 16, Format::Bgra8Unorm).expect("config");
     let core = create_renderer_core(device, config, "sprite hardware gate", shaders)
         .expect("production core");
@@ -50,19 +80,38 @@ where
         .expect("production resources");
     let (target, view) = color_target(device, config.size);
     upload_globals(device, resources.frame_resources[0].buffers);
-    primitives::verify_pixels(device, &resources, target, view);
-    paths::verify_pixels(device, &resources, target, view);
-    filters::verify_pixels(device, &resources, target, view);
+    relocation::verify_atlas_compaction(device, &resources, target, view);
+    // Preserve the existing DX11/GL gates; the added backends validate atlas formats here.
+    if matches!(
+        D::BACKEND_KIND,
+        gfx_core::BackendKind::Dx11 | gfx_core::BackendKind::OpenGl
+    ) {
+        primitives::verify_pixels(device, &resources, target, view);
+        paths::verify_pixels(device, &resources, target, view);
+        filters::verify_pixels(device, &resources, target, view);
+    }
     for kind in [
         AtlasTextureKind::Monochrome,
         AtlasTextureKind::Subpixel,
         AtlasTextureKind::Bgra,
         AtlasTextureKind::Rgba,
     ] {
+        let fragmented = if kind == AtlasTextureKind::Monochrome {
+            relocation::fragment_heap(device)
+        } else {
+            None
+        };
         let atlas = atlas_texture(device, &resources, kind);
+        relocation::compact_heap(device, fragmented);
         for sampling in [0, 1] {
-            let (pipeline, set) = upload_sprite(device, &resources, &atlas, kind, sampling);
-            let step = RenderStepDescriptor::Draw(DrawStepDescriptor {
+            let (pipeline, set) = upload_sprite(
+                device,
+                &resources,
+                &atlas,
+                (kind, crate::white().into()),
+                sampling,
+            );
+            let step = DrawStepDescriptor {
                 pipeline,
                 resource_sets: resource_set_list([set]),
                 vertex_count: 4,
@@ -70,19 +119,22 @@ where
                 first_vertex: 0,
                 first_instance: 0,
                 scissor: None,
-            });
+            };
             device
-                .render_steps_to_texture_compat(
+                .render_step_list_to_texture_compat(
                     view,
                     resources.render_pass,
-                    &[step],
+                    gfx_core::RenderStepList::Draw(&[step]),
                     LoadOp::Clear(ClearColor {
                         red: 0.0,
                         green: 0.0,
                         blue: 0.0,
                         alpha: 1.0,
                     }),
-                    None,
+                    Some(gfx_core::RenderPassDepthAttachment {
+                        target: resources.depth_texture_view,
+                        depth_load_op: LoadOp::Clear(1.0),
+                    }),
                 )
                 .expect("production sprite draw");
             let pixels = device.read_texture(target).expect("GPU sprite readback");
@@ -107,7 +159,70 @@ where
             }
             println!("production {kind:?} sampling={sampling}: native pixels verified");
         }
+        if kind == AtlasTextureKind::Monochrome {
+            verify_mono_tint(device, &resources, &atlas, target, view);
+        }
     }
+}
+
+fn verify_r8_transfers<D: BackendResources + TextureTransferDevice>(device: &mut D) {
+    let texture = device
+        .create_texture(&TextureDescriptor {
+            label: Some("odd-pitch R8 coverage".into()),
+            size: Extent2d::new(7, 5).expect("extent"),
+            mip_level_count: 1,
+            format: Format::R8Unorm,
+            usage: TextureUsage::COPY_DST | TextureUsage::COPY_SRC | TextureUsage::SAMPLED,
+            memory_location: MemoryLocation::GpuOnly,
+            dimension: TextureDimension::D2,
+        })
+        .expect("R8 texture");
+    let source = (0..49).map(|index| (index * 5) as u8).collect::<Vec<_>>();
+    let replacement = vec![193; 19];
+    let full = TextureWriteDescriptor {
+        texture,
+        mip_level: 0,
+        origin: Origin2d::ZERO,
+        size: Extent2d::new(7, 5).expect("extent"),
+        layout: TextureDataLayout::new(4, 9, 5).expect("odd pitch"),
+    };
+    let partial = TextureWriteDescriptor {
+        texture,
+        mip_level: 0,
+        origin: Origin2d { x: 2, y: 1 },
+        size: Extent2d::new(3, 3).expect("extent"),
+        layout: TextureDataLayout::new(4, 5, 3).expect("odd pitch"),
+    };
+    BackendResources::write_texture_batch(
+        device,
+        [
+            TextureWrite {
+                descriptor: full,
+                data: &source,
+            },
+            TextureWrite {
+                descriptor: partial,
+                data: &replacement,
+            },
+        ],
+    )
+    .expect("batched R8 upload");
+    let pixels = device.read_texture(texture).expect("R8 readback");
+    for y in 0..5 {
+        for x in 0..7 {
+            let expected = if (1..4).contains(&y) && (2..5).contains(&x) {
+                193
+            } else {
+                source[4 + y * 9 + x]
+            };
+            assert_eq!(
+                pixels.bytes[y * pixels.bytes_per_row as usize + x],
+                expected,
+                "R8 odd-pitch partial update at ({x},{y})"
+            );
+        }
+    }
+    device.destroy_texture(texture).expect("R8 cleanup");
 }
 
 fn color_target<D: BackendResources>(device: &mut D, size: Extent2d) -> (TextureId, TextureViewId) {
@@ -183,17 +298,22 @@ fn atlas_texture<D: BackendResources>(
         AtlasTextureKind::Bgra => [0, 0, 255, 255].repeat(64),
         AtlasTextureKind::Rgba => [255, 0, 0, 255].repeat(64),
     };
-    let mut tile = vec![0; 256];
-    frame_upload::upload_encoding::encode_bgra_upload(
+    let bytes_per_pixel = atlas_bytes_per_pixel(kind);
+    let mut tile = vec![0; 64 * bytes_per_pixel];
+    frame_upload::upload_encoding::encode_atlas_upload(
         &mut tile,
         size(DevicePixels(8), DevicePixels(8)),
         &source,
         kind,
     )
     .expect("production pixel encoder");
-    let mut pixels = vec![0; 16 * 16 * 4];
+    let row_bytes = 16 * bytes_per_pixel;
+    let tile_row_bytes = 8 * bytes_per_pixel;
+    let mut pixels = vec![0; 16 * row_bytes];
     for y in 0..8 {
-        pixels[(y + 4) * 64 + 16..(y + 4) * 64 + 48].copy_from_slice(&tile[y * 32..y * 32 + 32]);
+        let start = (y + 4) * row_bytes + 4 * bytes_per_pixel;
+        pixels[start..start + tile_row_bytes]
+            .copy_from_slice(&tile[y * tile_row_bytes..(y + 1) * tile_row_bytes]);
     }
     device
         .write_texture(
@@ -204,7 +324,7 @@ fn atlas_texture<D: BackendResources>(
                 size: Extent2d::new(16, 16).expect("atlas extent"),
                 layout: TextureDataLayout {
                     offset: 0,
-                    bytes_per_row: std::num::NonZeroU32::new(64).expect("row pitch"),
+                    bytes_per_row: std::num::NonZeroU32::new(row_bytes as u32).expect("row pitch"),
                     rows_per_image: std::num::NonZeroU32::new(16).expect("row count"),
                 },
             },
@@ -218,9 +338,10 @@ fn upload_sprite<D: BackendResources>(
     device: &mut D,
     resources: &RendererResources,
     atlas: &NovaGpuAtlasTexture,
-    kind: AtlasTextureKind,
+    appearance: (AtlasTextureKind, crate::Rgba),
     sampling: u32,
 ) -> (RenderPipelineId, ResourceSetId) {
+    let (kind, color) = appearance;
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(16.0), px(16.0))).scale(1.0);
     let mask = crate::ContentMask {
         bounds,
@@ -247,7 +368,7 @@ fn upload_sprite<D: BackendResources>(
                 animation_id: None,
                 bounds,
                 content_mask: mask,
-                color: crate::white().into(),
+                color,
                 tile,
                 transformation: Default::default(),
             },
@@ -285,6 +406,64 @@ fn upload_sprite<D: BackendResources>(
     }
 }
 
+fn verify_mono_tint<D>(
+    device: &mut D,
+    resources: &RendererResources,
+    atlas: &NovaGpuAtlasTexture,
+    target: TextureId,
+    view: TextureViewId,
+) where
+    D: BackendResources + BackendPresentationCompat + TextureTransferDevice,
+{
+    // Reuse the uploaded R8 coverage. Only sprite color/alpha buffers change.
+    for (color, expected) in [
+        (0xff0000ff, [0, 0, 255, 255]),
+        (0x00ff0080, [0, 128, 0, 255]),
+        (0x0000ff00, [0, 0, 0, 255]),
+    ] {
+        let (pipeline, set) = upload_sprite(
+            device,
+            resources,
+            atlas,
+            (AtlasTextureKind::Monochrome, crate::rgba(color).into()),
+            0,
+        );
+        let step = DrawStepDescriptor {
+            pipeline,
+            resource_sets: resource_set_list([set]),
+            vertex_count: 4,
+            instance_count: 1,
+            first_vertex: 0,
+            first_instance: 0,
+            scissor: None,
+        };
+        device
+            .render_step_list_to_texture_compat(
+                view,
+                resources.render_pass,
+                gfx_core::RenderStepList::Draw(&[step]),
+                LoadOp::Clear(ClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    alpha: 1.0,
+                }),
+                Some(gfx_core::RenderPassDepthAttachment {
+                    target: resources.depth_texture_view,
+                    depth_load_op: LoadOp::Clear(1.0),
+                }),
+            )
+            .expect("same R8 atlas with changed text color/alpha");
+        let pixels = device.read_texture(target).expect("tint readback");
+        let offset = 8 * pixels.bytes_per_row as usize + 8 * 4;
+        assert_eq!(
+            &pixels.bytes[offset..offset + 4],
+            &expected,
+            "R8 tint {color:08x}"
+        );
+    }
+}
+
 fn bounds_device_pixels() -> Bounds<DevicePixels> {
     bounds(
         point(DevicePixels(4), DevicePixels(4)),
@@ -295,9 +474,9 @@ fn bounds_device_pixels() -> Bounds<DevicePixels> {
 mod filters;
 mod paths;
 mod primitives;
+mod relocation;
 
-#[cfg(feature = "nova-gfx-opengl")]
-mod native_window {
+pub(in crate::platform::nova) mod native_window {
     use windows::{
         Win32::{
             Foundation::{HINSTANCE, HWND},
@@ -310,20 +489,26 @@ mod native_window {
         RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
     };
 
-    pub(super) struct Window(HWND);
+    pub(in crate::platform::nova) struct Window(HWND);
     impl Window {
-        pub(super) fn new() -> Self {
+        pub(in crate::platform::nova) fn new() -> Self {
+            Self::create(WS_OVERLAPPEDWINDOW, 32)
+        }
+        pub(in crate::platform::nova) fn renderer_fixture() -> Self {
+            Self::create(WS_POPUP, 512)
+        }
+        fn create(style: WINDOW_STYLE, size: i32) -> Self {
             // SAFETY: built-in STATIC class; a hidden HWND is owned and destroyed on this thread.
             let handle = unsafe {
                 CreateWindowExW(
                     WINDOW_EX_STYLE::default(),
                     w!("STATIC"),
                     w!("GPUI sprite GPU test"),
-                    WS_OVERLAPPEDWINDOW,
+                    style,
                     0,
                     0,
-                    32,
-                    32,
+                    size,
+                    size,
                     None,
                     None,
                     Some(HINSTANCE(GetModuleHandleW(None).expect("module").0)),
@@ -345,6 +530,25 @@ mod native_window {
                 unsafe { GetModuleHandleW(None).expect("module") }.0 as isize,
             );
             RawWindowHandle::Win32(handle)
+        }
+    }
+    impl winit::raw_window_handle::HasDisplayHandle for Window {
+        fn display_handle(
+            &self,
+        ) -> Result<
+            winit::raw_window_handle::DisplayHandle<'_>,
+            winit::raw_window_handle::HandleError,
+        > {
+            Ok(winit::raw_window_handle::DisplayHandle::windows())
+        }
+    }
+    impl winit::raw_window_handle::HasWindowHandle for Window {
+        fn window_handle(
+            &self,
+        ) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError>
+        {
+            // SAFETY: the HWND is owned by self and remains live throughout this borrow.
+            Ok(unsafe { winit::raw_window_handle::WindowHandle::borrow_raw(self.handle()) })
         }
     }
     impl Drop for Window {

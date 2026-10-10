@@ -895,8 +895,7 @@ impl Window {
                     && let Some(bounds) = view_bounds
                 {
                     self.next_frame
-                        .retained_scene_segments
-                        .push(RetainedSceneSegment {
+                        .push_retained_scene_segment(RetainedSceneSegment {
                             bounds,
                             scene_range,
                             paint_range: paint_start..paint_end,

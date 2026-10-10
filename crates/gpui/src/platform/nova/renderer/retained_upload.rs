@@ -1,4 +1,6 @@
 use super::chunk_upload::{QuadResidentLayout, QuadUploadPlan};
+
+mod sharing;
 use super::*;
 use std::hash::Hasher;
 use std::time::Duration;
@@ -6,6 +8,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct UploadKey {
     scene_revision: u64,
+    atlas_placement_generation: u64,
     size: DrawableSize,
     premultiplied_alpha: bool,
     blur_quality: BackdropBlurQuality,
@@ -27,45 +30,21 @@ impl BufferContentToken {
         }
     }
 
-    fn from_segmented_bytes(
-        bytes: &[u8],
-        retained_spans: &[RetainedResidentSpan],
-    ) -> (Self, usize) {
-        if retained_spans.is_empty() {
-            return (Self::from_bytes(bytes), bytes.len());
-        }
-
+    fn from_segmented_bytes(stream: &PackedQuadStream) -> (Self, usize) {
         let mut aggregate = collections::FxHasher::default();
-        let mut cursor = 0usize;
         let mut hashed_bytes = 0usize;
-        for span in retained_spans {
-            if span.range.start < cursor || span.range.end > bytes.len() {
-                return (Self::from_bytes(bytes), bytes.len());
-            }
-            if cursor < span.range.start {
-                let dirty = &bytes[cursor..span.range.start];
-                let token = Self::from_bytes(dirty);
-                aggregate.write_u8(0);
-                aggregate.write_usize(token.byte_len);
-                aggregate.write_u64(token.byte_hash);
-                hashed_bytes = hashed_bytes.saturating_add(dirty.len());
-            }
-            aggregate.write_u8(1);
-            aggregate.write_usize(span.range.len());
-            aggregate.write_u64(span.byte_hash);
-            cursor = span.range.end;
-        }
-        if cursor < bytes.len() {
-            let dirty = &bytes[cursor..];
-            let token = Self::from_bytes(dirty);
-            aggregate.write_u8(0);
-            aggregate.write_usize(token.byte_len);
-            aggregate.write_u64(token.byte_hash);
-            hashed_bytes = hashed_bytes.saturating_add(dirty.len());
+        for (_, bytes, cached_hash) in stream.segments() {
+            let hash = cached_hash.unwrap_or_else(|| {
+                hashed_bytes = hashed_bytes.saturating_add(bytes.len());
+                Self::from_bytes(bytes).byte_hash
+            });
+            aggregate.write_u8(u8::from(cached_hash.is_some()));
+            aggregate.write_usize(bytes.len());
+            aggregate.write_u64(hash);
         }
         (
             Self {
-                byte_len: bytes.len(),
+                byte_len: stream.len(),
                 byte_hash: aggregate.finish(),
             },
             hashed_bytes,
@@ -125,7 +104,7 @@ impl StaticUploadSignature {
         let (animation_topology, animation_topology_bytes) =
             AnimationTopologyTokens::from_frame_upload(upload);
         let (quad_content, quad_hashed_bytes) =
-            BufferContentToken::from_segmented_bytes(&upload.quads, &upload.resident_quad_spans);
+            BufferContentToken::from_segmented_bytes(&upload.quads);
         let hashed_bytes = [
             upload.globals.len(),
             upload.text_raster_params.len(),
@@ -399,9 +378,46 @@ pub(super) struct RetainedUpload {
     uploaded_slots: Vec<Option<StaticUploadSignature>>,
     current_quad_layout: QuadResidentLayout,
     uploaded_quad_layouts: Vec<Option<QuadResidentLayout>>,
+    current_shareable: [bool; 10],
+    uploaded_shareable: Vec<[bool; 10]>,
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn replaced_slot_uploads_every_stream_without_invalidating_the_other_slot() {
+        let signature = StaticUploadSignature::default();
+        let mut retained = RetainedUpload {
+            static_signature: Some(signature),
+            uploaded_slots: vec![Some(signature), Some(signature)],
+            ..Default::default()
+        };
+        assert!(retained.static_upload_mask(0).is_empty());
+        assert!(retained.static_upload_mask(1).is_empty());
+        retained.invalidate_slot(0);
+        assert!(!retained.static_upload_mask(0).is_empty());
+        assert!(retained.static_upload_mask(0).shadow);
+        assert!(retained.static_upload_mask(0).mono_sprite);
+        assert!(retained.static_upload_mask(0).poly_sprite);
+        assert!(retained.static_upload_mask(1).is_empty());
+    }
 }
 
 impl RetainedUpload {
+    pub(super) fn invalidate_slot(&mut self, slot: usize) {
+        if let Some(signature) = self.uploaded_slots.get_mut(slot) {
+            *signature = None;
+        }
+        if let Some(layout) = self.uploaded_quad_layouts.get_mut(slot) {
+            *layout = None;
+        }
+        if let Some(shareable) = self.uploaded_shareable.get_mut(slot) {
+            *shareable = [false; 10];
+        }
+    }
+
     pub(super) fn invalidate_encode_key(&mut self) {
         self.key = None;
     }
@@ -461,11 +477,22 @@ impl RetainedUpload {
         let Some(signature) = self.static_signature else {
             return;
         };
+        let shareable = std::array::from_fn(|index| {
+            self.current_shareable[index]
+                && (self.stream_state(slot, BufferStream::ALL[index]).2
+                    || self
+                        .uploaded_shareable
+                        .get(slot)
+                        .is_some_and(|streams| streams[index]))
+        });
         if let Some(uploaded) = self.uploaded_slots.get_mut(slot) {
             *uploaded = Some(signature);
         }
         if let Some(uploaded) = self.uploaded_quad_layouts.get_mut(slot) {
             *uploaded = Some(self.current_quad_layout.clone());
+        }
+        if let Some(uploaded) = self.uploaded_shareable.get_mut(slot) {
+            *uploaded = shareable;
         }
     }
 
@@ -486,6 +513,7 @@ impl RetainedUpload {
         // against what each slot actually contains.
         self.uploaded_slots.resize(slots, None);
         self.uploaded_quad_layouts.resize(slots, None);
+        self.uploaded_shareable.resize(slots, [false; 10]);
     }
 }
 
@@ -509,6 +537,7 @@ impl NovaRenderer {
         }
         let key = UploadKey {
             scene_revision: scene.revision,
+            atlas_placement_generation: self.atlas.placement_generation(),
             size: self.current_size,
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
             blur_quality,
@@ -532,6 +561,8 @@ impl NovaRenderer {
             );
         } else {
             let encode_started_at = Instant::now();
+            self.atlas
+                .copy_placements_into(&mut self.frame_upload.atlas_placements);
             summary = self.frame_upload.encode(
                 scene,
                 presentation_animation_values,
@@ -577,6 +608,7 @@ impl NovaRenderer {
             reusable && !gpu_indexed_animation_blocks_blur_reuse;
         self.frame_upload
             .sample_animated_primitives(self.current_size);
+        self.retained_upload.update_shareability(&self.frame_upload);
 
         let static_stream_misses = self
             .retained_upload
@@ -621,6 +653,7 @@ mod tests {
     fn key(scene_revision: u64) -> UploadKey {
         UploadKey {
             scene_revision,
+            atlas_placement_generation: 0,
             size: DrawableSize {
                 width: 640,
                 height: 480,
@@ -649,7 +682,9 @@ mod tests {
     fn static_upload_is_tracked_per_stream_and_per_slot() {
         let mut retained = RetainedUpload::default();
         let mut upload = FrameUpload::default();
-        upload.quads.extend_from_slice(b"quad-a");
+        upload
+            .quads
+            .write(|bytes| bytes.extend_from_slice(b"quad-a"));
         upload.shadows.extend_from_slice(b"shadow-a");
         let (first, first_hashed_bytes) = StaticUploadSignature::from_frame_upload(&upload);
         assert_eq!(
@@ -672,7 +707,9 @@ mod tests {
         );
 
         upload.quads.clear();
-        upload.quads.extend_from_slice(b"quad-b");
+        upload
+            .quads
+            .write(|bytes| bytes.extend_from_slice(b"quad-b"));
         let (second, second_hashed_bytes) = StaticUploadSignature::from_frame_upload(&upload);
         assert_eq!(
             second_hashed_bytes,
@@ -717,7 +754,9 @@ mod tests {
     fn replacing_quad_buffer_forces_full_quad_refill_for_slot() {
         let mut retained = RetainedUpload::default();
         let mut upload = FrameUpload::default();
-        upload.quads.resize(PACKED_QUAD_BYTES * 2, 1);
+        upload
+            .quads
+            .write(|bytes| bytes.resize(PACKED_QUAD_BYTES * 2, 1));
         upload.resident_quad_spans = vec![
             resident_span("left", 1, 0..PACKED_QUAD_BYTES),
             resident_span("right", 1, PACKED_QUAD_BYTES..PACKED_QUAD_BYTES * 2),
@@ -744,8 +783,10 @@ mod tests {
     fn replacing_path_buffer_invalidates_only_path_stream_for_slot() {
         let mut retained = RetainedUpload::default();
         let mut upload = FrameUpload::default();
-        upload.quads.extend_from_slice(b"quad");
-        upload.path_rasterization_vertices.extend_from_slice(b"path");
+        upload.quads.write(|bytes| bytes.extend_from_slice(b"quad"));
+        upload
+            .path_rasterization_vertices
+            .extend_from_slice(b"path");
         let (signature, _) = StaticUploadSignature::from_frame_upload(&upload);
         retained.replace(
             key(1),
@@ -766,10 +807,14 @@ mod tests {
     #[test]
     fn retained_span_signature_hashes_only_dirty_bytes() {
         let mut upload = FrameUpload::default();
-        upload.quads.extend(0_u8..96);
-        let cached = &upload.quads[32..64];
+        let cached: Vec<_> = (32_u8..64).collect();
         let mut hasher = collections::FxHasher::default();
-        hasher.write(cached);
+        hasher.write(&cached);
+        upload.quads.write(|bytes| bytes.extend(0_u8..32));
+        upload
+            .quads
+            .append_shared(Arc::new(cached), hasher.finish());
+        upload.quads.write(|bytes| bytes.extend(64_u8..96));
         upload.resident_quad_spans.push(RetainedResidentSpan {
             id: RetainedChunkId::new(crate::GlobalElementId::default(), 1),
             range: 32..64,
@@ -785,7 +830,7 @@ mod tests {
     fn slot_residency_uploads_dirty_chunk_but_not_clean_sibling() {
         let mut retained = RetainedUpload::default();
         let mut upload = FrameUpload::default();
-        upload.quads.resize(64, 1);
+        upload.quads.write(|bytes| bytes.resize(64, 1));
         upload.resident_quad_spans = vec![
             resident_span("left", 1, 0..32),
             resident_span("right", 1, 32..64),
@@ -800,7 +845,7 @@ mod tests {
         );
         retained.mark_uploaded(0);
 
-        upload.quads[..32].fill(2);
+        upload.quads.slice_mut(0..32).fill(2);
         upload.resident_quad_spans[0] = resident_span("left", 2, 0..32);
         let (second_signature, _) = StaticUploadSignature::from_frame_upload(&upload);
         retained.replace(

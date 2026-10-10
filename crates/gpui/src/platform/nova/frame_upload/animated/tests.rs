@@ -66,17 +66,20 @@ fn retained_translation_preserves_overshoot_without_accumulating_deltas() {
     assert_eq!(f32::from_le_bytes(bytes[8..12].try_into().unwrap()), 5.0);
     let expected = bytes.clone();
     let mut frame = FrameUpload {
-        quads: vec![0; 4 * PACKED_QUAD_BYTES],
+        quads: vec![0; 4 * PACKED_QUAD_BYTES].into(),
         animated_primitives: vec![upload],
         sampled_animation_values: vec![value],
         ..Default::default()
     };
     frame.sample_animated_primitives(size);
     assert_eq!(
-        &frame.quads[..3 * PACKED_QUAD_BYTES],
+        frame.quads.slice(0..3 * PACKED_QUAD_BYTES),
         vec![0; 3 * PACKED_QUAD_BYTES]
     );
-    assert_eq!(&frame.quads[3 * PACKED_QUAD_BYTES..], expected);
+    assert_eq!(
+        frame.quads.slice(3 * PACKED_QUAD_BYTES..frame.quads.len()),
+        expected
+    );
     assert_eq!(frame.animated_upload_bytes(), PACKED_QUAD_BYTES);
     assert!(frame.animated_primitive_staging.capacity() >= PACKED_QUAD_BYTES);
 }

@@ -38,7 +38,10 @@ impl NovaRenderer {
             .first()
             .copied()
             .context("nova renderer resources should include at least one frame slot")?;
-        Ok(Self {
+        let memory_profile =
+            crate::diagnostics::MemoryProfileRegistration::new(Arc::as_ptr(&backend) as usize);
+        let mut renderer = Self {
+            memory_profile,
             backend,
             backend_info,
             surface,
@@ -69,6 +72,8 @@ impl NovaRenderer {
             animation_value_buffer: current_frame_resources.buffers.animation_value_buffer,
             quad_resource_set: current_frame_resources.resource_sets.quad_resource_set,
             quad_resource_set_layout: resources.quad_resource_set_layout,
+            shadow_resource_set_layout: resources.shadow_resource_set_layout,
+            underline_resource_set_layout: resources.underline_resource_set_layout,
             shadow_resource_set: current_frame_resources.resource_sets.shadow_resource_set,
             path_rasterization_resource_set: current_frame_resources
                 .resource_sets
@@ -94,6 +99,7 @@ impl NovaRenderer {
             renderer_registry: extensions::RendererRegistry::default(),
             retained_upload: retained_upload::RetainedUpload::default(),
             draw_step_scratch: DrawStepScratch::default(),
+            path_mask_residency: path_mask::Residency::default(),
             current_size,
             pending_drawable_size: None,
             atlas: atlas.0,
@@ -108,6 +114,8 @@ impl NovaRenderer {
             active_presentation_packet: None,
             pending_animation_completions: SmallVec::new(),
             destroyed: false,
-        })
+        };
+        renderer.sample_memory(true, None);
+        Ok(renderer)
     }
 }

@@ -2,7 +2,10 @@ use super::*;
 use crate::platform::frame::ActivePresentationFrame;
 use smallvec::SmallVec;
 
+mod buffer_capacity;
+mod buffer_upload;
 mod chunk_upload;
+pub(super) mod compact;
 mod destroy;
 mod draw_step_scratch;
 mod draw_steps;
@@ -15,11 +18,14 @@ use drawable::resolve_initial_drawable_size;
 
 mod init;
 mod init_state;
+mod memory;
+mod path_mask;
 #[cfg(target_os = "windows")]
 mod preparation;
 use init_state::InitializedRenderer;
 mod present;
 mod retained_upload;
+mod shared_buffers;
 mod submission;
 mod surface_lifecycle;
 
@@ -96,6 +102,7 @@ impl NovaRendererAtlas {
 }
 
 pub(crate) struct NovaRenderer {
+    memory_profile: crate::diagnostics::MemoryProfileRegistration,
     backend: SharedBackend,
     backend_info: NovaBackendInfo,
     surface: SurfaceId,
@@ -124,6 +131,8 @@ pub(crate) struct NovaRenderer {
     animation_value_buffer: BufferId,
     quad_resource_set: ResourceSetId,
     quad_resource_set_layout: ResourceSetLayoutId,
+    shadow_resource_set_layout: ResourceSetLayoutId,
+    underline_resource_set_layout: ResourceSetLayoutId,
     shadow_resource_set: ResourceSetId,
     path_rasterization_resource_set: ResourceSetId,
     path_rasterization_resource_set_layout: ResourceSetLayoutId,
@@ -145,6 +154,7 @@ pub(crate) struct NovaRenderer {
     renderer_registry: extensions::RendererRegistry,
     retained_upload: retained_upload::RetainedUpload,
     draw_step_scratch: DrawStepScratch,
+    path_mask_residency: path_mask::Residency,
     current_size: DrawableSize,
     pending_drawable_size: Option<Size<DevicePixels>>,
     atlas: Arc<NovaAtlas>,
@@ -201,15 +211,17 @@ fn retire_replaced_quad_resources<D>(
     device: &mut D,
     label: &str,
     resource_set: ResourceSetId,
-    buffer: BufferId,
+    buffer: Option<BufferId>,
 ) where
     D: BackendResources,
 {
     if let Err(error) = device.destroy_resource_set(resource_set) {
         log::debug!("failed to retire {label} old quad resource set: {error}");
     }
-    if let Err(error) = device.destroy_buffer(buffer) {
-        log::debug!("failed to retire {label} old quad buffer: {error}");
+    if let Some(buffer) = buffer {
+        if let Err(error) = device.destroy_buffer(buffer) {
+            log::debug!("failed to retire {label} old quad buffer: {error}");
+        }
     }
 }
 
@@ -247,15 +259,17 @@ fn retire_replaced_path_rasterization_resources<D>(
     device: &mut D,
     label: &str,
     resource_set: ResourceSetId,
-    buffer: BufferId,
+    buffer: Option<BufferId>,
 ) where
     D: BackendResources,
 {
     if let Err(error) = device.destroy_resource_set(resource_set) {
         log::debug!("failed to retire {label} old path resource set: {error}");
     }
-    if let Err(error) = device.destroy_buffer(buffer) {
-        log::debug!("failed to retire {label} old path buffer: {error}");
+    if let Some(buffer) = buffer {
+        if let Err(error) = device.destroy_buffer(buffer) {
+            log::debug!("failed to retire {label} old path buffer: {error}");
+        }
     }
 }
 
@@ -302,6 +316,10 @@ impl NovaRenderer {
         let elapsed = started_at.elapsed();
         crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
         crate::diagnostics::performance_metrics::record_first_frame_backend_draw_time(elapsed);
+        self.sample_memory(
+            self.submitted_frames == 1 && result.as_ref().is_ok_and(|submitted| *submitted),
+            result.as_ref().err(),
+        );
         result
     }
 
@@ -589,6 +607,10 @@ impl NovaRenderer {
             packet.record_presentation(Instant::now());
         }
         self.active_presentation_packet = Some(packet);
+        self.sample_memory(
+            self.submitted_frames == 1 && result.as_ref().is_ok_and(|submitted| *submitted),
+            result.as_ref().err(),
+        );
         result
     }
 
@@ -622,6 +644,10 @@ impl NovaRenderer {
             packet.record_presentation(Instant::now());
         }
         self.active_presentation_packet = Some(packet);
+        self.sample_memory(
+            self.submitted_frames == 1 && draw_result.as_ref().is_ok_and(|submitted| *submitted),
+            draw_result.as_ref().err(),
+        );
         if !draw_result? {
             return Ok(None);
         }
@@ -685,6 +711,11 @@ impl NovaRenderer {
             false
         };
         self.atlas.trim(level);
+        if submissions_drained && matches!(level, GpuiMemoryTrimLevel::Moderate) {
+            if let Err(error) = self.compact_atlas_page() {
+                log::debug!("failed to compact nova atlas page: {error}");
+            }
+        }
         self.frame_upload.trim_retained_capacity(level);
         self.draw_step_scratch.trim_retained_capacity(level);
         if matches!(
@@ -716,9 +747,23 @@ impl NovaRenderer {
             }
         }
 
+        if submissions_drained && matches!(level, GpuiMemoryTrimLevel::Moderate) {
+            match lock_backend(&self.backend).compact_memory() {
+                Ok(report) if report.moved_resources != 0 => log::debug!(
+                    "nova heap compact: moved={} bytes={} reserved={} -> {}",
+                    report.moved_resources,
+                    report.moved_bytes,
+                    report.reserved_before,
+                    report.reserved_after
+                ),
+                Ok(_) => {}
+                Err(error) => log::debug!("failed to compact nova backend heap: {error}"),
+            }
+        }
         if let Err(error) = lock_backend(&self.backend).trim_memory(memory_trim_level(level)) {
             log::debug!("failed to trim nova-gfx backend memory: {error}");
         }
+        self.sample_memory(true, None);
     }
 
     pub(crate) fn destroy(&mut self) {
@@ -732,6 +777,7 @@ impl NovaRenderer {
         }
         self.destroy_renderer_extensions();
         self.destroy_window_resources();
+        self.memory_profile.remove();
     }
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {
@@ -931,6 +977,7 @@ impl NovaRenderer {
         self.quad_buffer = new_buffer;
         self.quad_resource_set = new_resource_set;
         self.retained_upload.invalidate_quad_slot(index);
+        let old_buffer = (!self.buffer_is_referenced(old_buffer)).then_some(old_buffer);
 
         match &mut *lock_backend(&self.backend) {
             #[cfg(all(
@@ -1106,6 +1153,7 @@ impl NovaRenderer {
         self.path_rasterization_resource_set = new_resource_set;
         self.retained_upload
             .invalidate_path_rasterization_slot(index);
+        let old_buffer = (!self.buffer_is_referenced(old_buffer)).then_some(old_buffer);
 
         match &mut *lock_backend(&self.backend) {
             #[cfg(all(

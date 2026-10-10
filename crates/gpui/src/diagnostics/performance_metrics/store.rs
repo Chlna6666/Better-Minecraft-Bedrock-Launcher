@@ -74,6 +74,13 @@ pub(super) struct SharedMetrics {
     pub(super) static_stream_misses: AtomicU64,
     pub(super) frame_slot_wait_micros: AtomicU64,
     pub(super) buffer_upload_micros: AtomicU64,
+    pub(super) buffer_upload_batches: AtomicU64,
+    pub(super) buffer_upload_requested_writes: AtomicU64,
+    pub(super) buffer_upload_requested_bytes: AtomicU64,
+    pub(super) buffer_upload_writes: AtomicU64,
+    pub(super) buffer_upload_bytes: AtomicU64,
+    pub(super) buffer_upload_backend_calls: AtomicU64,
+    pub(super) buffer_upload_backend_bytes: AtomicU64,
     pub(super) atlas_upload_micros: AtomicU64,
     pub(super) image_processing_compressed_bytes: AtomicU64,
     pub(super) image_processing_output_bytes: AtomicU64,
@@ -262,6 +269,7 @@ impl WindowTimingSamples {
 
 #[derive(Default, Clone)]
 pub(super) struct WindowMetrics {
+    pub(super) path_mask: super::window::path_mask::Metrics,
     pub(super) last_present_at: Option<Instant>,
     pub(super) present_fps_milli: u64,
     pub(super) dirty_to_present_total_micros: u64,

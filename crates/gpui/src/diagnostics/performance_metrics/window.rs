@@ -8,10 +8,13 @@ use super::store::shared_metrics;
 
 mod backend_ready;
 mod native_vsync;
+pub(super) mod path_mask;
 
 pub use backend_ready::WindowBackendReadyMetricsSnapshot;
 pub(crate) use backend_ready::record_window_backend_ready_wake;
 pub use native_vsync::WindowVSyncMetricsSnapshot;
+pub use path_mask::WindowPathMaskMetricsSnapshot;
+pub(crate) use path_mask::record_window_path_mask;
 pub(crate) use native_vsync::{
     record_window_active_presentation_attempt,
     record_window_active_presentation_preflight_not_ready, record_window_active_presentation_retry,
@@ -89,6 +92,8 @@ pub struct WindowMetricsSnapshot {
     pub native_vsync: WindowVSyncMetricsSnapshot,
     /// Backend readiness wake counts and queue delay, separate from DWM pacing.
     pub backend_ready: WindowBackendReadyMetricsSnapshot,
+    /// Submitted path-mask rasterizations, pixel-cache reuse and CPU pass-call timing.
+    pub path_mask: WindowPathMaskMetricsSnapshot,
     /// Skipped frame decisions.
     pub skip_count: usize,
     /// Skipped frame opportunities.
@@ -275,6 +280,7 @@ pub fn window_metrics_snapshot() -> Vec<WindowMetricsSnapshot> {
                         animation_sample_interval_sample_count: animation_sample_interval.count,
                         native_vsync: native_vsync::snapshot(metrics),
                         backend_ready: backend_ready::snapshot(metrics),
+                        path_mask: metrics.path_mask.snapshot(),
                         logical_width_milli: metrics.logical_width_milli as usize,
                         logical_height_milli: metrics.logical_height_milli as usize,
                         physical_width_px: metrics.physical_width_px as usize,

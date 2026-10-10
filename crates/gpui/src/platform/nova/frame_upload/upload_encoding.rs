@@ -44,7 +44,7 @@ impl AtlasPixelEncodingBenchmarkCore {
         };
         let source_byte_len = width as usize * height as usize * source_bytes_per_pixel;
         let destination_byte_len =
-            upload_width as usize * upload_height as usize * NOVA_ATLAS_BYTES_PER_PIXEL;
+            upload_width as usize * upload_height as usize * atlas_bytes_per_pixel(texture_kind);
         Self {
             destination: vec![0; destination_byte_len],
             source: (0..source_byte_len)
@@ -60,17 +60,17 @@ impl AtlasPixelEncodingBenchmarkCore {
     }
 
     pub(crate) fn encode(&mut self) -> usize {
-        self.encode_with(encode_bgra_upload_with_padding)
+        self.encode_with(encode_atlas_upload_with_padding)
     }
 
     #[cfg(feature = "bench-support")]
     pub(crate) fn encode_scalar(&mut self) -> usize {
-        self.encode_with(encode_bgra_upload_with_padding_scalar)
+        self.encode_with(encode_atlas_upload_with_padding_scalar)
     }
 
     #[cfg(feature = "bench-support")]
     pub(crate) fn encode_simd(&mut self) -> usize {
-        self.encode_with(encode_bgra_upload_with_padding_simd)
+        self.encode_with(encode_atlas_upload_with_padding_simd)
     }
 
     fn encode_with(
@@ -90,13 +90,13 @@ impl AtlasPixelEncodingBenchmarkCore {
 }
 
 #[cfg(test)]
-pub(in crate::platform::nova) fn encode_bgra_upload(
+pub(in crate::platform::nova) fn encode_atlas_upload(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
     bytes: &[u8],
     texture_kind: AtlasTextureKind,
 ) -> Option<()> {
-    encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, 0)
+    encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, 0)
 }
 
 pub(in crate::platform::nova) fn atlas_kind_index(texture_kind: AtlasTextureKind) -> usize {
@@ -129,7 +129,7 @@ pub(in crate::platform::nova) fn atlas_source_byte_len(
     width.checked_mul(height)?.checked_mul(bytes_per_pixel)
 }
 
-pub(in crate::platform::nova) fn encode_bgra_upload_with_padding(
+pub(in crate::platform::nova) fn encode_atlas_upload_with_padding(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
     bytes: &[u8],
@@ -144,7 +144,7 @@ pub(in crate::platform::nova) fn encode_bgra_upload_with_padding(
     if pixels.len()
         < upload_width
             .saturating_mul(upload_height)
-            .saturating_mul(NOVA_ATLAS_BYTES_PER_PIXEL)
+            .saturating_mul(atlas_bytes_per_pixel(texture_kind))
     {
         return None;
     }
@@ -190,7 +190,7 @@ pub(in crate::platform::nova) fn encode_bgra_upload_with_padding(
 }
 
 #[cfg(feature = "bench-support")]
-fn encode_bgra_upload_with_padding_scalar(
+fn encode_atlas_upload_with_padding_scalar(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
     bytes: &[u8],
@@ -198,7 +198,7 @@ fn encode_bgra_upload_with_padding_scalar(
     padding: u32,
 ) -> Option<()> {
     if texture_kind != AtlasTextureKind::Rgba {
-        return encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+        return encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding);
     }
 
     let width = size.width.0.max(1) as usize;
@@ -226,7 +226,7 @@ fn encode_bgra_upload_with_padding_scalar(
 }
 
 #[cfg(feature = "bench-support")]
-fn encode_bgra_upload_with_padding_simd(
+fn encode_atlas_upload_with_padding_simd(
     pixels: &mut [u8],
     size: Size<DevicePixels>,
     bytes: &[u8],
@@ -234,7 +234,7 @@ fn encode_bgra_upload_with_padding_simd(
     padding: u32,
 ) -> Option<()> {
     if texture_kind != AtlasTextureKind::Rgba {
-        return encode_bgra_upload_with_padding(pixels, size, bytes, texture_kind, padding);
+        return encode_atlas_upload_with_padding(pixels, size, bytes, texture_kind, padding);
     }
 
     let width = size.width.0.max(1) as usize;
@@ -469,30 +469,26 @@ fn encode_monochrome_upload(
 ) -> Option<()> {
     let source_len = width.checked_mul(height)?;
     let source = bytes.get(..source_len)?;
-    let upload_len = upload_width
-        .checked_mul(upload_height)?
-        .checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
+    let upload_len = upload_width.checked_mul(upload_height)?;
     let destination = pixels.get_mut(..upload_len)?;
-    let center_byte_len = width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
-    let upload_row_bytes = upload_width.checked_mul(NOVA_ATLAS_BYTES_PER_PIXEL)?;
 
     for (source_row, destination_row) in source
         .chunks_exact(width)
-        .zip(destination[padding * upload_row_bytes..].chunks_exact_mut(upload_row_bytes))
+        .zip(destination[padding * upload_width..].chunks_exact_mut(upload_width))
         .take(height)
     {
-        let center_start = padding * NOVA_ATLAS_BYTES_PER_PIXEL;
-        let center = &mut destination_row[center_start..center_start + center_byte_len];
-        for (&coverage, destination_pixel) in source_row
-            .iter()
-            .zip(center.chunks_exact_mut(NOVA_ATLAS_BYTES_PER_PIXEL))
-        {
-            // Monochrome shaders sample only the logical red channel of the BGRA atlas.
-            destination_pixel.copy_from_slice(&[0, 0, coverage, 255]);
-        }
-        replicate_horizontal_padding(destination_row, width, padding)?;
+        destination_row[padding..padding + width].copy_from_slice(source_row);
+        destination_row[..padding].fill(source_row[0]);
+        destination_row[padding + width..].fill(source_row[width - 1]);
     }
-    replicate_vertical_padding(destination, upload_width, height, padding)?;
+    let first_row = padding.checked_mul(upload_width)?;
+    let last_row = (padding + height - 1).checked_mul(upload_width)?;
+    for row in 0..padding {
+        destination.copy_within(first_row..first_row + upload_width, row * upload_width);
+    }
+    for row in padding + height..upload_height {
+        destination.copy_within(last_row..last_row + upload_width, row * upload_width);
+    }
     Some(())
 }
 

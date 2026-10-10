@@ -175,8 +175,8 @@ where
         )),
         size: Extent2d::new(width, height)?,
         mip_level_count: 1,
-        format: Format::Bgra8Unorm,
-        usage: TextureUsage::COPY_DST | TextureUsage::SAMPLED,
+        format: atlas_texture_format(atlas_id.kind),
+        usage: TextureUsage::COPY_SRC | TextureUsage::COPY_DST | TextureUsage::SAMPLED,
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
     })?;
@@ -188,7 +188,7 @@ where
         texture,
         base_mip_level: 0,
         mip_level_count: 1,
-        format: Format::Bgra8Unorm,
+        format: atlas_texture_format(atlas_id.kind),
     }) {
         Ok(texture_view) => texture_view,
         Err(error) => {
@@ -288,7 +288,7 @@ fn indexed_animation_binding(buffers: FrameResourceBuffers) -> ResourceBinding {
         resource: BindingResource::Buffer(BufferBinding {
             buffer: buffers.animation_value_buffer,
             offset: 0,
-            size: (MAX_ANIMATION_VALUES * PACKED_ANIMATION_VALUE_BYTES) as u64,
+            size: (buffers.animation_value_capacity * PACKED_ANIMATION_VALUE_BYTES) as u64,
             stride: Some(PACKED_ANIMATION_VALUE_BYTES as u32),
         }),
     }
@@ -312,46 +312,7 @@ where
             atlas_id.kind, atlas_id.index
         )),
         layout: descriptor.mono_sprite_resource_set_layout,
-        bindings: vec![
-            ResourceBinding {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.global_buffer,
-                    offset: 0,
-                    size: GLOBAL_UPLOAD_BYTES as u64,
-                    stride: None,
-                }),
-            },
-            ResourceBinding {
-                binding: 1,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.text_raster_buffer,
-                    offset: 0,
-                    size: TEXT_RASTER_UPLOAD_BYTES as u64,
-                    stride: None,
-                }),
-            },
-            ResourceBinding {
-                binding: 4,
-                resource: BindingResource::Texture(TextureBinding { texture_view }),
-            },
-            ResourceBinding {
-                binding: 5,
-                resource: BindingResource::Sampler(SamplerBinding {
-                    sampler: descriptor.sampler,
-                }),
-            },
-            ResourceBinding {
-                binding: 8,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.mono_sprite_buffer,
-                    offset: 0,
-                    size: (MAX_MONO_SPRITES * PACKED_MONO_SPRITE_BYTES) as u64,
-                    stride: Some(PACKED_MONO_SPRITE_BYTES as u32),
-                }),
-            },
-            indexed_animation_binding(buffers),
-        ],
+        bindings: mono_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
 
@@ -373,37 +334,7 @@ where
             atlas_id.kind, atlas_id.index
         )),
         layout: descriptor.poly_sprite_resource_set_layout,
-        bindings: vec![
-            ResourceBinding {
-                binding: 0,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.global_buffer,
-                    offset: 0,
-                    size: GLOBAL_UPLOAD_BYTES as u64,
-                    stride: None,
-                }),
-            },
-            ResourceBinding {
-                binding: 4,
-                resource: BindingResource::Texture(TextureBinding { texture_view }),
-            },
-            ResourceBinding {
-                binding: 5,
-                resource: BindingResource::Sampler(SamplerBinding {
-                    sampler: descriptor.sampler,
-                }),
-            },
-            ResourceBinding {
-                binding: 9,
-                resource: BindingResource::Buffer(BufferBinding {
-                    buffer: buffers.poly_sprite_buffer,
-                    offset: 0,
-                    size: (MAX_POLY_SPRITES * PACKED_POLY_SPRITE_BYTES) as u64,
-                    stride: Some(PACKED_POLY_SPRITE_BYTES as u32),
-                }),
-            },
-            indexed_animation_binding(buffers),
-        ],
+        bindings: poly_atlas_resource_bindings(buffers, texture_view, descriptor.sampler),
     })?)
 }
 
@@ -456,4 +387,85 @@ mod tests {
             ));
         }
     }
+}
+
+pub(super) fn mono_atlas_resource_bindings(
+    buffers: FrameResourceBuffers,
+    texture_view: TextureViewId,
+    sampler: SamplerId,
+) -> Vec<ResourceBinding> {
+    vec![
+        ResourceBinding {
+            binding: 0,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: buffers.global_buffer,
+                offset: 0,
+                size: GLOBAL_UPLOAD_BYTES as u64,
+                stride: None,
+            }),
+        },
+        ResourceBinding {
+            binding: 1,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: buffers.text_raster_buffer,
+                offset: 0,
+                size: TEXT_RASTER_UPLOAD_BYTES as u64,
+                stride: None,
+            }),
+        },
+        ResourceBinding {
+            binding: 4,
+            resource: BindingResource::Texture(TextureBinding { texture_view }),
+        },
+        ResourceBinding {
+            binding: 5,
+            resource: BindingResource::Sampler(SamplerBinding { sampler: sampler }),
+        },
+        ResourceBinding {
+            binding: 8,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: buffers.mono_sprite_buffer,
+                offset: 0,
+                size: (buffers.mono_sprite_capacity * PACKED_MONO_SPRITE_BYTES) as u64,
+                stride: Some(PACKED_MONO_SPRITE_BYTES as u32),
+            }),
+        },
+        indexed_animation_binding(buffers),
+    ]
+}
+
+pub(super) fn poly_atlas_resource_bindings(
+    buffers: FrameResourceBuffers,
+    texture_view: TextureViewId,
+    sampler: SamplerId,
+) -> Vec<ResourceBinding> {
+    vec![
+        ResourceBinding {
+            binding: 0,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: buffers.global_buffer,
+                offset: 0,
+                size: GLOBAL_UPLOAD_BYTES as u64,
+                stride: None,
+            }),
+        },
+        ResourceBinding {
+            binding: 4,
+            resource: BindingResource::Texture(TextureBinding { texture_view }),
+        },
+        ResourceBinding {
+            binding: 5,
+            resource: BindingResource::Sampler(SamplerBinding { sampler: sampler }),
+        },
+        ResourceBinding {
+            binding: 9,
+            resource: BindingResource::Buffer(BufferBinding {
+                buffer: buffers.poly_sprite_buffer,
+                offset: 0,
+                size: (buffers.poly_sprite_capacity * PACKED_POLY_SPRITE_BYTES) as u64,
+                stride: Some(PACKED_POLY_SPRITE_BYTES as u32),
+            }),
+        },
+        indexed_animation_binding(buffers),
+    ]
 }

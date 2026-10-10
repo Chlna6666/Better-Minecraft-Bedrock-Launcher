@@ -1,10 +1,5 @@
 use super::*;
 
-struct RetainedEntitySegments<'a> {
-    bounds: Bounds<ScaledPixels>,
-    segments: SmallVec<[&'a RetainedSceneSegment; 1]>,
-}
-
 fn record_draw_phase_metrics(metrics: FramePhaseMetrics) {
     record_first_frame_build_time(metrics.build);
     record_first_frame_layout_time(metrics.layout);
@@ -29,20 +24,6 @@ pub(super) fn deadline_remaining_micros(deadline: Option<Instant>) -> Option<i64
             .min(i64::MAX as u128) as i64)
     };
     Some(remaining)
-}
-
-impl<'a> RetainedEntitySegments<'a> {
-    fn new(segment: &'a RetainedSceneSegment) -> Self {
-        Self {
-            bounds: segment.bounds,
-            segments: SmallVec::from_elem(segment, 1),
-        }
-    }
-
-    fn push(&mut self, segment: &'a RetainedSceneSegment) {
-        self.bounds = self.bounds.union(&segment.bounds);
-        self.segments.push(segment);
-    }
 }
 
 impl Window {
@@ -457,23 +438,8 @@ impl Window {
             return;
         }
 
-        let mut previous_entities: FxHashMap<EntityId, RetainedEntitySegments<'_>> =
-            FxHashMap::default();
-        let mut current_entities: FxHashMap<EntityId, RetainedEntitySegments<'_>> =
-            FxHashMap::default();
-
-        for segment in &self.rendered_frame.retained_scene_segments {
-            previous_entities
-                .entry(segment.entity_id)
-                .and_modify(|entity| entity.push(segment))
-                .or_insert_with(|| RetainedEntitySegments::new(segment));
-        }
-        for segment in &self.next_frame.retained_scene_segments {
-            current_entities
-                .entry(segment.entity_id)
-                .and_modify(|entity| entity.push(segment))
-                .or_insert_with(|| RetainedEntitySegments::new(segment));
-        }
+        let previous_entities = &self.rendered_frame.retained_scene_index;
+        let current_entities = &self.next_frame.retained_scene_index;
 
         // Recovery rebuilds every view cache, so compare every retained entity. On ordinary
         // frames only directly invalidated views need scene-operation comparison.
@@ -481,13 +447,19 @@ impl Window {
             let previous = previous_entities.get(entity_id);
             let current = current_entities.get(entity_id);
             let diffed = previous.zip(current).is_some_and(|(previous, current)| {
-                if previous.segments.len() != 1 || current.segments.len() != 1 {
+                if previous.len() != 1 || current.len() != 1 {
                     return false;
                 }
                 self.next_frame.scene.for_each_changed_bounds(
-                    current.segments[0].scene_range.clone(),
+                    current
+                        .first(&self.next_frame.retained_scene_segments)
+                        .scene_range
+                        .clone(),
                     &self.rendered_frame.scene,
-                    previous.segments[0].scene_range.clone(),
+                    previous
+                        .first(&self.rendered_frame.retained_scene_segments)
+                        .scene_range
+                        .clone(),
                     |bounds| dirty_region.push(bounds),
                 )
             });
@@ -520,33 +492,32 @@ impl Window {
         // Layout changes can move siblings even though those siblings were not directly notified.
         // Compare retained bounds across frames and damage only entities whose visual extent moved,
         // appeared, or disappeared. Stable ancestors such as MainWindow therefore remain clean.
-        for (entity_id, current) in &current_entities {
+        for (entity_id, current) in current_entities {
             match previous_entities.get(entity_id) {
                 Some(previous)
-                    if previous.segments.len() == current.segments.len()
+                    if previous.len() == current.len()
                         && previous
-                            .segments
-                            .iter()
-                            .zip(&current.segments)
+                            .segments(&self.rendered_frame.retained_scene_segments)
+                            .zip(current.segments(&self.next_frame.retained_scene_segments))
                             .all(|(previous, current)| previous.bounds == current.bounds) => {}
                 Some(previous) => {
-                    for segment in &previous.segments {
+                    for segment in previous.segments(&self.rendered_frame.retained_scene_segments) {
                         dirty_region.push(segment.bounds);
                     }
-                    for segment in &current.segments {
+                    for segment in current.segments(&self.next_frame.retained_scene_segments) {
                         dirty_region.push(segment.bounds);
                     }
                 }
                 None => {
-                    for segment in &current.segments {
+                    for segment in current.segments(&self.next_frame.retained_scene_segments) {
                         dirty_region.push(segment.bounds);
                     }
                 }
             }
         }
-        for (entity_id, previous) in &previous_entities {
+        for (entity_id, previous) in previous_entities {
             if !current_entities.contains_key(entity_id) {
-                for segment in &previous.segments {
+                for segment in previous.segments(&self.rendered_frame.retained_scene_segments) {
                     dirty_region.push(segment.bounds);
                 }
             }

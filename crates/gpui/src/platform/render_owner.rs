@@ -82,7 +82,10 @@ fn sender() -> Result<&'static Sender<Job>> {
                             .recv()
                             .map_err(|_| mpsc::RecvTimeoutError::Disconnected);
                         match received {
-                            Ok(job) => job(&mut worker),
+                            Ok(job) => {
+                                let _dispatch = crate::diagnostics::gpu_owner::Dispatch::start();
+                                job(&mut worker);
+                            }
                             Err(mpsc::RecvTimeoutError::Timeout) => {}
                             Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         }

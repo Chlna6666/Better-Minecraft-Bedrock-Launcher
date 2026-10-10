@@ -62,10 +62,9 @@ pub(super) fn verify_pixels<D>(
                 label: None,
                 layout: resources.backdrop_blur_pass_resource_set_layout,
                 bindings: backdrop_blur_pass_resource_bindings(
+                    &buffers,
                     input,
                     resources.atlas_sampler,
-                    buffers.backdrop_blur_pass_buffer,
-                    buffers.animation_value_buffer,
                 ),
             })
             .expect("blur pass bindings");

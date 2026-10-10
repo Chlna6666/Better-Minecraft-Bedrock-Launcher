@@ -168,6 +168,8 @@ where
         depth_texture_view,
         frame_resources,
         quad_resource_set_layout: layouts.quad_resource_set_layout,
+        shadow_resource_set_layout: layouts.shadow_resource_set_layout,
+        underline_resource_set_layout: layouts.underline_resource_set_layout,
         path_rasterization_resource_set_layout: layouts.path_rasterization_resource_set_layout,
         path_resource_set_layout: layouts.path_resource_set_layout,
         mono_sprite_resource_set_layout: layouts.mono_resource_set_layout,
