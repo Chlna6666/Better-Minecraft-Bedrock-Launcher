@@ -529,6 +529,27 @@ impl NovaRenderer {
             .iter()
             .filter(|layer| Some(layer.index) == self.frame_upload.retained_root_blur)
             .count();
+        // Unlike the main swapchain pass count, this measures actual root
+        // source geometry replay after batch-level culling. Useful for
+        // verifying that a small animation no longer replays static chrome.
+        let retained_root_draw_steps: usize = element_blur_layers
+            .iter()
+            .filter(|layer| Some(layer.index) == self.frame_upload.retained_root_blur)
+            .flat_map(|layer| &layer.source_groups)
+            .map(|group| group.source_steps.len())
+            .sum();
+        let filter_source_draw_steps: usize = backdrop_blur_groups
+            .iter()
+            .map(|group| group.source_steps.len())
+            .sum::<usize>()
+            .saturating_add(
+                element_blur_layers
+                    .iter()
+                    .filter(|layer| Some(layer.index) != self.frame_upload.retained_root_blur)
+                    .flat_map(|layer| &layer.source_groups)
+                    .map(|group| group.source_steps.len())
+                    .sum::<usize>(),
+            );
         let (blur_source_pixels, blur_level_pixels) =
             self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();
@@ -659,6 +680,7 @@ impl NovaRenderer {
                     "async_submission={} async_wait={} async_presentation={} ",
                     "native_partial_presentation={} retained_root={} ",
                     "retained_root_refreshes={} main_swapchain_steps={} ",
+                    "retained_root_draw_steps={} filter_source_draw_steps={} ",
                     "present_damage={:?} dirty_mode={:?} dirty_full={} dirty_rects={} ",
                     "dirty_area={} backdrop_blur_refresh={} element_blur_refresh={} ",
                     "element_blur_dirty_layers={} blur_source_atlas_dirty={} ",
@@ -693,6 +715,8 @@ impl NovaRenderer {
                 root_scene_color_cached,
                 root_scene_color_refreshes,
                 draw_step_count,
+                retained_root_draw_steps,
+                filter_source_draw_steps,
                 present_damage,
                 packet.partial_present_mode,
                 packet.dirty_region.is_full(),
