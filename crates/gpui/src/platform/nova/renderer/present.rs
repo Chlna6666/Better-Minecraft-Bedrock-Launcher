@@ -1443,6 +1443,10 @@ impl NovaRenderer {
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {
+            self.filters.last_gpu_animation_values.clear();
+            self.filters
+                .last_gpu_animation_values
+                .extend_from_slice(&self.frame_upload.sampled_animation_values);
             self.filters.record_element_blur_inputs(
                 &self.frame_upload.element_blur_inputs,
                 &packet.presentation_animation_values,

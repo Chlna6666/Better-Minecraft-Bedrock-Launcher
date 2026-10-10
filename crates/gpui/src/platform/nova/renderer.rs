@@ -344,6 +344,7 @@ impl NovaRenderer {
             packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
+        self.reconcile_gpu_layer_animation_damage(packet);
         self.ensure_path_mask_target_for_frame()?;
         self.prepare_renderer_extensions(packet.frame_time)?;
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -589,6 +590,7 @@ impl NovaRenderer {
                 packet.presentation_animation_values.as_slice(),
                 backdrop_blur_quality,
             );
+            self.reconcile_gpu_layer_animation_damage(&mut packet);
             self.ensure_path_mask_target_for_frame()?;
             self.prepare_renderer_extensions(packet.frame_time)?;
             self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -778,6 +780,28 @@ impl NovaRenderer {
         self.destroy_renderer_extensions();
         self.destroy_window_resources();
         self.memory_profile.remove();
+    }
+
+    /// The Window can submit a compositor-owned animation without an
+    /// accompanying View commit. Repair the root retained-color damage after
+    /// the packed animation values are known, and before GPU Pass planning.
+    fn reconcile_gpu_layer_animation_damage(&mut self, packet: &mut PresentationPacket) {
+        if self.frame_upload.retained_root_blur.is_none() || !self.filters.is_valid() {
+            return;
+        }
+        let damage = packet.scene.gpu_sample_damage(
+            &self.filters.last_gpu_animation_values,
+            &self.frame_upload.sampled_animation_values,
+        );
+        if damage.is_empty() {
+            return;
+        }
+        for bounds in damage {
+            packet.dirty_region.push(bounds);
+        }
+        // The same repaired region must control root source clearing, texture
+        // draw-step scissors and swapchain partial eligibility.
+        self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();
     }
 
     fn observe_presentation_packet(&mut self, packet: &PresentationPacket) {

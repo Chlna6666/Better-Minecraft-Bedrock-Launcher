@@ -19,6 +19,10 @@ pub(super) struct FilterRegistry {
     /// Snapshotting only on success prevents a deferred/failed present from
     /// validating an output texture that was never updated.
     pub(super) element_blur_inputs: Vec<RetainedElementFilterSource>,
+    /// Last successfully submitted shader animation samples. A GPU-side
+    /// retained target must be invalidated against this precise snapshot,
+    /// not merely the latest UI View invalidation.
+    pub(super) last_gpu_animation_values: Vec<crate::SceneAnimationValue>,
     valid: bool,
 }
 
@@ -33,6 +37,7 @@ impl FilterRegistry {
             atlas_generation: 0,
             quality: None,
             element_blur_inputs: Vec::new(),
+            last_gpu_animation_values: Vec::new(),
         }
     }
 
@@ -52,6 +57,7 @@ impl FilterRegistry {
         self.valid = false;
         self.quality = None;
         self.element_blur_inputs.clear();
+        self.last_gpu_animation_values.clear();
     }
 
     pub(super) fn source_unchanged(

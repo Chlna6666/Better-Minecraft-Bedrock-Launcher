@@ -634,6 +634,75 @@ impl Scene {
         plan
     }
 
+    /// Compare the animation values actually consumed by successive GPU
+    /// submissions. This also includes Scene-local animation samples which
+    /// are NOT represented by the engine-owned presentation-value list.
+    ///
+    /// Scene/Buffer reuse does not imply pixel reuse: an indexed GPU animation
+    /// may change its shader parameters while producing no UI invalidation.
+    pub(crate) fn gpu_sample_damage(
+        &self,
+        previous: &[SceneAnimationValue],
+        current: &[SceneAnimationValue],
+    ) -> SmallVec<[Bounds<ScaledPixels>; 8]> {
+        // Most compositor callbacks have unchanged shader parameters.
+        // Avoid scanning all paint operations on those frames.
+        if previous == current {
+            return SmallVec::new();
+        }
+        let mut damage = SmallVec::new();
+        let mut changed_operations = SmallVec::<[usize; 8]>::new();
+        for (index, operation) in self.paint_operations.iter().enumerate() {
+            let animation_id = match operation {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartBlur(capture) => capture.animation_id,
+                PaintOperation::StartLayer(_)
+                | PaintOperation::EndLayer
+                | PaintOperation::EndBlur => None,
+            };
+            if let Some(animation_id) = animation_id {
+                let last = previous.iter().find(|v| v.animation_id == animation_id);
+                let now = current.iter().find(|v| v.animation_id == animation_id);
+                if last != now {
+                    let bounds = match operation {
+                        PaintOperation::Primitive(primitive) => {
+                            animation_sampled_bounds(primitive, last)
+                                .union(&animation_sampled_bounds(primitive, now))
+                        }
+                        PaintOperation::StartBlur(capture) => {
+                            animation_sampled_blur_capture_bounds(capture, last)
+                                .union(&animation_sampled_blur_capture_bounds(capture, now))
+                        }
+                        _ => continue,
+                    };
+                    if !bounds.is_empty() {
+                        damage.push(bounds);
+                        changed_operations.push(index);
+                    }
+                }
+            }
+            if let PaintOperation::Primitive(Primitive::Blur(blur)) = operation {
+                if !blur.content.gpu_sample_damage(previous, current).is_empty() {
+                    let bounds = blur.bounds.intersect(&blur.content_mask.bounds);
+                    if !bounds.is_empty() {
+                        damage.push(bounds);
+                        changed_operations.push(index);
+                    }
+                }
+            }
+        }
+        if !changed_operations.is_empty() {
+            self.for_each_element_blur_group(|range, bounds| {
+                if changed_operations.iter().any(|index| range.contains(index))
+                    && !bounds.is_empty()
+                {
+                    damage.push(bounds);
+                }
+            });
+        }
+        damage
+    }
+
     /// Derive pixel damage from the actual presentation animation samples,
     /// independently of UI element invalidation and layout rerenders.
     ///
@@ -2320,6 +2389,70 @@ fn paint_operations_match_for_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_resident_source_uses_submitted_animation_samples_not_ui_dirty_views() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(10.0), ScaledPixels(20.0)),
+            crate::size(ScaledPixels(30.0), ScaledPixels(40.0)),
+        );
+        let mut scene = Scene::default();
+        let animation_id = SceneAnimationId(7);
+        scene.insert_animated_primitive(
+            Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        let sample = |progress| SceneAnimationValue {
+            animation_id,
+            property: TransitionProperty::Opacity,
+            progress,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        };
+        assert!(scene.gpu_sample_damage(&[sample(0.5)], &[sample(0.5)]).is_empty());
+        assert_eq!(scene.gpu_sample_damage(&[sample(0.2)], &[sample(0.8)]).as_slice(), &[bounds]);
+    }
+
+    #[test]
+    fn gpu_resident_nested_blur_child_invalidates_parent_color_output() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(10.0), ScaledPixels(20.0)),
+            crate::size(ScaledPixels(40.0), ScaledPixels(20.0)),
+        );
+        let mut child = Scene::default();
+        let animation_id = SceneAnimationId(1 << 31);
+        child.insert_animated_primitive(
+            Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        let mut parent = Scene::default();
+        parent.insert_primitive(PaintBlur {
+            order: 0,
+            animation_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: ScaledPixels(8.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(child),
+        });
+        let sample = |progress| SceneAnimationValue {
+            animation_id,
+            property: TransitionProperty::Opacity,
+            progress,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        };
+        let dirty = parent.gpu_sample_damage(&[sample(0.1)], &[sample(0.9)]);
+        assert_eq!(dirty.as_slice(), &[bounds]);
+    }
 
     #[test]
     fn renderer_owned_opacity_tick_marks_pixels_without_ui_relayout() {
