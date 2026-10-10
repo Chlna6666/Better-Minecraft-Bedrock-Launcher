@@ -5,6 +5,29 @@ use super::*;
 use std::hash::Hasher;
 use std::time::Duration;
 
+// Reuse the original retained GPU scene-color target only when many stable
+// primitives justify an additional offscreen color attachment + final blit.
+// Small UIs and painter-ordered blur chains still use direct rendering.
+// The threshold is deliberately conservative until per-layer GPU timestamps
+// and adaptive cost feedback are available.
+const AUTO_RETAINED_COLOR_MIN_PRIMITIVES: usize = 384;
+
+fn should_retain_complex_scene_color(
+    scene: &crate::Scene,
+    summary: &FrameUploadSummary,
+) -> bool {
+    if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
+        return false;
+    }
+    let primitives = summary.quad_count as usize
+        + summary.shadow_count as usize
+        + summary.path_sprite_count as usize
+        + summary.mono_sprite_count as usize
+        + summary.poly_sprite_count as usize
+        + summary.underline_count as usize;
+    primitives >= AUTO_RETAINED_COLOR_MIN_PRIMITIVES
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct UploadKey {
     scene_revision: u64,
@@ -630,17 +653,18 @@ impl NovaRenderer {
             if !scene.requires_full_redraw_fallback()
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
-                // An unconditional root color target adds a full-window offscreen draw
-                // and full-screen texture composite to EVERY presented frame, even when
-                // no Gaussian blur exists. At high refresh rates that overhead can cost
-                // more than the saved primitive draws. Keep the experimental retained
-                // compositor explicitly opt-in until GPU pass timing demonstrates a win.
-                // Ordinary per-effect backdrop and element blur caches remain enabled.
-                && matches!(
-                    std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref(),
-                    Ok("1")
-                )
+                // The complete window color texture is NOT free: on a
+                // lightweight 48-primitive animated page it doubles memory
+                // bandwidth. Reuse it automatically only for complex scenes
+                // without painter-ordered Gaussian barriers. Smaller scenes
+                // retain direct presentation, and the explicit 1/0 overrides
+                // support reproducible A/B GPU measurements.
                 && std::env::var_os("BMCBL_DISABLE_RETAINED_COLOR").is_none()
+                && match std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref() {
+                    Ok("1") => true,
+                    Ok("0") => false,
+                    _ => should_retain_complex_scene_color(scene, &summary),
+                }
             {
                 self.frame_upload
                     .append_retained_root(self.current_size, &mut summary);
@@ -744,6 +768,40 @@ mod tests {
             range,
             byte_hash: generation,
         }
+    }
+
+    #[test]
+    fn complex_scene_color_cache_is_not_forced_on_small_ui() {
+        let scene = crate::Scene::default();
+        let mut summary = FrameUploadSummary::default();
+        summary.quad_count = 48;
+        assert!(!should_retain_complex_scene_color(&scene, &summary));
+
+        summary.mono_sprite_count = 500;
+        assert!(should_retain_complex_scene_color(&scene, &summary));
+
+        // A blur chain cannot use the opaque root color shortcut: it has
+        // painter-ordered source dependencies and separate cached targets.
+        let mut scene_with_blur = crate::Scene::default();
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        );
+        scene_with_blur.insert_primitive(crate::PaintBackdropBlur {
+            order: 0,
+            animation_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            corner_radii: crate::Corners::default(),
+            radius: crate::ScaledPixels(2.0),
+            downsample: 1,
+            levels: 1,
+            saturation: 1.0,
+            opacity: 1.0,
+            tint: None,
+            recompute_overlap: false,
+        });
+        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
     }
 
     #[test]
