@@ -59,6 +59,8 @@ const FRAMES_IN_FLIGHT: usize = 2;
 // Bound the wait so a hidden/occluded window cannot block the GPU owner indefinitely.
 const PRESENT_BACKPRESSURE_TIMEOUT_NS: u64 = 8_000_000;
 const UPLOAD_COMMAND_POOL_CAPACITY: usize = 4;
+// GPU-completed command pools are recycled instead of recreated for each blur/frame pass.
+const COMMAND_ENCODER_POOL_CAPACITY: usize = 16;
 const MAX_PIPELINE_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Native presentation target accepted by the Vulkan backend.
@@ -141,6 +143,7 @@ pub struct VulkanDevice {
     render_passes: ResourceRegistry<VulkanRenderPass>,
     render_pipelines: ResourceRegistry<VulkanRenderPipeline>,
     command_encoders: ResourceRegistry<VulkanCommandEncoder>,
+    free_command_encoders: Vec<VulkanCommandEncoder>,
     submissions: ResourceRegistry<VulkanSubmission>,
     surfaces: ResourceRegistry<VulkanSurface>,
     swapchains: ResourceRegistry<VulkanSwapchain>,
@@ -335,6 +338,7 @@ impl VulkanDevice {
             render_passes: ResourceRegistry::new("render pass"),
             render_pipelines: ResourceRegistry::new("render pipeline"),
             command_encoders: ResourceRegistry::new("command encoder"),
+            free_command_encoders: Vec::with_capacity(COMMAND_ENCODER_POOL_CAPACITY),
             submissions: ResourceRegistry::new("submission"),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
@@ -1264,6 +1268,17 @@ impl VulkanDevice {
                 "command encoder must allocate at least one command buffer".to_string(),
             ));
         }
+        // Recycle only fully completed encoders with exactly the same command-buffer count.
+        // In particular, a multipass blur submission must never submit stale extra buffers.
+        self.poll_cleanup();
+        if let Some(index) = self
+            .free_command_encoders
+            .iter()
+            .position(|encoder| encoder.command_buffers.len() == buffer_count as usize)
+        {
+            return Ok(self.command_encoders.insert(self.free_command_encoders.swap_remove(index)));
+        }
+
         let command_pool = create_command_pool(&self.device, self.graphics_queue_family_index)?;
         let command_buffers =
             match allocate_command_buffers(&self.device, command_pool, buffer_count) {
@@ -2956,8 +2971,7 @@ impl VulkanDevice {
                 self.trim_upload_pages(retained_page_count)
             }
             DeferredResource::CommandEncoder(encoder) => {
-                self.destroy_command_encoder_now(&encoder);
-                Ok(())
+                self.recycle_command_encoder(encoder)
             }
         }
     }
@@ -3054,6 +3068,41 @@ impl VulkanDevice {
                     .destroy_pipeline_layout(pipeline.pipeline_layout, None);
             }
         }
+    }
+
+    fn recycle_command_encoder(&mut self, mut encoder: VulkanCommandEncoder) -> Result<()> {
+        // The deferred-queue completion predicate verified the submission fence.
+        // Destroy transient render targets before resetting the command pool, then
+        // keep only bounded, fully idle native pools for subsequent frame submissions.
+        for framebuffer in encoder.transient_framebuffers.drain(..) {
+            // SAFETY: owning submission completed and the framebuffer belongs to this device.
+            unsafe { self.device.destroy_framebuffer(framebuffer, None) };
+        }
+        if encoder.owns_fence && encoder.fence != vk::Fence::null() {
+            // SAFETY: the completed submission owns this fence and it is destroyed once.
+            unsafe { self.device.destroy_fence(encoder.fence, None) };
+        }
+        encoder.fence = vk::Fence::null();
+        encoder.owns_fence = false;
+
+        if self.free_command_encoders.len() >= COMMAND_ENCODER_POOL_CAPACITY {
+            // SAFETY: all command buffers in this pool have finished executing.
+            unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
+            return Ok(());
+        }
+        // SAFETY: no pending GPU work references the command pool or any of its buffers.
+        if let Err(error) = unsafe {
+            self.device.reset_command_pool(
+                encoder.command_pool,
+                vk::CommandPoolResetFlags::empty(),
+            )
+        } {
+            // Do not cache a pool that could not be reset to the initial state.
+            unsafe { self.device.destroy_command_pool(encoder.command_pool, None) };
+            return Err(VulkanError::from(error).into());
+        }
+        self.free_command_encoders.push(encoder);
+        Ok(())
     }
 
     fn destroy_command_encoder_now(&self, encoder: &VulkanCommandEncoder) {
@@ -3642,6 +3691,9 @@ impl Drop for VulkanDevice {
             let _ = self.destroy_texture_now(texture);
         }
         for (_, encoder) in self.command_encoders.drain_live() {
+            self.destroy_command_encoder_now(&encoder);
+        }
+        for encoder in std::mem::take(&mut self.free_command_encoders) {
             self.destroy_command_encoder_now(&encoder);
         }
         for (_, swapchain) in self.swapchains.drain_live() {
