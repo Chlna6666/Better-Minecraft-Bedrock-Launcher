@@ -13,7 +13,7 @@ pub(super) struct LayoutRootCacheKey {
     pub(super) available_space: Size<AvailableSpaceKey>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub(super) enum AvailableSpaceKey {
     Definite(u32),
     #[default]

@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use crate::{AnimatedFrame, App, AssetPin, AsyncApp, ImageCacheError, RenderImage, Task, Window};
 
@@ -10,6 +16,39 @@ pub(crate) struct ImageElementState {
     pub(crate) current_frame: Option<AnimatedFrame>,
     pub(super) next_frame_at: Option<Instant>,
     pub(super) started_loading: Option<(Instant, Task<()>)>,
+    pub(super) release_signal: Option<(AsyncApp, Arc<AtomicBool>)>,
+}
+
+impl ImageElementState {
+    pub(super) fn release_image(&mut self) {
+        if self.current_image.take().is_none() {
+            return;
+        }
+        self.current_frame = None;
+        self.next_frame_at = None;
+        let Some((app, pending)) = self.release_signal.take() else {
+            return;
+        };
+        if pending.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        // Coalesce an entire disappearing page, then inspect ownership after its frame is cleared.
+        app.spawn(async move |cx| {
+            if let Err(error) = cx.update(|cx| {
+                pending.store(false, Ordering::Relaxed);
+                cx.reclaim_idle_image_cache();
+            }) {
+                log::debug!("image element release ended with application: {error}");
+            }
+        })
+        .detach();
+    }
+}
+
+impl Drop for ImageElementState {
+    fn drop(&mut self) {
+        self.release_image();
+    }
 }
 
 /// One element-owned reference to a concrete bounds-aware image request.
@@ -91,6 +130,7 @@ impl SizedImageElementState {
                 current_frame,
                 next_frame_at: None,
                 started_loading: None,
+                release_signal: None,
             },
             current_image: None,
             sized_image_request: None,

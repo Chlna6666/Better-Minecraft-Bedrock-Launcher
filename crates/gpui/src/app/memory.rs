@@ -11,6 +11,15 @@ use super::asset_loading::cached_asset_output;
 /// Retained image asset totals in GPUI's global asset cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GlobalImageAssetCacheSnapshot {
+    /// App-wide soft retention budget; active images and explicit leases may exceed it.
+    pub cache_budget_bytes: usize,
+    /// Unique decoded cache cost, including compressed sources retained by animated streams.
+    pub cache_cost_bytes: usize,
+    /// Cache cost above the soft budget, including protected active allocations.
+    pub over_budget_bytes: usize,
+    /// Decoded backing bytes counted once per RenderImage identity across
+    /// all decoded asset categories. Category byte counters can overlap.
+    pub unique_resident_bytes: usize,
     /// Resident image bytes retained by uncached resource images.
     pub resource_resident_bytes: usize,
     /// Number of completed uncached resource image assets.
@@ -30,8 +39,20 @@ pub struct GlobalImageAssetCacheSnapshot {
 }
 
 /// Aggregated GPUI memory diagnostics.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GpuiMemorySnapshot {
+    /// App-wide decoded image cache soft budget.
+    #[serde(default)]
+    pub image_cache_budget_bytes: usize,
+    /// Unique cache cost including active stream source data; not additive with CPU image totals.
+    #[serde(default)]
+    pub image_cache_cost_bytes: usize,
+    /// Protected cache cost above the soft budget; not an allocation failure.
+    #[serde(default)]
+    pub image_cache_over_budget_bytes: usize,
+    /// Cached per-window and shared-device renderer observations, with sample ages.
+    /// Image CPU counters below are overlapping cache views, not additive heap totals.
+    pub renderer: crate::MemoryProfileSnapshot,
     /// Number of entries retained by GPUI image caches.
     pub image_asset_cache_entries: usize,
     /// Encoded bytes retained by compressed image assets.
@@ -60,17 +81,19 @@ pub struct GpuiMemorySnapshot {
     pub atlas_polychrome_bytes: usize,
     /// Number of live atlas keys known to renderer metrics.
     pub atlas_live_keys: usize,
-    /// Estimated unused bytes inside retained atlas textures.
+    /// Atlas page bytes minus padded tile rectangles; not allocator free space.
     pub atlas_unused_bytes: usize,
-    /// Estimated bytes retained by window surface and retained-frame resources.
+    /// Logical depth/path/blur target bytes; excludes swapchain images and buffers.
     pub gpu_surface_texture_bytes: usize,
-    /// Aggregate GPUI-owned retained bytes visible to diagnostics.
+    /// Shared-device known GPU bytes, excluding CPU caches and driver overhead.
     pub gpu_estimated_total_retained_bytes: usize,
 }
 
 impl GpuiMemorySnapshot {
-    fn from_metrics(global_assets: GlobalImageAssetCacheSnapshot) -> Self {
-        let metrics = performance_metrics_snapshot();
+    fn from_metrics(
+        global_assets: GlobalImageAssetCacheSnapshot,
+        metrics: crate::PerformanceMetricsSnapshot,
+    ) -> Self {
         let BitmapPoolSnapshot {
             retained_bytes: bitmap_pool_retained_bytes,
             free_buffers: bitmap_pool_buffers,
@@ -80,10 +103,7 @@ impl GpuiMemorySnapshot {
             queued_bytes: animation_prefetch_bytes,
         } = crate::assets::animation_queue_snapshot();
         let (compressed_cache_entries, compressed_cache_bytes) = compressed_cache_snapshot();
-        let global_decoded_bytes = global_assets
-            .resource_resident_bytes
-            .saturating_add(global_assets.inline_resident_bytes)
-            .saturating_add(global_assets.sized_resident_bytes);
+        let global_decoded_bytes = global_assets.unique_resident_bytes;
         let global_entries = global_assets
             .resource_count
             .saturating_add(global_assets.inline_count)
@@ -95,6 +115,10 @@ impl GpuiMemorySnapshot {
             .max(metrics.image_asset_total_resident_bytes);
 
         Self {
+            image_cache_budget_bytes: global_assets.cache_budget_bytes,
+            image_cache_cost_bytes: global_assets.cache_cost_bytes,
+            image_cache_over_budget_bytes: global_assets.over_budget_bytes,
+            renderer: crate::memory_profile_snapshot(),
             image_asset_cache_entries: metrics
                 .image_asset_cache_entries
                 .saturating_add(global_entries),
@@ -115,12 +139,7 @@ impl GpuiMemorySnapshot {
             atlas_live_keys: metrics.atlas_live_keys,
             atlas_unused_bytes: metrics.atlas_unused_bytes,
             gpu_surface_texture_bytes: metrics.gpu_surface_texture_bytes,
-            gpu_estimated_total_retained_bytes: metrics.gpu_estimated_total_retained_bytes.max(
-                resident_bytes
-                    .saturating_add(bitmap_pool_retained_bytes)
-                    .saturating_add(compressed_cache_bytes)
-                    .saturating_add(metrics.gpu_retained_bytes),
-            ),
+            gpu_estimated_total_retained_bytes: metrics.gpu_estimated_total_retained_bytes,
         }
     }
 }
@@ -129,6 +148,12 @@ impl App {
     /// Returns retained image asset totals from GPUI's global asset cache.
     pub fn global_image_asset_cache_snapshot(&self) -> GlobalImageAssetCacheSnapshot {
         let mut snapshot = GlobalImageAssetCacheSnapshot::default();
+        snapshot.cache_budget_bytes = self.image_pipeline_config.idle_image_bytes;
+        snapshot.cache_cost_bytes = self.image_cache_cost_bytes();
+        snapshot.over_budget_bytes = snapshot
+            .cache_cost_bytes
+            .saturating_sub(snapshot.cache_budget_bytes);
+        let mut decoded_images = collections::FxHashSet::default();
         let resource_type = TypeId::of::<crate::ResourceImageLoader>();
         let inline_type = TypeId::of::<crate::AssetLogger<crate::ClipboardImageLoader>>();
         let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageLoader>>();
@@ -141,6 +166,11 @@ impl App {
                     cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
                 {
                     snapshot.resource_count = snapshot.resource_count.saturating_add(1);
+                    if decoded_images.insert(Arc::as_ptr(&image) as usize) {
+                        snapshot.unique_resident_bytes = snapshot
+                            .unique_resident_bytes
+                            .saturating_add(image.resident_capacity());
+                    }
                     snapshot.resource_resident_bytes = snapshot
                         .resource_resident_bytes
                         .saturating_add(image.resident_capacity());
@@ -150,6 +180,11 @@ impl App {
                     cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
                 {
                     snapshot.inline_count = snapshot.inline_count.saturating_add(1);
+                    if decoded_images.insert(Arc::as_ptr(&image) as usize) {
+                        snapshot.unique_resident_bytes = snapshot
+                            .unique_resident_bytes
+                            .saturating_add(image.resident_capacity());
+                    }
                     snapshot.inline_resident_bytes = snapshot
                         .inline_resident_bytes
                         .saturating_add(image.resident_capacity());
@@ -169,6 +204,11 @@ impl App {
                     cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
             {
                 snapshot.sized_count = snapshot.sized_count.saturating_add(1);
+                if decoded_images.insert(Arc::as_ptr(&image) as usize) {
+                    snapshot.unique_resident_bytes = snapshot
+                        .unique_resident_bytes
+                        .saturating_add(image.resident_capacity());
+                }
                 snapshot.sized_resident_bytes = snapshot
                     .sized_resident_bytes
                     .saturating_add(image.resident_capacity());
@@ -180,6 +220,32 @@ impl App {
 
     /// Returns a unified memory snapshot for GPUI-owned image and renderer resources.
     pub fn gpui_memory_snapshot(&self) -> GpuiMemorySnapshot {
-        GpuiMemorySnapshot::from_metrics(self.global_image_asset_cache_snapshot())
+        GpuiMemorySnapshot::from_metrics(
+            self.global_image_asset_cache_snapshot(),
+            performance_metrics_snapshot(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_image_capacity_does_not_inflate_gpu_memory_profile() {
+        let snapshot = GpuiMemorySnapshot::from_metrics(
+            GlobalImageAssetCacheSnapshot {
+                unique_resident_bytes: 4_000_000,
+                ..Default::default()
+            },
+            crate::PerformanceMetricsSnapshot {
+                image_cache_bytes: 5_000_000,
+                gpu_estimated_total_retained_bytes: 1024,
+                gpu_retained_bytes: 1024,
+                ..Default::default()
+            },
+        );
+        assert_eq!(snapshot.gpu_estimated_total_retained_bytes, 1024);
+        assert!(snapshot.image_asset_resident_bytes >= 4_000_000);
     }
 }

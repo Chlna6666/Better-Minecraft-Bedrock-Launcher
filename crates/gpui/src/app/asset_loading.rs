@@ -17,7 +17,9 @@ use super::App;
 type AssetId = (TypeId, u64);
 
 mod idle_images;
+mod residency;
 pub(super) use idle_images::IdleImageCache;
+pub(super) use residency::ImageResidency;
 
 struct OwnedAssetEntry<T>
 where
@@ -38,6 +40,21 @@ where
     {
         let lease = AssetLease::spawn(A::load(source.clone(), cx), cx);
         let identity = Rc::new(());
+
+        if residency::is_image_asset(asset_id.0) {
+            let completion = lease.completion_signal();
+            cx.spawn(async move |cx| {
+                if completion.wait().await {
+                    if let Err(error) = cx.update(|cx| {
+                        cx.image_residency.needs_scan = true;
+                        cx.enforce_image_cache_budget(Some(asset_id));
+                    }) {
+                        log::debug!("image budget completion ended with application: {error}");
+                    }
+                }
+            })
+            .detach();
+        }
 
         if A::RETENTION == AssetRetentionPolicy::TransientAfterReady {
             let completion = lease.completion_signal();
@@ -114,9 +131,15 @@ mod asset_loading_tests;
 impl App {
     fn asset_entry<A: Asset>(&mut self, source: &A::Source) -> &OwnedAssetEntry<A::Output> {
         let asset_id = (TypeId::of::<A>(), hash(source));
+        if residency::is_image_asset(asset_id.0) {
+            self.image_residency.touch(asset_id);
+        }
         if !self.asset_entries.contains_key(&asset_id) {
             let entry = OwnedAssetEntry::new::<A>(source, asset_id, self);
             self.asset_entries.insert(asset_id, Box::new(entry));
+            if residency::is_image_asset(asset_id.0) {
+                self.image_residency.needs_scan = true;
+            }
         }
         self.asset_entries
             .get(&asset_id)
@@ -142,8 +165,13 @@ impl App {
         view: EntityId,
         retained_id: Option<GlobalElementId>,
     ) -> Option<A::Output> {
-        self.asset_entry::<A>(source)
-            .use_by(window, view, retained_id)
+        let result = self
+            .asset_entry::<A>(source)
+            .use_by(window, view, retained_id);
+        if residency::is_image_asset(TypeId::of::<A>()) {
+            self.enforce_image_cache_budget(Some((TypeId::of::<A>(), hash(source))));
+        }
+        result
     }
 
     /// Trims idle image state without applying byte ceilings to active images.
@@ -160,52 +188,11 @@ impl App {
         crate::assets::trim_global_bitmap_pool_to(bitmap_pool_limit);
         crate::trim_compressed_cache();
 
-        if matches!(level, ImageMemoryTrimLevel::Light) {
-            return;
-        }
+        self.trim_image_residency(matches!(
+            level,
+            ImageMemoryTrimLevel::Moderate | ImageMemoryTrimLevel::Aggressive
+        ));
 
-        for asset_id in self.idle_sized_images.take_keys() {
-            self.retire_sized_image(asset_id, None, None);
-        }
-
-        let resource_type = TypeId::of::<crate::ResourceImageLoader>();
-        let inline_type = TypeId::of::<crate::AssetLogger<crate::ClipboardImageLoader>>();
-        let inline_bytes_type = TypeId::of::<crate::AssetLogger<crate::EncodedImageLoader>>();
-        let target_type = TypeId::of::<crate::SizedImageLoader>();
-        let mut evicted = Vec::new();
-        for (asset_id, entry) in &self.asset_entries {
-            let is_image = matches!(
-                asset_id.0,
-                id if id == resource_type
-                    || id == inline_type
-                    || id == inline_bytes_type
-                    || id == target_type
-            );
-            let is_pinned_target = asset_id.0 == target_type
-                && entry
-                    .downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
-                    .is_some_and(|entry| entry.pin_count() != 0);
-            if !is_image || is_pinned_target {
-                continue;
-            }
-            let Some(Ok(image)) =
-                cached_asset_output::<Result<Arc<RenderImage>, ImageCacheError>>(entry.as_ref())
-            else {
-                continue;
-            };
-            if Arc::strong_count(&image) <= 2 {
-                evicted.push((*asset_id, image));
-            }
-        }
-
-        for (asset_id, image) in evicted {
-            self.idle_sized_images.remove(asset_id);
-            self.asset_entries.remove(&asset_id);
-            self.drop_image(image, None);
-            if asset_id.0 == target_type {
-                drop_image_asset_retained(asset_id.1);
-            }
-        }
         crate::trim_compressed_cache();
     }
 
@@ -238,6 +225,9 @@ impl App {
         }
 
         self.idle_sized_images.remove(asset_id);
+        if residency::is_image_asset(asset_id.0) {
+            self.image_residency.needs_scan = true;
+        }
         self.asset_entries
             .remove(&asset_id)
             .and_then(|entry| entry.downcast::<OwnedAssetEntry<A::Output>>().ok())

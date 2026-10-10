@@ -113,11 +113,21 @@ impl TaffyLayoutEngine {
             }
         }
 
-        self.previous_layout_roots.retain(|key, _| {
-            computed_root_keys
-                .iter()
-                .any(|(current_key, _)| current_key == key)
-        });
+        if computed_root_keys.len() > 16 && self.previous_layout_roots.len() > 16 {
+            // Sort only after saving roots so duplicate-key replacement keeps its original order.
+            computed_root_keys.sort_unstable_by_key(|(key, _)| root_order(key));
+            self.previous_layout_roots.retain(|key, _| {
+                computed_root_keys
+                    .binary_search_by_key(&root_order(key), |(current, _)| root_order(current))
+                    .is_ok()
+            });
+        } else {
+            self.previous_layout_roots.retain(|key, _| {
+                computed_root_keys
+                    .iter()
+                    .any(|(current_key, _)| current_key == key)
+            });
+        }
         let root_target = 8usize.max(self.previous_layout_roots.len());
         if self.previous_layout_roots.capacity() > root_target.saturating_mul(4) {
             self.previous_layout_roots.shrink_to(root_target);
@@ -136,6 +146,52 @@ impl TaffyLayoutEngine {
             nodes.push(id);
             let children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
             stack.extend(children.into_iter().rev().map(Into::into));
+        }
+    }
+}
+
+fn root_order(key: &LayoutRootCacheKey) -> (u64, AvailableSpaceKey, AvailableSpaceKey) {
+    (
+        key.root_fingerprint,
+        key.available_space.width,
+        key.available_space.height,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorted_root_membership_matches_linear_lookup_including_duplicate_keys() {
+        let mut keys: Vec<_> = (0..64)
+            .rev()
+            .map(|index| LayoutRootCacheKey {
+                root_fingerprint: index / 3,
+                available_space: size(
+                    AvailableSpaceKey::Definite(index as u32),
+                    AvailableSpaceKey::MaxContent,
+                ),
+            })
+            .collect();
+        keys.push(keys[0]);
+        let original = keys.clone();
+        keys.sort_unstable_by_key(root_order);
+        for fingerprint in 0..24 {
+            for width in 0..72 {
+                let candidate = LayoutRootCacheKey {
+                    root_fingerprint: fingerprint,
+                    available_space: size(
+                        AvailableSpaceKey::Definite(width),
+                        AvailableSpaceKey::MaxContent,
+                    ),
+                };
+                assert_eq!(
+                    keys.binary_search_by_key(&root_order(&candidate), root_order)
+                        .is_ok(),
+                    original.contains(&candidate)
+                );
+            }
         }
     }
 }

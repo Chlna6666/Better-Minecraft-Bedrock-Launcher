@@ -229,6 +229,7 @@ impl Element for Img {
                     current_frame: None,
                     next_frame_at: None,
                     started_loading: None,
+                    release_signal: None,
                 })
             });
 
@@ -255,6 +256,18 @@ impl Element for Img {
                             let mut frame = data.frame(0);
 
                             if let Some(state) = &mut state {
+                                // Keep visible decoded pixels owned while global idle LRU runs.
+                                if state
+                                    .current_image
+                                    .as_ref()
+                                    .is_some_and(|previous| previous.id != data.id)
+                                {
+                                    state.release_image();
+                                }
+                                state.current_image = Some(data.clone());
+                                state
+                                    .release_signal
+                                    .get_or_insert_with(|| cx.image_cache_release_signal());
                                 if !data.is_animated() || !animation_config.play {
                                     state.current_frame = frame.clone();
                                     state.next_frame_at = None;
@@ -313,11 +326,13 @@ impl Element for Img {
                                 layout_state.replacement = Some(element);
                             }
                             if let Some(state) = &mut state {
+                                state.release_image();
                                 state.started_loading = None;
                             }
                         }
                         None => {
                             if let Some(state) = &mut state {
+                                state.release_image();
                                 if let Some((started_loading, _)) = state.started_loading {
                                     if started_loading.elapsed() > LOADING_DELAY
                                         && let Some(loading) = self.style.loading.as_ref()
@@ -497,6 +512,7 @@ impl Element for Img {
                                     current_frame: layout_state.frame.clone(),
                                     next_frame_at: None,
                                     started_loading: None,
+                                    release_signal: None,
                                 });
                                 let frame = select_animation_frame(
                                     &mut state,

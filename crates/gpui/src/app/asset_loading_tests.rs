@@ -35,6 +35,80 @@ fn image_assets(loads: Arc<AtomicUsize>) -> CountingImageAssets {
 }
 
 #[test]
+fn sized_preload_survives_last_element_release_and_memory_trim() {
+    let mut test = TestAppContext::single();
+    let (request, pin, preload) = test.update(|cx| {
+        cx.asset_source = Arc::new(image_assets(Arc::new(AtomicUsize::new(0))));
+        let request = cx
+            .image_render_request(
+                AssetLocation::Embedded("leased-sized.png".into()),
+                size(px(32.0), px(32.0)),
+                1.0,
+                ObjectFit::Cover,
+            )
+            .unwrap();
+        let pin = cx.pin_sized_image_request(&request);
+        let preload = cx.preload_sized_image(request.clone());
+        (request, pin, preload)
+    });
+    test.run_until_parked();
+    test.update(|cx| {
+        cx.release_sized_image_element_pin(&request, pin, None, None);
+        cx.image_pipeline_config.idle_image_bytes = 0;
+        cx.trim_image_memory(crate::ImageMemoryTrimLevel::Moderate);
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_some()
+        );
+    });
+    drop(preload);
+    test.update(|cx| {
+        cx.trim_image_memory(crate::ImageMemoryTrimLevel::Moderate);
+        assert!(
+            cx.cached_asset_lease::<crate::SizedImageLoader>(&request)
+                .is_none()
+        );
+    });
+    test.run_until_parked();
+}
+
+#[test]
+fn independent_image_cache_lookups_share_one_decode_and_default_asset() {
+    let mut test = TestAppContext::single();
+    let loads = Arc::new(AtomicUsize::new(0));
+    let source = AssetLocation::Embedded("shared-cache-image.png".into());
+    let (first, second) = test.update(|cx| {
+        cx.asset_source = Arc::new(image_assets(loads.clone()));
+        (
+            crate::ImageCacheItem::shared(&source, cx),
+            crate::ImageCacheItem::shared(&source, cx),
+        )
+    });
+    test.run_until_parked();
+    test.update(|cx| {
+        let one = first
+            .get()
+            .expect("ready first lookup")
+            .expect("decoded image");
+        let two = second
+            .get()
+            .expect("ready second lookup")
+            .expect("decoded image");
+        let default = cx
+            .fetch_asset::<crate::ResourceImageLoader>(&source)
+            .get()
+            .expect("ready default loader")
+            .expect("decoded image");
+        assert!(Arc::ptr_eq(&one, &two));
+        assert!(Arc::ptr_eq(&one, &default));
+        assert_eq!(loads.load(Ordering::Relaxed), 1);
+        assert_eq!(cx.global_image_asset_cache_snapshot().resource_count, 1);
+        drop(first);
+        assert!(second.is_live());
+    });
+}
+
+#[test]
 fn released_small_image_is_ready_when_element_remounts() {
     let mut test = TestAppContext::single();
     let loads = Arc::new(AtomicUsize::new(0));

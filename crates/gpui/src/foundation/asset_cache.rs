@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -110,6 +110,23 @@ where
     state: Arc<parking_lot::Mutex<AssetLeaseState<T>>>,
     completion: Shared<Task<Result<(), Aborted>>>,
     owner: Arc<AssetLoadOwner>,
+}
+
+/// Non-owning cache lookup; pending work and ready values remain owned by real leases.
+pub(crate) struct WeakAssetLease<T: Clone + Send + 'static> {
+    state: Weak<parking_lot::Mutex<AssetLeaseState<T>>>,
+    completion: Shared<Task<Result<(), Aborted>>>,
+    owner: Weak<AssetLoadOwner>,
+}
+
+impl<T: Clone + Send + 'static> WeakAssetLease<T> {
+    pub(crate) fn upgrade(&self) -> Option<AssetLease<T>> {
+        Some(AssetLease {
+            owner: self.owner.upgrade()?,
+            state: self.state.upgrade()?,
+            completion: self.completion.clone(),
+        })
+    }
 }
 
 impl<T> Clone for AssetLease<T>
@@ -273,6 +290,18 @@ where
         Arc::ptr_eq(&self.owner, &other.owner)
     }
 
+    pub(crate) fn owner_count(&self) -> usize {
+        Arc::strong_count(&self.owner)
+    }
+
+    pub(crate) fn downgrade(&self) -> WeakAssetLease<T> {
+        WeakAssetLease {
+            state: Arc::downgrade(&self.state),
+            completion: self.completion.clone(),
+            owner: Arc::downgrade(&self.owner),
+        }
+    }
+
     pub(crate) fn use_by(
         &self,
         window: AnyWindowHandle,
@@ -390,13 +419,27 @@ mod ownership_tests {
         });
         cx.run_until_parked();
 
+        let weak = lease.downgrade();
         drop(lease);
         cx.run_until_parked();
 
+        assert!(weak.upgrade().is_none());
         assert!(
             sender.send(7).is_err(),
             "dropping the final lease must cancel and drop the pending future"
         );
+    }
+
+    #[test]
+    fn weak_ready_lookup_does_not_retain_decoded_value() {
+        let image = Arc::new(vec![1u8; 64]);
+        let pixels = Arc::downgrade(&image);
+        let lease = AssetLease::ready(image);
+        let weak = lease.downgrade();
+        assert!(weak.upgrade().is_some());
+        drop(lease);
+        assert!(weak.upgrade().is_none());
+        assert!(pixels.upgrade().is_none());
     }
 }
 

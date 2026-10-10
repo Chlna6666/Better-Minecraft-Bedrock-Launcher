@@ -25,9 +25,13 @@ pub enum ImageMemoryTrimLevel {
 /// Application-wide image pipeline policy and diagnostics thresholds.
 ///
 /// Active image memory is lifetime-managed. The public API exposes scheduling, visibility,
-/// diagnostics, and idle-buffer reuse policy; fixed byte ceilings are intentionally absent.
+/// diagnostics, and idle reuse policy. Budgets evict idle images, never active image allocations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImagePipelineConfig {
+    /// App-wide decoded image cache budget, shared by ordinary and bounded image caches.
+    /// Explicit leases, element pins and displayed images can exceed this soft budget.
+    /// Eviction of unused images also requests Scene/Fence-safe GPU atlas retirement.
+    pub idle_image_bytes: usize,
     /// Controls animated image playback and frame residency.
     pub animated: AnimatedImageConfig,
     /// Maximum bytes retained only by the reusable *free* decoded bitmap pool.
@@ -55,6 +59,7 @@ pub struct ImagePipelineConfig {
 impl Default for ImagePipelineConfig {
     fn default() -> Self {
         Self {
+            idle_image_bytes: 128 * 1024 * 1024,
             animated: AnimatedImageConfig::default(),
             // This is intentionally a free-buffer retention budget, not an image memory limit.
             bitmap_pool_bytes: 64 * 1024 * 1024,

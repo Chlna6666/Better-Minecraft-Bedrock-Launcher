@@ -18,7 +18,8 @@ use super::{AnyImageCache, ImageCache, ImageCacheItem, ImageCacheProvider};
 pub struct BoundedImageCacheConfig {
     /// Maximum number of loaded or loading cache entries to retain.
     pub max_items: usize,
-    /// Maximum estimated retained bytes, including compressed sources needed by active streams.
+    /// Maximum working-set estimate for local lookups, including active stream sources.
+    /// Shared decoded allocations are limited once by [`crate::ImagePipelineConfig::idle_image_bytes`].
     pub max_bytes: usize,
 }
 
@@ -36,7 +37,8 @@ struct BoundedImageCacheEntry {
     estimated_bytes: usize,
 }
 
-/// An LRU image cache that releases decoded images and atlas tiles when limits are exceeded.
+/// A bounded local lookup into the App's shared decoded-image working set.
+/// Local eviction removes lookup metadata; App-wide idle eviction retires GPU tiles safely.
 pub struct BoundedImageCache {
     cache_id: u64,
     config: BoundedImageCacheConfig,
@@ -101,6 +103,11 @@ impl BoundedImageCache {
         let image_hash = hash(source);
 
         if let Some(entry) = self.entries.get_refresh(&image_hash) {
+            if !entry.item.is_live() {
+                entry.item = ImageCacheItem::shared(source, cx);
+                self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
+                entry.estimated_bytes = 0;
+            }
             let result = entry.item.use_image(window);
             if let Some(Ok(image)) = result.as_ref() {
                 let current_bytes = estimated_render_image_bytes(image);
@@ -111,11 +118,15 @@ impl BoundedImageCache {
                 entry.estimated_bytes = current_bytes;
             }
             self.enforce_limits(Some(image_hash), window, cx);
+            cx.enforce_image_cache_budget(Some((
+                std::any::TypeId::of::<crate::ResourceImageLoader>(),
+                image_hash,
+            )));
             self.record_metrics();
             return result;
         }
 
-        let item = ImageCacheItem::new(source, cx);
+        let item = ImageCacheItem::shared(source, cx);
         let result = item.use_image(window);
         let estimated_bytes = result
             .as_ref()
@@ -130,23 +141,30 @@ impl BoundedImageCache {
         );
         self.estimated_bytes = self.estimated_bytes.saturating_add(estimated_bytes);
         self.enforce_limits(Some(image_hash), window, cx);
+        cx.enforce_image_cache_budget(Some((
+            std::any::TypeId::of::<crate::ResourceImageLoader>(),
+            image_hash,
+        )));
         self.record_metrics();
 
         result
     }
 
-    /// Clear the image cache.
+    /// Clears local lookups and checks the App-wide idle budget.
+    /// Shared images may remain cached for other users or reuse within that budget.
     pub fn clear(&mut self, window: &mut Window, cx: &mut App) {
         self.drop_all(Some(window), cx);
     }
 
-    /// Remove one image from the cache.
+    /// Removes one local lookup and checks the App-wide idle budget.
+    /// This does not force retirement of an image used by another cache or visible element.
     pub fn remove(&mut self, source: &AssetLocation, window: &mut Window, cx: &mut App) {
         let image_hash = hash(source);
         if let Some(entry) = self.entries.remove(&image_hash) {
             self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
             record_image_cache_eviction(1);
             drop_cache_entry(entry, Some(window), cx);
+            cx.reclaim_idle_image_cache();
         }
         self.record_metrics();
     }
@@ -161,12 +179,14 @@ impl BoundedImageCache {
         self.entries.is_empty()
     }
 
-    /// Returns the estimated bytes retained by images and active stream sources in the cache.
+    /// Returns this lookup working set's estimated cost, including active stream sources.
+    /// This is not additional physical memory when another cache refers to the same image.
     pub fn estimated_bytes(&self) -> usize {
         self.estimated_bytes
     }
 
     fn enforce_limits(&mut self, protected_hash: Option<u64>, window: &mut Window, cx: &mut App) {
+        let mut evicted = false;
         while self.entries.len() > self.config.max_items
             || self.estimated_bytes > self.config.max_bytes
         {
@@ -183,6 +203,10 @@ impl BoundedImageCache {
             self.estimated_bytes = self.estimated_bytes.saturating_sub(entry.estimated_bytes);
             record_image_cache_eviction(1);
             drop_cache_entry(entry, Some(window), cx);
+            evicted = true;
+        }
+        if evicted {
+            cx.reclaim_idle_image_cache();
         }
     }
 
@@ -193,11 +217,19 @@ impl BoundedImageCache {
         for (_, entry) in entries.into_iter() {
             drop_cache_entry(entry, window.as_deref_mut(), cx);
         }
+        cx.reclaim_idle_image_cache();
         self.record_metrics();
     }
 
     fn record_metrics(&self) {
-        record_image_cache_metrics(self.cache_id, self.entries.len(), self.estimated_bytes);
+        // Shared lookups do not own another decoded allocation; App diagnostics count it once.
+        let owned_bytes = self
+            .entries
+            .values()
+            .filter(|entry| !entry.item.is_shared())
+            .map(|entry| entry.estimated_bytes)
+            .sum();
+        record_image_cache_metrics(self.cache_id, self.entries.len(), owned_bytes);
     }
 }
 
@@ -256,6 +288,9 @@ fn drop_cache_entry(
     current_window: Option<&mut Window>,
     cx: &mut App,
 ) {
+    if entry.item.is_shared() {
+        return;
+    }
     if let Some(Ok(image)) = entry.item.get() {
         cx.drop_image(image, current_window);
     }

@@ -48,7 +48,8 @@ impl IdleImageCache {
         evicted
     }
 
-    pub(super) fn take_keys(&mut self) -> Vec<AssetId> {
+    #[cfg(test)]
+    fn take_keys(&mut self) -> Vec<AssetId> {
         self.bytes = 0;
         self.entries.drain(..).map(|entry| entry.0).collect()
     }
@@ -83,6 +84,7 @@ impl App {
         if !should_retire {
             return;
         }
+        drop(pin);
 
         let ready_image = self.asset_entries.get(&asset_id).and_then(|entry| {
             let entry = entry
@@ -116,6 +118,17 @@ impl App {
         current_window: Option<&mut Window>,
     ) {
         self.idle_sized_images.remove(asset_id);
+        self.image_residency.needs_scan = true;
+        if self
+            .asset_entries
+            .get(&asset_id)
+            .and_then(|entry| {
+                entry.downcast_ref::<OwnedAssetEntry<Result<Arc<RenderImage>, ImageCacheError>>>()
+            })
+            .is_some_and(|entry| !entry.retire_when_unpinned && entry.lease.owner_count() != 1)
+        {
+            return;
+        }
         let cached_image = self
             .asset_entries
             .remove(&asset_id)
