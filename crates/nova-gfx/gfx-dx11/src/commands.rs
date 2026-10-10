@@ -5,6 +5,14 @@ use windows::Win32::{
     Graphics::{Direct3D::*, Direct3D11::*, Dxgi::Common::*},
 };
 
+// Only cache state within one immediate-context render pass. Other D3D11
+// operations and target switches can mutate the context between passes.
+#[derive(Default)]
+struct Dx11PassState {
+    pipeline: Option<u64>,
+    scissor: Option<(i32, i32, i32, i32)>,
+}
+
 impl CommandDevice for Dx11Device {
     fn create_command_encoder(
         &mut self,
@@ -156,8 +164,9 @@ impl Dx11Device {
                 }
             }
         }
+        let mut state = Dx11PassState::default();
         for step in steps.iter() {
-            self.draw_step(step, size, target_format, dsv.is_some())?;
+            self.draw_step(step, size, target_format, dsv.is_some(), &mut state)?;
         }
         // SAFETY: remove output bindings before these targets are sampled by another pass.
         unsafe {
@@ -171,6 +180,7 @@ impl Dx11Device {
         size: Extent2d,
         target_format: Format,
         has_depth: bool,
+        state: &mut Dx11PassState,
     ) -> Result<()> {
         let pipeline = self.pipelines.get(step.pipeline())?;
         if pipeline.desc.color_format != target_format
@@ -205,21 +215,31 @@ impl Dx11Device {
             bottom: (i64::from(scissor.y) + i64::from(scissor.height)).min(i64::from(size.height()))
                 as i32,
         };
-        // SAFETY: native state objects are retained by this pipeline; all slices live through calls.
+        // SAFETY: native state objects are retained by this pipeline; all slices
+        // remain live through calls. Shader/resource bindings still update for
+        // every draw; only unchanged pass-local pipeline/scissor state is skipped.
         unsafe {
-            self.context.VSSetShader(&pipeline.vertex, None);
-            self.context.PSSetShader(&pipeline.fragment, None);
-            self.context
-                .OMSetBlendState(&pipeline.blend, None, u32::MAX);
-            self.context.RSSetState(&pipeline.raster);
-            self.context.OMSetDepthStencilState(&pipeline.depth, 0);
-            self.context.RSSetScissorRects(Some(&[rect]));
-            self.context.IASetInputLayout(None);
-            self.context
-                .IASetPrimitiveTopology(match pipeline.desc.primitive_topology {
-                    PrimitiveTopology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-                    PrimitiveTopology::TriangleStrip => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
-                });
+            let pipeline_key = step.pipeline().raw();
+            if state.pipeline != Some(pipeline_key) {
+                self.context.VSSetShader(&pipeline.vertex, None);
+                self.context.PSSetShader(&pipeline.fragment, None);
+                self.context
+                    .OMSetBlendState(&pipeline.blend, None, u32::MAX);
+                self.context.RSSetState(&pipeline.raster);
+                self.context.OMSetDepthStencilState(&pipeline.depth, 0);
+                self.context.IASetInputLayout(None);
+                self.context
+                    .IASetPrimitiveTopology(match pipeline.desc.primitive_topology {
+                        PrimitiveTopology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+                        PrimitiveTopology::TriangleStrip => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+                    });
+                state.pipeline = Some(pipeline_key);
+            }
+            let scissor_key = (rect.left, rect.top, rect.right, rect.bottom);
+            if state.scissor != Some(scissor_key) {
+                self.context.RSSetScissorRects(Some(&[rect]));
+                state.scissor = Some(scissor_key);
+            }
         }
         for (id, layout) in step.resource_sets().iter().zip(expected) {
             let set = self.sets.get(*id)?;
