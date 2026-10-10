@@ -52,6 +52,32 @@ fn static_quad_run_visual_bounds(
     )
 }
 
+/// Preserve independent static visibility bounds after packing. A single
+/// animated Quad in a large prepared Scene run must not turn *all* the
+/// independent static GPU batches into unbounded commands. Each encoded
+/// batch corresponds to consecutive VISIBLE quads (degenerate clips were
+/// skipped by the packer), including reused retained quad chunks.
+fn static_packed_quad_batch_bounds(
+    original_quads: &[crate::Quad],
+    batches: &[UploadedBatch],
+    result: &mut [Option<crate::Bounds<crate::ScaledPixels>>],
+) {
+    let mut encoded = original_quads
+        .iter()
+        .filter(|quad| !clip_is_degenerate(&quad.content_mask));
+    for (batch, bounds) in batches.iter().zip(result.iter_mut()) {
+        let count = match *batch {
+            UploadedBatch::Quads { count, .. } | UploadedBatch::SolidQuads { count, .. } => {
+                count as usize
+            }
+            _ => continue,
+        };
+        *bounds = static_raster_run_visual_bounds(encoded.by_ref().take(count).map(|quad| {
+            (quad.bounds, quad.content_mask.bounds, quad.animation_id)
+        }));
+    }
+}
+
 fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
     mask.bounds.size.width <= crate::ScaledPixels(0.)
         || mask.bounds.size.height <= crate::ScaledPixels(0.)
@@ -232,6 +258,10 @@ impl FrameUpload {
 
         for batch in scene.prepared_batches() {
             let first_batch = self.batches.len();
+            let source_quad_range = match batch {
+                PreparedSceneBatch::Quads(run) => Some(run.range.clone()),
+                _ => None,
+            };
             let static_quad_bounds = match batch {
                 PreparedSceneBatch::Quads(run) => {
                     static_quad_run_visual_bounds(&scene.quads[run.range.clone()])
@@ -374,6 +404,15 @@ impl FrameUpload {
                 for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
                     *slot = Some(bounds);
                 }
+            } else if let Some(source_range) = source_quad_range {
+                // Mixed dynamic/static runs can emit several independently
+                // resident batches. Give the static ones precise bounds even
+                // though the *prepared* run as a whole is not cullable.
+                static_packed_quad_batch_bounds(
+                    &scene.quads[source_range],
+                    &self.batches[first_batch..last_batch],
+                    &mut self.batch_visual_bounds[first_batch..last_batch],
+                );
             }
         }
         if reset {
@@ -511,6 +550,33 @@ mod retained_root_tests {
         assert_eq!(upload.blur_content_ranges()[0].index, 0);
         assert_eq!(upload.backdrop_blur_configs().len(), 1);
         assert_eq!(upload.backdrop_blur_configs()[0].radius(), 0.0);
+    }
+
+    #[test]
+    fn animated_quad_does_not_poison_neighbor_static_batch_culling() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(20.0), crate::ScaledPixels(15.0)),
+            crate::size(crate::ScaledPixels(18.0), crate::ScaledPixels(14.0)),
+        );
+        let static_quad = crate::Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            ..Default::default()
+        };
+        let mut animated = static_quad;
+        animated.animation_id = Some(crate::SceneAnimationId(1));
+        let quads = [static_quad, animated, static_quad];
+        let batches = [
+            UploadedBatch::Quads { first: 0, count: 1 },
+            UploadedBatch::Quads { first: 1, count: 1 },
+            UploadedBatch::Quads { first: 2, count: 1 },
+        ];
+        assert!(static_quad_run_visual_bounds(&quads).is_none());
+        let mut packed_bounds = [None; 3];
+        static_packed_quad_batch_bounds(&quads, &batches, &mut packed_bounds);
+        assert!(packed_bounds[0].is_some());
+        assert!(packed_bounds[1].is_none());
+        assert!(packed_bounds[2].is_some());
     }
 
     #[test]
