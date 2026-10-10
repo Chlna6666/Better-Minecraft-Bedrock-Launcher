@@ -4,11 +4,14 @@
 //! decoded BlockStates; exact downgrade writes additionally require the target game's real vanilla
 //! BlockState palette so unavailable old-game states are rejected rather than guessed.
 
+use crate::chunk::SubChunkVersion;
+#[cfg(test)]
 use crate::block::VanillaBlockStatePalette;
-use crate::chunk::{
-    BedrockDbKey, ChunkRecordTag, SubChunk, SubChunkDecodeMode, SubChunkFormat, SubChunkVersion,
-};
+#[cfg(test)]
+use crate::chunk::{BedrockDbKey, ChunkRecordTag, SubChunk, SubChunkDecodeMode, SubChunkFormat};
+#[cfg(test)]
 use crate::error::{BedrockWorldError, Result};
+#[cfg(test)]
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 
 /// Summary of staging every SubChunk for one explicitly selected persisted version.
@@ -26,6 +29,7 @@ pub struct SubChunkStorageWriteReport {
     pub staged_bytes: usize,
 }
 
+#[cfg(test)]
 impl SubChunkStorageWriteReport {
     fn new(target: SubChunkVersion) -> Self {
         Self {
@@ -57,6 +61,7 @@ pub struct SubChunkDowngradeWriteReport {
     pub staged_bytes: usize,
 }
 
+#[cfg(test)]
 impl SubChunkDowngradeWriteReport {
     fn new(target: SubChunkVersion, palette: &VanillaBlockStatePalette) -> Self {
         Self {
@@ -75,6 +80,7 @@ impl SubChunkDowngradeWriteReport {
 ///
 /// No mutation occurs before the complete scan succeeds. A single unsupported source record therefore
 /// rejects the entire operation instead of leaving a mixed partially rewritten world.
+#[cfg(test)]
 pub(crate) fn stage_subchunks_as_version(
     storage: &dyn WorldStorage,
     target: SubChunkVersion,
@@ -121,6 +127,7 @@ pub(crate) fn stage_subchunks_as_version(
 /// palette. Matching entries are replaced by the target palette entry so the persisted BlockState
 /// `version` also comes from the target game. Renamed, removed, or otherwise unavailable states abort
 /// the entire operation before any database write.
+#[cfg(test)]
 pub(crate) fn stage_subchunks_for_exact_downgrade(
     storage: &dyn WorldStorage,
     target: SubChunkVersion,
@@ -187,6 +194,7 @@ pub(crate) fn stage_subchunks_for_exact_downgrade(
     Ok((batch, report))
 }
 
+#[cfg(test)]
 fn reject_unknown_world_target(target: SubChunkVersion) -> Result<()> {
     if let SubChunkVersion::Unknown(version) = target {
         return Err(BedrockWorldError::Validation(format!(
@@ -196,12 +204,14 @@ fn reject_unknown_world_target(target: SubChunkVersion) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn subchunk_source_version(key: &crate::chunk::ChunkKey, value: &[u8]) -> Result<SubChunkVersion> {
     SubChunkVersion::detect(value).ok_or_else(|| {
         BedrockWorldError::CorruptWorld(format!("SubChunk record {key:?} has an empty payload"))
     })
 }
 
+#[cfg(test)]
 fn subchunk_y(key: &crate::chunk::ChunkKey) -> Result<i8> {
     key.subchunk_y.ok_or_else(|| {
         BedrockWorldError::CorruptWorld(format!(

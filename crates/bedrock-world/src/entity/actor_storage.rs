@@ -5,10 +5,14 @@
 //! When both generations already exist for a chunk they must describe the same ordered actors and NBT;
 //! the library never merges two conflicting representations into a third state.
 
-use crate::chunk::{BedrockDbKey, ChunkKey, ChunkPos, ChunkRecordTag};
+use crate::chunk::{BedrockDbKey, ChunkPos};
+#[cfg(test)]
+use crate::chunk::{ChunkKey, ChunkRecordTag};
 use crate::entity::{ActorDigestKey, ActorUid};
 use crate::error::{BedrockWorldError, Result};
-use crate::nbt::{NbtTag, parse_consecutive_root_nbt, serialize_root_nbt};
+use crate::nbt::{NbtTag, parse_consecutive_root_nbt};
+#[cfg(test)]
+use crate::nbt::serialize_root_nbt;
 use crate::scan::{decode_actor_ids, encode_actor_ids};
 use crate::storage::{StorageBatch, StorageReadOptions, StorageVisitorControl, WorldStorage};
 use bytes::Bytes;
@@ -153,6 +157,7 @@ pub(crate) fn stage_actor_uid_repair(
 /// Existing modern records for a source chunk are accepted only when the `digp` UID sequence and every
 /// referenced `actorprefix` NBT exactly match the inline source. Extra actors, reordered actors, or
 /// differing actor NBT abort the entire rewrite before storage mutation.
+#[cfg(test)]
 pub(crate) fn stage_world_entity_to_digp_actorprefix(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
@@ -261,6 +266,7 @@ pub(crate) fn stage_world_entity_to_digp_actorprefix(
 /// must already equal the stream derived from the digest in digest order. Existing extra inline actors
 /// are not merged. Every referenced `actorprefix` is deleted only because every `digp` record is
 /// converted in the same batch; unreferenced `actorprefix` records are retained.
+#[cfg(test)]
 pub(crate) fn stage_world_digp_actorprefix_to_entity(
     storage: &dyn WorldStorage,
 ) -> Result<(StorageBatch, ActorStorageRewriteReport)> {
@@ -365,6 +371,7 @@ pub(crate) fn stage_world_digp_actorprefix_to_entity(
     Ok((batch, report))
 }
 
+#[cfg(test)]
 #[derive(Default)]
 struct ActorStorageContents {
     entities: BTreeMap<ChunkPos, Bytes>,
@@ -372,6 +379,7 @@ struct ActorStorageContents {
     actorprefix_records: usize,
 }
 
+#[cfg(test)]
 fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageContents> {
     let mut snapshot = ActorStorageContents::default();
     storage.for_each_entry(StorageReadOptions::default(), &mut |raw_key, value| {
@@ -401,6 +409,7 @@ fn scan_actor_storage(storage: &dyn WorldStorage) -> Result<ActorStorageContents
     Ok(snapshot)
 }
 
+#[cfg(test)]
 fn validate_digest_ownership(
     digests: &BTreeMap<ChunkPos, Bytes>,
 ) -> Result<BTreeMap<ActorUid, ChunkPos>> {

@@ -74,6 +74,7 @@ fn build_dx11_copy_shader(manifest_dir: &std::path::Path, out_dir: &std::path::P
 }
 
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Build-time FXC compilation reads native ID3DBlob buffers via Win32 FFI")]
 fn compile_dx11_copy_shader(source: &[u8]) -> Result<Vec<u8>, String> {
     use windows::Win32::Graphics::Direct3D::Fxc::{
         D3DCOMPILE_ENABLE_STRICTNESS, D3DCompile,
@@ -127,6 +128,7 @@ fn compile_dx11_copy_shader(source: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Build-time FXC compilation reads native ID3DBlob buffers via Win32 FFI")]
 fn d3d_blob_message(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
     // SAFETY: the blob owns this byte range for its lifetime.
     let bytes = unsafe {

@@ -7,19 +7,26 @@
 //! share this device; there is no runtime shader compiler or DX12 compatibility layer.
 
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod commands;
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod device;
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod frame_pacing;
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod pipelines;
 #[cfg(windows)]
 mod registry;
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod resources;
 #[cfg(windows)]
+#[expect(unsafe_code, reason = "Direct3D 11 native COM/Win32 calls require audited unsafe FFI boundaries")]
 mod surface;
+#[cfg_attr(windows, expect(unsafe_code, reason = "Direct3D 11 texture readback uses native COM and mapped pointers"))]
 mod transfer;
 
 #[cfg(windows)]

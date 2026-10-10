@@ -743,6 +743,7 @@ fn translate_vulkan(
 /// complete DX12 runtime backend. GPUI build scripts therefore do not pull device,
 /// swapchain, allocator, and presentation code into the host graph merely to call FXC.
 #[cfg(target_os = "windows")]
+#[expect(unsafe_code, reason = "FXC D3DCompile and returned ID3DBlob byte buffer require Windows FFI")]
 fn compile_hlsl_to_dxbc(
     hlsl: &str,
     entry_point: &str,
@@ -806,6 +807,7 @@ fn compile_hlsl_to_dxbc(
 }
 
 #[cfg(target_os = "windows")]
+#[expect(unsafe_code, reason = "Reading a live ID3DBlob pointer requires Windows FFI")]
 fn d3d_blob_message(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
     // SAFETY: the blob owns a byte range valid for its lifetime.
     let bytes = unsafe {
