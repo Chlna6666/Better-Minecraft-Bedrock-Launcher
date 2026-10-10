@@ -5,6 +5,39 @@ use std::ops::Range;
 const WORKING_SET_TRIM_MULTIPLIER: usize = 4;
 const CHUNK_SCRATCH_MIN_CAPACITY: usize = 16;
 
+/// Splitting every alternating animated/static primitive would increase
+/// driver draw-call overhead. Split only when the run contains a substantial
+/// static portion and has at most a few state transitions; this lets spatial
+/// culling discard stable batches beside a small animation.
+fn should_split_static_dynamic_quads(quads: &[crate::Quad]) -> bool {
+    const MIN_STATIC_RUN: usize = 8;
+    const MAX_TRANSITIONS: usize = 8;
+    let mut previous = None;
+    let mut transitions = 0usize;
+    let mut static_run = 0usize;
+    let mut longest_static_run = 0usize;
+    for quad in quads {
+        if clip_is_degenerate(&quad.content_mask) {
+            continue;
+        }
+        let animated = quad.animation_id.is_some();
+        if previous.is_some_and(|old| old != animated) {
+            transitions += 1;
+            if transitions > MAX_TRANSITIONS {
+                return false;
+            }
+        }
+        previous = Some(animated);
+        if animated {
+            static_run = 0;
+        } else {
+            static_run += 1;
+            longest_static_run = longest_static_run.max(static_run);
+        }
+    }
+    transitions > 0 && longest_static_run >= MIN_STATIC_RUN
+}
+
 impl FrameUpload {
     pub(super) fn encode_retained_quads(
         &mut self,
@@ -165,8 +198,11 @@ impl FrameUpload {
         is_solid: bool,
         summary: &mut FrameUploadSummary,
     ) -> u32 {
-        let first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-        let mut count = 0_u32;
+        let split_static_runs = should_split_static_dynamic_quads(quads);
+        let mut batch_first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+        let mut batch_count = 0_u32;
+        let mut total_count = 0_u32;
+        let mut batch_animated = None;
         for quad in quads {
             if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
                 break;
@@ -174,7 +210,14 @@ impl FrameUpload {
             if clip_is_degenerate(&quad.content_mask) {
                 continue;
             }
+            let animated = quad.animation_id.is_some();
             let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+            if split_static_runs && batch_animated.is_some_and(|old| old != animated) {
+                self.append_quad_batch(batch_first, batch_count, is_solid, summary);
+                batch_first = primitive_index;
+                batch_count = 0;
+            }
+            batch_animated = Some(animated);
             self.quads.write(|bytes| write_quad(bytes, quad));
             register_scene_animated_primitive(
                 self,
@@ -183,17 +226,13 @@ impl FrameUpload {
                 AnimatedPrimitiveKind::Quad,
                 primitive_index,
             );
-            count = count.saturating_add(1);
+            batch_count = batch_count.saturating_add(1);
+            total_count = total_count.saturating_add(1);
         }
-        if count > 0 {
-            self.batches.push(if is_solid {
-                UploadedBatch::SolidQuads { first, count }
-            } else {
-                UploadedBatch::Quads { first, count }
-            });
-            summary.quad_count = summary.quad_count.saturating_add(count);
+        if batch_count != 0 {
+            self.append_quad_batch(batch_first, batch_count, is_solid, summary);
         }
-        count
+        total_count
     }
 
     fn append_quad_batch(
@@ -233,5 +272,62 @@ impl FrameUpload {
             self.active_retained_chunk_ids_scratch
                 .shrink_to(scratch_target);
         }
+    }
+}
+
+#[cfg(test)]
+mod static_dynamic_batch_tests {
+    use super::*;
+
+    #[test]
+    fn long_static_runs_near_one_animation_become_separately_cullable_batches() {
+        let rect = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(15.0)),
+            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(25.0)),
+        );
+        let plain = crate::Quad {
+            bounds: rect,
+            content_mask: crate::ContentMask::new(rect),
+            ..Default::default()
+        };
+        let mut animated = plain;
+        animated.animation_id = Some(crate::SceneAnimationId(7));
+        let mut source = vec![plain; 10];
+        source.push(animated);
+        source.extend([plain; 10]);
+        assert!(should_split_static_dynamic_quads(&source));
+
+        let mut upload = FrameUpload::default();
+        let mut summary = FrameUploadSummary::default();
+        let count = upload.encode_quad_range(&source, false, &mut summary);
+        assert_eq!(count, 21);
+        assert_eq!(summary.quad_count, 21);
+        assert_eq!(upload.batches.len(), 3);
+        assert!(matches!(upload.batches[0], UploadedBatch::Quads { count: 10, .. }));
+        assert!(matches!(upload.batches[1], UploadedBatch::Quads { count: 1, .. }));
+        assert!(matches!(upload.batches[2], UploadedBatch::Quads { count: 10, .. }));
+    }
+
+    #[test]
+    fn heavily_interleaved_animations_remain_a_single_gpu_draw_batch() {
+        let rect = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(15.0)),
+            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(25.0)),
+        );
+        let plain = crate::Quad {
+            bounds: rect,
+            content_mask: crate::ContentMask::new(rect),
+            ..Default::default()
+        };
+        let mut animated = plain;
+        animated.animation_id = Some(crate::SceneAnimationId(7));
+        let source: Vec<_> = (0..32)
+            .map(|index| if index % 2 == 0 { plain } else { animated })
+            .collect();
+        assert!(!should_split_static_dynamic_quads(&source));
+        let mut upload = FrameUpload::default();
+        let mut summary = FrameUploadSummary::default();
+        upload.encode_quad_range(&source, false, &mut summary);
+        assert_eq!(upload.batches.len(), 1);
     }
 }
