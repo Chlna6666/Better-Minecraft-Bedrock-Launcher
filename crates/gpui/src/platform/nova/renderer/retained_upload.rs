@@ -5,18 +5,12 @@ use super::*;
 use std::hash::Hasher;
 use std::time::Duration;
 
-// Retain the already implemented scene-color target for complex unfiltered
-// scenes, and for multi-layer/effect scenes that otherwise repeatedly submit
-// the whole main painter stream at display refresh rate.
-//
-// Painter-order backdrop barriers remain INSIDE the synthetic zero-radius
-// capture. Their existing ping/final filter caches are still refreshed by
-// their own source-damage dependency graph, not by whole-window invalidation.
-// Keeping this decision at the flattened scene boundary works on all Nova
-// backends without relying on swapchain backbuffer persistence.
+// Synthetic full-window retention is only a fallback for otherwise unfiltered
+// complex scenes. A real blur/composite already owns an independent GPU texture
+// and dirty dependency graph; wrapping it in another zero-radius ROOT doubles
+// color targets and introduces a full-surface sample on EVERY present.
+// Explicit composite_layer() is retained and continues to cache its own subtree.
 const AUTO_RETAINED_COLOR_MIN_PRIMITIVES: usize = 384;
-const AUTO_RETAINED_EFFECT_SCENE_MIN_PRIMITIVES: usize = 40;
-const AUTO_RETAINED_EFFECT_SCENE_MIN_LAYERS: usize = 2;
 
 fn should_retain_complex_scene_color(
     scene: &crate::Scene,
@@ -28,13 +22,11 @@ fn should_retain_complex_scene_color(
         + summary.mono_sprite_count as usize
         + summary.poly_sprite_count as usize
         + summary.underline_count as usize;
+    // Nested effect textures are already retained by the filter registry.
+    // Forcing a synthetic root over them defeats independent invalidation and
+    // makes a 48-primitive page pay for an extra full-window GPU composite.
     if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
-        // A single small effect rarely offsets an extra fullscreen blit.
-        // Multiple independently filtered or composited layers have a
-        // higher repeated-raster cost even when the ordinary primitive count
-        // is modest (for example the 48-primitive animated page).
-        return primitives >= AUTO_RETAINED_EFFECT_SCENE_MIN_PRIMITIVES
-            && (summary.backdrop_blur_count as usize) >= AUTO_RETAINED_EFFECT_SCENE_MIN_LAYERS;
+        return false;
     }
     primitives >= AUTO_RETAINED_COLOR_MIN_PRIMITIVES
 }
@@ -791,8 +783,8 @@ mod tests {
         summary.mono_sprite_count = 500;
         assert!(should_retain_complex_scene_color(&scene, &summary));
 
-        // The synthetic root surrounds the existing ordered filter barriers,
-        // so multi-effect scenes are now eligible for GPU scene-color reuse.
+        // A filter scene already retains its isolated GPU results, so the
+        // automatic full-window root must not duplicate that compositor.
         let mut scene_with_blur = crate::Scene::default();
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -817,7 +809,11 @@ mod tests {
         summary.backdrop_blur_count = 1;
         assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
         summary.backdrop_blur_count = 3;
-        assert!(should_retain_complex_scene_color(&scene_with_blur, &summary));
+        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        // This is a topology decision, not an additional primitive threshold:
+        // even a large filtered scene reuses its real filter/layer caches.
+        summary.quad_count = 500;
+        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
         summary.quad_count = 8;
         assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
     }
