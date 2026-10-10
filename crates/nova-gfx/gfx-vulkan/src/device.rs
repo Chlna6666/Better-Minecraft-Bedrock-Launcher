@@ -1937,9 +1937,28 @@ impl VulkanDevice {
     ) -> Result<Option<VulkanPresentFrame>> {
         let (swapchain, frame_index, image_available, fence) = {
             let swapchain = self.swapchains.get(swapchain_id)?;
-            // A temporarily zero-sized surface has no drawable Vulkan images.
-            // Let the window resize path rebuild the swapchain before acquisition.
+            // A zero-sized native surface cannot acquire drawable Vulkan images.
             if swapchain.extent.width == 0 || swapchain.extent.height == 0 {
+                // Visibility can change without another logical window resize.
+                // Probe only while suspended, then rebuild when WSI becomes drawable.
+                let surface = swapchain.surface;
+                let config = swapchain.config;
+                // SAFETY: This surface belongs to our live Vulkan instance and device.
+                let capabilities = unsafe {
+                    self.surface_loader.get_physical_device_surface_capabilities(
+                        self.physical_device,
+                        surface,
+                    )
+                }
+                .map_err(VulkanError::from)?;
+                let extent = choose_extent(
+                    &capabilities,
+                    config.size.width(),
+                    config.size.height(),
+                );
+                if extent.width != 0 && extent.height != 0 {
+                    self.reconfigure_swapchain(swapchain_id, config)?;
+                }
                 return Ok(None);
             }
             let frame_index = swapchain.frame_index;
