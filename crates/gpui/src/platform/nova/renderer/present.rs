@@ -1329,6 +1329,18 @@ impl NovaRenderer {
             };
 
         let frame_elapsed_ms = frame_started.elapsed().as_millis();
+        // OUT_OF_DATE is a normal swapchain transition, not a failed render.
+        // The backend already rebuilds its native swapchain on this path.
+        // Preserve unsent damage and let the owner schedule the next frame.
+        if render_result.as_ref().err().is_some_and(|error| {
+            matches!(
+                error.downcast_ref::<gfx_core::Error>(),
+                Some(gfx_core::Error::SurfaceOutdated)
+            )
+        }) {
+            self.path_mask_residency.invalidate();
+            return Ok(false);
+        }
         // Resource ownership is observable after the attempt even when a draw
         // fails or presentation is skipped. The backend guard is released here.
         if let Err(error) = &render_result {
