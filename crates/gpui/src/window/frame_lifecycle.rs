@@ -981,7 +981,12 @@ impl Window {
         self.presentation_state
             .replace_active_engine_animation_values(tick.scene_values);
         let viewport = Bounds::new(Point::default(), self.viewport_size);
-        if !preserve_unpresented_damage && !tick.dirty_bounds.is_empty() {
+        // Damage from a COMPLETED animation frame must not accumulate into
+        // the next frame. Keep older regions only when an earlier GPU packet
+        // has not yet been presented (and still needs its pixels reproduced).
+        if !preserve_unpresented_damage
+            && (!tick.dirty_bounds.is_empty() || !presentation_animation_damage.is_empty())
+        {
             self.render_dirty_region = DirtyRegion::empty();
         }
         for bounds in tick.dirty_bounds {
