@@ -508,14 +508,7 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        let mut element_blur_layers = if element_blur_refresh_required {
-            self.prepare_element_blur_layers(true)
-        } else {
-            Vec::new()
-        };
-        if element_blur_refresh_required && !shared_blur_cache_invalid {
-            element_blur_layers.retain(|layer| dirty_element_indices.contains(&layer.index));
-        }
+        let element_blur_layers = self.prepare_element_blur_layers(&dirty_element_indices);
         let (blur_source_pixels, blur_level_pixels) =
             self.backdrop_blur_pixel_metrics(&backdrop_blur_groups, &element_blur_layers);
         let blur_target_pixels = blur_level_pixels.iter().copied().sum::<usize>();

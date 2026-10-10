@@ -342,9 +342,9 @@ impl NovaRenderer {
     /// no texture-copy stage. Composite-only animation is skipped above this path entirely.
     pub(super) fn prepare_element_blur_layers(
         &self,
-        enabled: bool,
+        dirty_indices: &[u32],
     ) -> Vec<PreparedElementBlurLayer> {
-        if !enabled {
+        if dirty_indices.is_empty() {
             return Vec::new();
         }
         let Some(targets) = self.filters.targets.as_ref() else {
@@ -363,6 +363,13 @@ impl NovaRenderer {
         let mut layers = Vec::new();
 
         for range in self.frame_upload.blur_content_ranges() {
+            // The input-dependency check already selected exactly which filter
+            // outputs need rebuilding. Skip clean layers BEFORE creating their
+            // source draw steps, resource-set bindings and Gaussian pass lists.
+            // This matters with nested filters and high-Hz animation frames.
+            if !dirty_indices.contains(&range.index) {
+                continue;
+            }
             // A retained child scene whose only changing state is the promoted final composite has
             // identical source pixels and Gaussian output. Keep the cached target and submit no
             // offscreen work. Non-spatial cache/atlas/quality invalidation sets `force_full`, which
