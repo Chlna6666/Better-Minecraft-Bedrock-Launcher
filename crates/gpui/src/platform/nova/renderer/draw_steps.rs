@@ -412,14 +412,18 @@ impl NovaRenderer {
                 // A changed child filter can expand its visible output beyond
                 // the original element damage; keep the union/halo path then.
                 && dirty_indices.iter().all(|index| *index == range.index)
-                // Painter-ordered root backdrop filters may change their
-                // source between segment barriers. Do not split across them.
-                && direct_backdrop_barriers(
+                // A painter-ordered backdrop filter only blocks split
+                // source captures while its own filtered output is dirty.
+                // If all backdrop textures are cached and no Gaussian pass
+                // will execute, their composite draw is equivalent to
+                // sampling any other retained texture on each disjoint patch.
+                && root_backdrop_barriers_are_clean(
                     &self.frame_upload,
                     range.content_start,
                     range.content_end,
-                )
-                .is_empty();
+                    self.current_size,
+                    damage,
+                );
             // Unchanged nested element filters are safe: their retained GPU
             // outputs are sampled by the root just like cached images, with
             // no Gaussian pass or source recapture for either dirty patch.
@@ -732,6 +736,33 @@ fn coalesce_source_groups(groups: &mut Vec<PreparedBackdropBlurGroup>) {
     }
 }
 
+/// A zero-radius retained root may replay disconnected source rectangles
+/// across backdrop composite barriers ONLY when every such filtered texture
+/// already contains valid pixels for the current damage. A dirty backdrop
+/// needs its ordered source capture and Gaussian pass to remain contiguous.
+fn root_backdrop_barriers_are_clean(
+    upload: &FrameUpload,
+    batch_start: usize,
+    batch_end: usize,
+    drawable_size: DrawableSize,
+    damage: &DirtyRegion,
+) -> bool {
+    direct_backdrop_barriers(upload, batch_start, batch_end)
+        .into_iter()
+        .all(|batch_index| {
+            let UploadedBatch::BackdropBlurs { first, count } = upload.batches[batch_index] else {
+                return false;
+            };
+            let configs = upload.backdrop_blur_configs_for_range(first, count);
+            // Unknown/empty config bookkeeping must not prove a cached output
+            // valid unless the upload range really has no filters.
+            !configs.is_empty()
+                && configs.into_iter().all(|config| {
+                    blur_damage_scissors(config, drawable_size, damage).is_none()
+                })
+        })
+}
+
 fn backdrop_damage_for_configs(
     plan: &crate::BackdropBlurDamagePlan,
     configs: &[BackdropBlurConfig],
@@ -765,6 +796,15 @@ fn retained_source_damage_patches(
 ) -> Vec<DirtyRegion> {
     if !can_split || damage.rect_count() < 2 || damage.rect_count() > 8 {
         return vec![damage.clone()];
+    }
+    // Splitting nearby rectangles can submit more GPU render passes without
+    // saving meaningful fill. Require the union scissor to waste at least
+    // 2x the actual damaged area before paying for additional passes.
+    if let Some(union) = damage.union_bounds() {
+        let union_area = union.size.width.0 * union.size.height.0;
+        if !union_area.is_finite() || damage.area() * 2.0 >= union_area {
+            return vec![damage.clone()];
+        }
     }
     damage
         .rects()
@@ -1027,6 +1067,20 @@ mod tests {
         assert_eq!(parts[0].rect_count(), 1);
         assert_eq!(parts[1].rect_count(), 1);
         assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
+    }
+
+    #[test]
+    fn adjacent_dirty_rectangles_do_not_multiply_retained_gpu_passes() {
+        let mut damage = DirtyRegion::empty();
+        damage.push(crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        ));
+        damage.push(crate::bounds(
+            crate::point(crate::ScaledPixels(22.0), crate::ScaledPixels(10.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        ));
+        assert_eq!(retained_source_damage_patches(&damage, true).len(), 1);
     }
 
     #[test]
