@@ -15,7 +15,7 @@
 //! 调用都在生成器里显式构造。
 
 use bmcbl::bench_support::{
-    DependencyGraph, EventCascade, HostEvent, HostEventKind, PluginManifest, PluginRegistry,
+    DependencyGraph, EventCascade, PluginEvent, PluginEventKind, PluginManifest, PluginRegistry,
     ROUTE_CHANGED_EVENT, dispatch_event,
 };
 use bmcbl_plugin_api as abi;
@@ -252,7 +252,7 @@ const FIXTURE_REQUEST_BUFFER: i32 = 4096;
 /// 夹具执行宿主调用时使用的响应缓冲地址。
 const FIXTURE_HOST_CALL_RESPONSE: i32 = 8192;
 /// 宿主调用导出函数的功能索引（唯一导入为索引 0）。
-const HOST_CALL_FUNCTION: u32 = 0;
+const APP_CALL_FUNCTION: u32 = 0;
 
 /// 夹具在 `render_page` / `handle_event` 里执行的插件侧工作量。
 #[derive(Clone, Copy, Debug)]
@@ -272,7 +272,7 @@ struct FixtureData {
     view_tree: (u32, usize),
     injection: (u32, usize),
     unit: (u32, usize),
-    host_request: (u32, usize),
+    app_request: (u32, usize),
 }
 
 fn push_blob(bytes: &mut Vec<u8>, blob: &[u8]) -> (u32, usize) {
@@ -297,14 +297,14 @@ fn fixture_view_tree() -> abi::ViewTree {
     for index in 0..8 {
         children.push(nodes.len() as u32);
         nodes.push(abi::ViewNode::Text(abi::TextNode {
-            text: format!("Bench row {index}"),
+            text: format!("Bench row {index}").into(),
             style,
         }));
     }
     children.push(nodes.len() as u32);
     nodes.push(abi::ViewNode::Button(abi::ButtonNode {
-        label: "Open".to_string(),
-        action_id: "bench-open".to_string(),
+        label: "Open".into(),
+        action_id: "bench-open".into(),
         action_value: None,
         style,
     }));
@@ -321,21 +321,21 @@ impl FixtureData {
         )]);
         let injection = abi::AbiResult::Ok(Some(fixture_view_tree()));
         let unit = abi::AbiResult::Ok(());
-        let host_request = abi::HostRequest::CurrentUnixMs;
+        let app_request = abi::AppRequest::CurrentUnixMs;
 
         let mut bytes = Vec::new();
         let init = push_encoded(&mut bytes, &init);
         let view_tree = push_encoded(&mut bytes, &abi::AbiResult::Ok(fixture_view_tree()));
         let injection = push_encoded(&mut bytes, &injection);
         let unit = push_encoded(&mut bytes, &unit);
-        let host_request = push_encoded(&mut bytes, &host_request);
+        let app_request = push_encoded(&mut bytes, &app_request);
         Self {
             bytes,
             init,
             view_tree,
             injection,
             unit,
-            host_request,
+            app_request,
         }
     }
 }
@@ -353,7 +353,7 @@ const NO_LOCALS: [ValType; 0] = [];
 fn append_workload(function: &mut WasmFunction, workload: FixtureWorkload, data: &FixtureData) {
     const COUNTER: u32 = 2;
     const ACCUMULATOR: u32 = 3;
-    let (count, host_calls) = match workload {
+    let (count, app_calls) = match workload {
         FixtureWorkload::ResponseOnly => return,
         FixtureWorkload::HostCalls(count) => (count, true),
         FixtureWorkload::GuestLoop(count) => (count, false),
@@ -367,13 +367,13 @@ fn append_workload(function: &mut WasmFunction, workload: FixtureWorkload, data:
     function.instruction(&Instruction::I32Const(count as i32));
     function.instruction(&Instruction::I32GeU);
     function.instruction(&Instruction::BrIf(1));
-    if host_calls {
-        function.instruction(&Instruction::I32Const(abi::HostOp::CurrentUnixMs.code()));
-        function.instruction(&Instruction::I32Const(data.host_request.0 as i32));
-        function.instruction(&Instruction::I32Const(data.host_request.1 as i32));
+    if app_calls {
+        function.instruction(&Instruction::I32Const(abi::AppOp::CurrentUnixMs.code()));
+        function.instruction(&Instruction::I32Const(data.app_request.0 as i32));
+        function.instruction(&Instruction::I32Const(data.app_request.1 as i32));
         function.instruction(&Instruction::I32Const(FIXTURE_HOST_CALL_RESPONSE));
         function.instruction(&Instruction::I32Const(64));
-        function.instruction(&Instruction::Call(HOST_CALL_FUNCTION));
+        function.instruction(&Instruction::Call(APP_CALL_FUNCTION));
         function.instruction(&Instruction::Drop);
     } else {
         function.instruction(&Instruction::LocalGet(ACCUMULATOR));
@@ -395,7 +395,7 @@ fn append_workload(function: &mut WasmFunction, workload: FixtureWorkload, data:
 /// 导入恰好一个宿主函数、导出线性内存与七个入口、数据段里放好各入口的 postcard 响应，
 /// 因此它可以通过 `validate_module_abi` 并走完整的宿主调用路径，而不需要 wasm 工具链。
 fn fixture_module(workload: FixtureWorkload, data: &FixtureData) -> Vec<u8> {
-    const HOST_CALL_TYPE: u32 = 0;
+    const APP_CALL_TYPE: u32 = 0;
     const ALLOC_TYPE: u32 = 1;
     const DEALLOC_TYPE: u32 = 2;
     const ENTRY_TYPE: u32 = 3;
@@ -416,7 +416,7 @@ fn fixture_module(workload: FixtureWorkload, data: &FixtureData) -> Vec<u8> {
     imports.import(
         "bmcbl",
         "bmcbl_host_call",
-        EntityType::Function(HOST_CALL_TYPE),
+        EntityType::Function(APP_CALL_TYPE),
     );
 
     let mut functions = FunctionSection::new();
@@ -513,11 +513,11 @@ capabilities = ["ui.page", "event.global"]
     )
 }
 
-fn route_changed_event() -> HostEvent {
-    HostEvent {
+fn route_changed_event() -> PluginEvent {
+    PluginEvent {
         plugin_id: None,
         page_id: None,
-        kind: HostEventKind::RouteChanged {
+        kind: PluginEventKind::RouteChanged {
             path: "/settings".to_string(),
         },
     }
@@ -564,12 +564,16 @@ fn load_fixture_plugin(
 /// Wasm 执行基准：实例化加 init、页面渲染、事件处理。
 ///
 /// 夹具是按 ABI 现场生成的 wasm 模块，因此不需要 wasm 工具链或仓库里的构建产物：
-/// `response_only` 度量宿主侧固定开销，`host_calls_8` 度量 8 次宿主往返，`guest_loop_100k`
-/// 度量解释器吞吐。渲染用 `iter_batched` 在测量之外失效缓存，所以每次迭代都是真实插件调用。
+/// `response_only` 度量启动器侧固定开销，`app_calls_8` 度量 8 次启动器往返，`guest_loop_100k`
+/// 度量解释器吞吐。
+///
+/// 渲染组在计时区内先失效页面缓存再渲染：criterion 的 `iter_batched` setup 在同一批次里只
+/// 调用一次，把失效放在 setup 里会让绝大多数迭代命中渲染缓存（实测 95ns 级缓存查找，而真实
+/// 冷渲染是 µs 级）。因此这里的数字是「失效 + 冷渲染」，并带一条自检断言防止再次退化。
 fn bench_wasm_execution(criterion: &mut Criterion) {
     let workloads = [
         ("response_only", FixtureWorkload::ResponseOnly),
-        ("host_calls_8", FixtureWorkload::HostCalls(8)),
+        ("app_calls_8", FixtureWorkload::HostCalls(8)),
         ("guest_loop_100k", FixtureWorkload::GuestLoop(100_000)),
     ];
     let mut fixtures = Vec::new();
@@ -586,18 +590,15 @@ fn bench_wasm_execution(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("plugin/wasm");
     for (label, (registry, _dirs)) in &fixtures {
         group.bench_function(BenchmarkId::new("render_page", *label), |bencher| {
-            bencher.iter_batched(
-                || registry.borrow_mut().trim_plugin_caches(FIXTURE_PLUGIN_ID),
-                |()| {
-                    black_box(
-                        registry
-                            .borrow_mut()
-                            .render_page(FIXTURE_PLUGIN_ID, "main")
-                            .expect("fixture render"),
-                    )
-                },
-                BatchSize::SmallInput,
-            );
+            bencher.iter(|| {
+                let mut registry = registry.borrow_mut();
+                registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
+                black_box(
+                    registry
+                        .render_page(FIXTURE_PLUGIN_ID, "main")
+                        .expect("fixture render"),
+                )
+            });
         });
         group.bench_function(BenchmarkId::new("handle_event", *label), |bencher| {
             bencher.iter(|| {
@@ -614,26 +615,40 @@ fn bench_wasm_execution(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("plugin/wasm_lifecycle");
     if let Some((_, (registry, _dirs))) = fixtures.first() {
         group.bench_function("instantiate_and_init", |bencher| {
-            bencher.iter_batched(
-                || {
+            bencher.iter(|| {
+                let mut registry = registry.borrow_mut();
+                registry
+                    .hibernate_plugin(FIXTURE_PLUGIN_ID)
+                    .expect("hibernate fixture plugin");
+                registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
+                black_box(
                     registry
-                        .borrow_mut()
-                        .hibernate_plugin(FIXTURE_PLUGIN_ID)
-                        .expect("hibernate fixture plugin");
-                },
-                |()| {
-                    black_box(
-                        registry
-                            .borrow_mut()
-                            .render_page(FIXTURE_PLUGIN_ID, "main")
-                            .expect("fixture render"),
-                    )
-                },
-                BatchSize::SmallInput,
-            );
+                        .render_page(FIXTURE_PLUGIN_ID, "main")
+                        .expect("fixture render"),
+                )
+            });
         });
     }
     group.finish();
+
+    // 自检：失效后连续两次渲染必须返回不同的树，否则渲染组退化成缓存查找。
+    if let Some((label, (registry, _dirs))) = fixtures.first() {
+        let mut registry = registry.borrow_mut();
+        let mut previous: Option<usize> = None;
+        for _ in 0..2 {
+            registry.trim_plugin_caches(FIXTURE_PLUGIN_ID);
+            let tree = registry
+                .render_page(FIXTURE_PLUGIN_ID, "main")
+                .expect("fixture render");
+            let pointer = std::sync::Arc::as_ptr(&tree) as usize;
+            assert_ne!(
+                previous,
+                Some(pointer),
+                "plugin/wasm render_page/{label}: 失效后仍返回同一棵树，基准会退化为缓存查找"
+            );
+            previous = Some(pointer);
+        }
+    }
 
     for (_, (_, dirs)) in fixtures {
         for dir in dirs {

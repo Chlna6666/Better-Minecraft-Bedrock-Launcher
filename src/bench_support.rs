@@ -4,7 +4,7 @@
 //! 与函数，不复制实现，保证基准走的是产品代码同一条路径。
 
 pub use crate::plugins::events::{
-    EventCascade, HostEvent, HostEventKind, InjectionSlot, ROUTE_CHANGED_EVENT,
+    EventCascade, InjectionSlot, PluginEvent, PluginEventKind, ROUTE_CHANGED_EVENT,
 };
 pub use crate::plugins::manifest::PluginManifest;
 pub use crate::plugins::runtime::{
@@ -18,7 +18,7 @@ pub use crate::plugins::ui_dsl::ViewTree;
 /// `PluginRegistry::handle_event` 是 crate 内部接口，基准通过这里进去，避免为了测量而放宽
 /// 生产代码的可见性。每次调用使用独立的事件级联预算，因此度量的是"单个插件收到一次事件"的
 /// 成本，而不是级联总量。
-pub fn dispatch_event(registry: &mut PluginRegistry, event: HostEvent) -> usize {
+pub fn dispatch_event(registry: &mut PluginRegistry, event: PluginEvent) -> usize {
     let mut cascade = EventCascade::new();
     registry.handle_event(event, &mut cascade).len()
 }

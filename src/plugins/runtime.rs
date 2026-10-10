@@ -1,5 +1,5 @@
 use crate::plugins::events::{
-    CompactBehavior, EventCascade, HostEvent, HostEventKind, InjectionLayout, InjectionSlot,
+    CompactBehavior, EventCascade, InjectionLayout, InjectionSlot, PluginEvent, PluginEventKind,
     PluginInjectionRegistration, PluginNavigationEntry, PluginPageRegistration,
     ROUTE_CHANGED_EVENT, sort_injections,
 };
@@ -29,18 +29,18 @@ use tinywasm::{
 };
 use tracing::{debug, error, info, warn};
 
-use crate::plugins::services::{PluginRpcCallStack, PluginServiceRegistry, MAX_RPC_DEPTH};
+use crate::plugins::services::{MAX_RPC_DEPTH, PluginRpcCallStack, PluginServiceRegistry};
 
 pub const INIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const RENDER_WARN_THRESHOLD: Duration = Duration::from_millis(16);
 pub const RENDER_TIMEOUT: Duration = Duration::from_millis(100);
 pub const EVENT_TIMEOUT: Duration = Duration::from_millis(50);
 pub const RPC_TIMEOUT: Duration = Duration::from_millis(500);
-const HOST_BUFFER_MAX_BYTES: usize = 1024 * 1024;
+const APP_BUFFER_MAX_BYTES: usize = 1024 * 1024;
 const ABI_MESSAGE_MAX_BYTES: usize = 1024 * 1024;
-const ABI_IMPORT_MODULE: &str = abi::HOST_MODULE;
+const ABI_IMPORT_MODULE: &str = abi::APP_MODULE;
 const ABI_LEGACY_IMPORT_MODULE: &str = "env";
-const ABI_IMPORT_NAME: &str = abi::HOST_CALL_NAME;
+const ABI_IMPORT_NAME: &str = abi::APP_CALL_NAME;
 const ABI_EXPORT_MEMORY: &str = "memory";
 const ABI_EXPORT_ALLOC: &str = "bmcbl_alloc";
 const ABI_EXPORT_DEALLOC: &str = "bmcbl_dealloc";
@@ -57,7 +57,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTP_MAX_BYTES: usize = 512 * 1024;
 const STORAGE_KEY_MAX_BYTES: usize = 128;
 
-static ASYNC_HOST_REFRESH_NOTIFICATION: OnceLock<
+static ASYNC_APP_REFRESH_NOTIFICATION: OnceLock<
     Mutex<Option<crate::plugins::watcher::PluginWatcherSender>>,
 > = OnceLock::new();
 static PLUGIN_PERSISTENCE_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<PluginPersistenceOp>> =
@@ -357,7 +357,7 @@ impl PluginPersistenceOp {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum HostEffect {
+pub(crate) enum PluginEffect {
     Toast {
         kind: abi::ToastKind,
         message: String,
@@ -557,7 +557,7 @@ struct RenderCache {
 
 #[derive(Clone)]
 pub(crate) struct ServiceDispatcher(
-    pub Rc<dyn Fn(&str, abi::ServiceCallRequest) -> std::result::Result<Vec<u8>, abi::HostError>>,
+    pub Rc<dyn Fn(&str, abi::ServiceCallRequest) -> std::result::Result<Vec<u8>, abi::AppError>>,
 );
 
 impl std::fmt::Debug for ServiceDispatcher {
@@ -587,17 +587,14 @@ fn create_service_dispatcher(
                     .borrow()
                     .find_service(&request.service_name)
                     .map(|descriptor| descriptor.provider_plugin_id.clone())
-                    .ok_or_else(|| abi::HostError {
+                    .ok_or_else(|| abi::AppError {
                         code: "service-not-found".to_string(),
-                        message: format!(
-                            "service '{}' is not registered",
-                            request.service_name
-                        ),
+                        message: format!("service '{}' is not registered", request.service_name),
                     })?,
             };
             let _guard = rpc_stack
                 .enter(&target_plugin_id)
-                .map_err(|error| abi::HostError {
+                .map_err(|error| abi::AppError {
                     code: "service-call-rejected".to_string(),
                     message: error.to_string(),
                 })?;
@@ -605,19 +602,14 @@ fn create_service_dispatcher(
                 .borrow()
                 .get(&target_plugin_id)
                 .cloned()
-                .ok_or_else(|| abi::HostError {
+                .ok_or_else(|| abi::AppError {
                     code: "service-provider-unavailable".to_string(),
                     message: format!("plugin '{target_plugin_id}' is not loaded"),
                 })?;
-            let mut execution =
-                runtime
-                    .try_borrow_mut()
-                    .map_err(|_| abi::HostError {
-                        code: "service-provider-busy".to_string(),
-                        message: format!(
-                            "plugin '{target_plugin_id}' is already executing"
-                        ),
-                    })?;
+            let mut execution = runtime.try_borrow_mut().map_err(|_| abi::AppError {
+                code: "service-provider-busy".to_string(),
+                message: format!("plugin '{target_plugin_id}' is already executing"),
+            })?;
             let result = execution.call_service(request);
             let effects = execution.drain_effects();
             drop(execution);
@@ -626,10 +618,10 @@ fn create_service_dispatcher(
                     caller_id,
                     target_plugin_id,
                     count = effects.len(),
-                    "plugin service call emitted host effects; effects are discarded"
+                    "plugin service call emitted plugin effects; effects are discarded"
                 );
             }
-            result.map_err(|error| abi::HostError {
+            result.map_err(|error| abi::AppError {
                 code: "service-call-failed".to_string(),
                 message: format!("{error:#}"),
             })
@@ -638,7 +630,7 @@ fn create_service_dispatcher(
 }
 
 #[derive(Debug)]
-struct HostState {
+struct ExecutionState {
     plugin_id: String,
     capabilities: BTreeSet<PluginCapability>,
     manifest: PluginManifest,
@@ -654,7 +646,7 @@ struct HostState {
     storage_values: std::result::Result<BTreeMap<String, String>, Arc<str>>,
     sidecar_files: BTreeSet<String>,
     clipboard_text: Option<String>,
-    effects: Vec<HostEffect>,
+    effects: Vec<PluginEffect>,
     next_window_id: u64,
     pub(crate) service_dispatcher: Option<ServiceDispatcher>,
     pub(crate) service_registry: Option<Rc<RefCell<PluginServiceRegistry>>>,
@@ -672,7 +664,7 @@ struct PluginExecution {
     render_injection: Function,
     call_service: Option<Function>,
     shutdown: Function,
-    host_state: Rc<RefCell<HostState>>,
+    state: Rc<RefCell<ExecutionState>>,
     /// 入口调用请求的编码缓冲；复用容量，避免每次渲染/事件都重新分配。
     request_buffer: Vec<u8>,
     /// 入口调用响应的解码缓冲；复用容量，避免每次调用都 `read_vec`。
@@ -1409,7 +1401,7 @@ impl PluginRegistry {
     fn set_theme_snapshot(&mut self, snapshot: abi::ThemeSnapshot) {
         for instance in self.plugins.values_mut() {
             if let Some(runtime) = instance.runtime.as_ref() {
-                runtime.borrow_mut().host_state.borrow_mut().theme_snapshot = snapshot;
+                runtime.borrow_mut().state.borrow_mut().theme_snapshot = snapshot;
             }
         }
     }
@@ -1448,7 +1440,7 @@ impl PluginRegistry {
             warn!(
                 plugin_id = manifest.id,
                 count = effects.len(),
-                "plugin init emitted host effects; effects are ignored during init"
+                "plugin init emitted plugin effects; effects are ignored during init"
             );
         }
 
@@ -1510,7 +1502,7 @@ impl PluginRegistry {
             });
         }
 
-        let translations = execution.host_state.borrow().translations.clone();
+        let translations = execution.state.borrow().translations.clone();
         let execution_rc = Rc::new(RefCell::new(execution));
         self.service_runtimes
             .borrow_mut()
@@ -1681,7 +1673,10 @@ impl PluginRegistry {
         instance.state = PluginLoadState::Unloaded;
         self.service_runtimes.borrow_mut().remove(plugin_id);
         self.render_cache.invalidate_plugin(plugin_id);
-        info!(plugin_id, "plugin hibernated; Store and Wasm linear memory released");
+        info!(
+            plugin_id,
+            "plugin hibernated; Store and Wasm linear memory released"
+        );
         Ok(true)
     }
 
@@ -1739,7 +1734,10 @@ impl PluginRegistry {
         } else {
             let reg = self.service_registry.borrow();
             let desc = reg.find_service(&request.service_name).ok_or_else(|| {
-                anyhow!("service '{}' not found in service bus", request.service_name)
+                anyhow!(
+                    "service '{}' not found in service bus",
+                    request.service_name
+                )
             })?;
             desc.provider_plugin_id.clone()
         };
@@ -1754,7 +1752,7 @@ impl PluginRegistry {
             warn!(
                 target_plugin_id,
                 count = effects.len(),
-                "plugin service emitted host effects; effects are discarded in host direct rpc call"
+                "plugin service emitted plugin effects; effects are discarded in launcher direct rpc call"
             );
         }
         result
@@ -1788,7 +1786,7 @@ impl PluginRegistry {
         let storage_dir = self.plugin_storage_dir(&manifest.id);
         self.resource_cache
             .seed(&manifest.id, &prepared_resources.resource_values);
-        let host_state = Rc::new(RefCell::new(HostState::new(
+        let state = Rc::new(RefCell::new(ExecutionState::new(
             manifest,
             locale,
             translations,
@@ -1805,12 +1803,12 @@ impl PluginRegistry {
             self.rpc_stack.clone(),
         );
         {
-            let mut state = host_state.borrow_mut();
+            let mut state = state.borrow_mut();
             state.service_dispatcher = Some(dispatcher);
             state.service_registry = Some(self.service_registry.clone());
         }
         let mut store = Store::new(engine.clone());
-        let imports = host_imports(host_state.clone());
+        let imports = app_imports(state.clone());
         let instance = ModuleInstance::instantiate(&mut store, &module, Some(&imports))
             .map_err(|error| anyhow!("instantiate plugin module failed: {error}"))?;
         let memory = instance
@@ -1838,7 +1836,7 @@ impl PluginRegistry {
             render_injection,
             call_service,
             shutdown,
-            host_state,
+            state,
             request_buffer: Vec::new(),
             response_buffer: Vec::new(),
         })
@@ -1880,7 +1878,7 @@ impl PluginRegistry {
                     plugin_id,
                     page_id,
                     count = effects.len(),
-                    "plugin render emitted host effects; effects are ignored during render"
+                    "plugin render emitted plugin effects; effects are ignored during render"
                 );
             }
             view_tree_from_abi(tree)
@@ -2011,7 +2009,7 @@ impl PluginRegistry {
             warn!(
                 plugin_id,
                 count = effects.len(),
-                "plugin injection render emitted host effects; effects are ignored during render"
+                "plugin injection render emitted plugin effects; effects are ignored during render"
             );
         }
 
@@ -2026,19 +2024,19 @@ impl PluginRegistry {
     /// 避免两个插件互相触发时无限展开主线程调用栈。
     pub(crate) fn handle_event(
         &mut self,
-        event: HostEvent,
+        event: PluginEvent,
         cascade: &mut EventCascade,
-    ) -> Vec<HostEffect> {
+    ) -> Vec<PluginEffect> {
         let started = Instant::now();
         match &event.kind {
-            HostEventKind::Action { .. } => {
+            PluginEventKind::Action { .. } => {
                 for plugin_id in self.event_targets(&event) {
                     if let Err(error) = self.ensure_plugin_runtime(&plugin_id) {
                         warn!(plugin_id, error = %error, "plugin action target load failed");
                     }
                 }
             }
-            HostEventKind::Global { .. } | HostEventKind::RouteChanged { .. } => {
+            PluginEventKind::Global { .. } | PluginEventKind::RouteChanged { .. } => {
                 self.ensure_plugins_with_capability(PluginCapability::EventGlobal);
             }
         }
@@ -2068,7 +2066,7 @@ impl PluginRegistry {
             else {
                 continue;
             };
-            let event = host_event_to_abi(&event);
+            let event = plugin_event_to_abi(&event);
             let result = {
                 let mut runtime = runtime.borrow_mut();
                 let result: Result<()> =
@@ -2092,15 +2090,15 @@ impl PluginRegistry {
         effects
     }
 
-    fn invalidate_render_cache_for_event(&mut self, event: &HostEvent, targets: &[String]) {
+    fn invalidate_render_cache_for_event(&mut self, event: &PluginEvent, targets: &[String]) {
         match &event.kind {
-            HostEventKind::Action { .. } => {
+            PluginEventKind::Action { .. } => {
                 if let Some(plugin_id) = event.plugin_id.as_deref() {
                     self.render_cache
                         .invalidate_page(plugin_id, event.page_id.as_deref());
                 }
             }
-            HostEventKind::Global { .. } | HostEventKind::RouteChanged { .. } => {
+            PluginEventKind::Global { .. } | PluginEventKind::RouteChanged { .. } => {
                 for plugin_id in targets {
                     self.render_cache.invalidate_plugin(plugin_id);
                 }
@@ -2131,17 +2129,17 @@ impl PluginRegistry {
             .unwrap_or_default()
     }
 
-    fn event_targets(&self, event: &HostEvent) -> Vec<String> {
+    fn event_targets(&self, event: &PluginEvent) -> Vec<String> {
         match &event.kind {
-            HostEventKind::Global { name, .. } => self.subscribers_of(name),
-            HostEventKind::RouteChanged { .. } => self.subscribers_of(ROUTE_CHANGED_EVENT),
-            HostEventKind::Action { .. } => event.plugin_id.iter().cloned().collect(),
+            PluginEventKind::Global { name, .. } => self.subscribers_of(name),
+            PluginEventKind::RouteChanged { .. } => self.subscribers_of(ROUTE_CHANGED_EVENT),
+            PluginEventKind::Action { .. } => event.plugin_id.iter().cloned().collect(),
         }
     }
 
-    fn event_requires_clipboard_snapshot(&self, event: &HostEvent) -> bool {
+    fn event_requires_clipboard_snapshot(&self, event: &PluginEvent) -> bool {
         match &event.kind {
-            HostEventKind::Action { .. } => event.plugin_id.as_deref().is_some_and(|plugin_id| {
+            PluginEventKind::Action { .. } => event.plugin_id.as_deref().is_some_and(|plugin_id| {
                 self.plugins.get(plugin_id).is_some_and(|plugin| {
                     plugin.enabled
                         && plugin
@@ -2149,7 +2147,7 @@ impl PluginRegistry {
                             .has_capability(&PluginCapability::ClipboardRead)
                 })
             }),
-            HostEventKind::Global { .. } | HostEventKind::RouteChanged { .. } => {
+            PluginEventKind::Global { .. } | PluginEventKind::RouteChanged { .. } => {
                 self.event_targets(event).iter().any(|plugin_id| {
                     self.plugins.get(plugin_id).is_some_and(|plugin| {
                         plugin.enabled
@@ -2205,7 +2203,7 @@ impl PluginRegistry {
         }
     }
 
-    fn apply_async_host_refreshes(&mut self) -> bool {
+    fn apply_async_app_refreshes(&mut self) -> bool {
         let mut invalidations = self.http_cache.drain_finished();
         invalidations.extend(self.resource_cache.drain_finished());
         if invalidations.is_empty() {
@@ -2236,7 +2234,7 @@ impl PluginRegistry {
         true
     }
 
-    fn has_finished_async_host_refreshes(&self) -> bool {
+    fn has_finished_async_app_refreshes(&self) -> bool {
         self.http_cache.has_finished_refreshes() || self.resource_cache.has_finished_refreshes()
     }
 
@@ -2297,14 +2295,14 @@ impl PluginInstance {
             warn!(
                 plugin_id = self.manifest.id,
                 count = effects.len(),
-                "plugin shutdown emitted host effects; effects are ignored during shutdown"
+                "plugin shutdown emitted plugin effects; effects are ignored during shutdown"
             );
         }
         Ok(())
     }
 }
 
-impl HostState {
+impl ExecutionState {
     fn new(
         manifest: &PluginManifest,
         locale: String,
@@ -2346,12 +2344,12 @@ impl HostState {
     fn require_capability(
         &self,
         capability: PluginCapability,
-    ) -> std::result::Result<(), abi::HostError> {
+    ) -> std::result::Result<(), abi::AppError> {
         if self.has_capability(&capability) {
             return Ok(());
         }
 
-        Err(abi::HostError {
+        Err(abi::AppError {
             code: "capability-denied".to_string(),
             message: format!(
                 "plugin {} did not declare {}",
@@ -2364,11 +2362,11 @@ impl HostState {
 
 impl PluginExecution {
     fn set_render_context(&mut self, context: Option<RenderContext>) {
-        self.host_state.borrow_mut().render_context = context;
+        self.state.borrow_mut().render_context = context;
     }
 
     fn set_clipboard_snapshot(&mut self, text: Option<String>) {
-        self.host_state.borrow_mut().clipboard_text = text;
+        self.state.borrow_mut().clipboard_text = text;
     }
 
     fn memory_snapshot(&self) -> Result<PluginWasmMemorySnapshot> {
@@ -2378,8 +2376,8 @@ impl PluginExecution {
         })
     }
 
-    fn drain_effects(&mut self) -> Vec<HostEffect> {
-        std::mem::take(&mut self.host_state.borrow_mut().effects)
+    fn drain_effects(&mut self) -> Vec<PluginEffect> {
+        std::mem::take(&mut self.state.borrow_mut().effects)
     }
 
     /// 调用插件的 `bmcbl_call_service` 导出，返回响应载荷。
@@ -2389,7 +2387,7 @@ impl PluginExecution {
     /// 插件没有导出该入口时返回明确错误，而不是让调用方拿到空白响应。
     fn call_service(&mut self, request: abi::ServiceCallRequest) -> Result<Vec<u8>> {
         let Some(function) = self.call_service.clone() else {
-            let plugin_id = self.host_state.borrow().plugin_id.clone();
+            let plugin_id = self.state.borrow().plugin_id.clone();
             bail!("plugin {plugin_id} does not export {ABI_EXPORT_CALL_SERVICE}");
         };
         let mut request_buffer = std::mem::take(&mut self.request_buffer);
@@ -2417,7 +2415,9 @@ impl PluginExecution {
             EntryCall::RenderPage(_) => self.render_page.clone(),
             EntryCall::RenderInjection(_) => self.render_injection.clone(),
             // 服务入口是可选的，必须走 `call_service`：那里才有“未导出”的可读错误。
-            EntryCall::CallService(_) => bail!("service calls must use PluginExecution::call_service"),
+            EntryCall::CallService(_) => {
+                bail!("service calls must use PluginExecution::call_service")
+            }
             EntryCall::Shutdown(_) => self.shutdown.clone(),
         };
 
@@ -2549,7 +2549,7 @@ struct PluginWasmMemorySnapshot {
 
 enum EntryCall {
     Init(abi::PluginContext),
-    HandleEvent(abi::HostEvent),
+    HandleEvent(abi::PluginEvent),
     RenderPage(abi::PageRenderRequest),
     RenderInjection(abi::InjectionRequest),
     CallService(abi::ServiceCallRequest),
@@ -2658,7 +2658,7 @@ fn clipboard_text_snapshot(cx: &mut App) -> Option<String> {
     cx.read_from_clipboard().and_then(|item| item.text())
 }
 
-fn clipboard_text_snapshot_for_event(cx: &mut App, event: &HostEvent) -> Option<Option<String>> {
+fn clipboard_text_snapshot_for_event(cx: &mut App, event: &PluginEvent) -> Option<Option<String>> {
     let required = cx
         .global::<PluginRegistry>()
         .event_requires_clipboard_snapshot(event);
@@ -2700,12 +2700,12 @@ fn theme_color_from_hsla(color: Hsla) -> abi::ThemeColor {
 fn validate_module_abi(module: &Module) -> Result<()> {
     let imports = module.imports().collect::<Vec<_>>();
     if imports.len() != 1 {
-        bail!("plugin must import exactly one host function");
+        bail!("plugin must import exactly one app function");
     }
     let import = &imports[0];
-    if !is_supported_host_import(import.module, import.name) {
+    if !is_supported_app_import(import.module, import.name) {
         bail!(
-            "plugin imports unsupported host function {}.{}; expected {}.{} or {}.{}",
+            "plugin imports unsupported app function {}.{}; expected {}.{} or {}.{}",
             import.module,
             import.name,
             ABI_IMPORT_MODULE,
@@ -2715,7 +2715,7 @@ fn validate_module_abi(module: &Module) -> Result<()> {
         );
     }
     let tinywasm::types::ImportType::Func(func_type) = import.ty else {
-        bail!("plugin host import must be a function");
+        bail!("plugin app import must be a function");
     };
     if func_type.params()
         != [
@@ -2727,7 +2727,7 @@ fn validate_module_abi(module: &Module) -> Result<()> {
         ]
         || func_type.results() != [WasmType::I64]
     {
-        bail!("plugin host import has invalid signature");
+        bail!("plugin app import has invalid signature");
     }
 
     let memory_types = module.memory_types.as_ref();
@@ -2756,22 +2756,22 @@ fn validate_module_abi(module: &Module) -> Result<()> {
     Ok(())
 }
 
-fn is_supported_host_import(module: &str, name: &str) -> bool {
+fn is_supported_app_import(module: &str, name: &str) -> bool {
     name == ABI_IMPORT_NAME && (module == ABI_IMPORT_MODULE || module == ABI_LEGACY_IMPORT_MODULE)
 }
 
 /// 单次宿主调用复用的编解码缓冲。
 #[derive(Default)]
-struct HostCallBuffers {
+struct CallBuffers {
     request: Vec<u8>,
     response: Vec<u8>,
 }
 
-fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
+fn app_imports(state: Rc<RefCell<ExecutionState>>) -> Imports {
     let mut imports = Imports::new();
-    // 每次 host call 都重新分配两个 Vec 会形成稳定的堆压力，这里按插件实例复用容量。
-    let buffers = Rc::new(RefCell::new(HostCallBuffers::default()));
-    let host_call = HostFunction::from_untyped(
+    // 每次 app call 都重新分配两个 Vec 会形成稳定的堆压力，这里按插件实例复用容量。
+    let buffers = Rc::new(RefCell::new(CallBuffers::default()));
+    let app_call = HostFunction::from_untyped(
         &tinywasm::types::FuncType::new(
             &[
                 WasmType::I32,
@@ -2791,19 +2791,19 @@ fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
                 WasmValue::I32(resp_cap),
             ] = args
             else {
-                return Err(tinywasm::Error::Other("invalid host-call signature".into()));
+                return Err(tinywasm::Error::Other("invalid app-call signature".into()));
             };
 
             let memory = ctx.memory(ABI_EXPORT_MEMORY)?;
             // 先按声明的长度校验，再写入复用缓冲，避免插件用一个超大长度触发巨额分配。
             let Ok(request_len) = usize::try_from(req_len) else {
                 return Err(tinywasm::Error::Other(
-                    "host request length is invalid".into(),
+                    "app request length is invalid".into(),
                 ));
             };
             if request_len > ABI_MESSAGE_MAX_BYTES {
                 return Err(tinywasm::Error::Other(
-                    "host request exceeds size limit".into(),
+                    "app request exceeds size limit".into(),
                 ));
             }
             let request = {
@@ -2813,20 +2813,20 @@ fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
                 memory
                     .read_exact(ctx.store(), req_ptr as usize, &mut buffers.request)
                     .map_err(|error| {
-                        tinywasm::Error::Other(format!("read host request failed: {error}"))
+                        tinywasm::Error::Other(format!("read app request failed: {error}"))
                     })?;
-                postcard::from_bytes::<abi::HostRequest>(&buffers.request).map_err(|error| {
-                    tinywasm::Error::Other(format!("decode host request failed: {error}"))
+                postcard::from_bytes::<abi::AppRequest>(&buffers.request).map_err(|error| {
+                    tinywasm::Error::Other(format!("decode app request failed: {error}"))
                 })?
             };
-            let response = handle_host_request(&host_state, op, request);
+            let response = handle_app_request(&state, op, request);
 
             let mut buffers = buffers.borrow_mut();
             buffers.response.clear();
             {
                 let _writer = postcard::to_extend(&response, VecWriter(&mut buffers.response))
                     .map_err(|error| {
-                        tinywasm::Error::Other(format!("encode host response failed: {error}"))
+                        tinywasm::Error::Other(format!("encode app response failed: {error}"))
                     })?;
             }
             let response_len = buffers.response.len();
@@ -2841,7 +2841,7 @@ fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
             memory
                 .write(ctx.store_mut(), resp_ptr as usize, &buffers.response)
                 .map_err(|error| {
-                    tinywasm::Error::Other(format!("write host response failed: {error}"))
+                    tinywasm::Error::Other(format!("write app response failed: {error}"))
                 })?;
             if !results.is_empty() {
                 results[0] = WasmValue::I64(response_len as i64);
@@ -2849,30 +2849,30 @@ fn host_imports(host_state: Rc<RefCell<HostState>>) -> Imports {
             Ok(())
         },
     );
-    imports.define(ABI_IMPORT_MODULE, ABI_IMPORT_NAME, host_call.clone());
-    imports.define(ABI_LEGACY_IMPORT_MODULE, ABI_IMPORT_NAME, host_call);
+    imports.define(ABI_IMPORT_MODULE, ABI_IMPORT_NAME, app_call.clone());
+    imports.define(ABI_LEGACY_IMPORT_MODULE, ABI_IMPORT_NAME, app_call);
     imports
 }
 
 fn schedule_plugin_persistence(
     operation: PluginPersistenceOp,
-) -> std::result::Result<(), abi::HostError> {
+) -> std::result::Result<(), abi::AppError> {
     let sender = if let Some(sender) = PLUGIN_PERSISTENCE_TX.get() {
         sender
     } else {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        start_plugin_persistence_worker(receiver).map_err(|error| abi::HostError {
+        start_plugin_persistence_worker(receiver).map_err(|error| abi::AppError {
             code: "persistence-schedule-failed".to_string(),
             message: error,
         })?;
         let _ = PLUGIN_PERSISTENCE_TX.set(sender);
-        PLUGIN_PERSISTENCE_TX.get().ok_or_else(|| abi::HostError {
+        PLUGIN_PERSISTENCE_TX.get().ok_or_else(|| abi::AppError {
             code: "persistence-schedule-failed".to_string(),
             message: "plugin persistence queue initialization failed".to_string(),
         })?
     };
 
-    sender.send(operation).map_err(|error| abi::HostError {
+    sender.send(operation).map_err(|error| abi::AppError {
         code: "persistence-schedule-failed".to_string(),
         message: format!("plugin persistence queue is unavailable: {error}"),
     })
@@ -2964,12 +2964,12 @@ fn storage_snapshot_next_used_bytes(
 fn require_non_render_blocking_io(
     render_context: Option<&RenderContext>,
     operation: &'static str,
-) -> std::result::Result<(), abi::HostError> {
+) -> std::result::Result<(), abi::AppError> {
     if render_context.is_none() {
         return Ok(());
     }
 
-    Err(abi::HostError {
+    Err(abi::AppError {
         code: "blocking-io-render-denied".to_string(),
         message: format!(
             "{operation} is not allowed while rendering plugin UI; load or persist data during init/event handling and keep render state in memory"
@@ -2977,16 +2977,16 @@ fn require_non_render_blocking_io(
     })
 }
 
-fn handle_host_request(
-    host_state: &Rc<RefCell<HostState>>,
+fn handle_app_request(
+    state: &Rc<RefCell<ExecutionState>>,
     op: i32,
-    request: abi::HostRequest,
-) -> std::result::Result<abi::HostResponse, abi::HostError> {
-    let mut state = host_state.borrow_mut();
+    request: abi::AppRequest,
+) -> std::result::Result<abi::AppResponse, abi::AppError> {
+    let mut state = state.borrow_mut();
     match (op, request) {
-        (code, abi::HostRequest::Log { level, message }) if code == abi::HostOp::Log.code() => {
+        (code, abi::AppRequest::Log { level, message }) if code == abi::AppOp::Log.code() => {
             let plugin_id = state.plugin_id.clone();
-            state.effects.push(HostEffect::Log {
+            state.effects.push(PluginEffect::Log {
                 plugin_id: plugin_id.clone(),
                 level,
                 message: message.clone(),
@@ -2997,26 +2997,26 @@ fn handle_host_request(
                 abi::LogLevel::Warn => warn!(plugin_id, "{message}"),
                 abi::LogLevel::Error => error!(plugin_id, "{message}"),
             }
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::ShowToast { kind, message })
-            if code == abi::HostOp::ShowToast.code() =>
+        (code, abi::AppRequest::ShowToast { kind, message })
+            if code == abi::AppOp::ShowToast.code() =>
         {
             state.require_capability(PluginCapability::Toast)?;
-            state.effects.push(HostEffect::Toast { kind, message });
-            Ok(abi::HostResponse::Unit)
+            state.effects.push(PluginEffect::Toast { kind, message });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::Navigate { target }) if code == abi::HostOp::Navigate.code() => {
-            state.effects.push(HostEffect::Navigate { target });
-            Ok(abi::HostResponse::Unit)
+        (code, abi::AppRequest::Navigate { target }) if code == abi::AppOp::Navigate.code() => {
+            state.effects.push(PluginEffect::Navigate { target });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::OpenWindow { request })
-            if code == abi::HostOp::OpenWindow.code() =>
+        (code, abi::AppRequest::OpenWindow { request })
+            if code == abi::AppOp::OpenWindow.code() =>
         {
             state.require_capability(PluginCapability::UiWindow)?;
             let plugin_id = state.plugin_id.clone();
             if request.plugin_id != plugin_id {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "invalid-window-request".to_string(),
                     message: "plugin can only open its own windows".to_string(),
                 });
@@ -3024,65 +3024,63 @@ fn handle_host_request(
 
             let window_id = state.next_window_id;
             state.next_window_id = state.next_window_id.saturating_add(1);
-            state.effects.push(HostEffect::OpenWindow { request });
-            Ok(abi::HostResponse::WindowId(window_id))
+            state.effects.push(PluginEffect::OpenWindow { request });
+            Ok(abi::AppResponse::WindowId(window_id))
         }
-        (code, abi::HostRequest::OpenModal { request })
-            if code == abi::HostOp::OpenModal.code() =>
-        {
+        (code, abi::AppRequest::OpenModal { request }) if code == abi::AppOp::OpenModal.code() => {
             state.require_capability(PluginCapability::UiPage)?;
             let plugin_id = state.plugin_id.clone();
             if request.plugin_id != plugin_id {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "invalid-modal-request".to_string(),
                     message: "plugin can only open its own modal pages".to_string(),
                 });
             }
 
-            state.effects.push(HostEffect::OpenModal { request });
-            Ok(abi::HostResponse::Unit)
+            state.effects.push(PluginEffect::OpenModal { request });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::CloseWindow { window_id })
-            if code == abi::HostOp::CloseWindow.code() =>
+        (code, abi::AppRequest::CloseWindow { window_id })
+            if code == abi::AppOp::CloseWindow.code() =>
         {
             state.require_capability(PluginCapability::UiWindow)?;
-            state.effects.push(HostEffect::CloseWindow { window_id });
-            Ok(abi::HostResponse::Unit)
+            state.effects.push(PluginEffect::CloseWindow { window_id });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::EmitEvent { name, payload })
-            if code == abi::HostOp::EmitEvent.code() =>
+        (code, abi::AppRequest::EmitEvent { name, payload })
+            if code == abi::AppOp::EmitEvent.code() =>
         {
             state.require_capability(PluginCapability::EventGlobal)?;
-            state.effects.push(HostEffect::EmitEvent { name, payload });
-            Ok(abi::HostResponse::Unit)
+            state
+                .effects
+                .push(PluginEffect::EmitEvent { name, payload });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::Invalidate { target })
-            if code == abi::HostOp::Invalidate.code() =>
-        {
+        (code, abi::AppRequest::Invalidate { target }) if code == abi::AppOp::Invalidate.code() => {
             let plugin_id = state.plugin_id.clone();
             state
                 .effects
-                .push(HostEffect::Invalidate { plugin_id, target });
-            Ok(abi::HostResponse::Unit)
+                .push(PluginEffect::Invalidate { plugin_id, target });
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::CurrentLocale) if code == abi::HostOp::CurrentLocale.code() => {
-            Ok(abi::HostResponse::String(state.locale.clone()))
+        (code, abi::AppRequest::CurrentLocale) if code == abi::AppOp::CurrentLocale.code() => {
+            Ok(abi::AppResponse::String(state.locale.clone()))
         }
-        (code, abi::HostRequest::Translate { key, args })
-            if code == abi::HostOp::Translate.code() =>
+        (code, abi::AppRequest::Translate { key, args })
+            if code == abi::AppOp::Translate.code() =>
         {
-            Ok(abi::HostResponse::String(translate_plugin_key(
+            Ok(abi::AppResponse::String(translate_plugin_key(
                 &state.translations,
                 &state.locale,
                 &key,
                 &args,
             )))
         }
-        (code, abi::HostRequest::ReadConfig) if code == abi::HostOp::ReadConfig.code() => {
+        (code, abi::AppRequest::ReadConfig) if code == abi::AppOp::ReadConfig.code() => {
             state.require_capability(PluginCapability::ConfigRead)?;
             match &state.config_text {
-                Ok(config) => Ok(abi::HostResponse::String(config.clone())),
-                Err(error) => Err(abi::HostError {
+                Ok(config) => Ok(abi::AppResponse::String(config.clone())),
+                Err(error) => Err(abi::AppError {
                     code: "config-read-failed".to_string(),
                     message: error.to_string(),
                 }),
@@ -3090,12 +3088,12 @@ fn handle_host_request(
         }
         (
             code,
-            abi::HostRequest::HttpGetText {
+            abi::AppRequest::HttpGetText {
                 url,
                 ttl_seconds,
                 max_bytes,
             },
-        ) if code == abi::HostOp::HttpGetText.code() => {
+        ) if code == abi::AppOp::HttpGetText.code() => {
             let snapshot = state.http_cache.snapshot(
                 &state.manifest,
                 &state.plugin_id,
@@ -3104,58 +3102,56 @@ fn handle_host_request(
                 ttl_seconds,
                 max_bytes,
             )?;
-            Ok(abi::HostResponse::HttpTextResponse {
+            Ok(abi::AppResponse::HttpTextResponse {
                 state: snapshot.state,
                 body: snapshot.body,
                 error: snapshot.error,
                 fetched_at_unix_ms: snapshot.fetched_at_unix_ms,
             })
         }
-        (code, abi::HostRequest::WriteClipboardText { text })
-            if code == abi::HostOp::WriteClipboardText.code() =>
+        (code, abi::AppRequest::WriteClipboardText { text })
+            if code == abi::AppOp::WriteClipboardText.code() =>
         {
             state.require_capability(PluginCapability::ClipboardWrite)?;
-            state.effects.push(HostEffect::EmitEvent {
+            state.effects.push(PluginEffect::EmitEvent {
                 name: "__plugin_write_clipboard".to_string(),
                 payload: text,
             });
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::ReadClipboardText)
-            if code == abi::HostOp::ReadClipboardText.code() =>
+        (code, abi::AppRequest::ReadClipboardText)
+            if code == abi::AppOp::ReadClipboardText.code() =>
         {
             state.require_capability(PluginCapability::ClipboardRead)?;
-            Ok(abi::HostResponse::SessionValue(
-                state.clipboard_text.clone(),
-            ))
+            Ok(abi::AppResponse::SessionValue(state.clipboard_text.clone()))
         }
-        (code, abi::HostRequest::CurrentUnixMs) if code == abi::HostOp::CurrentUnixMs.code() => {
-            Ok(abi::HostResponse::U64(current_unix_ms()))
+        (code, abi::AppRequest::CurrentUnixMs) if code == abi::AppOp::CurrentUnixMs.code() => {
+            Ok(abi::AppResponse::U64(current_unix_ms()))
         }
-        (code, abi::HostRequest::OpenExternalUrl { url })
-            if code == abi::HostOp::OpenExternalUrl.code() =>
+        (code, abi::AppRequest::OpenExternalUrl { url })
+            if code == abi::AppOp::OpenExternalUrl.code() =>
         {
             state.require_capability(PluginCapability::ExternalOpen)?;
             if !url.starts_with("https://") {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "invalid-url".to_string(),
                     message: "external URLs must use https".to_string(),
                 });
             }
             if !state.manifest.allows_external_url(&url) {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "external-url-denied".to_string(),
                     message: format!("plugin {} is not allowed to open {url}", state.plugin_id),
                 });
             }
-            state.effects.push(HostEffect::EmitEvent {
+            state.effects.push(PluginEffect::EmitEvent {
                 name: "__plugin_open_external_url".to_string(),
                 payload: url,
             });
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::ReadResourceText { path })
-            if code == abi::HostOp::ReadResourceText.code() =>
+        (code, abi::AppRequest::ReadResourceText { path })
+            if code == abi::AppOp::ReadResourceText.code() =>
         {
             let bytes = state.resource_cache.read(
                 &state.manifest,
@@ -3164,15 +3160,15 @@ fn handle_host_request(
                 &path,
             )?;
             let text = std::str::from_utf8(bytes.as_ref())
-                .map_err(|error| abi::HostError {
+                .map_err(|error| abi::AppError {
                     code: "resource-not-utf8".to_string(),
                     message: format!("plugin resource {path} is not utf-8: {error}"),
                 })?
                 .to_owned();
-            Ok(abi::HostResponse::String(text))
+            Ok(abi::AppResponse::String(text))
         }
-        (code, abi::HostRequest::ReadResourceBytes { path })
-            if code == abi::HostOp::ReadResourceBytes.code() =>
+        (code, abi::AppRequest::ReadResourceBytes { path })
+            if code == abi::AppOp::ReadResourceBytes.code() =>
         {
             let bytes = state.resource_cache.read(
                 &state.manifest,
@@ -3180,25 +3176,25 @@ fn handle_host_request(
                 state.render_context.as_ref(),
                 &path,
             )?;
-            Ok(abi::HostResponse::Bytes(bytes.as_ref().to_vec()))
+            Ok(abi::AppResponse::Bytes(bytes.as_ref().to_vec()))
         }
         (
             code,
-            abi::HostRequest::SidecarCall {
+            abi::AppRequest::SidecarCall {
                 name,
                 args,
                 timeout_ms,
                 max_output_bytes,
             },
-        ) if code == abi::HostOp::SidecarCall.code() => {
+        ) if code == abi::AppOp::SidecarCall.code() => {
             if state.render_context.is_some() {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "sidecar-render-denied".to_string(),
                     message: "sidecar calls are not allowed while rendering plugin UI".to_string(),
                 });
             }
             if max_output_bytes != 0 {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "sidecar-sync-output-denied".to_string(),
                     message: format!(
                         "synchronous sidecar output capture is disabled to keep the UI thread non-blocking (requested timeout {timeout_ms} ms)"
@@ -3206,15 +3202,13 @@ fn handle_host_request(
                 });
             }
             schedule_plugin_sidecar_start(&state.manifest, &state.sidecar_files, &name, args)?;
-            Ok(abi::HostResponse::String(String::new()))
+            Ok(abi::AppResponse::String(String::new()))
         }
-        (code, abi::HostRequest::SessionGet { key }) if code == abi::HostOp::SessionGet.code() => {
-            Ok(abi::HostResponse::SessionValue(
-                state.session.get(&key).cloned(),
-            ))
-        }
-        (code, abi::HostRequest::SessionSet { key, value })
-            if code == abi::HostOp::SessionSet.code() =>
+        (code, abi::AppRequest::SessionGet { key }) if code == abi::AppOp::SessionGet.code() => Ok(
+            abi::AppResponse::SessionValue(state.session.get(&key).cloned()),
+        ),
+        (code, abi::AppRequest::SessionSet { key, value })
+            if code == abi::AppOp::SessionSet.code() =>
         {
             match value {
                 Some(value) => {
@@ -3224,21 +3218,21 @@ fn handle_host_request(
                     state.session.remove(&key);
                 }
             }
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::StorageGet { key }) if code == abi::HostOp::StorageGet.code() => {
+        (code, abi::AppRequest::StorageGet { key }) if code == abi::AppOp::StorageGet.code() => {
             state.require_capability(PluginCapability::StorageKv)?;
             validate_storage_key(&key)?;
             match &state.storage_values {
-                Ok(values) => Ok(abi::HostResponse::SessionValue(values.get(&key).cloned())),
-                Err(error) => Err(abi::HostError {
+                Ok(values) => Ok(abi::AppResponse::SessionValue(values.get(&key).cloned())),
+                Err(error) => Err(abi::AppError {
                     code: "storage-read-failed".to_string(),
                     message: error.to_string(),
                 }),
             }
         }
-        (code, abi::HostRequest::StorageSet { key, value })
-            if code == abi::HostOp::StorageSet.code() =>
+        (code, abi::AppRequest::StorageSet { key, value })
+            if code == abi::AppOp::StorageSet.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage set")?;
@@ -3246,14 +3240,14 @@ fn handle_host_request(
             let values = state
                 .storage_values
                 .as_ref()
-                .map_err(|error| abi::HostError {
+                .map_err(|error| abi::AppError {
                     code: "storage-state-unavailable".to_string(),
                     message: error.to_string(),
                 })?;
             let quota_bytes = state.manifest.limits.max_storage_bytes;
             let next_used = storage_snapshot_next_used_bytes(values, &key, &value);
             if next_used > quota_bytes {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "storage-quota-exceeded".to_string(),
                     message: format!(
                         "plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"
@@ -3270,10 +3264,10 @@ fn handle_host_request(
             if let Ok(values) = &mut state.storage_values {
                 values.insert(key, value);
             }
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::StorageDelete { key })
-            if code == abi::HostOp::StorageDelete.code() =>
+        (code, abi::AppRequest::StorageDelete { key })
+            if code == abi::AppOp::StorageDelete.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "storage delete")?;
@@ -3281,12 +3275,12 @@ fn handle_host_request(
             let values = state
                 .storage_values
                 .as_ref()
-                .map_err(|error| abi::HostError {
+                .map_err(|error| abi::AppError {
                     code: "storage-state-unavailable".to_string(),
                     message: error.to_string(),
                 })?;
             if !values.contains_key(&key) {
-                return Ok(abi::HostResponse::Unit);
+                return Ok(abi::AppResponse::Unit);
             }
 
             schedule_plugin_persistence(PluginPersistenceOp::StorageDelete {
@@ -3297,17 +3291,17 @@ fn handle_host_request(
             if let Ok(values) = &mut state.storage_values {
                 values.remove(&key);
             }
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::StorageList { prefix })
-            if code == abi::HostOp::StorageList.code() =>
+        (code, abi::AppRequest::StorageList { prefix })
+            if code == abi::AppOp::StorageList.code() =>
         {
             state.require_capability(PluginCapability::StorageKv)?;
             if let Some(prefix) = prefix.as_deref() {
                 validate_storage_key_prefix(prefix)?;
             }
             match &state.storage_values {
-                Ok(values) => Ok(abi::HostResponse::StringList(
+                Ok(values) => Ok(abi::AppResponse::StringList(
                     values
                         .keys()
                         .filter(|key| {
@@ -3318,19 +3312,17 @@ fn handle_host_request(
                         .cloned()
                         .collect(),
                 )),
-                Err(error) => Err(abi::HostError {
+                Err(error) => Err(abi::AppError {
                     code: "storage-list-failed".to_string(),
                     message: error.to_string(),
                 }),
             }
         }
-        (code, abi::HostRequest::WriteConfig { text })
-            if code == abi::HostOp::WriteConfig.code() =>
-        {
+        (code, abi::AppRequest::WriteConfig { text }) if code == abi::AppOp::WriteConfig.code() => {
             state.require_capability(PluginCapability::ConfigWrite)?;
             require_non_render_blocking_io(state.render_context.as_ref(), "config write")?;
             crate::plugins::manifest::validate_user_config(&state.manifest, &text).map_err(
-                |error| abi::HostError {
+                |error| abi::AppError {
                     code: "config-write-failed".to_string(),
                     message: error.to_string(),
                 },
@@ -3342,14 +3334,14 @@ fn handle_host_request(
             })?;
             state.config_text = Ok(text);
             let plugin_id = state.plugin_id.clone();
-            state.effects.push(HostEffect::Invalidate {
+            state.effects.push(PluginEffect::Invalidate {
                 plugin_id,
                 target: abi::InvalidateTarget::All,
             });
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::CreateTask { request })
-            if code == abi::HostOp::CreateTask.code() =>
+        (code, abi::AppRequest::CreateTask { request })
+            if code == abi::AppOp::CreateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
             let task_id = crate::tasks::task_manager::create_task_with_details(
@@ -3360,10 +3352,10 @@ fn handle_host_request(
                 request.total,
                 request.supports_pause,
             );
-            Ok(abi::HostResponse::TaskId(task_id))
+            Ok(abi::AppResponse::TaskId(task_id))
         }
-        (code, abi::HostRequest::UpdateTask { request })
-            if code == abi::HostOp::UpdateTask.code() =>
+        (code, abi::AppRequest::UpdateTask { request })
+            if code == abi::AppOp::UpdateTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
             crate::tasks::task_manager::update_progress(
@@ -3375,10 +3367,10 @@ fn handle_host_request(
             if request.message.is_some() {
                 crate::tasks::task_manager::set_task_message(&request.task_id, request.message);
             }
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::FinishTask { request })
-            if code == abi::HostOp::FinishTask.code() =>
+        (code, abi::AppRequest::FinishTask { request })
+            if code == abi::AppOp::FinishTask.code() =>
         {
             state.require_capability(PluginCapability::TaskProgress)?;
             crate::tasks::task_manager::finish_task(
@@ -3386,44 +3378,44 @@ fn handle_host_request(
                 &request.status,
                 request.message,
             );
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::AppInfo) if code == abi::HostOp::AppInfo.code() => {
-            Ok(abi::HostResponse::AppInfo(abi::AppInfo {
+        (code, abi::AppRequest::AppInfo) if code == abi::AppOp::AppInfo.code() => {
+            Ok(abi::AppResponse::AppInfo(abi::AppInfo {
                 version: crate::utils::app_info::get_version().to_string(),
                 build_info: crate::utils::app_info::get_build_info(),
                 api_version: abi::API_VERSION.to_string(),
             }))
         }
-        (code, abi::HostRequest::ThemeSnapshot) if code == abi::HostOp::ThemeSnapshot.code() => {
-            Ok(abi::HostResponse::ThemeSnapshot(state.theme_snapshot))
+        (code, abi::AppRequest::ThemeSnapshot) if code == abi::AppOp::ThemeSnapshot.code() => {
+            Ok(abi::AppResponse::ThemeSnapshot(state.theme_snapshot))
         }
-        (code, abi::HostRequest::RegisterService { name })
-            if code == abi::HostOp::RegisterService.code() =>
+        (code, abi::AppRequest::RegisterService { name })
+            if code == abi::AppOp::RegisterService.code() =>
         {
             // 注册失败（重名/空名）在应用效果时记录，插件本体不受影响。
             if name.trim().is_empty() {
-                return Err(abi::HostError {
+                return Err(abi::AppError {
                     code: "service-name-invalid".to_string(),
                     message: "service name must not be empty".to_string(),
                 });
             }
             let plugin_id = state.plugin_id.clone();
-            state.effects.push(HostEffect::RegisterService {
+            state.effects.push(PluginEffect::RegisterService {
                 plugin_id,
                 service_name: name,
             });
-            Ok(abi::HostResponse::Unit)
+            Ok(abi::AppResponse::Unit)
         }
-        (code, abi::HostRequest::CallService { request })
-            if code == abi::HostOp::CallService.code() =>
+        (code, abi::AppRequest::CallService { request })
+            if code == abi::AppOp::CallService.code() =>
         {
             let dispatcher = state
                 .service_dispatcher
                 .as_ref()
-                .ok_or_else(|| abi::HostError {
+                .ok_or_else(|| abi::AppError {
                     code: "service-bus-unavailable".to_string(),
-                    message: "plugin host has no service dispatcher".to_string(),
+                    message: "launcher has no service dispatcher".to_string(),
                 })?
                 .0
                 .clone();
@@ -3431,11 +3423,11 @@ fn handle_host_request(
             // 释放调用方状态锁：目标插件可能在自己的执行里发起新的宿主调用。
             drop(state);
             let payload = dispatcher(&caller_id, request)?;
-            Ok(abi::HostResponse::Bytes(payload))
+            Ok(abi::AppResponse::Bytes(payload))
         }
-        (_code, _request) => Err(abi::HostError {
+        (_code, _request) => Err(abi::AppError {
             code: "invalid-host-operation".to_string(),
-            message: "plugin issued an unsupported host operation".to_string(),
+            message: "plugin issued an unsupported app operation".to_string(),
         }),
     }
 }
@@ -3453,15 +3445,13 @@ fn schedule_plugin_sidecar_start(
     sidecar_files: &BTreeSet<String>,
     name: &str,
     args: Vec<String>,
-) -> std::result::Result<(), abi::HostError> {
-    let executable = manifest
-        .sidecar_path(name)
-        .map_err(|error| abi::HostError {
-            code: "sidecar-denied".to_string(),
-            message: error.to_string(),
-        })?;
+) -> std::result::Result<(), abi::AppError> {
+    let executable = manifest.sidecar_path(name).map_err(|error| abi::AppError {
+        code: "sidecar-denied".to_string(),
+        message: error.to_string(),
+    })?;
     if !sidecar_files.contains(name) {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "sidecar-not-found".to_string(),
             message: format!("sidecar does not exist: {}", executable.display()),
         });
@@ -3501,14 +3491,14 @@ fn schedule_plugin_sidecar_start(
         }
     })
     .map(|_| ())
-    .map_err(|error| abi::HostError {
+    .map_err(|error| abi::AppError {
         code: "sidecar-start-schedule-failed".to_string(),
         message: error,
     })
 }
 fn load_storage_snapshot(
     storage_dir: &Path,
-) -> std::result::Result<BTreeMap<String, String>, abi::HostError> {
+) -> std::result::Result<BTreeMap<String, String>, abi::AppError> {
     let mut values = BTreeMap::new();
     for key in storage_list(storage_dir, None)? {
         if let Some(value) = storage_get(storage_dir, &key)? {
@@ -3521,14 +3511,14 @@ fn load_storage_snapshot(
 fn storage_get(
     storage_dir: &Path,
     key: &str,
-) -> std::result::Result<Option<String>, abi::HostError> {
+) -> std::result::Result<Option<String>, abi::AppError> {
     let path = storage_path(storage_dir, key)?;
     if !path.exists() {
         return Ok(None);
     }
     fs::read_to_string(&path)
         .map(Some)
-        .map_err(|error| abi::HostError {
+        .map_err(|error| abi::AppError {
             code: "storage-read-failed".to_string(),
             message: format!("read plugin storage key {key} failed: {error}"),
         })
@@ -3539,7 +3529,7 @@ fn storage_set(
     key: &str,
     value: &str,
     quota_bytes: u64,
-) -> std::result::Result<(), abi::HostError> {
+) -> std::result::Result<(), abi::AppError> {
     let path = storage_path(storage_dir, key)?;
     let existing_len = fs::metadata(&path)
         .map(|metadata| metadata.len())
@@ -3549,7 +3539,7 @@ fn storage_set(
         .saturating_sub(existing_len)
         .saturating_add(value.len() as u64);
     if next_used > quota_bytes {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "storage-quota-exceeded".to_string(),
             message: format!("plugin storage quota exceeded ({next_used}/{quota_bytes} bytes)"),
         });
@@ -3561,24 +3551,24 @@ fn persist_storage_value(
     storage_dir: &Path,
     key: &str,
     value: &str,
-) -> std::result::Result<(), abi::HostError> {
+) -> std::result::Result<(), abi::AppError> {
     let path = storage_path(storage_dir, key)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| abi::HostError {
+        fs::create_dir_all(parent).map_err(|error| abi::AppError {
             code: "storage-create-failed".to_string(),
             message: format!("create plugin storage {} failed: {error}", parent.display()),
         })?;
     }
-    fs::write(&path, value).map_err(|error| abi::HostError {
+    fs::write(&path, value).map_err(|error| abi::AppError {
         code: "storage-write-failed".to_string(),
         message: format!("write plugin storage key {key} failed: {error}"),
     })
 }
 
-fn storage_delete(storage_dir: &Path, key: &str) -> std::result::Result<(), abi::HostError> {
+fn storage_delete(storage_dir: &Path, key: &str) -> std::result::Result<(), abi::AppError> {
     let path = storage_path(storage_dir, key)?;
     if path.exists() {
-        fs::remove_file(&path).map_err(|error| abi::HostError {
+        fs::remove_file(&path).map_err(|error| abi::AppError {
             code: "storage-delete-failed".to_string(),
             message: format!("delete plugin storage key {key} failed: {error}"),
         })?;
@@ -3589,7 +3579,7 @@ fn storage_delete(storage_dir: &Path, key: &str) -> std::result::Result<(), abi:
 fn storage_list(
     storage_dir: &Path,
     prefix: Option<&str>,
-) -> std::result::Result<Vec<String>, abi::HostError> {
+) -> std::result::Result<Vec<String>, abi::AppError> {
     if let Some(prefix) = prefix {
         validate_storage_key_prefix(prefix)?;
     }
@@ -3597,14 +3587,14 @@ fn storage_list(
         return Ok(Vec::new());
     }
     let mut keys = Vec::new();
-    for entry in fs::read_dir(storage_dir).map_err(|error| abi::HostError {
+    for entry in fs::read_dir(storage_dir).map_err(|error| abi::AppError {
         code: "storage-list-failed".to_string(),
         message: format!(
             "list plugin storage {} failed: {error}",
             storage_dir.display()
         ),
     })? {
-        let entry = entry.map_err(|error| abi::HostError {
+        let entry = entry.map_err(|error| abi::AppError {
             code: "storage-list-failed".to_string(),
             message: format!(
                 "list plugin storage {} failed: {error}",
@@ -3632,20 +3622,20 @@ fn storage_list(
     Ok(keys)
 }
 
-fn storage_path(storage_dir: &Path, key: &str) -> std::result::Result<PathBuf, abi::HostError> {
+fn storage_path(storage_dir: &Path, key: &str) -> std::result::Result<PathBuf, abi::AppError> {
     validate_storage_key(key)?;
     Ok(storage_dir.join(storage_file_name(key)))
 }
 
-fn validate_storage_key_prefix(prefix: &str) -> std::result::Result<(), abi::HostError> {
+fn validate_storage_key_prefix(prefix: &str) -> std::result::Result<(), abi::AppError> {
     if prefix.len() > STORAGE_KEY_MAX_BYTES {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "invalid-storage-key".to_string(),
             message: format!("storage key prefix must be <= {STORAGE_KEY_MAX_BYTES} bytes"),
         });
     }
     if prefix.bytes().any(|byte| !is_storage_key_byte(byte)) {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "invalid-storage-key".to_string(),
             message: "storage key prefix contains unsupported characters".to_string(),
         });
@@ -3653,15 +3643,15 @@ fn validate_storage_key_prefix(prefix: &str) -> std::result::Result<(), abi::Hos
     Ok(())
 }
 
-fn validate_storage_key(key: &str) -> std::result::Result<(), abi::HostError> {
+fn validate_storage_key(key: &str) -> std::result::Result<(), abi::AppError> {
     if key.is_empty() || key.len() > STORAGE_KEY_MAX_BYTES {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "invalid-storage-key".to_string(),
             message: format!("storage key must be 1..={STORAGE_KEY_MAX_BYTES} bytes"),
         });
     }
     if key.bytes().any(|byte| !is_storage_key_byte(byte)) {
-        return Err(abi::HostError {
+        return Err(abi::AppError {
             code: "invalid-storage-key".to_string(),
             message: "storage key contains unsupported characters".to_string(),
         });
@@ -3700,19 +3690,19 @@ fn storage_key_from_file_name(file_name: &str) -> Option<String> {
     Some(key)
 }
 
-fn storage_used_bytes(storage_dir: &Path) -> std::result::Result<u64, abi::HostError> {
+fn storage_used_bytes(storage_dir: &Path) -> std::result::Result<u64, abi::AppError> {
     if !storage_dir.exists() {
         return Ok(0);
     }
     let mut used = 0_u64;
-    for entry in fs::read_dir(storage_dir).map_err(|error| abi::HostError {
+    for entry in fs::read_dir(storage_dir).map_err(|error| abi::AppError {
         code: "storage-quota-check-failed".to_string(),
         message: format!(
             "read plugin storage {} failed: {error}",
             storage_dir.display()
         ),
     })? {
-        let entry = entry.map_err(|error| abi::HostError {
+        let entry = entry.map_err(|error| abi::AppError {
             code: "storage-quota-check-failed".to_string(),
             message: format!(
                 "read plugin storage {} failed: {error}",
@@ -3788,9 +3778,8 @@ impl RenderCache {
         self.page_errors.retain(|key, _error| {
             key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
         });
-        self.pending_pages.retain(|key| {
-            key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id
-        });
+        self.pending_pages
+            .retain(|key| key.plugin_id.as_str() != plugin_id || key.page_id.as_str() != page_id);
         self.invalidate_plugin_injections(plugin_id);
     }
 
@@ -3887,21 +3876,21 @@ impl PluginHttpFetchCache {
         url: &str,
         ttl_seconds: u32,
         max_bytes: u32,
-    ) -> std::result::Result<HttpCacheSnapshot, abi::HostError> {
+    ) -> std::result::Result<HttpCacheSnapshot, abi::AppError> {
         manifest
             .require_capability(PluginCapability::NetworkHttp)
-            .map_err(|error| abi::HostError {
+            .map_err(|error| abi::AppError {
                 code: "capability-denied".to_string(),
                 message: error.to_string(),
             })?;
         if !manifest.allows_network_url(url) {
-            return Err(abi::HostError {
+            return Err(abi::AppError {
                 code: "network-url-denied".to_string(),
                 message: format!("plugin {plugin_id} is not allowed to request {url}"),
             });
         }
         if !url.starts_with("https://") {
-            return Err(abi::HostError {
+            return Err(abi::AppError {
                 code: "network-url-invalid".to_string(),
                 message: "plugin HTTP requests must use https:// URLs".to_string(),
             });
@@ -3928,7 +3917,7 @@ impl PluginHttpFetchCache {
             },
         });
 
-        let mut state = self.state.lock().map_err(|_| abi::HostError {
+        let mut state = self.state.lock().map_err(|_| abi::AppError {
             code: "network-cache-lock-failed".to_string(),
             message: "plugin HTTP cache lock failed".to_string(),
         })?;
@@ -4125,16 +4114,16 @@ impl PluginResourceCache {
         plugin_id: &str,
         render_context: Option<&RenderContext>,
         path: &str,
-    ) -> std::result::Result<Arc<[u8]>, abi::HostError> {
+    ) -> std::result::Result<Arc<[u8]>, abi::AppError> {
         manifest
             .require_capability(PluginCapability::ResourceRead)
-            .map_err(|error| abi::HostError {
+            .map_err(|error| abi::AppError {
                 code: "capability-denied".to_string(),
                 message: error.to_string(),
             })?;
         let resource_path = manifest
             .resource_path(path)
-            .map_err(|error| abi::HostError {
+            .map_err(|error| abi::AppError {
                 code: "resource-denied".to_string(),
                 message: error.to_string(),
             })?;
@@ -4157,7 +4146,7 @@ impl PluginResourceCache {
             },
         };
 
-        let mut state = self.state.lock().map_err(|_| abi::HostError {
+        let mut state = self.state.lock().map_err(|_| abi::AppError {
             code: "resource-cache-lock-failed".to_string(),
             message: "plugin resource cache lock failed".to_string(),
         })?;
@@ -4177,7 +4166,7 @@ impl PluginResourceCache {
             return Ok(Arc::clone(bytes));
         }
         if let Some(error) = entry.error.as_ref() {
-            return Err(abi::HostError {
+            return Err(abi::AppError {
                 code: "resource-read-failed".to_string(),
                 message: error.clone(),
             });
@@ -4193,7 +4182,7 @@ impl PluginResourceCache {
             );
         }
 
-        Err(abi::HostError {
+        Err(abi::AppError {
             code: "resource-loading".to_string(),
             message: format!("plugin resource {path} is loading in the background"),
         })
@@ -4322,7 +4311,7 @@ fn spawn_resource_refresh(
             return;
         }
         finished_refresh_pending.store(true, Ordering::Release);
-        notify_async_host_refresh_finished();
+        notify_async_app_refresh_finished();
     }) {
         if let Err(send_error) = fallback_sender.send(ResourceLoadResult {
             key: fallback_key,
@@ -4332,7 +4321,7 @@ fn spawn_resource_refresh(
             return;
         }
         fallback_finished_refresh_pending.store(true, Ordering::Release);
-        notify_async_host_refresh_finished();
+        notify_async_app_refresh_finished();
     }
 }
 
@@ -4364,7 +4353,7 @@ fn spawn_http_refresh(
             return;
         }
         finished_refresh_pending.store(true, Ordering::Release);
-        notify_async_host_refresh_finished();
+        notify_async_app_refresh_finished();
     }) {
         if let Err(send_error) = fallback_sender.send(HttpRefreshResult {
             url: fallback_url,
@@ -4374,7 +4363,7 @@ fn spawn_http_refresh(
             return;
         }
         fallback_finished_refresh_pending.store(true, Ordering::Release);
-        notify_async_host_refresh_finished();
+        notify_async_app_refresh_finished();
     }
 }
 
@@ -4510,22 +4499,22 @@ fn injection_layout_from_abi(layout: abi::InjectionLayout) -> InjectionLayout {
     }
 }
 
-fn host_event_to_abi(event: &HostEvent) -> abi::HostEvent {
-    abi::HostEvent {
+fn plugin_event_to_abi(event: &PluginEvent) -> abi::PluginEvent {
+    abi::PluginEvent {
         plugin_id: event.plugin_id.clone(),
         page_id: event.page_id.clone(),
         kind: match &event.kind {
-            HostEventKind::RouteChanged { path } => {
-                abi::HostEventKind::RouteChanged(abi::RouteChangedEvent { path: path.clone() })
+            PluginEventKind::RouteChanged { path } => {
+                abi::PluginEventKind::RouteChanged(abi::RouteChangedEvent { path: path.clone() })
             }
-            HostEventKind::Action { action_id, value } => {
-                abi::HostEventKind::Action(abi::ActionEvent {
+            PluginEventKind::Action { action_id, value } => {
+                abi::PluginEventKind::Action(abi::ActionEvent {
                     action_id: action_id.clone(),
                     value: value.clone(),
                 })
             }
-            HostEventKind::Global { name, payload } => {
-                abi::HostEventKind::Global(abi::GlobalEvent {
+            PluginEventKind::Global { name, payload } => {
+                abi::PluginEventKind::Global(abi::GlobalEvent {
                     name: name.clone(),
                     payload: payload.clone(),
                 })
@@ -5159,11 +5148,11 @@ pub fn start_watcher(cx: &mut App) {
     let plugins_dir = cx.global::<PluginRegistry>().plugins_dir().to_path_buf();
     match crate::plugins::watcher::spawn_plugin_watcher(plugins_dir, cx) {
         Ok((sender, task)) => {
-            set_async_host_refresh_sender(sender.clone());
+            set_async_app_refresh_sender(sender.clone());
             cx.update_global(|registry: &mut PluginRegistry, _cx| {
                 registry.set_watcher(sender, task);
             });
-            if drain_async_host_refreshes(cx) {
+            if drain_async_app_refreshes(cx) {
                 cx.refresh_windows();
             }
         }
@@ -5177,15 +5166,15 @@ pub fn start_watcher(cx: &mut App) {
     }
 }
 
-fn set_async_host_refresh_sender(sender: crate::plugins::watcher::PluginWatcherSender) {
-    let slot = ASYNC_HOST_REFRESH_NOTIFICATION.get_or_init(|| Mutex::new(None));
+fn set_async_app_refresh_sender(sender: crate::plugins::watcher::PluginWatcherSender) {
+    let slot = ASYNC_APP_REFRESH_NOTIFICATION.get_or_init(|| Mutex::new(None));
     if let Ok(mut current) = slot.lock() {
         *current = Some(sender);
     }
 }
 
-fn notify_async_host_refresh_finished() {
-    let Some(slot) = ASYNC_HOST_REFRESH_NOTIFICATION.get() else {
+fn notify_async_app_refresh_finished() {
+    let Some(slot) = ASYNC_APP_REFRESH_NOTIFICATION.get() else {
         return;
     };
     let Ok(current) = slot.lock() else {
@@ -5195,7 +5184,7 @@ fn notify_async_host_refresh_finished() {
         return;
     };
     if let Err(error) =
-        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::AsyncHostRefresh)
+        sender.unbounded_send(crate::plugins::watcher::PluginWatcherMessage::AsyncAppRefresh)
     {
         warn!(error = ?error, "plugin HTTP refresh notification receiver dropped");
     }
@@ -5203,7 +5192,7 @@ fn notify_async_host_refresh_finished() {
 
 pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<ViewTree>> {
     ensure_loaded(cx);
-    drain_async_host_refreshes(cx);
+    drain_async_app_refreshes(cx);
 
     {
         let registry = cx.global::<PluginRegistry>();
@@ -5229,7 +5218,7 @@ pub fn render_page(cx: &mut App, plugin_id: &str, page_id: &str) -> Result<Arc<V
 /// 阻塞当前帧或触发重绘循环。
 pub fn request_page_render(cx: &mut App, plugin_id: &str, page_id: &str) {
     // 已完成的后台刷新在这里落地：正常情况下只做一次原子检查，不会改写注册表。
-    drain_async_host_refreshes(cx);
+    drain_async_app_refreshes(cx);
 
     let needs_render = {
         let registry = cx.global::<PluginRegistry>();
@@ -5249,7 +5238,7 @@ pub fn request_page_render(cx: &mut App, plugin_id: &str, page_id: &str) {
 /// 在非渲染上下文执行页面渲染：加载插件、执行 Wasm，并把结果写入渲染缓存。
 fn request_page_render_now(cx: &mut App, plugin_id: &str, page_id: &str) {
     ensure_loaded(cx);
-    drain_async_host_refreshes(cx);
+    drain_async_app_refreshes(cx);
 
     let already_handled = {
         let registry = cx.global::<PluginRegistry>();
@@ -5304,7 +5293,7 @@ pub fn render_injections(
     page: Option<&str>,
 ) -> Vec<RenderedInjection> {
     // 已完成的后台刷新在这里落地：正常情况下只做一次原子检查，不会改写注册表。
-    drain_async_host_refreshes(cx);
+    drain_async_app_refreshes(cx);
 
     let should_request = {
         let registry = cx.global::<PluginRegistry>();
@@ -5331,7 +5320,7 @@ fn render_injections_now(
     page: Option<&str>,
 ) -> Vec<RenderedInjection> {
     ensure_loaded(cx);
-    drain_async_host_refreshes(cx);
+    drain_async_app_refreshes(cx);
 
     let theme_snapshot = current_theme_snapshot(cx);
     let rendered = cx.update_global(|registry: &mut PluginRegistry, _cx| {
@@ -5363,15 +5352,15 @@ pub fn injection_registrations(
         .collect()
 }
 
-pub(crate) fn drain_async_host_refreshes(cx: &mut App) -> bool {
+pub(crate) fn drain_async_app_refreshes(cx: &mut App) -> bool {
     if !cx
         .global::<PluginRegistry>()
-        .has_finished_async_host_refreshes()
+        .has_finished_async_app_refreshes()
     {
         return false;
     }
 
-    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_async_host_refreshes())
+    cx.update_global(|registry: &mut PluginRegistry, _cx| registry.apply_async_app_refreshes())
 }
 
 pub fn has_injections(cx: &App, slot: InjectionSlot, page: Option<&str>) -> bool {
@@ -5463,15 +5452,15 @@ where
                             .get_mut(&plugin_id)
                             .ok_or_else(|| anyhow!("unknown plugin {plugin_id}"))?;
                         if let Some(runtime) = instance.runtime.as_ref() {
-                            runtime.borrow_mut().host_state.borrow_mut().config_text =
+                            runtime.borrow_mut().state.borrow_mut().config_text =
                                 Ok(content_for_state.clone());
                         }
                         registry.render_cache.invalidate_plugin(&plugin_id);
                         Ok(registry.handle_event(
-                            HostEvent {
+                            PluginEvent {
                                 plugin_id: Some(plugin_id.clone()),
                                 page_id: None,
-                                kind: HostEventKind::Global {
+                                kind: PluginEventKind::Global {
                                     name: "config-changed".to_string(),
                                     payload: String::new(),
                                 },
@@ -5481,7 +5470,7 @@ where
                     });
                     match effects {
                         Ok(effects) => {
-                            apply_host_effects(cx, effects, &mut cascade);
+                            apply_plugin_effects(cx, effects, &mut cascade);
                             Ok(())
                         }
                         Err(error) => Err(error),
@@ -5817,10 +5806,10 @@ pub fn dispatch_plugin_action(
     action_id: String,
     value: Option<String>,
 ) {
-    let event = HostEvent {
+    let event = PluginEvent {
         plugin_id: Some(plugin_id),
         page_id,
-        kind: HostEventKind::Action { action_id, value },
+        kind: PluginEventKind::Action { action_id, value },
     };
     let theme_snapshot = current_theme_snapshot(cx);
     let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
@@ -5832,7 +5821,7 @@ pub fn dispatch_plugin_action(
         }
         registry.handle_event(event, &mut cascade)
     });
-    apply_host_effects(cx, effects, &mut cascade);
+    apply_plugin_effects(cx, effects, &mut cascade);
 }
 
 pub fn show_toast(cx: &mut App, plugin_id: &str, message: String) -> Result<()> {
@@ -5863,10 +5852,10 @@ pub fn open_plugin_link(cx: &mut App, plugin_id: &str, url: &str) -> Result<()> 
 }
 
 pub(crate) fn dispatch_global_event(cx: &mut App, name: String, payload: String) {
-    let event = HostEvent {
+    let event = PluginEvent {
         plugin_id: None,
         page_id: None,
-        kind: HostEventKind::Global { name, payload },
+        kind: PluginEventKind::Global { name, payload },
     };
     let theme_snapshot = current_theme_snapshot(cx);
     let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
@@ -5878,14 +5867,14 @@ pub(crate) fn dispatch_global_event(cx: &mut App, name: String, payload: String)
         }
         registry.handle_event(event, &mut cascade)
     });
-    apply_host_effects(cx, effects, &mut cascade);
+    apply_plugin_effects(cx, effects, &mut cascade);
 }
 
 pub(crate) fn dispatch_route_changed(cx: &mut App, path: String) {
-    let event = HostEvent {
+    let event = PluginEvent {
         plugin_id: None,
         page_id: None,
-        kind: HostEventKind::RouteChanged { path },
+        kind: PluginEventKind::RouteChanged { path },
     };
     let theme_snapshot = current_theme_snapshot(cx);
     let clipboard_text = clipboard_text_snapshot_for_event(cx, &event);
@@ -5897,23 +5886,23 @@ pub(crate) fn dispatch_route_changed(cx: &mut App, path: String) {
         }
         registry.handle_event(event, &mut cascade)
     });
-    apply_host_effects(cx, effects, &mut cascade);
+    apply_plugin_effects(cx, effects, &mut cascade);
 }
 
 /// 应用一次插件调用产生的宿主效果。
 ///
 /// 插件通过 `emit_event` 触发的后续事件放进同一个队列迭代处理，而不是递归调用本函数；
 /// 级联总量由 [`EventCascade`] 限制，保证两个插件互相触发时也能收敛。
-pub(crate) fn apply_host_effects(
+pub(crate) fn apply_plugin_effects(
     cx: &mut App,
-    effects: Vec<HostEffect>,
+    effects: Vec<PluginEffect>,
     cascade: &mut EventCascade,
 ) {
-    let mut queue: VecDeque<HostEffect> = effects.into();
+    let mut queue: VecDeque<PluginEffect> = effects.into();
     let mut cascade_warned = false;
     while let Some(effect) = queue.pop_front() {
         match effect {
-            HostEffect::Toast { kind, message } => {
+            PluginEffect::Toast { kind, message } => {
                 let kind = match kind {
                     abi::ToastKind::Info => crate::ui::components::toast::ToastKind::Info,
                     abi::ToastKind::Success => crate::ui::components::toast::ToastKind::Success,
@@ -5921,19 +5910,19 @@ pub(crate) fn apply_host_effects(
                 };
                 crate::ui::components::toast::push_kind(cx, kind, SharedString::from(message));
             }
-            HostEffect::Navigate { target } => {
+            PluginEffect::Navigate { target } => {
                 let target = route_target_from_abi(target);
                 crate::ui::navigation::navigate_target(cx, target);
             }
-            HostEffect::OpenWindow { request } => apply_open_window(cx, request),
-            HostEffect::OpenModal { request } => apply_open_modal(cx, request),
-            HostEffect::CloseWindow { window_id } => {
+            PluginEffect::OpenWindow { request } => apply_open_window(cx, request),
+            PluginEffect::OpenModal { request } => apply_open_modal(cx, request),
+            PluginEffect::CloseWindow { window_id } => {
                 warn!(
                     window_id,
                     "plugin close-window effect requested; close by id is not wired yet"
                 );
             }
-            HostEffect::EmitEvent { name, payload } => {
+            PluginEffect::EmitEvent { name, payload } => {
                 if name == "__plugin_write_clipboard" {
                     cx.write_to_clipboard(ClipboardItem::new_string(payload));
                     continue;
@@ -5955,22 +5944,22 @@ pub(crate) fn apply_host_effects(
                 }
                 let effects = cx.update_global(|registry: &mut PluginRegistry, _cx| {
                     registry.handle_event(
-                        HostEvent {
+                        PluginEvent {
                             plugin_id: None,
                             page_id: None,
-                            kind: HostEventKind::Global { name, payload },
+                            kind: PluginEventKind::Global { name, payload },
                         },
                         cascade,
                     )
                 });
                 queue.extend(effects);
             }
-            HostEffect::Invalidate { plugin_id, target } => {
+            PluginEffect::Invalidate { plugin_id, target } => {
                 cx.update_global(|registry: &mut PluginRegistry, _cx| {
                     registry.invalidate_from_plugin(&plugin_id, target);
                 });
             }
-            HostEffect::Log {
+            PluginEffect::Log {
                 plugin_id,
                 level,
                 message,
@@ -5979,7 +5968,7 @@ pub(crate) fn apply_host_effects(
                     registry.push_log(plugin_id, level, message);
                 });
             }
-            HostEffect::RegisterService {
+            PluginEffect::RegisterService {
                 plugin_id,
                 service_name,
             } => {
@@ -6180,7 +6169,7 @@ sidecar_dir = "bin"
     }
 
     #[test]
-    fn blocking_host_io_is_denied_during_page_render() {
+    fn blocking_app_io_is_denied_during_page_render() {
         let context = RenderContext::Page {
             page_id: "main".to_string(),
         };
@@ -6192,7 +6181,7 @@ sidecar_dir = "bin"
     }
 
     #[test]
-    fn blocking_host_io_is_allowed_outside_render() {
+    fn blocking_app_io_is_allowed_outside_render() {
         require_non_render_blocking_io(None, "storage get")
             .expect("event/init host I/O remains available");
     }
@@ -6299,10 +6288,10 @@ max_resource_bytes = 16
             root.join("cache"),
             root.join("packages"),
         );
-        let event = HostEvent {
+        let event = PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::RouteChanged {
+            kind: PluginEventKind::RouteChanged {
                 path: "/settings".to_string(),
             },
         };
@@ -6346,10 +6335,10 @@ capabilities = ["event.global"]
             .insert("route-changed".to_string());
         // 测试直接改写了插件订阅，必须同步事件订阅倒排索引。
         registry.rebuild_event_subscribers();
-        let event = HostEvent {
+        let event = PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::RouteChanged {
+            kind: PluginEventKind::RouteChanged {
                 path: "/settings".to_string(),
             },
         };
@@ -6518,10 +6507,10 @@ capabilities = ["event.global"]
         );
         registry.rebuild_event_subscribers();
 
-        let global_event = |name: &str| HostEvent {
+        let global_event = |name: &str| PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::Global {
+            kind: PluginEventKind::Global {
                 name: name.to_string(),
                 payload: String::new(),
             },
@@ -6532,10 +6521,10 @@ capabilities = ["event.global"]
         );
         assert!(registry.event_targets(&global_event("other")).is_empty());
 
-        let route_event = HostEvent {
+        let route_event = PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::RouteChanged {
+            kind: PluginEventKind::RouteChanged {
                 path: "/settings".to_string(),
             },
         };

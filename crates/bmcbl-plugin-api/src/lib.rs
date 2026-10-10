@@ -1,7 +1,7 @@
 #![cfg_attr(target_arch = "wasm32", no_std)]
 #![expect(
     unsafe_code,
-    reason = "plugin ABI crosses host-call and guest-memory boundaries"
+    reason = "plugin ABI crosses app-call and guest-memory boundaries"
 )]
 
 extern crate alloc;
@@ -18,14 +18,15 @@ pub use bmcbl_plugin_macros::{bmcbl_plugin, plugin_metadata};
 pub mod pack;
 
 pub const API_VERSION: &str = "0.6";
-pub const HOST_MODULE: &str = "bmcbl";
-pub const HOST_CALL_NAME: &str = "bmcbl_host_call";
-pub const DEFAULT_HOST_BUFFER_CAPACITY: usize = 256;
+pub const APP_MODULE: &str = "bmcbl";
+/// wasm 导入符号名。字符串值是冻结的 ABI 名称，不随 Rust 命名调整而变化。
+pub const APP_CALL_NAME: &str = "bmcbl_host_call";
+pub const DEFAULT_APP_BUFFER_CAPACITY: usize = 256;
 /// 文本类请求（配置、翻译、存储）的初始响应缓冲。
 const MEDIUM_HOST_BUFFER_CAPACITY: usize = 1024;
 /// 二进制/大文本类请求（资源读取、HTTP 文本）的初始响应缓冲上限。
 const LARGE_HOST_BUFFER_CAPACITY: usize = 16 * 1024;
-pub const MAX_HOST_BUFFER_CAPACITY: usize = 1024 * 1024;
+pub const MAX_APP_BUFFER_CAPACITY: usize = 1024 * 1024;
 
 const OP_LOG: i32 = 0;
 const OP_SHOW_TOAST: i32 = 1;
@@ -63,7 +64,7 @@ const OP_SIDECAR_CALL: i32 = 33;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
-pub enum HostOp {
+pub enum AppOp {
     Log = OP_LOG,
     ShowToast = OP_SHOW_TOAST,
     Navigate = OP_NAVIGATE,
@@ -99,7 +100,7 @@ pub enum HostOp {
     SidecarCall = OP_SIDECAR_CALL,
 }
 
-impl HostOp {
+impl AppOp {
     #[must_use]
     pub const fn code(self) -> i32 {
         self as i32
@@ -142,9 +143,10 @@ impl PluginError {
         Self::new("not-found", message)
     }
 
+    /// 由启动器侧产生的错误（例如宿主调用失败）。
     #[must_use]
-    pub fn host(message: impl Into<String>) -> Self {
-        Self::new("host", message)
+    pub fn app(message: impl Into<String>) -> Self {
+        Self::new("app", message)
     }
 
     #[must_use]
@@ -154,7 +156,7 @@ impl PluginError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HostError {
+pub struct AppError {
     pub code: String,
     pub message: String,
 }
@@ -556,17 +558,17 @@ pub struct GlobalEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum HostEventKind {
+pub enum PluginEventKind {
     RouteChanged(RouteChangedEvent),
     Action(ActionEvent),
     Global(GlobalEvent),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct HostEvent {
+pub struct PluginEvent {
     pub plugin_id: Option<String>,
     pub page_id: Option<String>,
-    pub kind: HostEventKind,
+    pub kind: PluginEventKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -827,7 +829,7 @@ pub struct ViewTree {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum HostRequest {
+pub enum AppRequest {
     Log {
         level: LogLevel,
         message: String,
@@ -937,7 +939,7 @@ pub struct ServiceCallRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum HostResponse {
+pub enum AppResponse {
     Unit,
     WindowId(u64),
     String(String),
@@ -959,7 +961,7 @@ pub enum HostResponse {
 pub trait Plugin {
     fn init(context: PluginContext) -> PluginResult<Vec<Registration>>;
 
-    fn handle_event(_event: HostEvent) -> PluginResult<()> {
+    fn handle_event(_event: PluginEvent) -> PluginResult<()> {
         Ok(())
     }
 
@@ -1050,12 +1052,12 @@ impl From<PluginAction> for String {
     }
 }
 
-impl HostEvent {
+impl PluginEvent {
     #[must_use]
     pub fn action_id(&self) -> Option<&str> {
         match &self.kind {
-            HostEventKind::Action(action) => Some(action.action_id.as_str()),
-            HostEventKind::RouteChanged(_) | HostEventKind::Global(_) => None,
+            PluginEventKind::Action(action) => Some(action.action_id.as_str()),
+            PluginEventKind::RouteChanged(_) | PluginEventKind::Global(_) => None,
         }
     }
 
@@ -1068,16 +1070,16 @@ impl HostEvent {
     #[must_use]
     pub fn route_path(&self) -> Option<&str> {
         match &self.kind {
-            HostEventKind::RouteChanged(route) => Some(route.path.as_str()),
-            HostEventKind::Action(_) | HostEventKind::Global(_) => None,
+            PluginEventKind::RouteChanged(route) => Some(route.path.as_str()),
+            PluginEventKind::Action(_) | PluginEventKind::Global(_) => None,
         }
     }
 
     #[must_use]
     pub fn global_event(&self) -> Option<(&str, &str)> {
         match &self.kind {
-            HostEventKind::Global(event) => Some((event.name.as_str(), event.payload.as_str())),
-            HostEventKind::Action(_) | HostEventKind::RouteChanged(_) => None,
+            PluginEventKind::Global(event) => Some((event.name.as_str(), event.payload.as_str())),
+            PluginEventKind::Action(_) | PluginEventKind::RouteChanged(_) => None,
         }
     }
 }
@@ -1941,7 +1943,7 @@ pub fn spacer(size: u16) -> ViewNode {
     ViewNode::Spacer(SpacerNode { size })
 }
 
-fn plugin_error_from_host_error(error: HostError) -> PluginError {
+fn plugin_error_from_app_error(error: AppError) -> PluginError {
     PluginError {
         code: error.code,
         message: error.message,
@@ -1949,11 +1951,11 @@ fn plugin_error_from_host_error(error: HostError) -> PluginError {
 }
 
 pub fn log(level: LogLevel, message: impl AsRef<str>) {
-    let request = HostRequest::Log {
+    let request = AppRequest::Log {
         level,
         message: message.as_ref().to_string(),
     };
-    let _ = host_call_unit(HostOp::Log, &request);
+    let _ = app_call_unit(AppOp::Log, &request);
 }
 
 pub fn log_debug(message: impl AsRef<str>) {
@@ -1973,9 +1975,9 @@ pub fn log_error(message: impl AsRef<str>) {
 }
 
 pub fn show_toast(kind: ToastKind, message: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::ShowToast,
-        &HostRequest::ShowToast {
+    app_call_unit(
+        AppOp::ShowToast,
+        &AppRequest::ShowToast {
             kind,
             message: message.as_ref().to_string(),
         },
@@ -1983,23 +1985,23 @@ pub fn show_toast(kind: ToastKind, message: impl AsRef<str>) -> PluginResult<()>
 }
 
 pub fn open_window(request: &WindowRequest) -> PluginResult<u64> {
-    match host_call(
-        HostOp::OpenWindow,
-        &HostRequest::OpenWindow {
+    match app_call(
+        AppOp::OpenWindow,
+        &AppRequest::OpenWindow {
             request: request.clone(),
         },
     )? {
-        HostResponse::WindowId(window_id) => Ok(window_id),
-        HostResponse::Unit
-        | HostResponse::String(_)
-        | HostResponse::U64(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+        AppResponse::WindowId(window_id) => Ok(window_id),
+        AppResponse::Unit
+        | AppResponse::String(_)
+        | AppResponse::U64(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "open-window returned unexpected response type",
         )),
@@ -2007,18 +2009,18 @@ pub fn open_window(request: &WindowRequest) -> PluginResult<u64> {
 }
 
 pub fn open_modal(request: &ModalRequest) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::OpenModal,
-        &HostRequest::OpenModal {
+    app_call_unit(
+        AppOp::OpenModal,
+        &AppRequest::OpenModal {
             request: request.clone(),
         },
     )
 }
 
 pub fn navigate(target: &RouteTarget) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::Navigate,
-        &HostRequest::Navigate {
+    app_call_unit(
+        AppOp::Navigate,
+        &AppRequest::Navigate {
             target: target.clone(),
         },
     )
@@ -2048,9 +2050,9 @@ pub fn navigate_path(path: impl Into<String>) -> PluginResult<()> {
 }
 
 pub fn emit_event(name: impl AsRef<str>, payload: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::EmitEvent,
-        &HostRequest::EmitEvent {
+    app_call_unit(
+        AppOp::EmitEvent,
+        &AppRequest::EmitEvent {
             name: name.as_ref().to_string(),
             payload: payload.as_ref().to_string(),
         },
@@ -2058,7 +2060,7 @@ pub fn emit_event(name: impl AsRef<str>, payload: impl AsRef<str>) -> PluginResu
 }
 
 pub fn invalidate(target: InvalidateTarget) -> PluginResult<()> {
-    host_call_unit(HostOp::Invalidate, &HostRequest::Invalidate { target })
+    app_call_unit(AppOp::Invalidate, &AppRequest::Invalidate { target })
 }
 
 pub fn invalidate_all() -> PluginResult<()> {
@@ -2081,19 +2083,19 @@ pub fn invalidate_injection(
 
 #[must_use]
 pub fn current_locale() -> String {
-    match host_call(HostOp::CurrentLocale, &HostRequest::CurrentLocale) {
-        Ok(HostResponse::String(locale)) => locale,
+    match app_call(AppOp::CurrentLocale, &AppRequest::CurrentLocale) {
+        Ok(AppResponse::String(locale)) => locale,
         Ok(
-            HostResponse::Unit
-            | HostResponse::WindowId(_)
-            | HostResponse::U64(_)
-            | HostResponse::SessionValue(_)
-            | HostResponse::Bytes(_)
-            | HostResponse::StringList(_)
-            | HostResponse::TaskId(_)
-            | HostResponse::AppInfo(_)
-            | HostResponse::ThemeSnapshot(_)
-            | HostResponse::HttpTextResponse { .. },
+            AppResponse::Unit
+            | AppResponse::WindowId(_)
+            | AppResponse::U64(_)
+            | AppResponse::SessionValue(_)
+            | AppResponse::Bytes(_)
+            | AppResponse::StringList(_)
+            | AppResponse::TaskId(_)
+            | AppResponse::AppInfo(_)
+            | AppResponse::ThemeSnapshot(_)
+            | AppResponse::HttpTextResponse { .. },
         )
         | Err(_) => String::new(),
     }
@@ -2106,25 +2108,25 @@ pub fn tr(key: impl AsRef<str>) -> String {
 
 #[must_use]
 pub fn tr_args(key: impl AsRef<str>, args: &[I18nArg]) -> String {
-    match host_call(
-        HostOp::Translate,
-        &HostRequest::Translate {
+    match app_call(
+        AppOp::Translate,
+        &AppRequest::Translate {
             key: key.as_ref().to_string(),
             args: args.to_vec(),
         },
     ) {
-        Ok(HostResponse::String(value)) => value,
+        Ok(AppResponse::String(value)) => value,
         Ok(
-            HostResponse::Unit
-            | HostResponse::WindowId(_)
-            | HostResponse::U64(_)
-            | HostResponse::SessionValue(_)
-            | HostResponse::Bytes(_)
-            | HostResponse::StringList(_)
-            | HostResponse::TaskId(_)
-            | HostResponse::AppInfo(_)
-            | HostResponse::ThemeSnapshot(_)
-            | HostResponse::HttpTextResponse { .. },
+            AppResponse::Unit
+            | AppResponse::WindowId(_)
+            | AppResponse::U64(_)
+            | AppResponse::SessionValue(_)
+            | AppResponse::Bytes(_)
+            | AppResponse::StringList(_)
+            | AppResponse::TaskId(_)
+            | AppResponse::AppInfo(_)
+            | AppResponse::ThemeSnapshot(_)
+            | AppResponse::HttpTextResponse { .. },
         )
         | Err(_) => key.as_ref().to_string(),
     }
@@ -2138,23 +2140,23 @@ pub fn tr_arg(key: impl Into<String>, value: impl Into<String>) -> I18nArg {
     }
 }
 
-/// Reads plugin configuration through the host.
+/// Reads plugin configuration through the launcher.
 ///
-/// This performs host filesystem I/O and is rejected while rendering plugin UI. Read it during
+/// This performs launcher filesystem I/O and is rejected while rendering plugin UI. Read it during
 /// initialization or event handling and retain render-facing values in session/plugin state.
 pub fn read_config() -> PluginResult<String> {
-    match host_call(HostOp::ReadConfig, &HostRequest::ReadConfig)? {
-        HostResponse::String(text) => Ok(text),
-        HostResponse::Unit
-        | HostResponse::WindowId(_)
-        | HostResponse::U64(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+    match app_call(AppOp::ReadConfig, &AppRequest::ReadConfig)? {
+        AppResponse::String(text) => Ok(text),
+        AppResponse::Unit
+        | AppResponse::WindowId(_)
+        | AppResponse::U64(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "read-config returned unexpected response type",
         )),
@@ -2166,15 +2168,15 @@ pub fn http_get_text(
     ttl_seconds: u32,
     max_bytes: u32,
 ) -> PluginResult<HttpTextResponse> {
-    match host_call(
-        HostOp::HttpGetText,
-        &HostRequest::HttpGetText {
+    match app_call(
+        AppOp::HttpGetText,
+        &AppRequest::HttpGetText {
             url: url.as_ref().to_string(),
             ttl_seconds,
             max_bytes,
         },
     )? {
-        HostResponse::HttpTextResponse {
+        AppResponse::HttpTextResponse {
             state,
             body,
             error,
@@ -2185,16 +2187,16 @@ pub fn http_get_text(
             error,
             fetched_at_unix_ms,
         }),
-        HostResponse::Unit
-        | HostResponse::WindowId(_)
-        | HostResponse::String(_)
-        | HostResponse::U64(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_) => Err(plugin_error(
+        AppResponse::Unit
+        | AppResponse::WindowId(_)
+        | AppResponse::String(_)
+        | AppResponse::U64(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_) => Err(plugin_error(
             "invalid-host-response",
             "http-get-text returned unexpected response type",
         )),
@@ -2202,34 +2204,34 @@ pub fn http_get_text(
 }
 
 pub fn write_clipboard_text(text: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::WriteClipboardText,
-        &HostRequest::WriteClipboardText {
+    app_call_unit(
+        AppOp::WriteClipboardText,
+        &AppRequest::WriteClipboardText {
             text: text.as_ref().to_string(),
         },
     )
 }
 
 pub fn read_clipboard_text() -> PluginResult<Option<String>> {
-    match host_call(HostOp::ReadClipboardText, &HostRequest::ReadClipboardText)? {
-        HostResponse::SessionValue(value) => Ok(value),
-        other => unexpected_host_response(other, "read-clipboard-text"),
+    match app_call(AppOp::ReadClipboardText, &AppRequest::ReadClipboardText)? {
+        AppResponse::SessionValue(value) => Ok(value),
+        other => unexpected_app_response(other, "read-clipboard-text"),
     }
 }
 
 pub fn current_unix_ms() -> PluginResult<u64> {
-    match host_call(HostOp::CurrentUnixMs, &HostRequest::CurrentUnixMs)? {
-        HostResponse::U64(value) => Ok(value),
-        HostResponse::Unit
-        | HostResponse::WindowId(_)
-        | HostResponse::String(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+    match app_call(AppOp::CurrentUnixMs, &AppRequest::CurrentUnixMs)? {
+        AppResponse::U64(value) => Ok(value),
+        AppResponse::Unit
+        | AppResponse::WindowId(_)
+        | AppResponse::String(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "current-unix-ms returned unexpected response type",
         )),
@@ -2237,66 +2239,66 @@ pub fn current_unix_ms() -> PluginResult<u64> {
 }
 
 pub fn open_external_url(url: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::OpenExternalUrl,
-        &HostRequest::OpenExternalUrl {
+    app_call_unit(
+        AppOp::OpenExternalUrl,
+        &AppRequest::OpenExternalUrl {
             url: url.as_ref().to_string(),
         },
     )
 }
 
-/// Reads a declared/allowed text resource through the host resource cache.
+/// Reads a declared/allowed text resource through the launcher resource cache.
 ///
 /// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
 /// background read and return a `resource-loading` error; render callers are invalidated
 /// automatically when the resource becomes ready.
 pub fn read_resource_text(path: impl AsRef<str>) -> PluginResult<String> {
-    match host_call(
-        HostOp::ReadResourceText,
-        &HostRequest::ReadResourceText {
+    match app_call(
+        AppOp::ReadResourceText,
+        &AppRequest::ReadResourceText {
             path: path.as_ref().to_string(),
         },
     )? {
-        HostResponse::String(text) => Ok(text),
-        other => unexpected_host_response(other, "read-resource-text"),
+        AppResponse::String(text) => Ok(text),
+        other => unexpected_app_response(other, "read-resource-text"),
     }
 }
 
-/// Reads a declared/allowed binary resource through the host resource cache.
+/// Reads a declared/allowed binary resource through the launcher resource cache.
 ///
 /// Exact-file allowlist entries are prewarmed during plugin reload. Other cache misses schedule a
 /// background read and return a `resource-loading` error; render callers are invalidated
 /// automatically when the resource becomes ready.
 pub fn read_resource_bytes(path: impl AsRef<str>) -> PluginResult<Vec<u8>> {
-    match host_call(
-        HostOp::ReadResourceBytes,
-        &HostRequest::ReadResourceBytes {
+    match app_call(
+        AppOp::ReadResourceBytes,
+        &AppRequest::ReadResourceBytes {
             path: path.as_ref().to_string(),
         },
     )? {
-        HostResponse::Bytes(bytes) => Ok(bytes),
-        other => unexpected_host_response(other, "read-resource-bytes"),
+        AppResponse::Bytes(bytes) => Ok(bytes),
+        other => unexpected_app_response(other, "read-resource-bytes"),
     }
 }
 
 pub fn session_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
-    match host_call(
-        HostOp::SessionGet,
-        &HostRequest::SessionGet {
+    match app_call(
+        AppOp::SessionGet,
+        &AppRequest::SessionGet {
             key: key.as_ref().to_string(),
         },
     )? {
-        HostResponse::SessionValue(value) => Ok(value),
-        HostResponse::Unit
-        | HostResponse::WindowId(_)
-        | HostResponse::String(_)
-        | HostResponse::U64(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+        AppResponse::SessionValue(value) => Ok(value),
+        AppResponse::Unit
+        | AppResponse::WindowId(_)
+        | AppResponse::String(_)
+        | AppResponse::U64(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "session-get returned unexpected response type",
         )),
@@ -2304,38 +2306,38 @@ pub fn session_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
 }
 
 pub fn session_set(key: impl AsRef<str>, value: Option<impl AsRef<str>>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::SessionSet,
-        &HostRequest::SessionSet {
+    app_call_unit(
+        AppOp::SessionSet,
+        &AppRequest::SessionSet {
             key: key.as_ref().to_string(),
             value: value.map(|value| value.as_ref().to_string()),
         },
     )
 }
 
-/// Reads the host-prepared persistent plugin KV snapshot.
+/// Reads the launcher-prepared persistent plugin KV snapshot.
 ///
 /// Reads are memory-only and safe while rendering plugin UI.
 pub fn storage_get(key: impl AsRef<str>) -> PluginResult<Option<String>> {
-    match host_call(
-        HostOp::StorageGet,
-        &HostRequest::StorageGet {
+    match app_call(
+        AppOp::StorageGet,
+        &AppRequest::StorageGet {
             key: key.as_ref().to_string(),
         },
     )? {
-        HostResponse::SessionValue(value) => Ok(value),
-        other => unexpected_host_response(other, "storage-get"),
+        AppResponse::SessionValue(value) => Ok(value),
+        other => unexpected_app_response(other, "storage-get"),
     }
 }
 
 /// Updates persistent plugin KV storage.
 ///
-/// The host validates quota and updates the in-memory snapshot immediately, then queues ordered
+/// The launcher validates quota and updates the in-memory snapshot immediately, then queues ordered
 /// background persistence. Mutating storage is rejected while rendering plugin UI.
 pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::StorageSet,
-        &HostRequest::StorageSet {
+    app_call_unit(
+        AppOp::StorageSet,
+        &AppRequest::StorageSet {
             key: key.as_ref().to_string(),
             value: value.as_ref().to_string(),
         },
@@ -2347,26 +2349,26 @@ pub fn storage_set(key: impl AsRef<str>, value: impl AsRef<str>) -> PluginResult
 /// The in-memory snapshot updates immediately and disk persistence is queued in order. Mutating
 /// storage is rejected while rendering plugin UI.
 pub fn storage_delete(key: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::StorageDelete,
-        &HostRequest::StorageDelete {
+    app_call_unit(
+        AppOp::StorageDelete,
+        &AppRequest::StorageDelete {
             key: key.as_ref().to_string(),
         },
     )
 }
 
-/// Lists keys from the host-prepared persistent plugin KV snapshot.
+/// Lists keys from the launcher-prepared persistent plugin KV snapshot.
 ///
 /// Reads are memory-only and safe while rendering plugin UI.
 pub fn storage_list(prefix: Option<impl AsRef<str>>) -> PluginResult<Vec<String>> {
-    match host_call(
-        HostOp::StorageList,
-        &HostRequest::StorageList {
+    match app_call(
+        AppOp::StorageList,
+        &AppRequest::StorageList {
             prefix: prefix.map(|prefix| prefix.as_ref().to_string()),
         },
     )? {
-        HostResponse::StringList(keys) => Ok(keys),
-        other => unexpected_host_response(other, "storage-list"),
+        AppResponse::StringList(keys) => Ok(keys),
+        other => unexpected_app_response(other, "storage-list"),
     }
 }
 
@@ -2374,44 +2376,44 @@ pub fn config_read() -> PluginResult<String> {
     read_config()
 }
 
-/// Updates plugin configuration through the host.
+/// Updates plugin configuration through the launcher.
 ///
 /// TOML is validated and the in-memory snapshot updates immediately; atomic disk persistence is
-/// queued on the host I/O runtime. Configuration mutation is rejected while rendering plugin UI.
+/// queued on the launcher I/O runtime. Configuration mutation is rejected while rendering plugin UI.
 pub fn config_write(text: impl AsRef<str>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::WriteConfig,
-        &HostRequest::WriteConfig {
+    app_call_unit(
+        AppOp::WriteConfig,
+        &AppRequest::WriteConfig {
             text: text.as_ref().to_string(),
         },
     )
 }
 
 pub fn create_task(request: TaskCreateRequest) -> PluginResult<String> {
-    match host_call(HostOp::CreateTask, &HostRequest::CreateTask { request })? {
-        HostResponse::TaskId(task_id) => Ok(task_id),
-        other => unexpected_host_response(other, "create-task"),
+    match app_call(AppOp::CreateTask, &AppRequest::CreateTask { request })? {
+        AppResponse::TaskId(task_id) => Ok(task_id),
+        other => unexpected_app_response(other, "create-task"),
     }
 }
 
 pub fn update_task(request: TaskUpdateRequest) -> PluginResult<()> {
-    host_call_unit(HostOp::UpdateTask, &HostRequest::UpdateTask { request })
+    app_call_unit(AppOp::UpdateTask, &AppRequest::UpdateTask { request })
 }
 
 pub fn finish_task(request: TaskFinishRequest) -> PluginResult<()> {
-    host_call_unit(HostOp::FinishTask, &HostRequest::FinishTask { request })
+    app_call_unit(AppOp::FinishTask, &AppRequest::FinishTask { request })
 }
 
 pub fn app_info() -> PluginResult<AppInfo> {
-    match host_call(HostOp::AppInfo, &HostRequest::AppInfo)? {
-        HostResponse::AppInfo(info) => Ok(info),
-        other => unexpected_host_response(other, "app-info"),
+    match app_call(AppOp::AppInfo, &AppRequest::AppInfo)? {
+        AppResponse::AppInfo(info) => Ok(info),
+        other => unexpected_app_response(other, "app-info"),
     }
 }
 
 /// Starts an executable shipped inside the plugin's declared sidecar directory.
 ///
-/// This is the non-blocking sidecar path. The host validates the pre-indexed executable name and
+/// This is the non-blocking sidecar path. The launcher validates the pre-indexed executable name and
 /// queues process creation on its I/O runtime; successful scheduling returns immediately.
 pub fn sidecar_start(
     name: impl Into<String>,
@@ -2420,10 +2422,10 @@ pub fn sidecar_start(
     sidecar_call(name, args, 0, 0).map(|_| ())
 }
 
-/// Compatibility entry point for the sidecar host operation.
+/// Compatibility entry point for the sidecar app operation.
 ///
 /// `max_output_bytes == 0` queues a non-blocking start. Synchronous captured output is intentionally
-/// rejected by the host because waiting for a child process inside a WASM host call can stall the
+/// rejected by the host because waiting for a child process inside a WASM app call can stall the
 /// GPUI foreground thread for seconds.
 pub fn sidecar_call(
     name: impl Into<String>,
@@ -2431,24 +2433,24 @@ pub fn sidecar_call(
     timeout_ms: u32,
     max_output_bytes: u32,
 ) -> PluginResult<String> {
-    match host_call(
-        HostOp::SidecarCall,
-        &HostRequest::SidecarCall {
+    match app_call(
+        AppOp::SidecarCall,
+        &AppRequest::SidecarCall {
             name: name.into(),
             args: args.into_iter().map(Into::into).collect(),
             timeout_ms,
             max_output_bytes,
         },
     )? {
-        HostResponse::String(output) => Ok(output),
-        other => unexpected_host_response(other, "sidecar-call"),
+        AppResponse::String(output) => Ok(output),
+        other => unexpected_app_response(other, "sidecar-call"),
     }
 }
 
 pub fn register_service(name: impl Into<String>) -> PluginResult<()> {
-    host_call_unit(
-        HostOp::RegisterService,
-        &HostRequest::RegisterService {
+    app_call_unit(
+        AppOp::RegisterService,
+        &AppRequest::RegisterService {
             name: name.into(),
         },
     )
@@ -2468,9 +2470,9 @@ pub fn call_plugin_service(
     method: impl Into<String>,
     payload: impl Into<Vec<u8>>,
 ) -> PluginResult<Vec<u8>> {
-    match host_call(
-        HostOp::CallService,
-        &HostRequest::CallService {
+    match app_call(
+        AppOp::CallService,
+        &AppRequest::CallService {
             request: ServiceCallRequest {
                 target_plugin,
                 service_name: service_name.into(),
@@ -2479,24 +2481,24 @@ pub fn call_plugin_service(
             },
         },
     )? {
-        HostResponse::Bytes(data) => Ok(data),
-        other => unexpected_host_response(other, "call-service"),
+        AppResponse::Bytes(data) => Ok(data),
+        other => unexpected_app_response(other, "call-service"),
     }
 }
 
 pub fn theme_snapshot() -> PluginResult<ThemeSnapshot> {
-    match host_call(HostOp::ThemeSnapshot, &HostRequest::ThemeSnapshot)? {
-        HostResponse::ThemeSnapshot(snapshot) => Ok(snapshot),
-        HostResponse::Unit
-        | HostResponse::WindowId(_)
-        | HostResponse::String(_)
-        | HostResponse::U64(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+    match app_call(AppOp::ThemeSnapshot, &AppRequest::ThemeSnapshot)? {
+        AppResponse::ThemeSnapshot(snapshot) => Ok(snapshot),
+        AppResponse::Unit
+        | AppResponse::WindowId(_)
+        | AppResponse::String(_)
+        | AppResponse::U64(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "theme-snapshot returned unexpected response type",
         )),
@@ -2519,8 +2521,8 @@ pub fn plugin_error(code: impl Into<String>, message: impl Into<String>) -> Plug
     PluginError::new(code, message)
 }
 
-fn unexpected_host_response<T>(
-    _response: HostResponse,
+fn unexpected_app_response<T>(
+    _response: AppResponse,
     operation: &'static str,
 ) -> PluginResult<T> {
     Err(plugin_error(
@@ -2529,36 +2531,36 @@ fn unexpected_host_response<T>(
     ))
 }
 
-fn host_call_unit(op: HostOp, request: &HostRequest) -> PluginResult<()> {
-    match host_call(op, request)? {
-        HostResponse::Unit => Ok(()),
-        HostResponse::WindowId(_)
-        | HostResponse::String(_)
-        | HostResponse::U64(_)
-        | HostResponse::SessionValue(_)
-        | HostResponse::Bytes(_)
-        | HostResponse::StringList(_)
-        | HostResponse::TaskId(_)
-        | HostResponse::AppInfo(_)
-        | HostResponse::ThemeSnapshot(_)
-        | HostResponse::HttpTextResponse { .. } => Err(plugin_error(
+fn app_call_unit(op: AppOp, request: &AppRequest) -> PluginResult<()> {
+    match app_call(op, request)? {
+        AppResponse::Unit => Ok(()),
+        AppResponse::WindowId(_)
+        | AppResponse::String(_)
+        | AppResponse::U64(_)
+        | AppResponse::SessionValue(_)
+        | AppResponse::Bytes(_)
+        | AppResponse::StringList(_)
+        | AppResponse::TaskId(_)
+        | AppResponse::AppInfo(_)
+        | AppResponse::ThemeSnapshot(_)
+        | AppResponse::HttpTextResponse { .. } => Err(plugin_error(
             "invalid-host-response",
             "host returned unexpected response type",
         )),
     }
 }
 
-fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
+fn app_call(op: AppOp, request: &AppRequest) -> PluginResult<AppResponse> {
     let request_bytes = postcard::to_allocvec(request).map_err(|error| {
         plugin_error(
             "postcard-encode-failed",
-            format!("encode host request failed: {error}"),
+            format!("encode app request failed: {error}"),
         )
     })?;
-    let mut response = vec![0_u8; initial_host_response_capacity(request)];
+    let mut response = vec![0_u8; initial_app_response_capacity(request)];
 
     loop {
-        let written = unsafe_host_call(
+        let written = unsafe_app_call(
             op.code(),
             request_bytes.as_ptr(),
             request_bytes.len(),
@@ -2567,11 +2569,11 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
         );
 
         if written < 0 {
-            let required = usize::try_from(-written).unwrap_or(MAX_HOST_BUFFER_CAPACITY + 1);
-            if required == 0 || required > MAX_HOST_BUFFER_CAPACITY {
+            let required = usize::try_from(-written).unwrap_or(MAX_APP_BUFFER_CAPACITY + 1);
+            if required == 0 || required > MAX_APP_BUFFER_CAPACITY {
                 return Err(plugin_error(
                     "host-buffer-too-large",
-                    format!("host requested invalid response size {required}"),
+                    format!("app requested invalid response size {required}"),
                 ));
             }
             response.resize(required, 0);
@@ -2591,14 +2593,14 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
             ));
         }
 
-        let response_value: Result<HostResponse, HostError> =
+        let response_value: Result<AppResponse, AppError> =
             postcard::from_bytes(&response[..written]).map_err(|error| {
                 plugin_error(
                     "postcard-decode-failed",
-                    format!("decode host response failed: {error}"),
+                    format!("decode app response failed: {error}"),
                 )
             })?;
-        return response_value.map_err(plugin_error_from_host_error);
+        return response_value.map_err(plugin_error_from_app_error);
     }
 }
 
@@ -2607,26 +2609,26 @@ fn host_call(op: HostOp, request: &HostRequest) -> PluginResult<HostResponse> {
 /// 宿主在响应放不下时不会写入任何字节，只回报所需长度；插件随后必须重新发起同一次
 /// 调用，而宿主会重新执行该动作（重新读取资源、重新编码响应）。因此容量估算直接影响
 /// 读取资源、读取配置、HTTP 文本等热路径的调用次数。
-fn initial_host_response_capacity(request: &HostRequest) -> usize {
+fn initial_app_response_capacity(request: &AppRequest) -> usize {
     match request {
-        HostRequest::ReadResourceBytes { .. } | HostRequest::CallService { .. } => {
+        AppRequest::ReadResourceBytes { .. } | AppRequest::CallService { .. } => {
             LARGE_HOST_BUFFER_CAPACITY
         }
-        HostRequest::HttpGetText { max_bytes, .. } => usize::try_from(*max_bytes)
+        AppRequest::HttpGetText { max_bytes, .. } => usize::try_from(*max_bytes)
             .unwrap_or(LARGE_HOST_BUFFER_CAPACITY)
-            .clamp(DEFAULT_HOST_BUFFER_CAPACITY, LARGE_HOST_BUFFER_CAPACITY),
-        HostRequest::ReadResourceText { .. }
-        | HostRequest::ReadConfig
-        | HostRequest::Translate { .. }
-        | HostRequest::StorageGet { .. }
-        | HostRequest::StorageList { .. } => MEDIUM_HOST_BUFFER_CAPACITY,
-        HostRequest::AppInfo | HostRequest::ThemeSnapshot => 512,
-        _ => DEFAULT_HOST_BUFFER_CAPACITY,
+            .clamp(DEFAULT_APP_BUFFER_CAPACITY, LARGE_HOST_BUFFER_CAPACITY),
+        AppRequest::ReadResourceText { .. }
+        | AppRequest::ReadConfig
+        | AppRequest::Translate { .. }
+        | AppRequest::StorageGet { .. }
+        | AppRequest::StorageList { .. } => MEDIUM_HOST_BUFFER_CAPACITY,
+        AppRequest::AppInfo | AppRequest::ThemeSnapshot => 512,
+        _ => DEFAULT_APP_BUFFER_CAPACITY,
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn unsafe_host_call(
+fn unsafe_app_call(
     op: i32,
     request_ptr: *const u8,
     request_len: usize,
@@ -2648,7 +2650,7 @@ fn unsafe_host_call(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn unsafe_host_call(
+fn unsafe_app_call(
     _op: i32,
     _request_ptr: *const u8,
     _request_len: usize,
@@ -2772,7 +2774,7 @@ macro_rules! export_plugin {
         )]
         #[unsafe(no_mangle)]
         pub extern "C" fn bmcbl_handle_event(ptr: u32, len: u32) -> u64 {
-            let event = match unsafe { $crate::decode_request::<$crate::HostEvent>(ptr, len) } {
+            let event = match unsafe { $crate::decode_request::<$crate::PluginEvent>(ptr, len) } {
                 Ok(event) => event,
                 Err(error) => return $crate::encode_plugin_result::<()>(Err(error)),
             };
@@ -3028,7 +3030,7 @@ macro_rules! invalidate {
 
 pub mod prelude {
     pub use crate::{
-        AbiResult, Align, CompactBehavior, Container, EventSubscription, HostEvent, HostEventKind,
+        AbiResult, Align, CompactBehavior, Container, EventSubscription, PluginEvent, PluginEventKind,
         HttpCacheState, HttpTextResponse, I18nArg, ImageFit, ImageOptions, Injection,
         InjectionLayout, InjectionRegistration, InjectionRequest, InjectionSlot, LogLevel, Modal,
         ModalRequest, Nav, Page, PageRegistration, PageRenderRequest, Plugin, PluginContext,
@@ -3114,13 +3116,13 @@ mod tests {
         assert_eq!(PluginError::denied("no").code, "denied");
         assert_eq!(PluginError::invalid_input("bad").code, "invalid-input");
         assert_eq!(PluginError::not_found("missing").code, "not-found");
-        assert_eq!(PluginError::host("host").code, "host");
+        assert_eq!(PluginError::app("app").code, "app");
         assert_eq!(PluginError::timeout("slow").code, "timeout");
     }
 
     #[test]
-    fn host_request_response_roundtrip_covers_v04_types() {
-        let request = HostRequest::CreateTask {
+    fn app_request_response_roundtrip_covers_v04_types() {
+        let request = AppRequest::CreateTask {
             request: TaskCreateRequest {
                 task_id: None,
                 title: "Build".to_string(),
@@ -3131,26 +3133,26 @@ mod tests {
             },
         };
         let encoded = postcard::to_allocvec(&request).expect("request should encode");
-        let decoded = postcard::from_bytes::<HostRequest>(&encoded).expect("request should decode");
+        let decoded = postcard::from_bytes::<AppRequest>(&encoded).expect("request should decode");
         assert_eq!(decoded, request);
 
-        let response = HostResponse::AppInfo(AppInfo {
+        let response = AppResponse::AppInfo(AppInfo {
             version: "1.0.0".to_string(),
             build_info: "build".to_string(),
             api_version: API_VERSION.to_string(),
         });
         let encoded = postcard::to_allocvec(&response).expect("response should encode");
         let decoded =
-            postcard::from_bytes::<HostResponse>(&encoded).expect("response should decode");
+            postcard::from_bytes::<AppResponse>(&encoded).expect("response should decode");
         assert_eq!(decoded, response);
     }
 
     #[test]
     fn action_helper_matches_action_events() {
-        let event = HostEvent {
+        let event = PluginEvent {
             plugin_id: Some("plugin".to_string()),
             page_id: Some("main".to_string()),
-            kind: HostEventKind::Action(ActionEvent {
+            kind: PluginEventKind::Action(ActionEvent {
                 action_id: "open-window".to_string(),
                 value: None,
             }),
@@ -3200,7 +3202,7 @@ mod tests {
         let decoded = postcard::from_bytes::<Registration>(&bytes).expect("service reg should decode");
         assert_eq!(decoded, registration);
 
-        let request = HostRequest::CallService {
+        let request = AppRequest::CallService {
             request: ServiceCallRequest {
                 target_plugin: Some("calc".to_string()),
                 service_name: "math".to_string(),
@@ -3209,7 +3211,7 @@ mod tests {
             },
         };
         let bytes = postcard::to_allocvec(&request).expect("service call request should encode");
-        let decoded = postcard::from_bytes::<HostRequest>(&bytes).expect("service call request should decode");
+        let decoded = postcard::from_bytes::<AppRequest>(&bytes).expect("service call request should decode");
         assert_eq!(decoded, request);
     }
 
@@ -3253,41 +3255,41 @@ mod tests {
             },
             ..ThemeSnapshot::light_default()
         };
-        let response = HostResponse::ThemeSnapshot(snapshot);
+        let response = AppResponse::ThemeSnapshot(snapshot);
 
         let bytes = postcard::to_allocvec(&response).expect("theme snapshot should encode");
         let decoded =
-            postcard::from_bytes::<HostResponse>(&bytes).expect("theme snapshot should decode");
+            postcard::from_bytes::<AppResponse>(&bytes).expect("theme snapshot should decode");
 
         assert_eq!(decoded, response);
         assert!(snapshot.is_dark());
     }
 
     #[test]
-    fn host_response_capacity_hint_reduces_retries_for_large_reads() {
+    fn app_response_capacity_hint_reduces_retries_for_large_reads() {
         assert_eq!(
-            initial_host_response_capacity(&HostRequest::ReadResourceBytes {
+            initial_app_response_capacity(&AppRequest::ReadResourceBytes {
                 path: "assets/data.bin".to_string(),
             }),
             LARGE_HOST_BUFFER_CAPACITY
         );
         assert_eq!(
-            initial_host_response_capacity(&HostRequest::ReadConfig),
+            initial_app_response_capacity(&AppRequest::ReadConfig),
             MEDIUM_HOST_BUFFER_CAPACITY
         );
         assert_eq!(
-            initial_host_response_capacity(&HostRequest::CurrentUnixMs),
-            DEFAULT_HOST_BUFFER_CAPACITY
+            initial_app_response_capacity(&AppRequest::CurrentUnixMs),
+            DEFAULT_APP_BUFFER_CAPACITY
         );
 
         // HTTP 初始容量跟随请求上限，但被夹在默认值与上限之间，避免按 512 KiB 预分配。
-        let http = HostRequest::HttpGetText {
+        let http = AppRequest::HttpGetText {
             url: "https://example.com/data.json".to_string(),
             ttl_seconds: 0,
             max_bytes: 512 * 1024,
         };
         assert_eq!(
-            initial_host_response_capacity(&http),
+            initial_app_response_capacity(&http),
             LARGE_HOST_BUFFER_CAPACITY
         );
     }

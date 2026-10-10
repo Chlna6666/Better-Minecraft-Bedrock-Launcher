@@ -19,7 +19,7 @@ pub type PluginWatcherSender = UnboundedSender<PluginWatcherMessage>;
 #[derive(Clone, Debug)]
 pub enum PluginWatcherMessage {
     Changed(PathBuf),
-    AsyncHostRefresh,
+    AsyncAppRefresh,
     Stop,
 }
 
@@ -73,15 +73,15 @@ async fn run_watcher_loop(
     while let Some(message) = rx.next().await {
         let (mut change_count, mut last_path) = match message {
             PluginWatcherMessage::Stop => return,
-            PluginWatcherMessage::AsyncHostRefresh => {
+            PluginWatcherMessage::AsyncAppRefresh => {
                 let refreshed =
-                    cx.update(|cx| crate::plugins::runtime::drain_async_host_refreshes(cx));
+                    cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));
                 match refreshed {
                     Ok(true) => {
                         if let Err(error) = cx.update(|cx| cx.refresh_windows()) {
                             warn!(
                                 error = %crate::plugins::manifest::format_error_chain(&error),
-                                "plugin async host refresh repaint failed"
+                                "plugin async app refresh repaint failed"
                             );
                         }
                     }
@@ -89,7 +89,7 @@ async fn run_watcher_loop(
                     Err(error) => {
                         warn!(
                             error = %crate::plugins::manifest::format_error_chain(&error),
-                            "plugin async host refresh notification failed"
+                            "plugin async app refresh notification failed"
                         );
                     }
                 }
@@ -105,15 +105,15 @@ async fn run_watcher_loop(
             loop {
                 match rx.next().now_or_never() {
                     Some(Some(PluginWatcherMessage::Stop)) => return,
-                    Some(Some(PluginWatcherMessage::AsyncHostRefresh)) => {
+                    Some(Some(PluginWatcherMessage::AsyncAppRefresh)) => {
                         let refreshed =
-                            cx.update(|cx| crate::plugins::runtime::drain_async_host_refreshes(cx));
+                            cx.update(|cx| crate::plugins::runtime::drain_async_app_refreshes(cx));
                         match refreshed {
                             Ok(true) => {
                                 if let Err(error) = cx.update(|cx| cx.refresh_windows()) {
                                     warn!(
                                         error = %crate::plugins::manifest::format_error_chain(&error),
-                                        "plugin async host refresh repaint failed"
+                                        "plugin async app refresh repaint failed"
                                     );
                                 }
                             }
@@ -121,7 +121,7 @@ async fn run_watcher_loop(
                             Err(error) => {
                                 warn!(
                                     error = %crate::plugins::manifest::format_error_chain(&error),
-                                    "plugin async host refresh notification failed"
+                                    "plugin async app refresh notification failed"
                                 );
                             }
                         }

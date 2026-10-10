@@ -67,7 +67,7 @@ impl Default for InjectionLayout {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HostEventKind {
+pub enum PluginEventKind {
     RouteChanged {
         path: String,
     },
@@ -82,10 +82,10 @@ pub enum HostEventKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostEvent {
+pub struct PluginEvent {
     pub plugin_id: Option<String>,
     pub page_id: Option<String>,
-    pub kind: HostEventKind,
+    pub kind: PluginEventKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,16 +94,16 @@ pub struct InjectionRenderRequest {
     pub page: Option<String>,
 }
 
-impl HostEvent {
+impl PluginEvent {
     /// 事件级联预算里用于标识一次投递的名称。
     ///
     /// 全局事件使用订阅名，路由变化使用 [`ROUTE_CHANGED_EVENT`]，动作事件使用 action id，
     /// 这样同一插件重复收到同一事件可以被稳定识别。
     pub fn cascade_name(&self) -> &str {
         match &self.kind {
-            HostEventKind::Global { name, .. } => name,
-            HostEventKind::RouteChanged { .. } => ROUTE_CHANGED_EVENT,
-            HostEventKind::Action { action_id, .. } => action_id,
+            PluginEventKind::Global { name, .. } => name,
+            PluginEventKind::RouteChanged { .. } => ROUTE_CHANGED_EVENT,
+            PluginEventKind::Action { action_id, .. } => action_id,
         }
     }
 }
@@ -289,29 +289,29 @@ mod tests {
 
     #[test]
     fn cascade_name_covers_every_event_kind() {
-        let action = HostEvent {
+        let action = PluginEvent {
             plugin_id: Some("alpha".to_string()),
             page_id: None,
-            kind: HostEventKind::Action {
+            kind: PluginEventKind::Action {
                 action_id: "refresh".to_string(),
                 value: None,
             },
         };
         assert_eq!(action.cascade_name(), "refresh");
 
-        let route = HostEvent {
+        let route = PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::RouteChanged {
+            kind: PluginEventKind::RouteChanged {
                 path: "/settings".to_string(),
             },
         };
         assert_eq!(route.cascade_name(), ROUTE_CHANGED_EVENT);
 
-        let global = HostEvent {
+        let global = PluginEvent {
             plugin_id: None,
             page_id: None,
-            kind: HostEventKind::Global {
+            kind: PluginEventKind::Global {
                 name: "download-finished".to_string(),
                 payload: String::new(),
             },
