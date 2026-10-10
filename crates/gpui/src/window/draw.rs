@@ -473,21 +473,29 @@ impl Window {
             let previous = previous_entities.get(entity_id);
             let current = current_entities.get(entity_id);
             let diffed = previous.zip(current).is_some_and(|(previous, current)| {
-                if previous.len() != 1 || current.len() != 1 {
+                if previous.len() != current.len() {
                     return false;
                 }
-                self.next_frame.scene.for_each_changed_bounds(
-                    current
-                        .first(&self.next_frame.retained_scene_segments)
-                        .scene_range
-                        .clone(),
-                    &self.rendered_frame.scene,
-                    previous
-                        .first(&self.rendered_frame.retained_scene_segments)
-                        .scene_range
-                        .clone(),
-                    |bounds| dirty_region.push(bounds),
-                )
+                // A View may own more than one independently retained scene
+                // fragment (e.g. a page body plus stable chrome). The old
+                // single-fragment requirement incorrectly marked the ENTIRE
+                // View dirty when just one fragment changed. Compare each
+                // paired fragment's painter operations and invalidate only
+                // the old/new pixels produced by that fragment.
+                //
+                // If any fragment cannot be compared, the caller retains the
+                // conservative old+new View bounds fallback below.
+                previous
+                    .segments(&self.rendered_frame.retained_scene_segments)
+                    .zip(current.segments(&self.next_frame.retained_scene_segments))
+                    .all(|(previous_segment, current_segment)| {
+                        self.next_frame.scene.for_each_changed_bounds(
+                            current_segment.scene_range.clone(),
+                            &self.rendered_frame.scene,
+                            previous_segment.scene_range.clone(),
+                            |bounds| dirty_region.push(bounds),
+                        )
+                    })
             });
             if !diffed {
                 if let Some(previous) = previous {
