@@ -217,14 +217,16 @@ fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
 fn dirty_element_blur_indices(
     frame_upload: &FrameUpload,
     dirty_region: &crate::DirtyRegion,
+    filters: &FilterRegistry,
+    animation_values: &[crate::SceneAnimationValue],
     force_all: bool,
 ) -> Vec<u32> {
     let ranges = frame_upload.blur_content_ranges();
     if ranges.is_empty() {
         return Vec::new();
     }
-    if force_all || dirty_region.is_full() {
-        return ranges.into_iter().map(|range| range.index).collect();
+    if force_all {
+        return ranges.iter().map(|range| range.index).collect();
     }
     if dirty_region.is_empty() {
         return Vec::new();
@@ -232,6 +234,22 @@ fn dirty_element_blur_indices(
 
     let mut dirty = Vec::new();
     for range in ranges {
+        // The generated root retained-color target deliberately has no Scene
+        // capture; it is invalidated by the whole-scene dirty region below.
+        // Real element filters instead compare their *captured input* rather
+        // than using overlap with the filter's output as a cache key.
+        if let Some((_, source)) = frame_upload
+            .element_blur_inputs
+            .iter()
+            .find(|(index, _)| *index == range.index)
+            && filters.source_unchanged(range.index, source, animation_values)
+        {
+            continue;
+        }
+        if dirty_region.is_full() {
+            dirty.push(range.index);
+            continue;
+        }
         let Some(config) = frame_upload.backdrop_blur_config_for_index(range.index) else {
             dirty.push(range.index);
             continue;
@@ -449,6 +467,8 @@ impl NovaRenderer {
         let dirty_element_indices = dirty_element_blur_indices(
             &self.frame_upload,
             &packet.dirty_region,
+            &self.filters,
+            &packet.presentation_animation_values,
             shared_blur_cache_invalid,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
@@ -1420,6 +1440,11 @@ impl NovaRenderer {
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {
+            self.filters.record_element_blur_inputs(
+                &self.frame_upload.element_blur_inputs,
+                &packet.presentation_animation_values,
+                element_blur_layers.iter().map(|layer| layer.index),
+            );
             self.filters
                 .record_submission(backdrop_blur_quality, atlas_content_generation);
         } else {

@@ -534,6 +534,41 @@ impl Scene {
                 .any(|blur| blur.content.has_backdrop_blurs())
     }
 
+    /// Exact source-cache proof for an isolated element filter.
+    ///
+    /// Window damage is NOT element-filter input damage: an unrelated overlay
+    /// above the filter can intersect its output rectangle without changing any
+    /// of its captured pixels. Compare the captured painter operations instead.
+    /// Unknown/dynamic animation ownership always takes the safe refresh path.
+    pub(crate) fn retained_filter_source_matches(
+        &self,
+        previous: &Self,
+        presentation_values: &[SceneAnimationValue],
+        previous_presentation_values: &[SceneAnimationValue],
+    ) -> bool {
+        if self.paint_operations.len() != previous.paint_operations.len() {
+            return false;
+        }
+
+        for (current, old) in self.paint_operations.iter().zip(&previous.paint_operations) {
+            if !current.visually_eq(old) {
+                return false;
+            }
+            let animation_id = match current {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                PaintOperation::StartBlur(blur) => blur.animation_id,
+                PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur => None,
+            };
+            let Some(animation_id) = animation_id else { continue };
+            let current_value = animation_value_for(self, animation_id, presentation_values);
+            let previous_value = animation_value_for(previous, animation_id, previous_presentation_values);
+            if current_value.is_none() || previous_value.is_none() || current_value != previous_value {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Computes spatial source damage independently for every backdrop draw-order barrier.
     pub(crate) fn backdrop_blur_damage_plan(
         &self,

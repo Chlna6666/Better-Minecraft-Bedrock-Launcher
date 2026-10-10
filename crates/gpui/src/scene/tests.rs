@@ -433,6 +433,73 @@ fn blur_capture_state_tracks_nested_captures() {
 }
 
 #[test]
+fn retained_element_filter_source_ignores_unrelated_output_damage() {
+    let viewport = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(200.0), ScaledPixels(200.0)),
+    );
+    let mut previous = Scene::default();
+    previous.insert_primitive(Quad {
+        bounds: viewport,
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    });
+    let mut unchanged = Scene::default();
+    unchanged.insert_primitive(Quad {
+        bounds: viewport,
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    });
+    // A modal or foreground overlay can dirty the entire output rectangle
+    // without changing any of these source operations.
+    assert!(unchanged.retained_filter_source_matches(&previous, &[], &[]));
+
+    let mut changed = Scene::default();
+    let mut quad = Quad {
+        bounds: viewport,
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    };
+    quad.bounds.origin.x = ScaledPixels(3.0);
+    changed.insert_primitive(quad);
+    assert!(!changed.retained_filter_source_matches(&previous, &[], &[]));
+}
+
+#[test]
+fn retained_element_filter_source_tracks_sampled_animations() {
+    let area = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(100.0), ScaledPixels(100.0)),
+    );
+    let animation_id = SceneAnimationId(1 << 31);
+    let make_scene = || {
+        let mut scene = Scene::default();
+        scene.insert_animated_primitive(
+            Quad {
+                bounds: area,
+                content_mask: ContentMask::new(area),
+                ..Default::default()
+            },
+            animation_id,
+        );
+        scene
+    };
+    let old = make_scene();
+    let new = make_scene();
+    let sample = |progress| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    assert!(new.retained_filter_source_matches(&old, &[sample(0.5)], &[sample(0.5)]));
+    assert!(!new.retained_filter_source_matches(&old, &[sample(0.75)], &[sample(0.5)]));
+    // Missing ownership information must never lead to accidental reuse.
+    assert!(!new.retained_filter_source_matches(&old, &[], &[]));
+}
+
+#[test]
 fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     let mut previous = Scene::default();
     previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));

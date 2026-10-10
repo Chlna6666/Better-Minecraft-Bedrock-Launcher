@@ -102,6 +102,8 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
+    /// Per-element captured input in packed blur-index order (not output damage).
+    pub(in crate::platform::nova) element_blur_inputs: Vec<(u32, crate::PaintBlur)>,
     /// Synthetic zero-filter root compositor, stored in the existing retained blur targets.
     pub(in crate::platform::nova) retained_root_blur: Option<u32>,
     /// One immutable transparent quad used as a Replace-blend rect clear.

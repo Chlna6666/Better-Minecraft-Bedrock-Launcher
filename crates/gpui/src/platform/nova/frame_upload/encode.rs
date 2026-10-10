@@ -118,6 +118,7 @@ impl FrameUpload {
             self.backdrop_blur_passes.clear();
             self.backdrop_blurs.clear();
             self.backdrop_blur_configs.clear();
+            self.element_blur_inputs.clear();
             self.retained_root_blur = None;
             self.retained_root_clear_quad = None;
             #[cfg(test)]
@@ -242,6 +243,7 @@ impl FrameUpload {
                             continue;
                         }
 
+                        self.element_blur_inputs.push((blur_index, blur.clone()));
                         write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
