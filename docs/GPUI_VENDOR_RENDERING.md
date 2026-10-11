@@ -705,6 +705,32 @@ This is a conservative correctness fallback scoped to the affected Layer,
 not a global full-frame redraw.
 Targets without a proven source snapshot take the conservative refresh path.
 
+The next Render Graph slice derives pass ordering from explicit logical
+resource reads and writes rather than declaring a fixed list of dependencies.
+The compiler records RAW, WAR and WAW hazard intents, first/last use of each
+render target, and residency classes. Current Path Mask, Element Color and
+Backdrop Color targets are **persistent across frames**, while the Swapchain
+is externally owned. None of these resources is currently a transient alias
+candidate. Alias eligibility rejects overlapping intervals, identical resources
+and anything not proven transient; even a future transient allocation must be
+retired by the native GPU fence before reuse by another submission.
+
+The hazard table is a **logical validation/planning layer**. gfx-core backend
+texture-pass transitions still emit native Vulkan/D3D/GL/Metal synchronization.
+This change does NOT yet auto-emit native image-layout transitions from the
+graph, pool aliased VkImages/ID3D12Resources, or treat a CPU Present result as
+a completed GPU fence. The renderer's opt-in diagnostics include
+`logical_resources` and `inferred_hazards` for checking the compiled plan.
+
+The existing `gpui-gpu-owner` thread is already a real thread-affine
+compositor and renderer owner, separate from UI generation. Immutable
+`PresentationPacket` contents pass to its per-window queues; obsolete Draw
+packets coalesce without losing accumulated spatial damage. Backend readiness
+and presentation-cadence callbacks control when that thread samples and
+submits timelines. A second thread is **not** required to satisfy that
+ownership boundary; further work is native GPU queue concurrency, resource
+retirement, and per-layer present planning.
+
 Nova now compiles an ordered four-node Render Graph DAG for each
 presentation packet (Path Mask, Element Layers, Backdrop Blur, Main Present).
 Inactive passes are omitted. The graph's dependency edges order mask

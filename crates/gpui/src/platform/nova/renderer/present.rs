@@ -663,8 +663,10 @@ impl NovaRenderer {
                 self.filters.layer_content_version(**index).is_some()
             }).count();
             log::debug!(
-                "nova render graph: nodes={} refreshed_layer_targets={} previously_versioned_layers={} path_mask={} element_layers={} backdrop={} main_present={}",
+                "nova render graph: nodes={} logical_resources={} inferred_hazards={} refreshed_layer_targets={} previously_versioned_layers={} path_mask={} element_layers={} backdrop={} main_present={}",
                 graph.node_count(),
+                graph.resource_count(),
+                graph.hazard_count(),
                 element_blur_layers.len(),
                 versioned_layers,
                 graph.requires(GraphPass::PathMask),
