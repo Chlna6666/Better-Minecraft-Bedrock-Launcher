@@ -195,9 +195,10 @@ impl Window {
         });
         let blur_bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
+        let layer_id = self.current_retained_element_id();
         self.next_frame.scene.begin_blur(crate::scene::BlurCapture {
             animation_id: composite_animation.map(|(animation_id, _)| animation_id),
-            layer_id: self.current_retained_element_id(),
+            layer_id,
             bounds: blur_bounds,
             content_mask,
             radius: ScaledPixels(sigma * scale_factor * visual_scale),
