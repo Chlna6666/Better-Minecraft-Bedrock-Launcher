@@ -54,6 +54,7 @@ impl FrameUpload {
             }
             let primitive_index = (self.mono_sprites.len() / PACKED_MONO_SPRITE_BYTES) as u32;
             write_monochrome_sprite(&mut self.mono_sprites, &sprite);
+            self.mono_atlas_tiles.push(sprite.tile);
             register_scene_animated_primitive(
                 self,
                 summary,
@@ -104,6 +105,7 @@ impl FrameUpload {
             }
             let primitive_index = (self.poly_sprites.len() / PACKED_POLY_SPRITE_BYTES) as u32;
             write_polychrome_sprite(&mut self.poly_sprites, &sprite);
+            self.poly_atlas_tiles.push(sprite.tile);
             register_scene_animated_primitive(
                 self,
                 summary,

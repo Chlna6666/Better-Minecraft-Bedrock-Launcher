@@ -475,12 +475,20 @@ impl NovaRenderer {
         } else {
             Default::default()
         };
+        let backdrop_source_atlas_tiles = if has_backdrop_blurs {
+            self.frame_upload.backdrop_source_atlas_tiles()
+        } else {
+            Default::default()
+        };
         let atlas_content_generation = self.atlas.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let backdrop_source_atlas_dirty = has_backdrop_blurs
             && self
                 .atlas
-                .pending_uploads_touch_any(&backdrop_source_atlas_textures);
+                .pending_uploads_touch_source_tiles(
+                    &backdrop_source_atlas_textures,
+                    &backdrop_source_atlas_tiles,
+                );
         let shared_blur_cache_invalid = has_backdrop_blurs
             && self
                 .filters

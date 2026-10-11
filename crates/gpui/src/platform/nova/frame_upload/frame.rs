@@ -98,6 +98,10 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) path_sprites: Vec<u8>,
     pub(in crate::platform::nova) mono_sprites: Vec<u8>,
     pub(in crate::platform::nova) poly_sprites: Vec<u8>,
+    /// Atlas placements in packed sprite order; tracked separately from GPU byte streams
+    /// so filter invalidation does not deserialize every sprite on each frame.
+    pub(in crate::platform::nova) mono_atlas_tiles: Vec<AtlasTile>,
+    pub(in crate::platform::nova) poly_atlas_tiles: Vec<AtlasTile>,
     pub(in crate::platform::nova) underlines: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
@@ -112,6 +116,10 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
     pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:
         Arc<FxHashSet<AtlasTextureId>>,
+    /// Exact atlas tile regions painted before the first backdrop barrier.
+    /// Immutable between scene encodes, shared cheaply with the renderer.
+    pub(in crate::platform::nova) backdrop_source_atlas_tiles_cache:
+        Arc<FxHashMap<AtlasTextureId, Vec<AtlasTile>>>,
     pub(in crate::platform::nova) backdrop_blur_use_base_filter_indices: FxHashSet<u32>,
     pub(in crate::platform::nova) backdrop_blur_filter_dirty_indices: FxHashSet<u32>,
     pub(in crate::platform::nova) backdrop_blur_filter_dirty_scratch: FxHashSet<u32>,

@@ -822,7 +822,8 @@ impl NovaRenderer {
         }
 
         let source_atlases = self.frame_upload.backdrop_source_atlas_texture_ids();
-        if self.atlas.pending_uploads_touch_any(&source_atlases) {
+        let source_tiles = self.frame_upload.backdrop_source_atlas_tiles();
+        if self.atlas.pending_uploads_touch_source_tiles(&source_atlases, &source_tiles) {
             self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
         }
     }

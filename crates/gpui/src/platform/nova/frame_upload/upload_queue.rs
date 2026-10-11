@@ -152,19 +152,32 @@ impl NovaAtlas {
         result.map(|()| stats)
     }
 
-    /// Returns whether pending GPU uploads can change pixels sampled by the current backdrop plan.
-    pub(in crate::platform::nova) fn pending_uploads_touch_any(
+    /// Returns whether queued Atlas uploads can change texels actually sampled by
+    /// the retained backdrop source. A shared atlas page is not a dependency:
+    /// only its resident, painted tile regions are. If tile bookkeeping is
+    /// unavailable, conservatively invalidate rather than reuse stale pixels.
+    pub(in crate::platform::nova) fn pending_uploads_touch_source_tiles(
         &self,
         texture_ids: &FxHashSet<AtlasTextureId>,
+        tiles: &FxHashMap<AtlasTextureId, Vec<AtlasTile>>,
     ) -> bool {
         if texture_ids.is_empty() {
             return false;
         }
         let state = self.state.lock().expect("nova atlas lock poisoned");
-        state
-            .pending_uploads
-            .iter()
-            .any(|upload| texture_ids.contains(&upload.texture_id))
+        state.pending_uploads.iter().any(|upload| {
+            if !texture_ids.contains(&upload.texture_id) {
+                return false;
+            }
+            let Some(used_tiles) = tiles.get(&upload.texture_id) else {
+                return true; // Unknown tile layout: do not trust the cached filter.
+            };
+            used_tiles.is_empty()
+                || used_tiles.iter().any(|tile| {
+                    tile.texture_id != upload.texture_id
+                        || atlas_upload_touches_tile(upload, tile)
+                })
+        })
     }
 
     pub(in crate::platform::nova) fn take_pending_uploads(&self) -> AtlasUploadBatch {
@@ -249,6 +262,31 @@ impl NovaAtlas {
         state.upload_bytes.clear();
         state.pending_uploads.clear();
     }
+}
+
+/// Texture-coordinate overlap, not screen-coordinate dirty bounds. Padding is
+/// included because bilinear sampling may read the replicated edge texels.
+fn atlas_upload_touches_tile(upload: &PendingAtlasUpload, tile: &AtlasTile) -> bool {
+    let bounds = tile.bounds;
+    let left = i64::from(bounds.origin.x.0) - i64::from(tile.padding);
+    let top = i64::from(bounds.origin.y.0) - i64::from(tile.padding);
+    let right = i64::from(bounds.origin.x.0)
+        + i64::from(bounds.size.width.0)
+        + i64::from(tile.padding);
+    let bottom = i64::from(bounds.origin.y.0)
+        + i64::from(bounds.size.height.0)
+        + i64::from(tile.padding);
+    if left >= right || top >= bottom {
+        return true; // Unknown or degenerate placement requires conservative refresh.
+    }
+    let upload_left = i64::from(upload.origin.x);
+    let upload_top = i64::from(upload.origin.y);
+    let upload_right = upload_left + i64::from(upload.size.width());
+    let upload_bottom = upload_top + i64::from(upload.size.height());
+    upload_left < right
+        && upload_right > left
+        && upload_top < bottom
+        && upload_bottom > top
 }
 
 impl NovaAtlasState {
@@ -374,6 +412,76 @@ impl NovaAtlasState {
 #[cfg(test)]
 mod upload_texture_snapshot_tests {
     use super::*;
+
+    #[test]
+    fn atlas_source_dependencies_distinguish_tiles_on_same_page() {
+        let id = AtlasTextureId { index: 3, kind: AtlasTextureKind::Rgba };
+        let source_tile = AtlasTile {
+            texture_id: id,
+            tile_id: crate::TileId(1),
+            padding: 1,
+            bounds: crate::bounds(
+                crate::point(crate::DevicePixels(10), crate::DevicePixels(20)),
+                crate::size(crate::DevicePixels(12), crate::DevicePixels(8)),
+            ),
+        };
+        let mut upload = PendingAtlasUpload {
+            texture_id: id,
+            origin: Origin2d { x: 200, y: 200 },
+            size: Extent2d::new(8, 8).expect("valid test extent"),
+            bytes_per_row: 32,
+            offset: 0,
+            len: 256,
+        };
+        assert!(!atlas_upload_touches_tile(&upload, &source_tile),
+            "unrelated uploads on the same page must not invalidate blur");
+        upload.origin = Origin2d { x: 22, y: 22 };
+        assert!(atlas_upload_touches_tile(&upload, &source_tile),
+            "tile padding may be sampled with bilinear filtering");
+        upload.origin = Origin2d { x: 23, y: 22 };
+        assert!(!atlas_upload_touches_tile(&upload, &source_tile),
+            "adjacent upload beyond the padded source is independent");
+    }
+
+    #[test]
+    fn queued_source_uploads_check_exact_tiles_and_fail_closed() {
+        let atlas = NovaAtlas::new();
+        let id = AtlasTextureId { index: 900_001, kind: AtlasTextureKind::Rgba };
+        let tile = AtlasTile {
+            texture_id: id,
+            tile_id: crate::TileId(7),
+            padding: 1,
+            bounds: crate::bounds(
+                crate::point(crate::DevicePixels(10), crate::DevicePixels(20)),
+                crate::size(crate::DevicePixels(12), crate::DevicePixels(8)),
+            ),
+        };
+        {
+            let mut state = atlas.state.lock().expect("test atlas mutex");
+            state.pending_uploads.push(PendingAtlasUpload {
+                texture_id: id,
+                origin: Origin2d { x: 300, y: 300 },
+                size: Extent2d::new(8, 8).expect("valid extent"),
+                bytes_per_row: 32,
+                offset: 0,
+                len: 0,
+            });
+        }
+        let mut sources = FxHashSet::default();
+        sources.insert(id);
+        let mut tiles = FxHashMap::default();
+        tiles.insert(id, vec![tile]);
+        assert!(!atlas.pending_uploads_touch_source_tiles(&sources, &tiles));
+        {
+            let mut state = atlas.state.lock().expect("test atlas mutex");
+            state.pending_uploads.last_mut().expect("test upload").origin =
+                Origin2d { x: 21, y: 22 };
+        }
+        assert!(atlas.pending_uploads_touch_source_tiles(&sources, &tiles));
+        tiles.clear();
+        assert!(atlas.pending_uploads_touch_source_tiles(&sources, &tiles),
+            "missing packed-sprite dependency data must preserve correctness");
+    }
 
     #[test]
     fn pending_atlas_texture_snapshot_covers_queued_uploads() {

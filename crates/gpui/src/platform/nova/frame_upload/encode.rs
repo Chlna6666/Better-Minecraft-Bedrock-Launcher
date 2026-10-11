@@ -185,6 +185,8 @@ impl FrameUpload {
             self.path_sprites.clear();
             self.mono_sprites.clear();
             self.poly_sprites.clear();
+            self.mono_atlas_tiles.clear();
+            self.poly_atlas_tiles.clear();
             self.underlines.clear();
             self.backdrop_blur_passes.clear();
             self.backdrop_blurs.clear();

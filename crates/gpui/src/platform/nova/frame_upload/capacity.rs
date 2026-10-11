@@ -31,6 +31,8 @@ impl FrameUpload {
             self.path_sprites.capacity(),
             self.mono_sprites.capacity(),
             self.poly_sprites.capacity(),
+            self.mono_atlas_tiles.capacity() * std::mem::size_of::<AtlasTile>(),
+            self.poly_atlas_tiles.capacity() * std::mem::size_of::<AtlasTile>(),
             self.underlines.capacity(),
             self.backdrop_blur_passes.capacity(),
             self.backdrop_blurs.capacity(),
@@ -39,6 +41,10 @@ impl FrameUpload {
             self.isolated_blur_source_indices_cache.capacity() * std::mem::size_of::<u32>(),
             self.backdrop_source_atlas_texture_ids_cache.capacity()
                 * std::mem::size_of::<AtlasTextureId>(),
+            self.backdrop_source_atlas_tiles_cache
+                .values()
+                .map(|tiles| tiles.capacity() * std::mem::size_of::<AtlasTile>())
+                .sum::<usize>(),
             self.animation_values.capacity(),
             self.animated_primitives.capacity() * std::mem::size_of::<AnimatedUpload>(),
             self.sampled_animation_values.capacity()
@@ -145,6 +151,14 @@ impl FrameUpload {
         // Animation/blur hash tables are reused between frames to avoid allocator churn, but one
         // pathological frame should not pin their peak bucket arrays forever. Keep a small floor so
         // normal animations remain allocation-free after a memory-pressure trim.
+        trim_upload_vec(&mut self.mono_atlas_tiles, 64, multiplier);
+        trim_upload_vec(&mut self.poly_atlas_tiles, 64, multiplier);
+        let tile_cache = Arc::make_mut(&mut self.backdrop_source_atlas_tiles_cache);
+        for tiles in tile_cache.values_mut() {
+            trim_upload_vec(tiles, 4, multiplier);
+        }
+        tile_cache.shrink_to(8usize.saturating_mul(multiplier.max(1)));
+
         let hash_floor = 8usize.saturating_mul(multiplier.max(1));
         Arc::make_mut(&mut self.backdrop_source_atlas_texture_ids_cache).shrink_to(hash_floor);
         self.backdrop_blur_use_base_filter_indices
@@ -232,6 +246,8 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn refresh_backdrop_source_atlas_texture_ids(&mut self) {
         let textures = Arc::make_mut(&mut self.backdrop_source_atlas_texture_ids_cache);
         textures.clear();
+        let tile_sources = Arc::make_mut(&mut self.backdrop_source_atlas_tiles_cache);
+        tile_sources.clear();
 
         let Some(first_blur_batch) = self.batches.iter().position(|batch| {
             matches!(
@@ -244,9 +260,21 @@ impl FrameUpload {
 
         for batch in &self.batches[..first_blur_batch] {
             match *batch {
-                UploadedBatch::MonoSprites { texture_id, .. }
-                | UploadedBatch::PolySprites { texture_id, .. } => {
+                UploadedBatch::MonoSprites { texture_id, first, count } => {
                     textures.insert(texture_id);
+                    let start = first as usize;
+                    let end = start.saturating_add(count as usize);
+                    if let Some(tiles) = self.mono_atlas_tiles.get(start..end) {
+                        tile_sources.entry(texture_id).or_default().extend_from_slice(tiles);
+                    }
+                }
+                UploadedBatch::PolySprites { texture_id, first, count } => {
+                    textures.insert(texture_id);
+                    let start = first as usize;
+                    let end = start.saturating_add(count as usize);
+                    if let Some(tiles) = self.poly_atlas_tiles.get(start..end) {
+                        tile_sources.entry(texture_id).or_default().extend_from_slice(tiles);
+                    }
                 }
                 UploadedBatch::SolidQuads { .. }
                 | UploadedBatch::Quads { .. }
@@ -272,6 +300,13 @@ impl FrameUpload {
         &self,
     ) -> Arc<FxHashSet<AtlasTextureId>> {
         Arc::clone(&self.backdrop_source_atlas_texture_ids_cache)
+    }
+
+    #[inline]
+    pub(in crate::platform::nova) fn backdrop_source_atlas_tiles(
+        &self,
+    ) -> Arc<FxHashMap<AtlasTextureId, Vec<AtlasTile>>> {
+        Arc::clone(&self.backdrop_source_atlas_tiles_cache)
     }
 
     pub(in crate::platform::nova) fn uploaded_bytes(&self) -> usize {
@@ -325,6 +360,44 @@ impl FrameUpload {
         ]
         .into_iter()
         .fold(0, usize::saturating_add)
+    }
+}
+
+#[cfg(test)]
+mod atlas_source_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn blur_source_keeps_only_sprite_tiles_before_first_filter_barrier() {
+        let id = AtlasTextureId {
+            index: 91,
+            kind: AtlasTextureKind::Rgba,
+        };
+        let tile = |number, x| AtlasTile {
+            texture_id: id,
+            tile_id: crate::TileId(number),
+            padding: 1,
+            bounds: crate::bounds(
+                crate::point(crate::DevicePixels(x), crate::DevicePixels(10)),
+                crate::size(crate::DevicePixels(8), crate::DevicePixels(8)),
+            ),
+        };
+        let mut upload = FrameUpload::default();
+        upload.mono_atlas_tiles.push(tile(1, 4));
+        upload.mono_atlas_tiles.push(tile(2, 50));
+        upload.batches.extend([
+            UploadedBatch::MonoSprites { texture_id: id, first: 0, count: 1 },
+            UploadedBatch::BackdropBlurs { first: 0, count: 1 },
+            UploadedBatch::MonoSprites { texture_id: id, first: 1, count: 1 },
+        ]);
+        upload.refresh_backdrop_source_atlas_texture_ids();
+        let tiles = upload.backdrop_source_atlas_tiles();
+        assert_eq!(tiles.get(&id).expect("source texture").len(), 1);
+        assert_eq!(tiles[&id][0].tile_id, crate::TileId(1));
+        assert!(upload.backdrop_source_atlas_texture_ids().contains(&id));
+        upload.batches.clear();
+        upload.refresh_backdrop_source_atlas_texture_ids();
+        assert!(upload.backdrop_source_atlas_tiles().is_empty());
     }
 }
 
