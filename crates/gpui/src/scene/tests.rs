@@ -8,6 +8,66 @@ use std::{
     sync::Arc,
 };
 
+
+#[test]
+fn retained_scene_bounds_ignore_fullscreen_paint_layer_metadata() {
+    let viewport = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(972.0), ScaledPixels(600.0)),
+    );
+    let popup = bounds(
+        point(ScaledPixels(160.0), ScaledPixels(90.0)),
+        size(ScaledPixels(120.0), ScaledPixels(64.0)),
+    );
+    let mut scene = Scene::default();
+    scene.push_layer(viewport);
+    scene.insert_primitive(Quad {
+        bounds: popup,
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    });
+    scene.pop_layer();
+
+    assert_eq!(scene.bounds_for_range(0..scene.len()), Some(popup));
+}
+
+#[test]
+fn isolated_blur_capture_ignores_fullscreen_nested_paint_layer() {
+    let viewport = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(972.0), ScaledPixels(600.0)),
+    );
+    let capture = bounds(
+        point(ScaledPixels(160.0), ScaledPixels(90.0)),
+        size(ScaledPixels(120.0), ScaledPixels(64.0)),
+    );
+    let child = bounds(
+        point(ScaledPixels(170.0), ScaledPixels(100.0)),
+        size(ScaledPixels(40.0), ScaledPixels(20.0)),
+    );
+    let mut scene = Scene::default();
+    scene.begin_blur(BlurCapture {
+        animation_id: None,
+        layer_id: None,
+        bounds: capture,
+        content_mask: ContentMask::new(viewport),
+        radius: ScaledPixels(0.0),
+        opacity: 1.0,
+    });
+    scene.push_layer(viewport);
+    scene.insert_primitive(Quad {
+        bounds: child,
+        content_mask: ContentMask::new(viewport),
+        ..Default::default()
+    });
+    scene.pop_layer();
+    scene.end_blur();
+
+    assert_eq!(scene.blurs.len(), 1);
+    assert_eq!(scene.blurs[0].bounds, capture);
+    assert_eq!(scene.bounds_for_range(0..scene.len()), Some(capture));
+}
+
 #[test]
 fn scene_revision_tracks_static_commits_not_animation_samples() {
     let mut scene = Scene::default();

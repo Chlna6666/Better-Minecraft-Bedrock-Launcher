@@ -378,7 +378,10 @@ impl Scene {
         for operation in self.paint_operations.get(range.clone())? {
             let operation_bounds = match operation {
                 PaintOperation::Primitive(primitive) => Some(primitive.visual_bounds()),
-                PaintOperation::StartLayer(layer_bounds) => Some(*layer_bounds),
+                // Paint layers are ordering metadata, not pixel producers. Including their
+                // often fullscreen bounds makes a small retained subtree appear to damage
+                // the entire window when a popup or nested element changes.
+                PaintOperation::StartLayer(_) => None,
                 PaintOperation::StartBlur(blur) => Some(
                     blur.bounds
                         .dilate(blur_influence_radius(blur.radius))
@@ -495,11 +498,9 @@ impl Scene {
                         *bounds = bounds.union(&primitive_bounds);
                     }
                 }
-                PaintOperation::StartLayer(bounds) => {
-                    for (_, _, group_bounds) in &mut stack {
-                        *group_bounds = group_bounds.union(bounds);
-                    }
-                }
+                // The layer only groups primitives for draw ordering. Its own bounds
+                // must not inflate an isolated filter's pixel-producing footprint.
+                PaintOperation::StartLayer(_) => {}
                 PaintOperation::EndBlur => {
                     let Some((start, config, bounds)) = stack.pop() else {
                         continue;
