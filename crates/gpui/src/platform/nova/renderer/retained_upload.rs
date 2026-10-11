@@ -67,6 +67,115 @@ fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition
     partition
 }
 
+/// Auto-capture an ordinary page's stable painter-order prefix into the
+/// existing zero-radius compositor target. All filtering, atlas and renderer
+/// extensions are rejected: the cached prefix only contains solid CPU-owned
+/// quads/shadows and does not depend on external texture residency.
+///
+/// This creates a REAL independent source texture (via the existing
+/// PaintBlur/ElementLayers path). Its contents are compared on the next
+/// commit by Scene::retained_filter_source_matches, while the animated
+/// suffix is submitted directly to the main pass.
+///
+/// Only a completely flat painter stream is eligible. Reordering nested
+/// PaintLayer boundaries or retained-chunk spans would invalidate painter
+/// ordering and residency assumptions, so these keep the ordinary path.
+fn auto_capture_static_background(
+    scene: &crate::Scene,
+    drawable_size: DrawableSize,
+) -> Option<crate::Scene> {
+    use crate::{Primitive, scene::PaintOperation};
+
+    if scene.revision == 0
+        || scene.has_backdrop_blurs()
+        || !scene.blurs.is_empty()
+        || scene.requires_full_redraw_fallback()
+        || !scene.prepared_retained_quad_chunks().is_empty()
+        || scene.paint_operations.len() < 97
+        || drawable_size.width == 0
+        || drawable_size.height == 0
+    {
+        return None;
+    }
+
+    // Parent and child must be reconstructed in the same order, without
+    // intervening structural paint operations or unsupported resources.
+    let mut static_prefix = 0usize;
+    let mut saw_dynamic = false;
+    for operation in &scene.paint_operations {
+        let PaintOperation::Primitive(primitive) = operation else {
+            return None;
+        };
+        match primitive {
+            Primitive::Quad(_) | Primitive::Shadow(_) => {}
+            _ if !saw_dynamic => return None, // No atlas/path inputs in retained background.
+            Primitive::Surface(_)
+            | Primitive::RendererExtension(_)
+            | Primitive::BackdropBlur(_)
+            | Primitive::Blur(_) => return None,
+            _ => {}
+        }
+        if !saw_dynamic && primitive.animation_id().is_none() {
+            static_prefix += 1;
+        } else {
+            saw_dynamic = true;
+        }
+    }
+    if static_prefix < 96 || !saw_dynamic || static_prefix == scene.paint_operations.len() {
+        return None;
+    }
+
+    // Do not synthesize another full-window root. The tight bounds limit
+    // the composite draw to the actual static background footprint.
+    let viewport = crate::bounds(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(
+            crate::ScaledPixels(drawable_size.width as f32),
+            crate::ScaledPixels(drawable_size.height as f32),
+        ),
+    );
+    let bounds = scene.bounds_for_range(0..static_prefix)?.intersect(&viewport);
+    if bounds.is_empty() {
+        return None;
+    }
+
+    let mut background = crate::Scene::default();
+    for operation in &scene.paint_operations[..static_prefix] {
+        let PaintOperation::Primitive(primitive) = operation else {
+            unreachable!("flat prefix was validated");
+        };
+        background.insert_primitive(primitive.clone());
+    }
+    background.finish();
+
+    let mut foreground = crate::Scene::default();
+    foreground.animation_values.extend_from_slice(&scene.animation_values);
+    foreground.insert_primitive(crate::PaintBlur {
+        order: 0,
+        animation_id: None,
+        layer_id: Some(crate::GlobalElementId::from_path(&[
+            "nova-auto-static-background".into(),
+        ])),
+        bounds,
+        content_mask: crate::ContentMask::new(viewport),
+        radius: crate::ScaledPixels(0.0),
+        opacity: 1.0,
+        content: Arc::new(background),
+    });
+    for operation in &scene.paint_operations[static_prefix..] {
+        let PaintOperation::Primitive(primitive) = operation else {
+            unreachable!("flat foreground was validated");
+        };
+        foreground.insert_primitive(primitive.clone());
+    }
+    foreground.finish();
+    // The immutable original scene revision is the lifetime key for
+    // packed GPU draw streams. Its stable value allows compositor-only
+    // frames to update animation values without rebuilding the prefix.
+    foreground.revision = scene.revision;
+    Some(foreground)
+}
+
 fn should_retain_complex_scene_color(
     scene: &crate::Scene,
     summary: &FrameUploadSummary,
@@ -683,6 +792,16 @@ impl NovaRenderer {
         // visual values change. Element-blur child scenes are flattened into the same static upload,
         // and retained-animation refresh recursively rebuilds only the animation-value stream.
         let reusable = scene.revision != 0 && self.retained_upload.key == Some(key);
+        // Rebuild the capture only on Scene commits. Retained animation-only
+        // frames keep the already encoded recursive prefix (which owns no
+        // animation samples), so their normal root value refresh is unchanged.
+        // Native GPU validation is still required before enabling this
+        // optimization by default across all rendering backends.
+        let captured_scene = (!reusable
+            && matches!(std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref(), Ok("1")))
+            .then(|| auto_capture_static_background(scene, self.current_size))
+            .flatten();
+        let scene_to_encode = captured_scene.as_ref().unwrap_or(scene);
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
         let mut signature_time = Duration::ZERO;
@@ -701,7 +820,7 @@ impl NovaRenderer {
             self.atlas
                 .copy_placements_into(&mut self.frame_upload.atlas_placements);
             summary = self.frame_upload.encode(
-                scene,
+                scene_to_encode,
                 presentation_animation_values,
                 self.current_size,
                 &self.rendering_parameters,
@@ -713,11 +832,12 @@ impl NovaRenderer {
             // Their child batches remain ordinary retained source geometry, while only the final
             // CompositeBlur record receives the promoted visual animation binding.
             self.frame_upload
-                .register_element_blur_animations(scene, &mut summary);
+                .register_element_blur_animations(scene_to_encode, &mut summary);
             // Only CPU/GPU-native ordinary primitives can be replayed inside
             // a retained root target. Native surfaces/extensions use the old
             // full-redraw path until they expose their own damage semantics.
-            if !scene.requires_full_redraw_fallback()
+            if captured_scene.is_none()
+                && !scene_to_encode.requires_full_redraw_fallback()
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
                 // Never add the extra full-surface texture for every window.
@@ -730,7 +850,7 @@ impl NovaRenderer {
                 && match std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref() {
                     Ok("1") => true,
                     Ok("0") => false,
-                    _ => should_retain_complex_scene_color(scene, &summary),
+                    _ => should_retain_complex_scene_color(scene_to_encode, &summary),
                 }
             {
                 self.frame_upload
@@ -808,6 +928,73 @@ impl NovaRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_static_capture_owns_real_gpu_layer_only_for_flat_safe_prefix() {
+        let mut original = crate::Scene::default();
+        for index in 0..100 {
+            original.insert_primitive(crate::Quad {
+                bounds: crate::bounds(
+                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                    crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+                ),
+                ..Default::default()
+            });
+        }
+        let mut animated = crate::Quad::default();
+        animated.bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
+            crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
+        );
+        animated.animation_id = Some(crate::SceneAnimationId(42));
+        original.insert_primitive(animated);
+        original.finish();
+        let captured = auto_capture_static_background(
+            &original,
+            DrawableSize { width: 640, height: 480 },
+        ).expect("flat page has independent static prefix");
+        assert_eq!(captured.blurs.len(), 1);
+        assert_eq!(captured.blurs[0].radius, crate::ScaledPixels(0.0));
+        assert_eq!(captured.blurs[0].content.paint_operations.len(), 100);
+        assert_eq!(captured.quads.len(), 1);
+        assert_eq!(captured.quads[0].animation_id, Some(crate::SceneAnimationId(42)));
+        assert_eq!(captured.revision, original.revision);
+        assert!(auto_capture_static_background(
+            &crate::Scene::default(),
+            DrawableSize { width: 640, height: 480 },
+        ).is_none());
+
+        // The entire cached background is independent from the dynamic
+        // foreground. A change to one background quad must invalidate its
+        // real source texture on the next committed scene.
+        let mut next = crate::Scene::default();
+        for index in 0..100 {
+            next.insert_primitive(crate::Quad {
+                bounds: crate::bounds(
+                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                    crate::size(
+                        crate::ScaledPixels(if index == 50 { 12.0 } else { 10.0 }),
+                        crate::ScaledPixels(10.0),
+                    ),
+                ),
+                ..Default::default()
+            });
+        }
+        next.insert_primitive(animated);
+        next.finish();
+        let changed = auto_capture_static_background(
+            &next,
+            DrawableSize { width: 640, height: 480 },
+        ).expect("changed background still eligible");
+        let before = &captured.blurs[0];
+        let after = &changed.blurs[0];
+        assert_eq!(before.layer_id, after.layer_id);
+        assert!(!after.content.retained_filter_source_matches(
+            &before.content,
+            &[],
+            &[],
+        ));
+    }
 
     #[test]
     fn painter_order_distinguishes_static_background_from_interleaved_content() {

@@ -689,12 +689,46 @@ that can increase GPU utilization. Explicit `composite_layer()` calls
 continue to work as before, and `BMCBL_ENABLE_RETAINED_COLOR=1` remains
 an explicit override for A/B analysis.
 
-The classifier does **not** yet automatically create separate persistent
-textures for static backgrounds and dynamic foregrounds. Such textures
-need separately verified draw-order boundaries, a prefix-only immutable
-content version, Atlas tile dependencies, and lifecycle-safe retirement.
-Passing this heuristic is only permission for the existing damage-aware
-root compositor, not proof that all static primitives may be reused.
+### Experimental independent static-background texture
+
+Set `BMCBL_ENABLE_AUTO_STATIC_LAYER=1` **before process start** to
+enable the first REAL independent offscreen GPU cache for ordinary scenes.
+This is **opt-in until native GPU verification is complete**.
+
+Nova rewrites a qualified flat, painter-ordered Scene at the retained
+upload boundary into:
+1. a zero-radius `PaintBlur` whose child Scene contains only the first
+   96 or more static Quads/Shadows, rendered into an independent persistent
+   GPU target; and
+2. the unchanged dynamic foreground primitives, which continue rendering
+   directly into the main Pass.
+
+Only completely flat painter-operation streams are accepted. Element filters,
+native surfaces, renderer extensions, retained-chunk spans, static glyph
+Atlas sources, paths, and other nontrivial effects in the candidate
+background deliberately fall back to the original Scene without modification.
+The captured source has a structural Layer ID and exact child Scene content
+comparison. Foreground animation can reuse that Layer without re-rendering
+its background; actual background changes invalidate its target. Recursive
+retained animation values remain in the root scene as before. The generated
+Layer and synthetic full-window retained root are mutually exclusive.
+This mechanism still samples the cached color texture in the main Pass:
+benchmark overdraw reduction against that composite cost before enabling
+it by default.
+
+The prior auto-retained-root heuristic remains for other qualified large
+pages, and `BMCBL_ENABLE_RETAINED_COLOR=1` explicitly forces that legacy
+full-window fallback for A/B experiments.
+
+Cross-frame physical heap aliasing is **not enabled**. On a blur target
+topology change, the renderer now waits for outstanding tracked GPU
+submissions before destroying/rebinding the old target chain. Retained
+textures remain persistent; only a future native placed/aliased allocation
+pool with fence-retired leases may overlap their physical allocations.
+The Render Graph still derives logical hazard intentions while the existing
+backend texture render passes emit the actual API-specific state/layout
+transitions. Native Barrier generation from graph intents remains separate
+work.
 
 ### Retained compositor layer identity and Render Graph baseline
 

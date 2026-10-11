@@ -470,6 +470,17 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
+        // Texture topology changes can destroy the previous cached color
+        // targets. Those targets may still be sampled by a previously submitted
+        // GPU frame. Wait for the recorded fence completion BEFORE replacing
+        // any resource sets or texture views; a successful CPU Present does not
+        // imply the GPU is finished with their physical allocation.
+        //
+        // This is a correctness prerequisite for a future fence-retired
+        // transient allocation pool, not physical heap aliasing by itself.
+        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
+            self.wait_for_pending_submissions()?;
+        }
         // New target storage has no retained filtered pixels. The first frame using the new chain
         // must therefore rebuild every root backdrop regardless of the current damage footprint.
         self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
