@@ -1888,10 +1888,8 @@ impl VulkanDevice {
         let mut previous_writers = Vec::<TextureId>::new();
         for (index, pass) in passes.iter().enumerate() {
             let texture_id = self.texture_views.get(pass.texture_view)?.texture;
-            let graph_write_hazard = previous_writers.contains(&texture_id);
-            if !graph_write_hazard {
-                previous_writers.push(texture_id);
-            }
+            let graph_write_hazard =
+                graph_color_write_requires_barrier(&mut previous_writers, texture_id);
             let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
             let result = self.record_render_step_list_desc_into(
                 encoder,
@@ -4042,6 +4040,21 @@ struct VulkanTextureWritePlan<'a> {
     mip_level_count: u32,
 }
 
+/// Native Render Graph access tracking for ordered physical color targets.
+/// A logical Blur variant is not a native allocation: different variants may
+/// resolve to the same TextureId after transient scratch aliasing.
+fn graph_color_write_requires_barrier(
+    previous_writers: &mut Vec<TextureId>,
+    texture: TextureId,
+) -> bool {
+    if previous_writers.contains(&texture) {
+        true
+    } else {
+        previous_writers.push(texture);
+        false
+    }
+}
+
 fn texture_uploads_overlap(first: &VulkanTextureUpload, second: &VulkanTextureUpload) -> bool {
     first.mip_level == second.mip_level
         && u64::from(first.origin.x) < u64::from(second.origin.x) + u64::from(second.size.width())
@@ -6066,6 +6079,19 @@ enum PendingDescriptorWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_graph_barrier_tracks_physical_images_not_logical_variants() {
+        let x = TextureId::from_parts(10, 1);
+        let y1 = TextureId::from_parts(11, 1);
+        let y2 = TextureId::from_parts(12, 1);
+        let mut written = Vec::new();
+        assert!(!graph_color_write_requires_barrier(&mut written, x));
+        assert!(!graph_color_write_requires_barrier(&mut written, y1));
+        assert!(graph_color_write_requires_barrier(&mut written, x));
+        assert!(!graph_color_write_requires_barrier(&mut written, y2));
+        assert_eq!(written, vec![x, y1, y2]);
+    }
 
     #[test]
     fn depth_comparison_maps_to_vulkan_operations() {

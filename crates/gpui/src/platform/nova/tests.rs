@@ -1999,6 +1999,20 @@ fn shared_gaussian_horizontal_scratch_accounts_for_one_physical_allocation() {
     assert_eq!(targets.byte_size(), 2048 + 1024 + 512 + 512);
     assert_eq!(targets.variants[0].levels[0].texture, targets.variants[1].levels[0].texture);
     assert_ne!(targets.variants[0].levels[1].texture, targets.variants[1].levels[1].texture);
+
+    // Real draw-pass ordering proves the X attachment's former consumer
+    // finishes before another variant overwrites the same physical target.
+    let mut passes = Vec::new();
+    backdrop_blur_render_passes_for_targets_into(&test_pipelines(), &targets, 0, &mut passes);
+    assert_eq!(
+        passes.iter().map(|pass| pass.target_texture_view).collect::<Vec<_>>(),
+        vec![
+            test_texture_view_id(2),
+            test_texture_view_id(3),
+            test_texture_view_id(2),
+            test_texture_view_id(4),
+        ],
+    );
 }
 
 #[test]
