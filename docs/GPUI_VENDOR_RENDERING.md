@@ -697,6 +697,12 @@ global window damage. A changed source can schedule its own offscreen
 refresh even with an empty window dirty region; an unchanged source can
 keep its texture when only its composite opacity changes. The synthetic
 root retained-color source remains driven by window spatial damage.
+When an isolated source is independently invalidated but the window's
+dirty rectangles are empty or outside its filter footprint, the draw-step
+planner captures the **entire isolated source and its nested filter support**.
+It does not apply an unrelated window scissor to that offscreen target.
+This is a conservative correctness fallback scoped to the affected Layer,
+not a global full-frame redraw.
 Targets without a proven source snapshot take the conservative refresh path.
 
 Nova now compiles an ordered four-node Render Graph DAG for each

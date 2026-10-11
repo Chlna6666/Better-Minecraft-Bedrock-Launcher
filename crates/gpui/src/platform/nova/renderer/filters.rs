@@ -194,6 +194,31 @@ mod tests {
     }
 
     #[test]
+    fn distinct_stable_layer_identity_prevents_slot_alias_reuse() {
+        let mut registry = FilterRegistry::new(None);
+        let mut source = crate::PaintBlur {
+            order: 0,
+            layer_id: Some(crate::GlobalElementId::from_path(&["page-one".into()])),
+            animation_id: None,
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        registry.record_element_blur_inputs(&[(4, source.clone())], &[], [4]);
+        let previous_version = registry.layer_content_version(4).expect("resident source");
+        assert!(registry.source_unchanged(4, &source, &[]));
+        source.layer_id = Some(crate::GlobalElementId::from_path(&["page-two".into()]));
+        assert!(!registry.source_unchanged(4, &source, &[]));
+        // A reused flattened index must never imply that the old GPU texture
+        // already holds the new layer's pixels.
+        registry.record_element_blur_inputs(&[(4, source.clone())], &[], [4]);
+        assert_ne!(registry.layer_content_version(4), Some(previous_version));
+        assert!(registry.source_unchanged(4, &source, &[]));
+    }
+
+    #[test]
     fn deferred_refresh_does_not_validate_retained_filters() {
         let mut registry = FilterRegistry::new(None);
         registry.record_submission(BackdropBlurQuality::Full, 3);
