@@ -114,6 +114,7 @@ mod tests {
         crate::PaintBlur {
             order: 3,
             animation_id: Some(animation_id),
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(12.0),

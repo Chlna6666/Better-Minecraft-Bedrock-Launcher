@@ -233,6 +233,8 @@ impl PaintOperation {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BlurCapture {
     pub(crate) animation_id: Option<SceneAnimationId>,
+    /// Structural retained identity. None when an element has no stable path.
+    pub(crate) layer_id: Option<crate::GlobalElementId>,
     pub(crate) bounds: Bounds<ScaledPixels>,
     pub(crate) content_mask: ContentMask<ScaledPixels>,
     pub(crate) radius: ScaledPixels,
@@ -254,6 +256,8 @@ pub(crate) fn blur_influence_radius(radius: ScaledPixels) -> ScaledPixels {
 #[derive(Clone)]
 pub(crate) struct PaintBlur {
     pub order: DrawOrder,
+    /// Structural retained identity independent of the layer's paint-order index.
+    pub layer_id: Option<crate::GlobalElementId>,
     /// Renderer-owned visual animation promoted from the captured subtree. The child scene keeps
     /// its raster/filter geometry static; only this final composite primitive is sampled per frame.
     pub animation_id: Option<SceneAnimationId>,
@@ -272,6 +276,7 @@ impl fmt::Debug for PaintBlur {
             .debug_struct("PaintBlur")
             .field("order", &self.order)
             .field("animation_id", &self.animation_id)
+            .field("layer_id", &self.layer_id)
             .field("bounds", &self.bounds)
             .field("content_mask", &self.content_mask)
             .field("radius", &self.radius)
@@ -285,6 +290,7 @@ impl PartialEq for PaintBlur {
     fn eq(&self, other: &Self) -> bool {
         self.order == other.order
             && self.animation_id == other.animation_id
+            && self.layer_id == other.layer_id
             && self.bounds == other.bounds
             && self.content_mask == other.content_mask
             && self.radius == other.radius

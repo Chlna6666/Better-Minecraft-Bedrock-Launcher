@@ -143,6 +143,7 @@ fn blur_radius_overshoot_stays_inside_reserved_endpoint_footprint() {
     let mut primitive = Primitive::Blur(crate::PaintBlur {
         order: 0,
         animation_id: Some(crate::SceneAnimationId(3)),
+        layer_id: None,
         bounds,
         content_mask: crate::ContentMask::new(bounds),
         radius: crate::ScaledPixels(20.0),
@@ -175,6 +176,7 @@ fn retained_blur_animation_updates_radius_without_changing_capture_bounds() {
     let mut primitive = Primitive::Blur(crate::PaintBlur {
         order: 0,
         animation_id: Some(crate::SceneAnimationId(3)),
+        layer_id: None,
         bounds,
         content_mask: crate::ContentMask::new(bounds),
         radius: crate::ScaledPixels(24.0),
@@ -354,6 +356,7 @@ fn element_blur_transform_changes_only_display_geometry_and_opacity() {
     let blur = crate::PaintBlur {
         order: 2,
         animation_id: Some(id),
+        layer_id: None,
         bounds,
         content_mask: crate::ContentMask {
             bounds,
@@ -411,6 +414,7 @@ fn retained_rotation_is_one_composite_with_a_shared_pivot() {
     let blur = crate::PaintBlur {
         order: 3,
         animation_id: Some(id),
+        layer_id: None,
         bounds,
         content_mask: crate::ContentMask {
             bounds,

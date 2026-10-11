@@ -102,6 +102,7 @@ mod tests {
 
         scene.begin_blur(super::super::BlurCapture {
             animation_id: None,
+            layer_id: None,
             bounds: layout_bounds,
             content_mask: ContentMask::new(layout_bounds),
             radius: ScaledPixels(1.0 / 4096.0),

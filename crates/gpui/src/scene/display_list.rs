@@ -1059,6 +1059,7 @@ impl Scene {
         let blur = PaintBlur {
             order: 0,
             animation_id: config.animation_id,
+            layer_id: config.layer_id,
             bounds: effect_bounds,
             content_mask: config.content_mask,
             radius: config.radius,

@@ -488,6 +488,7 @@ mod tests {
         let blur = crate::PaintBlur {
             order: 1,
             animation_id: Some(id),
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
@@ -548,6 +549,7 @@ mod tests {
         let blur = crate::PaintBlur {
             order: 1,
             animation_id: Some(id),
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(24.0),

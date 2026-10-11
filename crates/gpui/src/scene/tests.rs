@@ -118,6 +118,7 @@ fn element_blur_capture_reserves_full_three_sigma_footprint() {
     let mut scene = Scene::default();
     scene.begin_blur(BlurCapture {
         animation_id: Some(SceneAnimationId(17)),
+        layer_id: None,
         bounds: capture_bounds,
         content_mask: ContentMask::new(capture_bounds),
         radius,
@@ -371,6 +372,7 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
     let mut scene = Scene::default();
     scene.begin_blur(BlurCapture {
         animation_id: None,
+        layer_id: None,
         bounds,
         content_mask: content_mask.clone(),
         radius: ScaledPixels(4.0),
@@ -415,6 +417,7 @@ fn retained_range_distinguishes_balanced_from_standalone_blur_fragments() {
 fn blur_capture_state_tracks_nested_captures() {
     let capture = BlurCapture {
         animation_id: None,
+        layer_id: None,
         bounds: Bounds::default(),
         content_mask: ContentMask::default(),
         radius: ScaledPixels(1.0),
@@ -520,6 +523,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
         outer.insert_primitive(PaintBlur {
             order: 0,
             animation_id: None,
+            layer_id: None,
             bounds: rect,
             content_mask: ContentMask::new(rect),
             radius: ScaledPixels(2.0),

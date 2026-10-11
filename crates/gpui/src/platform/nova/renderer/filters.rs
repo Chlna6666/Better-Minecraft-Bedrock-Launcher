@@ -3,12 +3,19 @@
 //! does not replace that provenance with a global cache invalidation.
 use super::*;
 
+/// Logical content version of an offscreen GPU target, advanced only when a
+/// successful Present made the freshly rendered texels eligible for reuse.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct TextureContentVersion(pub(super) u64);
+
 #[derive(Clone)]
 pub(super) struct RetainedElementFilterSource {
     index: u32,
     blur: crate::PaintBlur,
     /// Last successful OFFSCREEN refresh for this particular filter.
     animation_values: Vec<crate::SceneAnimationValue>,
+    /// Content version is independent of compositor transform/opacity samples.
+    content_version: TextureContentVersion,
 }
 
 pub(super) struct FilterRegistry {
@@ -23,6 +30,7 @@ pub(super) struct FilterRegistry {
     /// retained target must be invalidated against this precise snapshot,
     /// not merely the latest UI View invalidation.
     pub(super) last_gpu_animation_values: Vec<crate::SceneAnimationValue>,
+    next_content_version: u64,
     valid: bool,
 }
 
@@ -38,6 +46,7 @@ impl FilterRegistry {
             quality: None,
             element_blur_inputs: Vec::new(),
             last_gpu_animation_values: Vec::new(),
+            next_content_version: 0,
         }
     }
 
@@ -73,7 +82,9 @@ impl FilterRegistry {
         else {
             return false;
         };
-        current.bounds == previous.blur.bounds
+        current.layer_id == previous.blur.layer_id
+            && previous.content_version.0 != 0
+            && current.bounds == previous.blur.bounds
             && current.content_mask == previous.blur.content_mask
             && current.radius == previous.blur.radius
             && current.content.retained_filter_source_matches(
@@ -96,10 +107,12 @@ impl FilterRegistry {
             else {
                 continue;
             };
+            self.next_content_version = self.next_content_version.wrapping_add(1).max(1);
             let snapshot = RetainedElementFilterSource {
                 index,
                 blur: current.clone(),
                 animation_values: animation_values.to_vec(),
+                content_version: TextureContentVersion(self.next_content_version),
             };
             if let Some(previous) = self
                 .element_blur_inputs
@@ -111,6 +124,16 @@ impl FilterRegistry {
                 self.element_blur_inputs.push(snapshot);
             }
         }
+    }
+
+    /// Texture contents become resident only through record_element_blur_inputs
+    /// after a successful presentation. A retained layer skipped by the Render
+    /// Graph keeps its previous version.
+    pub(super) fn layer_content_version(&self, index: u32) -> Option<TextureContentVersion> {
+        self.element_blur_inputs
+            .iter()
+            .find(|source| source.index == index)
+            .map(|source| source.content_version)
     }
 
     pub(super) fn record_submission(
@@ -147,6 +170,7 @@ mod tests {
         let blur = crate::PaintBlur {
             order: 0,
             animation_id: None,
+            layer_id: None,
             bounds: crate::Bounds::default(),
             content_mask: crate::ContentMask::default(),
             radius: crate::ScaledPixels(8.0),
@@ -157,6 +181,11 @@ mod tests {
         let mut changed_composite = blur.clone();
         changed_composite.opacity = 0.5;
         assert!(registry.source_unchanged(3, &changed_composite, &[]));
+        let first_version = registry.layer_content_version(3).expect("first resident texture");
+        registry.record_element_blur_inputs(&[(3, blur.clone())], &[], []);
+        assert_eq!(registry.layer_content_version(3), Some(first_version));
+        registry.record_element_blur_inputs(&[(3, blur.clone())], &[], [3]);
+        assert_ne!(registry.layer_content_version(3), Some(first_version));
         changed_composite.radius = crate::ScaledPixels(12.0);
         assert!(!registry.source_unchanged(3, &changed_composite, &[]));
         assert!(!registry.source_unchanged(4, &blur, &[]));

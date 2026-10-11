@@ -19,6 +19,16 @@ pub trait CompositeLayerExt: IntoElement + Sized + 'static {
     fn composite_layer(self) -> CompositeLayerElement<Self> {
         CompositeLayerElement {
             element: Some(self),
+            id: None,
+        }
+    }
+
+    /// Assign a stable GPU-layer path to repeated/anonymous compositor subtrees.
+    /// The id must continue to identify the same painted element across UI commits.
+    fn composite_layer_with_id(self, id: impl Into<ElementId>) -> CompositeLayerElement<Self> {
+        CompositeLayerElement {
+            element: Some(self),
+            id: Some(id.into()),
         }
     }
 }
@@ -29,6 +39,7 @@ impl<E: IntoElement + Sized + 'static> CompositeLayerExt for E {}
 /// retained zero-filter composite target.
 pub struct CompositeLayerElement<E> {
     element: Option<E>,
+    id: Option<ElementId>,
 }
 
 impl<E: IntoElement + 'static> IntoElement for CompositeLayerElement<E> {
@@ -44,7 +55,7 @@ impl<E: IntoElement + 'static> Element for CompositeLayerElement<E> {
     type PrepaintState = ();
 
     fn id(&self) -> Option<ElementId> {
-        None
+        self.id.clone()
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {

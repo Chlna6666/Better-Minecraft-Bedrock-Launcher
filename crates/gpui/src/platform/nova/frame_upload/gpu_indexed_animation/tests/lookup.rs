@@ -36,6 +36,7 @@ fn element_blur_upload(
         let blur = crate::PaintBlur {
             order: index,
             animation_id: Some(animation_id),
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(24.0),
