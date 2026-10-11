@@ -215,7 +215,7 @@ fn visually_identical_notify_skips_gpu_present(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn clean_animation_tick_does_not_render_view(cx: &mut TestAppContext) {
+fn clean_animation_tick_does_not_render_or_present(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| {
             cx.new(|_| AnimationTickView { renders: 0 })
@@ -240,9 +240,9 @@ fn clean_animation_tick_does_not_render_view(cx: &mut TestAppContext) {
 
         assert_eq!(view.read(cx).renders, renders);
         assert_eq!(test_window.draw_count(), draws);
-        assert_eq!(test_window.present_framebuffer_only_count(), presents + 1);
+        assert_eq!(test_window.present_framebuffer_only_count(), presents);
     })
-    .expect("a clean UI animation tick must preserve retained view output");
+    .expect("a clean UI animation tick must avoid submitting unchanged pixels");
 }
 
 #[gpui::test]
@@ -284,9 +284,39 @@ fn clean_on_next_frame_callback_runs_without_rendering_view(cx: &mut TestAppCont
         assert_eq!(callback_runs.get(), 1);
         assert_eq!(view.read(cx).renders, renders);
         assert_eq!(test_window.draw_count(), draws);
+        assert_eq!(test_window.present_framebuffer_only_count(), presents);
+    })
+    .expect("a clean on-next-frame callback should run without rebuilding or presenting");
+}
+
+#[gpui::test]
+fn explicit_present_survives_coalesced_clean_animation_tick(cx: &mut TestAppContext) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| AnimationTickView { renders: 0 })
+        })
+        .expect("test window should open")
+    });
+    cx.update_window(window.into(), |view, window, cx| {
+        window.active.set(true);
+        window.visibility = WindowVisibility::Visible;
+        window.draw(cx).clear();
+        assert!(window.present().is_accepted());
+        window.invalidator.set_dirty(false);
+        let view = view.downcast::<AnimationTickView>().expect("test view");
+        let renders = view.read(cx).renders;
+        let test_window = window.platform_window.as_test().expect("test backend").clone();
+        let presents = test_window.present_framebuffer_only_count();
+
+        window.run_platform_frame(
+            PlatformFrameRequest::animation_tick().merge(PlatformFrameRequest::presentation()),
+            cx,
+        );
+
+        assert_eq!(view.read(cx).renders, renders);
         assert_eq!(test_window.present_framebuffer_only_count(), presents + 1);
     })
-    .expect("a clean on-next-frame callback should run without rebuilding the view");
+    .expect("native present must never be lost when merging animation ticks");
 }
 
 #[gpui::test]

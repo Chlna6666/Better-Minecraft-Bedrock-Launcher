@@ -25,6 +25,9 @@ pub(crate) enum UiCommitRequest {
 pub(crate) enum PresentationRequest {
     #[default]
     None,
+    /// A cadence request; if the animation tick produced no pixels, it may be dropped.
+    AnimationTick,
+    /// An independent WSI, user or renderer request that must not be dropped.
     Required,
 }
 
@@ -45,7 +48,7 @@ impl PlatformFrameRequest {
     pub(crate) const fn animation_tick() -> Self {
         Self {
             ui_commit: UiCommitRequest::AnimationTick,
-            presentation: PresentationRequest::Required,
+            presentation: PresentationRequest::AnimationTick,
         }
     }
 
@@ -82,7 +85,20 @@ impl PlatformFrameRequest {
     }
 
     pub(crate) const fn needs_presentation(self) -> bool {
-        matches!(self.presentation, PresentationRequest::Required)
+        !matches!(self.presentation, PresentationRequest::None)
+    }
+
+    /// A pure animation cadence wake may update UI state without issuing a GPU frame.
+    /// Never suppress an explicit/merged present: its source may be WSI exposure,
+    /// an external renderer, or another untracked visual dependency.
+    pub(crate) const fn resolve_animation_presentation(self, visual_changed: bool) -> Self {
+        if visual_changed || !matches!(self.presentation, PresentationRequest::AnimationTick) {
+            return self;
+        }
+        Self {
+            ui_commit: self.ui_commit,
+            presentation: PresentationRequest::None,
+        }
     }
 
     pub(crate) const fn is_presentation_only(self) -> bool {
@@ -102,8 +118,12 @@ impl PlatformFrameRequest {
             } else {
                 UiCommitRequest::None
             },
-            presentation: if self.needs_presentation() || request.needs_presentation() {
+            presentation: if matches!(self.presentation, PresentationRequest::Required)
+                || matches!(request.presentation, PresentationRequest::Required)
+            {
                 PresentationRequest::Required
+            } else if self.needs_presentation() || request.needs_presentation() {
+                PresentationRequest::AnimationTick
             } else {
                 PresentationRequest::None
             },
@@ -463,16 +483,33 @@ mod tests {
         assert!(tick.needs_ui_commit());
         assert!(!tick.needs_ui_rebuild());
         assert!(!tick.is_presentation_only());
-        assert_eq!(tick.merge(PlatformFrameRequest::presentation()), tick);
-        assert_eq!(PlatformFrameRequest::presentation().merge(tick), tick);
         assert_eq!(
-            tick.merge(PlatformFrameRequest::ui_commit()),
+            tick.merge(PlatformFrameRequest::presentation()),
             PlatformFrameRequest::ui_commit_and_presentation(),
         );
         assert_eq!(
-            PlatformFrameRequest::ui_commit().merge(tick),
+            PlatformFrameRequest::presentation().merge(tick),
             PlatformFrameRequest::ui_commit_and_presentation(),
         );
+        let merged = tick.merge(PlatformFrameRequest::ui_commit());
+        assert!(merged.needs_ui_rebuild());
+        assert!(merged.needs_presentation());
+        assert!(!merged.resolve_animation_presentation(false).needs_presentation());
+        assert_eq!(PlatformFrameRequest::ui_commit().merge(tick), merged);
+    }
+
+    #[test]
+    fn empty_animation_tick_skips_only_implicit_gpu_presentation() {
+        let tick = PlatformFrameRequest::animation_tick();
+        assert!(!tick.resolve_animation_presentation(false).needs_presentation());
+        assert!(tick.resolve_animation_presentation(false).needs_ui_commit());
+        assert!(tick.resolve_animation_presentation(true).needs_presentation());
+        assert!(PlatformFrameRequest::presentation()
+            .resolve_animation_presentation(false).needs_presentation());
+        assert!(PlatformFrameRequest::ui_commit_and_presentation()
+            .resolve_animation_presentation(false).needs_presentation());
+        assert!(tick.merge(PlatformFrameRequest::presentation())
+            .resolve_animation_presentation(false).needs_presentation());
     }
 
     #[test]

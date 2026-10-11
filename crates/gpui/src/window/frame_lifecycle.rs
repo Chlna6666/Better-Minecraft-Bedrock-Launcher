@@ -36,6 +36,8 @@ pub(super) struct FrameWatchdog {
 #[derive(Clone, Copy, Debug)]
 struct PresentationPhaseOutcome {
     submitted_early: bool,
+    /// Derived from the real animation damage while keeping explicit WSI presents intact.
+    frame_request: PlatformFrameRequest,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -796,7 +798,7 @@ impl Window {
         // platform wake-up, but compositor work no longer depends on entity/UI access.
         let presentation = self.run_presentation_phase(frame_request);
         let ui_commit = self.run_ui_commit_phase(
-            frame_request,
+            presentation.frame_request,
             frame_started_at,
             frame_budget,
             presentation.submitted_early,
@@ -870,12 +872,23 @@ impl Window {
         // Consume the newest immutable UI commit before sampling renderer-owned animation. This
         // makes a presentation wake-up latest-wins and prevents a fresh committed scene from
         // waiting behind callbacks or another View/layout/paint pass.
-        if self.presentation_state.has_pending_scene() {
-            debug_assert!(self.presentation_state.activate_pending());
+        let pending_scene_commit = self.presentation_state.has_pending_scene();
+        if pending_scene_commit {
+            // Do not put the activation call inside debug_assert!: release builds
+            // must consume the newest immutable presentation packet as well.
+            let activated = self.presentation_state.activate_pending();
+            debug_assert!(activated);
         }
         let preserve_unpresented_damage = self.needs_present.get();
         let presentation_tick = self.run_animation_engine_frame(preserve_unpresented_damage);
-        let presentation_ready = preserve_unpresented_damage || presentation_tick;
+        // A newly activated GPU Scene is observable even without a new UI draw.
+        // Its first presentation must not be mistaken for an empty animation tick.
+        let presentation_ready =
+            pending_scene_commit || preserve_unpresented_damage || presentation_tick;
+        // A plain cadence wake is not a guaranteed image change. If it carried no
+        // animation damage and no older pending frame, do not submit a redundant
+        // full Swapchain pass. Explicit presentation requests retain priority.
+        let frame_request = frame_request.resolve_animation_presentation(presentation_ready);
         let submitted_early = should_present_before_ui_commit(
             presentation_ready,
             frame_request,
@@ -884,7 +897,10 @@ impl Window {
             self.platform_window.is_minimized(),
         ) && self.present_framebuffer_only().is_accepted();
 
-        PresentationPhaseOutcome { submitted_early }
+        PresentationPhaseOutcome {
+            submitted_early,
+            frame_request,
+        }
     }
 
     /// Run UI callbacks and scene generation after presentation had first access to this tick.
@@ -1035,7 +1051,12 @@ impl Window {
             self.request_animation_frame();
         }
 
-        tick.has_gpu_or_paint
+        // The native presentation lane samples scene-owned timelines separately
+        // from UI-owned paint work. Do not drop its cadence just because the UI
+        // animation tick produced no local dirty rectangles.
+        let compositor_visual_active = platform_owns_scene_animations
+            && tick.active_visual_count > tick.ui_active_visual_count;
+        tick.has_gpu_or_paint || compositor_visual_active
     }
 
     fn evaluate_frame_work(

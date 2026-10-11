@@ -234,6 +234,7 @@ Platform wakeups carry two independent typed work domains: `UiCommitRequest` and
 | Constructor | Meaning |
 | --- | --- |
 | `PlatformFrameRequest::ui_commit()` | Request fresh UI generation: layout, prepaint, paint, and a new retained scene commit. |
+| `PlatformFrameRequest::animation_tick()` | Wake animation callbacks and timelines; only present when visual work, a pending scene, or an independent request requires it. |
 | `PlatformFrameRequest::presentation()` | Request presentation of the last committed retained scene without forcing UI generation. |
 | `PlatformFrameRequest::ui_commit_and_presentation()` | Coalesce both domains into one platform wakeup while preserving their separate execution phases. |
 | `PlatformFrameRequest::default()` | No work; used only as an empty pending slot. |
@@ -269,6 +270,8 @@ Key behavior:
   available and no presentation is pending;
 - frame throttle can delay progressive work to protect frame pacing;
 - animation engine ticks can request paint/GPU or layout follow-up work;
+- a clean animation Tick or no-op next-frame callback no longer forces a GPU Present;
+  explicit/merged presentation requests and native compositor animations are preserved;
 - `run_platform_frame` evaluates whether to draw, present retained content,
   defer inactive dirty work, or skip;
 - retained resource trim policy is updated as windows remain idle.
