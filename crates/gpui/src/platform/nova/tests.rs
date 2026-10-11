@@ -1913,6 +1913,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
         },
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
+        shared_horizontal_scratch: false,
         variants: vec![BackdropBlurVariantTargets {
             config,
             levels: vec![
@@ -1967,6 +1968,40 @@ fn backdrop_blur_render_passes_blur_each_axis() {
 }
 
 #[test]
+fn shared_gaussian_horizontal_scratch_accounts_for_one_physical_allocation() {
+    let make_level = |texture: u32, bytes: u64| BackdropBlurLevelTarget {
+        byte_size: bytes,
+        texture: test_texture_id(texture),
+        texture_view: test_texture_view_id(texture),
+        pass_resource_sets: vec![test_resource_set_id(texture)],
+    };
+    let first = BackdropBlurVariantTargets {
+        config: test_backdrop_blur_config(2, 3),
+        levels: vec![make_level(2, 1024), make_level(3, 512)],
+        target_resource_sets: vec![test_resource_set_id(21)],
+    };
+    let second = BackdropBlurVariantTargets {
+        config: test_backdrop_blur_config(3, 3),
+        levels: vec![make_level(2, 1024), make_level(4, 512)],
+        target_resource_sets: vec![test_resource_set_id(22)],
+    };
+    let targets = BackdropBlurTargets {
+        source: RenderTarget {
+            byte_size: 2048,
+            texture: test_texture_id(1),
+            texture_view: test_texture_view_id(1),
+        },
+        source_pass_resource_sets: vec![],
+        isolated_sources: vec![],
+        variants: vec![first, second],
+        shared_horizontal_scratch: true,
+    };
+    assert_eq!(targets.byte_size(), 2048 + 1024 + 512 + 512);
+    assert_eq!(targets.variants[0].levels[0].texture, targets.variants[1].levels[0].texture);
+    assert_ne!(targets.variants[0].levels[1].texture, targets.variants[1].levels[1].texture);
+}
+
+#[test]
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
@@ -1977,6 +2012,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
         },
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
+        shared_horizontal_scratch: false,
         variants: Vec::new(),
     };
 

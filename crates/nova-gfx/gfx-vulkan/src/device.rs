@@ -1390,6 +1390,7 @@ impl VulkanDevice {
             steps,
             depth_attachment,
             None,
+            false,
         )
     }
 
@@ -1401,6 +1402,7 @@ impl VulkanDevice {
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
         clear_region: Option<ScissorRect>,
+        graph_write_hazard: bool,
     ) -> Result<()> {
         let mut transient_framebuffer = None;
         let mut render_target_texture = None;
@@ -1553,6 +1555,7 @@ impl VulkanDevice {
             render_target_transition,
             clear_region,
             gpu_trace,
+            graph_write_hazard,
         });
         if result.is_ok() {
             if let Some(slot) = gpu_trace_slot {
@@ -1877,7 +1880,18 @@ impl VulkanDevice {
         }
 
         let encoder = self.create_command_encoder_with_buffer_count(passes.len())?;
+        // The real target TextureId, not the logical variant index, is the
+        // resource identity. Multiple horizontal Gaussian passes may share
+        // one physical image. The graph marks WAW handoffs when a later pass
+        // reuses its attachment; the native command buffer executes that
+        // access barrier before entering the render pass.
+        let mut previous_writers = Vec::<TextureId>::new();
         for (index, pass) in passes.iter().enumerate() {
+            let texture_id = self.texture_views.get(pass.texture_view)?.texture;
+            let graph_write_hazard = previous_writers.contains(&texture_id);
+            if !graph_write_hazard {
+                previous_writers.push(texture_id);
+            }
             let command_buffer = self.command_encoders.get(encoder)?.command_buffers[index];
             let result = self.record_render_step_list_desc_into(
                 encoder,
@@ -1890,6 +1904,7 @@ impl VulkanDevice {
                 pass.steps,
                 pass.depth_attachment,
                 pass.clear_region,
+                graph_write_hazard,
             );
             if let Err(error) = result {
                 self.destroy_temporary_command_encoder_now(encoder)?;
@@ -5289,6 +5304,9 @@ struct CommandRecordInfo<'a> {
     clear_region: Option<ScissorRect>,
     /// Vulkan timestamps enclose all command-buffer GPU work including layout transitions.
     gpu_trace: Option<(vk::QueryPool, u32)>,
+    /// A later native attachment write reuses physical texture storage that
+    /// appeared earlier in this ordered Render Graph batch.
+    graph_write_hazard: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -5515,6 +5533,31 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 query_pool,
                 first_query,
+            );
+        }
+    }
+    if info.graph_write_hazard {
+        // WAW on the same physical VkImage. Preserve execution/memory ordering
+        // across independently recorded command buffers submitted to the same
+        // graphics queue. Existing image-layout barriers still handle RAW
+        // render-target -> sampled-image transitions separately.
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_access_mask(
+                vk::AccessFlags::COLOR_ATTACHMENT_READ
+                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            );
+        // SAFETY: Command buffer recording is active; the target image and
+        // previous writer belong to this same ordered queue submission.
+        unsafe {
+            info.device.cmd_pipeline_barrier(
+                info.command_buffer,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[barrier],
+                &[],
+                &[],
             );
         }
     }

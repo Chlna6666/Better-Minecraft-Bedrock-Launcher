@@ -720,6 +720,46 @@ The prior auto-retained-root heuristic remains for other qualified large
 pages, and `BMCBL_ENABLE_RETAINED_COLOR=1` explicitly forces that legacy
 full-window fallback for A/B experiments.
 
+### Experimental shared Gaussian scratch and native WAW barriers
+
+Set `BMCBL_ENABLE_BLUR_SCRATCH_SHARING=1` before launching BMCBL to reuse
+the **same actual physical GPU texture and view** for horizontal (X-axis)
+Gaussian intermediates with equal size and format across different blur
+variants. The retained final (Y-axis) outputs, zero-radius compositor layers,
+shared backdrop source and isolated inputs remain separate allocations.
+
+The GPU Render Graph executes X/Y filters consecutively (one X write,
+followed by its Y read). The shared X scratch must never be treated as a
+persistent previous-frame filter result. With sharing enabled, the draw
+planner disables partial filter-target preservation, computes complete
+dependency halos and clears/rebuilds filtered outputs instead of
+`LoadOp::Load` from another variant's old X texture. Native backend
+attachment transitions still synchronize each X->Y read. Vulkan additionally
+derives physical-target WAW hazards from the ordered
+`TextureRenderStepList` batch and records an actual
+`vkCmdPipelineBarrier` access/memory dependency before reusing a
+previously written color attachment. DX12 already executes tracked native
+`ResourceBarrier` transitions from render target to shader resource and
+back for every offscreen write/read handoff. On GL/Metal the existing
+in-order pass execution is retained.
+
+The ownership teardown deduplicates native texture/view destruction
+*after all variant resource sets are retired*, and the GPU memory estimate
+counts the reused horizontal texture exactly once. Fence waits on target
+topology changes keep old native allocations alive until the last submitted
+frame has finished. This experimental mode trades partial-filter refresh
+efficiency for lower GPU memory. It is disabled by default and requires
+native Vulkan, DX12, OpenGL and Metal image correctness/performance checks.
+
+**Terminology:** this is real physical GPU resource sharing by aliasing
+logical scratch target lifetimes to one native texture allocation. It is
+not yet DX12 `CreatePlacedResource` heap aliasing or Vulkan creation of
+multiple distinct `VkImage` handles bound to overlapping
+`VkDeviceMemory` ranges. Those operations require backend allocator
+leases, native alias barriers, explicit memory requirements and full fence
+retirement of all aliases; enabling them for persistent retained textures
+would be unsafe.
+
 Cross-frame physical heap aliasing is **not enabled**. On a blur target
 topology change **or a path-mask target promotion**, the renderer now waits
 for outstanding tracked GPU submissions before destroying/rebinding old

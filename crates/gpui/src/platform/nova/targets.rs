@@ -24,10 +24,14 @@ pub(super) struct BackdropBlurTargets {
     /// content can never become the backdrop source of a sibling group.
     pub(super) isolated_sources: Vec<IsolatedBlurSource>,
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
+    /// Multiple Gaussian variants reuse the same actual horizontal scratch texture.
+    /// Final retained textures and source targets are never aliased.
+    pub(super) shared_horizontal_scratch: bool,
 }
 
 impl BackdropBlurTargets {
     pub(super) fn byte_size(&self) -> u64 {
+        let mut textures = FxHashSet::default();
         self.isolated_sources
             .iter()
             .fold(self.source.byte_size, |total, source| {
@@ -37,6 +41,7 @@ impl BackdropBlurTargets {
                 self.variants
                     .iter()
                     .flat_map(|variant| &variant.levels)
+                    .filter(|level| textures.insert(level.texture))
                     .map(|level| level.byte_size)
                     .sum::<u64>(),
             )
@@ -284,6 +289,15 @@ where
     }
 
     let mut variants = Vec::with_capacity(configs.len());
+    // Same-size scratch shares the exact native TextureId/TextureViewId, so
+    // Vulkan/DX12/OpenGL/Metal have only ONE physical allocation per size
+    // rather than unrelated allocations with identical descriptors.
+    // Full-refresh source filtering is required whenever this path is used:
+    // LoadOp::Load on reused horizontal texels would sample another variant.
+    let requested_scratch_share =
+        std::env::var("BMCBL_ENABLE_BLUR_SCRATCH_SHARING").as_deref() == Ok("1");
+    let mut scratch_targets: Vec<(u32, u32, RenderTarget)> = Vec::new();
+    let mut shared_horizontal_scratch = false;
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
         let horizontal_size = Extent2d::new(
@@ -308,12 +322,38 @@ where
         let pass_count = blur_variant_level_count(config);
         let mut levels = Vec::with_capacity(pass_count);
         for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
-            let target = create_render_texture_target(
-                device,
-                &format!("{label} backdrop variant {variant_index} target {pass_index}"),
-                target_size,
-                descriptor.format,
-            )?;
+            let existing_scratch = if requested_scratch_share
+                && config.radius() > 0.0
+                && pass_index == 0
+            {
+                scratch_targets
+                    .iter()
+                    .find(|(width, height, _)| {
+                        *width == target_size.width() && *height == target_size.height()
+                    })
+                    .map(|(_, _, target)| *target)
+            } else {
+                None
+            };
+            let target = if let Some(existing) = existing_scratch {
+                shared_horizontal_scratch = true;
+                existing
+            } else {
+                let allocated = create_render_texture_target(
+                    device,
+                    &format!("{label} backdrop variant {variant_index} target {pass_index}"),
+                    target_size,
+                    descriptor.format,
+                )?;
+                if requested_scratch_share && config.radius() > 0.0 && pass_index == 0 {
+                    scratch_targets.push((
+                        target_size.width(),
+                        target_size.height(),
+                        allocated,
+                    ));
+                }
+                allocated
+            };
             let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
                 pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
@@ -358,6 +398,7 @@ where
         source_pass_resource_sets,
         isolated_sources,
         variants,
+        shared_horizontal_scratch,
     })
 }
 
@@ -385,6 +426,8 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
         }
         destroy_render_texture_target(device, source.target, backend_name);
     }
+    let mut gathered_textures = FxHashSet::default();
+    let mut physical_targets = Vec::new();
     for variant in targets.variants {
         for resource_set in variant.target_resource_sets {
             if let Err(error) = device.destroy_resource_set(resource_set) {
@@ -401,16 +444,19 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
                     );
                 }
             }
-            destroy_render_texture_target(
-                device,
-                RenderTarget {
+            // Collect unique physical targets. They must not be destroyed
+            // while any other variant's descriptor set still references them.
+            if gathered_textures.insert(target.texture) {
+                physical_targets.push(RenderTarget {
                     byte_size: target.byte_size,
                     texture: target.texture,
                     texture_view: target.texture_view,
-                },
-                backend_name,
-            );
+                });
+            }
         }
+    }
+    for target in physical_targets {
+        destroy_render_texture_target(device, target, backend_name);
     }
     destroy_render_texture_target(device, targets.source, backend_name);
 }
