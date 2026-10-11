@@ -12,6 +12,7 @@ mod draw_steps;
 mod drawable;
 mod extensions;
 mod filters;
+mod frame_graph;
 #[cfg(target_os = "windows")]
 use drawable::native_windows_hwnd;
 use drawable::resolve_initial_drawable_size;

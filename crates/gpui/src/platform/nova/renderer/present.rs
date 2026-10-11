@@ -1,6 +1,7 @@
 use super::buffer_upload::{FrameBufferUpload, upload_frame_buffers};
 use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
 use super::filters::FilterRegistry;
+use super::frame_graph::{FrameGraphPlan, Pass as GraphPass};
 use super::*;
 use std::time::Duration;
 
@@ -212,6 +213,53 @@ where
     Ok(device.render_step_lists_to_textures_compat(&passes)?)
 }
 
+fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
+    device: &mut D,
+    graph: &FrameGraphPlan,
+    render_pass: RenderPassId,
+    depth_attachment: RenderPassDepthAttachment,
+    path_texture_view: TextureViewId,
+    path_steps: &[DrawStepDescriptor],
+    path_mask_cpu_elapsed: &mut Duration,
+    element_layers: &[PreparedElementBlurLayer],
+    backdrop_source: Option<TextureViewId>,
+    backdrop_groups: &[PreparedBackdropBlurGroup],
+) -> Result<()> {
+    for pass in graph.offscreen_passes() {
+        match pass {
+            GraphPass::PathMask => path_mask::render(
+                device,
+                path_mask::Pass {
+                    texture_view: path_texture_view,
+                    render_pass,
+                    steps: path_steps,
+                    depth_attachment,
+                },
+                path_mask_cpu_elapsed,
+            )?,
+            GraphPass::ElementLayers => render_element_blur_layers(
+                device,
+                render_pass,
+                depth_attachment,
+                element_layers,
+            )?,
+            GraphPass::BackdropBlur => {
+                if let Some(source_texture_view) = backdrop_source {
+                    render_backdrop_blur_groups(
+                        device,
+                        source_texture_view,
+                        render_pass,
+                        depth_attachment,
+                        backdrop_groups,
+                    )?;
+                }
+            }
+            GraphPass::MainPresent => unreachable!("swapchain Present is the graph sink"),
+        }
+    }
+    Ok(())
+}
+
 fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
     let mut element_depth = 0usize;
     for batch in &frame_upload.batches {
@@ -253,22 +301,26 @@ fn dirty_element_blur_indices(
     if force_all {
         return ranges.iter().map(|range| range.index).collect();
     }
-    if dirty_region.is_empty() {
-        return Vec::new();
-    }
 
     let mut dirty = Vec::new();
     for range in ranges {
-        // The generated root retained-color target deliberately has no Scene
-        // capture; it is invalidated by the whole-scene dirty region below.
-        // Real element filters instead compare their *captured input* rather
-        // than using overlap with the filter's output as a cache key.
+        // Each captured Layer owns its dirty decision: the source may have a
+        // different stable identity, content revision, clip, radius or animated
+        // pixel values even when the outer window reports no spatial damage.
+        // A composite-only transform leaves the captured source unchanged.
         if let Some((_, source)) = frame_upload
             .element_blur_inputs
             .iter()
             .find(|(index, _)| *index == range.index)
-            && filters.source_unchanged(range.index, source, animation_values)
         {
+            if !filters.source_unchanged(range.index, source, animation_values) {
+                dirty.push(range.index);
+            }
+            continue;
+        }
+        // The synthetic retained-root target has no isolated Scene source:
+        // it must still be driven by window-level dirty pixels.
+        if dirty_region.is_empty() {
             continue;
         }
         if dirty_region.is_full() {
@@ -599,8 +651,28 @@ impl NovaRenderer {
         let render_path_mask =
             path_mask_step_count != 0 && self.path_mask_residency.begin(path_mask_key);
         let mut path_mask_cpu_elapsed = Duration::ZERO;
-        let mask_pass_count = usize::from(render_path_mask);
-        let main_pass_count = 1;
+        let graph = FrameGraphPlan::compile(
+            render_path_mask,
+            element_blur_layers.len(),
+            backdrop_blur_groups.len(),
+        );
+        let mask_pass_count = usize::from(graph.requires(GraphPass::PathMask));
+        let main_pass_count = usize::from(graph.requires(GraphPass::MainPresent));
+        if self.diagnostics.enabled {
+            let versioned_layers = dirty_element_indices.iter().filter(|index| {
+                self.filters.layer_content_version(**index).is_some()
+            }).count();
+            log::debug!(
+                "nova render graph: nodes={} refreshed_layer_targets={} previously_versioned_layers={} path_mask={} element_layers={} backdrop={} main_present={}",
+                graph.node_count(),
+                element_blur_layers.len(),
+                versioned_layers,
+                graph.requires(GraphPass::PathMask),
+                graph.requires(GraphPass::ElementLayers),
+                graph.requires(GraphPass::BackdropBlur),
+                graph.requires(GraphPass::MainPresent),
+            );
+        }
         let backdrop_blur_refreshed: bool;
         let element_blur_refreshed: bool;
         let blur_group_pass_count = backdrop_blur_groups.iter().enumerate().fold(
@@ -841,39 +913,20 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if render_path_mask {
-                        path_mask::render(
-                            device,
-                            path_mask::Pass {
-                                texture_view: self.path_texture_view,
-                                render_pass: self.render_pass,
-                                steps: self.draw_step_scratch.path_steps(),
-                                depth_attachment,
-                            },
-                            &mut path_mask_cpu_elapsed,
-                        )?;
-                    }
-                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                    element_blur_refreshed = !element_blur_layers.is_empty();
-                    if element_blur_refreshed {
-                        render_element_blur_layers(
-                            device,
-                            self.render_pass,
-                            depth_attachment,
-                            &element_blur_layers,
-                        )?;
-                    }
-                    if backdrop_blur_refreshed
-                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                    {
-                        render_backdrop_blur_groups(
-                            device,
-                            source_texture_view,
-                            self.render_pass,
-                            depth_attachment,
-                            &backdrop_blur_groups,
-                        )?;
-                    }
+                    execute_frame_graph_offscreen(
+                        device,
+                        &graph,
+                        self.render_pass,
+                        depth_attachment,
+                        self.path_texture_view,
+                        self.draw_step_scratch.path_steps(),
+                        &mut path_mask_cpu_elapsed,
+                        &element_blur_layers,
+                        backdrop_blur_source_texture_view,
+                        &backdrop_blur_groups,
+                    )?;
+                    backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
+                    element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
                     let offscreen_elapsed = offscreen_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.offscreen_render = offscreen_elapsed;
@@ -968,39 +1021,20 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if render_path_mask {
-                        path_mask::render(
-                            device,
-                            path_mask::Pass {
-                                texture_view: self.path_texture_view,
-                                render_pass: self.render_pass,
-                                steps: self.draw_step_scratch.path_steps(),
-                                depth_attachment,
-                            },
-                            &mut path_mask_cpu_elapsed,
-                        )?;
-                    }
-                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                    element_blur_refreshed = !element_blur_layers.is_empty();
-                    if element_blur_refreshed {
-                        render_element_blur_layers(
-                            device,
-                            self.render_pass,
-                            depth_attachment,
-                            &element_blur_layers,
-                        )?;
-                    }
-                    if backdrop_blur_refreshed
-                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                    {
-                        render_backdrop_blur_groups(
-                            device,
-                            source_texture_view,
-                            self.render_pass,
-                            depth_attachment,
-                            &backdrop_blur_groups,
-                        )?;
-                    }
+                    execute_frame_graph_offscreen(
+                        device,
+                        &graph,
+                        self.render_pass,
+                        depth_attachment,
+                        self.path_texture_view,
+                        self.draw_step_scratch.path_steps(),
+                        &mut path_mask_cpu_elapsed,
+                        &element_blur_layers,
+                        backdrop_blur_source_texture_view,
+                        &backdrop_blur_groups,
+                    )?;
+                    backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
+                    element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
                     let offscreen_elapsed = offscreen_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.offscreen_render = offscreen_elapsed;
@@ -1095,39 +1129,20 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if render_path_mask {
-                        path_mask::render(
-                            device,
-                            path_mask::Pass {
-                                texture_view: self.path_texture_view,
-                                render_pass: self.render_pass,
-                                steps: self.draw_step_scratch.path_steps(),
-                                depth_attachment,
-                            },
-                            &mut path_mask_cpu_elapsed,
-                        )?;
-                    }
-                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                    element_blur_refreshed = !element_blur_layers.is_empty();
-                    if element_blur_refreshed {
-                        render_element_blur_layers(
-                            device,
-                            self.render_pass,
-                            depth_attachment,
-                            &element_blur_layers,
-                        )?;
-                    }
-                    if backdrop_blur_refreshed
-                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                    {
-                        render_backdrop_blur_groups(
-                            device,
-                            source_texture_view,
-                            self.render_pass,
-                            depth_attachment,
-                            &backdrop_blur_groups,
-                        )?;
-                    }
+                    execute_frame_graph_offscreen(
+                        device,
+                        &graph,
+                        self.render_pass,
+                        depth_attachment,
+                        self.path_texture_view,
+                        self.draw_step_scratch.path_steps(),
+                        &mut path_mask_cpu_elapsed,
+                        &element_blur_layers,
+                        backdrop_blur_source_texture_view,
+                        &backdrop_blur_groups,
+                    )?;
+                    backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
+                    element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
                     let offscreen_elapsed = offscreen_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.offscreen_render = offscreen_elapsed;
@@ -1209,39 +1224,20 @@ impl NovaRenderer {
                     atlas_texture_region_count = atlas_stats.upload_count;
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
-                    if render_path_mask {
-                        path_mask::render(
-                            device,
-                            path_mask::Pass {
-                                texture_view: self.path_texture_view,
-                                render_pass: self.render_pass,
-                                steps: self.draw_step_scratch.path_steps(),
-                                depth_attachment,
-                            },
-                            &mut path_mask_cpu_elapsed,
-                        )?;
-                    }
-                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                    element_blur_refreshed = !element_blur_layers.is_empty();
-                    if element_blur_refreshed {
-                        render_element_blur_layers(
-                            device,
-                            self.render_pass,
-                            depth_attachment,
-                            &element_blur_layers,
-                        )?;
-                    }
-                    if backdrop_blur_refreshed
-                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                    {
-                        render_backdrop_blur_groups(
-                            device,
-                            source_texture_view,
-                            self.render_pass,
-                            depth_attachment,
-                            &backdrop_blur_groups,
-                        )?;
-                    }
+                    execute_frame_graph_offscreen(
+                        device,
+                        &graph,
+                        self.render_pass,
+                        depth_attachment,
+                        self.path_texture_view,
+                        self.draw_step_scratch.path_steps(),
+                        &mut path_mask_cpu_elapsed,
+                        &element_blur_layers,
+                        backdrop_blur_source_texture_view,
+                        &backdrop_blur_groups,
+                    )?;
+                    backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
+                    element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
                     let present_started = Instant::now();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.frame_prepare_upload =
@@ -1311,39 +1307,20 @@ impl NovaRenderer {
                     atlas_texture_upload_bytes = atlas_stats.uploaded_bytes;
                     record_nova_upload_metrics(mapped_upload_bytes, atlas_stats);
                     let offscreen_started = Instant::now();
-                    if render_path_mask {
-                        path_mask::render(
-                            device,
-                            path_mask::Pass {
-                                texture_view: self.path_texture_view,
-                                render_pass: self.render_pass,
-                                steps: self.draw_step_scratch.path_steps(),
-                                depth_attachment,
-                            },
-                            &mut path_mask_cpu_elapsed,
-                        )?;
-                    }
-                    backdrop_blur_refreshed = !backdrop_blur_groups.is_empty();
-                    element_blur_refreshed = !element_blur_layers.is_empty();
-                    if element_blur_refreshed {
-                        render_element_blur_layers(
-                            device,
-                            self.render_pass,
-                            depth_attachment,
-                            &element_blur_layers,
-                        )?;
-                    }
-                    if backdrop_blur_refreshed
-                        && let Some(source_texture_view) = backdrop_blur_source_texture_view
-                    {
-                        render_backdrop_blur_groups(
-                            device,
-                            source_texture_view,
-                            self.render_pass,
-                            depth_attachment,
-                            &backdrop_blur_groups,
-                        )?;
-                    }
+                    execute_frame_graph_offscreen(
+                        device,
+                        &graph,
+                        self.render_pass,
+                        depth_attachment,
+                        self.path_texture_view,
+                        self.draw_step_scratch.path_steps(),
+                        &mut path_mask_cpu_elapsed,
+                        &element_blur_layers,
+                        backdrop_blur_source_texture_view,
+                        &backdrop_blur_groups,
+                    )?;
+                    backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
+                    element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
                     let offscreen_elapsed = offscreen_started.elapsed();
                     if let Some(timing) = presentation_timing.as_mut() {
                         timing.offscreen_render = offscreen_elapsed;
@@ -1605,6 +1582,48 @@ impl NovaRenderer {
         let _ = (self.surface, self.atlas_sampler, self.path_texture);
         packet.consume_submitted_damage();
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod per_layer_damage_tests {
+    use super::*;
+
+    #[test]
+    fn isolated_source_damage_does_not_depend_on_window_damage() {
+        let mut frame = FrameUpload::default();
+        frame.blur_content_ranges_cache.push(BlurContentRange {
+            index: 7,
+            depth: 0,
+            content_start: 0,
+            content_end: 0,
+        });
+        let source = crate::PaintBlur {
+            order: 0,
+            layer_id: None,
+            animation_id: None,
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: crate::ScaledPixels(4.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        frame.element_blur_inputs.push((7, source.clone()));
+        let empty = crate::DirtyRegion::empty();
+        let mut filters = FilterRegistry::new(None);
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
+            vec![7],
+            "uninitialized layer must render even when window spatial dirty is empty"
+        );
+        filters.record_element_blur_inputs(&frame.element_blur_inputs, &[], [7]);
+        assert!(dirty_element_blur_indices(&frame, &empty, &filters, &[], false).is_empty());
+        frame.element_blur_inputs[0].1.radius = crate::ScaledPixels(5.0);
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
+            vec![7],
+            "changed source invalidates only its layer, independently of window dirty"
+        );
     }
 }
 

@@ -675,6 +675,48 @@ and target recreation invalidate it. This preserves the same blur shader and
 quality while avoiding repeated source/downsample/upsample passes for unrelated
 foreground animation.
 
+### Retained compositor layer identity and Render Graph baseline
+
+A filter capture now carries an optional structural `GlobalElementId` into the
+immutable Scene as its GPU Layer identity, separate from the flattened draw
+index. `CompositeLayerExt::composite_layer_with_id(id)` assigns an explicit
+retained path to anonymous/repeated compositor subtrees. Identity changes
+invalidate the previous source even if the new subtree occupies the same
+flattened slot and has the same bounds.
+
+`FilterRegistry` tracks an independent `TextureContentVersion` for each
+refreshed offscreen element source. It increments **only** for the element
+targets actually rerendered after successful presentation, not for the
+composite transform/opacity or an unrelated Scene commit. Cache invalidation
+clears those resident snapshots. The stable identity check is part of the
+actual `source_unchanged` decision.
+
+`dirty_element_blur_indices` now evaluates each captured element's
+source identity, visual contents and animation samples **before** looking at
+global window damage. A changed source can schedule its own offscreen
+refresh even with an empty window dirty region; an unchanged source can
+keep its texture when only its composite opacity changes. The synthetic
+root retained-color source remains driven by window spatial damage.
+Targets without a proven source snapshot take the conservative refresh path.
+
+Nova now compiles an ordered four-node Render Graph DAG for each
+presentation packet (Path Mask, Element Layers, Backdrop Blur, Main Present).
+Inactive passes are omitted. The graph's dependency edges order mask
+producers before sampling layers, captured layers before dependent
+backdrops, and all producers before Swapchain Present. The **same graph**
+runs through the shared backend-compatible offscreen dispatcher across
+DX11/DX12/Vulkan/OpenGL/Metal. Individual element layers are still batched
+for native submission rather than emitting one submission per layer.
+`GPUI_NOVA_RENDER_DIAGNOSTICS=1` logs graph node counts and previously
+versioned/updated layer counts.
+
+This is a first execution-graph baseline, **not** full render-target aliasing,
+transient texture lifetime analysis, barrier synthesis, independent GPU
+queues, texture-copy elimination or static-root caching for all GPUI
+pages. Swapchain backbuffer rotation still requires coherent main-pass
+output. Versioning prevents false source reuse; it does not by itself
+reduce draw work for pages without compositor layers.
+
 ## Presentation-Only Frames
 
 `present_framebuffer_only()` is used when GPUI needs presentation without a new
