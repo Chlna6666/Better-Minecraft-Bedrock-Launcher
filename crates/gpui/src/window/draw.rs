@@ -26,6 +26,74 @@ pub(super) fn deadline_remaining_micros(deadline: Option<Instant>) -> Option<i64
     Some(remaining)
 }
 
+/// When a view gains or loses retained paint fragments, keep visually identical
+/// prefix/suffix fragments out of the damage set. Retained View bounds are often
+/// the entire page even when the inserted fragment is a small popup.
+fn for_each_changed_fragment_count_bounds(
+    previous_scene: &Scene,
+    previous_segments: &[&RetainedSceneSegment],
+    current_scene: &Scene,
+    current_segments: &[&RetainedSceneSegment],
+    mut visit: impl FnMut(Bounds<ScaledPixels>),
+) {
+    fn unchanged(
+        previous_scene: &Scene,
+        previous: &RetainedSceneSegment,
+        current_scene: &Scene,
+        current: &RetainedSceneSegment,
+    ) -> bool {
+        if previous.bounds != current.bounds {
+            return false;
+        }
+        let mut changed = false;
+        current_scene.for_each_changed_bounds(
+            current.scene_range.clone(),
+            previous_scene,
+            previous.scene_range.clone(),
+            |_| changed = true,
+        ) && !changed
+    }
+
+    let common = previous_segments.len().min(current_segments.len());
+    let mut prefix = 0;
+    while prefix < common
+        && unchanged(
+            previous_scene,
+            previous_segments[prefix],
+            current_scene,
+            current_segments[prefix],
+        )
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0;
+    while suffix < common - prefix
+        && unchanged(
+            previous_scene,
+            previous_segments[previous_segments.len() - suffix - 1],
+            current_scene,
+            current_segments[current_segments.len() - suffix - 1],
+        )
+    {
+        suffix += 1;
+    }
+
+    // Use actual painter bounds, not the enclosing View/layout rectangle.
+    // Scene::bounds_for_range includes isolated blur groups and filter margins;
+    // empty paint fragments do not contribute pixel damage.
+    for fragment in &previous_segments[prefix..previous_segments.len() - suffix] {
+        if let Some(bounds) = previous_scene.bounds_for_range(fragment.scene_range.clone()) {
+            visit(bounds);
+        }
+    }
+    for fragment in &current_segments[prefix..current_segments.len() - suffix] {
+        if let Some(bounds) = current_scene.bounds_for_range(fragment.scene_range.clone()) {
+            visit(bounds);
+        }
+    }
+}
+
 impl Window {
     /// Produces a new frame and assigns it to `rendered_frame`. To actually show
     /// the contents of the new [`Scene`], use [`Self::present`].
@@ -474,7 +542,10 @@ impl Window {
             let current = current_entities.get(entity_id);
             let diffed = previous.zip(current).is_some_and(|(previous, current)| {
                 if previous.len() != current.len() {
-                    return false;
+                    // The fragment-count change is handled by the ordered painter diff
+                    // below. Falling back to Entry::bounds here damages the entire
+                    // containing View (often the full window).
+                    return true;
                 }
                 // A View may own more than one independently retained scene
                 // fragment (e.g. a page body plus stable chrome). The old
@@ -528,18 +599,32 @@ impl Window {
         // appeared, or disappeared. Stable ancestors such as MainWindow therefore remain clean.
         for (entity_id, current) in current_entities {
             match previous_entities.get(entity_id) {
-                Some(previous)
-                    if previous.len() == current.len()
-                        && previous
-                            .segments(&self.rendered_frame.retained_scene_segments)
-                            .zip(current.segments(&self.next_frame.retained_scene_segments))
-                            .all(|(previous, current)| previous.bounds == current.bounds) => {}
+                Some(previous) if previous.len() != current.len() => {
+                    let old = previous
+                        .segments(&self.rendered_frame.retained_scene_segments)
+                        .collect::<SmallVec<[_; 4]>>();
+                    let new = current
+                        .segments(&self.next_frame.retained_scene_segments)
+                        .collect::<SmallVec<[_; 4]>>();
+                    for_each_changed_fragment_count_bounds(
+                        &self.rendered_frame.scene,
+                        &old,
+                        &self.next_frame.scene,
+                        &new,
+                        |bounds| dirty_region.push(bounds),
+                    );
+                }
                 Some(previous) => {
-                    for segment in previous.segments(&self.rendered_frame.retained_scene_segments) {
-                        dirty_region.push(segment.bounds);
-                    }
-                    for segment in current.segments(&self.next_frame.retained_scene_segments) {
-                        dirty_region.push(segment.bounds);
+                    // A single moving fragment must not damage the other fragments
+                    // of the same View, which may include an entire static background.
+                    for (old, new) in previous
+                        .segments(&self.rendered_frame.retained_scene_segments)
+                        .zip(current.segments(&self.next_frame.retained_scene_segments))
+                    {
+                        if old.bounds != new.bounds {
+                            dirty_region.push(old.bounds);
+                            dirty_region.push(new.bounds);
+                        }
                     }
                 }
                 None => {
@@ -849,5 +934,78 @@ impl Window {
             return Some(element);
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod fragment_count_damage_tests {
+    use super::*;
+
+    fn append_quad(scene: &mut Scene, x: f32, width: f32) -> RetainedSceneSegment {
+        let bounds = Bounds::new(
+            point(ScaledPixels(x), ScaledPixels(0.0)),
+            size(ScaledPixels(width), ScaledPixels(10.0)),
+        );
+        let start = scene.len();
+        scene.insert_primitive(Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            ..Quad::default()
+        });
+        RetainedSceneSegment {
+            entity_id: EntityId::from(1_u64),
+            bounds,
+            scene_range: start..scene.len(),
+            prepaint_range: Default::default(),
+            paint_range: Default::default(),
+        }
+    }
+
+    #[test]
+    fn inserting_popup_fragment_preserves_large_static_background() {
+        let mut previous = Scene::default();
+        let old_background = append_quad(&mut previous, 0.0, 900.0);
+        let old_control = append_quad(&mut previous, 700.0, 20.0);
+
+        let mut current = Scene::default();
+        let new_background = append_quad(&mut current, 0.0, 900.0);
+        let popup = append_quad(&mut current, 150.0, 90.0);
+        let new_control = append_quad(&mut current, 700.0, 20.0);
+
+        let mut damage = Vec::new();
+        for_each_changed_fragment_count_bounds(
+            &previous,
+            &[&old_background, &old_control],
+            &current,
+            &[&new_background, &popup, &new_control],
+            |bounds| damage.push(bounds),
+        );
+        assert!(damage.contains(&popup.bounds));
+        assert!(!damage.contains(&old_background.bounds));
+        assert!(!damage.contains(&new_background.bounds));
+    }
+
+    #[test]
+    fn removing_popup_fragment_preserves_large_static_background() {
+        let mut previous = Scene::default();
+        let old_background = append_quad(&mut previous, 0.0, 900.0);
+        let popup = append_quad(&mut previous, 150.0, 90.0);
+        let old_control = append_quad(&mut previous, 700.0, 20.0);
+
+        let mut current = Scene::default();
+        let new_background = append_quad(&mut current, 0.0, 900.0);
+        let new_control = append_quad(&mut current, 700.0, 20.0);
+
+        let mut damage = Vec::new();
+        for_each_changed_fragment_count_bounds(
+            &previous,
+            &[&old_background, &popup, &old_control],
+            &current,
+            &[&new_background, &new_control],
+            |bounds| damage.push(bounds),
+        );
+        assert!(damage.contains(&popup.bounds));
+        assert!(!damage.contains(&old_background.bounds));
+        assert!(!damage.contains(&new_background.bounds));
     }
 }
