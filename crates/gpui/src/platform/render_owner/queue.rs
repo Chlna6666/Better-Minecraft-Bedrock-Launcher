@@ -105,6 +105,25 @@ impl Queue {
                 reply: None,
                 ..
             } => {
+                // A newly committed immutable Scene subsumes older presentation
+                // ticks in the same barrier-free segment. The Draw samples the
+                // current visual timeline on the GPU owner; running an old Tick
+                // first would render obsolete pixels only to replace them.
+                // Never absorb a Tick across Resize, Call, or a first-frame
+                // synchronous Draw barrier.
+                for index in (barrier..state.commands.len()).rev() {
+                    if !matches!(
+                        state.commands[index].command,
+                        Command::Tick(..) | Command::Continue(..)
+                    ) {
+                        continue;
+                    }
+                    let obsolete = state.commands.remove(index)
+                        .expect("index was validated against the queue");
+                    first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
+                    coalesced_count = coalesced_count
+                        .saturating_add(obsolete.coalesced_count.saturating_add(1));
+                }
                 if let Some(index) = (barrier..state.commands.len()).rev().find(|index| {
                     matches!(
                         state.commands[*index].command,
@@ -115,8 +134,9 @@ impl Queue {
                         .commands
                         .remove(index)
                         .expect("index was obtained from the queue");
-                    first_enqueued_at = previous.first_enqueued_at;
-                    coalesced_count = previous.coalesced_count.saturating_add(1);
+                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
+                    coalesced_count = coalesced_count
+                        .saturating_add(previous.coalesced_count.saturating_add(1));
                     let Command::Draw {
                         packet: previous, ..
                     } = previous.command

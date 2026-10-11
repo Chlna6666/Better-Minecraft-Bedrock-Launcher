@@ -725,7 +725,12 @@ a completed GPU fence. The renderer's opt-in diagnostics include
 The existing `gpui-gpu-owner` thread is already a real thread-affine
 compositor and renderer owner, separate from UI generation. Immutable
 `PresentationPacket` contents pass to its per-window queues; obsolete Draw
-packets coalesce without losing accumulated spatial damage. Backend readiness
+packets coalesce without losing accumulated spatial damage. A newly queued
+asynchronous Draw also absorbs obsolete Tick/Continue wakeups in the same
+barrier-free queue segment, retaining the oldest enqueue timestamp and all
+previous Draw damage. It never crosses Resize, Call, Shutdown or synchronous
+first-frame barriers. The GPU owner samples the current timeline on the new
+Draw instead of submitting a discarded intermediate image. Backend readiness
 and presentation-cadence callbacks control when that thread samples and
 submits timelines. A second thread is **not** required to satisfy that
 ownership boundary; further work is native GPU queue concurrency, resource

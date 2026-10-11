@@ -177,6 +177,49 @@ fn ticks_coalesce_but_first_frame_is_a_barrier() {
 }
 
 #[test]
+fn newest_scene_absorbs_obsolete_compositor_ticks_and_retains_damage() {
+    let queue = Queue::default();
+    let started = Instant::now();
+    let scene = Arc::new(Scene::default());
+    for (millis, command) in [
+        (0, Command::Tick(started, None)),
+        (3, draw(packet(scene.clone(), 0.0))),
+        (6, Command::Tick(started + Duration::from_millis(6), None)),
+        (8, Command::Continue(started + Duration::from_millis(8))),
+        (12, draw(packet(scene, 30.0))),
+    ] {
+        queue
+            .enqueue_at(command, || Ok(()), started + Duration::from_millis(millis))
+            .expect("gpu owner remains open");
+    }
+    let queued = queue.take_timed().expect("latest frame");
+    assert_eq!(queued.first_enqueued_at, started);
+    assert_eq!(queued.enqueued_at, started + Duration::from_millis(12));
+    assert_eq!(queued.coalesced_count, 4);
+    let Command::Draw { packet, .. } = queued.command else {
+        panic!("newest committed scene must replace old tick/render requests");
+    };
+    assert_eq!(
+        packet.dirty_region.union_bounds().expect("merged damage").size.width,
+        ScaledPixels(40.0)
+    );
+    assert!(queue.take().is_none(), "the owner should draw only once");
+}
+
+#[test]
+fn compositor_tick_coalescing_must_not_cross_control_barrier() {
+    let queue = Queue::default();
+    let scene = Arc::new(Scene::default());
+    queue.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
+    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(scene, 12.0)), || Ok(())).unwrap();
+    assert!(matches!(queue.take(), Some(Command::Tick(..))));
+    assert!(matches!(queue.take(), Some(Command::Call(_))));
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    assert!(queue.take().is_none());
+}
+
+#[test]
 fn shutdown_discards_pending_work_and_rejects_later_commits() {
     let queue = Queue::default();
     queue
