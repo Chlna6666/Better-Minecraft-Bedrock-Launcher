@@ -485,6 +485,13 @@ impl Scene {
         &self,
         mut visit: impl FnMut(Range<usize>, Bounds<ScaledPixels>),
     ) {
+        // Most ordinary GUI scenes contain no isolated element filter. In that
+        // case this query is called for every retained fragment during damage
+        // computation, but a full scan of the painter list cannot yield a
+        // filter output. Every completed, visible capture owns a PaintBlur.
+        if self.blurs.is_empty() {
+            return;
+        }
         let mut stack = SmallVec::<[(usize, &BlurCapture, Bounds<ScaledPixels>); 4]>::new();
 
         for (index, operation) in self.paint_operations.iter().enumerate() {
