@@ -85,7 +85,7 @@ impl Queue {
     ) -> Result<()> {
         // Profiling includes producer lock contention, while replacement keeps backlog age.
         let mut first_enqueued_at = enqueued_at;
-        let mut coalesced_count = 0;
+        let mut coalesced_count = 0_u64;
         let mut state = self.0.lock();
         if state.closing {
             return Err(anyhow!("GPU renderer is closing"));
