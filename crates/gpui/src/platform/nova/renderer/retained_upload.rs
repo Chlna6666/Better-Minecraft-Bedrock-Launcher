@@ -12,6 +12,61 @@ use std::time::Duration;
 // Explicit composite_layer() is retained and continues to cache its own subtree.
 const AUTO_RETAINED_COLOR_MIN_PRIMITIVES: usize = 384;
 
+/// Classifies *painter-order* scene content; this is not an ownership or
+/// GPU-residency proof. A static prefix is only a candidate for future
+/// independent retained color capture after its exact bytes, texture
+/// dependencies and window-relative geometry have been versioned.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StaticForegroundPartition {
+    static_prefix: usize,
+    static_after_dynamic: usize,
+    animated: usize,
+}
+
+impl StaticForegroundPartition {
+    fn total(self) -> usize {
+        self.static_prefix
+            .saturating_add(self.static_after_dynamic)
+            .saturating_add(self.animated)
+    }
+
+    /// An early animated primitive followed by large amounts of content is
+    /// not a separable static background. Wrapping the entire window in an
+    /// extra full-screen color texture can be more expensive than direct
+    /// rendering in this case.
+    fn has_proven_static_majority(self) -> bool {
+        self.animated == 0
+            || self.static_prefix.saturating_mul(3) >= self.total().saturating_mul(2)
+    }
+
+    fn has_contiguous_static_background(self) -> bool {
+        self.static_prefix > 0
+            && self.animated > 0
+            && self.static_after_dynamic == 0
+    }
+}
+
+fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition {
+    let mut partition = StaticForegroundPartition::default();
+    let mut saw_animation = false;
+    for operation in &scene.paint_operations {
+        let crate::scene::PaintOperation::Primitive(primitive) = operation else {
+            // StartLayer/EndLayer express batching and layout, not raster
+            // ownership. Actual blur/filter scenes are excluded by the caller.
+            continue;
+        };
+        if primitive.animation_id().is_some() {
+            saw_animation = true;
+            partition.animated += 1;
+        } else if saw_animation {
+            partition.static_after_dynamic += 1;
+        } else {
+            partition.static_prefix += 1;
+        }
+    }
+    partition
+}
+
 fn should_retain_complex_scene_color(
     scene: &crate::Scene,
     summary: &FrameUploadSummary,
@@ -28,7 +83,16 @@ fn should_retain_complex_scene_color(
     if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
         return false;
     }
-    primitives >= AUTO_RETAINED_COLOR_MIN_PRIMITIVES
+    if primitives < AUTO_RETAINED_COLOR_MIN_PRIMITIVES {
+        return false;
+    }
+    let partition = classify_static_foreground(scene);
+    // A cheap first-pass scene classification avoids installing a costly
+    // fullscreen compositor on highly animated or heavily interleaved pages.
+    // GPU-only animation is still rendered using the normal direct path.
+    // This is intentionally NOT a license to reuse static pixels: the
+    // retained source keeps existing pixel-accurate dirty invalidation.
+    partition.has_proven_static_majority()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -744,6 +808,56 @@ impl NovaRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn painter_order_distinguishes_static_background_from_interleaved_content() {
+        let mut background = crate::Scene::default();
+        let mut quad = crate::Quad::default();
+        background.paint_operations.extend((0..12).map(|_| {
+            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad))
+        }));
+        quad.animation_id = Some(crate::SceneAnimationId(42));
+        background.paint_operations.push(
+            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad)),
+        );
+        let split = classify_static_foreground(&background);
+        assert_eq!(split.static_prefix, 12);
+        assert_eq!(split.animated, 1);
+        assert_eq!(split.static_after_dynamic, 0);
+        assert!(split.has_contiguous_static_background());
+        assert!(split.has_proven_static_majority());
+
+        let mut interleaved = background;
+        interleaved.paint_operations.extend((0..12).map(|_| {
+            crate::scene::PaintOperation::Primitive(
+                crate::Primitive::Quad(crate::Quad::default()),
+            )
+        }));
+        let mixed = classify_static_foreground(&interleaved);
+        assert_eq!(mixed.static_after_dynamic, 12);
+        assert!(!mixed.has_contiguous_static_background());
+        assert!(!mixed.has_proven_static_majority());
+    }
+
+    #[test]
+    fn animated_first_scene_must_not_trigger_full_window_auto_retention() {
+        let mut scene = crate::Scene::default();
+        let mut quad = crate::Quad::default();
+        quad.animation_id = Some(crate::SceneAnimationId(9));
+        scene.paint_operations.push(
+            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad)),
+        );
+        scene.paint_operations.extend((0..512).map(|_| {
+            crate::scene::PaintOperation::Primitive(
+                crate::Primitive::Quad(crate::Quad::default()),
+            )
+        }));
+        let summary = FrameUploadSummary {
+            quad_count: 513,
+            ..Default::default()
+        };
+        assert!(!should_retain_complex_scene_color(&scene, &summary));
+    }
 
     fn key(scene_revision: u64) -> UploadKey {
         UploadKey {

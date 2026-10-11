@@ -675,6 +675,27 @@ and target recreation invalidate it. This preserves the same blur shader and
 quality while avoiding repeated source/downsample/upsample passes for unrelated
 foreground animation.
 
+### Ordinary page static/foreground classification (safe fallback)
+
+Nova's automatic synthetic retained-root policy now inspects the Scene's
+painter-order primitives before installing an extra full-viewport texture.
+It counts an initial static prefix, animated primitives, and static material
+appearing **after** the animated content. For large scenes (currently at
+least 384 packed primitives), an automatic root requires a proven static
+majority rather than simply having enough geometry. Static-only scenes
+retain the previous eligibility; heavily interleaved or animated-first
+pages stay on direct rendering, avoiding an extra full-screen composite
+that can increase GPU utilization. Explicit `composite_layer()` calls
+continue to work as before, and `BMCBL_ENABLE_RETAINED_COLOR=1` remains
+an explicit override for A/B analysis.
+
+The classifier does **not** yet automatically create separate persistent
+textures for static backgrounds and dynamic foregrounds. Such textures
+need separately verified draw-order boundaries, a prefix-only immutable
+content version, Atlas tile dependencies, and lifecycle-safe retirement.
+Passing this heuristic is only permission for the existing damage-aware
+root compositor, not proof that all static primitives may be reused.
+
 ### Retained compositor layer identity and Render Graph baseline
 
 A filter capture now carries an optional structural `GlobalElementId` into the
