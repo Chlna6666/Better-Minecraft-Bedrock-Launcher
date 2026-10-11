@@ -401,6 +401,16 @@ impl NovaRenderer {
             // The synthetic ROOT compositor is special: keep its previous color and
             // reconstruct only the dirty source rectangle from the full painter list.
             let is_retained_root = self.frame_upload.retained_root_blur == Some(range.index);
+            // A changed isolated subtree is independently dirty even when the
+            // window DirtyRegion is empty or covers a different element.
+            // Its source must be captured rather than clipping to unrelated pixels.
+            let layer_force_full = requires_full_isolated_layer_refresh(
+                is_retained_root,
+                force_full,
+                config,
+                self.current_size,
+                damage,
+            );
             // Chromium-style paint invalidation: keep spatially disconnected
             // damage disconnected all the way to the retained GPU color target.
             // Combining a left-hand label and a right-hand cursor into one
@@ -433,11 +443,11 @@ impl NovaRenderer {
             // no Gaussian pass or source recapture for either dirty patch.
             let damage_patches = retained_source_damage_patches(damage, can_split_root);
             for damage in &damage_patches {
-            let preserve_root = is_retained_root && !force_full && !damage.is_full();
+            let preserve_root = is_retained_root && !layer_force_full && !damage.is_full();
             let outer_source_scissor = if direct_composite && !is_retained_root {
                 blur_full_source_scissor(config, self.current_size)
             } else {
-                blur_source_scissor_for_refresh(config, self.current_size, damage, force_full)
+                blur_source_scissor_for_refresh(config, self.current_size, damage, layer_force_full)
             };
             let Some(outer_source_scissor) = outer_source_scissor else {
                 // The caller can conservatively select a layer whose effect bounds intersect a
@@ -484,7 +494,7 @@ impl NovaRenderer {
             let dirty_barrier_configs: Vec<Vec<BackdropBlurConfig>> = barrier_groups
                 .iter()
                 .map(|(_, configs)| {
-                    blur_configs_for_refresh(configs, self.current_size, damage, force_full)
+                    blur_configs_for_refresh(configs, self.current_size, damage, layer_force_full)
                 })
                 .collect();
 
@@ -500,7 +510,7 @@ impl NovaRenderer {
                         nested_config,
                         self.current_size,
                         damage,
-                        force_full,
+                        layer_force_full,
                     )
                 })
                 .fold(outer_source_scissor, union_scissor_rects);
@@ -516,7 +526,7 @@ impl NovaRenderer {
                     targets,
                     source_scissor,
                     damage,
-                    force_full,
+                    layer_force_full,
                 ));
                 segment_start = batch_index;
             }
@@ -557,7 +567,7 @@ impl NovaRenderer {
                     std::slice::from_ref(&config),
                     self.current_size,
                     damage,
-                    force_full,
+                    layer_force_full,
                     &mut filter_passes,
                 );
             }
@@ -565,7 +575,7 @@ impl NovaRenderer {
                 source_steps: final_source_steps,
                 source_clear_region: Some(source_scissor),
                 filter_passes: Vec::new(),
-                preserve_filtered_pixels: !force_full,
+                preserve_filtered_pixels: !layer_force_full,
             });
             if preserve_root {
                 if let Some(clear_index) = self.frame_upload.retained_root_clear_quad {
@@ -597,7 +607,7 @@ impl NovaRenderer {
                 source_texture_view,
                 source_groups,
                 filter_passes,
-                preserve_filtered_pixels: !force_full,
+                preserve_filtered_pixels: !layer_force_full,
                 preserve_retained_source: preserve_root,
             });
             } // independent GPU dirty rectangles for this retained color layer
@@ -877,6 +887,21 @@ fn blur_configs_for_refresh(
         .copied()
         .filter(|config| blur_damage_scissors(*config, drawable_size, dirty_region).is_some())
         .collect()
+}
+
+/// Independent source changes can be invisible to the *window's* dirty-region
+/// bookkeeping. Fall back to the full isolated input without invalidating
+/// unrelated retained targets. Synthetic root capture remains damage-driven.
+fn requires_full_isolated_layer_refresh(
+    is_retained_root: bool,
+    global_force_full: bool,
+    config: BackdropBlurConfig,
+    drawable_size: DrawableSize,
+    window_damage: &DirtyRegion,
+) -> bool {
+    global_force_full
+        || (!is_retained_root
+            && blur_damage_scissors(config, drawable_size, window_damage).is_none())
 }
 
 fn blur_source_scissor_for_refresh(
@@ -1244,3 +1269,31 @@ mod tests {
         assert!(partial.width < full.width || partial.height < full.height);
     }
 }
+
+#[cfg(test)]
+mod independent_layer_source_damage_tests {
+    use super::*;
+
+    #[test]
+    fn unrelated_window_damage_does_not_clip_changed_isolated_source() {
+        let config = test_backdrop_blur_config(1, 2);
+        let size = DrawableSize { width: 640, height: 480 };
+        let mut dirty = DirtyRegion::empty();
+        assert!(requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+        assert!(!requires_full_isolated_layer_refresh(true, false, config, size, &dirty));
+
+        dirty.push(crate::bounds(
+            crate::point(crate::ScaledPixels(400.0), crate::ScaledPixels(300.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        ));
+        assert!(requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+
+        dirty.push(crate::bounds(
+            crate::point(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
+            crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+        ));
+        assert!(!requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+        assert!(requires_full_isolated_layer_refresh(true, true, config, size, &dirty));
+    }
+}
+
