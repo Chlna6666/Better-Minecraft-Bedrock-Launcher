@@ -501,8 +501,13 @@ pub fn render_overlay(
                 .pb(px(4.))
                 .child(option_list),
         )
-        .composite_layer()
-        .with_sampled_animation(AnimationProperty::opacity(0.0, 1.0), panel_opacity)
+        .composite_layer_with_id(active.id.clone())
+        .with_stable_sampled_animation(
+            active.id.clone(),
+            AnimationProperty::opacity(0.0, 1.0),
+            panel_opacity,
+            overlay_animating,
+        )
         .with_stable_sampled_animation(
             active.id.clone(),
             AnimationProperty::vertical_reveal(reveal_edge, 0.0, 1.0),
