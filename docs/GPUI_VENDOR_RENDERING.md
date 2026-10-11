@@ -721,8 +721,9 @@ pages, and `BMCBL_ENABLE_RETAINED_COLOR=1` explicitly forces that legacy
 full-window fallback for A/B experiments.
 
 Cross-frame physical heap aliasing is **not enabled**. On a blur target
-topology change, the renderer now waits for outstanding tracked GPU
-submissions before destroying/rebinding the old target chain. Retained
+topology change **or a path-mask target promotion**, the renderer now waits
+for outstanding tracked GPU submissions before destroying/rebinding old
+texture views and resource sets. Retained
 textures remain persistent; only a future native placed/aliased allocation
 pool with fence-retired leases may overlap their physical allocations.
 The Render Graph still derives logical hazard intentions while the existing

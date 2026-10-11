@@ -367,6 +367,13 @@ impl NovaRenderer {
             return Ok(());
         }
 
+        // Promotion destroys the old 1x1 path mask texture and rebinds all
+        // frame-slot descriptor sets. An earlier frame may still sample its
+        // image on the GPU even though the owner thread has moved on.
+        // Retire tracked submissions before any view/resource-set replacement.
+        if !self.pending_submissions.is_empty() {
+            self.wait_for_pending_submissions()?;
+        }
         let descriptor = self.path_mask_target_descriptor(target_size);
         let old_target = self.current_path_mask_target();
         let next_target: PathMaskTarget = match &mut *lock_backend(&self.backend) {
