@@ -933,11 +933,13 @@ mod tests {
     fn auto_static_capture_owns_real_gpu_layer_only_for_flat_safe_prefix() {
         let mut original = crate::Scene::default();
         for index in 0..100 {
+            let bounds = crate::bounds(
+                crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+            );
             original.insert_primitive(crate::Quad {
-                bounds: crate::bounds(
-                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
-                    crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
-                ),
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
                 ..Default::default()
             });
         }
@@ -946,6 +948,7 @@ mod tests {
             crate::point(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
             crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
         );
+        animated.content_mask = crate::ContentMask::new(animated.bounds);
         animated.animation_id = Some(crate::SceneAnimationId(42));
         original.insert_primitive(animated);
         original.finish();
@@ -969,14 +972,16 @@ mod tests {
         // real source texture on the next committed scene.
         let mut next = crate::Scene::default();
         for index in 0..100 {
-            next.insert_primitive(crate::Quad {
-                bounds: crate::bounds(
-                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
-                    crate::size(
-                        crate::ScaledPixels(if index == 50 { 12.0 } else { 10.0 }),
-                        crate::ScaledPixels(10.0),
-                    ),
+            let bounds = crate::bounds(
+                crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                crate::size(
+                    crate::ScaledPixels(if index == 50 { 12.0 } else { 10.0 }),
+                    crate::ScaledPixels(10.0),
                 ),
+            );
+            next.insert_primitive(crate::Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
                 ..Default::default()
             });
         }
