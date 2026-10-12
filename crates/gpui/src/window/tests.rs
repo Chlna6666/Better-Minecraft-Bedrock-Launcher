@@ -986,6 +986,32 @@ fn viewport_size_records_the_current_rendered_view(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn window_geometry_reads_record_viewport_dependencies(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    window.update(|window, _cx| {
+        let bounds_view = EntityId::from(94);
+        window.with_rendered_view(bounds_view, |window| {
+            let _ = window.bounds();
+        });
+
+        let window_bounds_view = EntityId::from(95);
+        window.with_rendered_view(window_bounds_view, |window| {
+            let _ = window.window_bounds();
+        });
+
+        let inner_bounds_view = EntityId::from(96);
+        window.with_rendered_view(inner_bounds_view, |window| {
+            let _ = window.inner_window_bounds();
+        });
+
+        let dependent = window.viewport_dependent_views.borrow();
+        assert!(dependent.contains(&bounds_view));
+        assert!(dependent.contains(&window_bounds_view));
+        assert!(dependent.contains(&inner_bounds_view));
+    });
+}
+
+#[gpui::test]
 fn background_pointer_button_does_not_request_frame(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

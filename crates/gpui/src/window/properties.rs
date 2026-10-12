@@ -20,11 +20,18 @@ impl Window {
         self.appearance
     }
 
-    /// Returns the size of the drawable area within the window.
-    pub fn viewport_size(&self) -> Size<Pixels> {
+    /// Record geometry reads performed by a rendered View. Bounds and viewport reads must
+    /// participate in the same resize invalidation domain; otherwise a CachedView that reads
+    /// `Window::bounds()` can keep its previous viewport-sized contents after a native resize.
+    pub(super) fn record_viewport_dependency(&self) {
         if let Some(view_id) = self.rendered_entity_stack.last().copied() {
             self.viewport_dependent_views.borrow_mut().insert(view_id);
         }
+    }
+
+    /// Returns the size of the drawable area within the window.
+    pub fn viewport_size(&self) -> Size<Pixels> {
+        self.record_viewport_dependency();
         self.viewport_size
     }
 

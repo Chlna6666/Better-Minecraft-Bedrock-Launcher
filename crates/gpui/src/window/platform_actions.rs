@@ -65,6 +65,7 @@ impl Window {
 
     /// Returns the bounds of the current window in the global coordinate space, which could span across multiple displays.
     pub fn bounds(&self) -> Bounds<Pixels> {
+        self.record_viewport_dependency();
         self.platform_window.bounds()
     }
 
@@ -86,11 +87,13 @@ impl Window {
     /// Return the `WindowBounds` to indicate that how a window should be opened
     /// after it has been closed
     pub fn window_bounds(&self) -> WindowBounds {
+        self.record_viewport_dependency();
         self.platform_window.window_bounds()
     }
 
     /// Return the `WindowBounds` excluding insets (Wayland and X11)
     pub fn inner_window_bounds(&self) -> WindowBounds {
+        self.record_viewport_dependency();
         self.platform_window.inner_window_bounds()
     }
 

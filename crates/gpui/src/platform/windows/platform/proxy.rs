@@ -399,6 +399,40 @@ impl WindowProxy {
         receiver.recv().ok().flatten()
     }
 
+    /// Read native geometry without sending a synchronous command back to the HWND owner.
+    /// During `drag_resize_window`, Win32 runs a modal size/move message loop: user-event
+    /// commands to the outer winit loop are not guaranteed to run until the drag finishes.
+    /// Waiting for `WindowCall` here stalls the UI owner's resize callback and leaves the
+    /// newly exposed client area unpainted until the native loop returns.
+    fn refresh_geometry_snapshot(&self, resized: Option<(Size<Pixels>, f32)>) {
+        let mut snapshot = self.snapshot.borrow_mut();
+        if let Some((size, scale)) = resized {
+            snapshot.content_size = size;
+            snapshot.bounds.size = size;
+            snapshot.scale_factor = scale;
+        }
+
+        let scale = snapshot.scale_factor;
+        if scale.is_finite() && scale > 0.0 {
+            if let Ok(position) = self.window.outer_position() {
+                snapshot.bounds.origin = Point {
+                    x: Pixels(position.x as f32 / scale),
+                    y: Pixels(position.y as f32 / scale),
+                };
+            }
+        }
+        snapshot.maximized = self.window.is_maximized().unwrap_or(snapshot.maximized);
+        snapshot.minimized = self.window.is_minimized().unwrap_or(snapshot.minimized);
+        snapshot.fullscreen = self.window.fullscreen().is_some();
+        snapshot.window_bounds = if snapshot.fullscreen {
+            WindowBounds::Fullscreen(snapshot.bounds)
+        } else if snapshot.maximized {
+            WindowBounds::Maximized(snapshot.bounds)
+        } else {
+            WindowBounds::Windowed(snapshot.bounds)
+        };
+    }
+
     fn queue_scene(
         &self,
         packet: crate::PresentationPacket,
@@ -485,29 +519,7 @@ impl WindowProxy {
                 }
             }
             WindowsNativeEvent::Resized(size, scale) => {
-                let window_state = self.call(|window| {
-                    (
-                        window.bounds(),
-                        window.window_bounds(),
-                        window.is_maximized(),
-                        window.is_minimized(),
-                        window.is_fullscreen(),
-                    )
-                });
-                {
-                    let mut snapshot = self.snapshot.borrow_mut();
-                    snapshot.content_size = size;
-                    snapshot.scale_factor = scale;
-                    if let Some((bounds, window_bounds, maximized, minimized, fullscreen)) =
-                        window_state
-                    {
-                        snapshot.bounds = bounds;
-                        snapshot.window_bounds = window_bounds;
-                        snapshot.maximized = maximized;
-                        snapshot.minimized = minimized;
-                        snapshot.fullscreen = fullscreen;
-                    }
-                }
+                self.refresh_geometry_snapshot(Some((size, scale)));
                 let callback = self.callbacks.borrow_mut().resized.take();
                 if let Some(mut callback) = callback {
                     callback(size, scale);
@@ -515,13 +527,7 @@ impl WindowProxy {
                 }
             }
             WindowsNativeEvent::Moved => {
-                if let Some((bounds, window_bounds)) =
-                    self.call(|window| (window.bounds(), window.window_bounds()))
-                {
-                    let mut snapshot = self.snapshot.borrow_mut();
-                    snapshot.bounds = bounds;
-                    snapshot.window_bounds = window_bounds;
-                }
+                self.refresh_geometry_snapshot(None);
                 let callback = self.callbacks.borrow_mut().moved.take();
                 if let Some(mut callback) = callback {
                     callback();
