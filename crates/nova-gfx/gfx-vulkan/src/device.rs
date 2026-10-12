@@ -997,6 +997,8 @@ impl VulkanDevice {
         reason = "resource set creation keeps descriptor writes together for backend validation"
     )]
     fn create_resource_set(&mut self, desc: &ResourceSetDescriptor) -> Result<ResourceSetId> {
+        // Reclaim completed descriptor retirements before consuming the shared pool budget.
+        self.poll_cleanup();
         let layout_desc = self.resource_set_layouts.get(desc.layout)?.desc.clone();
         desc.validate_against(&layout_desc)?;
         let layout = self.resource_set_layouts.get(desc.layout)?.layout;
@@ -2226,13 +2228,20 @@ impl VulkanDevice {
 
     /// Destroys a texture view.
     ///
+    /// Invalidates the handle immediately. The native view is retained until prior graphics
+    /// submissions complete; this does not wait for work from other windows on the device.
+    /// Recorded command encoders referencing this view must be submitted before destruction.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid or the cleanup fence cannot be queued.
     fn destroy_texture_view(&mut self, view_id: TextureViewId) -> Result<()> {
-        self.wait_for_pending_work()?;
+        self.texture_views.get(view_id)?;
+        let fence = self.signal_cleanup_fence()?;
         let view = self.texture_views.take(view_id)?;
-        self.destroy_texture_view_now(&view);
+        self.deferred_destroys
+            .retire(0, DeferredResource::TextureView { fence, view });
+        self.poll_cleanup();
         Ok(())
     }
 
@@ -2262,13 +2271,20 @@ impl VulkanDevice {
 
     /// Destroys a resource set.
     ///
+    /// Invalidates the handle immediately and frees its native descriptor set only after prior
+    /// graphics submissions complete. The shared descriptor pool remains owned by this device.
+    /// Recorded command encoders referencing this set must be submitted before destruction.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error`] when the handle is invalid.
+    /// Returns [`Error`] when the handle is invalid or the cleanup fence cannot be queued.
     fn destroy_resource_set(&mut self, set_id: ResourceSetId) -> Result<()> {
-        self.wait_for_pending_work()?;
+        self.resource_sets.get(set_id)?;
+        let fence = self.signal_cleanup_fence()?;
         let set = self.resource_sets.take(set_id)?;
-        self.destroy_resource_set_now(&set);
+        self.deferred_destroys
+            .retire(0, DeferredResource::ResourceSet { fence, set });
+        self.poll_cleanup();
         Ok(())
     }
 
@@ -2674,11 +2690,15 @@ impl VulkanDevice {
         let submit_info = vk::SubmitInfo::default();
         // SAFETY: Queue and fence are owned by this device. An empty submit is valid and
         // orders the fence after earlier submissions on the same queue.
-        unsafe {
+        let result = unsafe {
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], fence)
+        };
+        if let Err(error) = result {
+            // SAFETY: The failed submit did not associate this fence with pending work.
+            unsafe { self.device.destroy_fence(fence, None) };
+            return Err(VulkanError::from(error).into());
         }
-        .map_err(VulkanError::from)?;
         Ok(fence)
     }
 
@@ -3024,6 +3044,16 @@ impl VulkanDevice {
             DeferredResource::Texture { fence, texture } => {
                 destroy_fence_if_needed(&self.device, fence);
                 self.destroy_texture_now(texture)
+            }
+            DeferredResource::TextureView { fence, view } => {
+                destroy_fence_if_needed(&self.device, fence);
+                self.destroy_texture_view_now(&view);
+                Ok(())
+            }
+            DeferredResource::ResourceSet { fence, set } => {
+                destroy_fence_if_needed(&self.device, fence);
+                self.destroy_resource_set_now(&set);
+                Ok(())
             }
             DeferredResource::Upload {
                 fence,
@@ -4418,6 +4448,14 @@ enum DeferredResource {
         fence: vk::Fence,
         texture: VulkanTexture,
     },
+    TextureView {
+        fence: vk::Fence,
+        view: VulkanTextureView,
+    },
+    ResourceSet {
+        fence: vk::Fence,
+        set: VulkanResourceSet,
+    },
     Upload {
         fence: vk::Fence,
         fence_value: u64,
@@ -4431,6 +4469,8 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
         DeferredResource::HeapReplacement { fence, .. }
         | DeferredResource::Buffer { fence, .. }
         | DeferredResource::Texture { fence, .. }
+        | DeferredResource::TextureView { fence, .. }
+        | DeferredResource::ResourceSet { fence, .. }
         | DeferredResource::Upload { fence, .. }
         | DeferredResource::CommandEncoder(VulkanCommandEncoder { fence, .. }) => *fence,
     };
