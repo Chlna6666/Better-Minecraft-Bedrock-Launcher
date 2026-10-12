@@ -255,6 +255,57 @@ fn retained_layout_cache_misses_when_measured_fingerprint_changes(cx: &mut TestA
 }
 
 #[gpui::test]
+fn pure_measure_survives_changed_sibling_layout_without_root_cache_hit(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    let calls = Rc::new(Cell::new(0));
+    let (first, second, cache_metrics) = window
+        .update(cx, |_, window, cx| {
+            let mut engine = TaffyLayoutEngine::new();
+            let build = |engine: &mut TaffyLayoutEngine, sibling_height: f32| {
+                let calls = calls.clone();
+                let child = engine.request_measured_layout_with_fingerprint(
+                    Style::default(),
+                    px(16.),
+                    1.0,
+                    Some(200),
+                    move |_, _, _, _| {
+                        calls.set(calls.get() + 1);
+                        size(px(36.), px(12.))
+                    },
+                );
+                let mut sibling_style = Style::default();
+                // An absolute sibling cannot participate in the parent's
+                // measured size, though its fingerprint changes.
+                sibling_style.position = crate::Position::Absolute;
+                sibling_style.size.height = px(sibling_height).into();
+                let sibling = engine.request_layout(sibling_style, px(16.), 1.0, &[]);
+                engine.request_layout(Style::default(), px(16.), 1.0, &[child, sibling])
+            };
+            let first_root = build(&mut engine, 20.);
+            engine.compute_layout(first_root, AvailableSpace::min_size(), window, cx);
+            let first = calls.get();
+            assert!(first > 0);
+            engine.clear();
+
+            let second_root = build(&mut engine, 60.);
+            engine.compute_layout(second_root, AvailableSpace::min_size(), window, cx);
+            (first, calls.get(), engine.layout_cache_metrics())
+        })
+        .unwrap();
+
+    assert_eq!(cache_metrics, (0, 1), "sibling change invalidates root layout");
+    assert_eq!(
+        second, first,
+        "the unchanged pure leaf should reuse its own measurement",
+    );
+}
+
+#[gpui::test]
 fn retained_layout_cache_reuses_fingerprinted_measured_subtrees(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
