@@ -209,7 +209,7 @@ impl Window {
         if let Some(layout_engine) = self.layout_engine.as_mut() {
             layout_engine.retain_committed_elements(|id| {
                 self.rendered_frame.retained_element_ranges.contains_key(id)
-            });
+            }, false);
         }
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
@@ -284,7 +284,7 @@ impl Window {
         if let Some(layout_engine) = self.layout_engine.as_mut() {
             layout_engine.retain_committed_elements(|id| {
                 self.rendered_frame.retained_element_ranges.contains_key(id)
-            });
+            }, true);
         }
         // Cached-view notify targets are valid only while their exact retained identity exists in
         // the committed frame. This keeps persistent targets safe across parent subtree replay,

@@ -68,6 +68,9 @@ pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
     persistent_nodes: FxHashMap<LayoutInstanceKey, PersistentLayoutNode>,
     request_ordinals: FxHashMap<GlobalElementId, u32>,
+    /// Layout slots consumed by each Element during the last finished frame.
+    /// A CachedView replay has no entry, preserving its existing native nodes.
+    finished_request_ordinals: FxHashMap<GlobalElementId, u32>,
     anonymous_nodes: Vec<LayoutId>,
     forced_style_restore: FxHashSet<LayoutId>,
      persistent_layout_reuses: usize,
@@ -124,6 +127,7 @@ impl TaffyLayoutEngine {
             taffy,
             persistent_nodes: FxHashMap::default(),
             request_ordinals: FxHashMap::default(),
+            finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
             forced_style_restore: FxHashSet::default(),
              persistent_layout_reuses: 0,
@@ -162,15 +166,23 @@ impl TaffyLayoutEngine {
     pub(crate) fn retain_committed_elements(
         &mut self,
         mut is_mounted: impl FnMut(&GlobalElementId) -> bool,
+        frame_committed: bool,
     ) {
         let mut removed = Vec::new();
+        let finished_request_ordinals = &self.finished_request_ordinals;
         self.persistent_nodes.retain(|key, node| {
-            if is_mounted(&key.element) {
-                true
-            } else {
+            // Rebuilding an Element may reduce the number of local layout
+            // slots, even if the Element itself stays mounted. Replayed
+            // CachedViews are not present in finished_request_ordinals:
+            // their entire native subtree remains valid.
+            let retained = is_mounted(&key.element)
+                && (!frame_committed
+                    || finished_request_ordinals.get(&key.element)
+                        .is_none_or(|count| key.ordinal < *count));
+            if !retained {
                 removed.push(node.id);
-                false
             }
+            retained
         });
         for id in removed {
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
@@ -224,8 +236,14 @@ impl TaffyLayoutEngine {
             self.root_constraints.remove(&id);
             self.forced_style_restore.remove(&id);
         }
-        let ordinal_count = self.request_ordinals.len();
+        // Transfer current-frame cardinalities without copying the map.
+        // The old finished map becomes the now-empty scratch for next frame.
+        std::mem::swap(
+            &mut self.finished_request_ordinals,
+            &mut self.request_ordinals,
+        );
         self.request_ordinals.clear();
+        let ordinal_count = self.finished_request_ordinals.len();
         if self.request_ordinals.capacity()
             > Self::MIN_RETAINED_CAPACITY.max(ordinal_count).saturating_mul(4)
         {
@@ -384,6 +402,7 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.request_ordinals.shrink_to_fit();
+            self.finished_request_ordinals.shrink_to_fit();
             self.anonymous_nodes.shrink_to_fit();
         }
         self.root_constraints

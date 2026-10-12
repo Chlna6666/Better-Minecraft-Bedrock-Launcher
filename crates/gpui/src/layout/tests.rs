@@ -214,7 +214,7 @@ fn native_taffy_keeps_cached_subtrees_until_committed_unmount(
         engine.clear();
         engine.retain_committed_elements(|id| {
             id == &root_identity || id == &child_identity
-        });
+        }, true);
         assert_eq!(engine.taffy.total_node_count(), 2);
 
         // The committed view is replayed with no request_layout calls.
@@ -222,12 +222,54 @@ fn native_taffy_keeps_cached_subtrees_until_committed_unmount(
         engine.clear();
         engine.retain_committed_elements(|id| {
             id == &root_identity || id == &child_identity
-        });
+        }, true);
         assert_eq!(engine.taffy.total_node_count(), 2);
         assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
 
         // Only the exact unmounted element is reclaimed.
-        engine.retain_committed_elements(|id| id == &root_identity);
+        engine.retain_committed_elements(|id| id == &root_identity, true);
+        assert_eq!(engine.taffy.total_node_count(), 1);
+    }).unwrap();
+}
+
+#[gpui::test]
+fn native_taffy_prunes_unused_layout_slots_but_not_replayed_or_degraded_slots(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, _, _| {
+        let mut engine = TaffyLayoutEngine::new();
+        let owner = layout_identity("multi-layout-owner").unwrap();
+        let request = |engine: &mut TaffyLayoutEngine| {
+            engine.request_layout(Some(owner.clone()), Style::default(), px(16.), 1., &[])
+        };
+
+        let first = request(&mut engine);
+        let second = request(&mut engine);
+        assert_ne!(first, second);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner, true);
+        assert_eq!(engine.taffy.total_node_count(), 2);
+
+        // A cached subtree can paint without requesting any layout this frame.
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner, true);
+        assert_eq!(engine.taffy.total_node_count(), 2);
+
+        // A failed/degraded frame may have visited only some of its slots.
+        assert_eq!(request(&mut engine), first);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner, false);
+        assert_eq!(engine.taffy.total_node_count(), 2);
+
+        // The next committed frame visits that owner with only one slot:
+        // its old extra Taffy allocation must be released.
+        assert_eq!(request(&mut engine), first);
+        engine.clear();
+        engine.retain_committed_elements(|id| id == &owner, true);
         assert_eq!(engine.taffy.total_node_count(), 1);
     }).unwrap();
 }
