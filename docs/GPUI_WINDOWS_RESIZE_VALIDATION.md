@@ -61,3 +61,14 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 - **成功呈现检查**：启用 `BMCBL_GPUI_RESIZE_TRACE=1` 后新增 `stage=present`，记录真正提交成功后的 WindowId、实际 Drawable extent、Scene revision 和 dirty_full。旧的 `stage=gpu` 只证明 ResizeBuffers 生效，不等于内容 Present 成功。
 
 新的观察重点：连续缩放后检查最后一个 `native`、`viewport`、`gpu`、`present` 尺寸。Vulkan 若仍有裁剪，收集 `dirty_full`、滤镜/Retained GPU Layer 日志与 Render Graph Scissor 范围，不应先禁用局部绘制或全局缓存。
+
+
+## 2026-10-13 第二阶段：高频 Resize 与 Vulkan 裁剪正确性
+
+**首次新尺寸帧的 GPU DirtyRegion**：Swapchain 刚刚完成 `resize` 后，`swapchain_warmup_frames` 保持非零直到真正成功 Present。此前 `FullRedraw` 只控制原生 Present 策略，不一定清除仍沿用旧尺寸的局部 `DirtyRegion`/Retained Layer Scissor。现改为在两条绘制入口（`draw_frame`、`present_framebuffer_only`）将 warmup 帧的 GPU DirtyRegion 升级为新 Drawable 完整覆盖范围，并强制刷新对应滤镜捕获。**只有首个成功新尺寸帧执行一次全覆盖**；后续静态/动画帧保留独立层缓存与局部裁剪，GPU 被延迟时不会提前清除 warmup。
+
+**资源复用**：Path Mask 未激活时通常是 1×1 占位纹理。DX11/DX12/OpenGL/Vulkan 等后端在窗口放大缩小时不再反复创建/销毁这个大小不变的占位纹理、TextureView 和 ResourceSet；实际已提升为全尺寸 Path Mask 的情形继续重建。此更改不会缓存一套新的备用大纹理，也不改变 Shader/Pipeline 启动预热逻辑。
+
+**跨窗口长尾阻塞**：新增 `gpui_gpu_stall: gpu_owner_submission_wait`（等待超过 8ms）记录后端、等待时间及 GPU 提交数；结合此前 `slow_surface_resize` 的 `submission_wait_us`、`swapchain_us`、`resources_us`，可区分驱动 Fence 阻塞与纹理/资源重建。GPU Worker 仍共享且 Vulkan 的 `try_resize` 保持原有保守同步边界：该轮**没有宣称消除所有跨窗口 GPU 头部阻塞**。
+
+建议同一台 Windows 实机每个后端运行 5 轮：主窗口缩放（50 次边缘拖动）、地图窗口动画并行、快速最大化/还原、多窗口交替缩放、最终固定尺寸 2 秒。重点核对第一次 `stage=present` 的 Drawable 尺寸和是否 `dirty_full=true`，以及 `gpu_owner_submission_wait` 和 `slow_surface_resize` 是否集中在单个后端。若 Vulkan 继续裁剪，接下来定位 Render Graph Scissor 与 Path Mask/Retained root target，而不是立即取消全局的 Retained Layer 机制。

@@ -19,3 +19,23 @@ pub(super) fn resolve_surface_packet(
         packet.partial_present_mode = PartialPresentMode::FullRedraw;
     }
 }
+
+/// A newly recreated swapchain has no trustworthy old backbuffer pixels.
+/// Partial GPU scissor and retained target damage must therefore cover its
+/// entire current extent for the first *successfully presented* new-size frame.
+/// The caller keeps `swapchain_warmup_frames` armed on a deferred/failed Present.
+pub(super) fn force_full_drawable_damage_after_resize(
+    packet: &mut PresentationPacket,
+    drawable_size: super::renderer::DrawableSize,
+) {
+    let bounds = crate::bounds(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(
+            crate::ScaledPixels(drawable_size.width as f32),
+            crate::ScaledPixels(drawable_size.height as f32),
+        ),
+    );
+    packet.dirty_region = crate::DirtyRegion::full(bounds);
+    packet.partial_present_mode = PartialPresentMode::FullRedraw;
+    packet.force_full_backdrop_blur_refresh = true;
+}

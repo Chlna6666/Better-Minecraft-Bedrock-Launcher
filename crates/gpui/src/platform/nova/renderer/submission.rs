@@ -168,9 +168,20 @@ impl NovaRenderer {
         {
             let started_at = Instant::now();
             let result = lock_backend(&self.backend).wait_submission(submission);
-            crate::diagnostics::performance_metrics::record_gpu_submission_wait(
-                started_at.elapsed(),
-            );
+            let waited = started_at.elapsed();
+            crate::diagnostics::performance_metrics::record_gpu_submission_wait(waited);
+            if waited >= std::time::Duration::from_millis(8) {
+                // The GPU owner is shared across windows: a single long fence wait
+                // delays every other window's queued work. Keep backend/time visible
+                // without logging the usual sub-millisecond polling completions.
+                log::warn!(
+                    target: "gpui_gpu_stall",
+                    "gpu_owner_submission_wait backend={} wait_us={} remaining_submissions={}",
+                    self.backend_info.label(),
+                    waited.as_micros(),
+                    self.pending_submissions.len(),
+                );
+            }
             result?;
             self.pending_submissions.remove(0);
         }

@@ -3402,3 +3402,37 @@ fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
         .expect("test offset should be in bounds");
     f32::from_ne_bytes(chunk.try_into().expect("f32 chunk should have exact size"))
 }
+
+#[test]
+fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
+    let scene = Arc::new(crate::Scene::default());
+    let mut dirty = crate::DirtyRegion::empty();
+    dirty.push(crate::bounds(
+        crate::point(crate::ScaledPixels(1.0), crate::ScaledPixels(1.0)),
+        crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(12.0)),
+    ));
+    let mut packet = PresentationPacket::new(
+        scene,
+        [],
+        [],
+        std::time::Instant::now(),
+        1.0,
+        dirty,
+        crate::BackdropBlurDamagePlan::default(),
+        PartialPresentMode::Partial,
+    );
+    force_full_drawable_damage_after_resize(
+        &mut packet,
+        crate::platform::nova::renderer::DrawableSize { width: 1280, height: 720 },
+    );
+    assert!(packet.dirty_region.is_full());
+    assert_eq!(packet.partial_present_mode, PartialPresentMode::FullRedraw);
+    assert!(packet.force_full_backdrop_blur_refresh);
+    assert_eq!(
+        packet.dirty_region.union_bounds().expect("full dirty bounds"),
+        crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(1280.0), crate::ScaledPixels(720.0)),
+        ),
+    );
+}

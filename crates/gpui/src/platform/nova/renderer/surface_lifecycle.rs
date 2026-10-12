@@ -1,5 +1,42 @@
 use super::*;
 
+/// A path mask promoted to the drawable extent must track Resize. Its 1x1
+/// placeholder can survive all intermediate client sizes without reallocation.
+fn planned_path_mask_size(
+    existing: Extent2d,
+    old_drawable: DrawableSize,
+    new_drawable: Extent2d,
+) -> Result<Extent2d> {
+    if existing.width() == old_drawable.width
+        && existing.height() == old_drawable.height
+    {
+        Ok(new_drawable)
+    } else {
+        Ok(Extent2d::new(1, 1)?)
+    }
+}
+
+#[cfg(test)]
+mod resize_plan_tests {
+    use super::*;
+
+    #[test]
+    fn resize_reuses_unpromoted_one_pixel_path_mask() {
+        let old = DrawableSize { width: 1000, height: 700 };
+        let placeholder = Extent2d::new(1, 1).unwrap();
+        let next = Extent2d::new(1600, 900).unwrap();
+        assert_eq!(planned_path_mask_size(placeholder, old, next).unwrap(), placeholder);
+    }
+
+    #[test]
+    fn resize_promotes_an_active_path_mask_to_new_client_extent() {
+        let old = DrawableSize { width: 1000, height: 700 };
+        let active = Extent2d::new(1000, 700).unwrap();
+        let next = Extent2d::new(1600, 900).unwrap();
+        assert_eq!(planned_path_mask_size(active, old, next).unwrap(), next);
+    }
+}
+
 impl NovaRenderer {
     /// The physical swapchain extent already committed by Nova; the pending resize
     /// request is deliberately excluded because it may still be fence-blocked.
@@ -39,13 +76,13 @@ impl NovaRenderer {
             present_mode: self.present_mode,
             alpha_mode: self.surface_alpha.swapchain_mode,
         };
-        let path_mask_was_promoted = self.path_texture_size.width() == self.current_size.width
-            && self.path_texture_size.height() == self.current_size.height;
-        let next_path_mask_size = if path_mask_was_promoted {
-            target_size
-        } else {
-            Extent2d::new(1, 1)?
-        };
+        let next_path_mask_size =
+            planned_path_mask_size(self.path_texture_size, self.current_size, target_size)?;
+        // Most windows never render a path mask; their 1x1 placeholder and
+        // frame-slot resource sets are still valid after a drawable resize.
+        // Reusing this object avoids per-WM_SIZE texture/view/set retirement and
+        // driver allocations. A promoted path mask changes size and is rebuilt.
+        let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
         let path_mask_target_descriptor = self.path_mask_target_descriptor(next_path_mask_size);
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_path_mask_target = self.current_path_mask_target();
@@ -62,11 +99,11 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux")
             ))]
             NovaBackend::OpenGl(device) => {
-                let next_path_mask_target = create_path_mask_target(
-                    device,
-                    "gpui nova opengl",
-                    path_mask_target_descriptor,
-                )?;
+                let next_path_mask_target = if reuse_path_mask_target {
+                    old_path_mask_target.clone()
+                } else {
+                    create_path_mask_target(device, "gpui nova opengl", path_mask_target_descriptor)?
+                };
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
                     Some(create_backdrop_blur_target_chain(
                         device,
@@ -84,7 +121,9 @@ impl NovaRenderer {
                 let swapchain_started_at = Instant::now();
                 if let Err(error) = resize_opengl_swapchain(device, self.swapchain, surface_config)
                 {
-                    destroy_path_mask_target(device, next_path_mask_target, "OpenGL");
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, next_path_mask_target, "OpenGL");
+                    }
                     if let Some(targets) = next_backdrop_blur_targets {
                         destroy_backdrop_blur_target_chain(device, targets, "OpenGL");
                     }
@@ -97,7 +136,9 @@ impl NovaRenderer {
                     return Err(error);
                 }
                 swapchain_resize = swapchain_started_at.elapsed();
-                destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
+                if !reuse_path_mask_target {
+                    destroy_path_mask_target(device, old_path_mask_target, "OpenGL");
+                }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
                 }
@@ -108,8 +149,11 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => {
-                let next_path_mask_target =
-                    create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?;
+                let next_path_mask_target = if reuse_path_mask_target {
+                    old_path_mask_target.clone()
+                } else {
+                    create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?
+                };
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
                     Some(create_backdrop_blur_target_chain(
                         device,
@@ -126,7 +170,9 @@ impl NovaRenderer {
                 // surface to DWM for the remainder of this transaction during live resize.
                 let swapchain_started_at = Instant::now();
                 if let Err(error) = resize_dx11_swapchain(device, self.swapchain, surface_config) {
-                    destroy_path_mask_target(device, next_path_mask_target, "DX11");
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, next_path_mask_target, "DX11");
+                    }
                     if let Some(targets) = next_backdrop_blur_targets {
                         destroy_backdrop_blur_target_chain(device, targets, "DX11");
                     }
@@ -139,7 +185,9 @@ impl NovaRenderer {
                     return Err(error);
                 }
                 swapchain_resize = swapchain_started_at.elapsed();
-                destroy_path_mask_target(device, old_path_mask_target, "DX11");
+                if !reuse_path_mask_target {
+                    destroy_path_mask_target(device, old_path_mask_target, "DX11");
+                }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
                 }
@@ -150,8 +198,11 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
-                let next_path_mask_target =
-                    create_path_mask_target(device, "gpui nova dx12", path_mask_target_descriptor)?;
+                let next_path_mask_target = if reuse_path_mask_target {
+                    old_path_mask_target.clone()
+                } else {
+                    create_path_mask_target(device, "gpui nova dx12", path_mask_target_descriptor)?
+                };
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
                     Some(create_backdrop_blur_target_chain(
                         device,
@@ -168,7 +219,9 @@ impl NovaRenderer {
                 // surface to DWM for the remainder of this transaction during live resize.
                 let swapchain_started_at = Instant::now();
                 if let Err(error) = resize_dx12_swapchain(device, self.swapchain, surface_config) {
-                    destroy_path_mask_target(device, next_path_mask_target, "DX12");
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, next_path_mask_target, "DX12");
+                    }
                     if let Some(targets) = next_backdrop_blur_targets {
                         destroy_backdrop_blur_target_chain(device, targets, "DX12");
                     }
@@ -181,7 +234,9 @@ impl NovaRenderer {
                     return Err(error);
                 }
                 swapchain_resize = swapchain_started_at.elapsed();
-                destroy_path_mask_target(device, old_path_mask_target, "DX12");
+                if !reuse_path_mask_target {
+                    destroy_path_mask_target(device, old_path_mask_target, "DX12");
+                }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
                 }
@@ -195,11 +250,11 @@ impl NovaRenderer {
                 let swapchain_started_at = Instant::now();
                 device.resize_swapchain(self.swapchain, width, height)?;
                 swapchain_resize = swapchain_started_at.elapsed();
-                let next_path_mask_target = create_path_mask_target(
-                    device,
-                    "gpui nova metal",
-                    path_mask_target_descriptor,
-                )?;
+                let next_path_mask_target = if reuse_path_mask_target {
+                    old_path_mask_target.clone()
+                } else {
+                    create_path_mask_target(device, "gpui nova metal", path_mask_target_descriptor)?
+                };
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
                     Some(create_backdrop_blur_target_chain(
                         device,
@@ -211,7 +266,9 @@ impl NovaRenderer {
                 };
                 let (next_depth_texture, next_depth_texture_view) =
                     create_depth_target(device, "gpui nova metal", target_size)?;
-                destroy_path_mask_target(device, old_path_mask_target, "Metal");
+                if !reuse_path_mask_target {
+                    destroy_path_mask_target(device, old_path_mask_target, "Metal");
+                }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
                 }
@@ -225,11 +282,11 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
             NovaBackend::Vulkan(device) => {
-                let next_path_mask_target = create_path_mask_target(
-                    device,
-                    "gpui nova vulkan",
-                    path_mask_target_descriptor,
-                )?;
+                let next_path_mask_target = if reuse_path_mask_target {
+                    old_path_mask_target.clone()
+                } else {
+                    create_path_mask_target(device, "gpui nova vulkan", path_mask_target_descriptor)?
+                };
                 let next_backdrop_blur_targets = if old_backdrop_blur_targets.is_some() {
                     Some(create_backdrop_blur_target_chain(
                         device,
@@ -246,7 +303,9 @@ impl NovaRenderer {
                 let swapchain_started_at = Instant::now();
                 if let Err(error) = resize_vulkan_swapchain(device, self.swapchain, surface_config)
                 {
-                    destroy_path_mask_target(device, next_path_mask_target, "Vulkan");
+                    if !reuse_path_mask_target {
+                        destroy_path_mask_target(device, next_path_mask_target, "Vulkan");
+                    }
                     if let Some(targets) = next_backdrop_blur_targets {
                         destroy_backdrop_blur_target_chain(device, targets, "Vulkan");
                     }
@@ -259,7 +318,9 @@ impl NovaRenderer {
                     return Err(error);
                 }
                 swapchain_resize = swapchain_started_at.elapsed();
-                destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
+                if !reuse_path_mask_target {
+                    destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
+                }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
                 }
@@ -288,7 +349,9 @@ impl NovaRenderer {
         self.path_texture = next_path_mask_target.texture;
         self.path_texture_view = next_path_mask_target.texture_view;
         self.path_texture_size = next_path_mask_size;
-        self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
+        if !reuse_path_mask_target {
+            self.update_path_mask_resource_sets(&next_path_mask_target.resource_sets)?;
+        }
         self.filters.targets = next_backdrop_blur_targets;
         self.invalidate_backdrop_blur_cache();
         self.activate_frame_resources(self.current_frame_resource_index)?;

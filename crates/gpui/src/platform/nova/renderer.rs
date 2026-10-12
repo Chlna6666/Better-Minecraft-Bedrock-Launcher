@@ -340,6 +340,12 @@ impl NovaRenderer {
                 .presentation_capabilities(self.swapchain)
                 .partial_presentation;
         resolve_surface_packet(packet, !supports_partial);
+        if self.swapchain_warmup_frames != 0 {
+            // The backbuffer/retained target dimensions changed. A full Present
+            // mode alone does not expand Scene/GPU Layer scissors from old dirty
+            // rectangles; the first successful frame must repaint the new extent.
+            force_full_drawable_damage_after_resize(packet, self.current_size);
+        }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
             packet.scene.as_ref(),
@@ -657,6 +663,9 @@ impl NovaRenderer {
                     .presentation_capabilities(self.swapchain)
                     .partial_presentation;
             resolve_surface_packet(&mut packet, !supports_partial);
+            if self.swapchain_warmup_frames != 0 {
+                force_full_drawable_damage_after_resize(&mut packet, self.current_size);
+            }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
                 packet.scene.as_ref(),
