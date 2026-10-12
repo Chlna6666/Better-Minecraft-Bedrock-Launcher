@@ -891,27 +891,55 @@ fn retained_source_damage_patches(
     damage: &DirtyRegion,
     can_split: bool,
 ) -> Vec<DirtyRegion> {
-    if !can_split || damage.rect_count() < 2 || damage.rect_count() > 8 {
+    const MAX_SOURCE_PASSES: usize = 8;
+    if !can_split || damage.is_full() || damage.rect_count() < 2 {
         return vec![damage.clone()];
     }
-    // Splitting nearby rectangles can submit more GPU render passes without
-    // saving meaningful fill. Require the union scissor to waste at least
-    // 2x the actual damaged area before paying for additional passes.
-    if let Some(union) = damage.union_bounds() {
-        let union_area = union.size.width.0 * union.size.height.0;
-        if !union_area.is_finite() || damage.area() * 2.0 >= union_area {
-            return vec![damage.clone()];
-        }
+    let Some(union) = damage.union_bounds() else {
+        return vec![damage.clone()];
+    };
+    let union_area = union.size.width.0 * union.size.height.0;
+    if !union_area.is_finite() || union_area <= 0.0 {
+        return vec![damage.clone()];
     }
-    damage
-        .rects()
-        .iter()
-        .map(|rect| {
-            let mut patch = DirtyRegion::empty();
-            patch.push(rect.bounds);
-            patch
-        })
-        .collect()
+
+    // The input union retains at most 128 disjoint rectangles. When it has
+    // more than eight, group nearby rectangles into no more than eight
+    // painter-order independent source passes instead of redrawing the entire
+    // bounding box. Sorting along the wider axis is bounded and deterministic.
+    let mut rects = damage.rects().iter().map(|rect| rect.bounds).collect::<Vec<_>>();
+    if rects.len() > MAX_SOURCE_PASSES {
+        let sort_horizontal = union.size.width >= union.size.height;
+        rects.sort_unstable_by(|left, right| {
+            let (first, second) = if sort_horizontal {
+                (left.origin.x.0, right.origin.x.0)
+            } else {
+                (left.origin.y.0, right.origin.y.0)
+            };
+            first.total_cmp(&second)
+        });
+    }
+    let group_size = rects.len().div_ceil(MAX_SOURCE_PASSES);
+    let mut patches = Vec::with_capacity(rects.len().div_ceil(group_size));
+    let mut source_pixels = 0.0f32;
+    for group in rects.chunks(group_size) {
+        let bounds = group
+            .iter()
+            .copied()
+            .reduce(|left, right| left.union(&right))
+            .expect("a damage patch must contain a rectangle");
+        source_pixels += bounds.size.width.0 * bounds.size.height.0;
+        let mut patch = DirtyRegion::empty();
+        patch.push(bounds);
+        patches.push(patch);
+    }
+    // Avoid paying for additional GPU passes when clustering loses most of
+    // its advantage. A single large source scissor remains the fallback.
+    if !source_pixels.is_finite() || source_pixels * 2.0 >= union_area {
+        vec![damage.clone()]
+    } else {
+        patches
+    }
 }
 
 fn blur_configs_for_refresh(
@@ -1258,6 +1286,31 @@ mod tests {
             crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
         ));
         assert_eq!(retained_source_damage_patches(&damage, true).len(), 1);
+    }
+
+    #[test]
+    fn many_separated_damage_rectangles_remain_locally_rasterized() {
+        let mut damage = DirtyRegion::empty();
+        for x in 0..4 {
+            for y in 0..4 {
+                damage.push(crate::bounds(
+                    crate::point(
+                        crate::ScaledPixels((x * 200) as f32),
+                        crate::ScaledPixels((y * 200) as f32),
+                    ),
+                    crate::size(crate::ScaledPixels(10.), crate::ScaledPixels(10.)),
+                ));
+            }
+        }
+        assert_eq!(damage.rect_count(), 16);
+        let patches = retained_source_damage_patches(&damage, true);
+        assert!(patches.len() <= 8);
+        assert!(patches.len() > 1);
+        let full = damage.union_bounds().expect("full damage extent");
+        let full_area = full.size.width.0 * full.size.height.0;
+        let patched_area: f32 = patches.iter().map(DirtyRegion::area).sum();
+        assert!(patched_area * 2.0 < full_area);
+        assert_eq!(retained_source_damage_patches(&damage, false).len(), 1);
     }
 
     #[test]
