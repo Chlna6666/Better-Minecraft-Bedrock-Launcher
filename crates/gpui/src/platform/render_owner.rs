@@ -53,6 +53,10 @@ pub(crate) struct RenderOwnerFrame {
 struct Status {
     pending: AtomicBool,
     submitted: AtomicBool,
+    /// Only the affected window stops speculative ticks while its swapchain has
+    /// an outstanding readiness callback; unrelated windows remain runnable.
+    #[cfg(target_os = "windows")]
+    waiting_for_frame_ready: AtomicBool,
 }
 
 type Job = Box<dyn FnOnce(&mut Worker) + Send>;
@@ -325,6 +329,10 @@ impl RenderOwner {
     }
 
     pub(super) fn has_active_presentation_animations(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        if self.status.waiting_for_frame_ready.load(Ordering::Acquire) {
+            return false;
+        }
         self.status.pending.load(Ordering::Acquire)
     }
 

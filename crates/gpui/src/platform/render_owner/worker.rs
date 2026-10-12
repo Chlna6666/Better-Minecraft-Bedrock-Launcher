@@ -228,7 +228,9 @@ impl Entry {
             }
             Command::Tick(now, timing) => self.tick(now, timing),
             Command::Continue(now) => {
-                if self.schedule.is_enabled() {
+                // Windows swapchain-ready callbacks are serialized into this owner's
+                // command queue, not reported from a foreign callback thread.
+                if self.schedule.is_enabled() || cfg!(target_os = "windows") {
                     self.tick(now, None);
                 }
             }
@@ -359,7 +361,10 @@ impl Entry {
             self.ready_registration.store(generation, Ordering::Release);
             let registration = self.ready_registration.clone();
             let report = self.report.clone();
-            let autonomous = self.schedule.is_enabled();
+            // Serialize Windows readiness behind the same per-window GPU queue:
+            // otherwise a callback can overtake an in-flight deferred report and
+            // restore a stale waiting=true status after ready was already signaled.
+            let autonomous = self.schedule.is_enabled() || cfg!(target_os = "windows");
             let queue = self.queue.clone();
             let id = self.id;
             let callback = Box::new(move || {
@@ -425,6 +430,11 @@ impl Entry {
             || self.renderer.has_active_presentation_animations()
             || self.queue.has_presentation();
         self.status.pending.store(pending, Ordering::Release);
+        #[cfg(target_os = "windows")]
+        self.status.waiting_for_frame_ready.store(
+            !submitted && self.ready_registration.load(Ordering::Acquire) != 0,
+            Ordering::Release,
+        );
         #[cfg(any(test, not(target_os = "windows")))]
         self.update_schedule(result.is_ok(), submitted);
         if let Err(error) = result {

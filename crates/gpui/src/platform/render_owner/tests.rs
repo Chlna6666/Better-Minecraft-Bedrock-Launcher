@@ -10,6 +10,7 @@ fn owner(pending: bool) -> (RenderOwner, mpsc::Receiver<Job>) {
         status: Arc::new(Status {
             pending: AtomicBool::new(pending),
             submitted: AtomicBool::new(true),
+            waiting_for_frame_ready: AtomicBool::new(false),
         }),
         gpu_specs: GpuSpecs::default(),
     };
@@ -117,4 +118,40 @@ fn competing_windows_have_independent_coalesced_queues() {
     assert!(interactive_wake.try_recv().is_ok());
     busy.queue.close();
     interactive.queue.close();
+}
+
+#[test]
+fn blocked_swapchain_suppresses_only_its_own_speculative_ticks() {
+    let (blocked, blocked_jobs) = owner(true);
+    let (responsive, responsive_jobs) = owner(true);
+    blocked
+        .status
+        .waiting_for_frame_ready
+        .store(true, Ordering::Release);
+
+    assert!(
+        blocked.present_active_frame(Instant::now(), None).unwrap().is_none(),
+        "blocked window must await its GPU-ready callback rather than polling DWM"
+    );
+    assert!(blocked.queue.take().is_none());
+    assert!(matches!(
+        blocked_jobs.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
+    assert!(
+        responsive.present_active_frame(Instant::now(), None).unwrap().is_some(),
+        "an independent window must remain schedulable"
+    );
+    assert!(matches!(responsive.queue.take(), Some(Command::Tick(_, _))));
+    assert!(responsive_jobs.try_recv().is_ok());
+
+    blocked
+        .status
+        .waiting_for_frame_ready
+        .store(false, Ordering::Release);
+    assert!(blocked.present_active_frame(Instant::now(), None).unwrap().is_some());
+    assert!(matches!(blocked.queue.take(), Some(Command::Tick(_, _))));
+    blocked.queue.close();
+    responsive.queue.close();
 }

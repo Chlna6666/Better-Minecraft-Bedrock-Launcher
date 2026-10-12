@@ -270,10 +270,19 @@ impl Window {
                 cx.propagate_event = true;
                 self.default_prevented = false;
             } else {
-                // MouseDown/touch changes modality without representing mouse motion. Keep the
-                // conservative redraw used upstream so tooltip timing and touch semantics are not
-                // accidentally converted into synthetic MouseMove behavior.
-                self.refresh();
+                // MouseDown/touch may restore hover and tooltip state even without a pointer
+                // move. Preserve the conservative transition for interactive subtrees.
+                // A completely noninteractive background, however, has no listeners or
+                // tooltips that could observe this transition: do not invalidate every
+                // cached view just because an inert mouse button was pressed.
+                let inert_mouse_down = matches!(&event, PlatformInput::MouseDown(_))
+                    && self.rendered_frame.mouse_listeners.is_empty()
+                    && self.rendered_frame.tooltip_requests.is_empty()
+                    && self.tooltip_bounds.is_none()
+                    && !cx.has_active_drag();
+                if !inert_mouse_down {
+                    self.refresh();
+                }
             }
         }
 

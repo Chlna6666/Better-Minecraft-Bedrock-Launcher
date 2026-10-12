@@ -1042,6 +1042,116 @@ fn background_pointer_button_does_not_request_frame(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn inert_mouse_click_storm_does_not_invalidate_sibling_window_or_cached_views(
+    cx: &mut TestAppContext,
+) {
+    let first = cx.add_empty_window();
+    let sibling = cx.add_empty_window();
+
+    sibling.update(|window, _| {
+        window.invalidator.set_dirty(false);
+        window.force_view_cache_refresh = false;
+    });
+    let sibling_platform = sibling.update(|window, _| {
+        window.platform_window.as_test().unwrap().clone()
+    });
+    let sibling_baseline = sibling_platform.requested_frame_count();
+
+    first.update(|window, cx| {
+        window.has_completed_rendered_frame = true;
+        window.force_view_cache_refresh = false;
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+
+        // A keyboard-to-pointer switch must not rebuild an entirely inert page.
+        window.dispatch_event(
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: Keystroke::parse("a").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+        assert!(window.last_input_was_keyboard());
+        let platform = window.platform_window.as_test().unwrap().clone();
+        let baseline = platform.requested_frame_count();
+        for _ in 0..128 {
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(8.), px(8.)),
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: point(px(8.), px(8.)),
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        }
+        assert!(!window.force_view_cache_refresh);
+        assert!(!window.invalidator.is_dirty());
+        assert_eq!(platform.requested_frame_count(), baseline);
+    });
+
+    sibling.update(|window, _| {
+        assert!(!window.invalidator.is_dirty());
+        assert!(!window.force_view_cache_refresh);
+    });
+    assert_eq!(sibling_platform.requested_frame_count(), sibling_baseline);
+}
+
+#[gpui::test]
+fn mouse_down_with_listener_preserves_modality_refresh(cx: &mut TestAppContext) {
+    let window = cx.add_empty_window();
+    let dispatched = Rc::new(Cell::new(0_usize));
+    window.update(|window, cx| {
+        window.has_completed_rendered_frame = true;
+        window.dispatch_event(
+            PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: Keystroke::parse("a").unwrap(),
+                is_held: false,
+            }),
+            cx,
+        );
+        window.force_view_cache_refresh = false;
+        window.invalidator.set_dirty(false);
+        window.refreshing = false;
+        window.dirty_frame_scheduled = false;
+
+        let count = dispatched.clone();
+        window
+            .rendered_frame
+            .mouse_listeners
+            .push(MouseListener::new::<MouseDownEvent>(Box::new(move |_, _, _, _| {
+                count.set(count.get() + 1);
+            })));
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: point(px(8.), px(8.)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        assert!(
+            window.force_view_cache_refresh,
+            "interactive input-modality changes must still reconcile hover/tooltip state"
+        );
+        assert_eq!(dispatched.get(), 2, "capture and bubble listeners must still execute");
+    });
+}
+
+#[gpui::test]
 fn mouse_hit_test_uses_event_position(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

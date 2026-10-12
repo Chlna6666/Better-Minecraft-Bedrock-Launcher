@@ -170,6 +170,26 @@ can still cause inter-window head-of-line blocking. GPU owner queue wait, per-wi
 and in-flight submission waits must be measured before claiming hard worst-case latency bounds;
 do not treat this scheduling improvement as proof of real-time isolation.
 
+Windows input and backpressure invariants:
+- An inert MouseDown/MouseUp on a listener-free, tooltip-free background must not
+  invalidate the view cache or request a GPU frame, including after keyboard-to-mouse
+  modality changes. Globally installed outside-click listeners and real interactive
+  controls must still receive the event; handler-driven invalidation is authoritative.
+- Each window has independent GPUI invalidation, retained scene and GPU command queue.
+  Input to a companion window must not invalidate a different window.
+- While the swapchain has an armed readiness callback, suppress DWM speculative GPU
+  ticks for that window only. On Windows, ready callbacks enqueue a serialized
+  Continue command on that window's GPU queue; they must not race an older worker
+  report to publish stale waiting state.
+- No-op clicks must be benchmarked separately from interactive focus/hover changes.
+  Performance acceptance requires zero additional Present for a noninteractive
+  repeated click sequence, not merely low CPU time.
+- A shared GPU owner still cannot interrupt a blocking driver call. Do not introduce
+  a per-window renderer thread without first resolving device registry ownership,
+  backend thread affinity, atlas sharing, and safe HWND retirement.
+- Track process-to-first-visible frame, per-window queue wait p50/p95/p99, GPU
+  blocking-wait time and idle Present counts for DX11/DX12/Vulkan/OpenGL independently.
+
 Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI
 layout or rebuilding its committed display list. Animation completions are returned only after
 successful submission. Windows, Wayland and X11 declare ownership through `owns_scene_animations()`;
