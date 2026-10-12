@@ -225,11 +225,12 @@ impl Window {
                         let retry_scheduled = retry_scheduled.clone();
                         foreground_executor
                             .spawn(async move {
-                                // Retries are bounded and yield to the event loop; a
-                                // temporarily borrowed Window must not lose its final resize.
-                                // Exponential backoff avoids a 1 ms polling storm if UI work
-                                // genuinely stays busy for multiple native messages.
-                                for attempt in 0..12 {
+                                // The newest native size must not be lost when a
+                                // foreground App/Window borrow outlives the original WM_SIZE.
+                                // One task per window retries with capped backoff until the
+                                // borrower releases; idle windows do not poll or redraw.
+                                let mut delay_ms = 1_u64;
+                                loop {
                                     match handle.update(&mut cx, |_, window, cx| {
                                         window.content_bounds_changed(cx)
                                     }) {
@@ -237,15 +238,18 @@ impl Window {
                                         Err(error) if error.to_string() == "window not found" => {
                                             break;
                                         }
-                                        Err(error) if attempt < 11 => {
-                                            log::trace!("GPUI resize callback remains busy: {error:#}");
-                                            let delay_ms = 1_u64 << attempt.min(4);
+                                        Err(error)
+                                            if error.to_string().contains("already borrowed") =>
+                                        {
+                                            log::trace!("GPUI resize callback remains borrowed: {error:#}");
                                             cx.background_executor()
                                                 .timer(Duration::from_millis(delay_ms))
                                                 .await;
+                                            delay_ms = (delay_ms * 2).min(32);
                                         }
                                         Err(error) => {
-                                            log::warn!("GPUI resize callback could not run after bounded retries: {error:#}");
+                                            log::warn!("GPUI resize callback failed permanently: {error:#}");
+                                            break;
                                         }
                                     }
                                 }

@@ -23,7 +23,7 @@ use futures::channel::oneshot::{self, Receiver};
 use slotmap::Key;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, WPARAM},
+        Foundation::{HWND, LPARAM, RECT, WPARAM},
         Graphics::{
             Dwm::{
                 DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW,
@@ -42,7 +42,7 @@ use windows::{
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 HICON, ICON_BIG, ICON_SMALL, IDCANCEL, IDOK, IMAGE_ICON, IsIconic, IsWindowVisible,
-                IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, PostQuitMessage,
+                GetClientRect, IsZoomed, KillTimer, LR_DEFAULTSIZE, LR_SHARED, LoadImageW, PostQuitMessage,
                 SW_RESTORE, SendMessageW, SetForegroundWindow, SetTimer, ShowWindow,
                 USER_TIMER_MINIMUM, WM_ENDSESSION, WM_ENTERSIZEMOVE, WM_ERASEBKGND,
                 WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_SETICON,
@@ -1769,6 +1769,33 @@ impl WindowsWindow {
         state.scale_factor.set(scale_factor);
         drop(state);
 
+        if crate::diagnostics::gpu_owner::resize_trace_enabled() {
+            // Query the real Win32 client rectangle, not just winit's event payload:
+            // an out-of-date WM_SIZE is otherwise indistinguishable from a lost GPUI commit.
+            let mut native_rect = RECT::default();
+            let actual_client = self.native_hwnd().and_then(|hwnd| {
+                unsafe { GetClientRect(hwnd, &mut native_rect) }.ok().map(|_| {
+                    (
+                        (native_rect.right - native_rect.left).max(0) as u32,
+                        (native_rect.bottom - native_rect.top).max(0) as u32,
+                    )
+                })
+            });
+            let (native_width, native_height) =
+                actual_client.unwrap_or((physical_size.width, physical_size.height));
+            log::info!(
+                target: "gpui_resize_trace",
+                "gpui_resize stage=native window_id={} physical_px={}x{} event_px={}x{} logical_px={:.3}x{:.3} scale={:.5}",
+                self.0.handle.window_id().data().as_ffi(),
+                native_width,
+                native_height,
+                physical_size.width,
+                physical_size.height,
+                logical_size.width.0,
+                logical_size.height.0,
+                scale_factor
+            );
+        }
         self.queue_resize(PendingWindowsResize {
             logical_size,
             drawable_size: Size {

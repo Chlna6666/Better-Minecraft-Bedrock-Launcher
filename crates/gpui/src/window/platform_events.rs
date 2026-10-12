@@ -72,6 +72,20 @@ impl Window {
         }
         self.force_full_redraw.set(true);
 
+        #[cfg(target_os = "windows")]
+        if crate::diagnostics::gpu_owner::resize_trace_enabled() {
+            log::info!(
+                target: "gpui_resize_trace",
+                "gpui_resize stage=viewport window_id={} logical_px={:.3}x{:.3} scale={:.5} physical_px={}x{}",
+                self.handle.window_id().as_u64(),
+                self.viewport_size.width.0,
+                self.viewport_size.height.0,
+                self.scale_factor,
+                (self.viewport_size.width.0 * self.scale_factor).round() as u32,
+                (self.viewport_size.height.0 * self.scale_factor).round() as u32
+            );
+        }
+
         let viewport_dependent_views = self
             .viewport_dependent_views
             .borrow()

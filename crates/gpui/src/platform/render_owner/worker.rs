@@ -111,6 +111,12 @@ impl Worker {
 
 pub(super) struct Entry {
     id: u64,
+    #[cfg(target_os = "windows")]
+    window_id: Option<u64>,
+    #[cfg(target_os = "windows")]
+    last_logged_swapchain_extent: Option<(u32, u32)>,
+    #[cfg(target_os = "windows")]
+    requested_swapchain_extent: Option<(u32, u32)>,
     renderer: NovaRenderer,
     queue: Arc<Queue>,
     status: Arc<Status>,
@@ -135,6 +141,12 @@ impl Entry {
     ) -> Self {
         Self {
             id: 0,
+            #[cfg(target_os = "windows")]
+            window_id: None,
+            #[cfg(target_os = "windows")]
+            last_logged_swapchain_extent: None,
+            #[cfg(target_os = "windows")]
+            requested_swapchain_extent: None,
             renderer,
             queue,
             status,
@@ -172,6 +184,25 @@ impl Entry {
         let previous_wait = gpu_owner::blocking_wait();
         self.job_outcome = GpuOwnerJobOutcome::Control;
         self.execute(command);
+        #[cfg(target_os = "windows")]
+        if gpu_owner::resize_trace_enabled() {
+            // Actual committed swapchain size (never merely the queued drawable size).
+            // An initial frame also generates a baseline so a missing resize is detectable.
+            let committed = self.renderer.committed_drawable_extent();
+            if self.last_logged_swapchain_extent != Some(committed) {
+                log::info!(
+                    target: "gpui_resize_trace",
+                    "gpui_resize stage=gpu window_id={} owner_id={} physical_px={}x{} target_px={}x{}",
+                    self.window_id.unwrap_or(0),
+                    self.id,
+                    committed.0,
+                    committed.1,
+                    self.requested_swapchain_extent.map_or(committed.0, |size| size.0),
+                    self.requested_swapchain_extent.map_or(committed.1, |size| size.1)
+                );
+                self.last_logged_swapchain_extent = Some(committed);
+            }
+        }
         let completed_at = Instant::now();
         gpu_owner::record_job(
             GpuOwnerJobSample {
@@ -214,6 +245,13 @@ impl Entry {
                 framebuffer_only,
                 reply,
             } => {
+                #[cfg(target_os = "windows")]
+                if self.window_id != Some(packet.window_id) {
+                    self.window_id = Some(packet.window_id);
+                    // A GPU control can run before the first scene packet binds the GPUI
+                    // window ID. Emit an identified baseline on its first Draw as well.
+                    self.last_logged_swapchain_extent = None;
+                }
                 if let Some((previous, _)) = self.scene.take() {
                     packet.merge_pending_damage_from(&previous);
                 }
@@ -242,6 +280,19 @@ impl Entry {
                 self.renderer.stretch_surface_for_pending_resize(size);
             }
             Command::Resize(size) => {
+                #[cfg(target_os = "windows")]
+                if gpu_owner::resize_trace_enabled() {
+                    let target = (size.width.0.max(1) as u32, size.height.0.max(1) as u32);
+                    self.requested_swapchain_extent = Some(target);
+                    log::info!(
+                        target: "gpui_resize_trace",
+                        "gpui_resize stage=gpu_queued window_id={} owner_id={} physical_px={}x{}",
+                        self.window_id.unwrap_or(0),
+                        self.id,
+                        target.0,
+                        target.1
+                    );
+                }
                 // Target recreation may cancel the backend's old readiness registration.
                 // Old callbacks must not consume a later registration or wake a closed window.
                 self.ready_registration.store(0, Ordering::Release);

@@ -1,6 +1,13 @@
 use super::*;
 
 impl NovaRenderer {
+    /// The physical swapchain extent already committed by Nova; the pending resize
+    /// request is deliberately excluded because it may still be fence-blocked.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn committed_drawable_extent(&self) -> (u32, u32) {
+        (self.current_size.width, self.current_size.height)
+    }
+
     pub(super) fn reset_live_resize_stretch(&mut self) {
         if let Err(error) =
             lock_backend(&self.backend).set_swapchain_content_stretch(self.swapchain, None)
