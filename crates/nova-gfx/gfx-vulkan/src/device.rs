@@ -5486,18 +5486,22 @@ fn retained_offscreen_render_area(
     clippy::too_many_lines,
     reason = "Vulkan command recording keeps render-pass state transitions adjacent for auditability"
 )]
-/// A bounded source capture clears the same rectangle on color and depth.
+/// A bounded source capture clears only the requested color/depth attachments.
 /// The caller clips every draw to that footprint. If any step could write
 /// outside it, use a full attachment clear instead.
 fn scoped_offscreen_clear_area(
     extent: vk::Extent2D,
     offscreen: bool,
     color_load_op: LoadOp<ClearColor>,
+    depth_load_op: Option<LoadOp<f32>>,
     clear_region: Option<ScissorRect>,
     scissors: impl IntoIterator<Item = Option<ScissorRect>>,
 ) -> Option<vk::Rect2D> {
     let region = clear_region?;
-    if !offscreen || !matches!(color_load_op, LoadOp::Clear(_)) {
+    if !offscreen
+        || (!matches!(color_load_op, LoadOp::Clear(_))
+            && !matches!(depth_load_op, Some(LoadOp::Clear(_))))
+    {
         return None;
     }
     let target = vk_rect_for_scissor(region, extent).ok()?;
@@ -5611,6 +5615,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         info.extent,
         info.render_target_transition.is_some(),
         info.color_load_op,
+        info.depth_load_op,
         info.clear_region,
         info.steps.iter().map(|step| step.scissor),
     ).unwrap_or_else(|| {
@@ -6179,6 +6184,7 @@ mod tests {
             extent,
             true,
             LoadOp::Clear(ClearColor::default()),
+            None,
             Some(region),
             [Some(region)],
         ).expect("known filter halo must limit attachment clear");
@@ -6189,6 +6195,7 @@ mod tests {
                 extent,
                 true,
                 LoadOp::Clear(ClearColor::default()),
+                None,
                 Some(region),
                 std::iter::empty(),
             ),
@@ -6198,19 +6205,43 @@ mod tests {
     }
 
     #[test]
+    fn retained_color_pass_scopes_depth_clear_without_clearing_color() {
+        let extent = vk::Extent2D { width: 1500, height: 900 };
+        let region = ScissorRect { x: 40, y: 20, width: 80, height: 65 };
+        let area = scoped_offscreen_clear_area(
+            extent, true, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region),
+            [Some(region)],
+        ).expect("preserved color source must clear only the dirty depth region");
+        assert_eq!(area.offset, vk::Offset2D { x: 40, y: 20 });
+        assert_eq!(area.extent, vk::Extent2D { width: 80, height: 65 });
+        for scissors in [[None], [Some(ScissorRect { x: 0, y: 0, width: 1500, height: 900 })]] {
+            assert!(scoped_offscreen_clear_area(
+                extent, true, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region),
+                scissors,
+            ).is_none());
+        }
+        assert!(scoped_offscreen_clear_area(
+            extent, true, LoadOp::Load, Some(LoadOp::Load), Some(region), [Some(region)],
+        ).is_none());
+        assert!(scoped_offscreen_clear_area(
+            extent, false, LoadOp::Load, Some(LoadOp::Clear(1.)), Some(region), [Some(region)],
+        ).is_none());
+    }
+
+    #[test]
     fn unknown_or_outside_draw_does_not_shrink_vulkan_clear() {
         let extent = vk::Extent2D { width: 1500, height: 900 };
         let region = ScissorRect { x: 4, y: 20, width: 900, height: 65 };
         assert!(scoped_offscreen_clear_area(
-            extent, true, LoadOp::Clear(ClearColor::default()), Some(region),
+            extent, true, LoadOp::Clear(ClearColor::default()), None, Some(region),
             [None],
         ).is_none());
         assert!(scoped_offscreen_clear_area(
-            extent, true, LoadOp::Clear(ClearColor::default()), Some(region),
+            extent, true, LoadOp::Clear(ClearColor::default()), None, Some(region),
             [Some(ScissorRect { x: 0, y: 0, width: 1500, height: 900 })],
         ).is_none());
         assert!(scoped_offscreen_clear_area(
-            extent, false, LoadOp::Clear(ClearColor::default()), Some(region),
+            extent, false, LoadOp::Clear(ClearColor::default()), None, Some(region),
             [Some(region)],
         ).is_none());
     }

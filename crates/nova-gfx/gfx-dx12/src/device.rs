@@ -3383,6 +3383,19 @@ mod platform {
                 }
             }
             for step in steps.iter() {
+                let step_scissor = if let Some(region) = step.scissor() {
+                    if region.is_empty() {
+                        continue;
+                    }
+                    dx12_rect_for_scissor(region, texture_desc.size)?
+                } else {
+                    scissor
+                };
+                if step_scissor.left >= step_scissor.right
+                    || step_scissor.top >= step_scissor.bottom
+                {
+                    continue;
+                }
                 let (
                     pipeline_state,
                     root_signature,
@@ -3414,6 +3427,7 @@ mod platform {
                 unsafe {
                     command_list.SetPipelineState(&pipeline_state);
                     command_list.SetGraphicsRootSignature(&root_signature);
+                    command_list.RSSetScissorRects(&[step_scissor]);
                     command_list
                         .IASetPrimitiveTopology(primitive_topology_to_dx12(primitive_topology));
                 }
