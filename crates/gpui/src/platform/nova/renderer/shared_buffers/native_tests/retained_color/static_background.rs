@@ -5,9 +5,17 @@ fn page(size: DrawableSize, revision: u64, background: crate::Rgba) -> Arc<crate
     let viewport = bounds(0., 0., size.width as f32, size.height as f32);
     let mut scene = crate::Scene::default();
     // A painter-ordered static prefix followed by independently animated foreground.
-    for _ in 0..96 {
-        scene.insert_primitive(quad(viewport, background));
+    scene.push_layer(viewport);
+    scene.insert_primitive(quad(viewport, background));
+    for index in 1..96 {
+        let region = bounds(8. + (index % 3) as f32, 8., 48., 48.);
+        let mut color = crate::rgb(if index % 2 == 0 { 0xff8040 } else { 0x4080ff });
+        color.a = 0.03;
+        scene.push_layer(region);
+        scene.insert_primitive(quad(region, color));
+        scene.pop_layer();
     }
+    scene.pop_layer();
     scene.insert_animated_primitive(
         quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
         crate::SceneAnimationId(1),
@@ -31,6 +39,9 @@ fn verify(backend: RendererBackend) {
     .expect("native renderer");
     let target = super::super::target(&renderer);
     let first = page(renderer.current_size, 1, crate::rgb(0x204060));
+    // Revision zero bypasses automatic capture. This is the direct painter
+    // stream reference, so both paths cannot share the same grouping mistake.
+    let direct = page(renderer.current_size, 0, crate::rgb(0x204060));
     while renderer.swapchain_warmup_frames > 0 {
         pixels(&mut renderer, &first, target, 0., [sample(0.)], true);
     }
@@ -55,7 +66,7 @@ fn verify(backend: RendererBackend) {
         );
         let full = pixels(
             &mut renderer,
-            &first,
+            &direct,
             target,
             current,
             [sample(current)],
@@ -64,6 +75,15 @@ fn verify(backend: RendererBackend) {
         assert_eq!(
             local, full,
             "automatic layer must match full raster on {backend}"
+        );
+        // Re-establish the retained source after rendering the direct reference.
+        pixels(
+            &mut renderer,
+            &first,
+            target,
+            current,
+            [sample(current)],
+            true,
         );
         previous = current;
     }
@@ -79,7 +99,15 @@ fn verify(backend: RendererBackend) {
     let changed = page(renderer.current_size, 3, crate::rgb(0x406080));
     let local = pixels(&mut renderer, &changed, target, 0.8, [sample(0.2)], false);
     assert!(crate::performance_metrics_snapshot().backdrop_blur_source_pixels > 0);
-    let full = pixels(&mut renderer, &changed, target, 0.2, [sample(0.2)], true);
+    let changed_direct = page(renderer.current_size, 0, crate::rgb(0x406080));
+    let full = pixels(
+        &mut renderer,
+        &changed_direct,
+        target,
+        0.2,
+        [sample(0.2)],
+        true,
+    );
     assert_eq!(
         local, full,
         "changed source must refresh outside foreground damage"

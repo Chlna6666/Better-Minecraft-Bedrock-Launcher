@@ -73,9 +73,9 @@ fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition
 /// commit by Scene::retained_filter_source_matches, while the animated
 /// suffix is submitted directly to the main pass.
 ///
-/// Only a completely flat painter stream is eligible. Reordering nested
-/// PaintLayer boundaries or retained-chunk spans would invalidate painter
-/// ordering and residency assumptions, so these keep the ordinary path.
+/// The capture boundary must close every PaintLayer in the prefix. Replay
+/// preserves nested painter ordering; splitting an open layer or a retained
+/// chunk would lose ordering/residency context and keeps the ordinary path.
 fn auto_capture_static_background(
     scene: &crate::Scene,
     drawable_size: DrawableSize,
@@ -97,10 +97,13 @@ fn auto_capture_static_background(
     // Parent and child must be reconstructed in the same order, without
     // intervening structural paint operations or unsupported resources.
     let mut static_prefix = 0usize;
+    let mut prefix_end = 0usize;
     let mut saw_dynamic = false;
-    for operation in &scene.paint_operations {
-        let PaintOperation::Primitive(primitive) = operation else {
-            return None;
+    for (index, operation) in scene.paint_operations.iter().enumerate() {
+        let primitive = match operation {
+            PaintOperation::Primitive(primitive) => primitive,
+            PaintOperation::StartLayer(_) | PaintOperation::EndLayer => continue,
+            PaintOperation::StartBlur(_) | PaintOperation::EndBlur => return None,
         };
         match primitive {
             Primitive::Quad(_) | Primitive::Shadow(_) => {}
@@ -114,10 +117,16 @@ fn auto_capture_static_background(
         if !saw_dynamic && primitive.animation_id().is_none() {
             static_prefix += 1;
         } else {
+            if !saw_dynamic {
+                prefix_end = index;
+            }
             saw_dynamic = true;
         }
     }
-    if static_prefix < 96 || !saw_dynamic || static_prefix == scene.paint_operations.len() {
+    if static_prefix < 96 || !saw_dynamic
+        || !scene.range_is_independently_replayable(0..prefix_end)
+        || !scene.range_is_independently_replayable(prefix_end..scene.paint_operations.len())
+    {
         return None;
     }
 
@@ -131,19 +140,14 @@ fn auto_capture_static_background(
         ),
     );
     let bounds = scene
-        .bounds_for_range(0..static_prefix)?
+        .bounds_for_range(0..prefix_end)?
         .intersect(&viewport);
     if bounds.is_empty() {
         return None;
     }
 
     let mut background = crate::Scene::default();
-    for operation in &scene.paint_operations[..static_prefix] {
-        let PaintOperation::Primitive(primitive) = operation else {
-            unreachable!("flat prefix was validated");
-        };
-        background.insert_primitive(primitive.clone());
-    }
+    background.replay(0..prefix_end, scene);
     background.finish();
 
     let mut foreground = crate::Scene::default();
@@ -162,12 +166,7 @@ fn auto_capture_static_background(
         opacity: 1.0,
         content: Arc::new(background),
     });
-    for operation in &scene.paint_operations[static_prefix..] {
-        let PaintOperation::Primitive(primitive) = operation else {
-            unreachable!("flat foreground was validated");
-        };
-        foreground.insert_primitive(primitive.clone());
-    }
+    foreground.replay(prefix_end..scene.paint_operations.len(), scene);
     foreground.finish();
     // The immutable original scene revision is the lifetime key for
     // packed GPU draw streams. Its stable value allows compositor-only
@@ -1002,6 +1001,30 @@ mod tests {
             Some(crate::SceneAnimationId(42))
         );
         assert_eq!(captured.revision, original.revision);
+        let viewport = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+        );
+        let mut nested = crate::Scene::default();
+        nested.push_layer(viewport);
+        nested.replay(0..100, &original);
+        nested.pop_layer();
+        nested.replay(100..101, &original);
+        nested.finish();
+        let size = DrawableSize { width: 640, height: 480 };
+        let nested_capture = auto_capture_static_background(&nested, size)
+            .expect("a closed nested prefix retains its layer ordering");
+        assert!(matches!(nested_capture.blurs[0].content.paint_operations.first(),
+            Some(crate::scene::PaintOperation::StartLayer(_))));
+        assert!(matches!(nested_capture.blurs[0].content.paint_operations.last(),
+            Some(crate::scene::PaintOperation::EndLayer)));
+        let mut split = crate::Scene::default();
+        split.push_layer(viewport);
+        split.replay(0..101, &original);
+        split.pop_layer();
+        split.finish();
+        assert!(auto_capture_static_background(&split, size).is_none(),
+            "capture cannot cut through an open layer");
         assert!(
             auto_capture_static_background(
                 &crate::Scene::default(),
