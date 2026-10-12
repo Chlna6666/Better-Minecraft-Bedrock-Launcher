@@ -86,6 +86,19 @@ impl Window {
             );
         }
 
+        // A change in the available root layout space is itself a dependency.
+        // Relying only on explicit viewport_size()/bounds() reads misses wrapper
+        // views such as BMCBL's RootView, which return div().size_full() without
+        // ever querying the Window dimensions. Retained replay can then keep an
+        // old-size subtree even after the GPU swapchain has grown, leaving black
+        // client-area strips. Invalidate this window's root cache boundary on
+        // actual geometry changes, not on unrelated input, hover, or native move.
+        // Descendant cached views remain eligible for retained replay when their
+        // own bounds and paint context are unchanged.
+        let root_view_id = self.root.as_ref().map(AnyView::entity_id);
+        if let Some(root_id) = root_view_id {
+            self.invalidator.invalidate_view(root_id, cx);
+        }
         let viewport_dependent_views = self
             .viewport_dependent_views
             .borrow()
@@ -93,7 +106,9 @@ impl Window {
             .copied()
             .collect::<SmallVec<[_; 8]>>();
         for view_id in viewport_dependent_views {
-            self.invalidator.invalidate_view(view_id, cx);
+            if Some(view_id) != root_view_id {
+                self.invalidator.invalidate_view(view_id, cx);
+            }
         }
         self.redraw_without_view_cache_refresh();
 

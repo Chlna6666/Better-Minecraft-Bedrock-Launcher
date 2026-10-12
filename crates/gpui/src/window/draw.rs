@@ -279,6 +279,35 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        #[cfg(target_os = "windows")]
+        if force_full_redraw && crate::diagnostics::gpu_owner::resize_trace_enabled() {
+            // Resizing a swapchain is not proof that the new Scene covers that extent.
+            // A missing root cache invalidation can replay quads clipped to the old
+            // viewport. Record the committed CPU Scene bounds, without a GPU readback.
+            // Quads are only a coverage heuristic: sprites/paths are separate draws.
+            let (quad_right, quad_bottom) = self
+                .rendered_frame
+                .scene
+                .quads
+                .iter()
+                .fold((0.0_f32, 0.0_f32), |(right, bottom), quad| {
+                    (
+                        right.max(quad.bounds.right().0),
+                        bottom.max(quad.bounds.bottom().0),
+                    )
+                });
+            log::info!(
+                target: "gpui_resize_trace",
+                "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} force_full_redraw=true",
+                self.handle.window_id().as_u64(),
+                (self.viewport_size.width.0 * self.scale_factor).round() as u32,
+                (self.viewport_size.height.0 * self.scale_factor).round() as u32,
+                self.rendered_frame.scene.len(),
+                self.rendered_frame.scene.quads.len(),
+                quad_right,
+                quad_bottom
+            );
+        }
         // GPU/CPU retained fragments may skip the layout traversal entirely,
         // so native Taffy liveness follows the committed retained identities.
         if let Some(layout_engine) = self.layout_engine.as_mut() {

@@ -12,6 +12,7 @@
 | `viewport` | `Window::content_bounds_changed` | `window_id`, `logical_px`, `physical_px`, `scale` | GPUI 收到新的 Layout 约束 |
 | `gpu_queued` | GPU RenderOwner 收到 Resize 命令 | `window_id`, `owner_id`, `physical_px` | 排队完成，不代表底层 Swapchain 已经 Resize |
 | `gpu` | GPU RenderOwner 执行命令后读取 Nova committed extent | `window_id`, `owner_id`, `physical_px`, `target_px` | **实际已经提交的 Swapchain 尺寸**，与 pending request 分离 |
+| `scene` | GPUI 完成一次全视口重绘后的 CPU Scene | `window_id`, `physical_px`, `scene_primitives`, `quads`, `quad_right_px`, `quad_bottom_px` | 识别旧尺寸 Retained 子树；quad 覆盖范围仅是启发式诊断，不等于最终合成像素覆盖 |
 
 所有阶段按 GPUI `window_id` 关联，便于多窗口分别对比。未绑定首帧 WindowId 的 GPU 预热日志可能带 `window_id=0`，检查器会忽略。
 
@@ -42,3 +43,11 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 - Vulkan / DX11 / DX12 / OpenGL 必须分别验证；不应把单一后端的通过推断为其他后端也安全。
 
 **限制**：纯 Rust GPUI TestPlatform 可以验证回调、Viewport 更新和窗口间隔离，但无法生成真实 Win32 `WM_ENTERSIZEMOVE` 模态循环、DWM 合成行为或硬件 Swapchain Fence。本仓库提交的脚本只验证日志最后已稳定尺寸，不能替代实际 Windows 视频、GPU 占用和 DX12/Vulkan 同步压力测试。日志若在尚未收敛时截断也会合理地报告失败。
+
+## 2026-10-12 DX11 实际日志定位
+
+用户提供的 DX11 日志中主窗口 `4294967297` 的最终 `native`、`viewport`、`gpu` 都达到 **1873×900**，缩放期间共出现 75 次 Viewport 更新且相应 GPU Resize 最终均被执行。窗口仍持续存在黑色未渲染区域。因此已排除“仅因 WM_SIZE 丢失，或最终 Swapchain 一直是旧尺寸”这两种解释。
+
+新的 P0 在 `Window::content_bounds_changed`：**窗口可用布局范围变化，必须使该窗口的根 CachedView 布局边界失效**，即使根 View 没有显式调用 `window.viewport_size()`（例如 `RootView` 只返回 `div().size_full()`）。仍保留子 View 的独立 retained 重用，且仅在真实尺寸变化时执行，不对无效点击和纯移动执行。新增 `stage=scene`，便于进一步判断 Scene 原语是否随新尺寸重建。
+
+此记录只证明三阶段 Resize 的调用链和已提交尺寸最终收敛，不证明新提交一定修好实际 Windows 黑色空白；仍需相同场景实机回归。此日志另有 **130.9ms 的 GPUI 帧构建**，其中约 **129.5ms 是 prepaint**，属于独立的 UI 性能问题，不应混同为 GPU Fence 阻塞。

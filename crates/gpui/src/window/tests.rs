@@ -999,6 +999,38 @@ fn reentrant_native_resize_delivers_latest_viewport_after_window_borrow(
 }
 
 #[gpui::test]
+fn resize_invalidates_root_layout_boundary_without_forcing_every_cached_view(
+    cx: &mut TestAppContext,
+) {
+    let (root, window) = cx.add_window_view(|_, _| PaintedTestView);
+    let root_id = root.entity_id();
+    window.update(|window, cx| {
+        assert_eq!(window.root.as_ref().map(AnyView::entity_id), Some(root_id));
+        let unrelated_view = EntityId::from(110);
+        let dependent_view = EntityId::from(111);
+        window.viewport_dependent_views.borrow_mut().insert(dependent_view);
+        window.invalidator.set_dirty(false);
+        window.invalidator.take_views();
+        window.force_view_cache_refresh = false;
+
+        {
+            let native = window.platform_window.as_test().unwrap();
+            native.0.lock().bounds.size.width += px(120.);
+        }
+        window.content_bounds_changed(cx);
+
+        let dirty = window.invalidator.take_views();
+        assert!(dirty.contains(&root_id), "root layout must follow the resized viewport");
+        assert!(dirty.contains(&dependent_view), "explicit viewport dependencies remain dirty");
+        assert!(!dirty.contains(&unrelated_view));
+        assert!(
+            !window.force_view_cache_refresh,
+            "geometry invalidation must not force a global cached-view refresh"
+        );
+    });
+}
+
+#[gpui::test]
 fn content_bounds_change_only_invalidates_viewport_dependent_views(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {
