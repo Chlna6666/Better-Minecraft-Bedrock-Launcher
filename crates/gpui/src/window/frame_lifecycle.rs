@@ -1,6 +1,8 @@
 use super::state::FrameRequestReason;
 use super::*;
 
+#[cfg(test)]
+mod completion_tests;
 mod throttle;
 
 use throttle::FrameActivity;
@@ -153,6 +155,20 @@ impl Window {
     }
 
     pub(super) fn mark_view_dirty(&mut self, view_id: EntityId) {
+        // A render can read a non-view entity. Its notify is window-scoped, without a
+        // dispatch route that identifies the dependent view, so an old root cannot hide it.
+        if self
+            .rendered_frame
+            .dispatch_tree
+            .view_path_reversed(view_id)
+            .next()
+            .is_none()
+        {
+            self.force_view_cache_refresh = true;
+        }
+        // These scopes are rebuilt while consuming invalidations in begin_draw_cycle. Their
+        // producer already requested the current frame; scheduling here would enqueue another
+        // UI commit for the same work and force a clean-frame cache refresh.
         self.direct_dirty_views.insert(view_id);
         self.dirty_frame_diagnostics
             .borrow_mut()
@@ -169,6 +185,17 @@ impl Window {
             }
         }
         self.dirty_views.insert(view_id);
+        // A visible View can also be data for another View's Render. Its retained
+        // target alone cannot cover those readers, including unrelated sibling owners.
+        let dependents = crate::CachedView::render_dependents(self, view_id);
+        if !dependents.is_empty() {
+            self.force_view_cache_refresh = true;
+        }
+        for dependent in dependents {
+            if !self.direct_dirty_views.contains(&dependent) {
+                self.mark_view_dirty(dependent);
+            }
+        }
         self.dirty_frame_diagnostics
             .borrow_mut()
             .record_dirty_scopes(
@@ -177,7 +204,6 @@ impl Window {
                     .len()
                     .saturating_sub(self.direct_dirty_views.len()),
             );
-        self.schedule_dirty_frame();
     }
 
     pub(crate) fn view_dirty_scope(&self, view_id: EntityId) -> Option<ViewDirtyScope> {
@@ -855,12 +881,10 @@ impl Window {
 
         if presentation.submitted_early && self.needs_present.get() {
             self.record_frame_request_reason(FrameRequestReason::PresentationAnimation);
-            let request = if self.presentation_state.has_pending_scene() {
-                PlatformFrameRequest::ui_commit()
-            } else {
-                PlatformFrameRequest::presentation()
-            };
-            self.request_platform_frame(request);
+            // The UI draw already published an immutable scene. The presentation phase activates
+            // it before sampling, so its continuation needs no second UI rebuild. A new notify
+            // independently merges a UI commit into this request when there is fresh dirty work.
+            self.request_platform_frame(PlatformFrameRequest::presentation());
         }
     }
 
@@ -984,10 +1008,8 @@ impl Window {
             let previous_values = self.presentation_state.active_engine_animation_values();
             let pixel_damage = presentation_scene
                 .presentation_animation_damage(previous_values, &tick.scene_values);
-            let mut tick_blur_damage = presentation_scene.backdrop_blur_animation_damage_plan(
-                previous_values,
-                &tick.scene_values,
-            );
+            let mut tick_blur_damage = presentation_scene
+                .backdrop_blur_animation_damage_plan(previous_values, &tick.scene_values);
             if preserve_unpresented_damage {
                 tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
             }
@@ -1411,11 +1433,21 @@ impl Window {
         );
     }
 
+    #[track_caller]
     pub(crate) fn degrade_current_draw(&mut self) {
         if !self.allows_progressive_frame_degradation() {
             return;
         }
 
+        if !self.draw_was_degraded && log::log_enabled!(log::Level::Trace) {
+            let caller = std::panic::Location::caller();
+            log::trace!(
+                "gpui draw degraded: caller={}:{} budget_exhausted={}",
+                caller.file(),
+                caller.line(),
+                self.draw_budget_exhausted()
+            );
+        }
         self.draw_was_degraded = true;
     }
 

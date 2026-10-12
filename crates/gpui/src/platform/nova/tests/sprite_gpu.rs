@@ -88,8 +88,8 @@ where
     ) {
         primitives::verify_pixels(device, &resources, target, view);
         paths::verify_pixels(device, &resources, target, view);
-        filters::verify_pixels(device, &resources, target, view);
     }
+    filters::verify_pixels(device, &resources);
     for kind in [
         AtlasTextureKind::Monochrome,
         AtlasTextureKind::Subpixel,

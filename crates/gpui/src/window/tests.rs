@@ -9,6 +9,7 @@ use crate::{
 };
 use std::{cell::Cell, cell::RefCell, rc::Rc};
 
+mod completion_render;
 mod presentation_ownership;
 
 #[cfg(test)]

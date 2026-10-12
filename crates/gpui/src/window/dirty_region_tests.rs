@@ -40,6 +40,24 @@ impl Render for AnimationTickView {
     }
 }
 
+struct PresentationContinuationView {
+    renders: usize,
+}
+
+impl Render for PresentationContinuationView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
+        crate::div()
+            .w(px(48.0))
+            .h(px(36.0))
+            .bg(if self.renders.is_multiple_of(2) {
+                crate::blue()
+            } else {
+                crate::red()
+            })
+    }
+}
+
 impl Render for StableOutputView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         crate::div()
@@ -135,6 +153,7 @@ fn child_notify_damages_child_without_promoting_root_bounds(cx: &mut TestAppCont
 
     cx.update_window(window, |_, window, cx| {
         window.draw(cx).clear();
+        assert!(window.present().is_accepted());
     })
     .expect("initial frame should draw");
 
@@ -287,6 +306,53 @@ fn clean_on_next_frame_callback_runs_without_rendering_view(cx: &mut TestAppCont
         assert_eq!(test_window.present_framebuffer_only_count(), presents);
     })
     .expect("a clean on-next-frame callback should run without rebuilding or presenting");
+}
+
+#[gpui::test]
+fn committed_scene_continuation_presents_without_rebuilding_ui(cx: &mut TestAppContext) {
+    let handle = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| PresentationContinuationView { renders: 0 })
+        })
+        .expect("test window should open")
+    });
+    cx.update_window(handle.into(), |view, window, cx| {
+        window.active.set(true);
+        window.visibility = WindowVisibility::Visible;
+        window.draw(cx).clear();
+        assert!(window.present().is_accepted());
+        let view = view
+            .downcast::<PresentationContinuationView>()
+            .expect("test view");
+        let baseline = view.read(cx).renders;
+        let test_window = window
+            .platform_window
+            .as_test()
+            .expect("test backend")
+            .clone();
+
+        // A presentation wake can carry genuine UI dirtiness even without its Required flag.
+        window.needs_present.set(true);
+        assert!(window.invalidator.invalidate_view(view.entity_id(), cx));
+        window.run_platform_frame(PlatformFrameRequest::presentation(), cx);
+        assert_eq!(view.read(cx).renders, baseline + 1);
+        assert!(window.presentation_state.has_pending_scene());
+        assert!(window.needs_present.get());
+        assert_eq!(
+            test_window.last_requested_frame(),
+            Some(PlatformFrameRequest::presentation())
+        );
+        let draws = test_window.draw_count();
+        let presents = test_window.present_framebuffer_only_count();
+
+        window.run_platform_frame(PlatformFrameRequest::presentation(), cx);
+        assert_eq!(view.read(cx).renders, baseline + 1);
+        assert_eq!(test_window.draw_count(), draws);
+        assert_eq!(test_window.present_framebuffer_only_count(), presents + 1);
+        assert!(!window.presentation_state.has_pending_scene());
+        assert!(!window.needs_present.get());
+    })
+    .expect("a committed scene continuation must present without a second UI rebuild");
 }
 
 #[gpui::test]

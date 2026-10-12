@@ -51,12 +51,13 @@ pub(super) fn verify_atlas_compaction<D>(
             descriptor(),
         )
         .expect("source page");
-        upload_pending_atlas(&atlas, device, |id| {
-            textures
-                .get(&id)
-                .map(|texture| texture.texture)
-                .context("resident source")
-        })
+        upload_pending_atlas(
+            &atlas,
+            device,
+            &mut textures,
+            "compact hardware gate",
+            &descriptor(),
+        )
         .expect("source pixels");
         let original = device
             .read_texture(textures[&old.texture_id].texture)

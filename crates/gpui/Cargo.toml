@@ -175,6 +175,10 @@ name = "gpui_perf_lab"
 path = "examples/gpui_perf_lab.rs"
 
 [[example]]
+name = "nested_dirty"
+path = "examples/nested_dirty.rs"
+
+[[example]]
 name = "buffer_residency_lab"
 path = "examples/buffer_residency.rs"
 

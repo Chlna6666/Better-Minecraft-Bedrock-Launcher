@@ -1,16 +1,14 @@
 use super::*;
 
-pub(super) fn verify_pixels<D>(
-    device: &mut D,
-    resources: &RendererResources,
-    target: TextureId,
-    view: TextureViewId,
-) where
+pub(super) fn verify_pixels<D>(device: &mut D, resources: &RendererResources)
+where
     D: BackendResources + BackendPipelines + BackendPresentationCompat + TextureTransferDevice,
 {
     let extent = Extent2d::new(16, 16).expect("extent");
     let (source, source_view) = color_target(device, extent);
-    let (_, horizontal_view) = color_target(device, extent);
+    // Match production downsampling: window-sized depth cannot accompany these color targets.
+    let (_, horizontal_view) = color_target(device, Extent2d::new(8, 16).expect("X extent"));
+    let (target, view) = color_target(device, Extent2d::new(8, 8).expect("Y extent"));
     let mut pixels = [0_u8; 16 * 16 * 4];
     for y in 0..16 {
         for x in 0..16 {
@@ -71,7 +69,7 @@ pub(super) fn verify_pixels<D>(
         device
             .render_steps_to_texture_compat(
                 output,
-                resources.render_pass,
+                resources.pipelines.filter_render_pass,
                 &[RenderStepDescriptor::Draw(DrawStepDescriptor {
                     pipeline,
                     resource_sets: resource_set_list([set]),
@@ -92,13 +90,13 @@ pub(super) fn verify_pixels<D>(
             .expect("Gaussian pass");
     }
     let pixels = device.read_texture(target).expect("blur readback");
-    let center = primitives::pixel(&pixels, 8, 8)[2];
+    let center = primitives::pixel(&pixels, 3, 3)[2];
     assert!(
         center > 0 && center < 255,
         "Gaussian center is filtered: {center}"
     );
-    let horizontal = primitives::pixel(&pixels, 5, 8)[2];
-    let vertical = primitives::pixel(&pixels, 8, 5)[2];
+    let horizontal = primitives::pixel(&pixels, 2, 3)[2];
+    let vertical = primitives::pixel(&pixels, 3, 2)[2];
     assert!(horizontal > 0 && vertical > 0, "both axes spread color");
     assert!(
         horizontal.abs_diff(vertical) <= 1,

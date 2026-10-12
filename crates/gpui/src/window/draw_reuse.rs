@@ -17,6 +17,28 @@ pub(crate) struct PrepaintFragmentReplay {
 }
 
 impl Window {
+    /// Whether retained invalidation on this view's route forbids reusing the boundary.
+    pub(crate) fn retained_view_boundary_is_dirty(
+        &self,
+        view_id: EntityId,
+        retained_id: &GlobalElementId,
+    ) -> bool {
+        if !self.retained_replay_is_targeted() {
+            return false;
+        }
+        let view_path = self.rendered_frame.dispatch_tree.view_path(view_id);
+        self.invalidator
+            .retained_path_is_dirty_for_view_route(retained_id, &|owner| {
+                owner == view_id
+                    || view_path.contains(&owner)
+                    || self
+                        .rendered_frame
+                        .dispatch_tree
+                        .view_path(owner)
+                        .contains(&view_id)
+            })
+    }
+
     pub(super) fn prepaint_deferred_draws(&mut self, cx: &mut App) {
         assert_eq!(self.element_id_stack.len(), 0);
         assert_eq!(self.retained_element_id_stack.len(), 0);
@@ -1227,7 +1249,7 @@ impl Window {
         target_prepaint: &Range<PrepaintStateIndex>,
         target_paint: &Range<PaintIndex>,
     ) -> bool {
-        if !retained_metadata_range_is_valid(
+        if !retained_metadata_fragment_range_is_valid(
             source_metadata,
             self.rendered_frame.retained_element_order.len(),
         ) {

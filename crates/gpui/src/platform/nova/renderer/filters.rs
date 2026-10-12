@@ -94,6 +94,51 @@ impl FilterRegistry {
             )
     }
 
+    /// Preserve a resident identity compositor only when its immutable source
+    /// scene is identical. Structural/content changes retain the full refresh.
+    pub(super) fn local_source_damage(
+        &self,
+        index: u32,
+        current: &crate::PaintBlur,
+        animation_values: &[crate::SceneAnimationValue],
+    ) -> Option<crate::DirtyRegion> {
+        let previous = self
+            .element_blur_inputs
+            .iter()
+            .find(|source| source.index == index)?;
+        // begin_refresh marks the pending frame invalid before pass planning.
+        // The prior successful source snapshot still proves resident pixels;
+        // forced/target invalidation is handled by the caller and clears it.
+        if previous.content_version.0 == 0
+            || current.layer_id != previous.blur.layer_id
+            || current.bounds != previous.blur.bounds
+            || current.content_mask != previous.blur.content_mask
+            || current.radius != previous.blur.radius
+            || !std::sync::Arc::ptr_eq(&current.content, &previous.blur.content)
+            || !crate::Scene::capture_preserves_source_coordinates(
+                current.radius,
+                current.animation_id,
+                self.last_gpu_animation_values.iter(),
+            )
+            || !crate::Scene::capture_preserves_source_coordinates(
+                current.radius,
+                current.animation_id,
+                animation_values.iter(),
+            )
+        {
+            return None;
+        }
+        let bounds = current.bounds.intersect(&current.content_mask.bounds);
+        let mut damage = crate::DirtyRegion::empty();
+        for region in current
+            .content
+            .gpu_sample_damage(&self.last_gpu_animation_values, animation_values)
+        {
+            damage.push(region.intersect(&bounds));
+        }
+        (!damage.is_empty()).then_some(damage)
+    }
+
     pub(super) fn record_element_blur_inputs(
         &mut self,
         sources: &[(u32, crate::PaintBlur)],
@@ -216,6 +261,72 @@ mod tests {
         registry.record_element_blur_inputs(&[(4, source.clone())], &[], [4]);
         assert_ne!(registry.layer_content_version(4), Some(previous_version));
         assert!(registry.source_unchanged(4, &source, &[]));
+    }
+
+    #[test]
+    fn identity_compositor_preserves_only_unchanged_immutable_source_geometry() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(10.), crate::ScaledPixels(20.)),
+            crate::size(crate::ScaledPixels(16.), crate::ScaledPixels(16.)),
+        );
+        let mut scene = crate::Scene::default();
+        scene.insert_animated_primitive(
+            crate::Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Default::default()
+            },
+            crate::SceneAnimationId(1),
+        );
+        let sample = |progress| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        let mut source = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.),
+            opacity: 1.,
+            content: std::sync::Arc::new(scene),
+        };
+        let mut registry = FilterRegistry::new(None);
+        registry.record_element_blur_inputs(&[(1, source.clone())], &[sample(0.2)], [1]);
+        registry.record_submission(BackdropBlurQuality::Full, 0);
+        registry.last_gpu_animation_values.push(sample(0.2));
+        registry.begin_refresh();
+        assert_eq!(
+            registry
+                .local_source_damage(1, &source, &[sample(0.8)])
+                .expect("local source damage")
+                .union_bounds(),
+            Some(bounds)
+        );
+        assert!(
+            registry
+                .local_source_damage(1, &source, &[sample(0.2)])
+                .is_none()
+        );
+        source.radius = crate::ScaledPixels(8.);
+        assert!(
+            registry
+                .local_source_damage(1, &source, &[sample(0.8)])
+                .is_none()
+        );
+        source.radius = crate::ScaledPixels(0.);
+        let mut replacement = crate::Scene::default();
+        replacement.replay(0..source.content.len(), &source.content);
+        source.content = std::sync::Arc::new(replacement);
+        assert!(
+            registry
+                .local_source_damage(1, &source, &[sample(0.8)])
+                .is_none()
+        );
     }
 
     #[test]

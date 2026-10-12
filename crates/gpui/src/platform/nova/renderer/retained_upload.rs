@@ -1,15 +1,14 @@
 use super::chunk_upload::{QuadResidentLayout, QuadUploadPlan};
 
+mod color;
 mod sharing;
 use super::*;
 use std::hash::Hasher;
 use std::time::Duration;
 
-// Synthetic full-window retention is only a fallback for otherwise unfiltered
-// complex scenes. A real blur/composite already owns an independent GPU texture
-// and dirty dependency graph; wrapping it in another zero-radius ROOT doubles
-// color targets and introduces a full-surface sample on EVERY present.
-// Explicit composite_layer() is retained and continues to cache its own subtree.
+// Primitive-count retention remains a fallback for complex unfiltered scenes.
+// Small animation pages use the raster-work policy below: buffer/filter reuse
+// alone does not preserve static pixels in the final swapchain pass.
 const AUTO_RETAINED_COLOR_MIN_PRIMITIVES: usize = 384;
 
 /// Classifies *painter-order* scene content; this is not an ownership or
@@ -35,14 +34,11 @@ impl StaticForegroundPartition {
     /// extra full-screen color texture can be more expensive than direct
     /// rendering in this case.
     fn has_proven_static_majority(self) -> bool {
-        self.animated == 0
-            || self.static_prefix.saturating_mul(3) >= self.total().saturating_mul(2)
+        self.animated == 0 || self.static_prefix.saturating_mul(3) >= self.total().saturating_mul(2)
     }
 
     fn has_contiguous_static_background(self) -> bool {
-        self.static_prefix > 0
-            && self.animated > 0
-            && self.static_after_dynamic == 0
+        self.static_prefix > 0 && self.animated > 0 && self.static_after_dynamic == 0
     }
 }
 
@@ -134,7 +130,9 @@ fn auto_capture_static_background(
             crate::ScaledPixels(drawable_size.height as f32),
         ),
     );
-    let bounds = scene.bounds_for_range(0..static_prefix)?.intersect(&viewport);
+    let bounds = scene
+        .bounds_for_range(0..static_prefix)?
+        .intersect(&viewport);
     if bounds.is_empty() {
         return None;
     }
@@ -149,7 +147,9 @@ fn auto_capture_static_background(
     background.finish();
 
     let mut foreground = crate::Scene::default();
-    foreground.animation_values.extend_from_slice(&scene.animation_values);
+    foreground
+        .animation_values
+        .extend_from_slice(&scene.animation_values);
     foreground.insert_primitive(crate::PaintBlur {
         order: 0,
         animation_id: None,
@@ -176,19 +176,15 @@ fn auto_capture_static_background(
     Some(foreground)
 }
 
-fn should_retain_complex_scene_color(
-    scene: &crate::Scene,
-    summary: &FrameUploadSummary,
-) -> bool {
+fn should_retain_complex_scene_color(scene: &crate::Scene, summary: &FrameUploadSummary) -> bool {
     let primitives = summary.quad_count as usize
         + summary.shadow_count as usize
         + summary.path_sprite_count as usize
         + summary.mono_sprite_count as usize
         + summary.poly_sprite_count as usize
         + summary.underline_count as usize;
-    // Nested effect textures are already retained by the filter registry.
-    // Forcing a synthetic root over them defeats independent invalidation and
-    // makes a 48-primitive page pay for an extra full-window GPU composite.
+    // Outside the local-motion policy, retained filter textures alone do not
+    // justify another full-window color target.
     if scene.has_backdrop_blurs() || !scene.blurs.is_empty() {
         return false;
     }
@@ -599,6 +595,7 @@ mod capacity_tests {
         let mut residency = super::super::path_mask::Residency::default();
         let key = super::super::path_mask::Key {
             content: Some(token),
+            draw_plan: Some(1),
             texture_view: TextureViewId::new(1),
             target_size: Extent2d::new(64, 64).expect("extent"),
             viewport: DrawableSize {
@@ -791,16 +788,43 @@ impl NovaRenderer {
         // Display-specific text raster parameters invalidate only this CPU encode key when their
         // visual values change. Element-blur child scenes are flattened into the same static upload,
         // and retained-animation refresh recursively rebuilds only the animation-value stream.
-        let reusable = scene.revision != 0 && self.retained_upload.key == Some(key);
+        // Admission depends on presented motion, not just scene topology. A
+        // large forwards-filled layer can finish without changing the revision.
+        // Reconsider a rejected root once at completion, rather than freezing
+        // the first moving sample's decision for the scene's entire lifetime.
+        let reconsider_color = self.frame_upload.retained_root_blur.is_none()
+            && presentation_animation_values.iter().any(|current| {
+                current.progress == 1.
+                    && self.frame_upload.sampled_animation_values.iter().any(|previous| {
+                        previous.animation_id == current.animation_id
+                            && previous.property == current.property
+                            && (previous.progress != 1.
+                                || (current.property == crate::TransitionProperty::VisualState
+                                    && current.to == [0., 0., 1., 1.]
+                                    && previous.to != current.to))
+                    })
+            });
+        let reusable = scene.revision != 0
+            && self.retained_upload.key == Some(key)
+            && !reconsider_color;
+        // Once useful static window color is resident, finishing/removing a
+        // small animation does not make those cached pixels disposable.
+        let keep_retained_root = self.frame_upload.retained_root_blur.is_some()
+            && self.retained_upload.key.is_some_and(|previous| {
+                previous.size == key.size && previous.premultiplied_alpha == key.premultiplied_alpha
+            });
         // Rebuild the capture only on Scene commits. Retained animation-only
         // frames keep the already encoded recursive prefix (which owns no
         // animation samples), so their normal root value refresh is unchanged.
         // Native GPU validation is still required before enabling this
         // optimization by default across all rendering backends.
         let captured_scene = (!reusable
-            && matches!(std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref(), Ok("1")))
-            .then(|| auto_capture_static_background(scene, self.current_size))
-            .flatten();
+            && matches!(
+                std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref(),
+                Ok("1")
+            ))
+        .then(|| auto_capture_static_background(scene, self.current_size))
+        .flatten();
         let scene_to_encode = captured_scene.as_ref().unwrap_or(scene);
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
@@ -850,12 +874,26 @@ impl NovaRenderer {
                 && match std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref() {
                     Ok("1") => true,
                     Ok("0") => false,
-                    _ => should_retain_complex_scene_color(scene_to_encode, &summary),
+                    _ => keep_retained_root || color::should_retain_local_animation(
+                        scene_to_encode,
+                        self.current_size,
+                        presentation_animation_values,
+                    ) || should_retain_complex_scene_color(scene_to_encode, &summary),
                 }
             {
                 self.frame_upload
                     .append_retained_root(self.current_size, &mut summary);
             }
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI color retention result: scene_revision={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={}",
+                scene.revision,
+                self.frame_upload.retained_root_blur.is_some(),
+                keep_retained_root,
+                scene_to_encode.requires_full_redraw_fallback(),
+                self.frame_upload.renderer_extensions.len(),
+                summary.unsupported_batches.total(),
+            );
             // BeginBlur/EndBlur topology is a pure function of the static flattened batch stream.
             // Parse it once here and reuse the retained slice throughout target planning, present
             // damage and draw-step construction instead of rebuilding temporary Vecs per consumer.
@@ -954,18 +992,31 @@ mod tests {
         original.finish();
         let captured = auto_capture_static_background(
             &original,
-            DrawableSize { width: 640, height: 480 },
-        ).expect("flat page has independent static prefix");
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+        )
+        .expect("flat page has independent static prefix");
         assert_eq!(captured.blurs.len(), 1);
         assert_eq!(captured.blurs[0].radius, crate::ScaledPixels(0.0));
         assert_eq!(captured.blurs[0].content.paint_operations.len(), 100);
         assert_eq!(captured.quads.len(), 1);
-        assert_eq!(captured.quads[0].animation_id, Some(crate::SceneAnimationId(42)));
+        assert_eq!(
+            captured.quads[0].animation_id,
+            Some(crate::SceneAnimationId(42))
+        );
         assert_eq!(captured.revision, original.revision);
-        assert!(auto_capture_static_background(
-            &crate::Scene::default(),
-            DrawableSize { width: 640, height: 480 },
-        ).is_none());
+        assert!(
+            auto_capture_static_background(
+                &crate::Scene::default(),
+                DrawableSize {
+                    width: 640,
+                    height: 480
+                },
+            )
+            .is_none()
+        );
 
         // The entire cached background is independent from the dynamic
         // foreground. A change to one background quad must invalidate its
@@ -989,29 +1040,35 @@ mod tests {
         next.finish();
         let changed = auto_capture_static_background(
             &next,
-            DrawableSize { width: 640, height: 480 },
-        ).expect("changed background still eligible");
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+        )
+        .expect("changed background still eligible");
         let before = &captured.blurs[0];
         let after = &changed.blurs[0];
         assert_eq!(before.layer_id, after.layer_id);
-        assert!(!after.content.retained_filter_source_matches(
-            &before.content,
-            &[],
-            &[],
-        ));
+        assert!(
+            !after
+                .content
+                .retained_filter_source_matches(&before.content, &[], &[],)
+        );
     }
 
     #[test]
     fn painter_order_distinguishes_static_background_from_interleaved_content() {
         let mut background = crate::Scene::default();
         let mut quad = crate::Quad::default();
-        background.paint_operations.extend((0..12).map(|_| {
-            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad))
-        }));
-        quad.animation_id = Some(crate::SceneAnimationId(42));
-        background.paint_operations.push(
-            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad)),
+        background.paint_operations.extend(
+            (0..12).map(|_| crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad))),
         );
+        quad.animation_id = Some(crate::SceneAnimationId(42));
+        background
+            .paint_operations
+            .push(crate::scene::PaintOperation::Primitive(
+                crate::Primitive::Quad(quad),
+            ));
         let split = classify_static_foreground(&background);
         assert_eq!(split.static_prefix, 12);
         assert_eq!(split.animated, 1);
@@ -1021,9 +1078,7 @@ mod tests {
 
         let mut interleaved = background;
         interleaved.paint_operations.extend((0..12).map(|_| {
-            crate::scene::PaintOperation::Primitive(
-                crate::Primitive::Quad(crate::Quad::default()),
-            )
+            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(crate::Quad::default()))
         }));
         let mixed = classify_static_foreground(&interleaved);
         assert_eq!(mixed.static_after_dynamic, 12);
@@ -1036,13 +1091,13 @@ mod tests {
         let mut scene = crate::Scene::default();
         let mut quad = crate::Quad::default();
         quad.animation_id = Some(crate::SceneAnimationId(9));
-        scene.paint_operations.push(
-            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad)),
-        );
+        scene
+            .paint_operations
+            .push(crate::scene::PaintOperation::Primitive(
+                crate::Primitive::Quad(quad),
+            ));
         scene.paint_operations.extend((0..512).map(|_| {
-            crate::scene::PaintOperation::Primitive(
-                crate::Primitive::Quad(crate::Quad::default()),
-            )
+            crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(crate::Quad::default()))
         }));
         let summary = FrameUploadSummary {
             quad_count: 513,
@@ -1113,15 +1168,27 @@ mod tests {
         summary.quad_count = 47;
         summary.mono_sprite_count = 0;
         summary.backdrop_blur_count = 1;
-        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        assert!(!should_retain_complex_scene_color(
+            &scene_with_blur,
+            &summary
+        ));
         summary.backdrop_blur_count = 3;
-        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        assert!(!should_retain_complex_scene_color(
+            &scene_with_blur,
+            &summary
+        ));
         // This is a topology decision, not an additional primitive threshold:
         // even a large filtered scene reuses its real filter/layer caches.
         summary.quad_count = 500;
-        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        assert!(!should_retain_complex_scene_color(
+            &scene_with_blur,
+            &summary
+        ));
         summary.quad_count = 8;
-        assert!(!should_retain_complex_scene_color(&scene_with_blur, &summary));
+        assert!(!should_retain_complex_scene_color(
+            &scene_with_blur,
+            &summary
+        ));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StyleRefinement;
 
 fn record_draw_phase_metrics(metrics: FramePhaseMetrics) {
     record_first_frame_build_time(metrics.build);
@@ -139,6 +140,7 @@ impl Window {
     }
 
     fn begin_draw_cycle(&mut self, cx: &mut App) -> (Option<usize>, SmallVec<[EntityId; 8]>) {
+        let was_dirty = self.invalidator.is_dirty();
         let frame_budget = self.frame_throttle.frame_budget();
         self.dirty_frame_scheduled = false;
         self.draw_deadline = Some(Instant::now() + frame_budget);
@@ -164,6 +166,11 @@ impl Window {
         // Defensive: an unwound draw could leave stale frames behind.
         self.view_bounds_stack.clear();
         self.invalidator.set_dirty(false);
+        // Window-level damage without retained provenance must still execute the root.
+        // A clean draw or a targeted child update can reuse it, but an unnamed dirty edge cannot.
+        if was_dirty && !self.invalidator.active_targeted_replay() {
+            self.force_view_cache_refresh = true;
+        }
         self.requested_autoscroll = None;
         (self.restore_previous_input_handler(), directly_dirty_views)
     }
@@ -690,6 +697,12 @@ impl Window {
         self.direct_dirty_views.iter().copied().collect()
     }
 
+    /// Acknowledge a drawn frame in element tests using the real presentation path.
+    #[cfg(test)]
+    pub(crate) fn test_present(&mut self) -> PlatformFrameResult {
+        self.present()
+    }
+
     #[profiling::function]
     pub(super) fn present(&mut self) -> PlatformFrameResult {
         #[cfg(feature = "profiler")]
@@ -744,9 +757,14 @@ impl Window {
             }
         };
 
-        // Root-level selective splice must prove image/blur capture ordering before it can
-        // replace the complete structural traversal. Nested cached boundaries remain active.
-        let mut root_element = self.root.as_ref().unwrap().clone().into_any_element();
+        let mut root_element = self
+            .root
+            .as_ref()
+            .unwrap()
+            .clone()
+            .cached(StyleRefinement::default().size_full())
+            .critical()
+            .into_any_element();
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
         });

@@ -558,8 +558,50 @@ fn retained_element_filter_source_tracks_sampled_animations() {
     };
     assert!(new.retained_filter_source_matches(&old, &[sample(0.5)], &[sample(0.5)]));
     assert!(!new.retained_filter_source_matches(&old, &[sample(0.75)], &[sample(0.5)]));
-    // Missing ownership information must never lead to accidental reuse.
-    assert!(!new.retained_filter_source_matches(&old, &[], &[]));
+    // An absent GPU sample executes the retained primitive at identity.
+    assert!(new.retained_filter_source_matches(&old, &[], &[]));
+    assert!(!new.retained_filter_source_matches(&old, &[], &[sample(0.5)]));
+    assert!(new.retained_filter_source_matches(&old, &[], &[sample(1.0)]));
+}
+
+#[test]
+fn retained_filter_source_compares_all_resolved_child_tracks() {
+    // Caller-sampled ids may be registered in an ancestor Scene. The child
+    // source must compare the flattened values actually consumed by the GPU.
+    let animation_id = SceneAnimationId(7);
+    let mut scene = Scene::default();
+    let area = bounds(
+        point(ScaledPixels(0.), ScaledPixels(0.)),
+        size(ScaledPixels(16.), ScaledPixels(16.)),
+    );
+    scene.insert_animated_primitive(
+        Quad { bounds: area, content_mask: ContentMask::new(area), ..Default::default() },
+        animation_id,
+    );
+    let opacity = SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::Opacity,
+        progress: 0.5,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    let clip = |progress| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::ClipReveal,
+        progress,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    assert!(scene.retained_filter_source_matches(
+        &scene, &[opacity, clip(0.5)], &[opacity, clip(0.5)]
+    ));
+    assert!(!scene.retained_filter_source_matches(
+        &scene, &[opacity, clip(0.75)], &[opacity, clip(0.5)]
+    ));
+    let changed_opacity = SceneAnimationValue { progress: 0.75, ..opacity };
+    assert!(!scene.retained_filter_source_matches(
+        &scene, &[changed_opacity], &[opacity]
+    ));
 }
 
 #[test]
@@ -568,7 +610,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
         point(ScaledPixels(10.0), ScaledPixels(20.0)),
         size(ScaledPixels(80.0), ScaledPixels(40.0)),
     );
-    let animation_id = SceneAnimationId(1 << 31);
+    let animation_id = SceneAnimationId(7);
     let build = || {
         let mut child = Scene::default();
         child.insert_animated_primitive(
@@ -592,8 +634,6 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
         });
         outer
     };
-    let previous = build();
-    let current = build();
     let sample = |progress| SceneAnimationValue {
         animation_id,
         property: crate::TransitionProperty::Opacity,
@@ -601,11 +641,16 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
         from: [0.0; 4],
         to: [1.0, 0.0, 0.0, 0.0],
     };
+    let mut previous = build();
+    let mut current = build();
+    previous.push_animation_value(sample(0.5));
+    current.push_animation_value(sample(0.5));
     assert!(current.retained_filter_source_matches(
-        &previous, &[sample(0.5)], &[sample(0.5)]
+        &previous, &current.animation_values, &previous.animation_values
     ));
+    current.animation_values[0] = sample(0.75);
     assert!(!current.retained_filter_source_matches(
-        &previous, &[sample(0.75)], &[sample(0.5)]
+        &previous, &current.animation_values, &previous.animation_values
     ));
 }
 

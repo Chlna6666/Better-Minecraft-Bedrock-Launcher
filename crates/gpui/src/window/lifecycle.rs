@@ -503,18 +503,21 @@ impl WindowInvalidator {
         }
     }
 
-    pub(crate) fn cached_view_state_global_id(
+    /// Resolve an element path to the closest registered cache boundary of its owner.
+    /// Returns the boundary's retained id and state id without widening the dirty path.
+    pub(crate) fn cached_view_boundary(
         &self,
         entity: EntityId,
         retained_id: &GlobalElementId,
-    ) -> Option<GlobalElementId> {
+    ) -> Option<(GlobalElementId, GlobalElementId)> {
         self.inner
             .borrow()
             .cached_view_retained_targets
             .get(&entity)?
             .iter()
-            .find(|target| target.retained_id == *retained_id)
-            .map(|target| target.state_global_id.clone())
+            .filter(|target| global_element_path_is_prefix(&target.retained_id, retained_id))
+            .max_by_key(|target| target.retained_id.0.len())
+            .map(|target| (target.retained_id.clone(), target.state_global_id.clone()))
     }
 
     pub(in crate::window) fn retain_cached_view_retained_targets(
@@ -570,7 +573,7 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_elements.len()
     }
 
-    /// Returns the only active ReconcileSubtree target strictly below ancestor.
+    /// Returns the only active subtree target strictly below ancestor.
     ///
     /// Selective cached-view splice is intentionally single-target. A second matching target,
     /// unsupported invalidation scope, or route-local generic dirtiness makes the ancestor rebuild
@@ -604,7 +607,12 @@ impl WindowInvalidator {
             if !global_element_path_is_strict_prefix(ancestor, target) {
                 continue;
             }
-            if *scope != RetainedInvalidationScope::ReconcileSubtree || selected.is_some() {
+            if !matches!(
+                scope,
+                RetainedInvalidationScope::ReconcileSubtree
+                    | RetainedInvalidationScope::InvalidateSubtree
+            ) || selected.is_some()
+            {
                 return None;
             }
             selected = Some((*owner, target.clone()));
@@ -912,6 +920,34 @@ mod retained_dirty_scope_tests {
                 .map(ElementId::InstanceSlot)
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn element_completion_resolves_its_owner_cache_without_crossing_instances() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        invalidator.register_cached_view_retained_target(owner, &path(&[0, 1]), &path(&[10]));
+        invalidator.register_cached_view_retained_target(owner, &path(&[0, 2]), &path(&[20]));
+        invalidator.register_cached_view_retained_target(owner, &path(&[0, 1, 3]), &path(&[30]));
+
+        assert_eq!(
+            invalidator.cached_view_boundary(owner, &path(&[0, 1, 3, 4])),
+            Some((path(&[0, 1, 3]), path(&[30]))),
+        );
+        assert_eq!(
+            invalidator.cached_view_boundary(owner, &path(&[0, 2, 4])),
+            Some((path(&[0, 2]), path(&[20]))),
+        );
+        assert!(
+            invalidator
+                .cached_view_boundary(owner, &path(&[0, 3]))
+                .is_none()
+        );
+        assert!(
+            invalidator
+                .cached_view_boundary(EntityId::from(2), &path(&[0, 1, 4]))
+                .is_none()
+        );
     }
 
     #[test]

@@ -586,6 +586,43 @@ mod tests {
     }
 
     #[test]
+    fn scene_bound_packet_animation_ignores_viewport_timeline_damage() {
+        for property in [TransitionProperty::Opacity, TransitionProperty::HorizontalEdges] {
+            let started_at = Instant::now();
+            let element_id = GlobalElementId::from_path(&[ElementId::from("local-packet-animation")]);
+            let animation_id = SceneAnimationId(1 << 31);
+            let mut engine = AnimationEngine::new();
+            engine.start_transition(
+                &element_id, property,
+                AnimationSpec::new(Duration::from_secs(1)).ease(Easing::Linear).driver(AnimationDriver::Gpu),
+                started_at,
+            );
+            assert!(engine.bind_scene_animation(&element_id, property,
+                animation_id, [0.; 4], [1., 0., 0., 0.]));
+            assert!(engine.set_transition_bounds(&element_id, property,
+                bounds(Point::default(), size(crate::px(640.), crate::px(480.)))));
+            let local = bounds(crate::point(ScaledPixels(20.), ScaledPixels(20.)),
+                size(ScaledPixels(16.), ScaledPixels(16.)));
+            let mut scene = Scene::default();
+            scene.insert_animated_primitive(crate::Quad {
+                bounds: local, content_mask: crate::ContentMask::new(local), ..Default::default()
+            }, animation_id);
+            let mut packet = PresentationPacket::new(
+                Arc::new(scene), [], engine.presentation_timelines(), started_at, 1.,
+                DirtyRegion::empty(), BackdropBlurDamagePlan::default(), PartialPresentMode::FullRedraw,
+            );
+            for elapsed in [250, 750] {
+                packet.sample_animations(started_at + Duration::from_millis(elapsed));
+                let expected = if property == TransitionProperty::Opacity { local } else {
+                    bounds(Point::default(), size(ScaledPixels(640.), ScaledPixels(480.)))
+                };
+                assert_eq!(packet.dirty_region.union_bounds(), Some(expected));
+                packet.consume_submitted_damage();
+            }
+        }
+    }
+
+    #[test]
     fn submitted_animation_damage_does_not_accumulate_across_frames() {
         let started_at = Instant::now();
         let element_id = GlobalElementId::from_path(&[ElementId::from("blur-damage")]);
@@ -1019,6 +1056,7 @@ pub(crate) struct PresentationPacket {
     previous_presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     presentation_animation_tracks: SmallVec<[SceneAnimationValue; 4]>,
     grouped_visual_animation_ids: FxHashSet<SceneAnimationId>,
+    scene_animation_ids: FxHashSet<SceneAnimationId>,
     timeline_track_keys: FxHashSet<(SceneAnimationId, TransitionProperty)>,
     packed_visual_samples: FxHashMap<SceneAnimationId, PackedVisualSample>,
     pub(crate) presentation_animation_timelines: SmallVec<[SceneAnimationTimeline; 4]>,
@@ -1105,6 +1143,7 @@ impl PresentationPacket {
             &mut packed_visual_samples,
             &mut presentation_animation_values,
         );
+        let scene_animation_ids = scene.animation_ids();
         Self {
             window_id: 0,
             scene,
@@ -1113,6 +1152,7 @@ impl PresentationPacket {
             previous_presentation_animation_values: SmallVec::new(),
             presentation_animation_tracks,
             grouped_visual_animation_ids,
+            scene_animation_ids,
             timeline_track_keys: FxHashSet::default(),
             packed_visual_samples,
             presentation_animation_timelines,
@@ -1176,6 +1216,7 @@ impl PresentationPacket {
             .retain(|value| !timeline_track_keys.contains(&(value.animation_id, value.property)));
         let mut completion_events = SmallVec::new();
         let scale_factor = self.scale_factor;
+        let scene_animation_ids = &self.scene_animation_ids;
         let timelines = &mut self.presentation_animation_timelines;
         let tracks = &mut self.presentation_animation_tracks;
         let dirty_region = &mut self.dirty_region;
@@ -1187,7 +1228,15 @@ impl PresentationPacket {
             if let Some(completion) = sample.completion {
                 completion_events.push(completion);
             }
-            if let Some(bounds) = timeline.bounds() {
+            let (animation_id, property) = timeline.track_key();
+            let scene_damage_covers_property = scene_animation_ids.contains(&animation_id)
+                && matches!(property, TransitionProperty::Opacity | TransitionProperty::Translation
+                    | TransitionProperty::Scale | TransitionProperty::Transform
+                    | TransitionProperty::VisualState | TransitionProperty::Rotation
+                    | TransitionProperty::ClipReveal);
+            if !scene_damage_covers_property
+                && let Some(bounds) = timeline.bounds()
+            {
                 dirty_region.push(bounds.scale(scale_factor));
             }
             !sample.done
@@ -1199,6 +1248,15 @@ impl PresentationPacket {
             &mut self.packed_visual_samples,
             &mut self.presentation_animation_values,
         );
+        // Registered timeline bounds can cover a viewport for translation.
+        // Scene-bound tracks instead damage the actual old/new pixels, including
+        // nested composites and geometry entering a fixed ancestor clip.
+        for bounds in self.scene.gpu_sample_damage(
+            &self.previous_presentation_animation_values,
+            &self.presentation_animation_values,
+        ) {
+            self.dirty_region.push(bounds);
+        }
         let animation_damage = self.scene.backdrop_blur_animation_damage_plan(
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,

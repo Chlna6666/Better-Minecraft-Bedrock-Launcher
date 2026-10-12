@@ -331,6 +331,60 @@ impl Render for SelectiveCompositeRootView {
 }
 
 #[gpui::test]
+fn empty_metadata_prefix_keeps_cached_parent_reusable(cx: &mut TestAppContext) {
+    let parent_renders = Rc::new(std::cell::Cell::new(0));
+    let leaf_renders = Rc::new(std::cell::Cell::new(0));
+    let (leaf, window) = cx.update(|cx| {
+        let leaf = cx.new(|_| SelectiveLeafView {
+            renders: leaf_renders.clone(),
+            revision: 0,
+        });
+        let parent = cx.new(|_| SelectiveParentView {
+            renders: parent_renders.clone(),
+            leaf: leaf.clone(),
+        });
+        let window = cx
+            .open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| SelectiveRootView {
+                    renders: Rc::new(std::cell::Cell::new(0)),
+                    parent,
+                })
+            })
+            .unwrap();
+        (leaf, AnyWindowHandle::from(window))
+    });
+    cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+        .unwrap();
+    cx.update_window(window, |_, window, _| {
+        let prepaint = window.prepaint_index()..window.prepaint_index();
+        let paint = window.paint_index()..window.paint_index();
+        assert!(window.replay_retained_element_metadata_fragment(
+            &prepaint,
+            &paint,
+            &(0..0),
+            &prepaint,
+            &paint,
+        ));
+    })
+    .unwrap();
+    let parent_baseline = parent_renders.get();
+    let leaf_baseline = leaf_renders.get();
+
+    // The sole child has no preceding metadata. A rejected empty prefix degrades the draw,
+    // forcing the parent to rebuild on the following revision instead of retaining it.
+    for revision in 1..=4 {
+        leaf.update(cx, |leaf, cx| {
+            leaf.revision = revision;
+            cx.notify();
+        });
+        cx.update_window(window, |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        assert_eq!(parent_renders.get(), parent_baseline);
+        assert_eq!(leaf_renders.get(), leaf_baseline + revision);
+    }
+}
+
+#[gpui::test]
 fn window_root_and_nested_ancestor_skip_render_for_single_target_selective_splice(
     cx: &mut TestAppContext,
 ) {
@@ -559,13 +613,17 @@ fn window_root_renders_when_multiple_dirty_targets_prevent_selective_splice(
     assert!(root_baseline > 0 && left_baseline > 0 && right_baseline > 0);
 
     for revision in 1..=2 {
-        left.update(cx, |leaf, cx| {
-            leaf.revision = revision;
-            cx.notify();
-        });
-        right.update(cx, |leaf, cx| {
-            leaf.revision = revision;
-            cx.notify();
+        // One TestAppContext update flushes both notifications together. Updating each
+        // entity through TestAppContext separately can draw two independent single targets.
+        cx.update(|cx| {
+            left.update(cx, |leaf, cx| {
+                leaf.revision = revision;
+                cx.notify();
+            });
+            right.update(cx, |leaf, cx| {
+                leaf.revision = revision;
+                cx.notify();
+            });
         });
         cx.update_window(window, |_, window, cx| {
             window.draw(cx).clear();
@@ -881,6 +939,7 @@ fn degraded_draw_does_not_publish_discarded_cached_view_ranges(cx: &mut TestAppC
     cx.update_window(window, |_, window, cx| {
         window.draw(cx).clear();
         assert_eq!(window.rendered_frame.hitboxes.len(), 1);
+        assert!(window.test_present().is_accepted());
     })
     .unwrap();
 
@@ -1038,10 +1097,10 @@ fn reuse_on_window_refresh_cached_view_preserves_flag_through_weak_upgrade(
 }
 
 #[test]
-fn cache_boundary_is_separate_from_plain_view_element() {
+fn reactive_and_cached_views_own_frame_local_metadata() {
     assert_eq!(
         <ViewElement as Element>::RETAINED_REPLAY_CAPABILITY,
-        crate::RetainedReplayCapability::Normal,
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
     );
     assert_eq!(
         <CachedView as Element>::RETAINED_REPLAY_CAPABILITY,

@@ -14,6 +14,14 @@ pub(super) fn create_renderer_pipelines<D>(
 where
     D: BackendResources + BackendPipelines,
 {
+    // Gaussian targets can be downsampled independently of the window-sized depth buffer.
+    let filter_render_pass = device.create_render_pass(&RenderPassDescriptor {
+        label: Some(format!("{label} filter render pass")),
+        color_attachment: ColorAttachmentDescriptor {
+            format: surface_config.format,
+        },
+        depth_attachment: None,
+    })?;
     let alpha = create_blend_pipelines(
         device,
         BlendPipelineDescriptor {
@@ -97,7 +105,7 @@ where
                 fragment_shader: shaders.backdrop_blur_downsample_fragment,
                 fragment_entry_point: "fs_backdrop_blur_downsample".to_string(),
                 vertex_buffers: Vec::new(),
-                render_pass,
+                render_pass: filter_render_pass,
                 pipeline_layout: Some(layouts.backdrop_blur_pass_pipeline_layout),
                 color_format: surface_config.format,
                 blend_mode: BlendMode::Replace,
@@ -116,7 +124,7 @@ where
                 fragment_shader: shaders.backdrop_blur_upsample_fragment,
                 fragment_entry_point: "fs_backdrop_blur_upsample".to_string(),
                 vertex_buffers: Vec::new(),
-                render_pass,
+                render_pass: filter_render_pass,
                 pipeline_layout: Some(layouts.backdrop_blur_pass_pipeline_layout),
                 color_format: surface_config.format,
                 blend_mode: BlendMode::Replace,
@@ -184,6 +192,7 @@ where
         )
         .context("creating nova path render pipeline")?;
     Ok(Pipelines {
+        filter_render_pass,
         alpha,
         premultiplied,
         path_rasterization,

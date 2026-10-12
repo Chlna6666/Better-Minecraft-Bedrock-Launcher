@@ -1906,11 +1906,13 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let pipelines = test_pipelines();
     let config = test_backdrop_blur_config(2, 3);
     let targets = BackdropBlurTargets {
-        source: RenderTarget {
+        active_variant_count: 1,
+        retained_root_variant: None,
+        source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
-        },
+        }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
         shared_horizontal_scratch: false,
@@ -1985,18 +1987,30 @@ fn shared_gaussian_horizontal_scratch_accounts_for_one_physical_allocation() {
         levels: vec![make_level(2, 1024), make_level(4, 512)],
         target_resource_sets: vec![test_resource_set_id(22)],
     };
-    let targets = BackdropBlurTargets {
-        source: RenderTarget {
+    let mut targets = BackdropBlurTargets {
+        active_variant_count: 2,
+        retained_root_variant: None,
+        source: Some(RenderTarget {
             byte_size: 2048,
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
-        },
-        source_pass_resource_sets: vec![],
+        }),
+        source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: vec![],
         variants: vec![first, second],
         shared_horizontal_scratch: true,
     };
     assert_eq!(targets.byte_size(), 2048 + 1024 + 512 + 512);
+    let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
+    assert!(targets.is_layout_compatible(&configs, &[], true));
+    assert!(!targets.is_layout_compatible(&configs, &[], false));
+    let source = targets.source.take();
+    let source_sets = std::mem::take(&mut targets.source_pass_resource_sets);
+    assert_eq!(targets.byte_size(), 1024 + 512 + 512);
+    assert!(targets.is_layout_compatible(&configs, &[], false));
+    assert!(!targets.is_layout_compatible(&configs, &[], true));
+    targets.source = source;
+    targets.source_pass_resource_sets = source_sets;
     assert_eq!(targets.variants[0].levels[0].texture, targets.variants[1].levels[0].texture);
     assert_ne!(targets.variants[0].levels[1].texture, targets.variants[1].levels[1].texture);
 
@@ -2019,11 +2033,13 @@ fn shared_gaussian_horizontal_scratch_accounts_for_one_physical_allocation() {
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
-        source: RenderTarget {
+        active_variant_count: 0,
+        retained_root_variant: None,
+        source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),
             texture_view: test_texture_view_id(1),
-        },
+        }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
         shared_horizontal_scratch: false,
@@ -3264,12 +3280,14 @@ fn test_blend_pipelines(base: u32) -> BlendPipelines {
 
 fn test_pipelines() -> Pipelines {
     Pipelines {
+        filter_render_pass: RenderPassId::from_parts(1, 1),
         alpha: test_blend_pipelines(0),
         premultiplied: test_blend_pipelines(100),
         path_rasterization: test_render_pipeline_id(4),
         paths: test_render_pipeline_id(5),
         backdrop_blur_downsample: test_render_pipeline_id(6),
         backdrop_blur_upsample: test_render_pipeline_id(7),
+        retained_clear: test_render_pipeline_id(8),
     }
 }
 

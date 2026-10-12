@@ -23,6 +23,8 @@ macro_rules! device {
 }
 
 mod chunks;
+mod reactive;
+mod retained_color;
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]

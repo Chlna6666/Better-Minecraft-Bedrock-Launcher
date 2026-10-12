@@ -443,6 +443,7 @@ pub(super) fn backdrop_blur_render_passes_for_targets_into(
     let configs: Vec<_> = targets
         .variants
         .iter()
+        .take(targets.active_variant_count)
         .map(|variant| variant.config)
         .collect();
     backdrop_blur_render_passes_for_configs_into(
@@ -494,6 +495,7 @@ pub(super) fn backdrop_blur_render_passes_for_configs_with_source_into(
         let Some((variant_index, variant)) = targets
             .variants
             .iter()
+            .take(targets.active_variant_count)
             .enumerate()
             .find(|(_, variant)| variant.config == *config)
         else {

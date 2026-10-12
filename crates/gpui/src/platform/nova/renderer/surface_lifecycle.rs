@@ -708,6 +708,7 @@ impl NovaRenderer {
             size,
             format: self.surface_format,
             configs: self.frame_upload.backdrop_blur_configs().to_vec(),
+            needs_root_source: super::present::has_root_backdrop_blurs(&self.frame_upload),
             isolated_source_indices,
             pass_resource_set_layout: self.backdrop_blur_pass_resource_set_layout,
             blur_resource_set_layout: self.backdrop_blur_resource_set_layout,

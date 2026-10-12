@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+mod damage_tests;
 
 const BLUR_ORDER_OFFSET: usize = 0;
 const BLUR_DOWNSAMPLE_OFFSET: usize = 4;

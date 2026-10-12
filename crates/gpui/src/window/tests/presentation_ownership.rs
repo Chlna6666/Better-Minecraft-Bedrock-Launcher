@@ -1,4 +1,20 @@
 use super::*;
+use crate::Styled;
+
+struct NativeFiniteView;
+
+impl Render for NativeFiniteView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::div()
+            .size(px(10.))
+            .bg(crate::white())
+            .with_visual_animation(
+                "native-owned-opacity",
+                Animation::new(Duration::ZERO).with_opacity(0.0, 1.0),
+            )
+            .expect("opacity is a presentation property")
+    }
+}
 
 fn start_finite_scene_animation(window: &mut Window) -> crate::SceneAnimationCompletion {
     window.start_scene_animation(
@@ -43,12 +59,25 @@ fn native_owner_ticks_ui_animation_without_querying_active_scene(cx: &mut TestAp
 
 #[gpui::test]
 fn native_owner_keeps_pending_scene_animation_until_completion_ack(cx: &mut TestAppContext) {
-    let window = cx.add_empty_window();
+    // The timeline must be live in the committed scene. An engine-only track on an
+    // empty scene is correctly pruned by the next UI commit before a native ACK.
+    let (_, window) = cx.add_window_view(|window, _| {
+        window
+            .platform_window
+            .as_test()
+            .unwrap()
+            .set_scene_animation_owner(true);
+        NativeFiniteView
+    });
     let (test_window, completion) = window.update(|window, _cx| {
         let test_window = window.platform_window.as_test().unwrap().clone();
-        test_window.set_scene_animation_owner(true);
+        assert!(window.test_present().is_accepted());
         test_window.set_frame_result(PlatformFrameResult::Queued);
-        let completion = start_finite_scene_animation(window);
+        let completion = window.animation_engine.borrow().presentation_timelines()[0]
+            .clone()
+            .sample_at(window.animation_time())
+            .completion
+            .expect("the committed finite track has a completion token");
         (test_window, completion)
     });
     test_window.simulate_request_frame(PlatformFrameRequest::animation_tick());

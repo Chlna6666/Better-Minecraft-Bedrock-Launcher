@@ -547,12 +547,14 @@ impl Scene {
     /// Window damage is NOT element-filter input damage: an unrelated overlay
     /// above the filter can intersect its output rectangle without changing any
     /// of its captured pixels. Compare the captured painter operations instead.
-    /// Unknown/dynamic animation ownership always takes the safe refresh path.
+    /// Samples must be the complete resolved set consumed by the GPU, including
+    /// caller-sampled values registered in ancestor scenes. Missing samples
+    /// execute at identity; every property track participates in this proof.
     pub(crate) fn retained_filter_source_matches(
         &self,
         previous: &Self,
-        presentation_values: &[SceneAnimationValue],
-        previous_presentation_values: &[SceneAnimationValue],
+        animation_values: &[SceneAnimationValue],
+        previous_animation_values: &[SceneAnimationValue],
     ) -> bool {
         if self.paint_operations.len() != previous.paint_operations.len() {
             return false;
@@ -572,8 +574,8 @@ impl Scene {
             ) = (current, old)
                 && !current_blur.content.retained_filter_source_matches(
                     &previous_blur.content,
-                    presentation_values,
-                    previous_presentation_values,
+                    animation_values,
+                    previous_animation_values,
                 )
             {
                 return false;
@@ -584,9 +586,14 @@ impl Scene {
                 PaintOperation::StartLayer(_) | PaintOperation::EndLayer | PaintOperation::EndBlur => None,
             };
             let Some(animation_id) = animation_id else { continue };
-            let current_value = animation_value_for(self, animation_id, presentation_values);
-            let previous_value = animation_value_for(previous, animation_id, previous_presentation_values);
-            if current_value.is_none() || previous_value.is_none() || current_value != previous_value {
+            let mut current_values = animation_values.iter()
+                .filter(|value| value.animation_id == animation_id);
+            let mut previous_values = previous_animation_values.iter()
+                .filter(|value| value.animation_id == animation_id);
+            if !current_values.clone().eq(previous_values.clone())
+                && !(current_values.all(Self::animation_sample_is_identity)
+                    && previous_values.all(Self::animation_sample_is_identity))
+            {
                 return false;
             }
         }
@@ -642,12 +649,17 @@ impl Scene {
         plan
     }
 
-    /// Compare the animation values actually consumed by successive GPU
-    /// submissions. This also includes Scene-local animation samples which
-    /// are NOT represented by the engine-owned presentation-value list.
-    ///
-    /// Scene/Buffer reuse does not imply pixel reuse: an indexed GPU animation
-    /// may change its shader parameters while producing no UI invalidation.
+    /// Resolves visible geometry with the same fixed-mask translation as the GPU.
+    pub(crate) fn sampled_primitive_bounds<'a>(
+        primitive: &Primitive,
+        values: impl IntoIterator<Item = &'a SceneAnimationValue>,
+    ) -> Bounds<ScaledPixels> {
+        let value = values.into_iter().find(|value| Some(value.animation_id) == primitive.animation_id());
+        animation_sampled_bounds(primitive, value)
+    }
+
+    /// Compares consumed GPU samples, including Scene-local animation values.
+    /// Retaining buffers does not imply that the pixels are unchanged.
     pub(crate) fn gpu_sample_damage(
         &self,
         previous: &[SceneAnimationValue],
@@ -671,7 +683,13 @@ impl Scene {
             if let Some(animation_id) = animation_id {
                 let last = previous.iter().find(|v| v.animation_id == animation_id);
                 let now = current.iter().find(|v| v.animation_id == animation_id);
-                if last != now {
+                if previous.iter().filter(|value| value.animation_id == animation_id)
+                    .ne(current.iter().filter(|value| value.animation_id == animation_id))
+                    && !(previous.iter().filter(|value| value.animation_id == animation_id)
+                        .all(Self::animation_sample_is_identity)
+                        && current.iter().filter(|value| value.animation_id == animation_id)
+                            .all(Self::animation_sample_is_identity))
+                {
                     let bounds = match operation {
                         PaintOperation::Primitive(primitive) => {
                             animation_sampled_bounds(primitive, last)
@@ -690,8 +708,15 @@ impl Scene {
                 }
             }
             if let PaintOperation::Primitive(Primitive::Blur(blur)) = operation {
-                if !blur.content.gpu_sample_damage(previous, current).is_empty() {
-                    let bounds = blur.bounds.intersect(&blur.content_mask.bounds);
+                let child_damage = blur.content.gpu_sample_damage(previous, current);
+                let local = Self::capture_preserves_source_coordinates(
+                    blur.radius, blur.animation_id, previous.iter(),
+                ) && Self::capture_preserves_source_coordinates(
+                    blur.radius, blur.animation_id, current.iter(),
+                );
+                for region in child_damage {
+                    let output = blur.bounds.intersect(&blur.content_mask.bounds);
+                    let bounds = if local { region.intersect(&output) } else { output };
                     if !bounds.is_empty() {
                         damage.push(bounds);
                         changed_operations.push(index);
@@ -701,6 +726,15 @@ impl Scene {
         }
         if !changed_operations.is_empty() {
             self.for_each_element_blur_group(|range, bounds| {
+                if let PaintOperation::StartBlur(capture) = &self.paint_operations[range.start]
+                    && Self::capture_preserves_source_coordinates(
+                        capture.radius, capture.animation_id, previous.iter(),
+                    ) && Self::capture_preserves_source_coordinates(
+                        capture.radius, capture.animation_id, current.iter(),
+                    )
+                {
+                    return;
+                }
                 if changed_operations.iter().any(|index| range.contains(index))
                     && !bounds.is_empty()
                 {
@@ -727,61 +761,7 @@ impl Scene {
         previous_values: &[SceneAnimationValue],
         current_values: &[SceneAnimationValue],
     ) -> SmallVec<[Bounds<ScaledPixels>; 8]> {
-        let mut output = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
-        let mut changed_operations = SmallVec::<[usize; 8]>::new();
-        for (index, operation) in self.paint_operations.iter().enumerate() {
-            let animation_id = match operation {
-                PaintOperation::Primitive(primitive) => primitive.animation_id(),
-                PaintOperation::StartBlur(blur) => blur.animation_id,
-                PaintOperation::StartLayer(_)
-                | PaintOperation::EndLayer
-                | PaintOperation::EndBlur => None,
-            };
-            if !animation_value_changed(
-                self,
-                self,
-                animation_id,
-                current_values,
-                previous_values,
-            ) {
-                continue;
-            }
-            let bounds = match operation {
-                PaintOperation::Primitive(primitive) => animation_swept_bounds(
-                    self,
-                    self,
-                    primitive,
-                    current_values,
-                    previous_values,
-                ),
-                PaintOperation::StartBlur(blur) => blur_capture_animation_swept_bounds(
-                    self,
-                    self,
-                    blur,
-                    current_values,
-                    previous_values,
-                ),
-                PaintOperation::StartLayer(_)
-                | PaintOperation::EndLayer
-                | PaintOperation::EndBlur => continue,
-            };
-            if !bounds.is_empty() {
-                output.push(bounds);
-                changed_operations.push(index);
-            }
-        }
-        if !changed_operations.is_empty() {
-            self.for_each_element_blur_group(|range, bounds| {
-                if changed_operations
-                    .iter()
-                    .any(|index| range.start <= *index && *index < range.end)
-                    && !bounds.is_empty()
-                {
-                    output.push(bounds);
-                }
-            });
-        }
-        output
+        self.gpu_sample_damage(previous_values, current_values)
     }
 
     /// Computes per-backdrop source damage for an animation-only retained-scene frame.
@@ -1189,9 +1169,7 @@ impl Scene {
     }
 
     fn order_for_primitive(&mut self, primitive: &Primitive) -> Option<DrawOrder> {
-        let clipped_bounds = primitive
-            .bounds()
-            .intersect(&primitive.content_mask().bounds);
+        let clipped_bounds = Self::ordering_bounds(primitive);
 
         if clipped_bounds.is_empty() {
             return None;
@@ -1203,6 +1181,17 @@ impl Scene {
                 .copied()
                 .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds)),
         )
+    }
+
+    fn ordering_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
+        // A retained animation can move geometry into its fixed clip after paint.
+        // Reserve ordering across that clip so replay cannot discard the primitive
+        // or reorder static siblings when the presentation sample changes.
+        if primitive.animation_id().is_some() {
+            primitive.content_mask().bounds
+        } else {
+            primitive.bounds().intersect(&primitive.content_mask().bounds)
+        }
     }
 
     fn push_ordered_primitive(
@@ -1267,9 +1256,7 @@ impl Scene {
         // the current layer and invalidate the remainder of this retained prefix.
         let retain_order = retain_order && !self.retained_prefix_invalid;
         let order = if retain_order {
-            let clipped_bounds = primitive
-                .bounds()
-                .intersect(&primitive.content_mask().bounds);
+            let clipped_bounds = Self::ordering_bounds(primitive);
             if clipped_bounds.is_empty() {
                 return;
             }
@@ -2191,6 +2178,21 @@ fn animation_sampled_bounds(
         return primitive.visual_bounds();
     };
     let sampled = sampled_animation_components(value);
+    if matches!(value.property, TransitionProperty::Translation | TransitionProperty::VisualState)
+        && matches!(primitive, Primitive::Quad(_) | Primitive::Shadow(_)
+            | Primitive::MonochromeSprite(_) | Primitive::PolychromeSprite(_)
+            | Primitive::BackdropBlur(_))
+    {
+        let mut translated = primitive.unclipped_visual_bounds();
+        let mut mask = primitive.content_mask().bounds;
+        if value.property == TransitionProperty::VisualState {
+            let center = primitive.bounds().center();
+            translated = scaled_animation_bounds(translated, sampled[2], center);
+            mask = scaled_animation_bounds(mask, sampled[2], center);
+        }
+        translated.origin += crate::point(ScaledPixels(sampled[0]), ScaledPixels(sampled[1]));
+        return translated.intersect(&mask);
+    }
     let bounds = primitive.visual_bounds();
     match value.property {
         TransitionProperty::Translation
@@ -2427,6 +2429,126 @@ mod tests {
     }
 
     #[test]
+    fn translated_geometry_entering_a_fixed_clip_marks_visible_pixels() {
+        let clip = Bounds::new(crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(100.), ScaledPixels(100.)));
+        let mut scene = Scene::default();
+        let animation_id = SceneAnimationId(1 << 31);
+        scene.insert_animated_primitive(Quad {
+            bounds: Bounds::new(crate::point(ScaledPixels(-20.), ScaledPixels(20.)),
+                crate::size(ScaledPixels(16.), ScaledPixels(16.))),
+            content_mask: crate::ContentMask::new(clip), ..Default::default()
+        }, animation_id);
+        let value = |progress| SceneAnimationValue {
+            animation_id, property: TransitionProperty::Translation, progress,
+            from: [0.; 4], to: [40., 0., 0., 0.],
+        };
+        let visible = Bounds::new(crate::point(ScaledPixels(20.), ScaledPixels(20.)),
+            crate::size(ScaledPixels(16.), ScaledPixels(16.)));
+        let mut replayed = Scene::default();
+        replayed.replay(0..scene.len(), &scene);
+        for retained in [&scene, &replayed] {
+            for property in [TransitionProperty::Translation, TransitionProperty::VisualState] {
+                let sample = |progress| {
+                    let mut sample = value(progress);
+                    sample.property = property;
+                    if property == TransitionProperty::VisualState {
+                        sample.from = [0., 0., 1., 1.];
+                        sample.to = [40., 0., 1., 1.];
+                    }
+                    sample
+                };
+                let dirty = retained.gpu_sample_damage(&[sample(0.)], &[sample(1.)]);
+                assert!(!dirty.is_empty());
+                assert!(dirty.iter().any(|region| region.intersect(&visible) == visible));
+                assert!(dirty.iter().all(|region| region.intersect(&clip) == *region));
+            }
+        }
+    }
+
+    #[test]
+    fn zero_radius_nested_child_keeps_parent_damage_local() {
+        let child_bounds = Bounds::new(
+            crate::point(ScaledPixels(10.), ScaledPixels(20.)),
+            crate::size(ScaledPixels(40.), ScaledPixels(20.)),
+        );
+        let parent_bounds = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(640.), ScaledPixels(480.)),
+        );
+        let child_id = SceneAnimationId(1 << 31);
+        let parent_id = SceneAnimationId((1 << 31) + 1);
+        let mut scene = Scene::default();
+        scene.begin_blur(BlurCapture {
+            animation_id: Some(parent_id),
+            layer_id: None,
+            bounds: parent_bounds,
+            content_mask: crate::ContentMask::new(parent_bounds),
+            radius: ScaledPixels(0.),
+            opacity: 1.,
+        });
+        scene.insert_primitive(Quad {
+            bounds: parent_bounds,
+            content_mask: crate::ContentMask::new(parent_bounds),
+            ..Default::default()
+        });
+        scene.insert_animated_primitive(Quad {
+            bounds: child_bounds,
+            content_mask: crate::ContentMask::new(child_bounds),
+            ..Default::default()
+        }, child_id);
+        scene.end_blur();
+        let child = |progress| SceneAnimationValue {
+            animation_id: child_id,
+            property: TransitionProperty::Opacity,
+            progress,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        let parent = SceneAnimationValue {
+            animation_id: parent_id,
+            property: TransitionProperty::Translation,
+            progress: 1.,
+            from: [10., 0., 0., 0.],
+            to: [0.; 4],
+        };
+        let dirty = scene.gpu_sample_damage(&[child(0.1), parent], &[child(0.9), parent]);
+        assert!(!dirty.is_empty());
+        assert!(dirty.iter().all(|region| child_bounds.intersect(region) == *region),
+            "a local child update must not invalidate the whole zero-radius parent");
+    }
+
+    #[test]
+    fn retired_identity_parent_sample_does_not_damage_static_capture() {
+        let bounds = Bounds::new(crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(640.), ScaledPixels(480.)));
+        let child = Bounds::new(crate::point(ScaledPixels(20.), ScaledPixels(20.)),
+            crate::size(ScaledPixels(16.), ScaledPixels(16.)));
+        let mut scene = Scene::default();
+        scene.begin_blur(BlurCapture {
+            animation_id: Some(SceneAnimationId(2)), layer_id: None, bounds,
+            content_mask: crate::ContentMask::new(bounds), radius: ScaledPixels(0.), opacity: 1.,
+        });
+        scene.insert_primitive(Quad { bounds, content_mask: crate::ContentMask::new(bounds),
+            ..Default::default() });
+        scene.insert_animated_primitive(Quad { bounds: child,
+            content_mask: crate::ContentMask::new(bounds), ..Default::default() }, SceneAnimationId(1));
+        scene.end_blur();
+        let value = |progress| SceneAnimationValue {
+            animation_id: SceneAnimationId(1), property: TransitionProperty::Opacity,
+            progress, from: [0.; 4], to: [1., 0., 0., 0.],
+        };
+        let identity = SceneAnimationValue {
+            animation_id: SceneAnimationId(2), property: TransitionProperty::Translation,
+            progress: 1., from: [10., 0., 0., 0.], to: [0.; 4],
+        };
+        let damage = scene.gpu_sample_damage(&[value(0.2), identity], &[value(0.8)]);
+        assert!(!damage.is_empty());
+        assert!(damage.iter().all(|region| region.intersect(&child) == *region),
+            "retiring an identity sample must not repaint a static ancestor: {damage:?}");
+    }
+
+    #[test]
     fn gpu_resident_nested_blur_child_invalidates_parent_color_output() {
         let bounds = Bounds::new(
             crate::point(ScaledPixels(10.0), ScaledPixels(20.0)),
@@ -2446,6 +2568,7 @@ mod tests {
         parent.insert_primitive(PaintBlur {
             order: 0,
             animation_id: None,
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: ScaledPixels(8.0),
@@ -2502,7 +2625,9 @@ mod tests {
         scene.insert_animated_primitive(
             Quad {
                 bounds,
-                content_mask: crate::ContentMask::new(bounds),
+                content_mask: crate::ContentMask::new(Bounds::new(
+                    bounds.origin, crate::size(ScaledPixels(120.), ScaledPixels(20.)),
+                )),
                 ..Default::default()
             },
             animation_id,

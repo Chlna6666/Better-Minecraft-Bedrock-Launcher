@@ -43,6 +43,7 @@ fn render_backdrop_blur_groups<D>(
     device: &mut D,
     source_texture_view: TextureViewId,
     render_pass: RenderPassId,
+    filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
     groups: &[PreparedBackdropBlurGroup],
 ) -> Result<()>
@@ -85,10 +86,6 @@ where
                 depth_attachment: Some(source_depth_attachment),
             });
         }
-        let filter_depth_attachment = RenderPassDepthAttachment {
-            target: depth_attachment.target,
-            depth_load_op: LoadOp::Load,
-        };
         let filter_load_op = if group.preserve_filtered_pixels {
             LoadOp::Load
         } else {
@@ -97,11 +94,11 @@ where
         for pass in &group.filter_passes {
             passes.push(gfx_core::TextureRenderStepList {
                 texture_view: pass.target_texture_view,
-                render_pass,
+                render_pass: filter_render_pass,
                 steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 color_load_op: filter_load_op,
                 clear_region: None,
-                depth_attachment: Some(filter_depth_attachment),
+                depth_attachment: None,
             });
         }
     }
@@ -117,12 +114,25 @@ fn source_pass_required(first: bool, preserved: bool, has_steps: bool) -> bool {
 fn render_element_blur_layers<D>(
     device: &mut D,
     render_pass: RenderPassId,
+    filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
     layers: &[PreparedElementBlurLayer],
 ) -> Result<()>
 where
     D: BackendPresentationCompat,
 {
+    let passes = element_blur_passes(render_pass, filter_render_pass, depth_attachment, layers);
+    Ok(device.render_step_lists_to_textures_compat(&passes)?)
+}
+
+/// Builds the actual attachment descriptors submitted to the backend. Source
+/// draws in every group share the first group's initialized depth footprint.
+pub(super) fn element_blur_passes(
+    render_pass: RenderPassId,
+    filter_render_pass: RenderPassId,
+    depth_attachment: RenderPassDepthAttachment,
+    layers: &[PreparedElementBlurLayer],
+) -> Vec<gfx_core::TextureRenderStepList<'_>> {
     let pass_count = layers
         .iter()
         .map(|layer| {
@@ -143,10 +153,6 @@ where
         .sum();
     let mut passes = Vec::with_capacity(pass_count);
     for layer in layers {
-        let filter_depth_attachment = RenderPassDepthAttachment {
-            target: depth_attachment.target,
-            depth_load_op: LoadOp::Load,
-        };
         for (group_index, group) in layer.source_groups.iter().enumerate() {
             let source_depth_attachment = RenderPassDepthAttachment {
                 target: depth_attachment.target,
@@ -170,7 +176,9 @@ where
                     } else {
                         LoadOp::Load
                     },
-                    clear_region: if group_index == 0 && !layer.preserve_retained_source {
+                    // Preserved color loads, but depth still clears. Restrict
+                    // that clear to the same footprint as every source draw.
+                    clear_region: if group_index == 0 {
                         group.source_clear_region
                     } else {
                         None
@@ -186,11 +194,11 @@ where
             for pass in &group.filter_passes {
                 passes.push(gfx_core::TextureRenderStepList {
                     texture_view: pass.target_texture_view,
-                    render_pass,
+                    render_pass: filter_render_pass,
                     steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                     color_load_op: filter_load_op,
                     clear_region: None,
-                    depth_attachment: Some(filter_depth_attachment),
+                    depth_attachment: None,
                 });
             }
         }
@@ -202,21 +210,22 @@ where
         for pass in &layer.filter_passes {
             passes.push(gfx_core::TextureRenderStepList {
                 texture_view: pass.target_texture_view,
-                render_pass,
+                render_pass: filter_render_pass,
                 steps: RenderStepList::from_draw_steps(std::slice::from_ref(&pass.step)),
                 color_load_op: filter_load_op,
                 clear_region: None,
-                depth_attachment: Some(filter_depth_attachment),
+                depth_attachment: None,
             });
         }
     }
-    Ok(device.render_step_lists_to_textures_compat(&passes)?)
+    passes
 }
 
 fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
     device: &mut D,
     graph: &FrameGraphPlan,
     render_pass: RenderPassId,
+    filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
     path_texture_view: TextureViewId,
     path_steps: &[DrawStepDescriptor],
@@ -240,6 +249,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
             GraphPass::ElementLayers => render_element_blur_layers(
                 device,
                 render_pass,
+                filter_render_pass,
                 depth_attachment,
                 element_layers,
             )?,
@@ -249,6 +259,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
                         device,
                         source_texture_view,
                         render_pass,
+                        filter_render_pass,
                         depth_attachment,
                         backdrop_groups,
                     )?;
@@ -260,7 +271,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
     Ok(())
 }
 
-fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
+pub(super) fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
     let mut element_depth = 0usize;
     for batch in &frame_upload.batches {
         match batch {
@@ -553,7 +564,7 @@ impl NovaRenderer {
             &self.frame_upload,
             &packet.dirty_region,
             &self.filters,
-            &packet.presentation_animation_values,
+            &self.frame_upload.sampled_animation_values,
             shared_blur_cache_invalid,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
@@ -852,13 +863,14 @@ impl NovaRenderer {
 
         let depth_attachment = self.depth_attachment();
         let frame_buffers = self.frame_buffer_targets();
-        let backdrop_blur_source_texture_view = if has_backdrop_blurs {
+        let backdrop_blur_source_texture_view = if has_root_backdrop_blurs {
             Some(
                 self.filters
                     .targets
                     .as_ref()
                     .context("missing nova backdrop blur targets")?
                     .source
+                    .context("missing nova root backdrop source")?
                     .texture_view,
             )
         } else {
@@ -917,6 +929,7 @@ impl NovaRenderer {
                         device,
                         &graph,
                         self.render_pass,
+                        self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
                         self.draw_step_scratch.path_steps(),
@@ -1025,6 +1038,7 @@ impl NovaRenderer {
                         device,
                         &graph,
                         self.render_pass,
+                        self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
                         self.draw_step_scratch.path_steps(),
@@ -1133,6 +1147,7 @@ impl NovaRenderer {
                         device,
                         &graph,
                         self.render_pass,
+                        self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
                         self.draw_step_scratch.path_steps(),
@@ -1228,6 +1243,7 @@ impl NovaRenderer {
                         device,
                         &graph,
                         self.render_pass,
+                        self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
                         self.draw_step_scratch.path_steps(),
@@ -1311,6 +1327,7 @@ impl NovaRenderer {
                         device,
                         &graph,
                         self.render_pass,
+                        self.pipelines.filter_render_pass,
                         depth_attachment,
                         self.path_texture_view,
                         self.draw_step_scratch.path_steps(),
@@ -1462,7 +1479,7 @@ impl NovaRenderer {
                 .extend_from_slice(&self.frame_upload.sampled_animation_values);
             self.filters.record_element_blur_inputs(
                 &self.frame_upload.element_blur_inputs,
-                &packet.presentation_animation_values,
+                &self.frame_upload.sampled_animation_values,
                 element_blur_layers.iter().map(|layer| layer.index),
             );
             self.filters
@@ -1587,7 +1604,10 @@ impl NovaRenderer {
 
 #[cfg(test)]
 mod per_layer_damage_tests {
-    use super::*;
+    use super::{
+        BlurContentRange, FilterRegistry, FrameUpload, UploadedBatch, dirty_element_blur_indices,
+        has_root_backdrop_blurs, source_pass_required,
+    };
 
     #[test]
     fn isolated_source_damage_does_not_depend_on_window_damage() {
@@ -1629,7 +1649,27 @@ mod per_layer_damage_tests {
 
 #[cfg(test)]
 mod root_cached_source_pass_tests {
-    use super::source_pass_required;
+    use super::*;
+
+    #[test]
+    fn shared_source_is_required_only_for_root_backdrops() {
+        let mut frame = FrameUpload::default();
+        assert!(!has_root_backdrop_blurs(&frame));
+        frame.batches.push(UploadedBatch::BeginBlur { index: 0 });
+        frame
+            .batches
+            .push(UploadedBatch::BackdropBlurs { first: 1, count: 1 });
+        assert!(
+            !has_root_backdrop_blurs(&frame),
+            "nested backdrops use the element source"
+        );
+        frame.batches.push(UploadedBatch::EndBlur { index: 0 });
+        assert!(!has_root_backdrop_blurs(&frame));
+        frame
+            .batches
+            .push(UploadedBatch::BackdropBlurs { first: 2, count: 1 });
+        assert!(has_root_backdrop_blurs(&frame));
+    }
 
     #[test]
     fn retained_root_without_new_pixels_does_not_submit_an_empty_load_pass() {

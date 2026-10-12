@@ -22,6 +22,7 @@ impl BackdropBlurTargets {
         let variant = self
             .variants
             .iter()
+            .take(self.active_variant_count)
             .find(|variant| variant.config.covers(config))?;
         let target = variant.levels.last()?;
         let source_resource_set = target

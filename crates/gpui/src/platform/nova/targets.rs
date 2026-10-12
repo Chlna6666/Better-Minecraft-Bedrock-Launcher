@@ -1,5 +1,7 @@
 use super::*;
 
+mod layout;
+
 #[derive(Clone)]
 pub(super) struct PathMaskTarget {
     pub(super) texture: TextureId,
@@ -17,13 +19,17 @@ pub(super) struct PathMaskTargetDescriptor {
 
 #[derive(Clone)]
 pub(super) struct BackdropBlurTargets {
-    /// Shared accumulated scene color used as the ordered backdrop source.
-    pub(super) source: RenderTarget,
+    /// Shared scene color for root backdrop barriers; absent for isolated-only captures.
+    pub(super) source: Option<RenderTarget>,
     pub(super) source_pass_resource_sets: Vec<ResourceSetId>,
     /// Per-element sources. Each CSS blur group starts from a clean attachment so one group's
     /// content can never become the backdrop source of a sibling group.
     pub(super) isolated_sources: Vec<IsolatedBlurSource>,
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
+    /// Live prefix; spare popup targets remain allocated until the chain is replaced or trimmed.
+    pub(super) active_variant_count: usize,
+    /// The window-color target follows its role when popup slots appear/disappear.
+    pub(super) retained_root_variant: Option<usize>,
     /// Multiple Gaussian variants reuse the same actual horizontal scratch texture.
     /// Final retained textures and source targets are never aliased.
     pub(super) shared_horizontal_scratch: bool,
@@ -34,9 +40,10 @@ impl BackdropBlurTargets {
         let mut textures = FxHashSet::default();
         self.isolated_sources
             .iter()
-            .fold(self.source.byte_size, |total, source| {
-                total.saturating_add(source.target.byte_size)
-            })
+            .fold(
+                self.source.map_or(0, |source| source.byte_size),
+                |total, source| total.saturating_add(source.target.byte_size),
+            )
             .saturating_add(
                 self.variants
                     .iter()
@@ -79,6 +86,8 @@ pub(super) struct BackdropBlurTargetDescriptor {
     pub(super) size: Extent2d,
     pub(super) format: Format,
     pub(super) configs: Vec<BackdropBlurConfig>,
+    /// Root backdrop barriers need a shared source; isolated captures already own their source.
+    pub(super) needs_root_source: bool,
     pub(super) isolated_source_indices: Vec<u32>,
     pub(super) pass_resource_set_layout: ResourceSetLayoutId,
     pub(super) blur_resource_set_layout: ResourceSetLayoutId,
@@ -113,6 +122,7 @@ impl BackdropBlurTargets {
     ) -> Option<ResourceSetId> {
         self.variants
             .iter()
+            .take(self.active_variant_count)
             .find(|variant| variant.config.covers(config))?
             .target_resource_sets
             .get(frame_resource_index)
@@ -147,8 +157,10 @@ impl BackdropBlurTargets {
         &self,
         next: &[BackdropBlurConfig],
         next_isolated_source_indices: &[u32],
+        needs_root_source: bool,
     ) -> bool {
-        self.variants.len() == next.len()
+        self.source.is_some() == needs_root_source
+            && self.active_variant_count == next.len()
             && self.isolated_sources.iter().map(|source| source.index).eq(
                 next_isolated_source_indices
                     .iter()
@@ -242,21 +254,33 @@ fn create_backdrop_blur_target_chain_with_configs<D>(
 where
     D: BackendResources + BackendPipelines,
 {
-    let source = create_render_texture_target(
-        device,
-        &format!("{label} backdrop scene color"),
-        descriptor.size,
-        descriptor.format,
-    )?;
-    let mut source_pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-    for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-            label: Some(format!(
-                "{label} backdrop scene color frame {index} resource set"
-            )),
-            layout: descriptor.pass_resource_set_layout,
-            bindings: backdrop_blur_pass_resource_bindings(&buffers, source.texture_view, descriptor.sampler),
-        })?);
+    // Element captures (including their nested backdrop barriers) have their own source.
+    // Allocate the shared full-window source only for a backdrop outside those captures.
+    let source = if descriptor.needs_root_source {
+        Some(create_render_texture_target(
+            device,
+            &format!("{label} backdrop scene color"),
+            descriptor.size,
+            descriptor.format,
+        )?)
+    } else {
+        None
+    };
+    let mut source_pass_resource_sets = Vec::new();
+    if let Some(source) = source {
+        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+            source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                label: Some(format!(
+                    "{label} backdrop scene color frame {index} resource set"
+                )),
+                layout: descriptor.pass_resource_set_layout,
+                bindings: backdrop_blur_pass_resource_bindings(
+                    &buffers,
+                    source.texture_view,
+                    descriptor.sampler,
+                ),
+            })?);
+        }
     }
 
     let mut isolated_source_indices = descriptor.isolated_source_indices;
@@ -376,7 +400,8 @@ where
         for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
             let source_texture_view = levels
                 .last()
-                .map_or(source.texture_view, |level| level.texture_view);
+                .expect("every blur variant owns at least one target")
+                .texture_view;
             target_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
                 label: Some(format!(
                     "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
@@ -398,6 +423,8 @@ where
         source_pass_resource_sets,
         isolated_sources,
         variants,
+        active_variant_count: configs.len(),
+        retained_root_variant: None,
         shared_horizontal_scratch,
     })
 }
@@ -458,7 +485,9 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
     for target in physical_targets {
         destroy_render_texture_target(device, target, backend_name);
     }
-    destroy_render_texture_target(device, targets.source, backend_name);
+    if let Some(source) = targets.source {
+        destroy_render_texture_target(device, source, backend_name);
+    }
 }
 
 pub(super) fn create_depth_target<D>(

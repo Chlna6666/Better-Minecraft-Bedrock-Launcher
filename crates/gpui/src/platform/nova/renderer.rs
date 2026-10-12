@@ -473,8 +473,24 @@ impl NovaRenderer {
             targets.is_layout_compatible(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
+                present::has_root_backdrop_blurs(&self.frame_upload),
             )
         }) {
+            return Ok(());
+        }
+        if self.filters.targets.as_mut().is_some_and(|targets| {
+            targets.reuse_layout(
+                self.frame_upload.backdrop_blur_configs(),
+                self.frame_upload.isolated_blur_source_indices(),
+                present::has_root_backdrop_blurs(&self.frame_upload),
+                self.frame_upload.retained_root_blur,
+            )
+        }) {
+            self.invalidate_draw_step_cache();
+            log::debug!(target: "gpui::diagnostics",
+                "GPUI retained target layout reused: active_variants={} allocated_variants={}",
+                self.frame_upload.backdrop_blur_configs().len(),
+                self.filters.targets.as_ref().expect("reused targets exist").variants.len());
             return Ok(());
         }
         // Texture topology changes can destroy the previous cached color
@@ -494,7 +510,7 @@ impl NovaRenderer {
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
-        let next_backdrop_blur_targets = match &mut *lock_backend(&self.backend) {
+        let next_backdrop_blur_targets: BackdropBlurTargets = match &mut *lock_backend(&self.backend) {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
@@ -578,7 +594,17 @@ impl NovaRenderer {
                 anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
             }
         };
+        let mut next_backdrop_blur_targets = next_backdrop_blur_targets;
+        next_backdrop_blur_targets.retained_root_variant = self.frame_upload.retained_root_blur
+            .and_then(|index| next_backdrop_blur_targets.variants.iter()
+                .position(|variant| variant.config.contains_member_index(index)));
+        log::debug!(target: "gpui::diagnostics",
+            "GPUI retained target layout recreated: active_variants={} target_bytes={}",
+            next_backdrop_blur_targets.active_variant_count, next_backdrop_blur_targets.byte_size());
         self.filters.targets = Some(next_backdrop_blur_targets);
+        // Cached steps borrow target resource-set handles. Fence retirement
+        // protects submitted work, but these CPU copies also outlive a slot.
+        self.invalidate_draw_step_cache();
         self.invalidate_backdrop_blur_cache();
         Ok(())
     }

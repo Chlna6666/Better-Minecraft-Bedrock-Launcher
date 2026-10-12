@@ -1,11 +1,12 @@
 use super::*;
 
-/// Render pipelines compiled for one device and color format.
+/// Render pipelines and the color-only filter pass for one device and color format.
 ///
 /// Every field is a device-registry handle, so a value can be copied into each window's
 /// renderer instead of recompiling the pipeline set per window.
 #[derive(Clone, Copy)]
 pub(super) struct Pipelines {
+    pub(super) filter_render_pass: RenderPassId,
     pub(super) alpha: BlendPipelines,
     pub(super) premultiplied: BlendPipelines,
     pub(super) path_rasterization: RenderPipelineId,

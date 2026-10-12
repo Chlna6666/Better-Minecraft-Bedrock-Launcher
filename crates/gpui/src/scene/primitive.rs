@@ -85,7 +85,13 @@ impl Primitive {
     }
 
     pub(crate) fn visual_bounds(&self) -> Bounds<ScaledPixels> {
-        let bounds = match self {
+        self.unclipped_visual_bounds().intersect(&self.content_mask().bounds)
+    }
+
+    /// Pixel-producing geometry before the content mask. Translation must
+    /// move this geometry before applying a fixed ancestor clip.
+    pub(crate) fn unclipped_visual_bounds(&self) -> Bounds<ScaledPixels> {
+        match self {
             Self::Shadow(shadow) => {
                 let radius = shadow.blur_radius.0.abs();
                 let margin = if radius.is_finite() {
@@ -97,8 +103,7 @@ impl Primitive {
             }
             Self::Blur(blur) => blur.bounds,
             _ => *self.bounds(),
-        };
-        bounds.intersect(&self.content_mask().bounds)
+        }
     }
 
     pub(crate) fn order(&self) -> DrawOrder {

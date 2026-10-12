@@ -1306,6 +1306,11 @@ pub struct SceneAnimationState {
 }
 
 impl<E: IntoElement + 'static> Element for AnimationElement<E> {
+    // Visual targets are not part of the child's layout fingerprint. Fresh declarations
+    // must reach prepaint so an unchanged layout cannot replay an obsolete timeline.
+    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
+
     type RequestLayoutState = AnyElement;
     type PrepaintState = Option<SmallVec<[SceneAnimationState; 3]>>;
 
@@ -1530,6 +1535,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                             ) =>
                         {
                             let mut state = state.clone();
+                            state.property = *property;
                             state.spec = spec.clone();
                             state.spring = *spring;
                             state.from = *from;

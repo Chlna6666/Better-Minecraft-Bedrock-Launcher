@@ -125,11 +125,13 @@ fn append_blur_bindings<'a>(
     layouts: (ResourceSetLayoutId, ResourceSetLayoutId),
 ) {
     let (slot, buffers) = frame;
-    bindings.push((
-        &mut targets.source_pass_resource_sets[slot],
-        layouts.0,
-        backdrop_blur_pass_resource_bindings(buffers, targets.source.texture_view, sampler),
-    ));
+    if let Some(source) = targets.source {
+        bindings.push((
+            &mut targets.source_pass_resource_sets[slot],
+            layouts.0,
+            backdrop_blur_pass_resource_bindings(buffers, source.texture_view, sampler),
+        ));
+    }
     for source in &mut targets.isolated_sources {
         bindings.push((
             &mut source.pass_resource_sets[slot],
@@ -141,7 +143,8 @@ fn append_blur_bindings<'a>(
         let source_view = variant
             .levels
             .last()
-            .map_or(targets.source.texture_view, |level| level.texture_view);
+            .expect("every blur variant owns at least one target")
+            .texture_view;
         bindings.push((
             &mut variant.target_resource_sets[slot],
             layouts.1,

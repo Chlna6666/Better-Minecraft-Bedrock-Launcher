@@ -374,7 +374,7 @@ impl NovaRenderer {
         // render the dirty filter's complete source/halo before sampling.
         let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh
             || targets.shared_horizontal_scratch;
-        let damage = &self.draw_step_scratch.backdrop_blur_damage_region;
+        let window_damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let composite_only = if force_full {
             FxHashSet::default()
         } else {
@@ -407,10 +407,21 @@ impl NovaRenderer {
             let direct_composite_target =
                 targets.direct_composite_target(config, frame_resource_index);
             let direct_composite = direct_composite_target.is_some();
-            // Ordinary element filters keep their established clear/full-layer path.
-            // The synthetic ROOT compositor is special: keep its previous color and
-            // reconstruct only the dirty source rectangle from the full painter list.
+            // Root color and resident identity compositors can preserve source pixels.
+            // Filters and changed source geometry keep the full-layer refresh path.
             let is_retained_root = self.frame_upload.retained_root_blur == Some(range.index);
+            let local_source_damage = if direct_composite && !is_retained_root && !force_full
+                && self.frame_upload.retained_root_clear_quad.is_some()
+            {
+                self.frame_upload.element_blur_inputs.iter()
+                    .find(|(index, _)| *index == range.index)
+                    .and_then(|(_, source)| self.filters.local_source_damage(
+                        range.index, source, &self.frame_upload.sampled_animation_values,
+                    ))
+            } else {
+                None
+            };
+            let damage = local_source_damage.as_ref().unwrap_or(window_damage);
             // A changed isolated subtree is independently dirty even when the
             // window DirtyRegion is empty or covers a different element.
             // Its source must be captured rather than clipping to unrelated pixels.
@@ -453,8 +464,9 @@ impl NovaRenderer {
             // no Gaussian pass or source recapture for either dirty patch.
             let damage_patches = retained_source_damage_patches(damage, can_split_root);
             for damage in &damage_patches {
-            let preserve_root = is_retained_root && !layer_force_full && !damage.is_full();
-            let outer_source_scissor = if direct_composite && !is_retained_root {
+            let preserve_source = (is_retained_root || local_source_damage.is_some())
+                && !layer_force_full && !damage.is_full();
+            let outer_source_scissor = if direct_composite && !preserve_source && !is_retained_root {
                 blur_full_source_scissor(config, self.current_size)
             } else {
                 blur_source_scissor_for_refresh(config, self.current_size, damage, layer_force_full)
@@ -587,7 +599,7 @@ impl NovaRenderer {
                 filter_passes: Vec::new(),
                 preserve_filtered_pixels: !layer_force_full,
             });
-            if preserve_root {
+            if preserve_source {
                 if let Some(clear_index) = self.frame_upload.retained_root_clear_quad {
                     // Replace (not alpha blend) with transparent black before
                     // replaying ALL intersecting primitives in painter order.
@@ -618,7 +630,7 @@ impl NovaRenderer {
                 source_groups,
                 filter_passes,
                 preserve_filtered_pixels: !layer_force_full,
-                preserve_retained_source: preserve_root,
+                preserve_retained_source: preserve_source,
             });
             } // independent GPU dirty rectangles for this retained color layer
         }

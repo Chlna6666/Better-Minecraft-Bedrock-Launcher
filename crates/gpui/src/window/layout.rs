@@ -9,6 +9,28 @@ fn snap_measured_size_to_device_pixels(measured: Size<Pixels>, scale_factor: f32
 }
 
 impl Window {
+    pub(crate) fn capture_view_layout(
+        &self,
+        id: LayoutId,
+    ) -> Option<crate::layout::RetainedViewLayout> {
+        self.layout_engine.as_ref()?.capture_view_layout(id)
+    }
+
+    pub(crate) fn restore_view_layout(
+        &mut self,
+        id: LayoutId,
+        retained: &crate::layout::RetainedViewLayout,
+        cx: &mut App,
+    ) -> bool {
+        let mut engine = self
+            .layout_engine
+            .take()
+            .expect("view reconciliation requires an active layout engine");
+        let restored = engine.restore_view_layout(id, retained, self, cx);
+        self.layout_engine = Some(engine);
+        restored
+    }
+
     /// Add a node to the layout tree for the current frame. Takes the `Style` of the element for which
     /// layout is being requested, along with the layout ids of any children. This method is called during
     /// calls to the [`Element::request_layout`] trait method and enables any element to participate in layout.

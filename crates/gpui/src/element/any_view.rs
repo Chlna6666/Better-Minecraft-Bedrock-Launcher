@@ -85,17 +85,19 @@ impl Eq for AnyView {}
 
 /// Shared non-generic lifecycle proxy for ordinary rendered entities.
 ///
-/// This is the normal reactive boundary. It deliberately carries no cache policy and therefore
-/// keeps the default `RetainedReplayCapability::Normal`.
+/// This preserves parent-driven layout while recording the geometry and frame-local ranges
+/// needed to reconcile an unchanged-layout subtree without rendering its ancestors.
 #[doc(hidden)]
 pub struct ViewElement {
-    view: AnyView,
+    boundary: super::cached_view::CachedView,
 }
 
 impl ViewElement {
     #[inline]
     fn new(view: AnyView) -> Self {
-        Self { view }
+        Self {
+            boundary: super::cached_view::CachedView::reactive(view),
+        }
     }
 
     #[inline]
@@ -114,11 +116,13 @@ impl IntoElement for ViewElement {
 }
 
 impl Element for ViewElement {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = ();
+    type RequestLayoutState = Option<AnyElement>;
+    type PrepaintState = super::cached_view::CachedViewPrepaintState;
+    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::View(self.view.entity_id()))
+        self.boundary.id()
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -127,43 +131,39 @@ impl Element for ViewElement {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let entity_id = self.view.entity_id();
-        window.record_rendered_view(
-            entity_id,
-            cx.entities.type_name_for_id(entity_id).unwrap_or("unknown"),
-        );
-        let element = self.view.render_element(window, cx);
-        request_layout_rendered_entity(entity_id, element, window, cx)
+        self.boundary.request_layout(id, inspector_id, window, cx)
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _: Bounds<crate::Pixels>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
-    ) {
-        prepaint_rendered_entity(self.view.entity_id(), element, window, cx);
+    ) -> Self::PrepaintState {
+        self.boundary
+            .prepaint(id, inspector_id, bounds, element, window, cx)
     }
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<crate::Pixels>,
         element: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
-        paint_rendered_entity(self.view.entity_id(), bounds, element, window, cx);
+        self.boundary
+            .paint(id, inspector_id, bounds, element, prepaint, window, cx);
     }
 }
 
@@ -182,41 +182,6 @@ fn render_entity<V: Render>(
         .expect("rendered entity type must match its render function");
     let mut view_cx = Context::new_context(cx, weak);
     view.render(window, &mut view_cx).into_any_element()
-}
-
-#[inline(never)]
-fn request_layout_rendered_entity(
-    entity_id: EntityId,
-    mut element: AnyElement,
-    window: &mut Window,
-    cx: &mut App,
-) -> (LayoutId, AnyElement) {
-    let layout_id =
-        window.with_rendered_view(entity_id, |window| element.request_layout(window, cx));
-    (layout_id, element)
-}
-
-#[inline(never)]
-fn prepaint_rendered_entity(
-    entity_id: EntityId,
-    element: &mut AnyElement,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    window.set_view_id(entity_id);
-    window.with_rendered_view(entity_id, |window| element.prepaint(window, cx));
-}
-
-#[inline(never)]
-fn paint_rendered_entity(
-    entity_id: EntityId,
-    bounds: Bounds<crate::Pixels>,
-    element: &mut AnyElement,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    window.record_debug_element_traversal_only(bounds, cx);
-    window.with_rendered_view(entity_id, |window| element.paint(window, cx));
 }
 
 impl<V: 'static + Render> IntoElement for Entity<V> {
@@ -302,10 +267,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ordinary_view_element_is_not_a_cache_boundary() {
+    fn ordinary_view_element_rebases_its_frame_local_ranges() {
         assert_eq!(
             <ViewElement as Element>::RETAINED_REPLAY_CAPABILITY,
-            crate::RetainedReplayCapability::Normal,
+            crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
         );
     }
 }

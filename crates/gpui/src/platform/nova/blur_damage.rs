@@ -7,7 +7,7 @@ pub(super) struct BlurDamageScissors {
     pub(super) source_capture: ScissorRect,
     /// Horizontal-pass output that must be updated in the retained ping target.
     pub(super) horizontal_output: ScissorRect,
-    /// Final vertical-pass output that is visible and affected by this frame's source damage.
+    /// Final output contributing to visible pixels, including the composite sampler footprint.
     pub(super) final_output: ScissorRect,
 }
 
@@ -18,7 +18,8 @@ pub(super) struct BlurDamageScissors {
 /// frame, the final affected output is one kernel support around that damage. The vertical pass
 /// needs one extra support in Y from the horizontal cache, and the horizontal pass in turn needs
 /// one support in X from the source capture. This keeps a small animation under a full-window blur
-/// local without reading undefined pixels from the cleared scratch source.
+/// local without reading undefined pixels from the cleared scratch source. Downsampled output
+/// includes the composite's neighboring linear-sampling texels and their convolution inputs.
 pub(super) fn blur_damage_scissors(
     config: BackdropBlurConfig,
     drawable_size: DrawableSize,
@@ -30,7 +31,13 @@ pub(super) fn blur_damage_scissors(
     if dirty_region.is_full() {
         let source_capture = blur_full_source_scissor(config, drawable_size)?;
         let horizontal_output = source_capture;
-        let final_output = blur_output_scissor(config, drawable_size)?;
+        let sampling_halo = composite_sampling_halo(config);
+        let final_output = dilate_scissor(
+            blur_output_scissor(config, drawable_size)?,
+            sampling_halo,
+            sampling_halo,
+            drawable_size,
+        );
         return Some(BlurDamageScissors {
             source_capture,
             horizontal_output,
@@ -57,10 +64,17 @@ pub(super) fn blur_damage_scissors(
     let dirty_source = dirty_source?;
 
     let support = gaussian_support_pixels(config, drawable_size);
-    // A changed source texel affects final Gaussian output by one support on both axes.
+    // The composite linearly samples a downsampled target. Its visible edge reads a neighboring
+    // target texel outside the visible bounds; refresh that footprint and its convolution inputs.
+    let sampling_halo = composite_sampling_halo(config);
     let final_output = intersect_scissor_rects(
-        dilate_scissor(dirty_source, support, support, drawable_size),
-        output_bounds,
+        dilate_scissor(
+            dirty_source,
+            support.saturating_add(sampling_halo),
+            support.saturating_add(sampling_halo),
+            drawable_size,
+        ),
+        dilate_scissor(output_bounds, sampling_halo, sampling_halo, drawable_size),
     );
     if final_output.is_empty() {
         return None;
@@ -101,7 +115,7 @@ pub(super) fn blur_full_source_scissor(
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
-    let support = 3.0 * config.radius().max(0.0) + 1.0;
+    let support = 3.0 * config.radius().max(0.0) + 1.0 + composite_sampling_halo(config) as f32;
     let left = floor_clamped_u32(x - support, drawable_size.width);
     let top = floor_clamped_u32(y - support, drawable_size.height);
     let right = ceil_clamped_u32(x + width + support, drawable_size.width);
@@ -148,6 +162,14 @@ pub(super) fn bounds_to_scissor(
         width: right.saturating_sub(left),
         height: bottom.saturating_sub(top),
     })
+}
+
+fn composite_sampling_halo(config: BackdropBlurConfig) -> u32 {
+    if config.downsample() > 1 {
+        u32::from(config.downsample())
+    } else {
+        0
+    }
 }
 
 fn gaussian_support_pixels(config: BackdropBlurConfig, drawable_size: DrawableSize) -> u32 {

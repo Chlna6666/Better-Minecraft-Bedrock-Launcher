@@ -27,6 +27,8 @@ struct CachedViewState {
     metadata_range: Range<usize>,
     cache_key: CachedViewCacheKey,
     accessed_entities: FxHashSet<EntityId>,
+    render_dependencies: FxHashSet<EntityId>,
+    reactive_layout: Option<crate::layout::RetainedViewLayout>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,6 +68,7 @@ struct SelectiveCachedViewTarget {
     retained_id: GlobalElementId,
     traversal_context: CachedViewTraversalContext,
     source_outer: RetainedElementRange,
+    reactive_layout: Option<crate::layout::RetainedViewLayout>,
 }
 
 struct SelectiveCachedViewTargetPatch {
@@ -98,7 +101,7 @@ fn selective_cached_view_target(
     ancestor_retained_id: &GlobalElementId,
     parent_state: &CachedViewState,
 ) -> Result<SelectiveCachedViewTarget, SelectiveSpliceMissReason> {
-    let (owner_id, retained_id) = window
+    let (owner_id, dirty_retained_id) = window
         .invalidator
         .single_reconcile_target_below(
             ancestor_retained_id,
@@ -109,6 +112,11 @@ fn selective_cached_view_target(
     if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
         return Err(SelectiveSpliceMissReason::TargetNotDirect);
     }
+
+    let (retained_id, state_global_id) = window
+        .invalidator
+        .cached_view_boundary(owner_id, &dirty_retained_id)
+        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?;
 
     let source_outer = window
         .rendered_frame
@@ -123,10 +131,6 @@ fn selective_cached_view_target(
         return Err(SelectiveSpliceMissReason::InvalidRetainedRange);
     }
 
-    let state_global_id = window
-        .invalidator
-        .cached_view_state_global_id(owner_id, &retained_id)
-        .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?;
     let boxed = window
         .rendered_frame
         .element_states
@@ -151,6 +155,7 @@ fn selective_cached_view_target(
         retained_id,
         traversal_context: state.traversal_context.clone(),
         source_outer,
+        reactive_layout: state.reactive_layout.clone(),
     })
 }
 
@@ -178,6 +183,7 @@ fn try_selective_cached_view_prepaint(
         &source.prepaint_range,
         target.view.entity_id(),
     ) || !window.can_reuse_prepaint_fragment(&source_prepaint_before)
+        || !window.can_reuse_paint(&source.paint_range)
         || !window.can_reuse_paint(&source_paint_before)
         || !window.can_reuse_prepaint_fragment(&source_prepaint_tail)
         || !window.can_reuse_paint(&source_paint_tail)
@@ -192,6 +198,25 @@ fn try_selective_cached_view_prepaint(
         });
     if !context_matches {
         return Err(SelectiveSpliceMissReason::ContextMismatch);
+    }
+
+    // Ordinary views retain their actual computed layout, including the constraints supplied
+    // by their parent. Never substitute the old bounds as new root constraints.
+    let mut target_view = target.view;
+    let mut target_request_layout = None;
+    if target_view.reactive {
+        let prepared =
+            window.with_cached_view_traversal_context(&target.traversal_context, |window| {
+                let (layout_id, element) =
+                    target_view.request_layout(Some(&target.state_global_id), None, window, cx);
+                let restored = target
+                    .reactive_layout
+                    .as_ref()
+                    .is_some_and(|layout| window.restore_view_layout(layout_id, layout, cx));
+                restored.then_some(element)
+            });
+        target_request_layout = prepared.ok_or(SelectiveSpliceMissReason::UnstableCacheKey)?;
+        target_view.reactive_layout = target.reactive_layout;
     }
 
     let parent_prepaint_start = window.prepaint_index();
@@ -209,7 +234,7 @@ fn try_selective_cached_view_prepaint(
     let target_prepaint_start = window.prepaint_index();
     if !window.begin_fresh_view_dispatch_for_fragment(
         &source.prepaint_range,
-        target.view.entity_id(),
+        target_view.entity_id(),
         &mut replay,
     ) {
         window.degrade_current_draw();
@@ -217,8 +242,6 @@ fn try_selective_cached_view_prepaint(
     }
 
     let source_target = target.source_outer;
-    let mut target_view = target.view;
-    let mut target_request_layout = None;
     let target_bounds = source_target.bounds;
     let target_prepaint =
         window.with_cached_view_traversal_context(&target.traversal_context, |window| {
@@ -281,6 +304,7 @@ pub struct CachedWeakView {
     progressive: bool,
     critical: bool,
     reuse_on_window_refresh: bool,
+    reactive: bool,
 }
 
 impl CachedWeakView {
@@ -293,13 +317,18 @@ impl CachedWeakView {
             progressive: self.progressive,
             critical: self.critical,
             reuse_on_window_refresh: self.reuse_on_window_refresh,
+            reactive: self.reactive,
+            reactive_layout_id: None,
+            reactive_layout: None,
+            render_dependencies: FxHashSet::default(),
         })
     }
 }
 
 /// Explicit retained/cache boundary for a reactive view.
 ///
-/// Ordinary `AnyView` and `Entity<V>` values do not carry any of this policy.
+/// Ordinary `AnyView` and `Entity<V>` retain parent-driven layout; this wrapper
+/// uses the caller-supplied layout style and cache policy.
 pub struct CachedView {
     view: AnyView,
     style: Rc<StyleRefinement>,
@@ -307,6 +336,10 @@ pub struct CachedView {
     progressive: bool,
     critical: bool,
     reuse_on_window_refresh: bool,
+    reactive: bool,
+    reactive_layout_id: Option<LayoutId>,
+    reactive_layout: Option<crate::layout::RetainedViewLayout>,
+    render_dependencies: FxHashSet<EntityId>,
 }
 
 impl CachedView {
@@ -321,7 +354,38 @@ impl CachedView {
             progressive: false,
             critical: false,
             reuse_on_window_refresh: false,
+            reactive: false,
+            reactive_layout_id: None,
+            reactive_layout: None,
+            render_dependencies: FxHashSet::default(),
         }
+    }
+
+    pub(super) fn reactive(view: AnyView) -> Self {
+        let mut boundary = Self::new(view, StyleRefinement::default(), None);
+        boundary.reactive = true;
+        boundary.critical = true;
+        boundary
+    }
+
+    pub(crate) fn render_dependents(
+        window: &Window,
+        entity_id: EntityId,
+    ) -> smallvec::SmallVec<[EntityId; 4]> {
+        let mut dependents = smallvec::SmallVec::new();
+        for ((_, state_type), state) in &window.rendered_frame.element_states {
+            if *state_type == TypeId::of::<CachedViewState>()
+                && let Some(state) = state
+                    .inner
+                    .downcast_ref::<Option<CachedViewState>>()
+                    .and_then(Option::as_ref)
+                && state.weak_view.view.entity_id() != entity_id
+                && state.render_dependencies.contains(&entity_id)
+            {
+                dependents.push(state.weak_view.view.entity_id());
+            }
+        }
+        dependents
     }
 
     /// Permit deferred dirty reuse when the frame budget is exhausted.
@@ -356,6 +420,7 @@ impl CachedView {
             progressive: self.progressive,
             critical: self.critical,
             reuse_on_window_refresh: self.reuse_on_window_refresh,
+            reactive: self.reactive,
         }
     }
 
@@ -445,7 +510,7 @@ impl Element for CachedView {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         window.with_rendered_view(self.entity_id(), |window| {
-            if !window.is_inspector_picking(cx) {
+            if !self.reactive && !window.is_inspector_picking(cx) {
                 let mut root_style = Style::default();
                 root_style.refine(self.style.as_ref());
                 let layout_id = window.request_layout(root_style, None, cx);
@@ -457,8 +522,11 @@ impl Element for CachedView {
                         .type_name_for_id(self.entity_id())
                         .unwrap_or("unknown"),
                 );
-                let mut element = self.view.render_element(window, cx);
+                let (mut element, dependencies) =
+                    cx.detect_accessed_entities(|cx| self.view.render_element(window, cx));
+                self.render_dependencies = dependencies;
                 let layout_id = element.request_layout(window, cx);
+                self.reactive_layout_id = self.reactive.then_some(layout_id);
                 (layout_id, Some(element))
             }
         })
@@ -486,7 +554,7 @@ impl Element for CachedView {
             );
         }
         window.with_rendered_view(self.entity_id(), |window| {
-            if let Some(mut element) = element.take() {
+            if !self.reactive && let Some(mut element) = element.take() {
                 element.prepaint(window, cx);
                 return CachedViewPrepaintState(CachedViewPrepaintStateKind::Fresh(element));
             }
@@ -514,9 +582,13 @@ impl Element for CachedView {
 
                     let cache_fingerprint = self.cache_fingerprint();
                     let dirty_scope = window.view_dirty_scope(self.entity_id());
-                    let view_dirty = dirty_scope.is_some();
                     let force_refresh = window.force_view_cache_refresh();
                     let targeted_replay = window.retained_replay_is_targeted();
+                    // A subtree invalidation must also reach cached descendants whose own
+                    // entities did not notify. Preserve unrelated owner routes and siblings.
+                    let retained_path_dirty = window
+                        .retained_view_boundary_is_dirty(self.entity_id(), &retained_id);
+                    let view_dirty = dirty_scope.is_some() || retained_path_dirty;
                     // Progressive reuse is appropriate for ordinary/background dirty work, but an
                     // exact retained target is an interactive sample that must reach the current
                     // frame. Replaying the previous dirty view here creates a visible plateau while
@@ -556,7 +628,7 @@ impl Element for CachedView {
                     // work and creates a deadline-miss -> full-render -> deadline-miss feedback loop.
                     // Recovery/forced refresh remain hard barriers because their retained ranges may
                     // no longer be trustworthy.
-                    let selective_candidate =
+                    let selective_candidate = !self.reactive &&
                         dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
                             && stable_cache_key
                             && !force_refresh
@@ -691,7 +763,7 @@ impl Element for CachedView {
                     };
                     window.record_debug_view_cache_status(bounds, cache_debug_status, cx);
 
-                    if let Some(mut element_state) = element_state
+                    if !self.reactive && let Some(mut element_state) = element_state
                         && element_state.cache_key.bounds == bounds
                         && element_state.cache_key.content_mask == content_mask
                         && element_state.cache_key.paint_context == paint_context
@@ -743,18 +815,33 @@ impl Element for CachedView {
                     }
                     let refreshing = mem::replace(&mut window.refreshing, true);
                     let prepaint_start = window.prepaint_index();
-                    window.record_rendered_view(
-                        self.entity_id(),
-                        cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
-                    );
+                    if !self.reactive {
+                        window.record_rendered_view(
+                            self.entity_id(),
+                            cx.entities.type_name_for_id(self.entity_id()).unwrap_or("unknown"),
+                        );
+                    }
                     let (mut element, accessed_entities) = cx.detect_accessed_entities(|cx| {
-                        let mut element = div()
-                            .relative()
-                            .size_full()
-                            .child(self.view.render_element(window, cx))
-                            .into_any_element();
-                        element.layout_as_root(bounds.size.into(), window, cx);
-                        element.prepaint_at(bounds.origin, window, cx);
+                        let mut element = if self.reactive {
+                            element.take().expect("ordinary views request their layout before prepaint")
+                        } else {
+                            let (rendered, dependencies) = cx.detect_accessed_entities(|cx| {
+                                self.view.render_element(window, cx)
+                            });
+                            self.render_dependencies = dependencies;
+                            let mut element = div()
+                                .relative()
+                                .size_full()
+                                .child(rendered)
+                                .into_any_element();
+                            element.layout_as_root(bounds.size.into(), window, cx);
+                            element
+                        };
+                        if self.reactive {
+                            element.prepaint(window, cx);
+                        } else {
+                            element.prepaint_at(bounds.origin, window, cx);
+                        }
                         element
                     });
 
@@ -767,6 +854,10 @@ impl Element for CachedView {
                             weak_view: self.downgrade(),
                             traversal_context,
                             accessed_entities,
+                            render_dependencies: mem::take(&mut self.render_dependencies),
+                            reactive_layout: self.reactive_layout.take().or_else(|| {
+                                self.reactive_layout_id.and_then(|id| window.capture_view_layout(id))
+                            }),
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
                             metadata_range: 0..0,
@@ -946,6 +1037,8 @@ impl Element for CachedView {
     }
 }
 
+#[cfg(test)]
+mod reactive_tests;
 #[cfg(test)]
 mod retained_boundary_tests;
 #[cfg(test)]
