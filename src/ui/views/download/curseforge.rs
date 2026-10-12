@@ -2827,16 +2827,14 @@ fn render_install_target_dropdown(
         options,
         selected_index,
         enabled && has_versions,
-        move |colors, _width, _height, enabled, open_k, label| {
+        move |colors, _width, _height, enabled, motion, label| {
             let chevron = svg()
                 .path(lucide_gpui::icon!(chevron_down))
                 .w(px(18.))
                 .h(px(18.))
                 .text_color(colors.text_secondary)
-                .opacity(if enabled { 0.78 } else { 0.36 })
-                .with_transformation(Transformation::rotate(radians(
-                    open_k * std::f32::consts::PI,
-                )));
+                .opacity(if enabled { 0.78 } else { 0.36 });
+            let chevron = motion.chevron(chevron);
 
             div()
                 .size_full()

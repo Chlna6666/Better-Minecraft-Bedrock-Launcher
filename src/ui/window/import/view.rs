@@ -1043,9 +1043,9 @@ impl Render for ImportWindowView {
 
         let dropdown_state = cx.global::<dropdown::DropdownOverlayState>();
         if self.presentation == ImportPresentation::Window
-            && dropdown::has_visible_overlay(window, frame_now, dropdown_state)
+            && dropdown::has_visible_overlay(window, dropdown_state)
         {
-            root = root.child(dropdown::render_overlay(window, frame_now, dropdown_state));
+            root = root.child(dropdown::render_overlay(window, dropdown_state));
         }
 
         root
@@ -2145,16 +2145,14 @@ fn render_versions_card(
             dropdown_options,
             selected_index.unwrap_or(0),
             !target_locked,
-            move |colors, _width, _trigger_height, enabled, open_k, label| {
+            move |colors, _width, _trigger_height, enabled, motion, label| {
                 let chevron = svg()
                     .path(lucide_gpui::icon!(chevron_down))
                     .w(px(18.))
                     .h(px(18.))
                     .text_color(colors.text_secondary)
-                    .opacity(if enabled { 0.78 } else { 0.36 })
-                    .with_transformation(Transformation::rotate(radians(
-                        open_k * std::f32::consts::PI,
-                    )));
+                    .opacity(if enabled { 0.78 } else { 0.36 });
+                let chevron = motion.chevron(chevron);
 
                 div()
                     .size_full()

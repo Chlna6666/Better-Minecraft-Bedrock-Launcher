@@ -408,7 +408,7 @@ pub(super) fn render_gdk_dropdown(
         options,
         selected_index,
         !state.gdk_users_loading,
-        |colors, _width, _height, enabled, open_k, label| {
+        |colors, _width, _height, enabled, motion, label| {
             div()
                 .size_full()
                 .px(px(10.))
@@ -431,15 +431,14 @@ pub(super) fn render_gdk_dropdown(
                         .child(label.clone()),
                 )
                 .child(
-                    svg()
-                        .path(lucide_gpui::icon!(chevron_down))
-                        .w(px(14.))
-                        .h(px(14.))
-                        .opacity(if enabled { 0.75 } else { 0.35 })
-                        .text_color(colors.text_secondary)
-                        .with_transformation(Transformation::rotate(radians(
-                            open_k * std::f32::consts::PI,
-                        ))),
+                    motion.chevron(
+                        svg()
+                            .path(lucide_gpui::icon!(chevron_down))
+                            .w(px(14.))
+                            .h(px(14.))
+                            .opacity(if enabled { 0.75 } else { 0.35 })
+                            .text_color(colors.text_secondary),
+                    ),
                 )
                 .into_any_element()
         },

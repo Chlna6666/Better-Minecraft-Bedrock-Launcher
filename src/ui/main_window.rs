@@ -410,7 +410,7 @@ impl MainWindowView {
         let dropdown_visible = {
             let dropdown_state =
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-            crate::ui::components::dropdown::has_visible_overlay(window, now, dropdown_state)
+            crate::ui::components::dropdown::has_visible_overlay(window, dropdown_state)
         };
         let route_transition_direction = route_transition_direction(
             self.recent_page_target
@@ -1807,7 +1807,6 @@ impl Render for MainWindowView {
                 cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
             root.child(crate::ui::components::dropdown::render_overlay(
                 window,
-                model.now,
                 dropdown_state,
             ))
         } else {

@@ -45,7 +45,7 @@ impl I18n {
     ///
     /// Missing translations fall back to English; an unknown key returns `None`.
     pub fn lookup(&self, key: &str) -> Option<SharedString> {
-        Some(SharedString::from(
+        Some(SharedString::new_static(
             catalog::lookup(self.locale(), key)?.text,
         ))
     }
@@ -53,7 +53,7 @@ impl I18n {
     /// Resolves embedded text, falling back to the key when it is unknown.
     pub fn t_key(&self, key: I18nKey) -> SharedString {
         self.lookup(key.as_str())
-            .unwrap_or_else(|| SharedString::from(key.as_str()))
+            .unwrap_or_else(|| SharedString::new_static(key.as_str()))
     }
 
     /// Resolves a dynamic key with transient formatting arguments.
@@ -64,7 +64,7 @@ impl I18n {
     ) -> Option<SharedString> {
         let translation = catalog::lookup(self.locale(), key)?;
         if N == 0 {
-            return Some(SharedString::from(translation.text));
+            return Some(SharedString::new_static(translation.text));
         }
         Some(SharedString::from(crate::i18n::interpolate_args(
             translation.parts,
@@ -75,7 +75,7 @@ impl I18n {
     /// Resolves embedded text with transient formatting arguments.
     pub fn t_key_args<const N: usize>(&self, key: I18nKey, args: [I18nArg<'_>; N]) -> SharedString {
         self.lookup_args(key.as_str(), args)
-            .unwrap_or_else(|| SharedString::from(key.as_str()))
+            .unwrap_or_else(|| SharedString::new_static(key.as_str()))
     }
 
     pub fn t_key_positional<const N: usize>(
@@ -87,7 +87,7 @@ impl I18n {
             return self.t_key(key);
         }
         let Some(translation) = catalog::lookup(self.locale(), key.as_str()) else {
-            return SharedString::from(key.as_str());
+            return SharedString::new_static(key.as_str());
         };
         SharedString::from(crate::i18n::interpolate_positional_args(
             translation.parts,
@@ -104,7 +104,7 @@ impl I18n {
                 .map(|translation| {
                     SharedString::from(interpolate_owned_args(translation.parts, args))
                 })
-                .unwrap_or_else(|| SharedString::from(key.as_str())),
+                .unwrap_or_else(|| SharedString::new_static(key.as_str())),
         }
     }
 }

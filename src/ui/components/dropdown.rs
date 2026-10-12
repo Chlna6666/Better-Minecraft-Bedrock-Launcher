@@ -44,6 +44,7 @@ impl From<SharedString> for DropdownOption {
 
 struct DropdownState {
     phase: DropdownPhase,
+    animation_duration: Duration,
     trigger_bounds: Option<Bounds<Pixels>>,
     menu_scroll_handle: UniformListScrollHandle,
     open_generation: u64,
@@ -51,7 +52,73 @@ struct DropdownState {
 }
 
 type DropdownTriggerBuilder =
-    Rc<dyn Fn(&ThemeColors, Pixels, Pixels, bool, f32, &SharedString) -> AnyElement>;
+    Rc<dyn Fn(&ThemeColors, Pixels, Pixels, bool, DropdownMotion, &SharedString) -> AnyElement>;
+
+/// A dropdown's discrete motion target, shared by its trigger and retained popup.
+///
+/// The transition keeps the 220/160 ms cubic opening/closing timing, including the remaining
+/// curve duration after reversal. GPUI retargets an active track from its presented value.
+#[derive(Clone, Copy)]
+pub struct DropdownMotion {
+    phase: DropdownPhase,
+    duration: Duration,
+}
+
+impl DropdownMotion {
+    fn target(self) -> f32 {
+        if matches!(
+            self.phase,
+            DropdownPhase::Opening { .. } | DropdownPhase::Open
+        ) {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    fn animation(self) -> Animation {
+        Animation::from_spec(
+            AnimationSpec::new(self.duration)
+                .ease(Easing::OutCubic)
+                .fill_mode(FillMode::Forwards),
+        )
+    }
+
+    /// Rotate a custom trigger's chevron on the presentation lane.
+    ///
+    /// The supplied SVG keeps its size, tint and opacity. Completion renders the owning view
+    /// once to settle the phase or remove the closing overlay; intermediate frames do not.
+    pub fn chevron(self, icon: Svg) -> AnyElement {
+        if self.phase == DropdownPhase::Closed {
+            return icon.into_any_element();
+        }
+        let target = self.target();
+        icon.with_visual_animation(
+            "dropdown-chevron",
+            self.animation().with_property(AnimationProperty::rotation(
+                radians((1.0 - target) * std::f32::consts::PI),
+                radians(target * std::f32::consts::PI),
+            )),
+        )
+        .expect("rotation is a declared presentation property")
+        .into_any_element()
+    }
+}
+
+impl DropdownState {
+    fn set_phase(&mut self, phase: DropdownPhase, now: Instant) {
+        if phase != self.phase {
+            self.animation_duration = match phase {
+                DropdownPhase::Opening { at } => Duration::from_secs_f32(OPEN_DURATION_SECS)
+                    .saturating_sub(now.saturating_duration_since(at)),
+                DropdownPhase::Closing { at } => Duration::from_secs_f32(CLOSE_DURATION_SECS)
+                    .saturating_sub(now.saturating_duration_since(at)),
+                DropdownPhase::Closed | DropdownPhase::Open => self.animation_duration,
+            };
+        }
+        self.phase = phase;
+    }
+}
 
 pub struct DropdownOverlayState {
     active_by_window: HashMap<u64, DropdownOverlaySnapshot>,
@@ -83,6 +150,7 @@ struct DropdownOverlaySnapshot {
     top_left: Point<Pixels>,
     open_up: bool,
     phase: DropdownPhase,
+    animation_duration: Duration,
     menu_h: Pixels,
 }
 
@@ -381,7 +449,7 @@ fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElem
 
                     let now = Instant::now();
                     if let Err(error) = state.update(cx, |state, _| {
-                        state.phase = begin_dropdown_close(state.phase, now);
+                        state.set_phase(begin_dropdown_close(state.phase, now), now);
                     }) {
                         cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
                             overlay.clear_if_matches(owner_window_id, &overlay_id);
@@ -395,11 +463,7 @@ fn dropdown_option_row(context: &DropdownOptionContext, index: usize) -> AnyElem
         .into_any_element()
 }
 
-pub fn render_overlay(
-    window: &mut Window,
-    now: Instant,
-    state: &DropdownOverlayState,
-) -> AnyElement {
+pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyElement {
     let owner_window_id = window.window_handle().window_id().as_u64();
     let Some(active) = state.active_for_window(owner_window_id) else {
         return div().into_any_element();
@@ -409,28 +473,21 @@ pub fn render_overlay(
     let menu_scroll_handle = active.menu_scroll_handle.clone();
     let options = active.options.clone();
     let selected_index = normalize_selected_index(active.selected_index, options.len());
-    let open_k = dropdown_progress(active.phase, now);
-
-    if matches!(active.phase, DropdownPhase::Closing { .. }) && open_k <= 0.02 {
-        return div().into_any_element();
-    }
-
-    let overlay_animating = matches!(
-        active.phase,
-        DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
-    );
+    let motion = DropdownMotion {
+        phase: active.phase,
+        duration: active.animation_duration,
+    };
+    let target = motion.target();
 
     if active.menu_h <= px(1.0) || active.width <= px(1.0) {
         return div().absolute().inset_0().into_any_element();
     }
 
-    let panel_opacity = 0.78 + 0.22 * open_k;
     let reveal_edge = if active.open_up {
         VerticalRevealEdge::Bottom
     } else {
         VerticalRevealEdge::Top
     };
-    let reveal_fraction = open_k;
     let option_context = DropdownOptionContext {
         colors,
         options: options.clone(),
@@ -502,18 +559,24 @@ pub fn render_overlay(
                 .child(option_list),
         )
         .composite_layer_with_id(active.id.clone())
-        .with_stable_sampled_animation(
+        .with_visual_animation(
             active.id.clone(),
-            AnimationProperty::opacity(0.0, 1.0),
-            panel_opacity,
-            overlay_animating,
+            motion
+                .animation()
+                .with_opacity(0.78 + 0.22 * (1.0 - target), 0.78 + 0.22 * target),
         )
-        .with_stable_sampled_animation(
+        .expect("opacity is a declared presentation property")
+        .with_visual_animation(
             active.id.clone(),
-            AnimationProperty::vertical_reveal(reveal_edge, 0.0, 1.0),
-            reveal_fraction,
-            overlay_animating,
-        );
+            motion
+                .animation()
+                .with_property(AnimationProperty::vertical_reveal(
+                    reveal_edge,
+                    1.0 - target,
+                    target,
+                )),
+        )
+        .expect("reveal is a declared presentation property");
 
     div()
         .absolute()
@@ -547,7 +610,7 @@ pub fn render_overlay(
                         s.scroll_bound_generation = 0;
                     }
 
-                    s.phase = next_phase;
+                    s.set_phase(next_phase, now);
                     next_phase != previous_phase
                 }) {
                     Ok(changed) => {
@@ -568,7 +631,7 @@ pub fn render_overlay(
         .into_any_element()
 }
 
-pub fn has_visible_overlay(window: &Window, now: Instant, state: &DropdownOverlayState) -> bool {
+pub fn has_visible_overlay(window: &Window, state: &DropdownOverlayState) -> bool {
     let owner_window_id = window.window_handle().window_id().as_u64();
     let Some(active) = state.active_for_window(owner_window_id) else {
         return false;
@@ -578,7 +641,7 @@ pub fn has_visible_overlay(window: &Window, now: Instant, state: &DropdownOverla
         return false;
     }
 
-    !matches!(active.phase, DropdownPhase::Closing { at } if closing_progress(now, at) <= 0.02)
+    true
 }
 
 /// Lightweight dropdown with:
@@ -627,6 +690,10 @@ impl Dropdown {
         }
     }
 
+    /// Build a dropdown with custom trigger content and the same retained motion contract.
+    ///
+    /// The builder must attach `motion.chevron(...)` to its arrow so completion settles the
+    /// dropdown state once. The motion is a target declaration, not a per-frame progress sample.
     pub fn with_trigger(
         id: impl Into<ElementId>,
         colors: &ThemeColors,
@@ -636,7 +703,14 @@ impl Dropdown {
         options: Vec<DropdownOption>,
         selected_index: usize,
         enabled: bool,
-        trigger_builder: impl Fn(&ThemeColors, Pixels, Pixels, bool, f32, &SharedString) -> AnyElement
+        trigger_builder: impl Fn(
+            &ThemeColors,
+            Pixels,
+            Pixels,
+            bool,
+            DropdownMotion,
+            &SharedString,
+        ) -> AnyElement
         + 'static,
         on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> Self {
@@ -687,6 +761,7 @@ impl RenderOnce for Dropdown {
 
         let state = window.use_keyed_state(id.clone(), cx, |_, _| DropdownState {
             phase: DropdownPhase::Closed,
+            animation_duration: Duration::from_secs_f32(OPEN_DURATION_SECS),
             trigger_bounds: None,
             menu_scroll_handle: UniformListScrollHandle::new(),
             open_generation: 0,
@@ -702,22 +777,17 @@ impl RenderOnce for Dropdown {
         let trigger_bounds = snapshot.trigger_bounds.clone();
 
         let now = window.animation_time();
-        let open_k = dropdown_progress(phase, now);
-
-        let phase_animating = matches!(
-            phase,
-            DropdownPhase::Opening { .. } | DropdownPhase::Closing { .. }
-        );
-
-        if matches!(phase, DropdownPhase::Closing { .. }) && open_k <= 0.001 {
-            state.update(cx, |s, _| s.phase = DropdownPhase::Closed);
-            cx.notify(parent_view_id);
-        } else if matches!(phase, DropdownPhase::Opening { .. }) && open_k >= 0.999 {
-            state.update(cx, |s, _| s.phase = DropdownPhase::Open);
+        let phase = phase_after_deadline(phase, now);
+        if phase != state.read(cx).phase {
+            state.update(cx, |s, _| s.set_phase(phase, now));
         }
+        let motion = DropdownMotion {
+            phase,
+            duration: state.read(cx).animation_duration,
+        };
 
         let trigger_content =
-            (trigger_builder)(&colors, width, trigger_height, enabled, open_k, &label);
+            (trigger_builder)(&colors, width, trigger_height, enabled, motion, &label);
 
         let trigger = div()
             .id(id.clone())
@@ -756,7 +826,7 @@ impl RenderOnce for Dropdown {
                     ..colors.border
                 })
             })
-            .child(trigger_content.with_layout_animation_target(phase_animating))
+            .child(trigger_content)
             .on_click({
                 let state = state.clone();
                 move |_ev, _window, cx| {
@@ -774,7 +844,7 @@ impl RenderOnce for Dropdown {
                             s.open_generation = s.open_generation.wrapping_add(1);
                             s.scroll_bound_generation = 0;
                         }
-                        s.phase = next_phase;
+                        s.set_phase(next_phase, now);
                     });
                     cx.notify(parent_view_id);
                 }
@@ -807,11 +877,16 @@ impl RenderOnce for Dropdown {
                 .bottom(px(0.)),
             );
 
-        let phase_after_cleanup = phase_after_deadline(state.read(cx).phase, now);
-        if phase_after_cleanup != state.read(cx).phase {
-            state.update(cx, |s, _| s.phase = phase_after_cleanup);
-        }
-        if !phase_after_cleanup.is_visible() {
+        if !phase.is_visible() {
+            if cx.read_global(|overlay: &DropdownOverlayState, _| {
+                overlay
+                    .active_for_window(owner_window_id)
+                    .is_some_and(|active| active.id == id)
+            }) {
+                cx.update_global(|overlay: &mut DropdownOverlayState, _| {
+                    overlay.clear_if_matches(owner_window_id, &id);
+                });
+            }
             return trigger;
         }
 
@@ -902,19 +977,21 @@ impl RenderOnce for Dropdown {
             top_left: final_top_left,
             trigger_bounds,
             open_up,
-            phase: phase_after_cleanup,
+            phase,
+            animation_duration: state.read(cx).animation_duration,
             menu_h,
         };
 
         let should_update_overlay = cx.read_global(|overlay: &DropdownOverlayState, _cx| {
             match (
-                phase_after_cleanup.is_visible(),
+                phase.is_visible(),
                 overlay.active_for_window(owner_window_id),
             ) {
                 (false, Some(active)) => active.id == id,
                 (false, None) => false,
                 (true, Some(active)) => {
                     active.id != overlay_snapshot.id
+                        || active.colors != overlay_snapshot.colors
                         || active.phase != overlay_snapshot.phase
                         || active.top_left != overlay_snapshot.top_left
                         || active.open_up != overlay_snapshot.open_up
@@ -928,7 +1005,7 @@ impl RenderOnce for Dropdown {
 
         if should_update_overlay {
             cx.update_global(|overlay: &mut DropdownOverlayState, _cx| {
-                if phase_after_cleanup.is_visible() {
+                if phase.is_visible() {
                     overlay.set_active(owner_window_id, overlay_snapshot);
                 } else {
                     overlay.clear_if_matches(owner_window_id, &id);
@@ -956,7 +1033,7 @@ fn default_dropdown_trigger(
     _width: Pixels,
     _trigger_height: Pixels,
     enabled: bool,
-    open_k: f32,
+    motion: DropdownMotion,
     label: &SharedString,
 ) -> AnyElement {
     let chevron = svg()
@@ -964,10 +1041,8 @@ fn default_dropdown_trigger(
         .w(px(16.))
         .h(px(16.))
         .opacity(if enabled { 0.80 } else { 0.35 })
-        .text_color(colors.text_secondary)
-        .with_transformation(Transformation::rotate(radians(
-            open_k * std::f32::consts::PI,
-        )));
+        .text_color(colors.text_secondary);
+    let chevron = motion.chevron(chevron);
 
     div()
         .size_full()
@@ -1004,5 +1079,34 @@ mod tests {
         assert_eq!(desired_dropdown_height(1.0), px(50.0));
         assert_eq!(desired_dropdown_height(3.0), px(126.0));
         assert_eq!(dropdown_min_preview_height(), px(126.0));
+    }
+
+    #[::core::prelude::v1::test]
+    fn reversal_retains_the_remaining_cubic_curve_duration() {
+        let start = Instant::now();
+        let reverse_at = start + Duration::from_millis(100);
+        let opening = DropdownPhase::Opening { at: start };
+        let progress = dropdown_progress(opening, reverse_at);
+        let mut state = DropdownState {
+            phase: opening,
+            animation_duration: Duration::from_secs_f32(OPEN_DURATION_SECS),
+            trigger_bounds: None,
+            menu_scroll_handle: UniformListScrollHandle::new(),
+            open_generation: 1,
+            scroll_bound_generation: 1,
+        };
+        state.set_phase(toggle_dropdown_phase(opening, reverse_at), reverse_at);
+        assert!(state.animation_duration > Duration::ZERO);
+        assert!(state.animation_duration < Duration::from_secs_f32(CLOSE_DURATION_SECS));
+        let halfway = state.animation_duration.mul_f32(0.5);
+        let legacy_sample = dropdown_progress(state.phase, reverse_at + halfway);
+        let retained_sample = progress * (1.0 - ease_out_cubic(0.5));
+        assert!((legacy_sample - retained_sample).abs() < 0.0001);
+        let duration = state.animation_duration;
+        state.set_phase(state.phase, reverse_at + halfway);
+        assert_eq!(
+            state.animation_duration, duration,
+            "unrelated renders must not retarget timing"
+        );
     }
 }
