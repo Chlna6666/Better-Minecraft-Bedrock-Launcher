@@ -42,6 +42,31 @@ struct LayoutRootDiagnosticNode {
     child_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PureMeasureCacheKey {
+    fingerprint: u64,
+    known_width: Option<u32>,
+    known_height: Option<u32>,
+    available_width: super::metrics::AvailableSpaceKey,
+    available_height: super::metrics::AvailableSpaceKey,
+}
+
+impl PureMeasureCacheKey {
+    fn new(
+        fingerprint: u64,
+        known: Size<Option<Pixels>>,
+        available: Size<AvailableSpace>,
+    ) -> Self {
+        Self {
+            fingerprint,
+            known_width: known.width.map(|width| width.0.to_bits()),
+            known_height: known.height.map(|height| height.0.to_bits()),
+            available_width: available.width.into(),
+            available_height: available.height.into(),
+        }
+    }
+}
+
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
@@ -59,6 +84,7 @@ pub struct TaffyLayoutEngine {
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
+    pure_measure_cache: FxHashMap<PureMeasureCacheKey, Size<Pixels>>,
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
     /// Recently seen exact layout shapes, ordered from oldest to newest.
     pub(super) retained_root_recency: Vec<LayoutRootCacheKey>,
@@ -113,6 +139,7 @@ impl TaffyLayoutEngine {
             node_fingerprints: FxHashMap::default(),
             node_layout_metadata: FxHashMap::default(),
             measured_subtrees: FxHashSet::default(),
+            pure_measure_cache: FxHashMap::default(),
             previous_layout_roots: FxHashMap::default(),
             retained_root_recency: Vec::new(),
             computed_root_keys: Vec::new(),
@@ -315,6 +342,8 @@ impl TaffyLayoutEngine {
         self.current_root_diagnostics
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            self.pure_measure_cache.clear();
+            self.pure_measure_cache.shrink_to_fit();
             self.previous_layout_roots.clear();
             self.retained_root_recency.clear();
             self.retained_root_recency.shrink_to_fit();
@@ -562,11 +591,13 @@ impl TaffyLayoutEngine {
             transform(available_space.height),
         );
 
+        let node_fingerprints = &self.node_fingerprints;
+        let pure_measure_cache = &mut self.pure_measure_cache;
         self.taffy
             .compute_layout_with_measure(
                 id.into(),
                 available_space.into(),
-                |inputs, _id, node_context, style| {
+                |inputs, node_id, node_context, style| {
                     taffy::compute_leaf_layout(
                         inputs,
                         style,
@@ -596,12 +627,40 @@ impl TaffyLayoutEngine {
 
                             node_context.last_measure_input =
                                 Some((known_dimensions, available_space));
-                            let measured: Size<Pixels> = (node_context.measure)(
-                                known_dimensions,
-                                available_space,
-                                window,
-                                cx,
-                            );
+                            // The recursive root fingerprint can change because a sibling moved.
+                            // Pure leaf measurement depends only on the leaf fingerprint and its
+                            // actual constraints, not on the parent node's placement.
+                            let key = node_context.is_pure.then(|| {
+                                node_fingerprints
+                                    .get(&LayoutId::from(node_id))
+                                    .copied()
+                                    .flatten()
+                                    .map(|fingerprint| PureMeasureCacheKey::new(
+                                        fingerprint,
+                                        known_dimensions,
+                                        available_space,
+                                    ))
+                            }).flatten();
+                            let measured = if let Some(cached) =
+                                key.and_then(|key| pure_measure_cache.get(&key).copied())
+                            {
+                                cached
+                            } else {
+                                let measured = (node_context.measure)(
+                                    known_dimensions,
+                                    available_space,
+                                    window,
+                                    cx,
+                                );
+                                if let Some(key) = key {
+                                    // Bound cross-frame residency independently from Taffy nodes.
+                                    if pure_measure_cache.len() >= 4096 {
+                                        pure_measure_cache.clear();
+                                    }
+                                    pure_measure_cache.insert(key, measured);
+                                }
+                                measured
+                            };
                             size(
                                 measured.width.0 * scale_factor,
                                 measured.height.0 * scale_factor,
@@ -774,6 +833,31 @@ impl TaffyLayoutEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pure_measure_cache_distinguishes_size_constraints_and_content_identity() {
+        let min = size(AvailableSpace::MinContent, AvailableSpace::MaxContent);
+        let known = size(Some(Pixels(48.)), None);
+        let first = PureMeasureCacheKey::new(7, known, min);
+        let same = PureMeasureCacheKey::new(7, known, min);
+        let different_width = PureMeasureCacheKey::new(
+            7,
+            size(Some(Pixels(49.)), None),
+            min,
+        );
+        let changed_content = PureMeasureCacheKey::new(8, known, min);
+        let changed_available = PureMeasureCacheKey::new(
+            7,
+            known,
+            size(AvailableSpace::Definite(Pixels(48.)), AvailableSpace::MaxContent),
+        );
+        let mut cache = FxHashMap::default();
+        cache.insert(first, size(Pixels(20.), Pixels(30.)));
+        assert_eq!(cache.get(&same).copied(), Some(size(Pixels(20.), Pixels(30.))));
+        assert!(!cache.contains_key(&different_width));
+        assert!(!cache.contains_key(&changed_content));
+        assert!(!cache.contains_key(&changed_available));
+    }
 
     #[test]
     fn frame_clear_releases_excess_layout_working_set_capacity() {
