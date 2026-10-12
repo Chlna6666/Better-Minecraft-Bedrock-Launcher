@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use winit::{event_loop::EventLoopProxy, raw_window_handle as rwh, window::Window as WinitWindow};
 
 use super::{
-    WindowsNativeCommand, WindowsNativeEvent, WindowsNativeWindow, WindowsPlatformInner,
-    WindowsUserEvent, WindowsWindow, WindowsWindowAction,
+    WindowsNativeCommand, WindowsNativeEvent, WindowsNativeGeometry, WindowsNativeWindow,
+    WindowsPlatformInner, WindowsUserEvent, WindowsWindow, WindowsWindowAction,
 };
 use crate::{
     ActivePresentationFrame, AnyWindowHandle, Bounds, Capslock, DispatchEventResult,
@@ -399,38 +399,15 @@ impl WindowProxy {
         receiver.recv().ok().flatten()
     }
 
-    /// Read native geometry without sending a synchronous command back to the HWND owner.
-    /// During `drag_resize_window`, Win32 runs a modal size/move message loop: user-event
-    /// commands to the outer winit loop are not guaranteed to run until the drag finishes.
-    /// Waiting for `WindowCall` here stalls the UI owner's resize callback and leaves the
-    /// newly exposed client area unpainted until the native loop returns.
-    fn refresh_geometry_snapshot(&self, resized: Option<(Size<Pixels>, f32)>) {
+    /// Apply the geometry captured by the native owner before this event was sent.
+    /// A synchronous WindowCall would deadlock/stall during the modal size/move loop.
+    fn apply_native_geometry(&self, geometry: WindowsNativeGeometry) {
         let mut snapshot = self.snapshot.borrow_mut();
-        if let Some((size, scale)) = resized {
-            snapshot.content_size = size;
-            snapshot.bounds.size = size;
-            snapshot.scale_factor = scale;
-        }
-
-        let scale = snapshot.scale_factor;
-        if scale.is_finite() && scale > 0.0 {
-            if let Ok(position) = self.window.outer_position() {
-                snapshot.bounds.origin = Point {
-                    x: Pixels(position.x as f32 / scale),
-                    y: Pixels(position.y as f32 / scale),
-                };
-            }
-        }
-        snapshot.maximized = self.window.is_maximized().unwrap_or(snapshot.maximized);
-        snapshot.minimized = self.window.is_minimized().unwrap_or(snapshot.minimized);
-        snapshot.fullscreen = self.window.fullscreen().is_some();
-        snapshot.window_bounds = if snapshot.fullscreen {
-            WindowBounds::Fullscreen(snapshot.bounds)
-        } else if snapshot.maximized {
-            WindowBounds::Maximized(snapshot.bounds)
-        } else {
-            WindowBounds::Windowed(snapshot.bounds)
-        };
+        snapshot.bounds = geometry.bounds;
+        snapshot.window_bounds = geometry.window_bounds;
+        snapshot.maximized = geometry.maximized;
+        snapshot.minimized = geometry.minimized;
+        snapshot.fullscreen = geometry.fullscreen;
     }
 
     fn queue_scene(
@@ -518,16 +495,21 @@ impl WindowProxy {
                     self.callbacks.borrow_mut().hovered = Some(callback);
                 }
             }
-            WindowsNativeEvent::Resized(size, scale) => {
-                self.refresh_geometry_snapshot(Some((size, scale)));
+            WindowsNativeEvent::Resized(size, scale, geometry) => {
+                self.apply_native_geometry(geometry);
+                {
+                    let mut snapshot = self.snapshot.borrow_mut();
+                    snapshot.content_size = size;
+                    snapshot.scale_factor = scale;
+                }
                 let callback = self.callbacks.borrow_mut().resized.take();
                 if let Some(mut callback) = callback {
                     callback(size, scale);
                     self.callbacks.borrow_mut().resized = Some(callback);
                 }
             }
-            WindowsNativeEvent::Moved => {
-                self.refresh_geometry_snapshot(None);
+            WindowsNativeEvent::Moved(geometry) => {
+                self.apply_native_geometry(geometry);
                 let callback = self.callbacks.borrow_mut().moved.take();
                 if let Some(mut callback) = callback {
                     callback();

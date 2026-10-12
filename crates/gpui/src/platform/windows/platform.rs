@@ -201,13 +201,24 @@ pub(crate) enum WindowsWindowAction {
     ToggleFullscreen,
 }
 
+/// Geometry captured on the Win32 owner thread and delivered without blocking RPC.
+/// The UI-side proxy installs this state but does not query the native HWND.
+#[derive(Clone, Copy)]
+pub(crate) struct WindowsNativeGeometry {
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) window_bounds: WindowBounds,
+    pub(crate) maximized: bool,
+    pub(crate) minimized: bool,
+    pub(crate) fullscreen: bool,
+}
+
 pub(crate) enum WindowsNativeEvent {
     Input(PlatformInput),
     Active(bool),
     Visibility(WindowVisibility),
     Hovered(bool),
-    Resized(Size<Pixels>, f32),
-    Moved,
+    Resized(Size<Pixels>, f32, WindowsNativeGeometry),
+    Moved(WindowsNativeGeometry),
     AppearanceChanged,
     CloseRequested,
     Closed,
@@ -1666,12 +1677,22 @@ impl WindowsApplication {
                         let _ = hover_sender.send(WindowsNativeEvent::Hovered(hovered));
                     }));
                     let resize_sender = sender.clone();
+                    let resize_window = Rc::downgrade(&window.0);
                     window.on_resize(Box::new(move |size, scale| {
-                        let _ = resize_sender.send(WindowsNativeEvent::Resized(size, scale));
+                        if let Some(inner) = resize_window.upgrade() {
+                            let geometry = WindowsWindow(inner).native_geometry();
+                            let _ = resize_sender.send(WindowsNativeEvent::Resized(
+                                size, scale, geometry,
+                            ));
+                        }
                     }));
                     let move_sender = sender.clone();
+                    let move_window = Rc::downgrade(&window.0);
                     window.on_moved(Box::new(move || {
-                        let _ = move_sender.send(WindowsNativeEvent::Moved);
+                        if let Some(inner) = move_window.upgrade() {
+                            let geometry = WindowsWindow(inner).native_geometry();
+                            let _ = move_sender.send(WindowsNativeEvent::Moved(geometry));
+                        }
                     }));
                     let appearance_sender = sender.clone();
                     window.on_appearance_changed(Box::new(move || {

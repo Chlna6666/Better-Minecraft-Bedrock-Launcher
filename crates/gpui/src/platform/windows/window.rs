@@ -496,6 +496,18 @@ impl Clone for WindowsWindow {
 }
 
 impl WindowsWindow {
+    /// Return authoritative native geometry without asking the UI thread to synchronously
+    /// call back into the Win32 event loop during interactive window dragging.
+    pub(crate) fn native_geometry(&self) -> super::platform::WindowsNativeGeometry {
+        super::platform::WindowsNativeGeometry {
+            bounds: PlatformWindow::bounds(self),
+            window_bounds: PlatformWindow::window_bounds(self),
+            maximized: PlatformWindow::is_maximized(self),
+            minimized: PlatformWindow::is_minimized(self),
+            fullscreen: PlatformWindow::is_fullscreen(self),
+        }
+    }
+
     fn default_resize_inset() -> Pixels {
         px(8.0)
     }
