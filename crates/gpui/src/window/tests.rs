@@ -946,6 +946,59 @@ fn content_bounds_change_still_dirties_window(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn rapid_resize_updates_latest_viewport_without_invalidating_companion_window(
+    cx: &mut TestAppContext,
+) {
+    let mut resized = cx.add_empty_window();
+    let companion = cx.add_empty_window();
+    let (companion_viewport, companion_frames) = companion.update(|window, _| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        (window.viewport_size(), test_window.requested_frame_count())
+    });
+
+    for bounds in [
+        size(px(920.0), px(580.0)),
+        size(px(1140.0), px(710.0)),
+        size(px(1000.0), px(660.0)),
+    ] {
+        resized.simulate_resize(bounds);
+    }
+    resized.run_until_parked();
+
+    resized.update(|window, _| {
+        assert_eq!(window.viewport_size(), size(px(1000.0), px(660.0)));
+        assert_eq!(window.bounds().size, size(px(1000.0), px(660.0)));
+    });
+    companion.update(|window, _| {
+        let test_window = window.platform_window.as_test().unwrap().clone();
+        assert_eq!(window.viewport_size(), companion_viewport);
+        assert_eq!(test_window.requested_frame_count(), companion_frames);
+    });
+}
+
+#[gpui::test]
+fn reentrant_native_resize_delivers_latest_viewport_after_window_borrow(
+    cx: &mut TestAppContext,
+) {
+    let mut visual = cx.add_empty_window();
+    let latest = size(px(1216.0), px(752.0));
+    visual.update(|window, _| {
+        let mut native = window.platform_window.as_test().unwrap().clone();
+        // Win32 can send WM_SIZE while the high-level window is still borrowed by
+        // a foreground input callback. The geometry event must survive until the
+        // callback unwinds instead of being silently discarded.
+        native.simulate_resize(size(px(1040.0), px(680.0)));
+        native.simulate_resize(latest);
+        assert_ne!(window.viewport_size(), latest);
+    });
+    visual.run_until_parked();
+    visual.update(|window, _| {
+        assert_eq!(window.viewport_size(), latest);
+        assert_eq!(window.bounds().size, latest);
+    });
+}
+
+#[gpui::test]
 fn content_bounds_change_only_invalidates_viewport_dependent_views(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, cx| {

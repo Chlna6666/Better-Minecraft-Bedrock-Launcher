@@ -164,6 +164,8 @@ impl Entry {
             Command::Tick(..) => GpuOwnerJobKind::Tick,
             Command::Continue(..) => GpuOwnerJobKind::Continue,
             Command::Resize(..) => GpuOwnerJobKind::Resize,
+            #[cfg(any(test, target_os = "windows"))]
+            Command::StretchResize(..) => GpuOwnerJobKind::Resize,
             _ => GpuOwnerJobKind::Control,
         };
         let started_at = Instant::now(); // Command service time, not visual animation time.
@@ -234,6 +236,10 @@ impl Entry {
                 {
                     self.tick(now, None);
                 }
+            }
+            #[cfg(any(test, target_os = "windows"))]
+            Command::StretchResize(size) => {
+                self.renderer.stretch_surface_for_pending_resize(size);
             }
             Command::Resize(size) => {
                 // Target recreation may cancel the backend's old readiness registration.

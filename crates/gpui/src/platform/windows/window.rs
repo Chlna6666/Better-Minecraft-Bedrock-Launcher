@@ -1173,6 +1173,9 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) content_ready: Arc<AtomicBool>,
     presentation_state: Cell<WindowsWindowPresentationState>,
     pending_resize: Cell<Option<PendingWindowsResize>>,
+    // WM_SIZE may arrive while a reentrant input/visibility callback borrows state.
+    // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
+    pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
@@ -1522,6 +1525,7 @@ impl WindowsWindow {
             content_ready: Arc::new(AtomicBool::new(false)),
             presentation_state: Cell::new(presentation_state),
             pending_resize: Cell::new(None),
+            pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
@@ -1748,9 +1752,16 @@ impl WindowsWindow {
             height: Pixels(physical_size.height as f32 / scale_factor),
         };
         let Ok(state) = self.try_borrow_state() else {
-            log::warn!("window state is already borrowed while synchronizing Windows size");
+            // WM_SIZE can arrive reentrantly from the OS resize loop while input/visibility
+            // handling still owns the window state. Never discard the new physical extent.
+            // Keep a per-window retry bit so global DWM dispatch will not skip this HWND.
+            self.0.pending_native_size_retry.set(true);
+            if !self.0.vsync_scheduler.request_frame() {
+                self.window().request_redraw();
+            }
             return;
         };
+        self.0.pending_native_size_retry.set(false);
         if state.logical_size.get() == logical_size && state.scale_factor.get() == scale_factor {
             return;
         }
@@ -1801,6 +1812,11 @@ impl WindowsWindow {
         // taking it while the callback is temporarily removed from `Callbacks`.
         if self.0.frame_dispatch_in_progress.replace(true) {
             return;
+        }
+        if self.0.pending_native_size_retry.replace(false) {
+            // The original WM_SIZE arrived during a nested window borrow. Only this
+            // window re-queries its HWND, without polling all windows every DWM frame.
+            self.sync_current_native_size();
         }
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
@@ -1896,6 +1912,7 @@ impl WindowsWindow {
             return false;
         };
         self.0.pending_resize.get().is_some()
+            || self.0.pending_native_size_retry.get()
             || state.pending_frame_request.get().requires_frame()
     }
 

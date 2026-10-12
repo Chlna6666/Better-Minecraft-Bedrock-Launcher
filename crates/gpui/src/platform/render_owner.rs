@@ -351,9 +351,10 @@ impl RenderOwner {
 
     #[cfg(target_os = "windows")]
     pub(super) fn stretch_for_pending_resize(&self, size: Size<DevicePixels>) {
-        if let Err(error) =
-            self.control(move |renderer| renderer.stretch_surface_for_pending_resize(size))
-        {
+        // Interactive WM_SIZE may arrive much faster than the GPU can service it. A typed,
+        // latest-wins command avoids filling the global GPU owner with obsolete stretch
+        // closures. Queue coalescing never crosses Draw/Resize or control barriers.
+        if let Err(error) = self.enqueue(Command::StretchResize(size)) {
             log::error!("failed to queue GPU resize stretch: {error:#}");
         }
     }

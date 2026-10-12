@@ -209,6 +209,23 @@ Windows input and backpressure invariants:
 - Track process-to-first-visible frame, per-window queue wait p50/p95/p99, GPU
   blocking-wait time and idle Present counts for DX11/DX12/Vulkan/OpenGL independently.
 
+Interactive Win32 resize correctness:
+- WM_SIZE is an authoritative geometry edge, not a request to redraw every View.
+  If native size synchronization encounters a window-state borrow conflict, retain
+  a per-HWND retry bit and rearm the native cadence; the global DWM dispatcher
+  must not regard that HWND as idle while its geometry retry is outstanding.
+- The GPUI resize callback attempts a low-latency immediate Window update.
+  Reentrant App/Window borrowing from the Win32 size/move modal loop defers one
+  coalesced foreground retry that reads the latest authoritative viewport.
+- Compositor stretch of an old frame during live resize uses a per-window typed
+  StretchResize GPU command. Adjacent queued stretches coalesce latest-wins,
+  but never cross Draw, swapchain Resize, or other resource-order barriers.
+- A pure move does not invalidate layout. Resize must ultimately update root
+  constraints, GPUI viewport and drawable extent; stretched pixels are only
+  an interim latency mask, not the resulting correct-size Scene.
+- Validate grow/shrink, reentrant WM_SIZE, multi-window modal drag and cross-DPI
+  moves; collect viewport, native-client and drawable extents plus frame latencies.
+
 Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI
 layout or rebuilding its committed display list. Animation completions are returned only after
 successful submission. Windows, Wayland and X11 declare ownership through `owns_scene_animations()`;

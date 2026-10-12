@@ -21,6 +21,9 @@ pub(super) enum Command {
     Tick(Instant, Option<ActivePresentationTiming>),
     Continue(Instant),
     Resize(Size<DevicePixels>),
+    /// Latest-wins native compositor stretch while WM_SIZE changes the client extent.
+    #[cfg(any(test, target_os = "windows"))]
+    StretchResize(Size<DevicePixels>),
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -40,6 +43,8 @@ impl Command {
             | Self::Call(_)
             | Self::Shutdown(_)
             | Self::Draw { reply: Some(_), .. } => true,
+            #[cfg(any(test, target_os = "windows"))]
+            Self::StretchResize(_) => true,
             #[cfg(any(test, not(target_os = "windows")))]
             Self::PresentationInterval(_) => true,
             #[cfg(not(target_os = "windows"))]
@@ -100,6 +105,19 @@ impl Queue {
             .rposition(|queued| queued.command.is_barrier())
             .map_or(0, |index| index + 1);
         match &mut command {
+            #[cfg(any(test, target_os = "windows"))]
+            Command::StretchResize(_) => {
+                // Only replace the immediately preceding stretch; a Draw, swapchain
+                // Resize or resource barrier must observe the prior stretch in order.
+                if state.commands.back().is_some_and(|last| {
+                    matches!(last.command, Command::StretchResize(_))
+                }) {
+                    let previous = state.commands.pop_back()
+                        .expect("last command was a stretch");
+                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
+                    coalesced_count = previous.coalesced_count.saturating_add(1);
+                }
+            }
             Command::Resize(_) => {
                 // Collapse adjacent unconsumed resizes only. Never cross a Draw,
                 // fence-bearing Call, or resource ownership barrier.

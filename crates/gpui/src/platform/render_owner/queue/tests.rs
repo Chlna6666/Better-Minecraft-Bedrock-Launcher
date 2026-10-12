@@ -414,3 +414,42 @@ fn adjacent_resize_commands_coalesce_without_crossing_draw_barriers() {
     let Some(Command::Resize(after_draw)) = queue.take() else { panic!("last resize lost") };
     assert_eq!(after_draw, extent(1300));
 }
+
+#[test]
+fn live_resize_stretch_coalesces_latest_without_crossing_draw_or_resize() {
+    use crate::{DevicePixels, size};
+
+    let queue = Queue::default();
+    let extent = |width, height| size(DevicePixels(width), DevicePixels(height));
+    let first_time = Instant::now();
+
+    queue.enqueue_at(Command::StretchResize(extent(1000, 650)), || Ok(()), first_time)
+        .unwrap();
+    queue.enqueue_at(
+        Command::StretchResize(extent(1120, 720)),
+        || panic!("a pending stretch must already have scheduled the GPU owner"),
+        first_time + Duration::from_millis(1),
+    ).unwrap();
+    let first = queue.take_timed().expect("latest stretch");
+    assert_eq!(first.coalesced_count, 1);
+    assert_eq!(first.first_enqueued_at, first_time);
+    let Command::StretchResize(extent) = first.command else { panic!("expected stretch") };
+    assert_eq!(extent, size(DevicePixels(1120), DevicePixels(720)));
+    assert!(queue.take().is_none());
+
+    queue.enqueue(Command::StretchResize(extent(1200, 750)), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.0)), || Ok(())).unwrap();
+    queue.enqueue(Command::StretchResize(extent(1280, 800)), || Ok(())).unwrap();
+    queue.enqueue(Command::Resize(extent(1280, 800)), || Ok(())).unwrap();
+    queue.enqueue(Command::StretchResize(extent(1320, 850)), || Ok(())).unwrap();
+
+    assert!(matches!(queue.take(), Some(Command::StretchResize(_))));
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    assert!(matches!(queue.take(), Some(Command::StretchResize(_))));
+    assert!(matches!(queue.take(), Some(Command::Resize(_))));
+    let Some(Command::StretchResize(latest)) = queue.take() else {
+        panic!("stretch following swapchain resize was dropped")
+    };
+    assert_eq!(latest, extent(1320, 850));
+    assert!(queue.take().is_none());
+}

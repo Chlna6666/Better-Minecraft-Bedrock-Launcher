@@ -205,10 +205,55 @@ impl Window {
         platform_window.set_presentation_animation_completion_sender(animation_completion_sender);
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
+            let foreground_executor = cx.foreground_executor().clone();
+            // Native WM_SIZE can be delivered from a nested drag/resize message loop while
+            // a GPUI App/Window update is borrowed. Keep the synchronous low-latency path
+            // when possible, and coalesce any reentrant retries into one foreground task.
+            // Each attempt re-reads the platform's latest authoritative viewport size.
+            let retry_scheduled = Rc::new(Cell::new(false));
             move |_, _| {
-                let _ = ignore_window_not_found(
-                    handle.update(&mut cx, |_, window, cx| window.content_bounds_changed(cx)),
-                );
+                if retry_scheduled.get() {
+                    return;
+                }
+                match handle.update(&mut cx, |_, window, cx| window.content_bounds_changed(cx)) {
+                    Ok(()) => {}
+                    Err(error) if error.to_string() == "window not found" => {}
+                    Err(error) => {
+                        log::debug!("deferring reentrant GPUI resize callback: {error:#}");
+                        retry_scheduled.set(true);
+                        let mut cx = cx.clone();
+                        let retry_scheduled = retry_scheduled.clone();
+                        foreground_executor
+                            .spawn(async move {
+                                // Retries are bounded and yield to the event loop; a
+                                // temporarily borrowed Window must not lose its final resize.
+                                // Exponential backoff avoids a 1 ms polling storm if UI work
+                                // genuinely stays busy for multiple native messages.
+                                for attempt in 0..12 {
+                                    match handle.update(&mut cx, |_, window, cx| {
+                                        window.content_bounds_changed(cx)
+                                    }) {
+                                        Ok(()) => break,
+                                        Err(error) if error.to_string() == "window not found" => {
+                                            break;
+                                        }
+                                        Err(error) if attempt < 11 => {
+                                            log::trace!("GPUI resize callback remains busy: {error:#}");
+                                            let delay_ms = 1_u64 << attempt.min(4);
+                                            cx.background_executor()
+                                                .timer(Duration::from_millis(delay_ms))
+                                                .await;
+                                        }
+                                        Err(error) => {
+                                            log::warn!("GPUI resize callback could not run after bounded retries: {error:#}");
+                                        }
+                                    }
+                                }
+                                retry_scheduled.set(false);
+                            })
+                            .detach();
+                    }
+                }
             }
         }));
         platform_window.on_moved(Box::new({
