@@ -689,11 +689,14 @@ that can increase GPU utilization. Explicit `composite_layer()` calls
 continue to work as before, and `BMCBL_ENABLE_RETAINED_COLOR=1` remains
 an explicit override for A/B analysis.
 
-### Experimental independent static-background texture
+### Conservative automatic static-background texture
 
-Set `BMCBL_ENABLE_AUTO_STATIC_LAYER=1` **before process start** to
-enable the first REAL independent offscreen GPU cache for ordinary scenes.
-This is **opt-in until native GPU verification is complete**.
+Nova automatically considers the existing independent offscreen GPU cache for
+strictly flat, painter-ordered Quad/Shadow prefixes. Set
+`BMCBL_ENABLE_AUTO_STATIC_LAYER=0` **before process start** to disable the
+path for a native GPU A/B comparison. This is a narrow, proof-gated default,
+not general automatic layerization; cross-backend GPU-busy and pixel validation
+of this new default are still required.
 
 Nova rewrites a qualified flat, painter-ordered Scene at the retained
 upload boundary into:
@@ -713,8 +716,8 @@ its background; actual background changes invalidate its target. Recursive
 retained animation values remain in the root scene as before. The generated
 Layer and synthetic full-window retained root are mutually exclusive.
 This mechanism still samples the cached color texture in the main Pass:
-benchmark overdraw reduction against that composite cost before enabling
-it by default.
+benchmark overdraw reduction against that composite cost, and use the
+opt-out switch if a backend regresses until its native pixel/BUSY checks pass.
 
 The prior auto-retained-root heuristic remains for other qualified large
 pages, and `BMCBL_ENABLE_RETAINED_COLOR=1` explicitly forces that legacy

@@ -818,11 +818,12 @@ impl NovaRenderer {
         // animation samples), so their normal root value refresh is unchanged.
         // Native GPU validation is still required before enabling this
         // optimization by default across all rendering backends.
+        // The candidate builder rejects non-flat streams, filters, atlas-backed
+        // prefixes and unstable resources. Its proven quad/shadow prefix can be
+        // retained by default without changing ordinary/complex Scene handling.
+        // A process-level off switch remains available for native GPU A/B tests.
         let captured_scene = (!reusable
-            && matches!(
-                std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref(),
-                Ok("1")
-            ))
+            && std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref() != Ok("0"))
         .then(|| auto_capture_static_background(scene, self.current_size))
         .flatten();
         let scene_to_encode = captured_scene.as_ref().unwrap_or(scene);
