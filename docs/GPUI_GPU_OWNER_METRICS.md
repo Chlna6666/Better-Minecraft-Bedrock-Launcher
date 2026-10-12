@@ -48,6 +48,19 @@ Native ticks and readiness continuations that enter the queue have normal queue
 timestamps. A replaced request produces no separate execution sample; the final
 sample carries `coalesced_count` and the earliest pending timestamp.
 
+Pending-submission retries now also run autonomously on Windows. Their queue wait
+is `None`; `schedule_lateness_us` describes the completion-poll deadline, not display
+cadence. Only a deferred packet needing a fence-safe slot, target rebind or atlas
+retirement gets a retry deadline (1/2/4/8/16 ms capped backoff). Successful submission,
+errors and notification-backed readiness remove that deadline. Native speculative
+ticks are suppressed while this per-window continuation owns readiness. Idle windows
+do not poll merely because a submitted frame's fence is still pending.
+
+Renderer preparation and Windows initialization logs include `queue_wait_us` from
+enqueue to GPU-owner execution. Keep these separate from device/core/swapchain/resource
+initialization times and process-to-first-visible/content-ready latency: overlapping
+preparation jobs have different timing origins.
+
 The global CPU value is captured after completed dispatches. The snapshot uses
 the current elapsed time, so prolonged idle reduces lifetime busy ratios. A slow
 unfinished job will appear in totals after completion; `sample_age_ms` exposes

@@ -170,6 +170,25 @@ can still cause inter-window head-of-line blocking. GPU owner queue wait, per-wi
 and in-flight submission waits must be measured before claiming hard worst-case latency bounds;
 do not treat this scheduling improvement as proof of real-time isolation.
 
+Deferred submission now polls completion before target rebinding and uploads. A full frame-slot
+set, Path Mask promotion, incompatible filter layout or retirable atlas removal retains the
+packet and its unsubmitted damage until the required fences complete. The owner services other
+windows between per-window completion retries with capped 1–16 ms backoff; retries neither notify
+UI entities nor rebuild layout. Explicit synchronous mode retains its blocking contract.
+
+Vulkan ResourceSet and TextureView destruction now removes the public handle and retains the
+native object behind a graphics-queue cleanup fence. Completed resources are collected by the
+existing poll/teardown paths; ordinary descriptor rebinding and atlas retirement no longer call
+`device_wait_idle` for those two object types. Each retirement currently adds one empty queue
+submission, so retained objects and queue overhead still need measurement. Resize, recovery,
+device-local synchronous uploads, explicit trim and shutdown still contain safety barriers.
+
+Application invalidation remains scoped to observable state: Map Viewer coordinate/zoom/dimension
+editing notifies its root only when clearing visible validation or applying an edit; ordinary text
+changes notify InputState. Main-window dropdown observers compare their own window's overlay
+revision before notifying, including removal. RenderOnce trigger/overlay state transitions still
+require their owning view; this change does not establish fully independent dropdown rendering.
+
 Windows input and backpressure invariants:
 - An inert MouseDown/MouseUp on a listener-free, tooltip-free background must not
   invalidate the view cache or request a GPU frame, including after keyboard-to-mouse

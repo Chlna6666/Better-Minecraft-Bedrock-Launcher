@@ -1,10 +1,11 @@
-#[cfg(any(test, not(target_os = "windows")))]
 use std::time::{Duration, Instant};
 
 /// Native display cadence for retained presentation, independent of UI dispatch.
 /// Idle, hidden and notification-backed readiness waits have no deadline.
 #[derive(Default)]
 pub(super) struct Schedule {
+    submission_deadline: Option<Instant>,
+    submission_retry_delay: Duration,
     #[cfg(any(test, not(target_os = "windows")))]
     interval: Option<Duration>,
     #[cfg(any(test, not(target_os = "windows")))]
@@ -45,11 +46,45 @@ impl Schedule {
         self.native_visible = visible;
         self.deadline = None;
         self.retry_delay = Duration::ZERO;
+        if !visible {
+            self.retry_submission(Instant::now(), false);
+        }
     }
 
-    #[cfg(any(test, not(target_os = "windows")))]
     pub(super) fn deadline(&self) -> Option<Instant> {
-        self.deadline
+        #[cfg(any(test, not(target_os = "windows")))]
+        {
+            self.deadline
+                .into_iter()
+                .chain(self.submission_deadline)
+                .min()
+        }
+        #[cfg(all(not(test), target_os = "windows"))]
+        {
+            self.submission_deadline
+        }
+    }
+
+    /// Poll only an unsubmitted packet whose GPU resources are still in flight. This is
+    /// completion bookkeeping, not an animation clock; native presentation pacing stays intact.
+    pub(super) fn retry_submission(&mut self, now: Instant, pending: bool) {
+        #[cfg(any(test, not(target_os = "windows")))]
+        let pending = pending && (!self.native_callbacks || self.native_visible);
+        if !pending {
+            self.submission_deadline = None;
+            self.submission_retry_delay = Duration::ZERO;
+            return;
+        }
+        self.submission_retry_delay = if self.submission_retry_delay.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            (self.submission_retry_delay * 2).min(Duration::from_millis(16))
+        };
+        self.submission_deadline = Some(now + self.submission_retry_delay);
+    }
+
+    pub(super) fn is_retrying_submission(&self) -> bool {
+        self.submission_deadline.is_some()
     }
 
     #[cfg(any(test, not(target_os = "windows")))]

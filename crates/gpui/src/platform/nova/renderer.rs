@@ -163,6 +163,7 @@ pub(crate) struct NovaRenderer {
     diagnostics: NovaRenderDiagnostics,
     submission_mode: GpuSubmissionMode,
     pending_submissions: Vec<PendingSubmission>,
+    submission_retry_pending: bool,
     metrics_started_at: Instant,
     first_frame_reported: bool,
     submitted_frames: u64,
@@ -346,6 +347,9 @@ impl NovaRenderer {
             backdrop_blur_quality,
         );
         self.reconcile_gpu_layer_animation_damage(packet);
+        if !self.frame_submission_is_ready(&packet.scene)? {
+            return Ok(false);
+        }
         self.ensure_path_mask_target_for_frame()?;
         self.prepare_renderer_extensions(packet.frame_time)?;
         self.update_backdrop_blur_cache_plan(backdrop_blur_quality);
@@ -660,6 +664,9 @@ impl NovaRenderer {
                 backdrop_blur_quality,
             );
             self.reconcile_gpu_layer_animation_damage(&mut packet);
+            if !self.frame_submission_is_ready(&packet.scene)? {
+                return Ok(false);
+            }
             self.ensure_path_mask_target_for_frame()?;
             self.prepare_renderer_extensions(packet.frame_time)?;
             self.update_backdrop_blur_cache_plan(backdrop_blur_quality);

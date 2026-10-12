@@ -216,7 +216,6 @@ impl Queue {
         })
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(super) fn has_commands(&self) -> bool {
         !self.0.lock().commands.is_empty()
     }

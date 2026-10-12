@@ -37,7 +37,6 @@ impl Worker {
         self.entries.insert(id, entry);
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(super) fn next_deadline(&self) -> Option<Instant> {
         self.entries
             .values()
@@ -50,7 +49,6 @@ impl Worker {
             .min()
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(super) fn present_due(&mut self) {
         let now = Instant::now();
         let due = self
@@ -230,7 +228,10 @@ impl Entry {
             Command::Continue(now) => {
                 // Windows swapchain-ready callbacks are serialized into this owner's
                 // command queue, not reported from a foreign callback thread.
-                if self.schedule.is_enabled() || cfg!(target_os = "windows") {
+                if self.schedule.is_enabled()
+                    || self.schedule.is_retrying_submission()
+                    || cfg!(target_os = "windows")
+                {
                     self.tick(now, None);
                 }
             }
@@ -271,7 +272,10 @@ impl Entry {
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) {
         #[cfg(not(target_os = "windows"))]
-        if self.presentation_clock.is_some() && !self.schedule.is_enabled() {
+        if self.presentation_clock.is_some()
+            && !self.schedule.is_enabled()
+            && !self.schedule.is_retrying_submission()
+        {
             return;
         }
         let mut completions = smallvec::SmallVec::new();
@@ -429,10 +433,20 @@ impl Entry {
         let pending = self.scene.is_some()
             || self.renderer.has_active_presentation_animations()
             || self.queue.has_presentation();
+        self.schedule.retry_submission(
+            Instant::now(),
+            pending
+                && result.is_ok()
+                && !submitted
+                && self.renderer.has_submission_retry()
+                && self.ready_registration.load(Ordering::Acquire) == 0,
+        );
         self.status.pending.store(pending, Ordering::Release);
         #[cfg(target_os = "windows")]
         self.status.waiting_for_frame_ready.store(
-            !submitted && self.ready_registration.load(Ordering::Acquire) != 0,
+            !submitted
+                && (self.ready_registration.load(Ordering::Acquire) != 0
+                    || self.schedule.is_retrying_submission()),
             Ordering::Release,
         );
         #[cfg(any(test, not(target_os = "windows")))]
@@ -448,7 +462,8 @@ impl Entry {
             pending,
             #[cfg(target_os = "windows")]
             waiting_for_frame_ready: !submitted
-                && self.ready_registration.load(Ordering::Acquire) != 0,
+                && (self.ready_registration.load(Ordering::Acquire) != 0
+                    || self.schedule.is_retrying_submission()),
             #[cfg(not(target_os = "windows"))]
             autonomous: self.schedule.is_enabled() || self.presentation_clock.is_some(),
             failed: result.is_err(),

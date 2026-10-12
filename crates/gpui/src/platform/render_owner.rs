@@ -38,8 +38,8 @@ use worker::{Entry, Worker};
 pub(crate) struct RenderOwnerFrame {
     pub(crate) submitted: bool,
     pub(crate) pending: bool,
-    /// A GPU readiness callback is armed; polling at the DWM refresh cadence
-    /// would waste CPU/GPU work while the swapchain is still unavailable.
+    /// Readiness is owned by a callback or a pending-submission retry deadline;
+    /// speculative DWM ticks would duplicate that per-window continuation.
     #[cfg(target_os = "windows")]
     pub(crate) waiting_for_frame_ready: bool,
     #[cfg(not(target_os = "windows"))]
@@ -53,8 +53,8 @@ pub(crate) struct RenderOwnerFrame {
 struct Status {
     pending: AtomicBool,
     submitted: AtomicBool,
-    /// Only the affected window stops speculative ticks while its swapchain has
-    /// an outstanding readiness callback; unrelated windows remain runnable.
+    /// Only the affected window stops speculative ticks while readiness has
+    /// an owner continuation; unrelated windows remain runnable.
     #[cfg(target_os = "windows")]
     waiting_for_frame_ready: AtomicBool,
 }
@@ -77,7 +77,6 @@ fn sender() -> Result<&'static Sender<Job>> {
                 .spawn(move || {
                     let mut worker = Worker::default();
                     loop {
-                        #[cfg(not(target_os = "windows"))]
                         let received = match worker.next_deadline() {
                             Some(deadline) => receiver
                                 .recv_timeout(deadline.saturating_duration_since(Instant::now())),
@@ -85,10 +84,6 @@ fn sender() -> Result<&'static Sender<Job>> {
                                 .recv()
                                 .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
                         };
-                        #[cfg(target_os = "windows")]
-                        let received = receiver
-                            .recv()
-                            .map_err(|_| mpsc::RecvTimeoutError::Disconnected);
                         match received {
                             Ok(job) => {
                                 let _dispatch = crate::diagnostics::gpu_owner::Dispatch::start();
@@ -100,7 +95,6 @@ fn sender() -> Result<&'static Sender<Job>> {
                         if worker.is_closing() {
                             break;
                         }
-                        #[cfg(not(target_os = "windows"))]
                         worker.present_due();
                     }
                 })?;
@@ -124,9 +118,16 @@ fn sender() -> Result<&'static Sender<Job>> {
 /// Returns an error if the GPU owner cannot start or accept the preparation job.
 #[cfg(target_os = "windows")]
 pub(crate) fn prepare_renderer(options: crate::RendererOptions) -> Result<()> {
+    let enqueued_at = Instant::now();
     sender()?
         .send(Box::new(move |_| {
             let started_at = Instant::now();
+            log::info!(
+                "GPUI renderer preparation queue_wait_us={}",
+                started_at
+                    .saturating_duration_since(enqueued_at)
+                    .as_micros()
+            );
             match NovaRenderer::prepare_renderer(&options) {
                 Ok(()) => log::info!(
                     "GPUI renderer preparation completed: backend={} elapsed_ms={}",
@@ -198,10 +199,15 @@ impl RenderOwner {
         report: Arc<dyn Fn(RenderOwnerFrame) + Send + Sync>,
         reply: oneshot::Sender<Result<Self>>,
     ) -> Result<()> {
+        let enqueued_at = Instant::now();
         let sender = sender()?.clone();
         let owner_sender = sender.clone();
         sender
             .send(Box::new(move |worker| {
+                log::info!(
+                    "GPUI renderer initialization queue_wait_us={}",
+                    enqueued_at.elapsed().as_micros()
+                );
                 let result = Self::create(worker, create, keep_alive, report, owner_sender);
                 if reply.send(result).is_err() {
                     log::debug!("GPU owner initialization receiver was dropped");

@@ -52,6 +52,50 @@ fn submit_presentation_buffers(
 }
 
 impl NovaRenderer {
+    /// Preflight before any target rebind or upload. Pending GPU readers keep their resources;
+    /// the owner retries this packet without occupying the shared thread in a fence wait.
+    pub(super) fn frame_submission_is_ready(&mut self, scene: &crate::Scene) -> Result<bool> {
+        self.submission_retry_pending = false;
+        if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
+            return Ok(true);
+        }
+        self.poll_pending_submissions()?;
+        let path_rebind = (!self.frame_upload.path_rasterization_vertices.is_empty()
+            || !self.frame_upload.path_sprites.is_empty())
+            && (self.path_texture_size.width() != self.current_size.width
+                || self.path_texture_size.height() != self.current_size.height);
+        let filter_rebind = !self.frame_upload.backdrop_blurs.is_empty()
+            && self.filters.targets.as_ref().is_some_and(|targets| {
+                !targets.is_layout_compatible(
+                    self.frame_upload.backdrop_blur_configs(),
+                    self.frame_upload.isolated_blur_source_indices(),
+                    super::present::has_root_backdrop_blurs(&self.frame_upload),
+                )
+            });
+        let atlas_retirement =
+            if !self.pending_submissions.is_empty() && self.atlas.has_pending_removals() {
+                let mut live_tiles = FxHashSet::default();
+                scene.collect_atlas_tile_ids_into(&mut live_tiles);
+                self.atlas.has_retirable_pending_removals(&live_tiles)
+            } else {
+                false
+            };
+        self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS
+            || self.next_available_frame_resource_index().is_err()
+            || atlas_retirement
+            || ((path_rebind || filter_rebind) && !self.pending_submissions.is_empty());
+        if self.submission_retry_pending {
+            log::trace!(target: "gpui::diagnostics",
+                "Nova submission deferred: pending={} path_rebind={} filter_rebind={} atlas_retirement={}",
+                self.pending_submissions.len(), path_rebind, filter_rebind, atlas_retirement);
+        }
+        Ok(!self.submission_retry_pending)
+    }
+
+    pub(crate) fn has_submission_retry(&self) -> bool {
+        self.submission_retry_pending
+    }
+
     pub(super) fn prepare_for_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
         if self.presentation_submission_mode() == GpuSubmissionMode::Synchronous {
             let had_pending_submissions = !self.pending_submissions.is_empty();
@@ -68,7 +112,7 @@ impl NovaRenderer {
         }
         self.poll_pending_submissions()?;
         if self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS {
-            self.wait_for_oldest_submission()?;
+            anyhow::bail!("nova submission preflight must reserve a fence-safe frame slot");
         }
         let frame_resource_index = self.next_available_frame_resource_index()?;
         self.activate_frame_resources(frame_resource_index)?;
@@ -113,24 +157,6 @@ impl NovaRenderer {
                 }
             }
         }
-        Ok(())
-    }
-
-    fn wait_for_oldest_submission(&mut self) -> Result<()> {
-        let Some(submission) = self
-            .pending_submissions
-            .first()
-            .map(|submission| submission.submission)
-        else {
-            return Ok(());
-        };
-        let started_at = Instant::now();
-        let result = lock_backend(&self.backend).wait_submission(submission);
-        let elapsed = started_at.elapsed();
-        crate::diagnostics::performance_metrics::record_gpu_submission_wait(elapsed);
-        crate::diagnostics::performance_metrics::record_frame_slot_wait(elapsed);
-        result?;
-        self.pending_submissions.remove(0);
         Ok(())
     }
 
