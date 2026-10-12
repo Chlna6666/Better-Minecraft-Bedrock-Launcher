@@ -439,8 +439,14 @@ impl TaffyLayoutEngine {
                 self.taffy.set_node_context(id.into(), None).expect(EXPECT_MESSAGE);
                 self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
             }
-            let old_children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
-            if old_children.as_slice() != LayoutId::to_taffy_slice(children) {
+            // Taffy 0.14 exposes allocation-free child traversal. The old
+            // children() call materialized a Vec on every stable node request,
+            // even when nothing changed in this subtree.
+            let child_order_unchanged = self.taffy.child_count(id.into()) == children.len()
+                && children.iter().enumerate().all(|(index, child)| {
+                    self.taffy.get_child_id(id.into(), index) == (*child).into()
+                });
+            if !child_order_unchanged {
                 self.taffy.set_children(id.into(), LayoutId::to_taffy_slice(children))
                     .expect(EXPECT_MESSAGE);
             }

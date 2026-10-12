@@ -149,6 +149,51 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(
 }
 
 #[gpui::test]
+fn native_taffy_compares_stable_child_order_without_allocating_a_child_vector(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let build = |engine: &mut TaffyLayoutEngine, reverse: bool| {
+            let left = engine.request_layout(
+                layout_identity("left"), Style::default(), px(16.), 1., &[],
+            );
+            let right = engine.request_layout(
+                layout_identity("right"), Style::default(), px(16.), 1., &[],
+            );
+            let children = if reverse { [right, left] } else { [left, right] };
+            let root = engine.request_layout(
+                layout_identity("root"), Style::default(), px(16.), 1., &children,
+            );
+            (left, right, root)
+        };
+
+        let first = build(&mut engine, false);
+        engine.compute_layout(first.2, AvailableSpace::min_size(), window, cx);
+        engine.clear();
+
+        let same = build(&mut engine, false);
+        assert_eq!(same, first);
+        assert!(!engine.taffy.dirty(same.2.into()).unwrap());
+        engine.compute_layout(same.2, AvailableSpace::min_size(), window, cx);
+        engine.clear();
+
+        let reversed = build(&mut engine, true);
+        assert_eq!(reversed, first);
+        assert!(engine.taffy.dirty(reversed.2.into()).unwrap());
+        assert_eq!(
+            engine.taffy.child_at_index(reversed.2.into(), 0).unwrap(),
+            reversed.1.into(),
+        );
+        engine.compute_layout(reversed.2, AvailableSpace::min_size(), window, cx);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
     cx: &mut TestAppContext,
 ) {
