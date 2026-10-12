@@ -168,24 +168,14 @@ impl TaffyLayoutEngine {
                     retained_nodes.shrink_to(target);
                 }
                 self.previous_layout_roots.insert(root_key, retained_nodes);
+                // Keep the most recent exact layout shapes warm across alternating
+                // popup/tab states instead of evicting every non-current shape.
+                self.retained_root_recency.retain(|key| *key != root_key);
+                self.retained_root_recency.push(root_key);
             }
         }
 
-        if computed_root_keys.len() > 16 && self.previous_layout_roots.len() > 16 {
-            // Sort only after saving roots so duplicate-key replacement keeps its original order.
-            computed_root_keys.sort_unstable_by_key(|(key, _)| root_order(key));
-            self.previous_layout_roots.retain(|key, _| {
-                computed_root_keys
-                    .binary_search_by_key(&root_order(key), |(current, _)| root_order(current))
-                    .is_ok()
-            });
-        } else {
-            self.previous_layout_roots.retain(|key, _| {
-                computed_root_keys
-                    .iter()
-                    .any(|(current_key, _)| current_key == key)
-            });
-        }
+        self.trim_retained_root_history();
         let root_target = 8usize.max(self.previous_layout_roots.len());
         if self.previous_layout_roots.capacity() > root_target.saturating_mul(4) {
             self.previous_layout_roots.shrink_to(root_target);
@@ -195,6 +185,37 @@ impl TaffyLayoutEngine {
         subtree_scratch.clear();
         self.computed_root_keys = computed_root_keys;
         self.subtree_scratch = subtree_scratch;
+    }
+
+    fn trim_retained_root_history(&mut self) {
+        // The cache key contains the entire recursive layout fingerprint and
+        // root constraints. Keeping prior shapes never bypasses either proof.
+        const MAX_ROOTS: usize = 16;
+        const MAX_NODES: usize = 8192;
+
+        self.retained_root_recency
+            .retain(|key| self.previous_layout_roots.contains_key(key));
+        let mut total_nodes: usize = self
+            .previous_layout_roots
+            .values()
+            .map(Vec::len)
+            .sum();
+        while self.retained_root_recency.len() > MAX_ROOTS
+            || (total_nodes > MAX_NODES && self.retained_root_recency.len() > 1)
+        {
+            let evicted = self.retained_root_recency.remove(0);
+            if let Some(nodes) = self.previous_layout_roots.remove(&evicted) {
+                total_nodes = total_nodes.saturating_sub(nodes.len());
+            }
+        }
+        // An isolated large page can exceed the nominal node budget, but
+        // keeping its only recent shape avoids a guaranteed miss every frame.
+        if self.retained_root_recency.capacity()
+            > self.retained_root_recency.len().max(8).saturating_mul(4)
+        {
+            self.retained_root_recency
+                .shrink_to(self.retained_root_recency.len().max(8));
+        }
     }
 
     pub(super) fn collect_subtree_nodes_into(&self, root_id: LayoutId, nodes: &mut Vec<LayoutId>) {
@@ -208,48 +229,81 @@ impl TaffyLayoutEngine {
     }
 }
 
-fn root_order(key: &LayoutRootCacheKey) -> (u64, AvailableSpaceKey, AvailableSpaceKey) {
-    (
-        key.root_fingerprint,
-        key.available_space.width,
-        key.available_space.height,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sorted_root_membership_matches_linear_lookup_including_duplicate_keys() {
-        let mut keys: Vec<_> = (0..64)
-            .rev()
-            .map(|index| LayoutRootCacheKey {
-                root_fingerprint: index / 3,
+    fn alternating_exact_layout_shapes_remain_warm_with_bounded_history() {
+        let mut engine = TaffyLayoutEngine::new();
+        let key = |index| LayoutRootCacheKey {
+            root_fingerprint: index,
+            available_space: size(
+                AvailableSpaceKey::Definite(800.0f32.to_bits()),
+                AvailableSpaceKey::Definite(600.0f32.to_bits()),
+            ),
+        };
+        let insert = |engine: &mut TaffyLayoutEngine, index, nodes: usize| {
+            let key = key(index);
+            engine.previous_layout_roots.insert(
+                key,
+                vec![
+                    RetainedLayoutNode {
+                        bounds: Default::default(),
+                        measure_input: None,
+                    };
+                    nodes
+                ],
+            );
+            engine.retained_root_recency.retain(|existing| *existing != key);
+            engine.retained_root_recency.push(key);
+            engine.trim_retained_root_history();
+        };
+
+        insert(&mut engine, 0, 2);
+        insert(&mut engine, 1, 2);
+        insert(&mut engine, 2, 2);
+        // Revisit the first state: its exact fingerprint stays resident.
+        insert(&mut engine, 0, 2);
+        for index in 3..18 {
+            insert(&mut engine, index, 2);
+        }
+        assert_eq!(engine.previous_layout_roots.len(), 16);
+        assert!(engine.previous_layout_roots.contains_key(&key(0)));
+        assert!(!engine.previous_layout_roots.contains_key(&key(1)));
+
+        engine.trim_retained_capacity(crate::GpuiMemoryTrimLevel::Aggressive);
+        assert!(engine.previous_layout_roots.is_empty());
+        assert!(engine.retained_root_recency.is_empty());
+    }
+
+    #[test]
+    fn retained_layout_history_limits_node_memory_without_losing_latest_shape() {
+        let mut engine = TaffyLayoutEngine::new();
+        for index in 0..3u64 {
+            let key = LayoutRootCacheKey {
+                root_fingerprint: index,
                 available_space: size(
-                    AvailableSpaceKey::Definite(index as u32),
+                    AvailableSpaceKey::MinContent,
                     AvailableSpaceKey::MaxContent,
                 ),
-            })
-            .collect();
-        keys.push(keys[0]);
-        let original = keys.clone();
-        keys.sort_unstable_by_key(root_order);
-        for fingerprint in 0..24 {
-            for width in 0..72 {
-                let candidate = LayoutRootCacheKey {
-                    root_fingerprint: fingerprint,
-                    available_space: size(
-                        AvailableSpaceKey::Definite(width),
-                        AvailableSpaceKey::MaxContent,
-                    ),
-                };
-                assert_eq!(
-                    keys.binary_search_by_key(&root_order(&candidate), root_order)
-                        .is_ok(),
-                    original.contains(&candidate)
-                );
-            }
+            };
+            engine.previous_layout_roots.insert(
+                key,
+                vec![
+                    RetainedLayoutNode {
+                        bounds: Default::default(),
+                        measure_input: None,
+                    };
+                    4096
+                ],
+            );
+            engine.retained_root_recency.push(key);
         }
+        engine.trim_retained_root_history();
+        assert_eq!(engine.previous_layout_roots.len(), 2);
+        assert!(engine.previous_layout_roots.contains_key(
+            engine.retained_root_recency.last().expect("last active root"),
+        ));
     }
 }

@@ -60,6 +60,8 @@ pub struct TaffyLayoutEngine {
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
     pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
+    /// Recently seen exact layout shapes, ordered from oldest to newest.
+    pub(super) retained_root_recency: Vec<LayoutRootCacheKey>,
     pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
     pub(super) subtree_scratch: Vec<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
@@ -112,6 +114,7 @@ impl TaffyLayoutEngine {
             node_layout_metadata: FxHashMap::default(),
             measured_subtrees: FxHashSet::default(),
             previous_layout_roots: FxHashMap::default(),
+            retained_root_recency: Vec::new(),
             computed_root_keys: Vec::new(),
             subtree_scratch: Vec::new(),
             layout_bounds_scratch_space: Vec::new(),
@@ -313,6 +316,8 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
             self.previous_layout_roots.clear();
+            self.retained_root_recency.clear();
+            self.retained_root_recency.shrink_to_fit();
         } else {
             for retained_nodes in self.previous_layout_roots.values_mut() {
                 retained_nodes.shrink_to(retained_nodes.len());
