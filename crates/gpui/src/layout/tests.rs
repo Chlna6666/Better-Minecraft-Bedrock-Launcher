@@ -4,6 +4,95 @@ use crate::{AppContext as _, Style, TestAppContext, WindowOptions, px, size};
 use std::{cell::Cell, rc::Rc};
 
 #[gpui::test]
+fn persistent_taffy_nodes_reuse_ids_and_recompute_changed_child(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        engine.enable_persistent_nodes_for_test();
+        let build = |engine: &mut TaffyLayoutEngine, width: f32| {
+            let mut moving = Style::default();
+            moving.size.width = px(width).into();
+            moving.size.height = px(20.).into();
+            let changed = engine.request_layout(moving, px(16.), 1.0, &[]);
+
+            let mut sibling = Style::default();
+            sibling.size.width = px(45.).into();
+            sibling.size.height = px(20.).into();
+            let stable = engine.request_layout(sibling, px(16.), 1.0, &[]);
+
+            let parent = engine.request_layout(
+                Style::default(),
+                px(16.),
+                1.0,
+                &[changed, stable],
+            );
+            (changed, stable, parent)
+        };
+
+        let first = build(&mut engine, 20.);
+        engine.compute_layout(first.2, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.total_node_count(), 3);
+        engine.clear();
+
+        let same = build(&mut engine, 20.);
+        assert_eq!(same, first);
+        assert_eq!(engine.taffy.total_node_count(), 3);
+        engine.compute_layout(same.2, AvailableSpace::min_size(), window, cx);
+        engine.clear();
+
+        let changed = build(&mut engine, 70.);
+        assert_eq!(changed, first);
+        engine.compute_layout(changed.2, AvailableSpace::min_size(), window, cx);
+        let changed_bounds = engine.layout_bounds(changed.0, 1.0);
+        let sibling_bounds = engine.layout_bounds(changed.1, 1.0);
+        assert_eq!(changed_bounds.size.width, px(70.));
+        assert_eq!(sibling_bounds.size.width, px(45.));
+        assert_eq!(engine.taffy.total_node_count(), 3);
+    }).unwrap();
+}
+
+#[gpui::test]
+fn persistent_taffy_reparents_after_subtree_removal(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        engine.enable_persistent_nodes_for_test();
+        let build = |engine: &mut TaffyLayoutEngine, children: usize| {
+            let leaves = (0..children)
+                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
+                .collect::<Vec<_>>();
+            engine.request_layout(Style::default(), px(16.), 1.0, &leaves)
+        };
+        let root = build(&mut engine, 3);
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.total_node_count(), 4);
+        engine.clear();
+
+        let reduced = build(&mut engine, 2);
+        engine.compute_layout(reduced, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.children(reduced.into()).unwrap().len(), 2);
+        engine.clear();
+        assert_eq!(engine.taffy.total_node_count(), 3);
+
+        let restored = build(&mut engine, 3);
+        engine.compute_layout(restored, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.children(restored.into()).unwrap().len(), 3);
+        assert_eq!(engine.taffy.total_node_count(), 4);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn taffy_014_leaf_layout_applies_fixed_size_without_measure_context(cx: &mut TestAppContext) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))

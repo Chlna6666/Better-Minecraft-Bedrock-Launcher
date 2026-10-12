@@ -51,6 +51,34 @@ fn centered_child_keeps_equal_device_margins_at_fractional_scale() {
 }
 
 #[test]
+fn persistent_layout_restores_child_style_after_passthrough_is_removed() {
+    let mut engine = TaffyLayoutEngine::new();
+    engine.enable_persistent_nodes_for_test();
+    let mut child_style = Style::default();
+    child_style.display = Display::Flex;
+    child_style.size = size(relative(0.75).into(), px(120.).into());
+
+    let child = engine.request_layout(child_style.clone(), px(16.), 1.0, &[]);
+    let mut wrapper_style = Style::default();
+    wrapper_style.percentage_passthrough = true;
+    engine.request_layout(wrapper_style, px(16.), 1.0, &[child]);
+    engine.clear();
+
+    let same_child = engine.request_layout(child_style.clone(), px(16.), 1.0, &[]);
+    assert_eq!(child, same_child);
+    let expected_style = super::convert::ToTaffy::to_taffy(
+        &crate::LayoutStyle::from(&child_style),
+        px(16.),
+        1.0,
+    );
+    assert_eq!(
+        engine.taffy.style(same_child.into()).unwrap().size.width,
+        expected_style.size.width,
+        "passthrough must not leak the previous parent's normalized percentage",
+    );
+}
+
+#[test]
 fn percentage_passthrough_keeps_relative_modal_centered() {
     let scale_factor = 1.0;
     let mut engine = TaffyLayoutEngine::new();

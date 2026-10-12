@@ -336,6 +336,31 @@ Elements call `Window::request_layout`, `request_measured_layout`, and
 Layout APIs assert that they run in the correct draw phase. Paint code should
 not mutate layout state.
 
+### Experimental persistent Taffy node allocation
+
+Set `GPUI_ENABLE_PERSISTENT_LAYOUT_NODES=1` before launching GPUI to
+test the first incremental Taffy allocation path. By default the stable
+legacy path still calls `taffy.clear()` each draw, then rebuilds the layout
+nodes and optionally restores matching retained root geometry.
+
+When enabled, `TaffyLayoutEngine` retains actual Taffy NodeIds between
+frames and reuses request-order slots. Styles, current parent/child
+relationships, and measurement closures are synchronized to the live
+Taffy tree. Unchanged properties do not call `set_style`/`set_children`;
+Taffy owns the internal layout dirty propagation when they do change.
+Stale trailing nodes are deleted only after the previous frame is
+complete, and aggressive memory trim defers the full reset to a frame
+boundary. Root fingerprints and per-leaf pure Measure caching remain
+independent correctness constraints.
+
+This is **not** stable cross-frame Element identity. If insertions/removals
+change request ordering, slots may represent different logical elements,
+so their current style, children and measurement context must be
+resynchronized before the next layout. Do not treat slot indices as
+persistent UI Element IDs; these are an allocation optimization pending
+real retained-element ownership, dirty Measure/Layout/Placement flags,
+and native comparison of complex reordering, Flex/Grid and text cases.
+
 ## Paint And Scene Primitives
 
 Paint methods add primitives to the frame scene:

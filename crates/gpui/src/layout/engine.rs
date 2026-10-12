@@ -76,8 +76,25 @@ pub(super) struct NodeContext {
 pub(super) const EXPECT_MESSAGE: &str =
     "we should avoid taffy layout errors by construction if possible";
 
+/// Stable Taffy allocation slot for one bottom-up layout request.
+///
+/// Slots intentionally are not semantic element identities: a structural
+/// insertion can repurpose the slot, in which case the precise new style,
+/// children and measure context are applied before layout. Never use this
+/// ordinal as a retained Element ID.
+struct PersistentLayoutSlot {
+    id: LayoutId,
+    style_fingerprint: Option<u64>,
+    measured: bool,
+}
+
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
+    persistent_layout_nodes: bool,
+    persistent_layout_slots: Vec<PersistentLayoutSlot>,
+    persistent_layout_cursor: usize,
+    persistent_layout_reuses: usize,
+    persistent_layout_reset_pending: bool,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
@@ -133,6 +150,12 @@ impl TaffyLayoutEngine {
         taffy.disable_rounding();
         TaffyLayoutEngine {
             taffy,
+            persistent_layout_nodes: std::env::var("GPUI_ENABLE_PERSISTENT_LAYOUT_NODES")
+                .as_deref() == Ok("1"),
+            persistent_layout_slots: Vec::new(),
+            persistent_layout_cursor: 0,
+            persistent_layout_reuses: 0,
+            persistent_layout_reset_pending: false,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
@@ -175,6 +198,17 @@ impl TaffyLayoutEngine {
         let node_working_set = self.nodes_requested;
 
         self.save_retained_layout_roots();
+        if self.persistent_layout_nodes && log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI persistent Taffy slots: reused={} requested={} live={} reset_pending={}",
+                self.persistent_layout_reuses,
+                self.nodes_requested,
+                self.persistent_layout_slots.len(),
+                self.persistent_layout_reset_pending,
+            );
+        }
+        self.persistent_layout_reuses = 0;
         std::mem::swap(
             &mut self.previous_root_diagnostics,
             &mut self.current_root_diagnostics,
@@ -186,7 +220,19 @@ impl TaffyLayoutEngine {
             self.current_root_diagnostics = FxHashMap::default();
             self.root_diagnostic_ids = FxHashMap::default();
         }
-        self.taffy.clear();
+        if self.persistent_layout_nodes && !self.persistent_layout_reset_pending {
+            // A frame can remove views, including trailing layout requests.
+            // Release only stale slots after their last frame is complete.
+            for slot in self.persistent_layout_slots.drain(self.persistent_layout_cursor..) {
+                self.taffy.remove(slot.id.into()).expect(EXPECT_MESSAGE);
+            }
+            self.persistent_layout_cursor = 0;
+        } else {
+            self.taffy.clear();
+            self.persistent_layout_slots.clear();
+            self.persistent_layout_cursor = 0;
+            self.persistent_layout_reset_pending = false;
+        }
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
@@ -342,6 +388,9 @@ impl TaffyLayoutEngine {
         self.current_root_diagnostics
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
+            // Current-frame LayoutIds may still be in use. Defer a Taffy
+            // reset until clear(), after this frame's prepaint and paint.
+            self.persistent_layout_reset_pending = true;
             self.pure_measure_cache.clear();
             self.pure_measure_cache.shrink_to_fit();
             self.previous_layout_roots.clear();
@@ -356,6 +405,109 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.previous_layout_roots.len()));
     }
 
+    /// Reuse the same native Taffy NodeId between consecutive frames when
+    /// layout requests retain their order. Taffy's own dirty propagation
+    /// handles changes to style, child relationships and measured content.
+    ///
+    /// Ordinal reuse is deliberately experimental: it reduces allocation but
+    /// does not supply semantic identity across structural reordering.
+    fn request_persistent_node(
+        &mut self,
+        style: taffy::Style,
+        style_fingerprint: u64,
+        children: &[LayoutId],
+        measure: Option<NodeContext>,
+    ) -> LayoutId {
+        if !self.persistent_layout_nodes {
+            return self.create_taffy_node(style, children, measure);
+        }
+        let slot_index = self.persistent_layout_cursor;
+        self.persistent_layout_cursor += 1;
+        if slot_index < self.persistent_layout_slots.len() {
+            let slot = &self.persistent_layout_slots[slot_index];
+            let id = slot.id;
+            let needs_style = slot.style_fingerprint != Some(style_fingerprint);
+            let measured = measure.is_some();
+            let previously_measured = slot.measured;
+            // A measured leaf becoming a container must drop its old
+            // context before children are attached to that Taffy node.
+            if previously_measured && !measured {
+                self.taffy
+                    .set_node_context(id.into(), None)
+                    .expect(EXPECT_MESSAGE);
+            }
+            // A child can have been reparented by an earlier request, so
+            // compare against the actual Taffy tree, not a cached child list.
+            let actual_children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
+            let needs_children = actual_children.as_slice() != LayoutId::to_taffy_slice(children);
+            if needs_children {
+                self.taffy
+                    .set_children(id.into(), LayoutId::to_taffy_slice(children))
+                    .expect(EXPECT_MESSAGE);
+            }
+            if needs_style {
+                self.taffy.set_style(id.into(), style).expect(EXPECT_MESSAGE);
+            }
+            if measured {
+                // Even a fingerprinted measure closure can capture a fresh
+                // immutable content handle. Do not retain last frame's closure.
+                self.taffy
+                    .set_node_context(id.into(), measure)
+                    .expect(EXPECT_MESSAGE);
+            }
+            let slot = &mut self.persistent_layout_slots[slot_index];
+            slot.style_fingerprint = Some(style_fingerprint);
+            slot.measured = measured;
+            self.persistent_layout_reuses += 1;
+            id
+        } else {
+            let measured = measure.is_some();
+            let id = self.create_taffy_node(style, children, measure);
+            self.persistent_layout_slots.push(PersistentLayoutSlot {
+                id,
+                style_fingerprint: Some(style_fingerprint),
+                measured,
+            });
+            // Bound unused retained node generations on very large dynamic
+            // pages. The next frame falls back to a clean Taffy allocation.
+            if self.persistent_layout_slots.len() > 16_384 {
+                self.persistent_layout_reset_pending = true;
+            }
+            id
+        }
+    }
+
+    fn create_taffy_node(
+        &mut self,
+        style: taffy::Style,
+        children: &[LayoutId],
+        measure: Option<NodeContext>,
+    ) -> LayoutId {
+        match measure {
+            Some(context) => self
+                .taffy
+                .new_leaf_with_context(style, context)
+                .expect(EXPECT_MESSAGE)
+                .into(),
+            None if children.is_empty() => self
+                .taffy
+                .new_leaf(style)
+                .expect(EXPECT_MESSAGE)
+                .into(),
+            None => self
+                .taffy
+                .new_with_children(style, LayoutId::to_taffy_slice(children))
+                .expect(EXPECT_MESSAGE)
+                .into(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_persistent_nodes_for_test(&mut self) {
+        assert!(self.persistent_layout_slots.is_empty());
+        self.persistent_layout_nodes = true;
+    }
+
     pub fn request_layout(
         &mut self,
         style: Style,
@@ -368,19 +520,14 @@ impl TaffyLayoutEngine {
         self.normalize_percentage_passthrough(&mut layout_style, children);
         let fingerprint = self.layout_fingerprint(&layout_style, rem_size, scale_factor, children);
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
-
-        let layout_id = if children.is_empty() {
-            self.taffy
-                .new_leaf(taffy_style)
-                .expect(EXPECT_MESSAGE)
-                .into()
-        } else {
-            self.taffy
-                // This is safe because LayoutId is repr(transparent) to taffy::tree::NodeId.
-                .new_with_children(taffy_style, LayoutId::to_taffy_slice(children))
-                .expect(EXPECT_MESSAGE)
-                .into()
-        };
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let layout_id = self.request_persistent_node(
+            taffy_style,
+            style_hasher.finish(),
+            children,
+            None,
+        );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
             layout_id,
@@ -440,23 +587,21 @@ impl TaffyLayoutEngine {
         });
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
 
-        let layout_id = self
-            .taffy
-            .new_leaf_with_context(
-                taffy_style,
-                NodeContext {
-                    measure: {
-                        let measure = Box::new(measure) as Box<MeasureFn>;
-                        #[cfg(feature = "stacker")]
-                        let measure = StackSafe::new(measure);
-                        measure
-                    },
-                    is_pure: fingerprint_seed.is_some(),
-                    last_measure_input: None,
-                },
-            )
-            .expect(EXPECT_MESSAGE)
-            .into();
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let measure = Box::new(measure) as Box<MeasureFn>;
+        #[cfg(feature = "stacker")]
+        let measure = StackSafe::new(measure);
+        let layout_id = self.request_persistent_node(
+            taffy_style,
+            style_hasher.finish(),
+            &[],
+            Some(NodeContext {
+                measure,
+                is_pure: fingerprint_seed.is_some(),
+                last_measure_input: None,
+            }),
+        );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
             layout_id,
@@ -493,23 +638,21 @@ impl TaffyLayoutEngine {
         let fingerprint = hasher.finish();
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
 
-        let layout_id = self
-            .taffy
-            .new_leaf_with_context(
-                taffy_style,
-                NodeContext {
-                    measure: {
-                        let measure = Box::new(measure) as Box<MeasureFn>;
-                        #[cfg(feature = "stacker")]
-                        let measure = StackSafe::new(measure);
-                        measure
-                    },
-                    is_pure: false,
-                    last_measure_input: None,
-                },
-            )
-            .expect(EXPECT_MESSAGE)
-            .into();
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let measure = Box::new(measure) as Box<MeasureFn>;
+        #[cfg(feature = "stacker")]
+        let measure = StackSafe::new(measure);
+        let layout_id = self.request_persistent_node(
+            taffy_style,
+            style_hasher.finish(),
+            &[],
+            Some(NodeContext {
+                measure,
+                is_pure: false,
+                last_measure_input: None,
+            }),
+        );
         self.node_fingerprints.insert(layout_id, Some(fingerprint));
         self.node_layout_metadata.insert(
             layout_id,
@@ -758,6 +901,19 @@ impl TaffyLayoutEngine {
         self.taffy
             .set_style(child_id.into(), taffy_style)
             .expect(EXPECT_MESSAGE);
+        // A parent-relative passthrough rewrites the child's live Taffy style
+        // after request_layout() has already consumed its persistent slot.
+        // Force the next frame to restore its original requested style before
+        // applying that frame's parent semantics (which may be different).
+        if self.persistent_layout_nodes {
+            if let Some(slot) = self.persistent_layout_slots
+                .iter_mut()
+                .take(self.persistent_layout_cursor)
+                .find(|slot| slot.id == child_id)
+            {
+                slot.style_fingerprint = None;
+            }
+        }
         self.node_layout_metadata.insert(child_id, child);
     }
 
