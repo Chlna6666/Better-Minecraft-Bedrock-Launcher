@@ -357,6 +357,12 @@ Placement change can shift descendants without changing their own style.
 Reactive View selective replay retains its separate snapshot contract;
 that snapshot is not a second general-purpose Taffy root cache.
 
+Within one frame, computing an enclosing layout clears cached absolute bounds
+for its descendants, including children measured earlier as standalone roots.
+Computing an attached child as a standalone root invalidates its ancestor
+placement caches; native child measurement caches remain available when the
+enclosing layout restores placement.
+
 Pure measured leaves retain the Taffy result if their fingerprint and
 constraints are unchanged. Impure measurements always mark their node dirty
 during a fresh request. Layout requests and measured callbacks still run
@@ -713,15 +719,12 @@ majority rather than simply having enough geometry. Static-only scenes
 retain the previous eligibility; heavily interleaved or animated-first
 pages stay on direct rendering, avoiding an extra full-screen composite
 that can increase GPU utilization. Explicit `composite_layer()` calls
-continue to work as before, and `BMCBL_ENABLE_RETAINED_COLOR=1` remains
-an explicit override for A/B analysis.
+continue to work as before. Admission is determined by this policy.
 
 ### Conservative automatic static-background texture
 
 Nova automatically considers the existing independent offscreen GPU cache for
-strictly flat, painter-ordered Quad/Shadow prefixes. Set
-`BMCBL_ENABLE_AUTO_STATIC_LAYER=0` **before process start** to disable the
-path for a native GPU A/B comparison. This is a narrow, proof-gated default,
+strictly flat, painter-ordered Quad/Shadow prefixes. This is a narrow default,
 not general automatic layerization; cross-backend GPU-busy and pixel validation
 of this new default are still required.
 
@@ -743,63 +746,19 @@ its background; actual background changes invalidate its target. Recursive
 retained animation values remain in the root scene as before. The generated
 Layer and synthetic full-window retained root are mutually exclusive.
 This mechanism still samples the cached color texture in the main Pass:
-benchmark overdraw reduction against that composite cost, and use the
-opt-out switch if a backend regresses until its native pixel/BUSY checks pass.
+benchmark overdraw reduction against that composite cost using native pixel
+and GPU workload checks.
 
-The prior auto-retained-root heuristic remains for other qualified large
-pages, and `BMCBL_ENABLE_RETAINED_COLOR=1` explicitly forces that legacy
-full-window fallback for A/B experiments.
+The auto-retained-root policy remains for other qualified large pages.
+Gaussian filter variants own independent intermediates, preserving their
+partial-refresh history instead of sharing mutable scratch across variants.
 
-### Experimental shared Gaussian scratch and native WAW barriers
-
-Set `BMCBL_ENABLE_BLUR_SCRATCH_SHARING=1` before launching BMCBL to reuse
-the **same actual physical GPU texture and view** for horizontal (X-axis)
-Gaussian intermediates with equal size and format across different blur
-variants. The retained final (Y-axis) outputs, zero-radius compositor layers,
-shared backdrop source and isolated inputs remain separate allocations.
-
-The GPU Render Graph executes X/Y filters consecutively (one X write,
-followed by its Y read). The shared X scratch must never be treated as a
-persistent previous-frame filter result. With sharing enabled, the draw
-planner disables partial filter-target preservation, computes complete
-dependency halos and clears/rebuilds filtered outputs instead of
-`LoadOp::Load` from another variant's old X texture. Native backend
-attachment transitions still synchronize each X->Y read. Vulkan additionally
-derives physical-target WAW hazards from the ordered
-`TextureRenderStepList` batch and records an actual
-`vkCmdPipelineBarrier` access/memory dependency before reusing a
-previously written color attachment. DX12 already executes tracked native
-`ResourceBarrier` transitions from render target to shader resource and
-back for every offscreen write/read handoff. On GL/Metal the existing
-in-order pass execution is retained.
-
-The ownership teardown deduplicates native texture/view destruction
-*after all variant resource sets are retired*, and the GPU memory estimate
-counts the reused horizontal texture exactly once. Fence waits on target
-topology changes keep old native allocations alive until the last submitted
-frame has finished. This experimental mode trades partial-filter refresh
-efficiency for lower GPU memory. It is disabled by default and requires
-native Vulkan, DX12, OpenGL and Metal image correctness/performance checks.
-
-**Terminology:** this is real physical GPU resource sharing by aliasing
-logical scratch target lifetimes to one native texture allocation. It is
-not yet DX12 `CreatePlacedResource` heap aliasing or Vulkan creation of
-multiple distinct `VkImage` handles bound to overlapping
-`VkDeviceMemory` ranges. Those operations require backend allocator
-leases, native alias barriers, explicit memory requirements and full fence
-retirement of all aliases; enabling them for persistent retained textures
-would be unsafe.
-
-Cross-frame physical heap aliasing is **not enabled**. On a blur target
-topology change **or a path-mask target promotion**, the renderer now waits
-for outstanding tracked GPU submissions before destroying/rebinding old
-texture views and resource sets. Retained
-textures remain persistent; only a future native placed/aliased allocation
-pool with fence-retired leases may overlap their physical allocations.
-The Render Graph still derives logical hazard intentions while the existing
-backend texture render passes emit the actual API-specific state/layout
-transitions. Native Barrier generation from graph intents remains separate
-work.
+`retained_color::static_background` tests the automatic static-prefix path with
+native DX11/DX12/Vulkan/OpenGL texture readback. It compares foreground reversal
+samples against complete redraws, checks zero static-source raster pixels during
+foreground-only animation, and checks source refresh after a content change even
+when window damage is local. This is evidence for the qualified prefix path;
+it does not establish automatic layerization of every ordinary Element subtree.
 
 ### Retained compositor layer identity and Render Graph baseline
 
@@ -987,11 +946,11 @@ not weaken rendering correctness to hit an arbitrary memory or CPU number.
 
 ### Vulkan GPU timestamps for main/offscreen scene work (P0)
 
-Set `NOVA_GFX_VULKAN_GPU_TRACE=1` before starting a Vulkan Nova-GFX process.
+Enable the static `gfx_vulkan::gpu` Trace log filter before device creation.
 The backend creates two Vulkan TIMESTAMP queries per native render command
 buffer, writing one pair around its entire GPU command stream (including
 attachment layout transitions). Query results are read only after the owning
-submission fence completes and are reported as an `INFO` log every five
+submission fence completes and are reported as a `TRACE` log every five
 seconds:
 
 - `main_gpu_us_avg` / `main_gpu_us_max`: actual GPU time for the main

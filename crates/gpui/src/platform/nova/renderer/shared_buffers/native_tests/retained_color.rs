@@ -3,6 +3,7 @@ use super::*;
 use std::sync::Arc;
 
 mod lifecycle;
+mod static_background;
 
 const SIDE: usize = 64;
 
