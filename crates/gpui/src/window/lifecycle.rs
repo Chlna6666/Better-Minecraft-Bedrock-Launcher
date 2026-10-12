@@ -573,11 +573,12 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_elements.len()
     }
 
-    /// Returns the only active subtree target strictly below ancestor.
+    /// Returns one reconstructible subtree target strictly below ancestor.
     ///
-    /// Selective cached-view splice is intentionally single-target. A second matching target,
-    /// unsupported invalidation scope, or route-local generic dirtiness makes the ancestor rebuild
-    /// normally instead of materializing a target collection that cannot be consumed.
+    /// Nested paths belonging to the same direct View can use their outermost target,
+    /// because rendering that View also rebuilds its nested paths. Distinct owners,
+    /// disjoint targets, unsupported scopes and route-local generic dirtiness remain
+    /// conservative fallbacks: selective splice still consumes one target.
     pub(crate) fn single_reconcile_target_below(
         &self,
         ancestor: &GlobalElementId,
@@ -611,11 +612,10 @@ impl WindowInvalidator {
                 scope,
                 RetainedInvalidationScope::ReconcileSubtree
                     | RetainedInvalidationScope::InvalidateSubtree
-            ) || selected.is_some()
+            ) || !merge_nested_reconcile_target(&mut selected, *owner, target)
             {
                 return None;
             }
-            selected = Some((*owner, target.clone()));
         }
         selected
     }
@@ -908,6 +908,33 @@ fn global_element_path_is_strict_prefix(prefix: &GlobalElementId, path: &GlobalE
     prefix.0.len() < path.0.len() && global_element_path_is_prefix(prefix, path)
 }
 
+/// A fresh render of the outermost directly dirty cached View also visits its
+/// nested targets. Only collapse paths owned by that *same* View: disjoint
+/// siblings and different owners still require structural reconciliation.
+fn merge_nested_reconcile_target(
+    selected: &mut Option<(EntityId, GlobalElementId)>,
+    owner: EntityId,
+    target: &GlobalElementId,
+) -> bool {
+    match selected {
+        None => {
+            *selected = Some((owner, target.clone()));
+            true
+        }
+        Some((selected_owner, selected_target)) if *selected_owner == owner => {
+            if global_element_path_is_prefix(selected_target, target) {
+                true
+            } else if global_element_path_is_prefix(target, selected_target) {
+                *selected_target = target.clone();
+                true
+            } else {
+                false
+            }
+        }
+        Some(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod retained_dirty_scope_tests {
     use super::*;
@@ -920,6 +947,31 @@ mod retained_dirty_scope_tests {
                 .map(ElementId::InstanceSlot)
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn nested_reconcile_targets_keep_the_outermost_direct_owner() {
+        let owner = EntityId::from(1);
+        let parent = path(&[0, 1]);
+        let child = path(&[0, 1, 2]);
+        let sibling = path(&[0, 3]);
+
+        for (first, second) in [
+            (parent.clone(), child.clone()),
+            (child.clone(), parent.clone()),
+        ] {
+            let mut selected = None;
+            assert!(merge_nested_reconcile_target(&mut selected, owner, &first));
+            assert!(merge_nested_reconcile_target(&mut selected, owner, &second));
+            assert_eq!(selected, Some((owner, parent.clone())));
+
+            assert!(!merge_nested_reconcile_target(&mut selected, owner, &sibling));
+            assert!(!merge_nested_reconcile_target(
+                &mut selected,
+                EntityId::from(2),
+                &child,
+            ));
+        }
     }
 
     #[test]
