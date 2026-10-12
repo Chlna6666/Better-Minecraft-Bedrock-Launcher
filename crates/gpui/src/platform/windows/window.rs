@@ -346,8 +346,14 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
+                // Win32's nested size/move loop suspended outer winit event delivery.
+                // Always request one final fresh GPUI Scene after the modal operation;
+                // stretching the old swapchain pixels is only a transient fallback.
+                // Pure moves pay for at most this one final reconciliation, never a
+                // recurring frame or GPU animation pump.
+                window.sync_current_native_size();
+                window.request_frame(PlatformFrameRequest::ui_commit());
             }
-            // Resume outer-loop delivery before flushing the final coalesced extent.
             dispatch_size_move_frame(hwnd);
             return result;
         }

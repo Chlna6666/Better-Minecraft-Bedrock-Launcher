@@ -1465,6 +1465,19 @@ impl NovaRenderer {
             );
         }
         let presentation_finished_at = Instant::now();
+        #[cfg(target_os = "windows")]
+        if crate::diagnostics::gpu_owner::resize_trace_enabled() {
+            log::info!(
+                target: "gpui_resize_trace",
+                "gpui_resize stage=present window_id={} physical_px={}x{} scene_revision={} scene_primitives={} dirty_full={}",
+                packet.window_id,
+                self.current_size.width,
+                self.current_size.height,
+                packet.scene.revision,
+                packet.scene.len(),
+                packet.dirty_region.is_full(),
+            );
+        }
         // A composition swapchain may still be stretching the last old-size frame while its
         // buffers are rebuilt. Only publish the identity transform after the first new-size
         // frame has been successfully presented; resetting it during ResizeBuffers exposes

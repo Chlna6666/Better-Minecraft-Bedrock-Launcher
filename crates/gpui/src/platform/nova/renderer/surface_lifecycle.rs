@@ -303,6 +303,22 @@ impl NovaRenderer {
             resources,
             total,
         );
+        // Resizing large offscreen blur/path/depth targets and native Swapchains
+        // serializes one shared GPU owner. Emit the expensive phase only on an
+        // actual outlier; no per-frame idle logging or additional GPU waits.
+        if total >= std::time::Duration::from_millis(16) {
+            log::warn!(
+                target: "gpui_gpu_resize",
+                "slow_surface_resize backend={} physical_px={}x{} total_us={} submission_wait_us={} swapchain_us={} resources_us={}",
+                self.backend_info.label(),
+                width,
+                height,
+                total.as_micros(),
+                submission_wait.as_micros(),
+                swapchain_resize.as_micros(),
+                resources.as_micros(),
+            );
+        }
         Ok(())
     }
 

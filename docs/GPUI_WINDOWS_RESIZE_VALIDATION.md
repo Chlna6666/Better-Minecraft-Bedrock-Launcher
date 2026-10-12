@@ -51,3 +51,13 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 新的 P0 在 `Window::content_bounds_changed`：**窗口可用布局范围变化，必须使该窗口的根 CachedView 布局边界失效**，即使根 View 没有显式调用 `window.viewport_size()`（例如 `RootView` 只返回 `div().size_full()`）。仍保留子 View 的独立 retained 重用，且仅在真实尺寸变化时执行，不对无效点击和纯移动执行。新增 `stage=scene`，便于进一步判断 Scene 原语是否随新尺寸重建。
 
 此记录只证明三阶段 Resize 的调用链和已提交尺寸最终收敛，不证明新提交一定修好实际 Windows 黑色空白；仍需相同场景实机回归。此日志另有 **130.9ms 的 GPUI 帧构建**，其中约 **129.5ms 是 prepaint**，属于独立的 UI 性能问题，不应混同为 GPU Fence 阻塞。
+
+
+## 2026-10-13 后端差异与修复分层
+
+- **DX11 黑色新增客户区**：不透明 `CreateSwapChainForHwnd` 原来采用 `DXGI_SCALING_NONE`。按 Microsoft DXGI 文档，后台缓冲区小于 HWND 目标时，多出的客户区会填充背景色。改成 `DXGI_SCALING_STRETCH`，在 WM_ENTERSIZEMOVE 拖拽中以旧帧临时铺满，真正的 ResizeBuffers/Present 完成后恢复 1:1。
+- **交互式 Resize 的最终提交**：WM_EXITSIZEMOVE 结束后主动读取最新客户区，并安排一次 GPUI UI commit，防止只有过渡帧拉伸没有最终重绘。
+- **DX12/OpenGL 卡顿、Vulkan 裁剪异常**：不要以 DX11 的 DXGI 缩放策略替代其他后端的同步与裁剪修复。新增后端 `slow_surface_resize` 日志，拆分资源同步等待、Swapchain 重建、其余大小依赖资源创建耗时；仅 Resize 超过 16ms 才发警告。
+- **成功呈现检查**：启用 `BMCBL_GPUI_RESIZE_TRACE=1` 后新增 `stage=present`，记录真正提交成功后的 WindowId、实际 Drawable extent、Scene revision 和 dirty_full。旧的 `stage=gpu` 只证明 ResizeBuffers 生效，不等于内容 Present 成功。
+
+新的观察重点：连续缩放后检查最后一个 `native`、`viewport`、`gpu`、`present` 尺寸。Vulkan 若仍有裁剪，收集 `dirty_full`、滤镜/Retained GPU Layer 日志与 Render Graph Scissor 范围，不应先禁用局部绘制或全局缓存。
