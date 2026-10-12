@@ -345,10 +345,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         frame_metrics: true,
         ..RendererOptions::default()
     };
-    Application::run_separate(
-        options.clone(),
-        move || Application::with_renderer_options(options),
-        move |cx| {
+    Application::with_renderer_options(options).run(move |cx| {
             let counts = Rc::new(Counts::default());
             let result = cx.open_window(
                 WindowOptions {
@@ -385,7 +382,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else {
                 cx.activate(true);
             }
-        },
-    )?;
+        });
     Ok(())
 }

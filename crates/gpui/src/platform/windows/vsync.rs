@@ -29,6 +29,7 @@ const BACKGROUND_FRAME_INTERVAL: Duration = Duration::from_micros(66_667);
 const EARLY_VSYNC_RETURN_THRESHOLD: Duration = Duration::from_millis(1);
 const MAX_REASONABLE_VSYNC_INTERVAL: Duration = Duration::from_secs(1);
 pub(super) const WM_MODAL_VSYNC: u32 = WM_APP + 0x475;
+pub(super) const WM_MODAL_UI_TASKS: u32 = WM_APP + 0x476;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct VSyncEventTiming {
@@ -123,6 +124,25 @@ impl VSyncScheduler {
             .as_mut()
             .filter(|target| target.hwnd == hwnd)
             .and_then(|target| target.pending.take())
+    }
+
+    /// Wake the HWND owner for GPUI foreground work during a native modal drag.
+    /// This is not a presentation request: no GPU frame is implied.
+    pub(super) fn wake_modal_ui_tasks(&self) {
+        let modal = self.modal_frame.lock().expect("modal vsync lock poisoned");
+        let Some(target) = modal.as_ref() else {
+            return;
+        };
+        if let Err(error) = unsafe {
+            PostMessageW(
+                Some(HWND(target.hwnd as *mut _)),
+                WM_MODAL_UI_TASKS,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            log::warn!("failed to post GPUI modal foreground task wake: {error}");
+        }
     }
 
     fn post_modal_frame(&self, timing: VSyncEventTiming) -> bool {

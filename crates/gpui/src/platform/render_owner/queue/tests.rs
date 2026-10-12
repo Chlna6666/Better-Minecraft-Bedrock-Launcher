@@ -384,3 +384,33 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
             .any(|damage| damage.origin.x == ScaledPixels(80.0))
     );
 }
+
+#[test]
+fn adjacent_resize_commands_coalesce_without_crossing_draw_barriers() {
+    use crate::{DevicePixels, size};
+    let queue = Queue::default();
+    let started = Instant::now();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+
+    queue.enqueue_at(Command::Resize(extent(900)), || Ok(()), started).unwrap();
+    queue.enqueue_at(
+        Command::Resize(extent(1000)),
+        || panic!("adjacent resize should reuse the pending wake"),
+        started + Duration::from_millis(1),
+    ).unwrap();
+    let first = queue.take_timed().expect("coalesced resize");
+    assert_eq!(first.coalesced_count, 1);
+    assert_eq!(first.first_enqueued_at, started);
+    let Command::Resize(size) = first.command else { panic!("expected resize") };
+    assert_eq!(size, extent(1000));
+    assert!(queue.take_timed().is_none());
+
+    queue.enqueue(Command::Resize(extent(1200)), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.0)), || Ok(())).unwrap();
+    queue.enqueue(Command::Resize(extent(1300)), || Ok(())).unwrap();
+    let Some(Command::Resize(before_draw)) = queue.take() else { panic!("first resize lost") };
+    assert_eq!(before_draw, extent(1200));
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    let Some(Command::Resize(after_draw)) = queue.take() else { panic!("last resize lost") };
+    assert_eq!(after_draw, extent(1300));
+}

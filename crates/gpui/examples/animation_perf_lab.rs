@@ -256,23 +256,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         animation_perf_lab_support::observe(config, block_receiver, observed_render_count);
     });
 
-    #[cfg(target_os = "windows")]
-    {
-        Application::run_separate(
-            options.clone(),
-            move || {
-                Application::with_renderer_options(options).with_assets(ExampleAssets { examples })
-            },
-            move |cx| open_lab(cx, config, block_started, render_count),
-        )?;
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Application::with_renderer_options(options)
-            .with_assets(ExampleAssets { examples })
-            .run(move |cx| open_lab(cx, config, block_started, render_count));
-    }
+    Application::with_renderer_options(options)
+        .with_assets(ExampleAssets { examples })
+        .run(move |cx| open_lab(cx, config, block_started, render_count));
     Ok(())
 }
 

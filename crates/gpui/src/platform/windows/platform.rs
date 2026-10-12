@@ -4,10 +4,10 @@
 )]
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::OsStr,
     path::{Path, PathBuf},
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -65,10 +65,6 @@ use super::{
 use crate::window::Decorations;
 use crate::*;
 
-mod proxy;
-pub(crate) use proxy::QueuedScene;
-use proxy::{SceneMailbox, WindowProxy};
-
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
 const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
 const STARTUP_WORKING_SET_TRIM_DELAY: Duration = Duration::from_secs(5);
@@ -105,17 +101,25 @@ fn spawn_startup_working_set_trim_task() {
 
 thread_local! {
     static ACTIVE_CONTEXT: RefCell<Option<(*const ActiveEventLoop, *mut WindowsApplication)>> = const { RefCell::new(None) };
-    static UI_OWNER_BRIDGE: RefCell<Option<WindowsUiBridge>> = const { RefCell::new(None) };
-    static UI_OWNER_TASKS: RefCell<Option<flume::Receiver<Runnable>>> = const { RefCell::new(None) };
+    static MODAL_FOREGROUND_OWNER: RefCell<Option<Weak<WindowsPlatformInner>>> = const { RefCell::new(None) };
+    static MODAL_FOREGROUND_DRAINING: Cell<bool> = const { Cell::new(false) };
 }
 
-#[derive(Clone)]
-struct WindowsUiBridge {
-    event_loop: EventLoopProxy<WindowsUserEvent>,
-    native_owner_closing: Arc<AtomicBool>,
-    displays: Vec<WindowsDisplay>,
-    primary_display_id: Option<DisplayId>,
-    renderer_backend: RendererBackend,
+/// Run a bounded slice of queued GPUI work while Win32 is in the native move/resize loop.
+/// This pumps CPU UI work only; all backend rendering stays on the GPU RenderOwner.
+pub(super) fn poll_modal_foreground_tasks() -> bool {
+    MODAL_FOREGROUND_DRAINING.with(|draining| {
+        if draining.replace(true) {
+            return false;
+        }
+        let owner = MODAL_FOREGROUND_OWNER.with(|slot| {
+            slot.borrow().as_ref().and_then(Weak::upgrade)
+        });
+        // At most 64 tasks or 2 ms of work per native message.
+        let needs_more = owner.is_some_and(|owner| owner.run_foreground_tasks());
+        draining.set(false);
+        needs_more
+    })
 }
 
 fn with_active_context<R>(
@@ -137,141 +141,13 @@ pub(crate) enum WindowsUserEvent {
         frame: crate::platform::render_owner::RenderOwnerFrame,
     },
     DockMenuAction(usize),
-    NativeCommand(WindowsNativeCommand),
     ActivateApp,
     SetCursorStyle(CursorStyle),
+    BeginNativeDrag {
+        window_id: winit::window::WindowId,
+        resize_edge: Option<ResizeEdge>,
+    },
     Quit,
-}
-
-pub(crate) enum WindowsNativeCommand {
-    CreateWindow {
-        handle: AnyWindowHandle,
-        options: WindowParams,
-        reply: std::sync::mpsc::Sender<Result<WindowsNativeWindow>>,
-    },
-    CommitScene {
-        window_id: winit::window::WindowId,
-        packet: PresentationPacket,
-        reply: std::sync::mpsc::Sender<PlatformFrameResult>,
-    },
-    CommitLatestScene {
-        window_id: winit::window::WindowId,
-        mailbox: Arc<parking_lot::Mutex<SceneMailbox>>,
-    },
-    SetFrameRequestSender {
-        window_id: winit::window::WindowId,
-        sender: PlatformFrameRequestSender,
-    },
-    SetAnimationCompletionSender {
-        window_id: winit::window::WindowId,
-        sender: SceneAnimationCompletionSender,
-    },
-    SetEventSender {
-        window_id: winit::window::WindowId,
-        sender: flume::Sender<WindowsNativeEvent>,
-    },
-    CloseWindow {
-        window_id: winit::window::WindowId,
-    },
-    WindowAction {
-        window_id: winit::window::WindowId,
-        action: WindowsWindowAction,
-    },
-    WindowCall {
-        window_id: winit::window::WindowId,
-        call: Box<dyn FnOnce(Option<&mut WindowsWindow>) + Send>,
-    },
-}
-
-pub(crate) enum WindowsWindowAction {
-    RequestFrame(PlatformFrameRequest),
-    FrameRequestTimedOut(PlatformFrameRequest),
-    StartMove,
-    StartResize(ResizeEdge),
-    Resize(Size<Pixels>),
-    SetTitle(String),
-    SetBackgroundAppearance(WindowBackgroundAppearance),
-    Activate,
-    Show,
-    Hide,
-    Minimize,
-    Maximize,
-    Restore,
-    Zoom,
-    ToggleFullscreen,
-}
-
-/// Geometry captured on the Win32 owner thread and delivered without blocking RPC.
-/// The UI-side proxy installs this state but does not query the native HWND.
-#[derive(Clone, Copy)]
-pub(crate) struct WindowsNativeGeometry {
-    pub(crate) bounds: Bounds<Pixels>,
-    pub(crate) window_bounds: WindowBounds,
-    pub(crate) maximized: bool,
-    pub(crate) minimized: bool,
-    pub(crate) fullscreen: bool,
-}
-
-pub(crate) enum WindowsNativeEvent {
-    Input(PlatformInput),
-    Active(bool),
-    Visibility(WindowVisibility),
-    Hovered(bool),
-    Resized(Size<Pixels>, f32, WindowsNativeGeometry),
-    Moved(WindowsNativeGeometry),
-    AppearanceChanged,
-    CloseRequested,
-    Closed,
-}
-
-impl std::fmt::Debug for WindowsNativeCommand {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::CreateWindow { .. } => "CreateWindow",
-            Self::CommitScene { .. } => "CommitScene",
-            Self::CommitLatestScene { .. } => "CommitLatestScene",
-            Self::SetFrameRequestSender { .. } => "SetFrameRequestSender",
-            Self::SetAnimationCompletionSender { .. } => "SetAnimationCompletionSender",
-            Self::SetEventSender { .. } => "SetEventSender",
-            Self::CloseWindow { .. } => "CloseWindow",
-            Self::WindowAction { .. } => "WindowAction",
-            Self::WindowCall { .. } => "WindowCall",
-        })
-    }
-}
-
-pub(crate) struct WindowsNativeWindow {
-    pub(crate) window_id: winit::window::WindowId,
-    pub(crate) window: Arc<winit::window::Window>,
-    pub(crate) atlas: Arc<dyn PlatformAtlas>,
-    pub(crate) display: Option<WindowsDisplay>,
-    pub(crate) bounds: Bounds<Pixels>,
-    pub(crate) window_bounds: WindowBounds,
-    pub(crate) content_size: Size<Pixels>,
-    pub(crate) scale_factor: f32,
-    pub(crate) appearance: WindowAppearance,
-    pub(crate) background_appearance: WindowBackgroundAppearance,
-    pub(crate) mouse_position: Point<Pixels>,
-    pub(crate) modifiers: Modifiers,
-    pub(crate) capslock: Capslock,
-    pub(crate) active: bool,
-    pub(crate) hovered: bool,
-    pub(crate) visibility: WindowVisibility,
-    pub(crate) content_ready: Arc<AtomicBool>,
-    pub(crate) maximized: bool,
-    pub(crate) minimized: bool,
-    pub(crate) fullscreen: bool,
-    pub(crate) gpu_specs: Option<GpuSpecs>,
-    pub(crate) decorations: Decorations,
-    pub(crate) default_client_inset: Option<Pixels>,
-}
-
-#[allow(dead_code)]
-fn assert_native_window_boundary_is_send() {
-    fn assert_send<T: Send>() {}
-    assert_send::<WindowsNativeCommand>();
-    assert_send::<WindowsNativeWindow>();
-    assert_send::<WindowsNativeEvent>();
 }
 
 pub(crate) struct WindowsPlatform {
@@ -284,7 +160,6 @@ pub(crate) struct WindowsPlatform {
     renderer_backend: RendererBackend,
     renderer_options: RendererOptions,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
-    ui_bridge: Option<WindowsUiBridge>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     ole_initialized: bool,
 }
@@ -441,105 +316,7 @@ fn set_process_dpi_awareness(awareness: PROCESS_DPI_AWARENESS) -> windows::core:
 }
 
 impl WindowsPlatform {
-    pub(crate) fn run_separate(
-        renderer_options: RendererOptions,
-        ui_main: impl FnOnce(flume::Receiver<()>) + Send + 'static,
-    ) -> Result<()> {
-        let native = Rc::new(Self::new_native_owner(renderer_options)?);
-        let (shutdown, shutdown_receiver) = flume::bounded(1);
-        let ui_thread = Rc::new(RefCell::new(None));
-        let ui_thread_slot = ui_thread.clone();
-        let native_for_launch = native.clone();
-        native.run(Box::new(move || {
-            let Some(event_loop) = native_for_launch.event_loop_proxy.lock().unwrap().clone()
-            else {
-                log::error!("Windows native event loop proxy was not initialized");
-                return;
-            };
-            let state = native_for_launch.inner.state.borrow();
-            let bridge = WindowsUiBridge {
-                event_loop,
-                native_owner_closing: native_for_launch.inner.native_owner_closing.clone(),
-                displays: state.displays.clone(),
-                primary_display_id: state.primary_display_id,
-                renderer_backend: native_for_launch.renderer_backend,
-            };
-            drop(state);
-            let native_events = bridge.event_loop.clone();
-            match std::thread::Builder::new()
-                .name("gpui-ui".into())
-                .spawn(move || {
-                    UI_OWNER_BRIDGE.with(|slot| *slot.borrow_mut() = Some(bridge));
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        ui_main(shutdown_receiver);
-                    }));
-                    let _ = native_events.send_event(WindowsUserEvent::Quit);
-                    if let Err(payload) = result {
-                        std::panic::resume_unwind(payload);
-                    }
-                }) {
-                Ok(handle) => *ui_thread_slot.borrow_mut() = Some(handle),
-                Err(error) => {
-                    log::error!("failed to start GPUI UI owner thread: {error}");
-                    let _ = native_for_launch
-                        .event_loop_proxy
-                        .lock()
-                        .unwrap()
-                        .as_ref()
-                        .map(|proxy| proxy.send_event(WindowsUserEvent::Quit));
-                }
-            }
-        }));
-        native
-            .inner
-            .native_owner_closing
-            .store(true, Ordering::Release);
-        if shutdown.send(()).is_err() {
-            log::debug!("GPUI UI owner was already stopped when native event loop exited");
-        }
-        if let Some(handle) = ui_thread.borrow_mut().take() {
-            handle
-                .join()
-                .map_err(|_| anyhow!("GPUI UI owner thread panicked"))?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn run_ui_owner_tasks(shutdown: flume::Receiver<()>) {
-        let tasks = UI_OWNER_TASKS.with(|slot| slot.borrow_mut().take());
-        let Some(tasks) = tasks else {
-            log::error!("GPUI UI owner task queue was not initialized");
-            return;
-        };
-        loop {
-            enum Event {
-                Task(Result<Runnable, flume::RecvError>),
-                Shutdown,
-            }
-            match flume::Selector::new()
-                .recv(&tasks, Event::Task)
-                .recv(&shutdown, |_| Event::Shutdown)
-                .wait()
-            {
-                Event::Task(Ok(runnable)) => {
-                    runnable.run();
-                }
-                Event::Task(Err(_)) => break,
-                Event::Shutdown => {
-                    // Native close events are queued before the event loop exits. Let the UI
-                    // owner consume those callbacks before dropping its App and windows.
-                    while let Ok(runnable) = tasks.try_recv() {
-                        runnable.run();
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    fn new_common_parts(
-        ui_owner_mode: bool,
-    ) -> (
+    fn new_common_parts(vsync_scheduler: Arc<super::vsync::VSyncScheduler>) -> (
         Rc<WindowsPlatformInner>,
         BackgroundExecutor,
         ForegroundExecutor,
@@ -548,17 +325,7 @@ impl WindowsPlatform {
         let (main_sender, main_receiver) = flume::unbounded::<Runnable>();
         let main_thread_wakeup_pending = Arc::new(AtomicBool::new(false));
         let event_loop_proxy = Arc::new(Mutex::new(None));
-        let native_owner_closing = if ui_owner_mode {
-            UI_OWNER_BRIDGE.with(|bridge| {
-                bridge
-                    .borrow()
-                    .as_ref()
-                    .map(|bridge| bridge.native_owner_closing.clone())
-            })
-        } else {
-            None
-        }
-        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let native_owner_closing = Arc::new(AtomicBool::new(false));
         let inner = Rc::new(WindowsPlatformInner {
             state: RefCell::new(WindowsPlatformState::new()),
             native_owner_closing,
@@ -569,7 +336,7 @@ impl WindowsPlatform {
             main_sender,
             main_thread_wakeup_pending,
             event_loop_proxy.clone(),
-            ui_owner_mode,
+            vsync_scheduler,
         ));
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -583,8 +350,9 @@ impl WindowsPlatform {
     }
 
     pub(crate) fn new_headless() -> Self {
+        let vsync_scheduler = Arc::new(super::vsync::VSyncScheduler::new());
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
-            Self::new_common_parts(false);
+            Self::new_common_parts(vsync_scheduler.clone());
         let renderer_backend = RendererBackend::HeadlessTest;
         let text_system = create_windows_text_system(renderer_backend.capabilities())
             .unwrap_or_else(|_| Arc::new(NoopTextSystem) as Arc<dyn PlatformTextSystem>);
@@ -598,8 +366,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options: RendererOptions::with_backend(renderer_backend),
             event_loop_proxy,
-            ui_bridge: None,
-            vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
+            vsync_scheduler,
             ole_initialized: false,
         }
     }
@@ -638,57 +405,34 @@ impl WindowsPlatform {
         }
     }
 
-    fn new_native_owner(renderer_options: RendererOptions) -> Result<Self> {
-        Self::new_for_role(renderer_options, true)
-    }
-
     pub(crate) fn new(renderer_options: RendererOptions) -> Result<Self> {
-        Self::new_for_role(renderer_options, false)
-    }
-
-    fn new_for_role(renderer_options: RendererOptions, native_owner_only: bool) -> Result<Self> {
         become_dpi_aware();
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
 
-        let ui_bridge = UI_OWNER_BRIDGE.with(|bridge| bridge.borrow().clone());
         let requested_renderer_backend = renderer_options.backend;
-        let renderer_backend = if let Some(bridge) = &ui_bridge {
-            // The split native owner already resolved and validated the backend.
-            // Reuse it to avoid a second DXGI/Vulkan adapter enumeration on the UI owner.
-            bridge.renderer_backend
-        } else {
-            match requested_renderer_backend {
-                RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
-                RendererBackend::Auto
-                | RendererBackend::NovaOpenGl
+        let renderer_backend = match requested_renderer_backend {
+            RendererBackend::HeadlessTest => RendererBackend::HeadlessTest,
+            RendererBackend::Auto
+            | RendererBackend::NovaOpenGl
+            | RendererBackend::NovaVulkan
+            | RendererBackend::NovaDx11
+            | RendererBackend::NovaDx12
+            | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
+        };
+        record_renderer_backend(renderer_backend);
+        if matches!(
+            requested_renderer_backend,
+            RendererBackend::Auto
                 | RendererBackend::NovaVulkan
                 | RendererBackend::NovaDx11
                 | RendererBackend::NovaDx12
-                | RendererBackend::NovaMetal => Self::resolve_renderer_backend(&renderer_options)?,
-            }
-        };
-        record_renderer_backend(renderer_backend);
-        if ui_bridge.is_none()
-            && matches!(
-                requested_renderer_backend,
-                RendererBackend::Auto
-                    | RendererBackend::NovaVulkan
-                    | RendererBackend::NovaDx11
-                    | RendererBackend::NovaDx12
-                    | RendererBackend::NovaMetal
-            )
-        {
-            log::info!(
-                "GPUI Windows resolved renderer backend: {}",
-                renderer_backend
-            );
+                | RendererBackend::NovaMetal
+        ) {
+            log::info!("GPUI Windows resolved renderer backend: {}", renderer_backend);
         }
-
-        if ui_bridge.is_none() && renderer_backend != RendererBackend::HeadlessTest {
-            // No HWND is needed: overlap device/core creation with DirectWrite, App and winit
-            // setup in both host modes. The split UI owner reuses the native owner's preparation.
+        if renderer_backend != RendererBackend::HeadlessTest {
             let options = RendererOptions {
                 backend: renderer_backend,
                 ..renderer_options.clone()
@@ -697,34 +441,15 @@ impl WindowsPlatform {
                 log::warn!("failed to queue GPUI renderer preparation: {error:#}");
             }
         }
-
-        // The native owner hosts winit, DWM pacing and window creation only. The GPUI App and
-        // all text shaping live on the separate UI owner, so constructing DirectWrite here would
-        // create/register a second font loader and system font collection that is never used.
-        let text_system: Arc<dyn PlatformTextSystem> = if native_owner_only {
-            Arc::new(NoopTextSystem)
-        } else {
-            create_windows_text_system(renderer_backend.capabilities())?
-        };
+        let text_system = create_windows_text_system(renderer_backend.capabilities())?;
         let disable_direct_composition = std::env::var(DISABLE_DIRECT_COMPOSITION)
             .is_ok_and(|value| value == "true" || value == "1");
+        let vsync_scheduler = Arc::new(super::vsync::VSyncScheduler::new());
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
-            Self::new_common_parts(ui_bridge.is_some());
-        if let Some(bridge) = &ui_bridge {
-            let mut state = inner.state.borrow_mut();
-            state.displays = bridge.displays.clone();
-            state.primary_display_id = bridge.primary_display_id;
-            UI_OWNER_TASKS.with(|tasks| {
-                *tasks.borrow_mut() = Some(inner.main_receiver.clone());
-            });
-        }
-
-        // EmptyWorkingSet is process-wide. In split-owner mode schedule it only from the UI
-        // platform after the real App has been constructed, not once per platform object.
-        if !native_owner_only && startup_working_set_trim_enabled() {
+            Self::new_common_parts(vsync_scheduler.clone());
+        if startup_working_set_trim_enabled() {
             spawn_startup_working_set_trim_task();
         }
-
         Ok(Self {
             inner,
             background_executor,
@@ -734,8 +459,7 @@ impl WindowsPlatform {
             renderer_backend,
             renderer_options,
             event_loop_proxy,
-            ui_bridge,
-            vsync_scheduler: Arc::new(super::vsync::VSyncScheduler::new()),
+            vsync_scheduler,
             ole_initialized: true,
         })
     }
@@ -936,13 +660,15 @@ impl Platform for WindowsPlatform {
             let mut lock = self.event_loop_proxy.lock().unwrap();
             *lock = Some(event_loop.create_proxy());
         }
+        MODAL_FOREGROUND_OWNER.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::downgrade(&self.inner));
+        });
         let inner = self.inner.clone();
         let event_loop_proxy = self.event_loop_proxy.clone();
         let mut application = WindowsApplication {
             inner,
             on_finish_launching: Some(on_finish_launching),
             event_loop_proxy,
-            creation_info: self.generate_creation_info(),
             windows: FxHashMap::default(),
             focused_window_id: None,
             current_modifiers: Modifiers::default(),
@@ -960,16 +686,13 @@ impl Platform for WindowsPlatform {
         if let Err(error) = event_loop.run_app(&mut application) {
             log::error!("Windows native event loop failed: {error}");
         }
+        MODAL_FOREGROUND_OWNER.with(|slot| *slot.borrow_mut() = None);
     }
 
     fn quit(&self) {
         self.inner
             .native_owner_closing
             .store(true, Ordering::Release);
-        if let Some(bridge) = &self.ui_bridge {
-            let _ = bridge.event_loop.send_event(WindowsUserEvent::Quit);
-            return;
-        }
         if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
             let _ = proxy.send_event(WindowsUserEvent::Quit);
         }
@@ -1014,11 +737,11 @@ impl Platform for WindowsPlatform {
     }
 
     fn activate(&self, _ignoring_other_apps: bool) {
-        if let Some(bridge) = &self.ui_bridge {
-            let _ = bridge.event_loop.send_event(WindowsUserEvent::ActivateApp);
-            return;
+        if with_active_context(|_event_loop, app| app.activate_window()).is_none() {
+            if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
+                let _ = proxy.send_event(WindowsUserEvent::ActivateApp);
+            }
         }
-        let _ = with_active_context(|_event_loop, app| app.activate_window());
     }
 
     fn hide(&self) {}
@@ -1072,29 +795,6 @@ impl Platform for WindowsPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        if let Some(bridge) = &self.ui_bridge {
-            let (reply, receiver) = std::sync::mpsc::channel();
-            bridge
-                .event_loop
-                .send_event(WindowsUserEvent::NativeCommand(
-                    WindowsNativeCommand::CreateWindow {
-                        handle,
-                        options,
-                        reply,
-                    },
-                ))
-                .map_err(|error| anyhow!("native Windows owner is closed: {error:?}"))?;
-            let snapshot = receiver
-                .recv()
-                .context("native Windows owner did not answer window creation")??;
-            return Ok(Box::new(WindowProxy::new(
-                snapshot,
-                handle,
-                Rc::downgrade(&self.inner),
-                bridge.event_loop.clone(),
-                self.foreground_executor.clone(),
-            )));
-        }
         let creation_info = self.generate_creation_info();
         let cursor_style = self.inner.state.borrow().cursor_style;
         let window = with_active_context(|event_loop, app| {
@@ -1256,18 +956,15 @@ impl Platform for WindowsPlatform {
         lock.cursor_style = style;
         drop(lock);
 
-        if let Some(bridge) = &self.ui_bridge {
-            let _ = bridge
-                .event_loop
-                .send_event(WindowsUserEvent::SetCursorStyle(style));
-            return;
-        }
-
-        let _ = with_active_context(|_event_loop, app| {
+        if with_active_context(|_event_loop, app| {
             for window in app.windows.values() {
                 apply_cursor_style_to_window(window.window(), style);
             }
-        });
+        }).is_none() {
+            if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
+                let _ = proxy.send_event(WindowsUserEvent::SetCursorStyle(style));
+            }
+        }
     }
 
     fn should_auto_hide_scrollbars(&self) -> bool {
@@ -1476,7 +1173,6 @@ struct WindowsApplication {
     inner: Rc<WindowsPlatformInner>,
     on_finish_launching: Option<Box<dyn FnOnce()>>,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
-    creation_info: WindowCreationInfo,
     windows: FxHashMap<winit::window::WindowId, WindowsWindow>,
     focused_window_id: Option<winit::window::WindowId>,
     current_modifiers: Modifiers,
@@ -1539,210 +1235,6 @@ impl WindowsApplication {
                 .native_owner_closing
                 .store(true, Ordering::Release);
             event_loop.exit();
-        }
-    }
-
-    fn create_native_window(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        handle: AnyWindowHandle,
-        options: WindowParams,
-    ) -> Result<WindowsNativeWindow> {
-        let event_loop_proxy = self
-            .event_loop_proxy
-            .lock()
-            .map_err(|_| anyhow!("Windows event loop proxy mutex is poisoned"))?
-            .clone()
-            .context("Windows event loop proxy is not initialized")?;
-        let window = WindowsWindow::new(
-            event_loop,
-            handle,
-            options,
-            self.creation_info.clone(),
-            event_loop_proxy,
-        )?;
-        let native_window = window
-            .0
-            .winit_window
-            .get()
-            .cloned()
-            .context("native Windows window is not initialized")?;
-        let snapshot = WindowsNativeWindow {
-            window_id: window.window_id(),
-            display: WindowsDisplay::from_window_monitor(&native_window),
-            bounds: window.bounds(),
-            window_bounds: window.window_bounds(),
-            content_size: window.content_size(),
-            scale_factor: window.scale_factor(),
-            appearance: window.appearance(),
-            background_appearance: window.background_appearance(),
-            mouse_position: window.mouse_position(),
-            modifiers: window.modifiers(),
-            capslock: window.capslock(),
-            active: window.is_active(),
-            hovered: window.is_hovered(),
-            visibility: window.visibility(),
-            content_ready: window.0.content_ready.clone(),
-            maximized: window.is_maximized(),
-            minimized: window.is_minimized(),
-            fullscreen: window.is_fullscreen(),
-            gpu_specs: window.gpu_specs(),
-            decorations: window.window_decorations(),
-            default_client_inset: window.default_client_inset(),
-            atlas: window.sprite_atlas(),
-            window: native_window,
-        };
-        apply_cursor_style_to_window(window.window(), self.inner.state.borrow().cursor_style);
-        self.windows.insert(snapshot.window_id, window);
-        Ok(snapshot)
-    }
-
-    fn handle_native_command(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        command: WindowsNativeCommand,
-    ) {
-        match command {
-            WindowsNativeCommand::CreateWindow {
-                handle,
-                options,
-                reply,
-            } => {
-                if reply
-                    .send(self.create_native_window(event_loop, handle, options))
-                    .is_err()
-                {
-                    log::warn!("Windows UI owner dropped native window creation reply");
-                }
-            }
-            WindowsNativeCommand::CommitScene {
-                window_id,
-                mut packet,
-                reply,
-            } => {
-                // UI Render may have started before an active compositor sample was presented.
-                // Sample the committed visual timelines on the native owner's clock, otherwise
-                // installing this scene can rewind geometry to the older UI frame timestamp.
-                packet.frame_time = Instant::now();
-                let result = self
-                    .windows
-                    .get(&window_id)
-                    .map_or(PlatformFrameResult::Deferred, |window| window.draw(packet));
-                if reply.send(result).is_err() {
-                    log::warn!("Windows UI owner dropped native scene submission reply");
-                }
-            }
-            WindowsNativeCommand::CommitLatestScene { window_id, mailbox } => {
-                let Some(mut scene) = mailbox.lock().take() else {
-                    return;
-                };
-                scene.prepare_for_native_frame(Instant::now());
-                if let Some(window) = self.windows.get(&window_id) {
-                    if scene.framebuffer_only {
-                        window.present_framebuffer_only(scene.packet);
-                    } else {
-                        window.draw(scene.packet);
-                    }
-                }
-            }
-            WindowsNativeCommand::SetFrameRequestSender { window_id, sender } => {
-                if let Some(window) = self.windows.get(&window_id) {
-                    window.set_frame_request_sender(sender);
-                }
-            }
-            WindowsNativeCommand::SetAnimationCompletionSender { window_id, sender } => {
-                if let Some(window) = self.windows.get(&window_id) {
-                    window.set_presentation_animation_completion_sender(sender);
-                }
-            }
-            WindowsNativeCommand::SetEventSender { window_id, sender } => {
-                if let Some(window) = self.windows.get(&window_id) {
-                    let input_sender = sender.clone();
-                    window.on_input(Box::new(move |input| {
-                        if input_sender.send(WindowsNativeEvent::Input(input)).is_err() {
-                            log::warn!("Windows UI owner dropped input event");
-                        }
-                        DispatchEventResult::default()
-                    }));
-                    let active_sender = sender.clone();
-                    window.on_active_status_change(Box::new(move |active| {
-                        let _ = active_sender.send(WindowsNativeEvent::Active(active));
-                    }));
-                    let visibility_sender = sender.clone();
-                    window.on_visibility_change(Box::new(move |visibility| {
-                        let _ = visibility_sender.send(WindowsNativeEvent::Visibility(visibility));
-                    }));
-                    let hover_sender = sender.clone();
-                    window.on_hover_status_change(Box::new(move |hovered| {
-                        let _ = hover_sender.send(WindowsNativeEvent::Hovered(hovered));
-                    }));
-                    let resize_sender = sender.clone();
-                    let resize_window = Rc::downgrade(&window.0);
-                    window.on_resize(Box::new(move |size, scale| {
-                        if let Some(inner) = resize_window.upgrade() {
-                            let geometry = WindowsWindow(inner).native_geometry();
-                            let _ = resize_sender.send(WindowsNativeEvent::Resized(
-                                size, scale, geometry,
-                            ));
-                        }
-                    }));
-                    let move_sender = sender.clone();
-                    let move_window = Rc::downgrade(&window.0);
-                    window.on_moved(Box::new(move || {
-                        if let Some(inner) = move_window.upgrade() {
-                            let geometry = WindowsWindow(inner).native_geometry();
-                            let _ = move_sender.send(WindowsNativeEvent::Moved(geometry));
-                        }
-                    }));
-                    let appearance_sender = sender.clone();
-                    window.on_appearance_changed(Box::new(move || {
-                        let _ = appearance_sender.send(WindowsNativeEvent::AppearanceChanged);
-                    }));
-                    let close_request_sender = sender.clone();
-                    window.on_should_close(Box::new(move || {
-                        close_request_sender
-                            .send(WindowsNativeEvent::CloseRequested)
-                            .is_err()
-                    }));
-                    window.on_close(Box::new(move || {
-                        let _ = sender.send(WindowsNativeEvent::Closed);
-                    }));
-                }
-            }
-            WindowsNativeCommand::CloseWindow { window_id } => {
-                self.close_window(event_loop, window_id);
-            }
-            WindowsNativeCommand::WindowAction { window_id, action } => {
-                // Moving/resizing pumps native messages synchronously; release the registry
-                // borrow before entering that loop.
-                let Some(mut window) = self.windows.get(&window_id).cloned() else {
-                    return;
-                };
-                match action {
-                    WindowsWindowAction::RequestFrame(request) => window.request_frame(request),
-                    WindowsWindowAction::FrameRequestTimedOut(request) => {
-                        window.frame_request_timed_out(request);
-                    }
-                    WindowsWindowAction::Resize(size) => window.resize(size),
-                    WindowsWindowAction::StartMove => window.start_window_move(),
-                    WindowsWindowAction::StartResize(edge) => window.start_window_resize(edge),
-                    WindowsWindowAction::SetTitle(title) => window.set_title(&title),
-                    WindowsWindowAction::SetBackgroundAppearance(appearance) => {
-                        window.set_background_appearance(appearance);
-                    }
-                    WindowsWindowAction::Activate => window.activate(),
-                    WindowsWindowAction::Show => window.show(),
-                    WindowsWindowAction::Hide => window.hide_window(),
-                    WindowsWindowAction::Minimize => window.minimize(),
-                    WindowsWindowAction::Maximize => window.maximize(),
-                    WindowsWindowAction::Restore => window.restore(),
-                    WindowsWindowAction::Zoom => window.zoom(),
-                    WindowsWindowAction::ToggleFullscreen => window.toggle_fullscreen(),
-                }
-            }
-            WindowsNativeCommand::WindowCall { window_id, call } => {
-                call(self.windows.get_mut(&window_id));
-            }
         }
     }
 
@@ -1897,10 +1389,18 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             WindowsUserEvent::DockMenuAction(action_index) => {
                 self.inner.handle_dock_action_event(action_index);
             }
-            WindowsUserEvent::NativeCommand(command) => {
-                self.handle_native_command(event_loop, command);
-            }
             WindowsUserEvent::ActivateApp => self.activate_window(),
+            WindowsUserEvent::BeginNativeDrag { window_id, resize_edge } => {
+                // The caller's input callback has returned. Keep App callbacks outside
+                // the native modal loop; HWND resize events schedule bounded task slices.
+                ACTIVE_CONTEXT.with(|storage| *storage.borrow_mut() = None);
+                if let Some(window) = self.windows.get(&window_id).cloned() {
+                    match resize_edge {
+                        Some(edge) => window.start_native_resize_now(edge),
+                        None => window.start_native_move_now(),
+                    }
+                }
+            }
             WindowsUserEvent::SetCursorStyle(style) => {
                 self.inner.state.borrow_mut().cursor_style = style;
                 for window in self.windows.values() {
@@ -2540,7 +2040,7 @@ fn should_auto_hide_scrollbars() -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::atomic::Ordering};
+    use std::{cell::Cell, rc::Rc, sync::{Arc, atomic::Ordering}};
 
     use super::{WINDOWS_AUTO_RENDERER_BACKEND_ORDER, username_and_password};
     use crate::{ClipboardItem, RendererBackend, read_from_clipboard, write_to_clipboard};
@@ -2664,7 +2164,9 @@ mod tests {
     #[test]
     fn windows_foreground_task_drain_clears_coalesced_wakeup() {
         let (inner, _background_executor, foreground_executor, _event_loop_proxy) =
-            super::WindowsPlatform::new_common_parts(false);
+            super::WindowsPlatform::new_common_parts(
+                Arc::new(super::super::vsync::VSyncScheduler::new()),
+            );
         let task_ran = Rc::new(Cell::new(false));
 
         foreground_executor

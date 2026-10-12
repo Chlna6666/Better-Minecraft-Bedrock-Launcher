@@ -339,19 +339,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         }
     };
 
-    #[cfg(windows)]
-    Application::run_separate(
-        renderer_options.clone(),
-        move || {
-            Application::with_renderer_options(renderer_options)
-                .with_image_pipeline_config(image_pipeline)
-                .with_platform_default_font(default_font)
-                .with_assets(crate::assets::asset_source::AppAssets)
-        },
-        launch,
-    )?;
-
-    #[cfg(not(windows))]
+    // Native events and GPUI run on the HWND-owning thread. RenderOwner is independent.
     Application::with_renderer_options(renderer_options)
         .with_image_pipeline_config(image_pipeline)
         .with_platform_default_font(default_font)

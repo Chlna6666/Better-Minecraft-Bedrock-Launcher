@@ -142,7 +142,7 @@ the same color that its view paints.
 Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
 
 Windows queues shared-device and BGRA renderer-core preparation on this GPU owner after resolving
-the backend, before DirectWrite/App/winit initialization in both `run` and `run_separate`. Device,
+the backend, before DirectWrite/App/winit initialization on the single Windows HWND/GPUI UI owner. Device,
 shader and pipeline creation overlap native/UI preparation; the window reuses the same device
 and format keys. Core pipelines have dynamic viewport/scissor and need no window-sized targets.
 Surface, swapchain and window resources remain in window initialization. Preparation errors are

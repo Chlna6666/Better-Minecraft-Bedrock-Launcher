@@ -70,18 +70,10 @@ impl Scenario {
 #[derive(Clone)]
 struct Config {
     backend: RendererBackend,
-    host: Host,
     present_mode: PresentModePreference,
     scenario: Scenario,
     refresh_rate: f32,
     frames: usize,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum Host {
-    Single,
-    Separate,
 }
 
 #[derive(Serialize)]
@@ -160,7 +152,6 @@ struct LabReport {
     process_memory_error: Option<String>,
     schema_version: u32,
     backend: &'static str,
-    host: Host,
     requested_present_mode: PresentModePreference,
     scenario: Scenario,
     refresh_rate: f32,
@@ -583,18 +574,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         ..RendererOptions::default()
     };
     let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
-    let host = config.host;
-    let launch = move |cx: &mut App| open_lab_window(config, cx);
-    match host {
-        Host::Single => Application::with_renderer_options(options)
-            .with_assets(Assets { examples })
-            .run(launch),
-        Host::Separate => Application::run_separate(
-            options.clone(),
-            move || Application::with_renderer_options(options).with_assets(Assets { examples }),
-            launch,
-        )?,
-    }
+    Application::with_renderer_options(options)
+        .with_assets(Assets { examples })
+        .run(move |cx: &mut App| open_lab_window(config, cx));
     Ok(())
 }
 
@@ -643,7 +625,6 @@ fn open_lab_window(config: Config, cx: &mut App) {
 fn parse_config() -> Result<Config, Box<dyn Error>> {
     let mut config = Config {
         backend: default_backend(),
-        host: Host::Single,
         present_mode: PresentModePreference::AutoVsync,
         scenario: Scenario::StaticIdle,
         refresh_rate: DEFAULT_REFRESH_RATE,
@@ -678,12 +659,6 @@ fn parse_config() -> Result<Config, Box<dyn Error>> {
 fn parse_argument(config: &mut Config, argument: &str) -> Result<(), Box<dyn Error>> {
     if let Some(value) = argument.strip_prefix("--backend=") {
         config.backend = value.parse()?;
-    } else if let Some(value) = argument.strip_prefix("--host=") {
-        config.host = match value {
-            "single" => Host::Single,
-            "separate" => Host::Separate,
-            _ => return Err("--host must be single or separate".into()),
-        };
     } else if let Some(value) = argument.strip_prefix("--present-mode=") {
         config.present_mode = match value {
             "auto-vsync" => PresentModePreference::AutoVsync,
@@ -745,14 +720,13 @@ fn print_report(
     let report = LabReport {
         window_metrics: gpui::window_metrics_snapshot(),
         text_metrics: gpui::text_metrics_snapshot(),
-        schema_version: 5,
+        schema_version: 6,
         gpu_owner,
         gpu_owner_samples,
         memory,
         process_memory,
         process_memory_error,
         backend: backend_label(snapshot.renderer_backend),
-        host: config.host,
         requested_present_mode: config.present_mode,
         scenario: config.scenario,
         refresh_rate: config.refresh_rate,
@@ -852,7 +826,7 @@ fn percentile(values: &[u64], percentile: usize) -> u64 {
 fn print_help() {
     println!(
         "gpui_perf_lab --backend=auto|nova-dx11|nova-dx12|nova-vulkan|nova-opengl \
-         --host=single|separate --present-mode=auto-vsync|mailbox|immediate \
+         --present-mode=auto-vsync|mailbox|immediate \
          --scenario=static-idle|single-dirty|scroll-10k|cjk-cold|cjk-hot|texture-stress|overdraw-modal|effects|animation|traversal-ancestor|buffer-growth \
          --refresh-rate=120 --frames=600"
     );

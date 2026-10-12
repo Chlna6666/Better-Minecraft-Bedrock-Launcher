@@ -52,7 +52,7 @@ use windows::{
     core::*,
 };
 
-use super::platform::{QueuedScene, WindowsUserEvent};
+use super::platform::WindowsUserEvent;
 use crate::diagnostics::performance_metrics::{
     record_frame_request, record_gpu_adapter_diagnostics, record_renderer_backend,
     record_window_active_presentation_attempt, record_window_active_presentation_retry,
@@ -78,6 +78,18 @@ mod startup;
 use startup::StartupBackground;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
+
+/// Latest deferred GPU scene; owned by the native window, never a secondary UI proxy.
+pub(crate) struct QueuedScene {
+    pub(crate) packet: PresentationPacket,
+    pub(crate) framebuffer_only: bool,
+}
+
+impl QueuedScene {
+    fn prepare_for_native_frame(&mut self, now: Instant) {
+        self.packet.frame_time = now;
+    }
+}
 
 const SIZE_MOVE_LOOP_SUBCLASS_ID: usize = 0x4750_5549;
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 0x4750_5549;
@@ -146,6 +158,7 @@ enum SizeMoveLoopAction {
     Start,
     Tick,
     VSync,
+    UiTasks,
     Finish,
     SyncExtent,
     SuppressErase,
@@ -158,6 +171,7 @@ fn size_move_loop_action(message: u32, timer_id: usize) -> SizeMoveLoopAction {
         WM_ENTERSIZEMOVE => SizeMoveLoopAction::Start,
         WM_TIMER if timer_id == SIZE_MOVE_LOOP_TIMER_ID => SizeMoveLoopAction::Tick,
         super::vsync::WM_MODAL_VSYNC => SizeMoveLoopAction::VSync,
+        super::vsync::WM_MODAL_UI_TASKS => SizeMoveLoopAction::UiTasks,
         WM_EXITSIZEMOVE => SizeMoveLoopAction::Finish,
         WM_SIZE | WM_WINDOWPOSCHANGED => SizeMoveLoopAction::SyncExtent,
         WM_ERASEBKGND => SizeMoveLoopAction::SuppressErase,
@@ -193,6 +207,9 @@ fn dispatch_size_move_frame(hwnd: HWND) {
     // while winit's outer event-loop runner is already borrowed.
     window.sync_current_native_size();
     window.dispatch_pending_update();
+    if super::platform::poll_modal_foreground_tasks() {
+        window.0.vsync_scheduler.wake_modal_ui_tasks();
+    }
 }
 
 unsafe extern "system" fn size_move_loop_subclass_proc(
@@ -299,6 +316,17 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 let event_received_at = Instant::now();
                 window.sync_current_native_size();
                 window.dispatch_pending_update_from_vsync(timing, event_received_at);
+                if super::platform::poll_modal_foreground_tasks() {
+                    window.0.vsync_scheduler.wake_modal_ui_tasks();
+                }
+            }
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+        SizeMoveLoopAction::UiTasks => {
+            if let Some(window) = native_window(hwnd)
+                && super::platform::poll_modal_foreground_tasks()
+            {
+                window.0.vsync_scheduler.wake_modal_ui_tasks();
             }
             return windows::Win32::Foundation::LRESULT(0);
         }
@@ -496,18 +524,6 @@ impl Clone for WindowsWindow {
 }
 
 impl WindowsWindow {
-    /// Return authoritative native geometry without asking the UI thread to synchronously
-    /// call back into the Win32 event loop during interactive window dragging.
-    pub(crate) fn native_geometry(&self) -> super::platform::WindowsNativeGeometry {
-        super::platform::WindowsNativeGeometry {
-            bounds: PlatformWindow::bounds(self),
-            window_bounds: PlatformWindow::window_bounds(self),
-            maximized: PlatformWindow::is_maximized(self),
-            minimized: PlatformWindow::is_minimized(self),
-            fullscreen: PlatformWindow::is_fullscreen(self),
-        }
-    }
-
     fn default_resize_inset() -> Pixels {
         px(8.0)
     }
@@ -566,6 +582,29 @@ impl WindowsWindow {
 
     pub(crate) fn window_id(&self) -> winit::window::WindowId {
         self.window().id()
+    }
+
+    fn queue_native_drag(&self, resize_edge: Option<ResizeEdge>) {
+        if let Err(error) = self.0.event_loop_proxy.send_event(
+            WindowsUserEvent::BeginNativeDrag {
+                window_id: self.window_id(),
+                resize_edge,
+            },
+        ) {
+            log::warn!("failed to queue native drag: {error:?}");
+        }
+    }
+
+    pub(crate) fn start_native_move_now(&self) {
+        if let Err(error) = start_winit_window_move(self.window()) {
+            log::debug!("winit drag_window failed: {error}");
+        }
+    }
+
+    pub(crate) fn start_native_resize_now(&self, edge: ResizeEdge) {
+        if let Err(error) = start_winit_window_resize(self.window(), edge) {
+            log::debug!("winit drag_resize_window failed: {error}");
+        }
     }
 
     pub(crate) fn native_hwnd(&self) -> Option<HWND> {
@@ -2104,15 +2143,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn start_window_move(&self) {
-        if let Err(error) = start_winit_window_move(self.window()) {
-            log::debug!("winit drag_window failed: {error}");
-        }
+        self.queue_native_drag(None);
     }
 
     fn start_window_resize(&self, edge: ResizeEdge) {
-        if let Err(error) = start_winit_window_resize(self.window(), edge) {
-            log::debug!("winit drag_resize_window failed: {error}");
-        }
+        self.queue_native_drag(Some(edge));
     }
 
     fn window_decorations(&self) -> Decorations {
@@ -2487,6 +2522,10 @@ mod tests {
         assert_eq!(
             size_move_loop_action(super::super::vsync::WM_MODAL_VSYNC, 0),
             SizeMoveLoopAction::VSync
+        );
+        assert_eq!(
+            size_move_loop_action(super::super::vsync::WM_MODAL_UI_TASKS, 0),
+            SizeMoveLoopAction::UiTasks
         );
         assert_eq!(
             size_move_loop_action(WM_EXITSIZEMOVE, 0),

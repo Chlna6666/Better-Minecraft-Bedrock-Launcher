@@ -175,10 +175,7 @@ fn main() {
         backend,
         ..Default::default()
     };
-    if let Err(error) = Application::run_separate(
-        options.clone(),
-        move || Application::with_renderer_options(options),
-        move |cx: &mut App| {
+    Application::with_renderer_options(options).run(move |cx: &mut App| {
             let view = cx.new(|_| BlockView {
                 block_next_render: false,
                 block_probe: Some(block_probe),
@@ -219,9 +216,5 @@ fn main() {
                 }
             })
             .detach();
-        },
-    ) {
-        eprintln!("failed to run presentation-lane gate: {error:#}");
-        std::process::exit(1);
-    }
+        });
 }

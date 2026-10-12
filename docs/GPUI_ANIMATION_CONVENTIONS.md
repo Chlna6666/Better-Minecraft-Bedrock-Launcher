@@ -69,10 +69,12 @@ vsync
 
 Do not move visual-only animation back into Render merely to make endpoint updates convenient. Retarget the renderer-owned timeline from the currently presented value instead. The UI thread is responsible for discrete state changes and scene commits; the presentation lane owns the frames between those commits.
 
-On Windows, winit owns native events and DWM pacing; Nova's GPU owner retains the scene, samples
-animations and submits frames. `Application::run_separate` constructs `App` and renders on the GPUI
-UI thread; packets cross through the native producer to the GPU owner, while input and animation
-completions return to UI. X11 Nova uses GPU-owner deadlines supplied by XRandR; Wayland uses actual
+On Windows, the Win32/winit message loop and GPUI App share the HWND-owning thread.
+During interactive move/resize, a bounded foreground queue runs from modal Win32 messages;
+pure move does not invalidate layout, while size/DPI changes request new UI commits.
+Nova's independent GPU RenderOwner retains the scene, samples animations, and submits frames
+from immutable PresentationPackets. The modal UI-task wake does not request a GPU Present.
+Window events and GPU completion reports are delivered to the single UI owner. X11 Nova uses GPU-owner deadlines supplied by XRandR; Wayland uses actual
 surface frame callbacks on a dedicated native event queue. Both send retained animation ticks without
 waiting for UI dispatch. Input/configure dispatch
 remains shared with UI on Linux. The blocked-Render lab distinguishes animation progress from

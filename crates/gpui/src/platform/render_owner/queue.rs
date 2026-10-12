@@ -100,6 +100,18 @@ impl Queue {
             .rposition(|queued| queued.command.is_barrier())
             .map_or(0, |index| index + 1);
         match &mut command {
+            Command::Resize(_) => {
+                // Collapse adjacent unconsumed resizes only. Never cross a Draw,
+                // fence-bearing Call, or resource ownership barrier.
+                if state.commands.back().is_some_and(|last| {
+                    matches!(last.command, Command::Resize(_))
+                }) {
+                    let previous = state.commands.pop_back()
+                        .expect("the previous command was checked");
+                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
+                    coalesced_count = previous.coalesced_count.saturating_add(1);
+                }
+            }
             Command::Draw {
                 packet,
                 reply: None,

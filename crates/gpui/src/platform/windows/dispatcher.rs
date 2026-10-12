@@ -35,7 +35,7 @@ pub(crate) struct WindowsDispatcher {
     main_thread_wakeup_pending: Arc<AtomicBool>,
     main_thread_id: ThreadId,
     event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
-    ui_owner_mode: bool,
+    vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
 impl WindowsDispatcher {
@@ -43,7 +43,7 @@ impl WindowsDispatcher {
         main_sender: Sender<Runnable>,
         main_thread_wakeup_pending: Arc<AtomicBool>,
         event_loop_proxy: Arc<Mutex<Option<EventLoopProxy<WindowsUserEvent>>>>,
-        ui_owner_mode: bool,
+        vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     ) -> Self {
         let main_thread_id = current().id();
 
@@ -52,7 +52,7 @@ impl WindowsDispatcher {
             main_thread_wakeup_pending,
             main_thread_id,
             event_loop_proxy,
-            ui_owner_mode,
+            vsync_scheduler,
         }
     }
 
@@ -134,10 +134,10 @@ impl PlatformDispatcher for WindowsDispatcher {
     fn dispatch_on_main_thread(&self, runnable: Runnable) {
         match self.main_sender.send(runnable) {
             Ok(_) => {
-                if self.ui_owner_mode {
-                    return;
-                }
                 if !self.main_thread_wakeup_pending.swap(true, Ordering::AcqRel) {
+                    // The outer winit loop pauses inside the OS drag/resize modal pump.
+                    // A Win32 task wake remains responsive without forcing a GPU Present.
+                    self.vsync_scheduler.wake_modal_ui_tasks();
                     let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
                     if let Some(event_loop_proxy) = event_loop_proxy {
                         if let Err(error) =
