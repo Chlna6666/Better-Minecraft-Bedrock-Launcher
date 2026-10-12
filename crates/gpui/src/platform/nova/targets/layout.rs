@@ -13,15 +13,14 @@ impl BackdropBlurTargets {
         needs_root_source: bool,
         root_index: Option<u32>,
     ) -> bool {
-        let Some(old_root) = self.retained_root_variant else {
-            return false;
-        };
-        let Some(new_root) = root_index.and_then(|index| {
+        let old_root = self.retained_root_variant;
+        let new_root = root_index.and_then(|index| {
             next.iter()
                 .position(|config| config.contains_member_index(index))
-        }) else {
+        });
+        if root_index.is_some() && new_root.is_none() {
             return false;
-        };
+        }
         if needs_root_source
             || self.source.is_some()
             || !self.isolated_sources.is_empty()
@@ -37,11 +36,16 @@ impl BackdropBlurTargets {
 
         // Every admitted target has exactly one native-resolution color texture.
         // No per-slot source or Gaussian dimensions change with the flattened index.
-        self.variants.swap(old_root, new_root);
+        // Preserve a warmed window-root allocation when both layouts contain it.
+        // Other layouts may rebind child-only slots, but ALL old pixel residency
+        // is invalidated by ensure_backdrop_blur_targets before the next draw.
+        if let (Some(old_root), Some(new_root)) = (old_root, new_root) {
+            self.variants.swap(old_root, new_root);
+        }
         for (variant, config) in self.variants.iter_mut().zip(next) {
             variant.config = *config;
         }
-        self.retained_root_variant = Some(new_root);
+        self.retained_root_variant = new_root;
         self.active_variant_count = next.len();
         true
     }

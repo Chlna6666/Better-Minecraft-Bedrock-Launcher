@@ -1902,6 +1902,58 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
 }
 
 #[test]
+fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: test_zero_radius_blur_config(index),
+        levels: vec![BackdropBlurLevelTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(index + 1),
+            texture_view: test_texture_view_id(index + 1),
+            pass_resource_sets: vec![test_resource_set_id(index + 1)],
+        }],
+        target_resource_sets: vec![test_resource_set_id(index + 11)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: Vec::new(),
+        variants: (0..5).map(make_variant).collect(),
+        active_variant_count: 5,
+        retained_root_variant: None,
+        shared_horizontal_scratch: false,
+    };
+    let texture_ids = targets.variants.iter()
+        .map(|variant| variant.levels[0].texture_view)
+        .collect::<Vec<_>>();
+    for count in [3_u32, 4, 2, 5] {
+        let configs = (0..count)
+            .map(test_zero_radius_blur_config)
+            .collect::<Vec<_>>();
+        assert!(targets.rebind_zero_radius_layout(&configs, false, None));
+        assert_eq!(targets.active_variant_count, count as usize);
+        assert_eq!(targets.retained_root_variant, None);
+        assert_eq!(
+            targets.variants.iter()
+                .map(|variant| variant.levels[0].texture_view)
+                .collect::<Vec<_>>(),
+            texture_ids,
+        );
+    }
+    assert!(!targets.rebind_zero_radius_layout(
+        &[test_backdrop_blur_config(2, 2)],
+        false,
+        None,
+    ));
+    // Do not reuse an old child cache as a window root without a valid
+    // root index in the new flattened stream.
+    assert!(!targets.rebind_zero_radius_layout(
+        &[test_zero_radius_blur_config(0)],
+        false,
+        Some(100),
+    ));
+}
+
+#[test]
 fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_zero_radius_blur_config(index),
