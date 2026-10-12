@@ -575,10 +575,10 @@ impl WindowInvalidator {
 
     /// Returns one reconstructible subtree target strictly below ancestor.
     ///
-    /// Nested paths belonging to the same direct View can use their outermost target,
-    /// because rendering that View also rebuilds its nested paths. Distinct owners,
-    /// disjoint targets, unsupported scopes and route-local generic dirtiness remain
-    /// conservative fallbacks: selective splice still consumes one target.
+    /// Nested paths belonging to the same direct View can use the outermost target.
+    /// Disjoint paths can use their shared registered cached View boundary, when
+    /// it is strictly inside this traversal ancestor. Distinct owners, unrelated
+    /// cache instances, unsupported scopes and generic dirtiness remain barriers.
     pub(crate) fn single_reconcile_target_below(
         &self,
         ancestor: &GlobalElementId,
@@ -612,7 +612,13 @@ impl WindowInvalidator {
                 scope,
                 RetainedInvalidationScope::ReconcileSubtree
                     | RetainedInvalidationScope::InvalidateSubtree
-            ) || !merge_nested_reconcile_target(&mut selected, *owner, target)
+            ) || !merge_reconcile_target(
+                &mut selected,
+                *owner,
+                target,
+                ancestor,
+                inner.cached_view_retained_targets.get(owner).map(Vec::as_slice),
+            )
             {
                 return None;
             }
@@ -908,13 +914,17 @@ fn global_element_path_is_strict_prefix(prefix: &GlobalElementId, path: &GlobalE
     prefix.0.len() < path.0.len() && global_element_path_is_prefix(prefix, path)
 }
 
-/// A fresh render of the outermost directly dirty cached View also visits its
-/// nested targets. Only collapse paths owned by that *same* View: disjoint
-/// siblings and different owners still require structural reconciliation.
-fn merge_nested_reconcile_target(
+/// A fresh render of one directly dirty cached View visits every dirty
+/// path beneath that View boundary. Nested targets collapse to the outermost
+/// path; disjoint targets can collapse only to their registered common cached
+/// boundary, strictly below the traversal ancestor. Different View owners or
+/// unrelated cache instances must never share a splice target.
+fn merge_reconcile_target(
     selected: &mut Option<(EntityId, GlobalElementId)>,
     owner: EntityId,
     target: &GlobalElementId,
+    ancestor: &GlobalElementId,
+    cache_boundaries: Option<&[CachedViewRetainedTarget]>,
 ) -> bool {
     match selected {
         None => {
@@ -928,7 +938,21 @@ fn merge_nested_reconcile_target(
                 *selected_target = target.clone();
                 true
             } else {
-                false
+                let Some(common) = cache_boundaries
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| &entry.retained_id)
+                    .filter(|boundary| {
+                        global_element_path_is_strict_prefix(ancestor, boundary)
+                            && global_element_path_is_prefix(boundary, selected_target)
+                            && global_element_path_is_prefix(boundary, target)
+                    })
+                    .max_by_key(|boundary| boundary.0.len())
+                else {
+                    return false;
+                };
+                *selected_target = common.clone();
+                true
             }
         }
         Some(_) => false,
@@ -961,17 +985,54 @@ mod retained_dirty_scope_tests {
             (child.clone(), parent.clone()),
         ] {
             let mut selected = None;
-            assert!(merge_nested_reconcile_target(&mut selected, owner, &first));
-            assert!(merge_nested_reconcile_target(&mut selected, owner, &second));
+            let ancestor = path(&[0]);
+            assert!(merge_reconcile_target(
+                &mut selected, owner, &first, &ancestor, None,
+            ));
+            assert!(merge_reconcile_target(
+                &mut selected, owner, &second, &ancestor, None,
+            ));
             assert_eq!(selected, Some((owner, parent.clone())));
 
-            assert!(!merge_nested_reconcile_target(&mut selected, owner, &sibling));
-            assert!(!merge_nested_reconcile_target(
-                &mut selected,
-                EntityId::from(2),
-                &child,
+            assert!(!merge_reconcile_target(
+                &mut selected, owner, &sibling, &ancestor, None,
+            ));
+            assert!(!merge_reconcile_target(
+                &mut selected, EntityId::from(2), &child, &ancestor, None,
             ));
         }
+    }
+
+    #[test]
+    fn disjoint_dirty_siblings_merge_only_through_same_instance_cache_boundary() {
+        let owner = EntityId::from(1);
+        let ancestor = path(&[0]);
+        let shared = path(&[0, 1]);
+        let left = path(&[0, 1, 3]);
+        let right = path(&[0, 1, 4]);
+        let other = path(&[0, 2, 3]);
+        let registered = vec![
+            CachedViewRetainedTarget {
+                retained_id: shared.clone(),
+                state_global_id: path(&[10]),
+            },
+            CachedViewRetainedTarget {
+                retained_id: path(&[0, 2]),
+                state_global_id: path(&[20]),
+            },
+        ];
+        let merge = |second: &GlobalElementId, boundaries: Option<&[CachedViewRetainedTarget]>| {
+            let mut selected = None;
+            assert!(merge_reconcile_target(
+                &mut selected, owner, &left, &ancestor, boundaries,
+            ));
+            (merge_reconcile_target(
+                &mut selected, owner, second, &ancestor, boundaries,
+            ), selected)
+        };
+        assert_eq!(merge(&right, Some(&registered)), (true, Some((owner, shared))));
+        assert_eq!(merge(&right, None), (false, Some((owner, left.clone()))));
+        assert_eq!(merge(&other, Some(&registered)), (false, Some((owner, left.clone()))));
     }
 
     #[test]
