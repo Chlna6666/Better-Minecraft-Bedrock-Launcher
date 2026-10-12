@@ -1,5 +1,6 @@
 use crate::{App, Window};
 use smallvec::SmallVec;
+use taffy::TraversePartialTree as _;
 
 use super::{
     engine::{EXPECT_MESSAGE, TaffyLayoutEngine},
@@ -69,8 +70,12 @@ impl TaffyLayoutEngine {
         stack.push(root_id);
         while let Some(id) = stack.pop() {
             nodes.push(id);
-            let children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
-            stack.extend(children.into_iter().rev().map(Into::into));
+            // Preserve pre-order traversal without allocating a Vec of
+            // child IDs at every node of a retained layout subtree.
+            let count = self.taffy.child_count(id.into());
+            for index in (0..count).rev() {
+                stack.push(self.taffy.get_child_id(id.into(), index).into());
+            }
         }
     }
 }

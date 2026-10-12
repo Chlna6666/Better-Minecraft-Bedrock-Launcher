@@ -148,6 +148,26 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(
     }).unwrap();
 }
 
+#[test]
+fn native_taffy_subtree_snapshot_preserves_preorder_without_child_vec_allocations() {
+    let mut engine = TaffyLayoutEngine::new();
+    let leaf = engine.request_layout(
+        layout_identity("leaf"), Style::default(), px(16.), 1., &[],
+    );
+    let left = engine.request_layout(
+        layout_identity("left"), Style::default(), px(16.), 1., &[leaf],
+    );
+    let right = engine.request_layout(
+        layout_identity("right"), Style::default(), px(16.), 1., &[],
+    );
+    let root = engine.request_layout(
+        layout_identity("root"), Style::default(), px(16.), 1., &[left, right],
+    );
+    let mut preorder = Vec::new();
+    engine.collect_subtree_nodes_into(root, &mut preorder);
+    assert_eq!(preorder, vec![root, left, leaf, right]);
+}
+
 #[gpui::test]
 fn native_taffy_compares_stable_child_order_without_allocating_a_child_vector(
     cx: &mut TestAppContext,

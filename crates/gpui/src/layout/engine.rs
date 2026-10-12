@@ -716,13 +716,9 @@ impl TaffyLayoutEngine {
             while let Some(id) = stack.pop() {
                 self.absolute_layout_bounds.remove(&id);
                 self.unrounded_layout_origins.remove(&id);
-                stack.extend(
-                    self.taffy
-                        .children(id.into())
-                        .expect(EXPECT_MESSAGE)
-                        .into_iter()
-                        .map(LayoutId::from),
-                );
+                // Taffy 0.14 exposes native child iterators. No temporary
+                // Vec is needed while invalidating repeated-root bounds.
+                stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
             }
         }
 
