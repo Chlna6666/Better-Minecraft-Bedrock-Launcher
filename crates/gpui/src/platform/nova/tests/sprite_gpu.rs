@@ -261,7 +261,7 @@ fn upload_globals<D: BackendResources>(device: &mut D, buffers: resources::Frame
             width: 16,
             height: 16,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         false,
         BackdropBlurQuality::Full,
     );

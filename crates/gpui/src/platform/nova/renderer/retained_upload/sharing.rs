@@ -262,7 +262,7 @@ mod tests {
                     width: 16,
                     height: 16,
                 },
-                &RenderingParameters::from_env(),
+                &RenderingParameters::system(),
                 false,
                 BackdropBlurQuality::Full,
             );

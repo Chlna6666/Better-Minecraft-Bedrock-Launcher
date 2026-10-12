@@ -21,10 +21,10 @@ defaults。
 启动时使用 `Application::with_renderer_options(options)` 或
 `Application::with_renderer_backend(backend)`。
 
-## 环境变量 Override
+## 显式 Backend Selection
 
-`GPUI_RENDERER` 可以覆盖配置的 backend。可接受值包括 `auto`、`vulkan`、
-`dx12`、`metal` 和 `headless`。
+`RendererOptions::backend` 是唯一的 backend preference。CLI 工具将 backend
+参数解析后传入该配置。
 
 renderer choice 的应用 UI 应放在 GPUI 外部。GPUI 暴露 options 和 metrics；应用
 决定自己的 defaults。

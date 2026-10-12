@@ -761,7 +761,7 @@ impl NovaRenderer {
                 concat!(
                     "nova-gfx unsupported or fallback batches: backend={} ",
                     "paths={} surfaces={} backdrop_blurs={} backdrop_blur_tint_fallbacks={} ",
-                    "set GPUI_NOVA_RENDER_DIAGNOSTICS=1 for every-frame details"
+                    "enable RendererOptions::frame_metrics for every-frame details"
                 ),
                 backend_label,
                 unsupported.paths,

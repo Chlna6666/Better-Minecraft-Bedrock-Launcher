@@ -69,7 +69,10 @@ impl NovaRenderer {
                 window.display_handle().ok().map(|handle| handle.as_raw()),
             );
         }
-        initialization
+        initialization.map(|mut renderer| {
+            renderer.diagnostics = NovaRenderDiagnostics::new(renderer_options.frame_metrics);
+            renderer
+        })
     }
 
     fn initialize<W>(
@@ -108,10 +111,10 @@ impl NovaRenderer {
         let current_size = DrawableSize { width, height };
         #[cfg(target_os = "windows")]
         let rendering_parameters = native_windows_hwnd(window)
-            .map(RenderingParameters::from_env_for_window)
-            .unwrap_or_else(RenderingParameters::from_env);
+            .map(RenderingParameters::for_window)
+            .unwrap_or_else(RenderingParameters::system);
         #[cfg(not(target_os = "windows"))]
-        let rendering_parameters = RenderingParameters::from_env();
+        let rendering_parameters = RenderingParameters::system();
 
         match backend {
             #[cfg(all(

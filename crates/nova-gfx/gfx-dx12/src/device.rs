@@ -240,7 +240,7 @@ mod platform {
         /// Returns [`Error`] if Direct3D 12 initialization fails.
         pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
             let started_at = Instant::now();
-            enable_debug_layer_if_requested();
+        enable_debug_layer();
             let factory = create_factory()?;
             let allow_tearing = factory_supports_tearing(&factory);
             let adapter = pick_adapter(&factory, desc)?;
@@ -5351,8 +5351,8 @@ mod platform {
         }
     }
 
-    fn enable_debug_layer_if_requested() {
-        if std::env::var_os("NOVA_GFX_DX12_DEBUG").is_none() {
+    fn enable_debug_layer() {
+        if !cfg!(debug_assertions) {
             return;
         }
         let mut debug = None;

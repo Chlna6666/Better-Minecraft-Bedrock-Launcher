@@ -205,11 +205,7 @@ impl NovaRenderer {
             return Vec::new();
         }
 
-        // Shared horizontal scratch contains another variant's last result.
-        // A per-variant partial LoadOp::Load cannot safely reuse that history:
-        // render the dirty filter's complete source/halo before sampling.
-        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh
-            || targets.shared_horizontal_scratch;
+        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
         let group_damage: Vec<_> = blur_groups
             .iter()
             .map(|(_, configs)| {
@@ -347,9 +343,7 @@ impl NovaRenderer {
             &configs,
             passes,
         );
-        if !targets.shared_horizontal_scratch {
-            apply_filter_pass_scissors(&configs, self.current_size, passes);
-        }
+        apply_filter_pass_scissors(&configs, self.current_size, passes);
     }
 
     /// Builds isolated element-filter work. Gaussian layers reconstruct their source scratch and
@@ -369,11 +363,7 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        // Shared horizontal scratch contains another variant's last result.
-        // A per-variant partial LoadOp::Load cannot safely reuse that history:
-        // render the dirty filter's complete source/halo before sampling.
-        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh
-            || targets.shared_horizontal_scratch;
+        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
         let window_damage = &self.draw_step_scratch.backdrop_blur_damage_region;
         let composite_only = if force_full {
             FxHashSet::default()

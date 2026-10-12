@@ -2,9 +2,6 @@ use collections::HashMap;
 
 use super::EntityId;
 
-static LEAK_BACKTRACE: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("LEAK_BACKTRACE").is_ok_and(|b| !b.is_empty()));
-
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub(crate) struct HandleId {
     id: u64, // id of the handle itself, not the pointed at object
@@ -23,7 +20,8 @@ impl LeakDetector {
         let handles = self.entity_handles.entry(entity_id).or_default();
         handles.insert(
             handle_id,
-            LEAK_BACKTRACE.then(backtrace::Backtrace::new_unresolved),
+            log::log_enabled!(target: "gpui::entity_leaks", log::Level::Trace)
+                .then(backtrace::Backtrace::new_unresolved),
         );
         handle_id
     }
@@ -41,7 +39,7 @@ impl LeakDetector {
                     backtrace.resolve();
                     eprintln!("Leaked handle: {:#?}", backtrace);
                 } else {
-                    eprintln!("Leaked handle: export LEAK_BACKTRACE to find allocation site");
+                    eprintln!("Leaked handle: enable gpui::entity_leaks trace logging to find allocation site");
                 }
             }
             panic!();

@@ -198,9 +198,8 @@ impl RendererOptions {
         candidates
     }
 
-    /// Resolves the backend against the environment override.
+    /// Normalizes adapter selection and clamps the explicit rendering policy.
     pub fn resolve(mut self) -> Self {
-        self.backend = self.backend.resolve();
         self.adapter_name = self.adapter_name.and_then(|name| match name.trim() {
             "" => None,
             trimmed => Some(trimmed.to_string()),
@@ -245,9 +244,6 @@ pub struct GpuAdapterInfo {
 }
 
 impl RendererBackend {
-    /// Environment variable used to override the renderer backend.
-    pub const ENV_VAR: &'static str = "GPUI_RENDERER";
-
     /// Returns the resource-generation capabilities of this renderer backend.
     ///
     /// `Auto` reports conservative capabilities because its concrete backend is
@@ -297,19 +293,7 @@ impl RendererBackend {
         ]
     }
 
-    /// Reads [`Self::ENV_VAR`] and returns a parsed backend preference.
-    pub fn from_env() -> Option<Self> {
-        std::env::var(Self::ENV_VAR)
-            .ok()
-            .and_then(|value| value.parse().ok())
-    }
-
-    /// Resolves a builder preference against the environment override.
-    pub fn resolve(self) -> Self {
-        Self::from_env().unwrap_or(self)
-    }
-
-    /// Returns the environment string for this backend.
+    /// Returns the canonical backend name accepted by configuration and CLI parsing.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -409,10 +393,6 @@ mod tests {
             [RendererBackend::NovaDx11]
         );
     }
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
     #[test]
     fn parse_and_display() {
         for alias in ["dx11", "d3d11", "directx11", "nova-dx11", "nova_dx11"] {
@@ -587,16 +567,8 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        unsafe_code,
-        reason = "the test serializes process environment mutation with ENV_LOCK"
-    )]
-    fn environment_override_takes_precedence() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        // SAFETY: This test holds a process-wide mutex while mutating the environment.
-        unsafe { std::env::set_var(RendererBackend::ENV_VAR, "nova-dx12") };
-        assert_eq!(RendererBackend::Auto.resolve(), RendererBackend::NovaDx12);
-        // SAFETY: This test holds a process-wide mutex while mutating the environment.
-        unsafe { std::env::remove_var(RendererBackend::ENV_VAR) };
+    fn normalization_preserves_explicit_backend_selection() {
+        let options = RendererOptions::with_backend(RendererBackend::NovaDx12).resolve();
+        assert_eq!(options.backend, RendererBackend::NovaDx12);
     }
 }

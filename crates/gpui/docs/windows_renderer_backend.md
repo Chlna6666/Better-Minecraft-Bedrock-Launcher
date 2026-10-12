@@ -9,8 +9,8 @@ is enabled.
 ## Backend Selection
 
 `RendererBackend::Auto` uses the Windows backend order defined by the platform.
-Explicit `NovaVulkan` or `NovaDx12` preferences select one backend. The
-`GPUI_RENDERER` environment variable can override startup configuration.
+Explicit `NovaVulkan` or `NovaDx12` preferences select one backend through
+`RendererOptions::backend`.
 
 The renderer should report the backend it actually selected through frame and
 performance metrics.

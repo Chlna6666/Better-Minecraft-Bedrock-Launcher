@@ -145,7 +145,7 @@ pub(super) fn verify_atlas_compaction<D>(
                 width: 16,
                 height: 16,
             },
-            &RenderingParameters::from_env(),
+            &RenderingParameters::system(),
             false,
             BackdropBlurQuality::Full,
         );

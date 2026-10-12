@@ -11,9 +11,9 @@ pub(super) struct NovaRenderDiagnostics {
 }
 
 impl NovaRenderDiagnostics {
-    pub(super) fn from_env() -> Self {
+    pub(super) fn new(enabled: bool) -> Self {
         Self {
-            enabled: env_flag("GPUI_NOVA_RENDER_DIAGNOSTICS"),
+            enabled,
             warned_unsupported: false,
             last_slow_frame_warning_at: None,
         }
@@ -54,12 +54,6 @@ impl NovaRenderDiagnostics {
         self.warned_unsupported = true;
         true
     }
-}
-
-pub(super) fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
 pub(super) fn nova_power_preference(renderer_options: &RendererOptions) -> PowerPreference {

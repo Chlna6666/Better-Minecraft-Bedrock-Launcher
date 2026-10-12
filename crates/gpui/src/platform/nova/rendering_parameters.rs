@@ -44,12 +44,12 @@ pub(super) struct RenderingParameters {
 }
 
 impl RenderingParameters {
-    pub(super) fn from_env() -> Self {
+    pub(super) fn system() -> Self {
         Self::from_system(system_rendering_parameters())
     }
 
     #[cfg(target_os = "windows")]
-    pub(super) fn from_env_for_window(hwnd: isize) -> Self {
+    pub(super) fn for_window(hwnd: isize) -> Self {
         let monitor = monitor_for_window(hwnd);
         let system = monitor
             .and_then(system_rendering_parameters_for_monitor)
@@ -99,27 +99,10 @@ impl RenderingParameters {
     }
 
     fn from_system(system: SystemRenderingParameters) -> Self {
-        let gamma = std::env::var("ZED_FONTS_GAMMA")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(system.gamma)
-            .clamp(1.0, 2.2);
-        let grayscale_enhanced_contrast = std::env::var("ZED_FONTS_GRAYSCALE_ENHANCED_CONTRAST")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(system.grayscale_enhanced_contrast)
-            .max(0.0);
-        let subpixel_enhanced_contrast = std::env::var("ZED_FONTS_SUBPIXEL_ENHANCED_CONTRAST")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(system.subpixel_enhanced_contrast)
-            .max(0.0);
-        let clear_type_level = std::env::var("ZED_FONTS_CLEARTYPE_LEVEL")
-            .ok()
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|value| value.is_finite())
-            .unwrap_or(system.clear_type_level)
-            .clamp(0.0, 1.0);
+        let gamma = system.gamma.clamp(1.0, 2.2);
+        let grayscale_enhanced_contrast = system.grayscale_enhanced_contrast.max(0.0);
+        let subpixel_enhanced_contrast = system.subpixel_enhanced_contrast.max(0.0);
+        let clear_type_level = system.clear_type_level.clamp(0.0, 1.0);
         Self {
             gamma_ratios: gamma_ratios(gamma),
             grayscale_enhanced_contrast,

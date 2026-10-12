@@ -1555,8 +1555,7 @@ fn default_cache_key_flags() -> CacheKeyFlags {
 }
 
 fn script_text_trace_enabled() -> bool {
-    std::env::var_os("GPUI_SCRIPT_TEXT_TRACE").is_some()
-        || std::env::var_os("GPUI_CJK_TEXT_TRACE").is_some()
+    log::log_enabled!(target: "gpui::text", log::Level::Trace)
 }
 
 fn font_bytes_hash(bytes: &[u8]) -> u64 {

@@ -94,7 +94,7 @@ impl FrameUploadBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
-            rendering_parameters: RenderingParameters::from_env(),
+            rendering_parameters: RenderingParameters::system(),
         }
     }
 
@@ -135,7 +135,7 @@ impl PathPackingBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
-            rendering_parameters: RenderingParameters::from_env(),
+            rendering_parameters: RenderingParameters::system(),
         }
     }
 

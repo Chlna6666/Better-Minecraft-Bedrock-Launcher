@@ -353,7 +353,7 @@ impl VulkanDevice {
             upload_command_pool: Vec::with_capacity(UPLOAD_COMMAND_POOL_CAPACITY),
             timestamp_clock,
             gpu_trace_enabled: timestamp_clock.is_some()
-                && std::env::var("NOVA_GFX_VULKAN_GPU_TRACE").is_ok_and(|value| value == "1"),
+                && log::log_enabled!(target: "gfx_vulkan::gpu", log::Level::Trace),
             gpu_trace_totals: VulkanGpuTraceTotals::default(),
             last_texture_transfer_time: None,
             deferred_destroys: DeferredFreeQueue::new(),
@@ -4326,7 +4326,7 @@ impl VulkanGpuTraceTotals {
         if now.duration_since(*started) < Duration::from_secs(5) {
             return;
         }
-        log::info!(
+        log::trace!(target: "gfx_vulkan::gpu",
             "nova Vulkan GPU timestamp trace (5s, completed submissions): main_passes={} main_gpu_us_avg={:.1} main_gpu_us_max={:.1} offscreen_passes={} offscreen_gpu_us_avg={:.1} offscreen_gpu_us_max={:.1} note=GPU_command_execution_excludes_WSI_present_wait",
             self.main_count,
             self.main_total_us / f64::from(self.main_count.max(1)),

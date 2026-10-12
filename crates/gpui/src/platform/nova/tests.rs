@@ -876,7 +876,7 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
 fn frame_upload_globals_follow_surface_alpha_mode() {
     let scene = crate::Scene::default();
     let mut upload = FrameUpload::default();
-    let rendering_parameters = RenderingParameters::from_env();
+    let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
         width: 640,
         height: 480,
@@ -907,7 +907,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let previous = retained_quad_scene(1);
     let mut upload = FrameUpload::default();
-    let rendering_parameters = RenderingParameters::from_env();
+    let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
         width: 640,
         height: 480,
@@ -1074,7 +1074,7 @@ fn frame_upload_records_scene_animation_bindings() {
             width: 64,
             height: 64,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1113,7 +1113,7 @@ fn frame_upload_records_scene_animation_values() {
             width: 64,
             height: 64,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1148,7 +1148,7 @@ fn frame_upload_accepts_presentation_animation_values_outside_scene() {
             width: 64,
             height: 64,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1213,7 +1213,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         &scene,
         &[],
         drawable_size,
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1231,7 +1231,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         &scene,
         &[],
         drawable_size,
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1366,7 +1366,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
             width: 640,
             height: 480,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Full,
     );
@@ -1415,7 +1415,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
             width: 640,
             height: 480,
         },
-        &RenderingParameters::from_env(),
+        &RenderingParameters::system(),
         true,
         BackdropBlurQuality::Disabled,
     );
@@ -1920,7 +1920,6 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
-        shared_horizontal_scratch: false,
     };
     let texture_ids = targets.variants.iter()
         .map(|variant| variant.levels[0].texture_view)
@@ -1972,7 +1971,6 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
-        shared_horizontal_scratch: false,
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
     for (count, root) in [(4_u32, 3_u32), (5, 4), (6, 5), (4, 3)] {
@@ -2009,7 +2007,6 @@ fn backdrop_blur_render_passes_blur_each_axis() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
-        shared_horizontal_scratch: false,
         variants: vec![BackdropBlurVariantTargets {
             config,
             levels: vec![
@@ -2064,66 +2061,6 @@ fn backdrop_blur_render_passes_blur_each_axis() {
 }
 
 #[test]
-fn shared_gaussian_horizontal_scratch_accounts_for_one_physical_allocation() {
-    let make_level = |texture: u32, bytes: u64| BackdropBlurLevelTarget {
-        byte_size: bytes,
-        texture: test_texture_id(texture),
-        texture_view: test_texture_view_id(texture),
-        pass_resource_sets: vec![test_resource_set_id(texture)],
-    };
-    let first = BackdropBlurVariantTargets {
-        config: test_backdrop_blur_config(2, 3),
-        levels: vec![make_level(2, 1024), make_level(3, 512)],
-        target_resource_sets: vec![test_resource_set_id(21)],
-    };
-    let second = BackdropBlurVariantTargets {
-        config: test_backdrop_blur_config(3, 3),
-        levels: vec![make_level(2, 1024), make_level(4, 512)],
-        target_resource_sets: vec![test_resource_set_id(22)],
-    };
-    let mut targets = BackdropBlurTargets {
-        active_variant_count: 2,
-        retained_root_variant: None,
-        source: Some(RenderTarget {
-            byte_size: 2048,
-            texture: test_texture_id(1),
-            texture_view: test_texture_view_id(1),
-        }),
-        source_pass_resource_sets: vec![test_resource_set_id(11)],
-        isolated_sources: vec![],
-        variants: vec![first, second],
-        shared_horizontal_scratch: true,
-    };
-    assert_eq!(targets.byte_size(), 2048 + 1024 + 512 + 512);
-    let configs: Vec<_> = targets.variants.iter().map(|variant| variant.config).collect();
-    assert!(targets.is_layout_compatible(&configs, &[], true));
-    assert!(!targets.is_layout_compatible(&configs, &[], false));
-    let source = targets.source.take();
-    let source_sets = std::mem::take(&mut targets.source_pass_resource_sets);
-    assert_eq!(targets.byte_size(), 1024 + 512 + 512);
-    assert!(targets.is_layout_compatible(&configs, &[], false));
-    assert!(!targets.is_layout_compatible(&configs, &[], true));
-    targets.source = source;
-    targets.source_pass_resource_sets = source_sets;
-    assert_eq!(targets.variants[0].levels[0].texture, targets.variants[1].levels[0].texture);
-    assert_ne!(targets.variants[0].levels[1].texture, targets.variants[1].levels[1].texture);
-
-    // Real draw-pass ordering proves the X attachment's former consumer
-    // finishes before another variant overwrites the same physical target.
-    let mut passes = Vec::new();
-    backdrop_blur_render_passes_for_targets_into(&test_pipelines(), &targets, 0, &mut passes);
-    assert_eq!(
-        passes.iter().map(|pass| pass.target_texture_view).collect::<Vec<_>>(),
-        vec![
-            test_texture_view_id(2),
-            test_texture_view_id(3),
-            test_texture_view_id(2),
-            test_texture_view_id(4),
-        ],
-    );
-}
-
-#[test]
 fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
@@ -2136,7 +2073,6 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
-        shared_horizontal_scratch: false,
         variants: Vec::new(),
     };
 

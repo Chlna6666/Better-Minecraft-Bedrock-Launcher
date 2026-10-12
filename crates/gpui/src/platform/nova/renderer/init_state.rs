@@ -104,7 +104,7 @@ impl NovaRenderer {
             pending_drawable_size: None,
             atlas: atlas.0,
             rendering_parameters,
-            diagnostics: NovaRenderDiagnostics::from_env(),
+            diagnostics: NovaRenderDiagnostics::new(false),
             submission_mode,
             pending_submissions: Vec::new(),
             metrics_started_at,

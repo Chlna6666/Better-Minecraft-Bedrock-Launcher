@@ -8,8 +8,7 @@ backend selection。
 ## Backend Selection
 
 `RendererBackend::Auto` 使用平台定义的 Windows backend order。显式
-`NovaVulkan` 或 `NovaDx12` preference 会选择单个 backend。`GPUI_RENDERER` 环境变
-量可以覆盖 startup configuration。
+`NovaVulkan` 或 `NovaDx12` preference 通过 `RendererOptions::backend` 选择 backend。
 
 renderer 应通过 frame 和 performance metrics 报告实际选择的 backend。
 

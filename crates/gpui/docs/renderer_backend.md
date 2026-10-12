@@ -21,10 +21,10 @@ hard-coding platform policy into framework defaults.
 Use `Application::with_renderer_options(options)` or
 `Application::with_renderer_backend(backend)` at startup.
 
-## Environment Override
+## Explicit Backend Selection
 
-`GPUI_RENDERER` can override the configured backend. Accepted values include
-`auto`, `vulkan`, `dx12`, `metal`, and `headless`.
+The configured `RendererOptions::backend` is the sole backend preference.
+CLI tools parse their backend argument into these options.
 
 Keep application UI for renderer choice outside GPUI itself. GPUI should expose
 the options and metrics; applications decide their own defaults.

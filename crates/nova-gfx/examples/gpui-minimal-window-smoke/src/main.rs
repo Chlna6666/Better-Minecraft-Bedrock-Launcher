@@ -36,7 +36,6 @@ impl Render for SmokeWindow {
 fn main() -> Result<(), Box<dyn Error>> {
     let started_at = Instant::now();
     let backend = requested_backend()?;
-    reject_conflicting_gpui_renderer_env(backend)?;
     let first_frame_printed = Arc::new(AtomicBool::new(false));
     let initial_presents = gpui::performance_metrics_snapshot().direct_present_count;
     let image = Arc::new(RenderImage::from_raw_pixels(
@@ -117,7 +116,6 @@ fn requested_backend() -> Result<RendererBackend, Box<dyn Error>> {
     let backend = std::env::args()
         .skip(1)
         .find_map(|arg| arg.strip_prefix("--backend=").map(str::to_string))
-        .or_else(|| std::env::var(RendererBackend::ENV_VAR).ok())
         .unwrap_or_else(default_backend_name);
     let backend = backend.parse::<RendererBackend>()?;
     if is_supported_smoke_backend(backend) {
@@ -160,30 +158,12 @@ fn is_supported_smoke_backend(backend: RendererBackend) -> bool {
 fn auto_exit_timeout() -> Result<Option<Duration>, Box<dyn Error>> {
     let value = std::env::args()
         .skip(1)
-        .find_map(|arg| arg.strip_prefix("--auto-exit-ms=").map(str::to_string))
-        .or_else(|| std::env::var("NOVA_GPUI_SMOKE_AUTO_EXIT_MS").ok());
+        .find_map(|arg| arg.strip_prefix("--auto-exit-ms=").map(str::to_string));
     let Some(value) = value else {
         return Ok(None);
     };
     let millis = value.parse::<u64>()?;
     Ok(Some(Duration::from_millis(millis)))
-}
-
-fn reject_conflicting_gpui_renderer_env(backend: RendererBackend) -> Result<(), Box<dyn Error>> {
-    let Ok(value) = std::env::var(RendererBackend::ENV_VAR) else {
-        return Ok(());
-    };
-    let env_backend = value.parse::<RendererBackend>()?;
-    if env_backend == backend {
-        return Ok(());
-    }
-    Err(format!(
-        "{}={} would override --backend={} and leave the smoke unable to prove the nova-gfx path",
-        RendererBackend::ENV_VAR,
-        value,
-        backend
-    )
-    .into())
 }
 
 fn process_memory_kib() -> u64 {

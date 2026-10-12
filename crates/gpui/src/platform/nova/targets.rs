@@ -30,9 +30,6 @@ pub(super) struct BackdropBlurTargets {
     pub(super) active_variant_count: usize,
     /// The window-color target follows its role when popup slots appear/disappear.
     pub(super) retained_root_variant: Option<usize>,
-    /// Multiple Gaussian variants reuse the same actual horizontal scratch texture.
-    /// Final retained textures and source targets are never aliased.
-    pub(super) shared_horizontal_scratch: bool,
 }
 
 impl BackdropBlurTargets {
@@ -313,15 +310,6 @@ where
     }
 
     let mut variants = Vec::with_capacity(configs.len());
-    // Same-size scratch shares the exact native TextureId/TextureViewId, so
-    // Vulkan/DX12/OpenGL/Metal have only ONE physical allocation per size
-    // rather than unrelated allocations with identical descriptors.
-    // Full-refresh source filtering is required whenever this path is used:
-    // LoadOp::Load on reused horizontal texels would sample another variant.
-    let requested_scratch_share =
-        std::env::var("BMCBL_ENABLE_BLUR_SCRATCH_SHARING").as_deref() == Ok("1");
-    let mut scratch_targets: Vec<(u32, u32, RenderTarget)> = Vec::new();
-    let mut shared_horizontal_scratch = false;
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
         let horizontal_size = Extent2d::new(
@@ -346,38 +334,12 @@ where
         let pass_count = blur_variant_level_count(config);
         let mut levels = Vec::with_capacity(pass_count);
         for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
-            let existing_scratch = if requested_scratch_share
-                && config.radius() > 0.0
-                && pass_index == 0
-            {
-                scratch_targets
-                    .iter()
-                    .find(|(width, height, _)| {
-                        *width == target_size.width() && *height == target_size.height()
-                    })
-                    .map(|(_, _, target)| *target)
-            } else {
-                None
-            };
-            let target = if let Some(existing) = existing_scratch {
-                shared_horizontal_scratch = true;
-                existing
-            } else {
-                let allocated = create_render_texture_target(
-                    device,
-                    &format!("{label} backdrop variant {variant_index} target {pass_index}"),
-                    target_size,
-                    descriptor.format,
-                )?;
-                if requested_scratch_share && config.radius() > 0.0 && pass_index == 0 {
-                    scratch_targets.push((
-                        target_size.width(),
-                        target_size.height(),
-                        allocated,
-                    ));
-                }
-                allocated
-            };
+            let target = create_render_texture_target(
+                device,
+                &format!("{label} backdrop variant {variant_index} target {pass_index}"),
+                target_size,
+                descriptor.format,
+            )?;
             let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
                 pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
@@ -425,7 +387,6 @@ where
         variants,
         active_variant_count: configs.len(),
         retained_root_variant: None,
-        shared_horizontal_scratch,
     })
 }
 

@@ -24,7 +24,6 @@ impl BackdropBlurTargets {
         if needs_root_source
             || self.source.is_some()
             || !self.isolated_sources.is_empty()
-            || self.shared_horizontal_scratch
             || next.len() > self.variants.len()
             || self.variants.iter().any(|variant| {
                 variant.config.radius() != 0. || variant.levels.len() != 1
@@ -51,7 +50,7 @@ impl BackdropBlurTargets {
     }
 
     /// Reuse a warmed popup layout without discarding resident window color.
-    /// Only existing slots are reused; growth, filters with shared scratch and
+    /// Only existing slots are reused; growth and
     /// changed source layouts retain the complete allocation/initialization path.
     pub(in crate::platform::nova) fn reuse_layout(
         &mut self,
@@ -69,8 +68,7 @@ impl BackdropBlurTargets {
         }) else {
             return false;
         };
-        if self.shared_horizontal_scratch
-            || next.len() > self.variants.len()
+        if next.len() > self.variants.len()
             || self.source.is_some() != needs_root_source
             || !self
                 .isolated_sources

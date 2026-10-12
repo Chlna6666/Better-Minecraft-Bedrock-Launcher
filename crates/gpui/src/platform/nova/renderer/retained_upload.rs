@@ -821,9 +821,7 @@ impl NovaRenderer {
         // The candidate builder rejects non-flat streams, filters, atlas-backed
         // prefixes and unstable resources. Its proven quad/shadow prefix can be
         // retained by default without changing ordinary/complex Scene handling.
-        // A process-level off switch remains available for native GPU A/B tests.
-        let captured_scene = (!reusable
-            && std::env::var("BMCBL_ENABLE_AUTO_STATIC_LAYER").as_deref() != Ok("0"))
+        let captured_scene = (!reusable)
         .then(|| auto_capture_static_background(scene, self.current_size))
         .flatten();
         let scene_to_encode = captured_scene.as_ref().unwrap_or(scene);
@@ -870,17 +868,13 @@ impl NovaRenderer {
                 // nested filters/composites can reuse the retained root color
                 // texture and only repaint the damaged source pixels. Exact
                 // filter-order barriers are preserved inside the root capture.
-                // The explicit 1/0 switch enables repeatable driver A/B tests.
-                && std::env::var_os("BMCBL_DISABLE_RETAINED_COLOR").is_none()
-                && match std::env::var("BMCBL_ENABLE_RETAINED_COLOR").as_deref() {
-                    Ok("1") => true,
-                    Ok("0") => false,
-                    _ => keep_retained_root || color::should_retain_local_animation(
+                && (keep_retained_root
+                    || color::should_retain_local_animation(
                         scene_to_encode,
                         self.current_size,
                         presentation_animation_values,
-                    ) || should_retain_complex_scene_color(scene_to_encode, &summary),
-                }
+                    )
+                    || should_retain_complex_scene_color(scene_to_encode, &summary))
             {
                 self.frame_upload
                     .append_retained_root(self.current_size, &mut summary);

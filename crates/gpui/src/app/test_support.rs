@@ -30,7 +30,6 @@ use futures::StreamExt as _;
 use rand::prelude::*;
 use smol::channel;
 use std::{
-    env,
     panic::{self, RefUnwindSafe},
     pin::Pin,
 };
@@ -86,46 +85,14 @@ fn calculate_seeds(
     iterations: u64,
     explicit_seeds: &[u64],
 ) -> (impl Iterator<Item = u64> + '_, bool) {
-    let iterations = env::var("ITERATIONS")
-        .ok()
-        .map(|var| var.parse().expect("invalid ITERATIONS variable"))
-        .unwrap_or(iterations);
-
-    let env_num = env::var("SEED")
-        .map(|seed| seed.parse().expect("invalid SEED variable as integer"))
-        .ok();
-
-    let empty_range = || 0..0;
-
-    let iter = {
-        let env_range = if let Some(env_num) = env_num {
-            env_num..env_num + 1
-        } else {
-            empty_range()
-        };
-
-        // if `iterations` is 1 and !(`explicit_seeds` is non-empty || `SEED` is set), then add     the run `0`
-        // if `iterations` is 1 and  (`explicit_seeds` is non-empty || `SEED` is set), then discard the run `0`
-        // if `iterations` isn't 1 and `SEED` is set, do `SEED..SEED+iterations`
-        // otherwise, do `0..iterations`
-        let iterations_range = match (iterations, env_num) {
-            (1, None) if explicit_seeds.is_empty() => 0..1,
-            (1, None) | (1, Some(_)) => empty_range(),
-            (iterations, Some(env)) => env..env + iterations,
-            (iterations, None) => 0..iterations,
-        };
-
-        // if `SEED` is set, ignore `explicit_seeds`
-        let explicit_seeds = if env_num.is_some() {
-            &[]
-        } else {
-            explicit_seeds
-        };
-
-        env_range
-            .chain(iterations_range)
-            .chain(explicit_seeds.iter().copied())
+    // The macro's explicit iteration/seed arguments are the sole source of
+    // scheduling inputs. A process environment cannot change this test run.
+    let iterations_range = if iterations == 1 && !explicit_seeds.is_empty() {
+        0..0
+    } else {
+        0..iterations
     };
+    let iter = iterations_range.chain(explicit_seeds.iter().copied());
     let is_multiple_runs = iter.clone().nth(1).is_some();
     (iter, is_multiple_runs)
 }
