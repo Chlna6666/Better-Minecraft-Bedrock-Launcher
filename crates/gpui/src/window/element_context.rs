@@ -239,6 +239,24 @@ impl Window {
             .then(|| GlobalElementId::from_path(&self.retained_element_id_stack))
     }
 
+    /// Only an unambiguous retained mount may own a cross-frame Taffy node.
+    ///
+    /// Positional identities are reused for unrelated siblings after insertion,
+    /// and ambiguous ancestors can invalidate an otherwise keyed descendant.
+    /// Those layouts must stay frame-local rather than aliasing native caches.
+    pub(crate) fn current_stable_layout_element_id(&self) -> Option<GlobalElementId> {
+        let stable = RETAINED_IDENTITY_SCOPES.with(|scopes| {
+            scopes.borrow().active.last().is_some_and(|scope| {
+                scope.owner_ambiguity.iter().all(|flag| !flag.get())
+            })
+        });
+        if stable {
+            self.current_retained_element_id()
+        } else {
+            None
+        }
+    }
+
     /// Executes the provided function with the specified rem size.
     ///
     /// This method must only be called as part of element drawing.
@@ -922,5 +940,35 @@ impl Window {
         } else {
             f(self)
         }
+    }
+}
+
+
+#[cfg(test)]
+mod layout_identity_tests {
+    use super::*;
+
+    #[test]
+    fn positional_layout_identity_never_reuses_native_taffy_state() {
+        let mut pool = RetainedIdentityScopePool::default();
+        assert!(!pool.active.last().is_some_and(|scope| {
+            scope.owner_ambiguity.iter().all(|flag| !flag.get())
+        }));
+        pool.push_scope(SmallVec::new());
+        assert!(pool.active.last().unwrap().owner_ambiguity.is_empty());
+
+        let mut positional = SmallVec::new();
+        positional.push(Rc::new(Cell::new(true)));
+        pool.push_scope(positional);
+        assert!(!pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
+
+        // A latent ambiguity can be raised after an auto ID has been mounted.
+        let changed = Rc::new(Cell::new(false));
+        let mut auto = SmallVec::new();
+        auto.push(changed.clone());
+        pool.push_scope(auto);
+        assert!(pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
+        changed.set(true);
+        assert!(!pool.active.last().unwrap().owner_ambiguity.iter().all(|flag| !flag.get()));
     }
 }
