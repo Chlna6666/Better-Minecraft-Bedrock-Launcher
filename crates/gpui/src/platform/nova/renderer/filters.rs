@@ -82,16 +82,44 @@ impl FilterRegistry {
         else {
             return false;
         };
-        current.layer_id == previous.blur.layer_id
-            && previous.content_version.0 != 0
-            && current.bounds == previous.blur.bounds
-            && current.content_mask == previous.blur.content_mask
-            && current.radius == previous.blur.radius
-            && current.content.retained_filter_source_matches(
-                &previous.blur.content,
-                animation_values,
-                &previous.animation_values,
+        if current.layer_id != previous.blur.layer_id
+            || previous.content_version.0 == 0
+            || current.bounds != previous.blur.bounds
+            || current.content_mask != previous.blur.content_mask
+            || current.radius != previous.blur.radius
+        {
+            return false;
+        }
+
+        if current.content.retained_filter_source_matches(
+            &previous.blur.content,
+            animation_values,
+            &previous.animation_values,
+        ) {
+            return true;
+        }
+
+        // A changing child can remain fully outside an identity capture's
+        // visible source region. Its GPU samples do not invalidate the
+        // resident parent texture when neither old nor new pixels reach it.
+        // Preserve the conservative path for filters, remapped coordinates,
+        // and newly built child Scenes (whose static painter content may differ).
+        if !std::sync::Arc::ptr_eq(&current.content, &previous.blur.content)
+            || !crate::Scene::capture_preserves_source_coordinates(
+                current.radius, current.animation_id, previous.animation_values.iter(),
             )
+            || !crate::Scene::capture_preserves_source_coordinates(
+                current.radius, current.animation_id, animation_values.iter(),
+            )
+        {
+            return false;
+        }
+        let visible_source = current.bounds.intersect(&current.content_mask.bounds);
+        current
+            .content
+            .gpu_sample_damage(&previous.animation_values, animation_values)
+            .into_iter()
+            .all(|damage| !damage.intersects(&visible_source))
     }
 
     /// Preserve a resident identity compositor only when its immutable source
@@ -327,6 +355,54 @@ mod tests {
                 .local_source_damage(1, &source, &[sample(0.8)])
                 .is_none()
         );
+    }
+
+    #[test]
+    fn identity_capture_ignores_child_animation_entirely_outside_its_visible_source() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(0.)),
+            crate::size(crate::ScaledPixels(16.), crate::ScaledPixels(16.)),
+        );
+        let far_bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(100.), crate::ScaledPixels(100.)),
+            crate::size(crate::ScaledPixels(8.), crate::ScaledPixels(8.)),
+        );
+        let mut child = crate::Scene::default();
+        child.insert_animated_primitive(
+            crate::Quad {
+                bounds: far_bounds,
+                content_mask: crate::ContentMask::new(far_bounds),
+                ..Default::default()
+            },
+            crate::SceneAnimationId(7),
+        );
+        let sample = |progress: f32| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(7),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0., 0., 0., 0.],
+            to: [1., 0., 0., 0.],
+        };
+        let source = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.),
+            opacity: 1.,
+            content: std::sync::Arc::new(child),
+        };
+        let mut registry = FilterRegistry::new(None);
+        registry.record_element_blur_inputs(&[(2, source.clone())], &[sample(0.1)], [2]);
+        assert!(registry.source_unchanged(2, &source, &[sample(0.9)]));
+        let mut filtered = source.clone();
+        filtered.radius = crate::ScaledPixels(8.);
+        assert!(!registry.source_unchanged(2, &filtered, &[sample(0.9)]));
+        let mut shifted = source.clone();
+        shifted.bounds = far_bounds;
+        shifted.content_mask = crate::ContentMask::new(far_bounds);
+        assert!(!registry.source_unchanged(2, &shifted, &[sample(0.9)]));
     }
 
     #[test]
