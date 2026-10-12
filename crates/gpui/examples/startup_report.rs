@@ -21,7 +21,11 @@ struct StartupReport {
 }
 
 pub(crate) fn report_path() -> Option<PathBuf> {
-    std::env::var_os("GPUI_STARTUP_REPORT_PATH").map(PathBuf::from)
+    std::env::args_os()
+        .skip(1)
+        .skip_while(|argument| argument != "--startup-report")
+        .nth(1)
+        .map(PathBuf::from)
 }
 
 pub(crate) fn write_if_requested() {

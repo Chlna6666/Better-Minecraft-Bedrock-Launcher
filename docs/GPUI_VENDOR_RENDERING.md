@@ -561,7 +561,7 @@ and its component fields to estimate process startup time.
 
 ### Measured Frame Cost
 
-`GPUI_NOVA_RENDER_DIAGNOSTICS` enables the per-frame copy attribution line, which
+`RendererOptions::frame_metrics` enables the per-frame copy attribution line, which
 reports where a frame actually moves bytes and pixels. Measured on BMCBL's main
 window plus its debug window:
 
@@ -829,7 +829,7 @@ backdrops, and all producers before Swapchain Present. The **same graph**
 runs through the shared backend-compatible offscreen dispatcher across
 DX11/DX12/Vulkan/OpenGL/Metal. Individual element layers are still batched
 for native submission rather than emitting one submission per layer.
-`GPUI_NOVA_RENDER_DIAGNOSTICS=1` logs graph node counts and previously
+`RendererOptions::frame_metrics` logs graph node counts and previously
 versioned/updated layer counts.
 
 This is a first execution-graph baseline, **not** full render-target aliasing,
