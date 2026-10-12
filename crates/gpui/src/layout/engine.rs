@@ -59,10 +59,9 @@ struct LayoutInstanceKey {
 
 struct PersistentLayoutNode {
     id: LayoutId,
-    style_fingerprint: Option<u64>,
     measure_fingerprint: Option<u64>,
     measured: bool,
- }
+}
 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
@@ -72,8 +71,7 @@ pub struct TaffyLayoutEngine {
     /// A CachedView replay has no entry, preserving its existing native nodes.
     finished_request_ordinals: FxHashMap<GlobalElementId, u32>,
     anonymous_nodes: Vec<LayoutId>,
-    forced_style_restore: FxHashSet<LayoutId>,
-     persistent_layout_reuses: usize,
+    persistent_layout_reuses: usize,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
@@ -129,8 +127,7 @@ impl TaffyLayoutEngine {
             request_ordinals: FxHashMap::default(),
             finished_request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
-            forced_style_restore: FxHashSet::default(),
-             persistent_layout_reuses: 0,
+            persistent_layout_reuses: 0,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
@@ -187,7 +184,6 @@ impl TaffyLayoutEngine {
         for id in removed {
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
-            self.forced_style_restore.remove(&id);
         }
         let live = self.persistent_nodes.len();
         if self.persistent_nodes.capacity()
@@ -234,7 +230,6 @@ impl TaffyLayoutEngine {
         for id in self.anonymous_nodes.drain(..) {
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
-            self.forced_style_restore.remove(&id);
         }
         // Transfer current-frame cardinalities without copying the map.
         // The old finished map becomes the now-empty scratch for next frame.
@@ -417,7 +412,6 @@ impl TaffyLayoutEngine {
         &mut self,
         owner: Option<GlobalElementId>,
         style: taffy::Style,
-        style_fingerprint: u64,
         children: &[LayoutId],
         measure: Option<NodeContext>,
         measure_fingerprint: Option<u64>,
@@ -432,8 +426,11 @@ impl TaffyLayoutEngine {
         *ordinal = ordinal.saturating_add(1);
         if let Some(node) = self.persistent_nodes.get_mut(&key) {
             let id = node.id;
-            let requires_style = node.style_fingerprint != Some(style_fingerprint)
-                || self.forced_style_restore.remove(&id);
+            // Compare the actual native inputs. GPUI interaction/scroll flags
+            // can change without changing Taffy's layout style; they must not
+            // clear native measurement caches. This also detects a child style
+            // rewritten by its previous percentage-passthrough parent.
+            let requires_style = self.taffy.style(id.into()).expect(EXPECT_MESSAGE) != &style;
             let is_measured = measure.is_some();
             if node.measured && !is_measured {
                 self.taffy.set_node_context(id.into(), None).expect(EXPECT_MESSAGE);
@@ -470,7 +467,6 @@ impl TaffyLayoutEngine {
                     self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
                 }
             }
-            node.style_fingerprint = Some(style_fingerprint);
             node.measure_fingerprint = measure_fingerprint;
             node.measured = is_measured;
             self.persistent_layout_reuses += 1;
@@ -480,7 +476,6 @@ impl TaffyLayoutEngine {
             let id = self.create_taffy_node(style, children, measure);
             self.persistent_nodes.insert(key, PersistentLayoutNode {
                 id,
-                style_fingerprint: Some(style_fingerprint),
                 measure_fingerprint,
                 measured: is_measured,
             });
@@ -530,7 +525,7 @@ impl TaffyLayoutEngine {
         let fingerprint = self.layout_fingerprint(style_fingerprint, children);
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let layout_id = self.request_persistent_node(
-            owner, taffy_style, style_fingerprint, children, None, None,
+            owner, taffy_style, children, None, None,
         );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
@@ -599,13 +594,13 @@ impl TaffyLayoutEngine {
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);
         let layout_id = self.request_persistent_node(
-            owner, taffy_style, style_fingerprint, &[],
+            owner, taffy_style, &[],
             Some(NodeContext {
                 measure,
                 is_pure: fingerprint_seed.is_some(),
                 last_measure_input: None,
             }),
-            fingerprint,
+            fingerprint_seed,
         );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
@@ -650,13 +645,13 @@ impl TaffyLayoutEngine {
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);
         let layout_id = self.request_persistent_node(
-            owner, taffy_style, style_fingerprint, &[],
+            owner, taffy_style, &[],
             Some(NodeContext {
                 measure,
                 is_pure: false,
                 last_measure_input: None,
             }),
-            Some(fingerprint),
+            Some(fingerprint_seed),
         );
         self.node_fingerprints.insert(layout_id, Some(fingerprint));
         self.node_layout_metadata.insert(
@@ -882,11 +877,6 @@ impl TaffyLayoutEngine {
         self.taffy
             .set_style(child_id.into(), taffy_style)
             .expect(EXPECT_MESSAGE);
-        // A parent-relative passthrough rewrites the child's live Taffy style
-        // after request_layout() has already consumed its persistent slot.
-        // Force the next frame to restore its original requested style before
-        // applying that frame's parent semantics (which may be different).
-        self.forced_style_restore.insert(child_id);
         self.node_layout_metadata.insert(child_id, child);
     }
 
