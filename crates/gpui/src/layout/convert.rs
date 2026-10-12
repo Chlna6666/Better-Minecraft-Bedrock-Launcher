@@ -413,17 +413,17 @@ mod tests {
     }
 
     #[test]
-    fn absolute_lengths_snap_before_taffy_layout() {
+    fn absolute_lengths_preserve_fractional_geometry_for_taffy_alignment() {
         let length = AbsoluteLength::Pixels(px(1.0));
         assert_eq!(
             <AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.5),
-            1.0
+            1.5
         );
 
         let length = AbsoluteLength::Pixels(px(1.6));
         assert_eq!(
             <AbsoluteLength as ToTaffy<f32>>::to_taffy(&length, px(16.0), 1.0),
-            2.0
+            1.6
         );
     }
 

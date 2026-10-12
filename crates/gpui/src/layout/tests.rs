@@ -144,6 +144,8 @@ fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(
         assert_eq!(removed, first);
         engine.compute_layout(removed.2, AvailableSpace::min_size(), window, cx);
         engine.clear();
+        let center_identity = layout_identity("center").unwrap();
+        engine.retain_committed_elements(|id| id != &center_identity, true);
         assert_eq!(engine.taffy.total_node_count(), 3);
     }).unwrap();
 }
@@ -349,33 +351,34 @@ fn native_taffy_reused_node_changes_between_measured_leaf_and_container(
     });
     window.update(cx, |_, window, cx| {
         let mut engine = TaffyLayoutEngine::new();
+        let scale_factor = window.scale_factor();
         let first = engine.request_measured_layout_with_fingerprint(
-            layout_identity("slot"), Style::default(), px(16.), 1., Some(1),
+            layout_identity("slot"), Style::default(), px(16.), scale_factor, Some(1),
             |_, _, _, _| size(px(20.), px(15.)),
         );
         engine.compute_layout(first, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.layout_bounds(first, 1.).size.width, px(20.));
+        assert_eq!(engine.layout_bounds(first, scale_factor).size.width, px(20.));
         engine.clear();
 
         let mut style = Style::default();
         style.size.width = px(80.).into();
         style.size.height = px(30.).into();
-        let reused = engine.request_layout(layout_identity("slot"), style, px(16.), 1., &[]);
+        let reused = engine.request_layout(layout_identity("slot"), style, px(16.), scale_factor, &[]);
         assert_eq!(first, reused);
         assert!(engine.taffy.get_node_context(reused.into()).is_none());
         assert!(engine.taffy.dirty(reused.into()).unwrap());
         engine.compute_layout(reused, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.layout_bounds(reused, 1.).size.width, px(80.));
+        assert_eq!(engine.layout_bounds(reused, scale_factor).size.width, px(80.));
         engine.clear();
 
         let restored = engine.request_measured_layout_with_fingerprint(
-            layout_identity("slot"), Style::default(), px(16.), 1., Some(2),
+            layout_identity("slot"), Style::default(), px(16.), scale_factor, Some(2),
             |_, _, _, _| size(px(36.), px(12.)),
         );
         assert_eq!(restored, first);
         assert!(engine.taffy.dirty(restored.into()).unwrap());
         engine.compute_layout(restored, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.layout_bounds(restored, 1.).size.width, px(36.));
+        assert_eq!(engine.layout_bounds(restored, scale_factor).size.width, px(36.));
     }).unwrap();
 }
 

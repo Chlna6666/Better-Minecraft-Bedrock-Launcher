@@ -781,34 +781,44 @@ mod tests {
 
     #[gpui::test]
     fn text_layout_truncation_remeasures_when_available_width_changes(cx: &mut TestAppContext) {
-        let (_, visual) = cx.add_window_view(|_, _| crate::Empty);
+        struct TruncationView {
+            width: f32,
+            text: SharedString,
+            layout: TextLayout,
+        }
+
+        impl Render for TruncationView {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut crate::Context<Self>,
+            ) -> impl IntoElement {
+                let mut text = StyledText::new(self.text.clone());
+                text.layout = self.layout.clone();
+                div().w(px(self.width)).truncate().child(text)
+            }
+        }
+
         let layout = TextLayout::default();
         let text = SharedString::from(
             "a deliberately long title that must be truncated when the container narrows",
         );
 
-        let mut wide = StyledText::new(text.clone());
-        wide.layout = layout.clone();
-        visual.draw(
-            point(px(0.), px(0.)),
-            size(
-                AvailableSpace::Definite(px(900.)),
-                AvailableSpace::MinContent,
-            ),
-            |_, _| div().w(px(900.)).truncate().child(wide),
-        );
+        let (view, visual) = cx.add_window_view(|_, _| TruncationView {
+            width: 900.,
+            text: text.clone(),
+            layout: layout.clone(),
+        });
+        visual.update(|window, cx| window.draw(cx).clear());
         let wide_text = layout.text();
 
-        let mut narrow = StyledText::new(text.clone());
-        narrow.layout = layout.clone();
-        visual.draw(
-            point(px(0.), px(0.)),
-            size(
-                AvailableSpace::Definite(px(90.)),
-                AvailableSpace::MinContent,
-            ),
-            |_, _| div().w(px(90.)).truncate().child(narrow),
-        );
+        visual.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.width = 90.;
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
         let narrow_text = layout.text();
 
         assert_eq!(wide_text, text.as_ref());

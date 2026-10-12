@@ -685,7 +685,9 @@ impl TaffyLayoutEngine {
             AvailableSpaceKey::from(available_space.width),
             AvailableSpaceKey::from(available_space.height),
         );
-        let reusable = self.root_constraints.get(&id) == Some(&constraints)
+        let parent = self.taffy.parent(id.into());
+        let reusable = parent.is_none()
+            && self.root_constraints.get(&id) == Some(&constraints)
             && !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE);
         self.record_root_diagnostic(id, reusable);
         if reusable {
@@ -709,18 +711,11 @@ impl TaffyLayoutEngine {
         // }
         //
 
-        if !self.computed_layouts.insert(id) {
-            let stack = &mut self.layout_bounds_scratch_space;
-            stack.clear();
-            stack.push(id);
-            while let Some(id) = stack.pop() {
-                self.absolute_layout_bounds.remove(&id);
-                self.unrounded_layout_origins.remove(&id);
-                // Taffy 0.14 exposes native child iterators. No temporary
-                // Vec is needed while invalidating repeated-root bounds.
-                stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
-            }
-        }
+        self.computed_layouts.insert(id);
+        // Descendants may already have been measured as standalone roots in
+        // this frame. Parent placement changes their absolute coordinates even
+        // when this is the parent's first computation.
+        self.invalidate_subtree_bounds(id);
 
         let scale_factor = window.scale_factor();
 
@@ -786,7 +781,24 @@ impl TaffyLayoutEngine {
                 },
             )
             .expect(EXPECT_MESSAGE);
+        if let Some(parent) = parent {
+            // A standalone computation overwrites this child's parent-relative
+            // placement. Invalidate only ancestor layout caches so the next
+            // enclosing computation restores placement from cached measures.
+            self.taffy.mark_dirty(parent).expect(EXPECT_MESSAGE);
+        }
         self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
+    }
+
+    fn invalidate_subtree_bounds(&mut self, id: LayoutId) {
+        let stack = &mut self.layout_bounds_scratch_space;
+        stack.clear();
+        stack.push(id);
+        while let Some(id) = stack.pop() {
+            self.absolute_layout_bounds.remove(&id);
+            self.unrounded_layout_origins.remove(&id);
+            stack.extend(self.taffy.child_ids(id.into()).map(LayoutId::from));
+        }
     }
 
     pub(crate) fn frame_layout_time(&self) -> Duration {
