@@ -38,6 +38,10 @@ use worker::{Entry, Worker};
 pub(crate) struct RenderOwnerFrame {
     pub(crate) submitted: bool,
     pub(crate) pending: bool,
+    /// A GPU readiness callback is armed; polling at the DWM refresh cadence
+    /// would waste CPU/GPU work while the swapchain is still unavailable.
+    #[cfg(target_os = "windows")]
+    pub(crate) waiting_for_frame_ready: bool,
     #[cfg(not(target_os = "windows"))]
     pub(crate) autonomous: bool,
     pub(crate) failed: bool,
@@ -252,26 +256,46 @@ impl RenderOwner {
     }
 
     fn submit(&self, packet: PresentationPacket, framebuffer_only: bool) -> Result<bool> {
-        // Only the initial visibility handshake waits for GPU work. Subsequent commits are
-        // acknowledged as queued; successful submission is reported by the owner separately.
-        let first = !self.status.submitted.load(Ordering::Acquire);
-        let handshake = first.then(|| mpsc::sync_channel(1));
-        let (reply, receiver) = match handshake {
-            Some((reply, receiver)) => (Some(reply), Some(receiver)),
-            None => (None, None),
-        };
-        self.status.pending.store(true, Ordering::Release);
-        self.enqueue(Command::Draw {
-            packet,
-            framebuffer_only,
-            reply,
-        })?;
-        if let Some(receiver) = receiver {
-            receiver
-                .recv()
-                .map_err(|_| anyhow!("GPU owner stopped before first frame"))?
-        } else {
-            Ok(false)
+        // On Windows the HWND and GPUI App share the same foreground thread. Waiting for
+        // the GPU to present even a first frame would block ALL windows and input while
+        // another window initializes, resizes or waits on its swapchain.
+        // The completion event is the only authority for first-frame visibility.
+        #[cfg(target_os = "windows")]
+        {
+            self.status.pending.store(true, Ordering::Release);
+            if let Err(error) = self.enqueue(Command::Draw {
+                packet,
+                framebuffer_only,
+                reply: None,
+            }) {
+                self.status.pending.store(false, Ordering::Release);
+                return Err(error);
+            }
+            return Ok(false);
+        }
+
+        // Non-Windows producers retain their existing initial visibility handshake.
+        #[cfg(not(target_os = "windows"))]
+        {
+            let first = !self.status.submitted.load(Ordering::Acquire);
+            let handshake = first.then(|| mpsc::sync_channel(1));
+            let (reply, receiver) = match handshake {
+                Some((reply, receiver)) => (Some(reply), Some(receiver)),
+                None => (None, None),
+            };
+            self.status.pending.store(true, Ordering::Release);
+            self.enqueue(Command::Draw {
+                packet,
+                framebuffer_only,
+                reply,
+            })?;
+            if let Some(receiver) = receiver {
+                receiver
+                    .recv()
+                    .map_err(|_| anyhow!("GPU owner stopped before first frame"))?
+            } else {
+                Ok(false)
+            }
         }
     }
 
@@ -301,6 +325,13 @@ impl RenderOwner {
     }
 
     pub(super) fn has_active_presentation_animations(&self) -> bool {
+        self.status.pending.load(Ordering::Acquire)
+    }
+
+    /// True when an immutable GPU frame was queued but no submission report has arrived.
+    /// In particular, a Windows first frame is queued rather than synchronously presented.
+    #[cfg(target_os = "windows")]
+    pub(super) fn has_pending_gpu_work(&self) -> bool {
         self.status.pending.load(Ordering::Acquire)
     }
 

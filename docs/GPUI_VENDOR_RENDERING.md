@@ -151,6 +151,25 @@ shaders, pipelines), surface/swapchain and window resources (buffers, textures, 
 Preparation and renderer first-frame logs have separate timing origins; compare process-to-visible
 time to measure the end-to-end benefit.
 
+Multi-window Windows scheduling: winit/GPUI shares one HWND-owning foreground thread while Nova
+retains a dedicated GPU owner with independently coalesced per-window Draw/Tick queues.
+Normal first-frame submission never waits on a GPU fence or acknowledgement from the UI thread;
+the first successful GPU completion report is responsible for unmasking the window. Window
+destruction still waits for renderer-resource retirement to preserve HWND thread ownership.
+
+During a Win32 modal move/resize loop, a snapshot of all registered windows dispatches only
+pending Resize/Presentation requests. Static companion windows incur no per-tick render work.
+Each HWND has a one-slot coalesced GPU status mailbox; first-present, error and animation
+completion information must survive merges. GPU completions wake the modal HWND directly,
+instead of accumulating undeliverable winit user events. An armed swapchain-ready callback
+suppresses speculative DWM-rate retry while the GPU is blocked on presentation readiness.
+All Win32 modal UI-task messages are coalesced and do not themselves request a GPU Present.
+
+The global GPU owner serializes backend execution, so a long synchronous driver/fence call
+can still cause inter-window head-of-line blocking. GPU owner queue wait, per-window job time
+and in-flight submission waits must be measured before claiming hard worst-case latency bounds;
+do not treat this scheduling improvement as proof of real-time isolation.
+
 Presentation samples use the GPU frame's monotonic timestamp after queueing, without running UI
 layout or rebuilding its committed display list. Animation completions are returned only after
 successful submission. Windows, Wayland and X11 declare ownership through `owns_scene_animations()`;

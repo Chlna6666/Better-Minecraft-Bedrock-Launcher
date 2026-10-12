@@ -138,7 +138,6 @@ pub(crate) enum WindowsUserEvent {
     VSync(super::vsync::VSyncEventTiming),
     RenderOwnerFrame {
         window_id: winit::window::WindowId,
-        frame: crate::platform::render_owner::RenderOwnerFrame,
     },
     DockMenuAction(usize),
     ActivateApp,
@@ -1249,7 +1248,15 @@ impl WindowsApplication {
 
     fn dispatch_pending_window_updates(&self, timing: super::vsync::VSyncEventTiming) {
         let event_received_at = Instant::now();
-        let windows: Vec<_> = self.windows.values().cloned().collect();
+        // A global DWM cadence is not a global redraw. Static companion windows
+        // incur no per-tick work. Release the window-map borrow before dispatch:
+        // GPUI callbacks are allowed to close/create other windows reentrantly.
+        let windows = self
+            .windows
+            .values()
+            .filter(|window| window.has_pending_native_frame())
+            .cloned()
+            .collect::<Vec<_>>();
         for window in windows {
             window.dispatch_pending_update_from_vsync(timing, event_received_at);
         }
@@ -1381,9 +1388,11 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
-            WindowsUserEvent::RenderOwnerFrame { window_id, frame } => {
-                if let Some(window) = self.windows.get(&window_id) {
-                    window.report_render_owner_frame(frame);
+            WindowsUserEvent::RenderOwnerFrame { window_id } => {
+                // The frame data lives in a per-window latest-wins mailbox. Release
+                // the registry lookup before invoking potentially reentrant callbacks.
+                if let Some(window) = self.windows.get(&window_id).cloned() {
+                    window.drain_gpu_reports();
                 }
             }
             WindowsUserEvent::DockMenuAction(action_index) => {

@@ -59,6 +59,7 @@ pub(super) struct VSyncScheduler {
     shutdown: AtomicBool,
     thread: Mutex<Option<Thread>>,
     modal_frame: Mutex<Option<ModalFrameTarget>>,
+    modal_task_wake_pending: AtomicBool,
 }
 
 struct ModalFrameTarget {
@@ -80,6 +81,7 @@ impl VSyncScheduler {
             shutdown: AtomicBool::new(false),
             thread: Mutex::new(None),
             modal_frame: Mutex::new(None),
+            modal_task_wake_pending: AtomicBool::new(false),
         }
     }
 
@@ -105,6 +107,7 @@ impl VSyncScheduler {
             hwnd,
             pending: None,
         });
+        self.modal_task_wake_pending.store(false, Ordering::Release);
         self.request_frame()
     }
 
@@ -112,6 +115,7 @@ impl VSyncScheduler {
         let mut target = self.modal_frame.lock().expect("modal vsync lock poisoned");
         if target.as_ref().is_some_and(|target| target.hwnd == hwnd) {
             *target = None;
+            self.modal_task_wake_pending.store(false, Ordering::Release);
         }
         drop(target);
         self.request_frame();
@@ -126,13 +130,28 @@ impl VSyncScheduler {
             .and_then(|target| target.pending.take())
     }
 
-    /// Wake the HWND owner for GPUI foreground work during a native modal drag.
-    /// This is not a presentation request: no GPU frame is implied.
-    pub(super) fn wake_modal_ui_tasks(&self) {
+    /// Claim a coalesced UI-task wake for the currently active native modal HWND.
+    /// A late message from an earlier drag cannot clear a later drag's wake flag.
+    pub(super) fn take_modal_ui_task_wake(&self, hwnd: isize) -> bool {
+        let modal = self.modal_frame.lock().expect("modal vsync lock poisoned");
+        if !modal.as_ref().is_some_and(|target| target.hwnd == hwnd) {
+            return false;
+        }
+        self.modal_task_wake_pending.swap(false, Ordering::AcqRel)
+    }
+
+    /// Wake the HWND owner to run GPUI foreground tasks, not to submit a GPU frame.
+    /// Multiple producers posting from the same drag are combined into one Win32 message.
+    /// Returns true when the active native modal loop owns the wake. Callers with
+    /// a winit fallback can avoid queueing redundant outer-loop user events.
+    pub(super) fn wake_modal_ui_tasks(&self) -> bool {
         let modal = self.modal_frame.lock().expect("modal vsync lock poisoned");
         let Some(target) = modal.as_ref() else {
-            return;
+            return false;
         };
+        if self.modal_task_wake_pending.swap(true, Ordering::AcqRel) {
+            return true;
+        }
         if let Err(error) = unsafe {
             PostMessageW(
                 Some(HWND(target.hwnd as *mut _)),
@@ -141,8 +160,11 @@ impl VSyncScheduler {
                 LPARAM(0),
             )
         } {
+            self.modal_task_wake_pending.store(false, Ordering::Release);
             log::warn!("failed to post GPUI modal foreground task wake: {error}");
+            return false;
         }
+        true
     }
 
     fn post_modal_frame(&self, timing: VSyncEventTiming) -> bool {

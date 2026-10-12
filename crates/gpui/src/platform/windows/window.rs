@@ -17,6 +17,7 @@ use std::{
 };
 
 use ::util::ResultExt;
+use parking_lot::Mutex as ParkingMutex;
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot::{self, Receiver};
 use slotmap::Key;
@@ -88,6 +89,38 @@ pub(crate) struct QueuedScene {
 impl QueuedScene {
     fn prepare_for_native_frame(&mut self, now: Instant) {
         self.packet.frame_time = now;
+    }
+}
+
+/// One bounded status mailbox per HWND: GPU completion events cannot accumulate in
+/// winit's outer user-event queue while Win32 runs a modal move/resize loop.
+/// Animation completions are lossless; ordinary frame status is latest-wins.
+#[derive(Default)]
+struct GpuReportMailbox {
+    latest: Option<crate::platform::render_owner::RenderOwnerFrame>,
+}
+
+impl GpuReportMailbox {
+    /// True if an empty mailbox became nonempty, requiring a new wake.
+    fn push(&mut self, incoming: crate::platform::render_owner::RenderOwnerFrame) -> bool {
+        if let Some(previous) = &mut self.latest {
+            previous.submitted |= incoming.submitted;
+            previous.pending = incoming.pending;
+            previous.waiting_for_frame_ready = incoming.waiting_for_frame_ready;
+            previous.failed |= incoming.failed;
+            if previous.ready_enqueued_at.is_none() {
+                previous.ready_enqueued_at = incoming.ready_enqueued_at;
+            }
+            previous.completed_animations.extend(incoming.completed_animations);
+            false
+        } else {
+            self.latest = Some(incoming);
+            true
+        }
+    }
+
+    fn take(&mut self) -> Option<crate::platform::render_owner::RenderOwnerFrame> {
+        self.latest.take()
     }
 }
 
@@ -197,17 +230,68 @@ fn redraw_size_move_frame(hwnd: HWND) {
     }
 }
 
+/// Snapshot registered windows without holding the HWND registry across GPUI callbacks.
+/// The winit event loop cannot dispatch user events while Windows is in its nested drag loop;
+/// active companion windows must still receive their own pending presentation requests.
+fn dispatch_modal_window_updates(
+    hwnd: HWND,
+    timing: Option<super::vsync::VSyncEventTiming>,
+) {
+    let windows = WINDOWS_BY_HWND.with(|registry| {
+        registry
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(WindowsWindow)
+            .collect::<Vec<_>>()
+    });
+
+    for window in windows {
+        // A completion can arm the next retained animation tick for any window;
+        // it is not tied to the HWND currently being dragged.
+        window.drain_gpu_reports();
+        // A move with unchanged client size is not a layout invalidation.
+        if window.native_hwnd() == Some(hwnd) {
+            window.sync_current_native_size();
+        }
+        if !window.has_pending_native_frame() {
+            continue;
+        }
+        if let Some(timing) = timing {
+            window.dispatch_pending_update_from_vsync(timing, Instant::now());
+        } else {
+            window.dispatch_pending_update();
+        }
+    }
+}
+
+/// Drain completion reports from all Windows HWNDs while the outer winit
+/// user-event loop is paused. The registry borrow ends before any callbacks.
+fn drain_modal_gpu_reports() {
+    let windows = WINDOWS_BY_HWND.with(|registry| {
+        registry
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(WindowsWindow)
+            .collect::<Vec<_>>()
+    });
+    for window in windows {
+        window.drain_gpu_reports();
+    }
+}
+
 fn dispatch_size_move_frame(hwnd: HWND) {
-    let Some(window) = native_window(hwnd) else {
+    if native_window(hwnd).is_none() {
         redraw_size_move_frame(hwnd);
         return;
-    };
+    }
 
-    // The timer is a fallback when DWM scheduling is unavailable. WM_PAINT alone is insufficient
-    // while winit's outer event-loop runner is already borrowed.
-    window.sync_current_native_size();
-    window.dispatch_pending_update();
-    if super::platform::poll_modal_foreground_tasks() {
+    // The fallback timer is event-driven and only dispatches windows with pending work.
+    dispatch_modal_window_updates(hwnd, None);
+    if super::platform::poll_modal_foreground_tasks()
+        && let Some(window) = native_window(hwnd)
+    {
         window.0.vsync_scheduler.wake_modal_ui_tasks();
     }
 }
@@ -313,9 +397,9 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             if let Some(window) = native_window(hwnd)
                 && let Some(timing) = window.0.vsync_scheduler.take_modal_frame(hwnd.0 as isize)
             {
-                let event_received_at = Instant::now();
-                window.sync_current_native_size();
-                window.dispatch_pending_update_from_vsync(timing, event_received_at);
+                // Even if this HWND is in the native modal loop, other GPUI windows
+                // can have pending animation/presentation work. Never tick idle windows.
+                dispatch_modal_window_updates(hwnd, Some(timing));
                 if super::platform::poll_modal_foreground_tasks() {
                     window.0.vsync_scheduler.wake_modal_ui_tasks();
                 }
@@ -324,9 +408,17 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
         }
         SizeMoveLoopAction::UiTasks => {
             if let Some(window) = native_window(hwnd)
-                && super::platform::poll_modal_foreground_tasks()
+                && window
+                    .0
+                    .vsync_scheduler
+                    .take_modal_ui_task_wake(hwnd.0 as isize)
             {
-                window.0.vsync_scheduler.wake_modal_ui_tasks();
+                // GPU reports may be the only reason for this wake. Drain them
+                // independently of GPUI foreground tasks, without a GPU Present.
+                drain_modal_gpu_reports();
+                if super::platform::poll_modal_foreground_tasks() {
+                    window.0.vsync_scheduler.wake_modal_ui_tasks();
+                }
             }
             return windows::Win32::Foundation::LRESULT(0);
         }
@@ -1087,6 +1179,7 @@ pub(crate) struct WindowsWindowInner {
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
     pending_scene: RefCell<Option<QueuedScene>>,
+    gpu_reports: Arc<ParkingMutex<GpuReportMailbox>>,
     event_loop_proxy: EventLoopProxy<WindowsUserEvent>,
 }
 
@@ -1186,6 +1279,14 @@ impl WindowsWindow {
         }
     }
 
+    /// Consume without holding the GPU mailbox lock across GPUI callbacks.
+    pub(crate) fn drain_gpu_reports(&self) {
+        let report = self.0.gpu_reports.lock().take();
+        if let Some(report) = report {
+            self.report_render_owner_frame(report);
+        }
+    }
+
     pub(crate) fn report_render_owner_frame(
         &self,
         frame: crate::platform::render_owner::RenderOwnerFrame,
@@ -1203,12 +1304,12 @@ impl WindowsWindow {
         for completion in frame.completed_animations {
             self.invoke_presentation_animation_completed(completion);
         }
-        if frame.pending || frame.failed {
-            self.request_frame(if frame.failed {
-                PlatformFrameRequest::ui_commit()
-            } else {
-                PlatformFrameRequest::presentation()
-            });
+        if frame.failed {
+            self.request_frame(PlatformFrameRequest::ui_commit());
+        } else if frame.pending && !frame.waiting_for_frame_ready {
+            // If a swapchain-ready notification is armed, another DWM tick
+            // cannot make the GPU ready sooner. The callback will wake us.
+            self.request_frame(PlatformFrameRequest::presentation());
         }
     }
 
@@ -1228,7 +1329,7 @@ impl WindowsWindow {
         if !self.try_apply_queued_renderer_resize() {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }
-        let (result, has_submitted_frame) = {
+        let (result, has_submitted_frame, pending_gpu_work) = {
             let renderer_state = self.0.renderer.borrow();
             let WindowsRendererState::Ready(renderer) = &*renderer_state else {
                 return defer_scene_until_native_frame(self, packet, framebuffer_only);
@@ -1238,14 +1339,14 @@ impl WindowsWindow {
             } else {
                 renderer.draw(packet)
             };
-            (result, renderer.has_submitted_frame())
+            (result, renderer.has_submitted_frame(), renderer.has_pending_gpu_work())
         };
         match result {
             Ok(true) => {
                 self.mark_first_frame_presented();
                 PlatformFrameResult::Submitted
             }
-            Ok(false) if has_submitted_frame => {
+            Ok(false) if has_submitted_frame || pending_gpu_work => {
                 // The GPU report schedules any remaining damage or animation. Requesting a
                 // frame here can outlive submission and replay an already idle scene forever.
                 PlatformFrameResult::Queued
@@ -1427,6 +1528,7 @@ impl WindowsWindow {
             fallback_corner_radius,
             winit_window: cell,
             pending_scene: RefCell::new(None),
+            gpu_reports: Arc::new(ParkingMutex::new(GpuReportMailbox::default())),
             event_loop_proxy,
         }));
         if let Some(hwnd) = hwnd {
@@ -1462,11 +1564,21 @@ impl WindowsWindow {
             .clone();
         let events = self.0.event_loop_proxy.clone();
         let window_id = window.id();
+        let mailbox = self.0.gpu_reports.clone();
+        let scheduler = self.0.vsync_scheduler.clone();
         let report = Arc::new(
             move |frame: crate::platform::render_owner::RenderOwnerFrame| {
-                if events
-                    .send_event(WindowsUserEvent::RenderOwnerFrame { window_id, frame })
-                    .is_err()
+                let needs_wake = mailbox.lock().push(frame);
+                // The nested Win32 drag loop cannot service winit UserEvent until the
+                // mouse is released. Its HWND directly consumes this one coalesced report.
+                // Do not also fill the paused outer event queue with frame notifications.
+                if scheduler.wake_modal_ui_tasks() {
+                    return;
+                }
+                if needs_wake
+                    && events
+                        .send_event(WindowsUserEvent::RenderOwnerFrame { window_id })
+                        .is_err()
                 {
                     log::trace!("Windows GPU frame receiver closed");
                 }
@@ -1772,6 +1884,19 @@ impl WindowsWindow {
         if pending.requires_frame() && !self.0.vsync_scheduler.request_frame() {
             self.window().request_redraw();
         }
+    }
+
+    /// Whether a native cadence event has any work for this particular window.
+    /// This avoids O(windows × refresh_rate) empty callbacks and per-window telemetry.
+    pub(crate) fn has_pending_native_frame(&self) -> bool {
+        // Native Win32 messages may be delivered reentrantly while a callback owns
+        // the state RefCell. Never dispatch a frame through that outstanding borrow.
+        let Ok(state) = self.0.state.try_borrow() else {
+            self.0.vsync_scheduler.request_frame();
+            return false;
+        };
+        self.0.pending_resize.get().is_some()
+            || state.pending_frame_request.get().requires_frame()
     }
 
     pub(crate) fn dispatch_pending_resize(&self) {
@@ -2406,6 +2531,41 @@ mod tests {
         WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SIZE, WM_TIMER,
         WM_WINDOWPOSCHANGED,
     };
+
+    #[test]
+    fn gpu_report_mailbox_coalesces_status_without_losing_first_present() {
+        use super::GpuReportMailbox;
+        use crate::platform::render_owner::RenderOwnerFrame;
+        use std::time::Instant;
+
+        let mut mailbox = GpuReportMailbox::default();
+        let ready_at = Instant::now();
+        assert!(mailbox.push(RenderOwnerFrame {
+            submitted: true,
+            pending: true,
+            waiting_for_frame_ready: true,
+            failed: false,
+            ready_enqueued_at: Some(ready_at),
+            completed_animations: smallvec::SmallVec::new(),
+        }));
+        // The GPU can complete multiple frames while the Win32 outer user-event
+        // loop is suspended. Status remains one slot, not an unbounded event queue.
+        assert!(!mailbox.push(RenderOwnerFrame {
+            submitted: false,
+            pending: false,
+            waiting_for_frame_ready: false,
+            failed: true,
+            ready_enqueued_at: None,
+            completed_animations: smallvec::SmallVec::new(),
+        }));
+        let report = mailbox.take().expect("coalesced GPU report");
+        assert!(report.submitted, "first-frame visibility must be preserved");
+        assert!(!report.pending, "latest continuation state wins");
+        assert!(!report.waiting_for_frame_ready, "latest readiness state wins");
+        assert!(report.failed, "a GPU error must not disappear");
+        assert_eq!(report.ready_enqueued_at, Some(ready_at));
+        assert!(mailbox.take().is_none());
+    }
 
     #[test]
     fn test_double_click_interval() {

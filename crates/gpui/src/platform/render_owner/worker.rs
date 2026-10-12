@@ -383,6 +383,8 @@ impl Entry {
                 report(RenderOwnerFrame {
                     submitted: false,
                     pending: true,
+                    #[cfg(target_os = "windows")]
+                    waiting_for_frame_ready: false,
                     #[cfg(not(target_os = "windows"))]
                     autonomous: false,
                     failed: false,
@@ -434,6 +436,9 @@ impl Entry {
         (self.report)(RenderOwnerFrame {
             submitted,
             pending,
+            #[cfg(target_os = "windows")]
+            waiting_for_frame_ready: !submitted
+                && self.ready_registration.load(Ordering::Acquire) != 0,
             #[cfg(not(target_os = "windows"))]
             autonomous: self.schedule.is_enabled() || self.presentation_clock.is_some(),
             failed: result.is_err(),
