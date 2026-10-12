@@ -155,24 +155,27 @@ impl Window {
     }
 
     pub(super) fn mark_view_dirty(&mut self, view_id: EntityId) {
-        // A render can read a non-view entity. Its notify is window-scoped, without a
-        // dispatch route that identifies the dependent view, so an old root cannot hide it.
-        if self
+        let dependents = crate::CachedView::render_dependents(self, view_id);
+        let has_view_route = self
             .rendered_frame
             .dispatch_tree
             .view_path_reversed(view_id)
             .next()
-            .is_none()
-        {
+            .is_some();
+        // A data Entity has no dispatch route of its own. Exact Render readers
+        // provide that route; only unknown readers require a window barrier.
+        if !has_view_route && dependents.is_empty() {
             self.force_view_cache_refresh = true;
         }
         // These scopes are rebuilt while consuming invalidations in begin_draw_cycle. Their
         // producer already requested the current frame; scheduling here would enqueue another
         // UI commit for the same work and force a clean-frame cache refresh.
-        self.direct_dirty_views.insert(view_id);
-        self.dirty_frame_diagnostics
-            .borrow_mut()
-            .record_view_dirty(view_id);
+        if has_view_route {
+            self.direct_dirty_views.insert(view_id);
+            self.dirty_frame_diagnostics
+                .borrow_mut()
+                .record_view_dirty(view_id);
+        }
         // Keep ancestors in the traversal path. An ancestor already in the path also has all of
         // its own ancestors recorded; only `direct_dirty_views` represents direct invalidation.
         for view_id in self
@@ -184,16 +187,23 @@ impl Window {
                 break;
             }
         }
-        self.dirty_views.insert(view_id);
+        if has_view_route {
+            self.dirty_views.insert(view_id);
+        }
         // A visible View can also be data for another View's Render. Its retained
         // target alone cannot cover those readers, including unrelated sibling owners.
-        let dependents = crate::CachedView::render_dependents(self, view_id);
-        if !dependents.is_empty() {
-            self.force_view_cache_refresh = true;
-        }
+        // Dependency readers are direct dirty owners, not a window-wide cache
+        // barrier. Their own boundaries must rebuild while unrelated owners
+        // and routing ancestors remain eligible for retained replay.
         for dependent in dependents {
             if !self.direct_dirty_views.contains(&dependent) {
+                let boundary = self.invalidator.invalidate_render_dependency(dependent);
                 self.mark_view_dirty(dependent);
+                if let Some(boundary) = boundary
+                    && !self.direct_dirty_views.contains(&boundary)
+                {
+                    self.mark_view_dirty(boundary);
+                }
             }
         }
         self.dirty_frame_diagnostics

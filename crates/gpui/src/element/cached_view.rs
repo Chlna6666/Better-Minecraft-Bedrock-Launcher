@@ -112,6 +112,17 @@ fn selective_cached_view_target(
     if window.view_dirty_scope(owner_id) != Some(ViewDirtyScope::Direct) {
         return Err(SelectiveSpliceMissReason::TargetNotDirect);
     }
+    let ancestor_owner = parent_state.weak_view.view.entity_id();
+    if window.direct_dirty_views.iter().any(|dirty_owner| {
+        let route = window.rendered_frame.dispatch_tree.view_path(*dirty_owner);
+        (*dirty_owner == ancestor_owner || route.contains(&ancestor_owner))
+            && *dirty_owner != owner_id
+            && !route.contains(&owner_id)
+    }) {
+        // A dependency reader outside this target cannot live in the replayed
+        // prefix/suffix. Rebuild this cache boundary, preserving other caches.
+        return Err(SelectiveSpliceMissReason::NoUniqueTarget);
+    }
 
     let (retained_id, state_global_id) = window
         .invalidator

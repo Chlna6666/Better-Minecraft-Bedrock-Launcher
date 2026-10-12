@@ -2,6 +2,8 @@ use super::*;
 use crate::element::InteractiveElement;
 use crate::{AnyWindowHandle, AppContext, Context, TestAppContext, WindowOptions, px};
 
+mod dependency_tests;
+
 struct PlainLeafView {
     renders: Rc<std::cell::Cell<usize>>,
     revision: usize,

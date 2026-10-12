@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+mod uncached;
+
 use super::*;
 use crate::element::{CompositeLayerExt, ParentElement, StatefulInteractiveElement};
 use crate::{
@@ -254,7 +256,7 @@ impl Render for SelectiveFallbackParentView {
         self.renders.set(self.renders.get().saturating_add(1));
         // Intentionally leave the leaf uncached. A leaf notify must be promoted to this cached
         // parent boundary instead of forcing the window root to render.
-        crate::div().child(self.leaf.clone())
+        crate::div().child(uncached::View(AnyView::from(self.leaf.clone())))
     }
 }
 
@@ -797,12 +799,11 @@ fn cached_view_reuses_during_platform_refreshing_frame(cx: &mut TestAppContext) 
     let baseline = renders.get();
     assert!(baseline > 0, "cached leaf should render at least once");
 
+    sibling.update(cx, |sibling, cx| {
+        sibling.revision = sibling.revision.saturating_add(1);
+        cx.notify();
+    });
     cx.update_window(window, |_, window, cx| {
-        sibling.update(cx, |sibling, _cx| {
-            sibling.revision = sibling.revision.saturating_add(1);
-        });
-        window.dirty_views.insert(sibling.entity_id());
-        window.invalidator.set_dirty(true);
         window.refreshing = true;
         window.draw(cx).clear();
     })

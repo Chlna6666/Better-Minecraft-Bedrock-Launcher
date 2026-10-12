@@ -573,6 +573,39 @@ impl WindowInvalidator {
         self.inner.borrow().active_targeted_elements.len()
     }
 
+    /// Add a Render dependency before activating this frame's dirtiness.
+    /// Its retained paths must also be dirty for element replay, not only View routing.
+    pub(crate) fn invalidate_render_dependency(&self, entity: EntityId) -> Option<EntityId> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.pending_targeted_replay {
+            return None;
+        }
+        let owner = inner
+            .cached_view_retained_targets
+            .get(&entity)
+            .filter(|targets| !targets.is_empty())
+            .map(|_| entity)
+            .or_else(|| inner.cached_view_fallback_boundaries.get(&entity).copied());
+        if let Some(owner) = owner
+            && let Some(targets) = inner.cached_view_retained_targets.get(&owner).cloned()
+            && !targets.is_empty()
+        {
+            for target in targets {
+                inner
+                    .pending_targeted_elements
+                    .entry((owner, target.retained_id))
+                    .and_modify(|scope| {
+                        *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
+                    })
+                    .or_insert(RetainedInvalidationScope::ReconcileSubtree);
+            }
+            Some(owner)
+        } else {
+            inner.pending_generic_dirty_views.insert(entity);
+            None
+        }
+    }
+
     /// Returns one reconstructible subtree target strictly below ancestor.
     ///
     /// Nested paths belonging to the same direct View can use the outermost target.
