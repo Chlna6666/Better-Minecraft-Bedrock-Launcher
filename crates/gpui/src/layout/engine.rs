@@ -412,6 +412,7 @@ impl TaffyLayoutEngine {
             let is_measured = measure.is_some();
             if node.measured && !is_measured {
                 self.taffy.set_node_context(id.into(), None).expect(EXPECT_MESSAGE);
+                self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
             }
             let old_children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
             if old_children.as_slice() != LayoutId::to_taffy_slice(children) {

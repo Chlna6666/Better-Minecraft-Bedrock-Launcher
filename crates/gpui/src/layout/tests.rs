@@ -193,6 +193,46 @@ fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
 }
 
 #[gpui::test]
+fn native_taffy_reused_node_changes_between_measured_leaf_and_container(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let first = engine.request_measured_layout_with_fingerprint(
+            layout_identity("slot"), Style::default(), px(16.), 1., Some(1),
+            |_, _, _, _| size(px(20.), px(15.)),
+        );
+        engine.compute_layout(first, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.layout_bounds(first, 1.).size.width, px(20.));
+        engine.clear();
+
+        let mut style = Style::default();
+        style.size.width = px(80.).into();
+        style.size.height = px(30.).into();
+        let reused = engine.request_layout(layout_identity("slot"), style, px(16.), 1., &[]);
+        assert_eq!(first, reused);
+        assert!(engine.taffy.get_node_context(reused.into()).is_none());
+        assert!(engine.taffy.dirty(reused.into()).unwrap());
+        engine.compute_layout(reused, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.layout_bounds(reused, 1.).size.width, px(80.));
+        engine.clear();
+
+        let restored = engine.request_measured_layout_with_fingerprint(
+            layout_identity("slot"), Style::default(), px(16.), 1., Some(2),
+            |_, _, _, _| size(px(36.), px(12.)),
+        );
+        assert_eq!(restored, first);
+        assert!(engine.taffy.dirty(restored.into()).unwrap());
+        engine.compute_layout(restored, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.layout_bounds(restored, 1.).size.width, px(36.));
+    }).unwrap();
+}
+
+#[gpui::test]
 fn native_taffy_marks_impure_measure_dirty_on_every_commit(
     cx: &mut TestAppContext,
 ) {
