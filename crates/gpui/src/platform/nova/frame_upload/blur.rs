@@ -208,6 +208,22 @@ impl PartialEq for BackdropBlurConfig {
 impl Eq for BackdropBlurConfig {}
 
 #[cfg(test)]
+pub(in crate::platform::nova) fn test_zero_radius_blur_config(
+    member_index: u32,
+) -> BackdropBlurConfig {
+    BackdropBlurConfig::new(
+        0,
+        member_index,
+        member_index,
+        1,
+        1,
+        0.0,
+        [0.0, 0.0, 64.0, 32.0],
+        false,
+    )
+}
+
+#[cfg(test)]
 pub(in crate::platform::nova) fn test_backdrop_blur_config(
     downsample: u8,
     levels: u8,

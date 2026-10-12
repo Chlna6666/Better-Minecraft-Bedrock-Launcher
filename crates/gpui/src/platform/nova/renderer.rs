@@ -493,6 +493,33 @@ impl NovaRenderer {
                 self.filters.targets.as_ref().expect("reused targets exist").variants.len());
             return Ok(());
         }
+        // Rebinding will overwrite recycled offscreen textures on the next draw.
+        // Retire any in-flight reads before changing their ownership.
+        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
+            self.wait_for_pending_submissions()?;
+        }
+        // For zero-radius capture-only layouts, a popup can change the number
+        // and flattened order of captures without changing texture dimensions.
+        // Rebind warmed texture slots instead of destroying the whole target chain.
+        // This mapping deliberately invalidates ALL old pixels: slot indices and
+        // cached filter snapshots no longer describe the same source content.
+        if self.filters.targets.as_mut().is_some_and(|targets| {
+            targets.rebind_zero_radius_layout(
+                self.frame_upload.backdrop_blur_configs(),
+                present::has_root_backdrop_blurs(&self.frame_upload),
+                self.frame_upload.retained_root_blur,
+            )
+        }) {
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            self.invalidate_draw_step_cache();
+            self.invalidate_backdrop_blur_cache();
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI zero-radius retained target layout rebound: active_variants={}",
+                self.frame_upload.backdrop_blur_configs().len(),
+            );
+            return Ok(());
+        }
         // Texture topology changes can destroy the previous cached color
         // targets. Those targets may still be sampled by a previously submitted
         // GPU frame. Wait for the recorded fence completion BEFORE replacing
@@ -501,9 +528,6 @@ impl NovaRenderer {
         //
         // This is a correctness prerequisite for a future fence-retired
         // transient allocation pool, not physical heap aliasing by itself.
-        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
-            self.wait_for_pending_submissions()?;
-        }
         // New target storage has no retained filtered pixels. The first frame using the new chain
         // must therefore rebuild every root backdrop regardless of the current damage footprint.
         self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
