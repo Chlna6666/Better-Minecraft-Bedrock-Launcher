@@ -143,37 +143,31 @@ Compose 的核心做法不是“所有东西都缓存”，而是让频繁变化
 
 ---
 
-## P0-C — Taffy：当前“每帧重建树 + root fingerprint reuse”粒度仍然太粗
+## P0-C — Taffy：持久原生 Node 与局部 Layout 依赖
 
-### 当前问题
+### 当前实现
 
-`TaffyLayoutEngine::clear()` 每帧会保存 retained roots 后清理：
+GPUI 现在以 Retained Element 路径和元素内部请求序号作为节点所有权，
+跨帧复用真实 Taffy 0.14 NodeId；不再每帧调用 `taffy.clear()`。
+稳定节点直接使用 `set_style`、`set_children` 和 `mark_dirty`
+触发 Taffy 自身的缓存失效与增量求解。布局根只保存最后约束，不再
+将整棵节点 Bounds 复制进 `previous_layout_roots` 再恢复。
+没有稳定 Retained Element 身份的匿名节点按帧销毁。
 
-- `taffy`
-- `absolute_layout_bounds`
-- `unrounded_layout_origins`
-- `computed_layouts`
-- `node_fingerprints`
-- `node_layout_metadata`
-- measured subtree state
+Reactive View 的选择性预绘制仍可能独立恢复语义上未变的几何快照，
+这不是通用根布局缓存。
 
-下一帧 `request_layout()` 又创建新的 Taffy nodes，再依靠 root fingerprint 尝试复用整 root。这个模型对“整个 root 完全稳定”的情况有效，但动画中某个 absolute child 的 `left/width` 改动很容易让 root/subtree fingerprint 改变，随后大片 sibling 被重新建树/重新求 bounds。
+### 后续 TODO
 
-### 短期 TODO
-
-- [ ] 记录每个 layout root cache miss 的 **第一处 fingerprint divergence**，不要只统计 hit/miss。
-- [ ] 对 absolute-positioned child 建立 dependency 规则：如果它不参与 parent intrinsic size/flex distribution，其 `left/top/transform` 变化不得让无关 sibling layout invalid。
-- [ ] layout animation target 除 retained scene boundary 外增加 retained layout boundary。
-- [ ] 将“geometry 变化但不影响 parent measure”的 property 单独标为 placement dirty，而不是 measure dirty。
-- [ ] measured node 仅在 measure input / font / content / intrinsic constraints 改变时重新调用 measure closure。
-
-### 中期 TODO
-
-- [ ] 引入稳定 `LayoutInstanceId` / persistent layout node identity；不要把 frame-local `LayoutId` 当长期 identity。
-- [ ] 每个 persistent node 维护 `needs_measure / needs_layout / needs_placement` dirty bits。
-- [ ] 从 dirty node 向上只传播必要依赖；向下只在 parent constraints 改变时传播。
-- [ ] layout result cache 从“整 root fingerprint”升级为可复用的 persistent subtree result。
-- [ ] 若继续使用 Taffy，设计 GPUI persistent instance → frame Taffy node 的映射/增量同步；不要同时维护两套互相不知道 dirty 语义的半缓存。
+- [x] 持久 NodeId 所有权使用稳定 Element 路径，不使用全局帧内 ordinal
+- [x] 仅在样式、子节点关系和测量内容变化时调用原生 Taffy 更新 API
+- [x] 移除通用 Taffy 根布局结果复制缓存和实验环境变量
+- [ ] 验证重复元素身份、虚拟列表回收、跨窗口和多根的重排/卸载行为
+- [ ] 将 GPUI 生命周期中的 Measure、Placement、Paint Dirty 完全分开；
+      Taffy 当前已负责布局算法内部的 Dirty，但 GPUI 元素层尚未全部解耦
+- [ ] 对纯视觉动画保持纯 GPU 呈现，不进入元素布局请求
+- [ ] 更新调试面板指标，区分节点创建/复用、Taffy 内部 cache hit、
+      节点测量次数、Placement 和 Paint 失效
 
 ### 可借鉴模型
 

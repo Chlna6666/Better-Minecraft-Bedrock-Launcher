@@ -1,95 +1,10 @@
 use super::engine::TaffyLayoutEngine;
 use super::metrics::AvailableSpace;
-use crate::{AppContext as _, Style, TestAppContext, WindowOptions, px, size};
+use crate::{AppContext as _, ElementId, GlobalElementId, Style, TestAppContext, WindowOptions, px, size};
 use std::{cell::Cell, rc::Rc};
 
-#[gpui::test]
-fn persistent_taffy_nodes_reuse_ids_and_recompute_changed_child(
-    cx: &mut TestAppContext,
-) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    window.update(cx, |_, window, cx| {
-        let mut engine = TaffyLayoutEngine::new();
-        engine.enable_persistent_nodes_for_test();
-        let build = |engine: &mut TaffyLayoutEngine, width: f32| {
-            let mut moving = Style::default();
-            moving.size.width = px(width).into();
-            moving.size.height = px(20.).into();
-            let changed = engine.request_layout(moving, px(16.), 1.0, &[]);
-
-            let mut sibling = Style::default();
-            sibling.size.width = px(45.).into();
-            sibling.size.height = px(20.).into();
-            let stable = engine.request_layout(sibling, px(16.), 1.0, &[]);
-
-            let parent = engine.request_layout(
-                Style::default(),
-                px(16.),
-                1.0,
-                &[changed, stable],
-            );
-            (changed, stable, parent)
-        };
-
-        let first = build(&mut engine, 20.);
-        engine.compute_layout(first.2, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.taffy.total_node_count(), 3);
-        engine.clear();
-
-        let same = build(&mut engine, 20.);
-        assert_eq!(same, first);
-        assert_eq!(engine.taffy.total_node_count(), 3);
-        engine.compute_layout(same.2, AvailableSpace::min_size(), window, cx);
-        engine.clear();
-
-        let changed = build(&mut engine, 70.);
-        assert_eq!(changed, first);
-        engine.compute_layout(changed.2, AvailableSpace::min_size(), window, cx);
-        let changed_bounds = engine.layout_bounds(changed.0, 1.0);
-        let sibling_bounds = engine.layout_bounds(changed.1, 1.0);
-        assert_eq!(changed_bounds.size.width, px(70.));
-        assert_eq!(sibling_bounds.size.width, px(45.));
-        assert_eq!(engine.taffy.total_node_count(), 3);
-    }).unwrap();
-}
-
-#[gpui::test]
-fn persistent_taffy_reparents_after_subtree_removal(
-    cx: &mut TestAppContext,
-) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-    window.update(cx, |_, window, cx| {
-        let mut engine = TaffyLayoutEngine::new();
-        engine.enable_persistent_nodes_for_test();
-        let build = |engine: &mut TaffyLayoutEngine, children: usize| {
-            let leaves = (0..children)
-                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
-                .collect::<Vec<_>>();
-            engine.request_layout(Style::default(), px(16.), 1.0, &leaves)
-        };
-        let root = build(&mut engine, 3);
-        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.taffy.total_node_count(), 4);
-        engine.clear();
-
-        let reduced = build(&mut engine, 2);
-        engine.compute_layout(reduced, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.taffy.children(reduced.into()).unwrap().len(), 2);
-        engine.clear();
-        assert_eq!(engine.taffy.total_node_count(), 3);
-
-        let restored = build(&mut engine, 3);
-        engine.compute_layout(restored, AvailableSpace::min_size(), window, cx);
-        assert_eq!(engine.taffy.children(restored.into()).unwrap().len(), 3);
-        assert_eq!(engine.taffy.total_node_count(), 4);
-    }).unwrap();
+fn layout_identity(name: &'static str) -> Option<GlobalElementId> {
+    Some(GlobalElementId::from_path(&[ElementId::from(name)]))
 }
 
 #[gpui::test]
@@ -106,7 +21,7 @@ fn taffy_014_leaf_layout_applies_fixed_size_without_measure_context(cx: &mut Tes
             style.size.width = px(80.).into();
             style.size.height = px(30.).into();
 
-            let root = engine.request_layout(style, px(16.), 1.0, &[]);
+            let root = engine.request_layout(None, style, px(16.), 1.0, &[]);
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
             engine.layout_bounds(root, 1.0)
         })
@@ -130,7 +45,7 @@ fn taffy_014_measured_leaf_keeps_style_constraints(cx: &mut TestAppContext) {
             style.min_size.height = px(30.).into();
 
             let root = engine
-                .request_measured_layout(style, px(16.), 1.0, |_, _, _, _| size(px(20.), px(12.)));
+                .request_measured_layout(None, style, px(16.), 1.0, |_, _, _, _| size(px(20.), px(12.)));
             engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
             engine.layout_bounds(root, 1.0)
         })
@@ -140,448 +55,197 @@ fn taffy_014_measured_leaf_keeps_style_constraints(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn retained_layout_cache_reuses_clean_style_tree(cx: &mut TestAppContext) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    let (first_hits, first_misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_layout(Style::default(), px(16.), 1.0, &[]);
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            let metrics = engine.layout_cache_metrics();
-            engine.clear();
-            metrics
-        })
-        .unwrap();
-
-    assert_eq!(first_hits, 0);
-    assert_eq!(first_misses, 1);
-
-    let (second_hits, second_misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_layout(Style::default(), px(16.), 1.0, &[]);
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child = engine.request_layout(Style::default(), px(16.), 1.0, &[]);
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_cache_metrics()
-        })
-        .unwrap();
-
-    assert_eq!(second_hits, 1);
-    assert_eq!(second_misses, 0);
-}
-
-#[gpui::test]
-fn retained_layout_cache_restores_large_tree_in_one_pass(cx: &mut TestAppContext) {
-    const CHILD_COUNT: usize = 1_500;
-
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    let (cache_metrics, frame_metrics, restored_child_count) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let children = (0..CHILD_COUNT)
-                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
-                .collect::<Vec<_>>();
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &children);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            for child in &children {
-                engine.layout_bounds(*child, 1.0);
-            }
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let children = (0..CHILD_COUNT)
-                .map(|_| engine.request_layout(Style::default(), px(16.), 1.0, &[]))
-                .collect::<Vec<_>>();
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &children);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-
-            let restored_child_count = children
-                .iter()
-                .filter(|child| engine.absolute_layout_bounds.contains_key(child))
-                .count();
-            (
-                engine.layout_cache_metrics(),
-                engine.frame_metrics(),
-                restored_child_count,
-            )
-        })
-        .unwrap();
-
-    assert_eq!(cache_metrics, (1, 0));
-    assert_eq!(frame_metrics.cache_reused_roots, 1);
-    assert_eq!(frame_metrics.cache_saved_roots, CHILD_COUNT);
-    assert_eq!(restored_child_count, CHILD_COUNT);
-}
-
-#[gpui::test]
-fn retained_layout_cache_misses_when_available_space_changes(cx: &mut TestAppContext) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    let (hits, misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[]);
-            engine.compute_layout(
-                root,
-                size(
-                    AvailableSpace::Definite(px(100.)),
-                    AvailableSpace::MinContent,
-                ),
-                window,
-                cx,
-            );
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[]);
-            engine.compute_layout(
-                root,
-                size(
-                    AvailableSpace::Definite(px(200.)),
-                    AvailableSpace::MinContent,
-                ),
-                window,
-                cx,
-            );
-            engine.layout_cache_metrics()
-        })
-        .unwrap();
-
-    assert_eq!(hits, 0);
-    assert_eq!(misses, 1);
-}
-
-#[gpui::test]
-fn retained_layout_cache_ignores_paint_only_style_changes(cx: &mut TestAppContext) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    let (hits, misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let mut style = Style::default();
-            style.background = Some(crate::red().into());
-            let root = engine.request_layout(style.clone(), px(16.), 1.0, &[]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            style.background = Some(crate::blue().into());
-            let root = engine.request_layout(style, px(16.), 1.0, &[]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_cache_metrics()
-        })
-        .unwrap();
-
-    assert_eq!(hits, 1);
-    assert_eq!(misses, 0);
-}
-
-#[gpui::test]
-fn retained_layout_cache_misses_when_measured_fingerprint_changes(cx: &mut TestAppContext) {
-    let window = cx.update(|cx| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
-            .unwrap()
-    });
-
-    let (hits, misses, second_bounds) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(1),
-                |_, _, _, _| size(px(10.), px(10.)),
-            );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(2),
-                |_, _, _, _| size(px(10.), px(40.)),
-            );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            let second_bounds = engine.layout_bounds(child, 1.0);
-            let (hits, misses) = engine.layout_cache_metrics();
-            (hits, misses, second_bounds)
-        })
-        .unwrap();
-
-    assert_eq!(hits, 0);
-    assert_eq!(misses, 1);
-    assert!(second_bounds.size.height > px(10.));
-}
-
-#[gpui::test]
-fn pure_measure_survives_changed_sibling_layout_without_root_cache_hit(
+fn native_taffy_reuses_stable_element_nodes_and_updates_dirty_geometry(
     cx: &mut TestAppContext,
 ) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-    let calls = Rc::new(Cell::new(0));
-    let (first, second, cache_metrics) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let build = |engine: &mut TaffyLayoutEngine, sibling_height: f32| {
-                let calls = calls.clone();
-                let child = engine.request_measured_layout_with_fingerprint(
-                    Style::default(),
-                    px(16.),
-                    1.0,
-                    Some(200),
-                    move |_, _, _, _| {
-                        calls.set(calls.get() + 1);
-                        size(px(36.), px(12.))
-                    },
-                );
-                let mut sibling_style = Style::default();
-                // An absolute sibling cannot participate in the parent's
-                // measured size, though its fingerprint changes.
-                sibling_style.position = crate::Position::Absolute;
-                sibling_style.size.height = px(sibling_height).into();
-                let sibling = engine.request_layout(sibling_style, px(16.), 1.0, &[]);
-                engine.request_layout(Style::default(), px(16.), 1.0, &[child, sibling])
-            };
-            let first_root = build(&mut engine, 20.);
-            engine.compute_layout(first_root, AvailableSpace::min_size(), window, cx);
-            let first = calls.get();
-            assert!(first > 0);
-            engine.clear();
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let build = |engine: &mut TaffyLayoutEngine, width: f32| {
+            let mut moving = Style::default();
+            moving.size.width = px(width).into();
+            moving.size.height = px(20.).into();
+            let left = engine.request_layout(
+                layout_identity("left"), moving, px(16.), 1., &[],
+            );
+            let mut fixed = Style::default();
+            fixed.size.width = px(45.).into();
+            fixed.size.height = px(20.).into();
+            let right = engine.request_layout(
+                layout_identity("right"), fixed, px(16.), 1., &[],
+            );
+            let root = engine.request_layout(
+                layout_identity("root"), Style::default(), px(16.), 1.,
+                &[left, right],
+            );
+            (left, right, root)
+        };
+        let first = build(&mut engine, 20.);
+        engine.compute_layout(first.2, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.total_node_count(), 3);
+        engine.clear();
 
-            let second_root = build(&mut engine, 60.);
-            engine.compute_layout(second_root, AvailableSpace::min_size(), window, cx);
-            (first, calls.get(), engine.layout_cache_metrics())
-        })
-        .unwrap();
+        let same = build(&mut engine, 20.);
+        assert_eq!(first, same);
+        engine.compute_layout(same.2, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.layout_cache_metrics(), (1, 0));
+        engine.clear();
 
-    assert_eq!(cache_metrics, (0, 1), "sibling change invalidates root layout");
-    assert_eq!(
-        second, first,
-        "the unchanged pure leaf should reuse its own measurement",
-    );
+        let changed = build(&mut engine, 70.);
+        assert_eq!(first, changed);
+        assert!(engine.taffy.dirty(changed.2.into()).unwrap());
+        engine.compute_layout(changed.2, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.layout_bounds(changed.0, 1.).size.width, px(70.));
+        assert_eq!(engine.layout_bounds(changed.1, 1.).size.width, px(45.));
+        assert_eq!(engine.taffy.total_node_count(), 3);
+    }).unwrap();
 }
 
 #[gpui::test]
-fn retained_layout_cache_reuses_fingerprinted_measured_subtrees(cx: &mut TestAppContext) {
+fn native_taffy_preserves_identity_across_sibling_insertion_and_removal(
+    cx: &mut TestAppContext,
+) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-
-    let (hits, misses, first_bounds, second_bounds) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(11),
-                |_, _, _, _| size(px(20.), px(12.)),
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let build = |engine: &mut TaffyLayoutEngine, middle: bool| {
+            let left = engine.request_layout(
+                layout_identity("left"), Style::default(), px(16.), 1., &[],
             );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            let first_bounds = engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(11),
-                |_, _, _, _| size(px(20.), px(12.)),
+            let center = middle.then(|| engine.request_layout(
+                layout_identity("center"), Style::default(), px(16.), 1., &[],
+            ));
+            let right = engine.request_layout(
+                layout_identity("right"), Style::default(), px(16.), 1., &[],
             );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            let second_bounds = engine.layout_bounds(child, 1.0);
-            let (hits, misses) = engine.layout_cache_metrics();
-            (hits, misses, first_bounds, second_bounds)
-        })
-        .unwrap();
+            let children = [Some(left), center, Some(right)].into_iter().flatten().collect::<Vec<_>>();
+            let root = engine.request_layout(
+                layout_identity("root"), Style::default(), px(16.), 1., &children,
+            );
+            (left, right, root)
+        };
+        let first = build(&mut engine, false);
+        engine.compute_layout(first.2, AvailableSpace::min_size(), window, cx);
+        engine.clear();
 
-    assert_eq!((hits, misses), (1, 0));
-    assert_eq!(second_bounds, first_bounds);
+        let inserted = build(&mut engine, true);
+        assert_eq!((inserted.0, inserted.1, inserted.2), first);
+        engine.compute_layout(inserted.2, AvailableSpace::min_size(), window, cx);
+        assert_eq!(engine.taffy.children(inserted.2.into()).unwrap().len(), 3);
+        engine.clear();
+
+        let removed = build(&mut engine, false);
+        assert_eq!(removed, first);
+        engine.compute_layout(removed.2, AvailableSpace::min_size(), window, cx);
+        engine.clear();
+        assert_eq!(engine.taffy.total_node_count(), 3);
+    }).unwrap();
 }
 
 #[gpui::test]
-fn retained_layout_cache_replays_impure_measured_nodes(cx: &mut TestAppContext) {
+fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
+    cx: &mut TestAppContext,
+) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-
-    let first_measure_count = Rc::new(Cell::new(0));
-    let second_measure_count = Rc::new(Cell::new(0));
-
-    let (hits, misses, first_bounds, second_bounds) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_impure_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                11,
-                {
-                    let first_measure_count = first_measure_count.clone();
-                    move |_, _, _, _| {
-                        first_measure_count.set(first_measure_count.get() + 1);
-                        size(px(20.), px(12.))
-                    }
+    let count = Rc::new(Cell::new(0));
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let build = |engine: &mut TaffyLayoutEngine, sibling_height: f32| {
+            let counter = count.clone();
+            let leaf = engine.request_measured_layout_with_fingerprint(
+                layout_identity("leaf"), Style::default(), px(16.), 1.,
+                Some(41),
+                move |_, _, _, _| {
+                    counter.set(counter.get() + 1);
+                    size(px(36.), px(12.))
                 },
             );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            let first_bounds = engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child = engine.request_impure_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                11,
-                {
-                    let second_measure_count = second_measure_count.clone();
-                    move |_, _, _, _| {
-                        second_measure_count.set(second_measure_count.get() + 1);
-                        size(px(20.), px(12.))
-                    }
-                },
+            let mut style = Style::default();
+            style.position = crate::Position::Absolute;
+            style.size.height = px(sibling_height).into();
+            let sibling = engine.request_layout(
+                layout_identity("overlay"), style, px(16.), 1., &[],
             );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            let second_bounds = engine.layout_bounds(child, 1.0);
-            let (hits, misses) = engine.layout_cache_metrics();
-            (hits, misses, first_bounds, second_bounds)
-        })
-        .unwrap();
-
-    assert_eq!((hits, misses), (1, 0));
-    assert_eq!(second_bounds, first_bounds);
-    assert!(first_measure_count.get() > 0);
-    assert_eq!(second_measure_count.get(), 1);
+            engine.request_layout(
+                layout_identity("root"), Style::default(), px(16.), 1.,
+                &[leaf, sibling],
+            )
+        };
+        let root = build(&mut engine, 20.);
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        assert!(count.get() > 0);
+        let measured = count.get();
+        engine.clear();
+        let root = build(&mut engine, 70.);
+        assert!(engine.taffy.dirty(root.into()).unwrap());
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        assert_eq!(measured, count.get());
+    }).unwrap();
 }
 
 #[gpui::test]
-fn retained_layout_cache_skips_pure_measured_nodes(cx: &mut TestAppContext) {
+fn native_taffy_marks_impure_measure_dirty_on_every_commit(
+    cx: &mut TestAppContext,
+) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-
-    let first_measure_count = Rc::new(Cell::new(0));
-    let second_measure_count = Rc::new(Cell::new(0));
-
-    let (hits, misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(11),
-                {
-                    let first_measure_count = first_measure_count.clone();
-                    move |_, _, _, _| {
-                        first_measure_count.set(first_measure_count.get() + 1);
-                        size(px(20.), px(12.))
-                    }
+    let count = Rc::new(Cell::new(0));
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let build = |engine: &mut TaffyLayoutEngine| {
+            let counter = count.clone();
+            engine.request_impure_measured_layout_with_fingerprint(
+                layout_identity("impure"), Style::default(), px(16.), 1., 99,
+                move |_, _, _, _| {
+                    counter.set(counter.get() + 1);
+                    size(px(22.), px(14.))
                 },
-            );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child = engine.request_measured_layout_with_fingerprint(
-                Style::default(),
-                px(16.),
-                1.0,
-                Some(11),
-                {
-                    let second_measure_count = second_measure_count.clone();
-                    move |_, _, _, _| {
-                        second_measure_count.set(second_measure_count.get() + 1);
-                        size(px(20.), px(12.))
-                    }
-                },
-            );
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            let (hits, misses) = engine.layout_cache_metrics();
-            (hits, misses)
-        })
-        .unwrap();
-
-    assert_eq!((hits, misses), (1, 0));
-    assert!(first_measure_count.get() > 0);
-    assert_eq!(second_measure_count.get(), 0);
+            )
+        };
+        let root = build(&mut engine);
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        let first = count.get();
+        assert!(first > 0);
+        engine.clear();
+        let same = build(&mut engine);
+        assert_eq!(same, root);
+        assert!(engine.taffy.dirty(same.into()).unwrap());
+        engine.compute_layout(same, AvailableSpace::min_size(), window, cx);
+        assert!(count.get() > first);
+    }).unwrap();
 }
 
 #[gpui::test]
-fn retained_layout_cache_skips_unfingerprinted_measured_subtrees(cx: &mut TestAppContext) {
+fn native_taffy_recomputes_when_root_constraints_change(
+    cx: &mut TestAppContext,
+) {
     let window = cx.update(|cx| {
         cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
             .unwrap()
     });
-
-    let (hits, misses) = window
-        .update(cx, |_, window, cx| {
-            let mut engine = TaffyLayoutEngine::new();
-            let child =
-                engine.request_measured_layout(Style::default(), px(16.), 1.0, |_, _, _, _| {
-                    size(px(20.), px(12.))
-                });
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_bounds(child, 1.0);
-            engine.layout_bounds(root, 1.0);
-            engine.clear();
-
-            let child =
-                engine.request_measured_layout(Style::default(), px(16.), 1.0, |_, _, _, _| {
-                    size(px(20.), px(12.))
-                });
-            let root = engine.request_layout(Style::default(), px(16.), 1.0, &[child]);
-            engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
-            engine.layout_cache_metrics()
-        })
-        .unwrap();
-
-    assert_eq!((hits, misses), (0, 1));
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let id = engine.request_layout(
+            layout_identity("root"), Style::default(), px(16.), 1., &[],
+        );
+        engine.compute_layout(id, size(AvailableSpace::Definite(px(100.)), AvailableSpace::MinContent), window, cx);
+        engine.clear();
+        let reused = engine.request_layout(
+            layout_identity("root"), Style::default(), px(16.), 1., &[],
+        );
+        assert_eq!(id, reused);
+        engine.compute_layout(reused, size(AvailableSpace::Definite(px(200.)), AvailableSpace::MinContent), window, cx);
+        assert_eq!(engine.layout_cache_metrics(), (0, 1));
+    }).unwrap();
 }

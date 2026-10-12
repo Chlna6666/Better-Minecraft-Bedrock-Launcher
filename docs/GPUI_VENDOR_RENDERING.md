@@ -336,30 +336,30 @@ Elements call `Window::request_layout`, `request_measured_layout`, and
 Layout APIs assert that they run in the correct draw phase. Paint code should
 not mutate layout state.
 
-### Experimental persistent Taffy node allocation
+### Native persistent Taffy 0.14 layout
 
-Set `GPUI_ENABLE_PERSISTENT_LAYOUT_NODES=1` before launching GPUI to
-test the first incremental Taffy allocation path. By default the stable
-legacy path still calls `taffy.clear()` each draw, then rebuilds the layout
-nodes and optionally restores matching retained root geometry.
+GPUI retains native Taffy NodeIds by the already-committed Retained Element
+identity and per-element layout request index. This is the default layout
+path; there is no environment-variable switch and no parallel root-results
+cache. Each UI commit synchronizes the live node styles, ordered child edges,
+and current measurement callbacks with `set_style`, `set_children`, and native
+`mark_dirty` only when the inputs change. Taffy's internal dirty/cache
+mechanism determines whether to recompute the root; constraints that differ
+from the last root compute also call into Taffy.
 
-When enabled, `TaffyLayoutEngine` retains actual Taffy NodeIds between
-frames and reuses request-order slots. Styles, current parent/child
-relationships, and measurement closures are synchronized to the live
-Taffy tree. Unchanged properties do not call `set_style`/`set_children`;
-Taffy owns the internal layout dirty propagation when they do change.
-Stale trailing nodes are deleted only after the previous frame is
-complete, and aggressive memory trim defers the full reset to a frame
-boundary. Root fingerprints and per-leaf pure Measure caching remain
-independent correctness constraints.
+A sibling insertion or removal does not renumber an unrelated element's
+native node. Stale nodes are detached and removed after the frame, and
+anonymous internal layouts without a retained identity have frame-local
+lifetimes. Layout-bound caches remain frame-local because a parent
+Placement change can shift descendants without changing their own style.
+Reactive View selective replay retains its separate snapshot contract;
+that snapshot is not a second general-purpose Taffy root cache.
 
-This is **not** stable cross-frame Element identity. If insertions/removals
-change request ordering, slots may represent different logical elements,
-so their current style, children and measurement context must be
-resynchronized before the next layout. Do not treat slot indices as
-persistent UI Element IDs; these are an allocation optimization pending
-real retained-element ownership, dirty Measure/Layout/Placement flags,
-and native comparison of complex reordering, Flex/Grid and text cases.
+Pure measured leaves retain the Taffy result if their fingerprint and
+constraints are unchanged. Impure measurements always mark their node dirty
+during a fresh request. Layout requests and measured callbacks still run
+for elements traversed by UI generation; persistent Taffy is not a
+persistent incremental *Element* tree.
 
 ## Paint And Scene Primitives
 

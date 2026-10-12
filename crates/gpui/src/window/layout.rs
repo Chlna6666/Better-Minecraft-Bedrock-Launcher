@@ -50,7 +50,9 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
 
+        let owner = self.current_retained_element_id();
         self.layout_engine.as_mut().unwrap().request_layout(
+            owner,
             style,
             rem_size,
             scale_factor,
@@ -78,10 +80,12 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
+        let owner = self.current_retained_element_id();
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_measured_layout(
+                owner,
                 style,
                 rem_size,
                 scale_factor,
@@ -107,10 +111,12 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
+        let owner = self.current_retained_element_id();
         self.layout_engine
             .as_mut()
             .unwrap()
             .request_impure_measured_layout_with_fingerprint(
+                owner,
                 style,
                 rem_size,
                 scale_factor,

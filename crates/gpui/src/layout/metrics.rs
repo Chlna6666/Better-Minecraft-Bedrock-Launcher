@@ -7,12 +7,6 @@ use crate::{LayoutFrameMetrics, Pixels, Size};
 use std::hash::Hash;
 use taffy::{TraversePartialTree as _, style::AvailableSpace as TaffyAvailableSpace, tree::NodeId};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub(super) struct LayoutRootCacheKey {
-    pub(super) root_fingerprint: u64,
-    pub(super) available_space: Size<AvailableSpaceKey>,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub(super) enum AvailableSpaceKey {
     Definite(u32),

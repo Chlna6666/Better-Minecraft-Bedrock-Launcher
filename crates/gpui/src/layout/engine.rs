@@ -17,7 +17,7 @@ use super::{
         hash_optional_align_content, hash_optional_align_items, hash_overflow_point, hash_position,
         hash_size_definite_length, hash_size_length,
     },
-    metrics::{AvailableSpace, LayoutId, LayoutRootCacheKey, RetainedLayoutNode},
+    metrics::{AvailableSpace, AvailableSpaceKey, LayoutId},
 };
 
 #[cfg(feature = "stacker")]
@@ -42,31 +42,6 @@ struct LayoutRootDiagnosticNode {
     child_count: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct PureMeasureCacheKey {
-    fingerprint: u64,
-    known_width: Option<u32>,
-    known_height: Option<u32>,
-    available_width: super::metrics::AvailableSpaceKey,
-    available_height: super::metrics::AvailableSpaceKey,
-}
-
-impl PureMeasureCacheKey {
-    fn new(
-        fingerprint: u64,
-        known: Size<Option<Pixels>>,
-        available: Size<AvailableSpace>,
-    ) -> Self {
-        Self {
-            fingerprint,
-            known_width: known.width.map(|width| width.0.to_bits()),
-            known_height: known.height.map(|height| height.0.to_bits()),
-            available_width: available.width.into(),
-            available_height: available.height.into(),
-        }
-    }
-}
-
 pub(super) struct NodeContext {
     pub(super) measure: NodeMeasureFn,
     pub(super) is_pure: bool,
@@ -76,36 +51,35 @@ pub(super) struct NodeContext {
 pub(super) const EXPECT_MESSAGE: &str =
     "we should avoid taffy layout errors by construction if possible";
 
-/// Stable Taffy allocation slot for one bottom-up layout request.
-///
-/// Slots intentionally are not semantic element identities: a structural
-/// insertion can repurpose the slot, in which case the precise new style,
-/// children and measure context are applied before layout. Never use this
-/// ordinal as a retained Element ID.
-struct PersistentLayoutSlot {
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+struct LayoutInstanceKey {
+    element: GlobalElementId,
+    ordinal: u32,
+}
+
+struct PersistentLayoutNode {
     id: LayoutId,
     style_fingerprint: Option<u64>,
+    measure_fingerprint: Option<u64>,
     measured: bool,
+    seen_generation: u64,
 }
 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
-    persistent_layout_nodes: bool,
-    persistent_layout_slots: Vec<PersistentLayoutSlot>,
-    persistent_layout_cursor: usize,
+    persistent_nodes: FxHashMap<LayoutInstanceKey, PersistentLayoutNode>,
+    request_ordinals: FxHashMap<GlobalElementId, u32>,
+    anonymous_nodes: Vec<LayoutId>,
+    forced_style_restore: FxHashSet<LayoutId>,
+    layout_generation: u64,
     persistent_layout_reuses: usize,
-    persistent_layout_reset_pending: bool,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
-    pure_measure_cache: FxHashMap<PureMeasureCacheKey, Size<Pixels>>,
-    pub(super) previous_layout_roots: FxHashMap<LayoutRootCacheKey, Vec<RetainedLayoutNode>>,
-    /// Recently seen exact layout shapes, ordered from oldest to newest.
-    pub(super) retained_root_recency: Vec<LayoutRootCacheKey>,
-    pub(super) computed_root_keys: Vec<(LayoutRootCacheKey, LayoutId)>,
+    root_constraints: FxHashMap<LayoutId, Size<AvailableSpaceKey>>,
     pub(super) subtree_scratch: Vec<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
     root_diagnostic_ids: FxHashMap<LayoutId, GlobalElementId>,
@@ -150,22 +124,19 @@ impl TaffyLayoutEngine {
         taffy.disable_rounding();
         TaffyLayoutEngine {
             taffy,
-            persistent_layout_nodes: std::env::var("GPUI_ENABLE_PERSISTENT_LAYOUT_NODES")
-                .as_deref() == Ok("1"),
-            persistent_layout_slots: Vec::new(),
-            persistent_layout_cursor: 0,
+            persistent_nodes: FxHashMap::default(),
+            request_ordinals: FxHashMap::default(),
+            anonymous_nodes: Vec::new(),
+            forced_style_restore: FxHashSet::default(),
+            layout_generation: 1,
             persistent_layout_reuses: 0,
-            persistent_layout_reset_pending: false,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
             node_fingerprints: FxHashMap::default(),
             node_layout_metadata: FxHashMap::default(),
             measured_subtrees: FxHashSet::default(),
-            pure_measure_cache: FxHashMap::default(),
-            previous_layout_roots: FxHashMap::default(),
-            retained_root_recency: Vec::new(),
-            computed_root_keys: Vec::new(),
+            root_constraints: FxHashMap::default(),
             subtree_scratch: Vec::new(),
             layout_bounds_scratch_space: Vec::new(),
             root_diagnostic_ids: FxHashMap::default(),
@@ -194,18 +165,15 @@ impl TaffyLayoutEngine {
         let fingerprint_count = self.node_fingerprints.len();
         let metadata_count = self.node_layout_metadata.len();
         let measured_subtree_count = self.measured_subtrees.len();
-        let computed_root_count = self.computed_root_keys.len();
         let node_working_set = self.nodes_requested;
 
-        self.save_retained_layout_roots();
-        if self.persistent_layout_nodes && log::log_enabled!(log::Level::Debug) {
-            log::debug!(
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI persistent Taffy slots: reused={} requested={} live={} reset_pending={}",
+                "GPUI persistent Taffy nodes: reused={} requested={} live={}",
                 self.persistent_layout_reuses,
                 self.nodes_requested,
-                self.persistent_layout_slots.len(),
-                self.persistent_layout_reset_pending,
+                self.persistent_nodes.len(),
             );
         }
         self.persistent_layout_reuses = 0;
@@ -220,26 +188,50 @@ impl TaffyLayoutEngine {
             self.current_root_diagnostics = FxHashMap::default();
             self.root_diagnostic_ids = FxHashMap::default();
         }
-        if self.persistent_layout_nodes && !self.persistent_layout_reset_pending {
-            // A frame can remove views, including trailing layout requests.
-            // Release only stale slots after their last frame is complete.
-            for slot in self.persistent_layout_slots.drain(self.persistent_layout_cursor..) {
-                self.taffy.remove(slot.id.into()).expect(EXPECT_MESSAGE);
+        let current_generation = self.layout_generation;
+        let mut removed_nodes = Vec::new();
+        self.persistent_nodes.retain(|_, node| {
+            if node.seen_generation == current_generation {
+                true
+            } else {
+                removed_nodes.push(node.id);
+                false
             }
-            self.persistent_layout_cursor = 0;
-        } else {
-            self.taffy.clear();
-            self.persistent_layout_slots.clear();
-            self.persistent_layout_cursor = 0;
-            self.persistent_layout_reset_pending = false;
+        });
+        // Nodes are removed only after all layout/prepaint/paint callers
+        // have finished using current-frame LayoutIds.
+        for id in removed_nodes {
+            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+            self.forced_style_restore.remove(&id);
+            self.root_constraints.remove(&id);
         }
+        for id in self.anonymous_nodes.drain(..) {
+            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+            self.root_constraints.remove(&id);
+            self.forced_style_restore.remove(&id);
+        }
+        let ordinal_count = self.request_ordinals.len();
+        self.request_ordinals.clear();
+        if self.request_ordinals.capacity()
+            > Self::MIN_RETAINED_CAPACITY.max(ordinal_count).saturating_mul(4)
+        {
+            self.request_ordinals
+                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(ordinal_count));
+        }
+        let retained_node_count = self.persistent_nodes.len();
+        if self.persistent_nodes.capacity()
+            > Self::MIN_RETAINED_CAPACITY.max(retained_node_count).saturating_mul(4)
+        {
+            self.persistent_nodes
+                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(retained_node_count));
+        }
+        self.layout_generation = self.layout_generation.wrapping_add(1).max(1);
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
         self.node_fingerprints.clear();
         self.node_layout_metadata.clear();
         self.measured_subtrees.clear();
-        self.computed_root_keys.clear();
 
         macro_rules! trim_to_working_set {
             ($collection:expr, $count:expr) => {{
@@ -256,7 +248,6 @@ impl TaffyLayoutEngine {
         trim_to_working_set!(self.node_fingerprints, fingerprint_count);
         trim_to_working_set!(self.node_layout_metadata, metadata_count);
         trim_to_working_set!(self.measured_subtrees, measured_subtree_count);
-        trim_to_working_set!(self.computed_root_keys, computed_root_count);
         trim_to_working_set!(self.subtree_scratch, node_working_set);
         trim_to_working_set!(self.layout_bounds_scratch_space, node_working_set);
 
@@ -371,8 +362,6 @@ impl TaffyLayoutEngine {
             .shrink_to(floor.max(self.node_layout_metadata.len()));
         self.measured_subtrees
             .shrink_to(floor.max(self.measured_subtrees.len()));
-        self.computed_root_keys
-            .shrink_to(floor.max(self.computed_root_keys.len()));
         self.subtree_scratch
             .shrink_to(floor.max(self.subtree_scratch.len()));
         self.layout_bounds_scratch_space
@@ -388,91 +377,83 @@ impl TaffyLayoutEngine {
         self.current_root_diagnostics
             .shrink_to(floor.max(self.current_root_diagnostics.len()));
         if matches!(level, GpuiMemoryTrimLevel::Aggressive) {
-            // Current-frame LayoutIds may still be in use. Defer a Taffy
-            // reset until clear(), after this frame's prepaint and paint.
-            self.persistent_layout_reset_pending = true;
-            self.pure_measure_cache.clear();
-            self.pure_measure_cache.shrink_to_fit();
-            self.previous_layout_roots.clear();
-            self.retained_root_recency.clear();
-            self.retained_root_recency.shrink_to_fit();
-        } else {
-            for retained_nodes in self.previous_layout_roots.values_mut() {
-                retained_nodes.shrink_to(retained_nodes.len());
-            }
+            self.request_ordinals.shrink_to_fit();
+            self.anonymous_nodes.shrink_to_fit();
         }
-        self.previous_layout_roots
-            .shrink_to(floor.max(self.previous_layout_roots.len()));
+        self.root_constraints
+            .shrink_to(floor.max(self.root_constraints.len()));
+        self.persistent_nodes
+            .shrink_to(floor.max(self.persistent_nodes.len()));
     }
 
-    /// Reuse the same native Taffy NodeId between consecutive frames when
-    /// layout requests retain their order. Taffy's own dirty propagation
-    /// handles changes to style, child relationships and measured content.
-    ///
-    /// Ordinal reuse is deliberately experimental: it reduces allocation but
-    /// does not supply semantic identity across structural reordering.
+    /// Reconcile the retained Element's native layout nodes. Only genuinely
+    /// changed styles/child edges/measure inputs dirty Taffy's cached layouts.
     fn request_persistent_node(
         &mut self,
+        owner: Option<GlobalElementId>,
         style: taffy::Style,
         style_fingerprint: u64,
         children: &[LayoutId],
         measure: Option<NodeContext>,
+        measure_fingerprint: Option<u64>,
     ) -> LayoutId {
-        if !self.persistent_layout_nodes {
-            return self.create_taffy_node(style, children, measure);
-        }
-        let slot_index = self.persistent_layout_cursor;
-        self.persistent_layout_cursor += 1;
-        if slot_index < self.persistent_layout_slots.len() {
-            let slot = &self.persistent_layout_slots[slot_index];
-            let id = slot.id;
-            let needs_style = slot.style_fingerprint != Some(style_fingerprint);
-            let measured = measure.is_some();
-            let previously_measured = slot.measured;
-            // A measured leaf becoming a container must drop its old
-            // context before children are attached to that Taffy node.
-            if previously_measured && !measured {
-                self.taffy
-                    .set_node_context(id.into(), None)
+        let Some(element) = owner else {
+            let id = self.create_taffy_node(style, children, measure);
+            self.anonymous_nodes.push(id);
+            return id;
+        };
+        let ordinal = self.request_ordinals.entry(element.clone()).or_default();
+        let key = LayoutInstanceKey { element, ordinal: *ordinal };
+        *ordinal = ordinal.saturating_add(1);
+        if let Some(node) = self.persistent_nodes.get_mut(&key) {
+            let id = node.id;
+            let requires_style = node.style_fingerprint != Some(style_fingerprint)
+                || self.forced_style_restore.remove(&id);
+            let is_measured = measure.is_some();
+            if node.measured && !is_measured {
+                self.taffy.set_node_context(id.into(), None).expect(EXPECT_MESSAGE);
+            }
+            let old_children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
+            if old_children.as_slice() != LayoutId::to_taffy_slice(children) {
+                self.taffy.set_children(id.into(), LayoutId::to_taffy_slice(children))
                     .expect(EXPECT_MESSAGE);
             }
-            // A child can have been reparented by an earlier request, so
-            // compare against the actual Taffy tree, not a cached child list.
-            let actual_children = self.taffy.children(id.into()).expect(EXPECT_MESSAGE);
-            let needs_children = actual_children.as_slice() != LayoutId::to_taffy_slice(children);
-            if needs_children {
-                self.taffy
-                    .set_children(id.into(), LayoutId::to_taffy_slice(children))
-                    .expect(EXPECT_MESSAGE);
-            }
-            if needs_style {
+            if requires_style {
                 self.taffy.set_style(id.into(), style).expect(EXPECT_MESSAGE);
             }
-            if measured {
-                // Even a fingerprinted measure closure can capture a fresh
-                // immutable content handle. Do not retain last frame's closure.
-                self.taffy
-                    .set_node_context(id.into(), measure)
-                    .expect(EXPECT_MESSAGE);
+            if let Some(mut context) = measure {
+                let unchanged_pure = node.measured && context.is_pure
+                    && node.measure_fingerprint == measure_fingerprint;
+                if let Some(old_context) = self.taffy.get_node_context_mut(id.into()) {
+                    if unchanged_pure {
+                        context.last_measure_input = old_context.last_measure_input;
+                    }
+                    *old_context = context;
+                    if !unchanged_pure {
+                        self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                    }
+                } else {
+                    self.taffy.set_node_context(id.into(), Some(context))
+                        .expect(EXPECT_MESSAGE);
+                    self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+                }
             }
-            let slot = &mut self.persistent_layout_slots[slot_index];
-            slot.style_fingerprint = Some(style_fingerprint);
-            slot.measured = measured;
+            node.style_fingerprint = Some(style_fingerprint);
+            node.measure_fingerprint = measure_fingerprint;
+            node.measured = is_measured;
+            node.seen_generation = self.layout_generation;
             self.persistent_layout_reuses += 1;
             id
         } else {
-            let measured = measure.is_some();
+            let is_measured = measure.is_some();
             let id = self.create_taffy_node(style, children, measure);
-            self.persistent_layout_slots.push(PersistentLayoutSlot {
+            self.persistent_nodes.insert(key, PersistentLayoutNode {
                 id,
                 style_fingerprint: Some(style_fingerprint),
-                measured,
+                measure_fingerprint,
+                measured: is_measured,
+                seen_generation: self.layout_generation,
             });
-            // Bound unused retained node generations on very large dynamic
-            // pages. The next frame falls back to a clean Taffy allocation.
-            if self.persistent_layout_slots.len() > 16_384 {
-                self.persistent_layout_reset_pending = true;
-            }
             id
         }
     }
@@ -502,14 +483,9 @@ impl TaffyLayoutEngine {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn enable_persistent_nodes_for_test(&mut self) {
-        assert!(self.persistent_layout_slots.is_empty());
-        self.persistent_layout_nodes = true;
-    }
-
     pub fn request_layout(
         &mut self,
+        owner: Option<GlobalElementId>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -518,15 +494,13 @@ impl TaffyLayoutEngine {
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         let mut layout_style = LayoutStyle::from(&style);
         self.normalize_percentage_passthrough(&mut layout_style, children);
-        let fingerprint = self.layout_fingerprint(&layout_style, rem_size, scale_factor, children);
-        let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let mut style_hasher = FxHasher::default();
         self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let style_fingerprint = style_hasher.finish();
+        let fingerprint = self.layout_fingerprint(style_fingerprint, children);
+        let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
         let layout_id = self.request_persistent_node(
-            taffy_style,
-            style_hasher.finish(),
-            children,
-            None,
+            owner, taffy_style, style_fingerprint, children, None, None,
         );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
@@ -548,6 +522,7 @@ impl TaffyLayoutEngine {
 
     pub fn request_measured_layout(
         &mut self,
+        owner: Option<GlobalElementId>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -559,11 +534,12 @@ impl TaffyLayoutEngine {
         ) -> Size<Pixels>
         + 'static,
     ) -> LayoutId {
-        self.request_measured_layout_with_fingerprint(style, rem_size, scale_factor, None, measure)
+        self.request_measured_layout_with_fingerprint(owner, style, rem_size, scale_factor, None, measure)
     }
 
     pub fn request_measured_layout_with_fingerprint(
         &mut self,
+        owner: Option<GlobalElementId>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -579,28 +555,27 @@ impl TaffyLayoutEngine {
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
         let layout_style = LayoutStyle::from(&style);
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let style_fingerprint = style_hasher.finish();
         let fingerprint = fingerprint_seed.map(|seed| {
             let mut hasher = FxHasher::default();
-            self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut hasher);
+            style_fingerprint.hash(&mut hasher);
             seed.hash(&mut hasher);
             hasher.finish()
         });
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
-
-        let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let measure = Box::new(measure) as Box<MeasureFn>;
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);
         let layout_id = self.request_persistent_node(
-            taffy_style,
-            style_hasher.finish(),
-            &[],
+            owner, taffy_style, style_fingerprint, &[],
             Some(NodeContext {
                 measure,
                 is_pure: fingerprint_seed.is_some(),
                 last_measure_input: None,
             }),
+            fingerprint,
         );
         self.node_fingerprints.insert(layout_id, fingerprint);
         self.node_layout_metadata.insert(
@@ -617,6 +592,7 @@ impl TaffyLayoutEngine {
 
     pub fn request_impure_measured_layout_with_fingerprint(
         &mut self,
+        owner: Option<GlobalElementId>,
         style: Style,
         rem_size: Pixels,
         scale_factor: f32,
@@ -632,26 +608,25 @@ impl TaffyLayoutEngine {
         self.nodes_requested = self.nodes_requested.saturating_add(1);
         self.measured_nodes_requested = self.measured_nodes_requested.saturating_add(1);
         let layout_style = LayoutStyle::from(&style);
+        let mut style_hasher = FxHasher::default();
+        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
+        let style_fingerprint = style_hasher.finish();
         let mut hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut hasher);
+        style_fingerprint.hash(&mut hasher);
         fingerprint_seed.hash(&mut hasher);
         let fingerprint = hasher.finish();
         let taffy_style = layout_style.to_taffy(rem_size, scale_factor);
-
-        let mut style_hasher = FxHasher::default();
-        self.hash_layout_style(&layout_style, rem_size, scale_factor, &mut style_hasher);
         let measure = Box::new(measure) as Box<MeasureFn>;
         #[cfg(feature = "stacker")]
         let measure = StackSafe::new(measure);
         let layout_id = self.request_persistent_node(
-            taffy_style,
-            style_hasher.finish(),
-            &[],
+            owner, taffy_style, style_fingerprint, &[],
             Some(NodeContext {
                 measure,
                 is_pure: false,
                 last_measure_input: None,
             }),
+            Some(fingerprint),
         );
         self.node_fingerprints.insert(layout_id, Some(fingerprint));
         self.node_layout_metadata.insert(
@@ -676,22 +651,23 @@ impl TaffyLayoutEngine {
     ) {
         let started_at = Instant::now();
         self.roots_computed = self.roots_computed.saturating_add(1);
-        let root_key = self.root_cache_key(id, available_space);
-        if let Some(root_key) = root_key {
-            if self.try_retain_layout(id, &root_key, window, cx) {
-                self.record_root_diagnostic(id, true);
-                self.computed_layouts.insert(id);
-                self.computed_root_keys.push((root_key, id));
-                self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
-                self.layout_cache_reused_roots = self.layout_cache_reused_roots.saturating_add(1);
-                self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
-                return;
-            }
-            self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
-        } else {
-            self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
+        let constraints = size(
+            AvailableSpaceKey::from(available_space.width),
+            AvailableSpaceKey::from(available_space.height),
+        );
+        let reusable = self.root_constraints.get(&id) == Some(&constraints)
+            && !self.taffy.dirty(id.into()).expect(EXPECT_MESSAGE);
+        self.record_root_diagnostic(id, reusable);
+        if reusable {
+            self.computed_layouts.insert(id);
+            self.layout_cache_hits = self.layout_cache_hits.saturating_add(1);
+            self.layout_cache_reused_roots = self.layout_cache_reused_roots.saturating_add(1);
+            self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
+            return;
         }
-        self.record_root_diagnostic(id, false);
+        self.layout_cache_misses = self.layout_cache_misses.saturating_add(1);
+        self.root_constraints.insert(id, constraints);
+
         // Leaving this here until we have a better instrumentation approach.
         // println!("Laying out {} children", self.count_all_children(id)?);
         // println!("Max layout depth: {}", self.max_depth(0, id)?);
@@ -734,13 +710,11 @@ impl TaffyLayoutEngine {
             transform(available_space.height),
         );
 
-        let node_fingerprints = &self.node_fingerprints;
-        let pure_measure_cache = &mut self.pure_measure_cache;
         self.taffy
             .compute_layout_with_measure(
                 id.into(),
                 available_space.into(),
-                |inputs, node_id, node_context, style| {
+                |inputs, _node_id, node_context, style| {
                     taffy::compute_leaf_layout(
                         inputs,
                         style,
@@ -770,40 +744,12 @@ impl TaffyLayoutEngine {
 
                             node_context.last_measure_input =
                                 Some((known_dimensions, available_space));
-                            // The recursive root fingerprint can change because a sibling moved.
-                            // Pure leaf measurement depends only on the leaf fingerprint and its
-                            // actual constraints, not on the parent node's placement.
-                            let key = node_context.is_pure.then(|| {
-                                node_fingerprints
-                                    .get(&LayoutId::from(node_id))
-                                    .copied()
-                                    .flatten()
-                                    .map(|fingerprint| PureMeasureCacheKey::new(
-                                        fingerprint,
-                                        known_dimensions,
-                                        available_space,
-                                    ))
-                            }).flatten();
-                            let measured = if let Some(cached) =
-                                key.and_then(|key| pure_measure_cache.get(&key).copied())
-                            {
-                                cached
-                            } else {
-                                let measured = (node_context.measure)(
-                                    known_dimensions,
-                                    available_space,
-                                    window,
-                                    cx,
-                                );
-                                if let Some(key) = key {
-                                    // Bound cross-frame residency independently from Taffy nodes.
-                                    if pure_measure_cache.len() >= 4096 {
-                                        pure_measure_cache.clear();
-                                    }
-                                    pure_measure_cache.insert(key, measured);
-                                }
-                                measured
-                            };
+                            let measured = (node_context.measure)(
+                                known_dimensions,
+                                available_space,
+                                window,
+                                cx,
+                            );
                             size(
                                 measured.width.0 * scale_factor,
                                 measured.height.0 * scale_factor,
@@ -814,9 +760,6 @@ impl TaffyLayoutEngine {
                 },
             )
             .expect(EXPECT_MESSAGE);
-        if let Some(root_key) = root_key {
-            self.computed_root_keys.push((root_key, id));
-        }
         self.layout_time = self.layout_time.saturating_add(started_at.elapsed());
     }
 
@@ -905,27 +848,17 @@ impl TaffyLayoutEngine {
         // after request_layout() has already consumed its persistent slot.
         // Force the next frame to restore its original requested style before
         // applying that frame's parent semantics (which may be different).
-        if self.persistent_layout_nodes {
-            if let Some(slot) = self.persistent_layout_slots
-                .iter_mut()
-                .take(self.persistent_layout_cursor)
-                .find(|slot| slot.id == child_id)
-            {
-                slot.style_fingerprint = None;
-            }
-        }
+        self.forced_style_restore.insert(child_id);
         self.node_layout_metadata.insert(child_id, child);
     }
 
     fn layout_fingerprint(
         &self,
-        style: &LayoutStyle,
-        rem_size: Pixels,
-        scale_factor: f32,
+        style_fingerprint: u64,
         children: &[LayoutId],
     ) -> Option<u64> {
         let mut hasher = FxHasher::default();
-        self.hash_layout_style(style, rem_size, scale_factor, &mut hasher);
+        style_fingerprint.hash(&mut hasher);
         self.hash_layout_children(children, &mut hasher)?;
         Some(hasher.finish())
     }
@@ -991,60 +924,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pure_measure_cache_distinguishes_size_constraints_and_content_identity() {
-        let min = size(AvailableSpace::MinContent, AvailableSpace::MaxContent);
-        let known = size(Some(Pixels(48.)), None);
-        let first = PureMeasureCacheKey::new(7, known, min);
-        let same = PureMeasureCacheKey::new(7, known, min);
-        let different_width = PureMeasureCacheKey::new(
-            7,
-            size(Some(Pixels(49.)), None),
-            min,
-        );
-        let changed_content = PureMeasureCacheKey::new(8, known, min);
-        let changed_available = PureMeasureCacheKey::new(
-            7,
-            known,
-            size(AvailableSpace::Definite(Pixels(48.)), AvailableSpace::MaxContent),
-        );
-        let mut cache = FxHashMap::default();
-        cache.insert(first, size(Pixels(20.), Pixels(30.)));
-        assert_eq!(cache.get(&same).copied(), Some(size(Pixels(20.), Pixels(30.))));
-        assert!(!cache.contains_key(&different_width));
-        assert!(!cache.contains_key(&changed_content));
-        assert!(!cache.contains_key(&changed_available));
-    }
-
-    #[test]
     fn frame_clear_releases_excess_layout_working_set_capacity() {
         let mut engine = TaffyLayoutEngine::new();
         engine.absolute_layout_bounds.reserve(4096);
         engine.node_fingerprints.reserve(4096);
-        engine.computed_root_keys.reserve(4096);
+        engine.request_ordinals.reserve(4096);
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
         let fingerprints_capacity = engine.node_fingerprints.capacity();
-        let roots_capacity = engine.computed_root_keys.capacity();
+        let roots_capacity = engine.request_ordinals.capacity();
 
         engine.clear();
 
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
         assert!(engine.node_fingerprints.capacity() < fingerprints_capacity);
-        assert!(engine.computed_root_keys.capacity() < roots_capacity);
+        assert!(engine.request_ordinals.capacity() < roots_capacity);
     }
 
     #[test]
     fn aggressive_trim_releases_layout_high_watermark_capacity() {
         let mut engine = TaffyLayoutEngine::new();
-        engine.computed_root_keys.reserve(4096);
+        engine.request_ordinals.reserve(4096);
         engine.subtree_scratch.reserve(4096);
         engine.absolute_layout_bounds.reserve(4096);
-        let roots_capacity = engine.computed_root_keys.capacity();
+        let roots_capacity = engine.request_ordinals.capacity();
         let scratch_capacity = engine.subtree_scratch.capacity();
         let bounds_capacity = engine.absolute_layout_bounds.capacity();
 
         engine.trim_retained_capacity(GpuiMemoryTrimLevel::Aggressive);
 
-        assert!(engine.computed_root_keys.capacity() < roots_capacity);
+        assert!(engine.request_ordinals.capacity() < roots_capacity);
         assert!(engine.subtree_scratch.capacity() < scratch_capacity);
         assert!(engine.absolute_layout_bounds.capacity() < bounds_capacity);
     }
