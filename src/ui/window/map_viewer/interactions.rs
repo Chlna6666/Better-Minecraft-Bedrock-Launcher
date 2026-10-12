@@ -1151,8 +1151,8 @@ impl MapViewerWindowView {
                 self.input_fields.dirty_fields.insert(field);
                 if self.input_fields.validation.invalid_field == Some(field) {
                     self.input_fields.validation = InputValidationState::default();
+                    cx.notify();
                 }
-                cx.notify();
             }
             InputEvent::Blur => {
                 let value = input.read(cx).value();

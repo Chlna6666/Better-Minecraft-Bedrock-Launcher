@@ -246,12 +246,19 @@ impl MainWindowView {
                 }
             }),
         );
+        let mut dropdown_revision = cx
+            .global::<crate::ui::components::dropdown::DropdownOverlayState>()
+            .revision_for_window(self.window_id);
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::components::dropdown::DropdownOverlayState>(
-                |_this, cx| {
-                    // Dropdown state is scoped by window id. This global reactor has no Window,
-                    // so wake the main view and let build_render_model filter the owner window.
-                    cx.notify();
+                move |this, cx| {
+                    let revision = cx
+                        .global::<crate::ui::components::dropdown::DropdownOverlayState>()
+                        .revision_for_window(this.window_id);
+                    if revision != dropdown_revision {
+                        dropdown_revision = revision;
+                        cx.notify();
+                    }
                 },
             ),
         );

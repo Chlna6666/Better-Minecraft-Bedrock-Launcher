@@ -122,12 +122,14 @@ impl DropdownState {
 
 pub struct DropdownOverlayState {
     active_by_window: HashMap<u64, DropdownOverlaySnapshot>,
+    next_revision: u64,
 }
 
 impl Default for DropdownOverlayState {
     fn default() -> Self {
         Self {
             active_by_window: HashMap::new(),
+            next_revision: 0,
         }
     }
 }
@@ -136,6 +138,7 @@ impl Global for DropdownOverlayState {}
 
 #[derive(Clone)]
 struct DropdownOverlaySnapshot {
+    revision: u64,
     id: ElementId,
     parent_view_id: EntityId,
     state: WeakEntity<DropdownState>,
@@ -184,8 +187,17 @@ impl DropdownPhase {
 }
 
 impl DropdownOverlayState {
-    fn set_active(&mut self, owner_window_id: u64, snapshot: DropdownOverlaySnapshot) {
+    fn set_active(&mut self, owner_window_id: u64, mut snapshot: DropdownOverlaySnapshot) {
+        self.next_revision = self.next_revision.wrapping_add(1);
+        snapshot.revision = self.next_revision;
         self.active_by_window.insert(owner_window_id, snapshot);
+    }
+
+    /// Identifies the current overlay snapshot for this window. Clearing returns `None`,
+    /// so observers can repaint a removed overlay without waking unrelated windows.
+    pub(crate) fn revision_for_window(&self, owner_window_id: u64) -> Option<u64> {
+        self.active_for_window(owner_window_id)
+            .map(|active| active.revision)
     }
 
     pub(crate) fn clear_for_window(&mut self, owner_window_id: u64) {
@@ -964,6 +976,7 @@ impl RenderOnce for Dropdown {
             .unwrap_or(point(px(0.), px(0.)));
 
         let overlay_snapshot = DropdownOverlaySnapshot {
+            revision: 0,
             id: id.clone(),
             parent_view_id,
             state: state.downgrade(),
