@@ -348,8 +348,10 @@ mechanism determines whether to recompute the root; constraints that differ
 from the last root compute also call into Taffy.
 
 A sibling insertion or removal does not renumber an unrelated element's
-native node. Stale nodes are detached and removed after the frame, and
-anonymous internal layouts without a retained identity have frame-local
+native node. Stale nodes are removed after the new retained Element tree has been
+committed, not merely because a CachedView skipped request_layout in this
+frame. Degraded frames retain only previously committed identities.
+Anonymous internal layouts without a retained identity have frame-local
 lifetimes. Layout-bound caches remain frame-local because a parent
 Placement change can shift descendants without changing their own style.
 Reactive View selective replay retains its separate snapshot contract;

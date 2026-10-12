@@ -193,6 +193,46 @@ fn native_taffy_keeps_unchanged_pure_measure_when_absolute_sibling_changes(
 }
 
 #[gpui::test]
+fn native_taffy_keeps_cached_subtrees_until_committed_unmount(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| crate::Empty))
+            .unwrap()
+    });
+    window.update(cx, |_, window, cx| {
+        let mut engine = TaffyLayoutEngine::new();
+        let child_identity = layout_identity("child").unwrap();
+        let root_identity = layout_identity("root").unwrap();
+        let child = engine.request_layout(
+            Some(child_identity.clone()), Style::default(), px(16.), 1., &[],
+        );
+        let root = engine.request_layout(
+            Some(root_identity.clone()), Style::default(), px(16.), 1., &[child],
+        );
+        engine.compute_layout(root, AvailableSpace::min_size(), window, cx);
+        engine.clear();
+        engine.retain_committed_elements(|id| {
+            id == &root_identity || id == &child_identity
+        });
+        assert_eq!(engine.taffy.total_node_count(), 2);
+
+        // The committed view is replayed with no request_layout calls.
+        // It is still mounted, so native Taffy nodes and cached data survive.
+        engine.clear();
+        engine.retain_committed_elements(|id| {
+            id == &root_identity || id == &child_identity
+        });
+        assert_eq!(engine.taffy.total_node_count(), 2);
+        assert_eq!(engine.taffy.children(root.into()).unwrap().len(), 1);
+
+        // Only the exact unmounted element is reclaimed.
+        engine.retain_committed_elements(|id| id == &root_identity);
+        assert_eq!(engine.taffy.total_node_count(), 1);
+    }).unwrap();
+}
+
+#[gpui::test]
 fn native_taffy_reused_node_changes_between_measured_leaf_and_container(
     cx: &mut TestAppContext,
 ) {

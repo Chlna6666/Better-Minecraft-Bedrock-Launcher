@@ -204,6 +204,13 @@ impl Window {
         self.degraded_draw_count = self.degraded_draw_count.saturating_add(1);
         self.restore_input_handler_after_degraded_draw(restored_input_handler_index);
         self.finish_layout_and_text_frame();
+        // An aborted frame never replaces the committed retained tree.
+        // Drop only newly allocated/unmounted Taffy nodes, not cached views.
+        if let Some(layout_engine) = self.layout_engine.as_mut() {
+            layout_engine.retain_committed_elements(|id| {
+                self.rendered_frame.retained_element_ranges.contains_key(id)
+            });
+        }
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
@@ -272,6 +279,13 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        // GPU/CPU retained fragments may skip the layout traversal entirely,
+        // so native Taffy liveness follows the committed retained identities.
+        if let Some(layout_engine) = self.layout_engine.as_mut() {
+            layout_engine.retain_committed_elements(|id| {
+                self.rendered_frame.retained_element_ranges.contains_key(id)
+            });
+        }
         // Cached-view notify targets are valid only while their exact retained identity exists in
         // the committed frame. This keeps persistent targets safe across parent subtree replay,
         // while structural moves/removals automatically fall back to generic invalidation.

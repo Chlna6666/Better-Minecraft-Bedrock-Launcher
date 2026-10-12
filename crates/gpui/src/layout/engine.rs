@@ -62,8 +62,7 @@ struct PersistentLayoutNode {
     style_fingerprint: Option<u64>,
     measure_fingerprint: Option<u64>,
     measured: bool,
-    seen_generation: u64,
-}
+ }
 
 pub struct TaffyLayoutEngine {
     pub(super) taffy: TaffyTree<NodeContext>,
@@ -71,8 +70,7 @@ pub struct TaffyLayoutEngine {
     request_ordinals: FxHashMap<GlobalElementId, u32>,
     anonymous_nodes: Vec<LayoutId>,
     forced_style_restore: FxHashSet<LayoutId>,
-    layout_generation: u64,
-    persistent_layout_reuses: usize,
+     persistent_layout_reuses: usize,
     pub(super) absolute_layout_bounds: FxHashMap<LayoutId, Bounds<Pixels>>,
     unrounded_layout_origins: FxHashMap<LayoutId, (f32, f32)>,
     pub(super) computed_layouts: FxHashSet<LayoutId>,
@@ -128,8 +126,7 @@ impl TaffyLayoutEngine {
             request_ordinals: FxHashMap::default(),
             anonymous_nodes: Vec::new(),
             forced_style_restore: FxHashSet::default(),
-            layout_generation: 1,
-            persistent_layout_reuses: 0,
+             persistent_layout_reuses: 0,
             absolute_layout_bounds: FxHashMap::default(),
             unrounded_layout_origins: FxHashMap::default(),
             computed_layouts: FxHashSet::default(),
@@ -152,6 +149,40 @@ impl TaffyLayoutEngine {
             layout_cache_reused_roots: 0,
             layout_cache_saved_roots: 0,
             layout_time: Duration::ZERO,
+        }
+    }
+
+    /// Prune native Taffy nodes only after the new retained Element tree is
+    /// committed. A CachedView may reuse its old child scene without requesting
+    /// the child's layout again; that child is still mounted and must keep its
+    /// Taffy node, cached measurements, and parent relationship.
+    ///
+    /// A degraded draw instead supplies the last successfully committed set:
+    /// its uncommitted temporary nodes are not allowed to become retained.
+    pub(crate) fn retain_committed_elements(
+        &mut self,
+        mut is_mounted: impl FnMut(&GlobalElementId) -> bool,
+    ) {
+        let mut removed = Vec::new();
+        self.persistent_nodes.retain(|key, node| {
+            if is_mounted(&key.element) {
+                true
+            } else {
+                removed.push(node.id);
+                false
+            }
+        });
+        for id in removed {
+            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
+            self.root_constraints.remove(&id);
+            self.forced_style_restore.remove(&id);
+        }
+        let live = self.persistent_nodes.len();
+        if self.persistent_nodes.capacity()
+            > Self::MIN_RETAINED_CAPACITY.max(live).saturating_mul(4)
+        {
+            self.persistent_nodes
+                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(live));
         }
     }
 
@@ -188,23 +219,6 @@ impl TaffyLayoutEngine {
             self.current_root_diagnostics = FxHashMap::default();
             self.root_diagnostic_ids = FxHashMap::default();
         }
-        let current_generation = self.layout_generation;
-        let mut removed_nodes = Vec::new();
-        self.persistent_nodes.retain(|_, node| {
-            if node.seen_generation == current_generation {
-                true
-            } else {
-                removed_nodes.push(node.id);
-                false
-            }
-        });
-        // Nodes are removed only after all layout/prepaint/paint callers
-        // have finished using current-frame LayoutIds.
-        for id in removed_nodes {
-            self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
-            self.forced_style_restore.remove(&id);
-            self.root_constraints.remove(&id);
-        }
         for id in self.anonymous_nodes.drain(..) {
             self.taffy.remove(id.into()).expect(EXPECT_MESSAGE);
             self.root_constraints.remove(&id);
@@ -218,14 +232,6 @@ impl TaffyLayoutEngine {
             self.request_ordinals
                 .shrink_to(Self::MIN_RETAINED_CAPACITY.max(ordinal_count));
         }
-        let retained_node_count = self.persistent_nodes.len();
-        if self.persistent_nodes.capacity()
-            > Self::MIN_RETAINED_CAPACITY.max(retained_node_count).saturating_mul(4)
-        {
-            self.persistent_nodes
-                .shrink_to(Self::MIN_RETAINED_CAPACITY.max(retained_node_count));
-        }
-        self.layout_generation = self.layout_generation.wrapping_add(1).max(1);
         self.absolute_layout_bounds.clear();
         self.unrounded_layout_origins.clear();
         self.computed_layouts.clear();
@@ -442,7 +448,6 @@ impl TaffyLayoutEngine {
             node.style_fingerprint = Some(style_fingerprint);
             node.measure_fingerprint = measure_fingerprint;
             node.measured = is_measured;
-            node.seen_generation = self.layout_generation;
             self.persistent_layout_reuses += 1;
             id
         } else {
@@ -453,7 +458,6 @@ impl TaffyLayoutEngine {
                 style_fingerprint: Some(style_fingerprint),
                 measure_fingerprint,
                 measured: is_measured,
-                seen_generation: self.layout_generation,
             });
             id
         }
