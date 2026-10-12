@@ -441,28 +441,24 @@ impl NovaRenderer {
             // A normal element filter or a root with nested painter barriers
             // still follows the established one-pass path; its captured source
             // is not a single independently preserved scene-color layer.
-            let can_split_root = is_retained_root
-                && !force_full
-                && !damage.is_full()
-                // A changed child filter can expand its visible output beyond
-                // the original element damage; keep the union/halo path then.
-                && dirty_indices.iter().all(|index| *index == range.index)
-                // A painter-ordered backdrop filter only blocks split
-                // source captures while its own filtered output is dirty.
-                // If all backdrop textures are cached and no Gaussian pass
-                // will execute, their composite draw is equivalent to
-                // sampling any other retained texture on each disjoint patch.
-                && root_backdrop_barriers_are_clean(
+            let can_split_source = can_split_retained_source_damage(
+                is_retained_root,
+                local_source_damage.is_some(),
+                force_full || layer_force_full,
+                dirty_indices.iter().any(|index| *index != range.index),
+                root_backdrop_barriers_are_clean(
                     &self.frame_upload,
                     range.content_start,
                     range.content_end,
                     self.current_size,
                     damage,
-                );
+                ),
+                damage,
+            );
             // Unchanged nested element filters are safe: their retained GPU
             // outputs are sampled by the root just like cached images, with
             // no Gaussian pass or source recapture for either dirty patch.
-            let damage_patches = retained_source_damage_patches(damage, can_split_root);
+            let damage_patches = retained_source_damage_patches(damage, can_split_source);
             for damage in &damage_patches {
             let preserve_source = (is_retained_root || local_source_damage.is_some())
                 && !layer_force_full && !damage.is_full();
@@ -865,6 +861,29 @@ fn backdrop_damage_for_configs(
     (full_refresh, region)
 }
 
+/// A resident zero-radius child composite may update disjoint patches even when its
+/// parent/root is also dirty: its own immutable source and local animation damage
+/// establish that the pixels between patches remain valid. A synthetic window root
+/// still requires exclusive damage ownership. Any dirty backdrop barrier prevents
+/// split source capture so filter sampling stays painter-order correct.
+fn can_split_retained_source_damage(
+    is_retained_root: bool,
+    has_local_source_damage: bool,
+    requires_full_refresh: bool,
+    has_other_dirty_layers: bool,
+    backdrop_barriers_clean: bool,
+    damage: &DirtyRegion,
+) -> bool {
+    !requires_full_refresh
+        && !damage.is_full()
+        && backdrop_barriers_clean
+        && (if is_retained_root {
+            !has_other_dirty_layers
+        } else {
+            has_local_source_damage
+        })
+}
+
 /// Preserve exact disjoint dirty rectangles instead of submitting the
 /// bounding box as one large GPU raster region. Cap the number of passes:
 /// command overhead can outweigh saved fill when a layer is fragmented.
@@ -1193,6 +1212,38 @@ mod tests {
         let mut gap = vec![draw(0, 1), draw(3, 1)];
         coalesce_adjacent_instanced_draws(&mut gap);
         assert_eq!(gap.len(), 2);
+    }
+
+    #[test]
+    fn nested_identity_layer_splits_local_child_damage_without_widening_to_parent() {
+        let mut damage = DirtyRegion::empty();
+        for x in [10.0, 900.0] {
+            damage.push(crate::bounds(
+                crate::point(crate::ScaledPixels(x), crate::ScaledPixels(20.0)),
+                crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
+            ));
+        }
+
+        let nested = can_split_retained_source_damage(
+            false, true, false, true, true, &damage,
+        );
+        assert_eq!(retained_source_damage_patches(&damage, nested).len(), 2);
+        assert!(!can_split_retained_source_damage(
+            false, false, false, true, true, &damage,
+        ));
+        assert!(!can_split_retained_source_damage(
+            false, true, true, true, true, &damage,
+        ));
+        assert!(!can_split_retained_source_damage(
+            false, true, false, true, false, &damage,
+        ));
+        // The root cannot ignore a concurrently dirty child layer.
+        assert!(!can_split_retained_source_damage(
+            true, false, false, true, true, &damage,
+        ));
+        assert!(can_split_retained_source_damage(
+            true, false, false, false, true, &damage,
+        ));
     }
 
     #[test]
