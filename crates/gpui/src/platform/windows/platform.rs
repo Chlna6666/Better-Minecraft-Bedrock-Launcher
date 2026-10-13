@@ -1262,14 +1262,6 @@ impl WindowsApplication {
         }
     }
 
-    fn sync_window_size(
-        window: &WindowsWindow,
-        physical_size: winit::dpi::PhysicalSize<u32>,
-        scale_factor: f32,
-    ) {
-        window.sync_size(physical_size, scale_factor);
-    }
-
     fn refresh_display_cache(&mut self, event_loop: &ActiveEventLoop) {
         let displays: Vec<WindowsDisplay> = event_loop
             .available_monitors()
@@ -1457,10 +1449,12 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         let window = window.clone();
 
         match event {
-            winit::event::WindowEvent::Resized(physical_size) => {
-                let scale_factor = window.scale_factor();
-                Self::sync_window_size(&window, physical_size, scale_factor);
-                // `sync_window_size` queues the newest extent and requests a platform frame.
+            winit::event::WindowEvent::Resized(_reported_size) => {
+                // A queued Resized event can arrive after a newer Win32 WM_SIZE.
+                // Re-read HWND instead of replacing the latest scene generation
+                // with a stale event payload during rapid opposite-edge drags.
+                window.sync_current_native_size();
+                // `sync_size` queues the newest extent and requests a platform frame.
                 // Maximize/restore may emit this event reentrantly from a GPUI window-control
                 // callback, so invoking the resize/frame callbacks here would borrow Window twice.
             }
@@ -1483,8 +1477,10 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 window.invoke_active_status_change(active);
             }
             winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // Preserve winit's DPI notification but take the *current* HWND
+                // client bounds, not a possibly stale cached inner_size.
                 let physical_size = window.window().inner_size();
-                Self::sync_window_size(&window, physical_size, scale_factor as f32);
+                window.sync_size(physical_size, scale_factor as f32);
                 self.refresh_display_cache(event_loop);
             }
             winit::event::WindowEvent::ThemeChanged(_) => {

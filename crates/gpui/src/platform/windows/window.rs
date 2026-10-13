@@ -1864,11 +1864,28 @@ impl WindowsWindow {
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
+    /// Read the *current* Win32 client extent. Winit Resized events can be
+    /// delivered after the native modal loop already processed a newer WM_SIZE.
+    /// Event payloads are notifications, not authoritative layout generations.
+    fn native_client_extent(&self) -> Option<winit::dpi::PhysicalSize<u32>> {
+        let hwnd = self.native_hwnd()?;
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rect) }.ok()?;
+        Some(winit::dpi::PhysicalSize::new(
+            (rect.right - rect.left).max(0) as u32,
+            (rect.bottom - rect.top).max(0) as u32,
+        ))
+    }
+
     pub(crate) fn sync_size(
         &self,
-        physical_size: winit::dpi::PhysicalSize<u32>,
+        reported_size: winit::dpi::PhysicalSize<u32>,
         scale_factor: f32,
     ) {
+        // WM_SIZE (subclass) and delayed winit Resized/ScaleFactorChanged must
+        // converge to the same HWND generation. Never let an older event replace
+        // the latest pending renderer size with stale geometry.
+        let physical_size = self.native_client_extent().unwrap_or(reported_size);
         if physical_size.width == 0 || physical_size.height == 0 {
             return;
         }
@@ -1932,20 +1949,10 @@ impl WindowsWindow {
         });
     }
 
-    fn sync_current_native_size(&self) {
-        // While Win32 owns the nested WM_ENTERSIZEMOVE loop, winit's cached
-        // inner size is not the authoritative geometry. Query the HWND directly
-        // so GPUI layout sees the actual client extent on this modal tick.
-        let physical_size = self.native_hwnd().and_then(|hwnd| {
-            let mut rect = RECT::default();
-            unsafe { GetClientRect(hwnd, &mut rect) }.ok()?;
-            Some(winit::dpi::PhysicalSize::new(
-                (rect.right - rect.left).max(0) as u32,
-                (rect.bottom - rect.top).max(0) as u32,
-            ))
-        }).unwrap_or_else(|| self.window().inner_size());
-        let scale_factor = self.window().scale_factor() as f32;
-        self.sync_size(physical_size, scale_factor);
+    pub(crate) fn sync_current_native_size(&self) {
+        // sync_size() always resolves the latest HWND client rectangle, even if
+        // winit's cached inner_size still belongs to a previous modal resize.
+        self.sync_size(self.window().inner_size(), self.window().scale_factor() as f32);
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
