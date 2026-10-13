@@ -869,3 +869,37 @@ impl Window {
         }
     }
 }
+
+#[cfg(test)]
+mod presentation_extent_tests {
+    use super::{PresentationState, Scene};
+    use std::sync::Arc;
+
+    #[test]
+    fn pending_resize_does_not_relabel_active_scene() {
+        let mut presentation = PresentationState::default();
+        presentation.publish_pending(
+            Arc::new(Scene::default()),
+            [],
+            Some((1200, 800)),
+        );
+        assert_eq!(presentation.active_layout_extent(), None);
+        assert!(presentation.activate_pending());
+        assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+
+        presentation.publish_pending(
+            Arc::new(Scene::default()),
+            [],
+            Some((1300, 850)),
+        );
+        presentation.publish_pending(
+            Arc::new(Scene::default()),
+            [],
+            Some((1400, 900)),
+        );
+        // Before activation, the active GPU scene still belongs to 1200x800.
+        assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+        assert!(presentation.activate_pending());
+        assert_eq!(presentation.active_layout_extent(), Some((1400, 900)));
+    }
+}

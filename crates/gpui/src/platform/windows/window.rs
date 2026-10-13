@@ -1474,7 +1474,7 @@ impl WindowsWindow {
                 return PlatformFrameResult::Deferred;
             }
         }
-        if !self.try_apply_queued_renderer_resize() {
+        if !self.try_apply_queued_renderer_resize(packet.layout_extent) {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }
         let (result, has_submitted_frame, pending_gpu_work) = {
@@ -2184,7 +2184,7 @@ impl WindowsWindow {
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
-    fn try_apply_queued_renderer_resize(&self) -> bool {
+    fn try_apply_queued_renderer_resize(&self, scene_extent: Option<(u32, u32)>) -> bool {
         let mut renderer_state = self.0.renderer.borrow_mut();
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return false;
@@ -2193,7 +2193,14 @@ impl WindowsWindow {
             renderer.set_live_resize_active(active);
         }
         if let Some(size) = self.0.pending_renderer_size.take() {
-            if let Err(error) = renderer.update_drawable_size(size) {
+            let pending_extent = (size.width.0.max(0) as u32, size.height.0.max(0) as u32);
+            if scene_extent.is_some_and(|layout| layout != pending_extent) {
+                // WM_SIZE is already ahead of this Scene. Do not enqueue a
+                // future-size Resize before an old-size Draw (which would
+                // immediately have to reverse it on the GPU owner).
+                // Keep the latest extent for the subsequent UI commit.
+                self.0.pending_renderer_size.set(Some(size));
+            } else if let Err(error) = renderer.update_drawable_size(size) {
                 self.0.pending_renderer_size.set(Some(size));
                 log::error!("failed to queue Windows GPU resize: {error:#}");
                 return false;
