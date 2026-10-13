@@ -2494,14 +2494,45 @@ mod platform {
 
         /// Destroys a swapchain.
         ///
-        /// Presentation to the swapchain has stopped by contract, but the last
-        /// frame may still be executing; the backbuffers are released through
-        /// the deferred queue instead of stalling the device.
+        /// Unlike ordinary GPU buffers, an HWND-bound DXGI swapchain must not
+        /// outlive the native window whose renderer is being retired. The GPUI
+        /// GPU owner holds its HWND keep-alive only until renderer destruction
+        /// returns; deferring the swapchain COM release past that point can
+        /// leave DXGI attached to an already-destroyed child HWND.
+        ///
+        /// This is a window-destruction barrier, not a resize-frame barrier:
+        /// ResizeBuffers follows the separate resize path. Run the fence wait
+        /// on the GPU owner, never on the Windows UI message thread.
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
             let mut swapchain = self.swapchains.take(swapchain)?;
             swapchain.frame_pacing.reset();
-            self.defer_release(DeferredDx12Release::Swapchain(swapchain));
-            Ok(())
+            let started_at = Instant::now();
+            log::debug!(
+                target: "nova_dx12_surface",
+                "DX12 swapchain close: draining GPU work before native HWND retirement"
+            );
+            // This also retires deferred backbuffer references and descriptor
+            // releases created earlier in this renderer's teardown.
+            let drained = self.wait_for_pending_work();
+            // Release IDXGISwapChain3, its backbuffer COM references and the
+            // DirectComposition attachment *before* returning control to GPUI.
+            // On device removal, drop the swapchain even if the wait fails.
+            drop(swapchain);
+            let elapsed = started_at.elapsed();
+            if elapsed >= Duration::from_millis(16) {
+                log::warn!(
+                    target: "nova_dx12_surface",
+                    "DX12 swapchain close: GPU retirement and COM release took {} us",
+                    elapsed.as_micros()
+                );
+            } else {
+                log::debug!(
+                    target: "nova_dx12_surface",
+                    "DX12 swapchain close completed in {} us",
+                    elapsed.as_micros()
+                );
+            }
+            drained
         }
 
         /// Destroys a surface.
