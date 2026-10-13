@@ -1220,6 +1220,12 @@ impl WindowsApplication {
         let Some(window) = self.windows.get(&window_id).cloned() else {
             return;
         };
+        // Native HWND visibility is a UI operation, not a GPU retirement fence.
+        // Hide only the requested window before invoking GPUI close observers:
+        // on DX12 a swapchain can remain alive on the shared GPU owner until
+        // in-flight work is retired, but that must not leave a child on screen
+        // or delay the main window's input/message loop.
+        window.window().set_visible(false);
         window.invoke_close();
         if self.hovered_window_id == Some(window_id) {
             self.hovered_window_id = None;

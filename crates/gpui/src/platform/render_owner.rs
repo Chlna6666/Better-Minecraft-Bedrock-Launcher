@@ -470,25 +470,16 @@ impl Drop for RenderOwner {
             }
             return;
         }
-        // A dropped initialization receiver can release this proxy on the GPU owner itself.
-        // In that case its queued shutdown runs after initialization returns, without self-wait.
-        if thread::current().id() != self.owner_thread {
-            #[cfg(target_os = "windows")]
-            loop {
-                super::windows::service_driver_messages();
-                match receiver.recv_timeout(Duration::from_millis(1)) {
-                    Ok(()) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        log::error!("GPU owner stopped before renderer shutdown completed");
-                        break;
-                    }
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
-            if receiver.recv().is_err() {
-                log::error!("GPU owner stopped before renderer shutdown completed");
-            }
+        // On Windows, closing a child HWND must never wait for DX12/Vulkan
+        // swapchain retirement on the UI message thread. The GPU owner holds its
+        // own native-window keep_alive until this ordered Shutdown is executed.
+        // Dropping receiver only detaches acknowledgment; it does NOT cancel
+        // owner-side resource destruction. Global GPU shutdown still joins it.
+        #[cfg(target_os = "windows")]
+        drop(receiver);
+        #[cfg(not(target_os = "windows"))]
+        if thread::current().id() != self.owner_thread && receiver.recv().is_err() {
+            log::error!("GPU owner stopped before renderer shutdown completed");
         }
     }
 }
