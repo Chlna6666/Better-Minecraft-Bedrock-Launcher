@@ -248,6 +248,13 @@ distinction.
 
 ## Performance model
 
+Rust 1.89 is required. The default `simd` feature uses workspace-pinned
+`fearless_simd` 1.1.0 for complete 4-bit SubChunk index unpacking on AVX2 CPUs.
+Other widths, CPUs and decode modes retain the scalar implementation; malformed
+input has the same first error. `--no-default-features` removes this dependency.
+Read-only fixture measurements and their limits are recorded in the workspace's
+[`parsing audit`](../../docs/PARSING_SIMD_AUDIT.md).
+
 - use file-level `level.dat` access when no database data is needed;
 - use exact `get_many` render reads instead of scanning unrelated records;
 - use key-only scans for classification and bounds discovery;

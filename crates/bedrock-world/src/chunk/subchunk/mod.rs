@@ -11,10 +11,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod heightmap;
+mod indices;
 mod numeric_downgrade;
 mod numeric_storage;
 mod numeric_upgrade;
 mod palette_upgrade;
+#[cfg(all(test, feature = "bedrock-leveldb"))]
+mod profile;
 mod storage;
 mod upgrade;
 mod v0;
@@ -226,20 +229,30 @@ impl<'chunk> Iterator for VisibleBlockSurfaceStatesAt<'chunk> {
 }
 
 pub(super) fn decode(y: i8, bytes: Bytes, mode: SubChunkDecodeMode) -> Result<SubChunk> {
+    decode_indices::<true>(y, bytes, mode)
+}
+
+// Both policies share all format, NBT and error rules. The scalar instantiation
+// is used by the opt-in paired benchmark; production uses automatic selection.
+fn decode_indices<const SIMD: bool>(
+    y: i8,
+    bytes: Bytes,
+    mode: SubChunkDecodeMode,
+) -> Result<SubChunk> {
     let version = bytes.first().copied();
     let format = match version {
         Some(0 | 2..=7) => SubChunkFormat::LegacySubChunk(LegacySubChunk::parse(bytes.clone())?),
         Some(version @ 1) => SubChunkFormat::Paletted {
             version,
-            storages: parse_exact_palette_storages(&bytes, 1, 1, mode)?,
+            storages: parse_exact_palette_storages::<SIMD>(&bytes, 1, 1, mode)?,
         },
-        Some(version @ (8 | 9)) => parse_paletted_subchunk(version, &bytes, mode)?,
+        Some(version @ (8 | 9)) => parse_paletted_subchunk::<SIMD>(version, &bytes, mode)?,
         _ => SubChunkFormat::Raw { version, bytes },
     };
     Ok(SubChunk { y, format })
 }
 
-fn parse_paletted_subchunk(
+fn parse_paletted_subchunk<const SIMD: bool>(
     version: u8,
     bytes: &Bytes,
     mode: SubChunkDecodeMode,
@@ -252,7 +265,7 @@ fn parse_paletted_subchunk(
     let offsets: &[usize] = if version == 9 { &[3, 2] } else { &[2] };
     let mut layout_errors = Vec::with_capacity(offsets.len());
     for offset in offsets {
-        match parse_exact_palette_storages(bytes, *offset, storage_count, mode) {
+        match parse_exact_palette_storages::<SIMD>(bytes, *offset, storage_count, mode) {
             Ok(storages) => return Ok(SubChunkFormat::Paletted { version, storages }),
             Err(error) => layout_errors.push(format!("offset {offset}: {error}")),
         }
@@ -263,13 +276,13 @@ fn parse_paletted_subchunk(
     )))
 }
 
-fn parse_exact_palette_storages(
+fn parse_exact_palette_storages<const SIMD: bool>(
     bytes: &Bytes,
     offset: usize,
     storage_count: u8,
     mode: SubChunkDecodeMode,
 ) -> Result<Vec<BlockPalette>> {
-    let (storages, consumed) = parse_palette_storages(bytes, offset, storage_count, mode)?;
+    let (storages, consumed) = parse_palette_storages::<SIMD>(bytes, offset, storage_count, mode)?;
     if consumed != bytes.len() {
         return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
             "palette storage ended at byte {consumed} but payload has {} bytes",
@@ -279,7 +292,7 @@ fn parse_exact_palette_storages(
     Ok(storages)
 }
 
-fn parse_palette_storages(
+fn parse_palette_storages<const SIMD: bool>(
     bytes: &Bytes,
     mut offset: usize,
     storage_count: u8,
@@ -353,7 +366,11 @@ fn parse_palette_storages(
         .then(|| vec![0_u16; palette_len]);
         let (indices, packed_indices) = match mode {
             SubChunkDecodeMode::FullIndices => {
-                let indices = unpack_palette_indices(words_bytes, bits_per_block, palette_len)?;
+                let indices = if SIMD {
+                    indices::unpack(words_bytes, bits_per_block, palette_len)?
+                } else {
+                    indices::scalar(words_bytes, bits_per_block, palette_len)?
+                };
                 for index in &indices {
                     if let Some(count) = counts
                         .as_mut()
@@ -450,45 +467,6 @@ pub(crate) fn packed_word_count(bits_per_block: u8) -> usize {
     }
     let values_per_word = usize::from(32 / bits_per_block);
     4096_usize.div_ceil(values_per_word)
-}
-
-fn unpack_palette_indices(
-    words_bytes: &[u8],
-    bits_per_block: u8,
-    palette_len: usize,
-) -> Result<Vec<u16>> {
-    if bits_per_block == 0 {
-        return Ok(vec![0; 4096]);
-    }
-    let values_per_word = usize::from(32 / bits_per_block);
-    let mask = (1_u32 << bits_per_block) - 1;
-    let mut indices = Vec::with_capacity(4096);
-    for word_bytes in words_bytes.chunks_exact(4) {
-        let word = u32::from_le_bytes(
-            word_bytes
-                .try_into()
-                .map_err(|_| BedrockWorldError::CorruptWorld("bad palette word".to_string()))?,
-        );
-        for item_index in 0..values_per_word {
-            if indices.len() == 4096 {
-                break;
-            }
-            let value = ((word >> (item_index * usize::from(bits_per_block))) & mask) as u16;
-            if palette_len > 0 && usize::from(value) >= palette_len {
-                return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-                    "palette index {value} exceeds palette length {palette_len}"
-                )));
-            }
-            indices.push(value);
-        }
-    }
-    if indices.len() != 4096 {
-        return Err(BedrockWorldError::UnsupportedChunkFormat(format!(
-            "palette produced {} block indices instead of 4096",
-            indices.len()
-        )));
-    }
-    Ok(indices)
 }
 
 fn block_state_from_nbt(tag: NbtTag) -> BlockState {

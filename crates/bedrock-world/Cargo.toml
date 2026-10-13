@@ -2,7 +2,7 @@
 name = "bedrock-world"
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 description = "Multi-version Minecraft Bedrock world, level.dat, NBT, player and chunk library"
 repository = "https://github.com/BE-Community-Dev/bedrock-world"
@@ -34,12 +34,14 @@ include = [
 all-features = true
 
 [features]
-default = ["async", "bedrock-leveldb"]
+default = ["async", "bedrock-leveldb", "simd"]
+simd = ["dep:fearless_simd"]
 async = ["dep:tokio", "bedrock-leveldb?/async"]
 bedrock-leveldb = ["dep:bedrock-leveldb", "bedrock-leveldb/zlib", "bedrock-leveldb/snappy"]
 leveldb-mmap = ["bedrock-leveldb", "bedrock-leveldb/mmap"]
 
 [dependencies]
+fearless_simd = { workspace = true, optional = true }
 bedrock-leveldb = { path = "../bedrock-leveldb", version = "0.7.0", default-features = false, optional = true }
 bytes = "1.10.1"
 indexmap = { version = "2.12.1", features = ["serde"] }

@@ -33,6 +33,10 @@ fn inspect() -> bedrock_world::Result<()> {
 ```
 
 开启 `async` feature 后可使用 `World::open_async` 和对应 async wrapper。
+最低 Rust 版本为 1.89。默认 `simd` feature 使用统一的 `fearless_simd` 1.1.0，
+仅加速 AVX2 CPU 上完整的 4 位 SubChunk 索引解包；其它位宽、CPU 与解码模式
+保持标量路径，错误语义不变。`--no-default-features` 可移除 SIMD 依赖。
+实测条件与范围见 workspace [解析审计](../../docs/PARSING_SIMD_AUDIT.md)。
 只有需要显式格式提示或可写 LevelDB 时，才使用
 `World::open(path, OpenOptions)`。
 
