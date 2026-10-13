@@ -124,6 +124,15 @@ impl Window {
     /// not blindly invalidated: a stable relative/flex container must be traversed when an absolute
     /// child moves, while unrelated siblings outside the target remain replayable.
     pub(crate) fn request_layout_animation_frame(&self, retained_id: GlobalElementId) {
+        self.request_layout_animation_frame_scoped(retained_id, RetainedInvalidationScope::RelayoutSubtree);
+    }
+
+    /// Only for absolutely positioned / layout-independent animation targets.
+    pub(crate) fn request_local_layout_animation_frame(&self, retained_id: GlobalElementId) {
+        self.request_layout_animation_frame_scoped(retained_id, RetainedInvalidationScope::ReconcileSubtree);
+    }
+
+    fn request_layout_animation_frame_scoped(&self, retained_id: GlobalElementId, scope: RetainedInvalidationScope) {
         let Some(entity) = self.current_view_or_root() else {
             return;
         };
@@ -143,7 +152,7 @@ impl Window {
         // callbacks carry no useful historical state; they only create stale frame pressure.
         if !self
             .invalidator
-            .arm_layout_animation_frame(entity, &retained_id)
+            .arm_layout_animation_frame(entity, &retained_id, scope)
         {
             record_coalesced_refresh();
             return;
@@ -155,16 +164,16 @@ impl Window {
         self.enqueue_next_frame_callback(
             FrameRequestReason::LayoutAnimation,
             move |window, _cx| {
-                if !window
+                let Some(scope) = window
                     .invalidator
                     .take_layout_animation_frame(entity, &retained_id)
-                {
+                else {
                     return;
-                }
+                };
                 if window.invalidator.invalidate_retained_path_with_scope(
                     entity,
                     Some(&retained_id),
-                    RetainedInvalidationScope::ReconcileSubtree,
+                    scope,
                 ) {
                     // This callback already runs inside the platform frame requested by the
                     // layout cadence. Marking the target dirty is enough for the current
@@ -213,7 +222,7 @@ impl Window {
                 if window.invalidator.invalidate_retained_path_with_scope(
                     entity,
                     Some(&retained_id),
-                    RetainedInvalidationScope::ReconcileSubtree,
+                    RetainedInvalidationScope::RelayoutSubtree,
                 ) {
                     window.record_frame_request_reason(FrameRequestReason::LayoutAnimation);
                     window.schedule_interactive_animation_frame();

@@ -38,6 +38,32 @@ use tracing::{debug, warn};
 const IMPORT_WINDOW_NARROW_WIDTH_PX: f32 = 520.0;
 const IMPORT_WINDOW_COMPACT_WIDTH_PX: f32 = 420.0;
 const IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX: f32 = 900.0;
+const IMPORT_BREAKPOINT_HYSTERESIS_PX: f32 = 8.0;
+
+/// Schmitt-trigger responsive switch: a client size may oscillate by a pixel
+/// around a breakpoint while dragging. Geometry remains current; only the
+/// discrete responsive mode has a small hysteresis band.
+fn responsive_at_least(width: f32, boundary: f32, previous: bool) -> bool {
+    if !width.is_finite() {
+        return previous;
+    }
+    if previous {
+        width >= boundary - IMPORT_BREAKPOINT_HYSTERESIS_PX
+    } else {
+        width >= boundary + IMPORT_BREAKPOINT_HYSTERESIS_PX
+    }
+}
+
+fn responsive_at_most(width: f32, boundary: f32, previous: bool) -> bool {
+    if !width.is_finite() {
+        return previous;
+    }
+    if previous {
+        width <= boundary + IMPORT_BREAKPOINT_HYSTERESIS_PX
+    } else {
+        width <= boundary - IMPORT_BREAKPOINT_HYSTERESIS_PX
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StatusKind {
@@ -95,6 +121,9 @@ pub struct ImportWindowView {
     close_after_launch_completion: bool,
     launch_completion_close_scheduled: bool,
     titlebar_gesture: crate::ui::window::chrome::TitlebarGesture,
+    two_column_layout: bool,
+    header_compact_controls: bool,
+    header_hide_file_path: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -176,6 +205,17 @@ impl ImportWindowView {
             cx.notify();
         }));
 
+        let initial_window_width = window.bounds().size.width / px(1.0);
+        let initial_content_width = if presentation == ImportPresentation::Overlay {
+            (initial_window_width - 32.0).min(900.0)
+        } else {
+            initial_window_width
+        };
+        let initial_header_width = if presentation == ImportPresentation::Overlay {
+            900.0
+        } else {
+            initial_window_width
+        };
         let mut this = Self {
             window_id: None,
             presentation,
@@ -199,6 +239,9 @@ impl ImportWindowView {
             close_after_launch_completion: false,
             launch_completion_close_scheduled: false,
             titlebar_gesture: crate::ui::window::chrome::TitlebarGesture::default(),
+            two_column_layout: initial_content_width >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
+            header_compact_controls: initial_header_width <= IMPORT_WINDOW_COMPACT_WIDTH_PX,
+            header_hide_file_path: initial_header_width <= IMPORT_WINDOW_NARROW_WIDTH_PX,
             _subscriptions: subscriptions,
         };
         this.sync_selected_folder(cx);
@@ -831,7 +874,27 @@ impl Render for ImportWindowView {
         } else {
             window.bounds().size.width / px(1.0)
         };
-        let use_two_column_layout = window_width_px >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX;
+        self.two_column_layout = responsive_at_least(
+            window_width_px,
+            IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
+            self.two_column_layout,
+        );
+        let header_width = if self.presentation == ImportPresentation::Overlay {
+            900.0
+        } else {
+            window_width_px
+        };
+        self.header_compact_controls = responsive_at_most(
+            header_width,
+            IMPORT_WINDOW_COMPACT_WIDTH_PX,
+            self.header_compact_controls,
+        );
+        self.header_hide_file_path = responsive_at_most(
+            header_width,
+            IMPORT_WINDOW_NARROW_WIDTH_PX,
+            self.header_hide_file_path,
+        );
+        let use_two_column_layout = self.two_column_layout;
         let colors = self.theme_colors(frame_now, cx);
         let is_overlay = self.presentation == ImportPresentation::Overlay;
         let content_padding = if is_overlay { 16.0 } else { 20.0 };
@@ -1060,13 +1123,8 @@ fn render_window_header(
     cx: &mut Context<ImportWindowView>,
 ) -> AnyElement {
     let is_overlay = view.presentation == ImportPresentation::Overlay;
-    let window_width = if is_overlay {
-        900.0
-    } else {
-        window.bounds().size.width / px(1.0)
-    };
-    let compact_controls = window_width <= IMPORT_WINDOW_COMPACT_WIDTH_PX;
-    let hide_file_path = window_width <= IMPORT_WINDOW_NARROW_WIDTH_PX;
+    let compact_controls = view.header_compact_controls;
+    let hide_file_path = view.header_hide_file_path;
     let controls_width = if compact_controls { px(56.) } else { px(68.) };
 
     let drag_surface = div()
@@ -3421,5 +3479,38 @@ mod batch_path_tests {
                 PathBuf::from("c.mcpack"),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod responsive_breakpoint_tests {
+    use super::*;
+
+    #[test]
+    fn two_column_does_not_flip_on_one_pixel_resize_jitter() {
+        let mut columns = true;
+        for width in [901.0, 900.0, 899.0, 898.0, 902.0] {
+            columns = responsive_at_least(width, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns);
+            assert!(columns);
+        }
+        columns = responsive_at_least(891.0, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns);
+        assert!(!columns);
+        columns = responsive_at_least(906.0, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns);
+        assert!(!columns);
+        assert!(responsive_at_least(908.0, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX, columns));
+    }
+
+    #[test]
+    fn compact_header_remains_stable_across_breakpoint_noise() {
+        let mut compact = false;
+        for width in [421.0, 420.0, 419.0, 418.0] {
+            compact = responsive_at_most(width, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact);
+            assert!(!compact);
+        }
+        compact = responsive_at_most(412.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact);
+        assert!(compact);
+        assert!(responsive_at_most(427.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact));
+        assert!(!responsive_at_most(429.0, IMPORT_WINDOW_COMPACT_WIDTH_PX, compact));
+        assert!(responsive_at_most(f32::NAN, IMPORT_WINDOW_COMPACT_WIDTH_PX, true));
     }
 }

@@ -99,3 +99,17 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 在 240Hz 显示器上，每刷新周期约 4.17ms；如果 UI Prepaint 本身超过这个预算，就不能期待每次 Resize 都产出完全重排的新 Scene 并达到 240 FPS。之前记录的 130.9ms 帧构建（其中 129.5ms Prepaint）是需要单独用火焰图定位的 CPU 长尾，不能靠优化 Swapchain 处理。
 
 注意：`BMCBL_GPUI_RESIZE_TRACE=1` 会逐阶段写大量日志，**适合定位正确性和因果顺序，不适合作为无扰动 FPS 基准**。测量真实 FPS/延迟时，应使用低开销统计或外部图形帧分析，并对比开启与关闭该变量的结果。
+
+## 2026-10-13：展开动画的 CachedView 失效和 DX11 ResizeBuffers 细分
+
+本轮排查来源：DX11 / AMD Radeon 780M 的 Debug 日志（其余后端不在这份日志中），一次 `slow_surface_resize`：`total_us=115442`、`swapchain_us=114845`、`submission_wait_us=0`、`resources_us=596`。这只能定位到 DX11 后端 Swapchain API 链路，尚不能归因到 `ResizeBuffers` 本体。另有 GPUI 帧构建约 54.16ms、Prepaint 约 50.56ms，属于独立 CPU 帧长尾。
+
+DX11 现在仅在一次具体 resize 超过 16ms 时附加 `slow_dx11_resize_phases`，字段为 `pacing_cancel_us`、`context_flush_us`、`dxgi_resize_buffers_us`、`backbuffer_view_us`、`dcomp_reset_us` 和 `total_us`。先确认 115ms 是 DXGI 阻塞还是 Flush/准备资源，再决定是否改变帧延迟队列或内存退休策略。其余 DX12、Vulkan、OpenGL 继续使用已有 `slow_surface_resize` 的 wait/swapchain/resources 切分；**没有对应实机日志就不宣称它们的驱动瓶颈与 DX11 相同**。
+
+针对嵌套 CachedView：布局动画默认使用 `RelayoutSubtree`，禁用旧几何约束上的 selective prepaint splice 并使受影响的目标及子元素重新计算。确定为绝对定位、不改变父级流布局的导航选中胶囊和模态透明度/缩放，则使用 `with_local_layout_animation_target` 保留局部 reconcile。一个目标在同一帧收到不同 scope 时取最强值，防止动画展开或快速反向时丢失祖先布局失效。
+
+P1 响应式迟滞采用 Schmitt trigger 而非全局防抖：主导航标签和导入窗口的双栏、紧凑标题栏、文件路径显示，只在跨越带宽后切换状态，持续 Resize 的实际客户区尺寸与 Scene 计算不人为延迟。
+
+尚未把所有纯视觉展开组件迁到 GPU Presentation Lane。首页加载脉冲等已有 renderer-owned opacity animation；需要先为带中断/关闭回调的模态、带动态文字的布局展开建立等价的 timeline 生命周期和 Retained Layer，再去掉 CPU 每帧驱动，不能简单替换成 opacity 动画导致文本、裁剪和关闭回调错序。
+
+验收：在 Release 下验证嵌套 CachedView 展开/收起/中途反向/Resize 同时进行，检查布局、文字、背景、Hit-test 同步；每个后端分别进行 5 轮拖拽，收集 Present 成功率、帧间隔 P95/P99、GPU owner queue、resize 子阶段长尾与 GPUI Prepaint；此环境没有 Windows/Rust 工具链，修改本身不构成编译或实机通过。

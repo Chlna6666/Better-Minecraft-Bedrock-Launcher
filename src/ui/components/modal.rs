@@ -447,7 +447,7 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             // instead of notifying the entire owning view every platform frame.
             let mut element =
                 dismissible_modal_layer(content, self.background, sample.progress, current_control)
-                    .with_layout_animation_target(sample.animating)
+                    .with_local_layout_animation_target(sample.animating)
                     .into_any_element();
             let layout_id = element.request_layout(window, cx);
 

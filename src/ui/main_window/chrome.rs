@@ -158,7 +158,7 @@ pub(super) fn render_nav(
         .h(item_height)
         .rounded(px(17.))
         .bg(colors.accent)
-        .with_layout_animation_target(state.nav_animating);
+        .with_local_layout_animation_target(state.nav_animating);
 
     let nav = div()
         .relative()

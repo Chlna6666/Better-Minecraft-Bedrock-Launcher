@@ -52,6 +52,8 @@ pub(crate) enum RetainedInvalidationScope {
     ElementOnly,
     ReconcileSubtree,
     InvalidateSubtree,
+    /// Invalidate layout ancestors; old cached geometry must never be spliced.
+    RelayoutSubtree,
 }
 
 impl RetainedInvalidationScope {
@@ -207,7 +209,7 @@ struct WindowInvalidatorInner {
     pub pending_generic_dirty_views: FxHashSet<EntityId>,
     /// Layout-animation frame tickets that have already been armed for an exact retained target.
     /// Keeping this per target prevents repeated samples from stacking stale next-frame callbacks.
-    pub pending_layout_animation_frames: FxHashSet<(EntityId, GlobalElementId)>,
+    pub pending_layout_animation_frames: FxHashMap<(EntityId, GlobalElementId), RetainedInvalidationScope>,
     /// Delayed layout-animation tickets keyed by the exact retained target. The earliest deadline
     /// wins; generation changes make superseded timers exit without touching retained state.
     pub pending_layout_animation_deadlines: FxHashMap<(EntityId, GlobalElementId), (Instant, u64)>,
@@ -247,7 +249,7 @@ impl WindowInvalidator {
                 pending_targeted_replay: false,
                 pending_targeted_elements: FxHashMap::default(),
                 pending_generic_dirty_views: FxHashSet::default(),
-                pending_layout_animation_frames: FxHashSet::default(),
+                pending_layout_animation_frames: FxHashMap::default(),
                 pending_layout_animation_deadlines: FxHashMap::default(),
                 layout_animation_deadline_generation: 0,
                 active_targeted_replay: false,
@@ -275,19 +277,28 @@ impl WindowInvalidator {
         &self,
         entity: EntityId,
         retained_id: &GlobalElementId,
+        scope: RetainedInvalidationScope,
     ) -> bool {
         let mut inner = self.inner.borrow_mut();
         let key = (entity, retained_id.clone());
         inner.pending_layout_animation_deadlines.remove(&key);
-        inner.pending_layout_animation_frames.insert(key)
+        if let Some(existing) = inner.pending_layout_animation_frames.get_mut(&key) {
+            // A later stronger layout-reflow request must not be hidden by
+            // the already scheduled local animation callback.
+            *existing = existing.merged(scope);
+            false
+        } else {
+            inner.pending_layout_animation_frames.insert(key, scope);
+            true
+        }
     }
 
-    /// Consumes the immediate ticket owned by one layout-animation callback.
+    /// Consumes a ticket and its strongest required invalidation scope.
     pub(in crate::window) fn take_layout_animation_frame(
         &self,
         entity: EntityId,
         retained_id: &GlobalElementId,
-    ) -> bool {
+    ) -> Option<RetainedInvalidationScope> {
         self.inner
             .borrow_mut()
             .pending_layout_animation_frames
@@ -306,7 +317,7 @@ impl WindowInvalidator {
     ) -> Option<u64> {
         let mut inner = self.inner.borrow_mut();
         let key = (entity, retained_id.clone());
-        if inner.pending_layout_animation_frames.contains(&key)
+        if inner.pending_layout_animation_frames.contains_key(&key)
             || inner
                 .pending_layout_animation_deadlines
                 .get(&key)
@@ -930,7 +941,7 @@ fn retained_path_requires_repaint(
     scope: RetainedInvalidationScope,
 ) -> bool {
     global_element_path_is_prefix(candidate, dirty)
-        || scope == RetainedInvalidationScope::InvalidateSubtree
+        || scope >= RetainedInvalidationScope::InvalidateSubtree
             && global_element_path_is_prefix(dirty, candidate)
 }
 
@@ -1177,6 +1188,25 @@ mod retained_dirty_scope_tests {
     }
 
     #[test]
+    fn relayout_target_invalidates_descendants_and_preserves_unrelated_siblings() {
+        let invalidator = WindowInvalidator::new();
+        let dirty = path(&[0, 1]);
+        let ancestor = path(&[0]);
+        let descendant = path(&[0, 1, 2]);
+        let sibling = path(&[0, 3]);
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            EntityId::from(1), Some(&dirty), RetainedInvalidationScope::RelayoutSubtree,
+        ));
+        invalidator.set_dirty(false);
+        assert!(invalidator.retained_path_is_dirty(&ancestor));
+        assert!(invalidator.retained_path_is_dirty(&dirty));
+        assert!(invalidator.retained_path_is_dirty(&descendant));
+        assert!(!invalidator.retained_path_is_dirty(&sibling));
+        assert!(!invalidator.retained_path_requires_reconciliation(&descendant));
+    }
+
+    #[test]
     fn stronger_scope_wins_when_targets_merge() {
         let invalidator = WindowInvalidator::new();
         let dirty = path(&[0, 1]);
@@ -1326,12 +1356,14 @@ mod retained_dirty_scope_tests {
         let first = path(&[0, 1]);
         let second = path(&[0, 2]);
 
-        assert!(invalidator.arm_layout_animation_frame(entity, &first));
-        assert!(!invalidator.arm_layout_animation_frame(entity, &first));
-        assert!(invalidator.arm_layout_animation_frame(entity, &second));
-        assert!(invalidator.take_layout_animation_frame(entity, &first));
-        assert!(!invalidator.take_layout_animation_frame(entity, &first));
-        assert!(invalidator.take_layout_animation_frame(entity, &second));
+        let local = RetainedInvalidationScope::ReconcileSubtree;
+        let reflow = RetainedInvalidationScope::RelayoutSubtree;
+        assert!(invalidator.arm_layout_animation_frame(entity, &first, local));
+        assert!(!invalidator.arm_layout_animation_frame(entity, &first, reflow));
+        assert!(invalidator.arm_layout_animation_frame(entity, &second, local));
+        assert_eq!(invalidator.take_layout_animation_frame(entity, &first), Some(reflow));
+        assert_eq!(invalidator.take_layout_animation_frame(entity, &first), None);
+        assert_eq!(invalidator.take_layout_animation_frame(entity, &second), Some(local));
     }
 
     #[test]
@@ -1344,7 +1376,7 @@ mod retained_dirty_scope_tests {
             .arm_layout_animation_deadline(entity, &target, deadline)
             .expect("first delayed ticket");
 
-        assert!(invalidator.arm_layout_animation_frame(entity, &target));
+        assert!(invalidator.arm_layout_animation_frame(entity, &target, RetainedInvalidationScope::RelayoutSubtree));
         assert!(
             !invalidator.take_layout_animation_deadline(entity, &target, deadline, generation,)
         );

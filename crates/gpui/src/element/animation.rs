@@ -904,6 +904,22 @@ pub trait AnimationExt {
             source: core::panic::Location::caller(),
             element: Some(self),
             animating,
+            local_layout: false,
+        }
+    }
+
+    /// Layout animation limited to an absolute-positioned/local subtree.
+    /// Only use if ancestor flow geometry cannot change with its progress.
+    #[track_caller]
+    fn with_local_layout_animation_target(self, animating: bool) -> LayoutAnimationTargetElement<Self>
+    where
+        Self: Sized,
+    {
+        LayoutAnimationTargetElement {
+            source: core::panic::Location::caller(),
+            element: Some(self),
+            animating,
+            local_layout: true,
         }
     }
 }
@@ -915,6 +931,7 @@ pub struct LayoutAnimationTargetElement<E> {
     source: &'static core::panic::Location<'static>,
     element: Option<E>,
     animating: bool,
+    local_layout: bool,
 }
 
 impl<E: IntoElement + 'static> IntoElement for LayoutAnimationTargetElement<E> {
@@ -948,7 +965,11 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
             let retained_id = window
                 .current_retained_element_id()
                 .expect("layout animation target must have a retained identity");
-            window.request_layout_animation_frame(retained_id);
+            if self.local_layout {
+                window.request_local_layout_animation_frame(retained_id);
+            } else {
+                window.request_layout_animation_frame(retained_id);
+            }
         }
 
         let mut element = self

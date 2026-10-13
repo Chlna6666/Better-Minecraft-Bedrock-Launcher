@@ -199,14 +199,17 @@ impl Dx11Device {
     /// Returns a native resize error; existing buffers are reacquired on failure.
     pub fn resize_swapchain(&mut self, id: SwapchainId, width: u32, height: u32) -> Result<()> {
         let size = Extent2d::new(width, height)?;
+        let resize_started = std::time::Instant::now();
         let chain = self.swapchains.get_mut(id)?;
         chain.pacing.cancel();
+        let cancel_elapsed = resize_started.elapsed();
         // SAFETY: clear indirect references before DXGI ResizeBuffers; immediate commands
         // retain native resources until execution retires, and DXGI synchronizes the resize.
         unsafe {
             self.context.ClearState();
             self.context.Flush();
         }
+        let flush_elapsed = resize_started.elapsed().saturating_sub(cancel_elapsed);
         chain.view = None;
         // SAFETY: backbuffer references were released; flags preserve the waitable chain.
         let result = unsafe {
@@ -218,7 +221,11 @@ impl Dx11Device {
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
             )
         };
+        let dxgi_elapsed = resize_started.elapsed()
+            .saturating_sub(cancel_elapsed + flush_elapsed);
         chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
+        let view_elapsed = resize_started.elapsed()
+            .saturating_sub(cancel_elapsed + flush_elapsed + dxgi_elapsed);
         result.map_err(backend)?;
         chain.config.size = size;
         // Preserve DXGI frame-ready credit acquired from the auto-reset waitable
@@ -230,7 +237,26 @@ impl Dx11Device {
         // present_steps() consumes the credit only after successful Present.
         // A replacement swapchain uses a new FrameLatencyWait; old credit cannot
         // leak across a swapchain-identity change.
-        self.stretch(id, None)
+        let stretch_started = std::time::Instant::now();
+        let stretch_result = self.stretch(id, None);
+        let stretch_elapsed = stretch_started.elapsed();
+        let total = resize_started.elapsed();
+        // Emit outliers only: tracing every WM_SIZE would itself disrupt high-refresh resize.
+        if total >= std::time::Duration::from_millis(16) {
+            log::warn!(
+                target: "gpui_gpu_resize",
+                "slow_dx11_resize_phases physical_px={}x{} total_us={} pacing_cancel_us={} context_flush_us={} dxgi_resize_buffers_us={} backbuffer_view_us={} dcomp_reset_us={}",
+                width,
+                height,
+                total.as_micros(),
+                cancel_elapsed.as_micros(),
+                flush_elapsed.as_micros(),
+                dxgi_elapsed.as_micros(),
+                view_elapsed.as_micros(),
+                stretch_elapsed.as_micros(),
+            );
+        }
+        stretch_result
     }
     /// Replaces alpha/presentation configuration at a swapchain lifecycle boundary.
     /// # Errors
