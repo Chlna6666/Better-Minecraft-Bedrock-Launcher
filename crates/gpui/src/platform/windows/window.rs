@@ -87,6 +87,18 @@ pub(crate) struct QueuedScene {
     pub(crate) framebuffer_only: bool,
 }
 
+/// A resize packet is valid only for its layout generation. A zero-sized
+/// minimized client does not accept a replacement Present; synthetic packets
+/// (no layout extent) retain their existing backend-test behavior.
+fn native_extent_matches_layout(
+    layout: Option<(u32, u32)>,
+    client: winit::dpi::PhysicalSize<u32>,
+) -> bool {
+    client.width == 0
+        || client.height == 0
+        || layout.is_none_or(|(width, height)| width == client.width && height == client.height)
+}
+
 impl QueuedScene {
     fn prepare_for_native_frame(&mut self, now: Instant) {
         self.packet.frame_time = now;
@@ -1437,12 +1449,19 @@ impl WindowsWindow {
         // A cached old-size Scene cannot fill an enlarged HWND, regardless of
         // GPU throughput; presenting it exposes black strips on every backend.
         // Only the matching viewport generation can consume a pending Resize.
-        if let (Some(layout_extent), Some(native)) =
-            (packet.layout_extent, self.native_client_extent())
-            && native.width > 0
-            && native.height > 0
-            && layout_extent != (native.width, native.height)
+        if let Some(native) = self.native_client_extent()
+            && !native_extent_matches_layout(packet.layout_extent, native)
         {
+            if crate::diagnostics::gpu_owner::resize_trace_enabled() {
+                log::info!(
+                    target: "gpui_resize_trace",
+                    "gpui_resize stage=stale_scene window_id={} layout_px={:?} native_px={}x{}",
+                    self.0.handle.window_id().data().as_ffi(),
+                    packet.layout_extent,
+                    native.width,
+                    native.height,
+                );
+            }
             self.sync_current_native_size();
             self.request_frame(PlatformFrameRequest::ui_commit());
             return PlatformFrameResult::Deferred;
@@ -2816,6 +2835,22 @@ mod tests {
         assert!(report.failed, "a GPU error must not disappear");
         assert_eq!(report.ready_enqueued_at, Some(ready_at));
         assert!(mailbox.take().is_none());
+    }
+
+    #[test]
+    fn scene_layout_extent_must_match_current_hwnd_client() {
+        use super::native_extent_matches_layout;
+        use winit::dpi::PhysicalSize;
+
+        let current = PhysicalSize::new(1400, 900);
+        assert!(native_extent_matches_layout(Some((1400, 900)), current));
+        assert!(!native_extent_matches_layout(Some((1200, 900)), current));
+        assert!(!native_extent_matches_layout(Some((1400, 800)), current));
+        assert!(native_extent_matches_layout(None, current));
+        assert!(native_extent_matches_layout(
+            Some((1400, 900)),
+            PhysicalSize::new(0, 0),
+        ));
     }
 
     #[test]
