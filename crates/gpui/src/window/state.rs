@@ -838,6 +838,15 @@ impl Window {
 
     /// Close this window.
     pub fn remove_window(&mut self) {
+        if self.removed {
+            return;
+        }
         self.removed = true;
+        // The custom titlebar closes windows through Window::remove_window,
+        // bypassing winit CloseRequested. Hide the native HWND immediately,
+        // before GPU owner teardown or application quit observers run.
+        // This mirrors the immediate hide in Zed's Windows window Drop.
+        #[cfg(target_os = "windows")]
+        self.platform_window.hide_window();
     }
 }
