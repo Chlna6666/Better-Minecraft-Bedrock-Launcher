@@ -625,9 +625,28 @@ impl Entry {
 
 impl Drop for Entry {
     fn drop(&mut self) {
+        // This is the GPU owner thread, not the HWND/UI thread. Pair these
+        // boundaries with the native close log to distinguish renderer
+        // teardown faults from erroneous application-level exit decisions.
+        log::debug!(
+            target: "gpui_gpu_shutdown",
+            "renderer shutdown begin owner_id={} window_id={:?}",
+            self.id,
+            {
+                #[cfg(target_os = "windows")]
+                { self.window_id }
+                #[cfg(not(target_os = "windows"))]
+                { Option::<u64>::None }
+            }
+        );
         self.queue.close();
         self.ready_registration.store(0, Ordering::Release);
         self.renderer.destroy();
+        log::debug!(
+            target: "gpui_gpu_shutdown",
+            "renderer shutdown completed owner_id={}",
+            self.id
+        );
         gpu_owner::unregister(self.id);
     }
 }
