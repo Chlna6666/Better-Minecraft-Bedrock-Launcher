@@ -4,13 +4,32 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::error::{BlockModelError, Result};
+use crate::resource::ResourceFile;
 
 pub fn read_json_file(path: &Path) -> Result<Value> {
     let content = fs::read_to_string(path).map_err(|source| BlockModelError::Read {
         path: path.to_path_buf(),
         source,
     })?;
-    let relaxed_content = strip_json_comments_and_trailing_commas(&content);
+    parse_json(&content, path)
+}
+
+pub(crate) fn read_resource_json(resource: &ResourceFile) -> Result<Value> {
+    let bytes = resource.read()?;
+    if bytes.starts_with(b"\x7fMCB") {
+        return Err(BlockModelError::UnsupportedMcb {
+            path: resource.path().to_owned(),
+        });
+    }
+    let content = std::str::from_utf8(&bytes).map_err(|source| BlockModelError::Read {
+        path: resource.path().to_owned(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, source),
+    })?;
+    parse_json(content, resource.path())
+}
+
+fn parse_json(content: &str, path: &Path) -> Result<Value> {
+    let relaxed_content = strip_json_comments_and_trailing_commas(content);
     serde_json::from_str(&relaxed_content).map_err(|source| BlockModelError::Json {
         path: path.to_path_buf(),
         source,

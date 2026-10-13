@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -100,16 +100,6 @@ pub fn normalize_texture_path(texture_path: &str) -> String {
         .or_else(|| path.strip_suffix(".jpg"))
         .unwrap_or(&path);
     trimmed.trim_matches('/').to_owned()
-}
-
-#[must_use]
-pub fn terrain_texture_paths(pack_root: &Path) -> Vec<PathBuf> {
-    [
-        pack_root.join("textures").join("terrain_texture.json"),
-        pack_root.join("terrain_texture.json"),
-    ]
-    .into_iter()
-    .collect()
 }
 
 fn collect_texture_paths(value: &Value, paths: &mut Vec<String>) {

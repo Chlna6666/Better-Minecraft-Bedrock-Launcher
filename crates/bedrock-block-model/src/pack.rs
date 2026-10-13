@@ -2,16 +2,16 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
-use walkdir::WalkDir;
 
-use crate::error::{BlockModelError, Result};
+use crate::error::Result;
 use crate::geometry::{BlockGeometry, GeometryLibrary};
-use crate::json::read_json_file;
+use crate::json::{read_json_file, read_resource_json};
 use crate::material::BlockComponents;
 use crate::permutation::BlockPermutation;
 use crate::resolver::{ResolvedBlockModel, resolve_block};
+use crate::resource::PackResources;
 use crate::state::BlockStateQuery;
-use crate::texture::{TerrainTextureAtlas, terrain_texture_paths};
+use crate::texture::TerrainTextureAtlas;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BlockModelRepository {
@@ -47,21 +47,37 @@ impl BlockModelRepository {
 
     /// Merges one resource-pack root into this repository.
     ///
+    /// Reads loose files and mirrored `__brarchive` v1 entries without extracting
+    /// the pack. Embedded content wins over a matching loose file; empty archive
+    /// registrations fall back to loose files. Only text JSON is interpreted,
+    /// preserving unknown fields in the existing raw values without conversion.
+    ///
     /// # Errors
     ///
-    /// Returns an error when any supported JSON file under the pack cannot be read or parsed.
+    /// Returns an error for invalid/unsupported archives, compiled MCB resources,
+    /// or supported JSON files that cannot be read or parsed.
     pub fn merge_pack(&mut self, pack_root: &Path) -> Result<()> {
-        for terrain_texture_path in terrain_texture_paths(pack_root) {
-            self.terrain_textures.merge_file(&terrain_texture_path)?;
-        }
+        self.merge_resources(&PackResources::open(pack_root)?)
+    }
 
-        let root_blocks_json = pack_root.join("blocks.json");
-        if root_blocks_json.exists() {
-            self.merge_blocks_file(&root_blocks_json)?;
+    pub(crate) fn merge_resources(&mut self, resources: &PackResources) -> Result<()> {
+        for path in ["textures/terrain_texture.json", "terrain_texture.json"] {
+            if let Some(resource) = resources.get(Path::new(path)) {
+                self.terrain_textures
+                    .merge_value(&read_resource_json(&resource)?);
+            }
         }
-
-        self.merge_block_files(pack_root)?;
-        self.merge_geometry_files(pack_root)?;
+        if let Some(resource) = resources.get(Path::new("blocks.json")) {
+            self.merge_blocks_value(&read_resource_json(&resource)?);
+        }
+        for folder in ["blocks", "definitions/blocks"] {
+            for resource in resources.json_files(Path::new(folder))?.values() {
+                self.merge_blocks_value(&read_resource_json(resource)?);
+            }
+        }
+        for resource in resources.json_files(Path::new("models"))?.values() {
+            self.geometries.merge_value(&read_resource_json(resource)?);
+        }
         Ok(())
     }
 
@@ -103,47 +119,6 @@ impl BlockModelRepository {
     #[must_use]
     pub fn geometry(&self, identifier: &str) -> Option<&BlockGeometry> {
         self.geometries.get(identifier)
-    }
-
-    fn merge_block_files(&mut self, pack_root: &Path) -> Result<()> {
-        for folder in [
-            pack_root.join("blocks"),
-            pack_root.join("definitions").join("blocks"),
-        ] {
-            if !folder.exists() {
-                continue;
-            }
-            for entry in WalkDir::new(&folder) {
-                let entry = entry.map_err(|source| BlockModelError::Walk {
-                    path: folder.clone(),
-                    source,
-                })?;
-                let path = entry.path();
-                if is_json_file(path) {
-                    self.merge_blocks_file(path)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn merge_geometry_files(&mut self, pack_root: &Path) -> Result<()> {
-        let models_root = pack_root.join("models");
-        if !models_root.exists() {
-            return Ok(());
-        }
-
-        for entry in WalkDir::new(&models_root) {
-            let entry = entry.map_err(|source| BlockModelError::Walk {
-                path: models_root.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            if is_json_file(path) {
-                self.merge_geometry_file(path)?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -248,12 +223,6 @@ fn minecraft_identifier_alias(identifier: &str) -> Option<String> {
         return Some(stripped.to_owned());
     }
     (!identifier.contains(':')).then(|| format!("minecraft:{identifier}"))
-}
-
-fn is_json_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
 }
 
 #[cfg(test)]

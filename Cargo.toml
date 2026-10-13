@@ -143,6 +143,7 @@ gpui-windows-vulkan = ["gpui/nova-gfx-vulkan"]
 [workspace]
 resolver = "3"
 members = [
+    "crates/bedrock-brarchive",
     "crates/bedrock-block-model",
     "crates/bedrock-leveldb",
     "crates/bedrock-world",
@@ -179,6 +180,9 @@ members = [
     "crates/nova-gfx/examples/gpui-minimal-window-smoke",
 ]
 exclude = ["crates/easytier", "crates/raknet", "vendor/sctk-adwaita"]
+
+[workspace.dependencies]
+fearless_simd = "=1.1.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-future = "0.3.2"

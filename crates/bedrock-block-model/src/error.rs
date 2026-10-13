@@ -7,6 +7,17 @@ pub type Result<T> = std::result::Result<T, BlockModelError>;
 
 #[derive(Debug, Error)]
 pub enum BlockModelError {
+    /// `BRArchive` index, version, range or payload read failure at this container.
+    #[error("failed to read BRArchive {path}: {source}")]
+    Archive {
+        path: PathBuf,
+        #[source]
+        source: bedrock_brarchive::Error,
+    },
+
+    /// Compiled MCB bytes require a separate decoder rather than JSON parsing.
+    #[error("compiled MCB resource is not supported: {path}")]
+    UnsupportedMcb { path: PathBuf },
     #[error("failed to read {path}: {source}")]
     Read { path: PathBuf, source: io::Error },
 

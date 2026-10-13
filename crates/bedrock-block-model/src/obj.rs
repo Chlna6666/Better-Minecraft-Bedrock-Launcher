@@ -8,12 +8,16 @@ use image::DynamicImage;
 use serde_json::Value;
 
 use crate::json::read_json_file;
+use crate::resource::{PackResources, ResourceFile};
 use crate::{
     BlockFace, BlockModelError, BlockModelRepository, BlockStateQuery, ModelWarning, Result,
 };
 
 pub const MATERIAL_SLOT_SEPARATOR: &str = "__mat_";
 pub const FALLBACK_MATERIAL_NAME: &str = "minecraft_unknown";
+
+mod resource_pack;
+use resource_pack::ObjResourcePack;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjMaterial {
@@ -67,16 +71,20 @@ impl ObjMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjExportMaterial {
-    pub source_texture_path: Option<PathBuf>,
+    /// Loose file or indexed `BRArchive` payload, retained until export completes.
+    pub source_texture_path: Option<ResourceFile>,
     pub material: ObjMaterial,
 }
 
 impl ObjExportMaterial {
+    /// Associates a read-only resource source with an OBJ material. The source
+    /// may be a loose file or archived payload; it is read only during export.
+    /// Cloning a source retains its archive without copying texture bytes.
     #[must_use]
     pub fn from_preview_color(
         material_name: &str,
         color: [f32; 4],
-        source_texture_path: Option<PathBuf>,
+        source_texture_path: Option<ResourceFile>,
         relative_texture_path: Option<String>,
     ) -> Self {
         Self {
@@ -95,7 +103,8 @@ pub struct ObjMaterialSample<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjTextureCopy {
-    pub source_path: PathBuf,
+    /// Read-only source; its logical path need not exist on disk.
+    pub source_path: ResourceFile,
     pub relative_path: String,
     pub tint: Option<[f32; 3]>,
     pub alpha_mask: bool,
@@ -124,7 +133,7 @@ pub fn write_obj_texture_copy(texture_copy: &ObjTextureCopy, target_path: &Path)
         .map_err(|error| {
             BlockModelError::Message(format!(
                 "failed to encode OBJ texture {} as PNG: {error}",
-                texture_copy.source_path.display()
+                texture_copy.source_path.path().display()
             ))
         })?;
     std::fs::write(target_path, encoded.into_inner()).map_err(|source| BlockModelError::Write {
@@ -206,17 +215,13 @@ fn obj_export_texture_target_path(export_root: &Path, relative_path: &str) -> Re
 }
 
 pub fn read_obj_texture_copy_image(texture_copy: &ObjTextureCopy) -> Result<DynamicImage> {
-    let bytes =
-        std::fs::read(&texture_copy.source_path).map_err(|source| BlockModelError::Read {
-            path: texture_copy.source_path.clone(),
-            source,
-        })?;
-    if path_extension_eq(&texture_copy.source_path, "tga") {
+    let bytes = texture_copy.source_path.read()?;
+    if path_extension_eq(texture_copy.source_path.path(), "tga") {
         return image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga).map_err(
             |error| {
                 BlockModelError::Message(format!(
                     "failed to decode OBJ TGA texture {}: {error}",
-                    texture_copy.source_path.display()
+                    texture_copy.source_path.path().display()
                 ))
             },
         );
@@ -224,7 +229,7 @@ pub fn read_obj_texture_copy_image(texture_copy: &ObjTextureCopy) -> Result<Dyna
     image::load_from_memory(&bytes).map_err(|error| {
         BlockModelError::Message(format!(
             "failed to decode OBJ texture {}: {error}",
-            texture_copy.source_path.display()
+            texture_copy.source_path.path().display()
         ))
     })
 }
@@ -345,7 +350,8 @@ pub struct NamedObjMaterial<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjResolvedTexture {
-    pub source_path: PathBuf,
+    /// Read-only source; archive bytes are read on demand by the export writer.
+    pub source_path: ResourceFile,
     pub relative_path: String,
 }
 
@@ -384,14 +390,6 @@ pub struct ObjTextureResolver {
     model_errors: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObjResourcePack {
-    root: PathBuf,
-    texture_root: PathBuf,
-    blocks: Value,
-    texture_data: HashMap<String, String>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObjTextureSlot {
     Up,
@@ -417,15 +415,22 @@ impl ObjTextureResolver {
             }
         }
 
-        let packs = unique_pack_roots
-            .iter()
-            .filter_map(|root| ObjResourcePack::load(root.clone()))
-            .collect();
+        let mut packs = Vec::new();
         let mut models = BlockModelRepository::new();
         let mut model_errors = Vec::new();
         for root in &unique_pack_roots {
-            if let Err(error) = models.merge_pack(root) {
-                model_errors.push(error.to_string());
+            match PackResources::open(root) {
+                Ok(resources) => {
+                    if let Err(error) = models.merge_resources(&resources) {
+                        model_errors.push(error.to_string());
+                    }
+                    match ObjResourcePack::load(root.clone(), resources) {
+                        Ok(Some(pack)) => packs.push(pack),
+                        Ok(None) => {}
+                        Err(error) => model_errors.push(error.to_string()),
+                    }
+                }
+                Err(error) => model_errors.push(error.to_string()),
             }
         }
 
@@ -601,105 +606,13 @@ impl ObjTextureResolver {
             .and_then(|material| material.texture_key.clone())
     }
 
-    fn texture_path_for_key(&self, texture_key: &str) -> Option<(&ObjResourcePack, PathBuf)> {
+    fn texture_path_for_key(&self, texture_key: &str) -> Option<(&ObjResourcePack, ResourceFile)> {
         for pack in self.packs.iter().rev() {
             if let Some(source_path) = pack.texture_path_for_key(texture_key) {
                 return Some((pack, source_path));
             }
         }
         None
-    }
-}
-
-impl ObjResourcePack {
-    #[must_use]
-    pub fn load(root: PathBuf) -> Option<Self> {
-        let texture_root = root.join("textures");
-        if !texture_root.is_dir() {
-            return None;
-        }
-        let blocks = read_optional_json(&root.join("blocks.json")).unwrap_or(Value::Null);
-        let texture_data = read_texture_data_maps(&root, &texture_root);
-        Some(Self {
-            root,
-            texture_root,
-            blocks,
-            texture_data,
-        })
-    }
-
-    #[must_use]
-    pub fn block_texture_key_for(&self, block: &str, normal: [i32; 3]) -> Option<String> {
-        let object = block_definition(&self.blocks, block)?;
-        let textures = object
-            .get("textures")
-            .or_else(|| object.get("texture"))
-            .or_else(|| object.get("carried_textures"))?;
-        obj_texture_key_from_value(textures, normal)
-    }
-
-    #[must_use]
-    pub fn texture_path_for_key(&self, texture_key: &str) -> Option<PathBuf> {
-        let normalized = self
-            .texture_data
-            .get(texture_key)
-            .map(String::as_str)
-            .unwrap_or(texture_key);
-        let normalized = obj_normalize_texture_key(normalized);
-        for relative_path in texture_candidate_relatives(&normalized) {
-            if let Some(path) = find_texture_file(&self.texture_root, &relative_path) {
-                return Some(path);
-            }
-            if let Some(path) = find_texture_file(&self.root, &relative_path) {
-                return Some(path);
-            }
-        }
-        None
-    }
-
-    #[must_use]
-    pub fn packaged_texture_path(
-        &self,
-        texture_directory_name: &str,
-        source_path: &Path,
-    ) -> String {
-        if let Ok(relative_path) = source_path.strip_prefix(&self.texture_root) {
-            return prefixed_relative_path(texture_directory_name, relative_path);
-        }
-        if let Ok(relative_path) = source_path.strip_prefix(&self.root)
-            && let Some(path) = relative_path_string(relative_path)
-        {
-            if path_starts_with_directory(&path, texture_directory_name) {
-                return path;
-            }
-            return format!("{texture_directory_name}/{path}");
-        }
-        source_path
-            .file_name()
-            .and_then(|file_name| file_name.to_str())
-            .map(|file_name| format!("{texture_directory_name}/{file_name}"))
-            .unwrap_or_else(|| format!("{texture_directory_name}/texture.png"))
-    }
-
-    #[must_use]
-    pub fn export_texture_path(&self, texture_directory_name: &str, source_path: &Path) -> String {
-        let relative_path = self.packaged_texture_path(texture_directory_name, source_path);
-        if path_extension_eq(source_path, "tga") {
-            replace_path_extension(&relative_path, "png")
-        } else {
-            relative_path
-        }
-    }
-
-    fn resolved_texture(
-        &self,
-        texture_directory_name: &str,
-        source_path: PathBuf,
-    ) -> ObjResolvedTexture {
-        ObjResolvedTexture {
-            relative_path: self.export_texture_path(texture_directory_name, &source_path),
-            source_path,
-        }
     }
 }
 
@@ -2387,7 +2300,10 @@ fn push_vanilla_resource_pack_roots(roots: &mut Vec<PathBuf>, resource_packs_dir
 }
 
 fn resource_pack_candidate_matches(path: &Path, pack_id: &str, allow_name_fallback: bool) -> bool {
-    if !path.join("textures").is_dir() {
+    if !path.join("textures").is_dir()
+        && !path.join("__brarchive/textures.brarchive").is_file()
+        && !path.join("__brarchive/textures").is_dir()
+    {
         return false;
     }
     if let Some(manifest_uuid) = resource_pack_manifest_uuid(path) {
@@ -5475,7 +5391,7 @@ mod tests {
             ObjExportMaterial::from_preview_color(
                 "minecraft_stone_side",
                 [0.25, 0.5, 0.75, 0.4],
-                Some(PathBuf::from("stone.png")),
+                Some(crate::ResourceFile::file(PathBuf::from("stone.png"))),
                 Some("textures/blocks/stone.png".to_owned()),
             ),
         );
@@ -5494,7 +5410,9 @@ mod tests {
             ObjExportMaterial::from_preview_color(
                 "minecraft_web_side",
                 [1.0, 1.0, 1.0, 1.0],
-                Some(PathBuf::from("textures/blocks/web.png")),
+                Some(crate::ResourceFile::file(PathBuf::from(
+                    "textures/blocks/web.png",
+                ))),
                 Some("textures/blocks/web.png".to_owned()),
             ),
         );
@@ -5523,7 +5441,9 @@ mod tests {
         let material = ObjExportMaterial::from_preview_color(
             "minecraft_web_side",
             [1.0, 1.0, 1.0, 1.0],
-            Some(PathBuf::from("textures/blocks/web.tga")),
+            Some(crate::ResourceFile::file(PathBuf::from(
+                "textures/blocks/web.tga",
+            ))),
             Some("textures/blocks/web.png".to_owned()),
         );
 
@@ -5556,7 +5476,7 @@ mod tests {
         image.put_pixel(1, 0, image::Rgba([200, 210, 220, 255]));
         must_ok(image.save(&source_path));
         let texture_copy = ObjTextureCopy {
-            source_path,
+            source_path: crate::ResourceFile::file(source_path),
             relative_path: "textures/blocks/web_alpha.png".to_owned(),
             tint: None,
             alpha_mask: true,
@@ -5581,7 +5501,7 @@ mod tests {
         image.put_pixel(0, 0, image::Rgba([100, 150, 200, 255]));
         must_ok(image.save(&source_path));
         let texture_copy = ObjTextureCopy {
-            source_path,
+            source_path: crate::ResourceFile::file(source_path),
             relative_path: "textures/blocks/grass.png".to_owned(),
             tint: Some([0.5, 1.0, 0.25]),
             alpha_mask: false,
@@ -5609,7 +5529,7 @@ mod tests {
             obj_text: "# obj\n".to_owned(),
             material_library_text: "# mtl\n".to_owned(),
             texture_copies: vec![ObjTextureCopy {
-                source_path,
+                source_path: crate::ResourceFile::file(source_path),
                 relative_path: "textures/blocks/grass.png".to_owned(),
                 tint: Some([0.5, 1.0, 0.25]),
                 alpha_mask: false,
@@ -5644,7 +5564,7 @@ mod tests {
             obj_text: "# obj\n".to_owned(),
             material_library_text: "# mtl\n".to_owned(),
             texture_copies: vec![ObjTextureCopy {
-                source_path,
+                source_path: crate::ResourceFile::file(source_path),
                 relative_path: "../outside.png".to_owned(),
                 tint: None,
                 alpha_mask: false,

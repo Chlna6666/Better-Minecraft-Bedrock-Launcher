@@ -1,0 +1,25 @@
+[package]
+name = "bedrock-brarchive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+description = "Read-only indexed BRArchive access for Minecraft Bedrock packs"
+publish = false
+
+[features]
+default = ["simd"]
+simd = ["dep:fearless_simd"]
+
+[dependencies]
+fearless_simd = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

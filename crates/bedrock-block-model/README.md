@@ -37,6 +37,24 @@ through resolver warnings instead of panicking.
 
 Later pack roots override earlier roots. Pass packs in low-to-high priority order.
 
+Resource reads also support BRArchive v1 under `__brarchive/`, through the
+self-maintained `bedrock-brarchive` workspace crate. Archive paths mirror pack
+directories: `__brarchive/textures/blocks.brarchive` + `stone.png` resolves to
+`textures/blocks/stone.png`. Non-empty archived payloads override matching loose
+files within one pack; zero-length registrations fall back to loose files.
+Block/model JSON and PNG/TGA textures are read on demand without whole-pack
+extraction. Unknown archive versions and compiled MCB in JSON consumers return
+explicit errors; MCB content decoding is not implemented here.
+Texture/model/block archive indexes are validated when loading a pack, including
+texture directories that a custom material could reference. A malformed index
+fails pack loading even if its particular payload is not requested.
+
+OBJ source fields (`source_path` and `source_texture_path`) now hold `ResourceFile`
+instead of `PathBuf`. For loose inputs use `ResourceFile::file(path)`; use
+`read()` for raw bytes and `path()` only for the logical location/extension.
+An archived resource's logical path need not exist on disk. Source clones retain
+the open archive after the resolver is dropped, including until OBJ export completes.
+
 ## Boundary
 
 `bedrock-block-model` owns resource-pack parsing, block-state permutation resolution,

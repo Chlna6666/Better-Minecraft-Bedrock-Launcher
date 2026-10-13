@@ -762,6 +762,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "bedrock-block-model"
 version = "0.1.0"
 dependencies = [
+ "bedrock-brarchive",
  "bedrock-world",
  "image",
  "serde",
@@ -769,6 +770,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "walkdir",
+]
+
+[[package]]
+name = "bedrock-brarchive"
+version = "0.1.0"
+dependencies = [
+ "fearless_simd",
+ "tempfile",
 ]
 
 [[package]]
@@ -833,6 +842,7 @@ dependencies = [
  "bedrock-leveldb",
  "bytes",
  "criterion",
+ "fearless_simd",
  "indexmap",
  "log",
  "rayon",
@@ -3358,9 +3368,9 @@ dependencies = [
 
 [[package]]
 name = "fearless_simd"
-version = "0.7.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4beca3cb2444e3304ac30843cc091f44ed58932353cd492ce740067bfce6b12"
+checksum = "3296eb97d869113eaf148a6bdf01884e90b3828ad7ae2340b0f93362fc158611"
 
 [[package]]
 name = "ff"

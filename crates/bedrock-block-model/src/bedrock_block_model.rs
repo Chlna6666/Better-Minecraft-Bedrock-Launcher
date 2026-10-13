@@ -19,6 +19,7 @@ mod obj;
 mod pack;
 mod permutation;
 mod resolver;
+mod resource;
 mod state;
 mod texture;
 
@@ -80,6 +81,7 @@ pub use obj::{
 pub use pack::{BlockDefinition, BlockModelRepository};
 pub use permutation::{BlockPermutation, ConditionEvaluation};
 pub use resolver::{ModelWarning, ResolvedBlockModel, ResolvedMaterialInstance, ResolvedTexture};
+pub use resource::ResourceFile;
 pub use state::{BlockStateQuery, BlockStateValue};
 pub use texture::{TerrainTexture, TerrainTextureAtlas};
 

@@ -98,6 +98,7 @@ domain logic.
 | Path | Responsibility |
 | --- | --- |
 | `crates/bedrock-leveldb` | Mojang LevelDB storage driver, validation, recovery, locking, flush, and compaction. It must not contain Minecraft world-domain decoding. |
+| `crates/bedrock-brarchive` | Read-only BRArchive container indexing and selected raw payload access, with optional metadata SIMD validation. Payload JSON/image decoding remains in consumers. |
 | `crates/bedrock-world` | Minecraft Bedrock world, chunk, block state, biome, player, entity, item, structure, and compatibility APIs built on `bedrock-leveldb`. |
 | `crates/bedrock-block-model` | Locally vendored resource-pack block-model resolver. It consumes `bedrock-world::BlockState` directly so model selection includes direction, open/closed, upper/lower, waterlogged, connection, and other Bedrock block states. |
 | `crates/bedrock-render` | Bedrock world-tile and map-item image rendering over the current `bedrock-world` API. It does not parse OBJ files or own world-edit workflows. |
