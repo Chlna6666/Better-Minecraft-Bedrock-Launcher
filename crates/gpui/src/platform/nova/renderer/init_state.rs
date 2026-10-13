@@ -113,6 +113,7 @@ impl NovaRenderer {
             submitted_frames: 0,
             swapchain_warmup_frames: SWAPCHAIN_WARMUP_FRAME_COUNT,
             live_resize_active: false,
+            live_resize_size: None,
             active_presentation_packet: None,
             pending_animation_completions: SmallVec::new(),
             destroyed: false,

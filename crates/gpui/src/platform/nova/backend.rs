@@ -305,55 +305,32 @@ impl NovaBackend {
         }
     }
 
-    /// Only D3D composition surfaces may use a scaled old-frame fallback.
-    /// Vulkan must wait for an actual extent-matched redraw and present.
-    pub(super) fn supports_live_resize_stretch(&self) -> bool {
+    /// Whether an oversized drawable is cropped at native pixel scale instead of stretched.
+    pub(super) fn supports_unscaled_presentation(
+        &self,
+        swapchain: SwapchainId,
+        extent: gfx_core::Extent2d,
+    ) -> Result<bool> {
         match self {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(_) => true,
+            Self::Dx11(_) => Ok(true),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(_) => true,
-            _ => false,
-        }
-    }
-
-    /// Stretches composited swapchain content over a pending window resize.
-    pub(super) fn set_swapchain_content_stretch(
-        &mut self,
-        swapchain: SwapchainId,
-        scale: Option<[f32; 2]>,
-    ) -> Result<()> {
-        match self {
+            Self::Dx12(_) => Ok(true),
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(_) => Ok(()),
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            Self::Metal(_) => Ok(()),
+            Self::OpenGl(_) => Ok(cfg!(target_os = "windows")),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(_) => Ok(()),
-            #[cfg(not(any(
-                all(
-                    feature = "nova-gfx-opengl",
-                    any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            Self::Unavailable => Ok(()),
+            Self::Vulkan(device) => Ok(device.supports_unscaled_presentation(swapchain, extent)?),
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = (swapchain, extent);
+                Ok(false)
+            }
         }
     }
 

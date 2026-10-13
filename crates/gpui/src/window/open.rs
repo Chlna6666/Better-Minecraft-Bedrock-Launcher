@@ -191,6 +191,20 @@ impl Window {
         )
         .detach();
         platform_window.set_frame_request_sender(frame_request_sender);
+        platform_window.on_live_resize_frame(Box::new({
+            let mut cx = cx.to_async();
+            move |request| {
+                match handle.update(&mut cx, |_, window, cx| {
+                    window.run_platform_frame(request, cx);
+                }) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        log::trace!("deferring native resize frame to its UI owner: {error:#}");
+                        false
+                    }
+                }
+            }
+        }));
         let (animation_completion_sender, animation_completion_receiver) =
             futures::channel::mpsc::unbounded();
         cx.spawn_stream(animation_completion_receiver, move |completion, cx| {
@@ -472,6 +486,8 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
+            live_resize_active: false,
+            live_resize_image_views: FxHashSet::default(),
             layout_engine: Some(TaffyLayoutEngine::new()),
             root: None,
             element_id_stack: SmallVec::default(),

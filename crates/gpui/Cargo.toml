@@ -373,7 +373,7 @@ version = "2.1.1"
 version = "0.3.0"
 
 [dependencies.fearless_simd]
-version = "0.7.0"
+workspace = true
 
 [dependencies.futures]
 version = "0.3"

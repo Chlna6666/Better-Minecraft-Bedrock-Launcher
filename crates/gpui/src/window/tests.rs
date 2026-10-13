@@ -23,6 +23,50 @@ impl Render for EmptyTestView {
     }
 }
 
+struct ResizeBudgetView {
+    width: Pixels,
+    expire_budget: bool,
+}
+
+impl Render for ResizeBudgetView {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if self.expire_budget {
+            window.test_expire_draw_budget();
+        }
+        crate::div().child(crate::deferred(
+            crate::div().w(self.width).h(px(24.0)).bg(crate::white()),
+        ))
+    }
+}
+
+#[gpui::test]
+fn live_resize_commits_new_geometry_after_draw_budget_expires(cx: &mut TestAppContext) {
+    let (view, mut cx) = cx.add_window_view(|_, _| ResizeBudgetView {
+        width: px(40.0),
+        expire_budget: false,
+    });
+    cx.update(|window, cx| {
+        window
+            .last_input_timestamp
+            .set(Instant::now() - Duration::from_secs(2));
+        window.test_expire_draw_budget();
+        assert!(window.draw_budget_exhausted());
+        window.live_resize_active = true;
+        view.update(cx, |view, _cx| {
+            view.width = px(80.0);
+            view.expire_budget = true;
+        });
+        window.refresh();
+        window.draw(cx);
+        assert!(!window.draw_was_degraded());
+        assert!(
+            window.rendered_frame.scene.quads.iter().any(|quad| {
+                quad.bounds.size.width == px(80.0).scale(window.scale_factor)
+            })
+        );
+    });
+}
+
 struct SceneAnimationSpecRetargetView {
     easing: Easing,
 }
@@ -949,8 +993,9 @@ fn content_bounds_change_still_dirties_window(cx: &mut TestAppContext) {
 fn rapid_resize_updates_latest_viewport_without_invalidating_companion_window(
     cx: &mut TestAppContext,
 ) {
-    let mut resized = cx.add_empty_window();
-    let companion = cx.add_empty_window();
+    let mut companion_cx = cx.clone();
+    let resized = cx.add_empty_window();
+    let companion = companion_cx.add_empty_window();
     let (companion_viewport, companion_frames) = companion.update(|window, _| {
         let test_window = window.platform_window.as_test().unwrap().clone();
         (window.viewport_size(), test_window.requested_frame_count())
@@ -1130,8 +1175,9 @@ fn background_pointer_button_does_not_request_frame(cx: &mut TestAppContext) {
 fn inert_mouse_click_storm_does_not_invalidate_sibling_window_or_cached_views(
     cx: &mut TestAppContext,
 ) {
+    let mut sibling_cx = cx.clone();
     let first = cx.add_empty_window();
-    let sibling = cx.add_empty_window();
+    let sibling = sibling_cx.add_empty_window();
 
     sibling.update(|window, _| {
         window.invalidator.set_dirty(false);

@@ -497,6 +497,21 @@ pub(in crate::platform::nova) mod native_window {
         pub(in crate::platform::nova) fn renderer_fixture() -> Self {
             Self::create(WS_POPUP, 512)
         }
+        pub(in crate::platform::nova) fn resize(&self, width: u32, height: u32) {
+            // SAFETY: the fixture owns this HWND on the test thread; only its size changes.
+            unsafe {
+                SetWindowPos(
+                    self.0,
+                    None,
+                    0,
+                    0,
+                    width as i32,
+                    height as i32,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            }
+            .expect("resize fixture HWND");
+        }
         fn create(style: WINDOW_STYLE, size: i32) -> Self {
             // SAFETY: built-in STATIC class; a hidden HWND is owned and destroyed on this thread.
             let handle = unsafe {

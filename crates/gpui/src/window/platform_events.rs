@@ -52,6 +52,7 @@ impl Window {
         let scale_factor = self.platform_window.scale_factor();
         let viewport_size = self.platform_window.content_size();
         let display_id = self.platform_window.display().map(|display| display.id());
+        let live_resize_active = self.platform_window.is_live_resizing();
 
         let text_rasterization_changed =
             self.scale_factor != scale_factor || self.display_id != display_id;
@@ -59,6 +60,7 @@ impl Window {
         if self.scale_factor == scale_factor
             && self.viewport_size == viewport_size
             && self.display_id == display_id
+            && self.live_resize_active == live_resize_active
         {
             return;
         }
@@ -66,6 +68,7 @@ impl Window {
         self.scale_factor = scale_factor;
         self.viewport_size = viewport_size;
         self.display_id = display_id;
+        self.live_resize_active = live_resize_active;
         self.mouse_position = self.platform_window.mouse_position();
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
@@ -98,6 +101,15 @@ impl Window {
         let root_view_id = self.root.as_ref().map(AnyView::entity_id);
         if let Some(root_id) = root_view_id {
             self.invalidator.invalidate_view(root_id, cx);
+        }
+        if !live_resize_active {
+            // Only image owners whose target size was deferred need a final
+            // resample. Static siblings keep their retained scene and atlas data.
+            for view_id in self.live_resize_image_views.drain() {
+                if Some(view_id) != root_view_id {
+                    self.invalidator.invalidate_view(view_id, cx);
+                }
+            }
         }
         let viewport_dependent_views = self
             .viewport_dependent_views

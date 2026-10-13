@@ -26,6 +26,7 @@ mod preparation;
 use init_state::InitializedRenderer;
 mod present;
 mod retained_upload;
+mod resize_plan;
 mod shared_buffers;
 mod submission;
 mod surface_lifecycle;
@@ -83,7 +84,7 @@ pub(super) fn nova_present_mode_for_backend(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct DrawableSize {
     pub(super) width: u32,
     pub(super) height: u32,
@@ -169,6 +170,7 @@ pub(crate) struct NovaRenderer {
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
     live_resize_active: bool,
+    live_resize_size: Option<Size<DevicePixels>>,
     active_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
@@ -277,12 +279,12 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
-    #[cfg(target_os = "windows")]
-    pub(crate) fn supports_live_resize_stretch(&self) -> bool {
-        lock_backend(&self.backend).supports_live_resize_stretch()
-    }
-
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
+        if self.live_resize_active && !active {
+            if let Some(size) = self.live_resize_size.take() {
+                self.pending_drawable_size = Some(size);
+            }
+        }
         self.live_resize_active = active;
     }
 
@@ -889,12 +891,21 @@ impl NovaRenderer {
         }
         self.destroyed = true;
         self.active_presentation_packet = None;
+        let destroy_started_at = Instant::now();
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
+        let submission_wait = destroy_started_at.elapsed();
         self.destroy_renderer_extensions();
         self.destroy_window_resources();
         self.memory_profile.remove();
+        let total = destroy_started_at.elapsed();
+        if total >= std::time::Duration::from_millis(16) {
+            log::warn!(target: "gpui_gpu_shutdown",
+                "slow_renderer_destroy backend={} total_us={} submission_wait_us={} resources_us={}",
+                self.backend_info.label(), total.as_micros(), submission_wait.as_micros(),
+                total.saturating_sub(submission_wait).as_micros());
+        }
     }
 
     /// The Window can submit a compositor-owned animation without an

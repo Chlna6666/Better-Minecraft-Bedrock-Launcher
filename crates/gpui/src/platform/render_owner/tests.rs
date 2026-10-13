@@ -8,6 +8,7 @@ fn owner(pending: bool) -> (RenderOwner, mpsc::Receiver<Job>) {
         sender,
         owner_thread: thread::current().id(),
         status: Arc::new(Status {
+
             pending: AtomicBool::new(pending),
             submitted: AtomicBool::new(true),
             waiting_for_frame_ready: AtomicBool::new(false),

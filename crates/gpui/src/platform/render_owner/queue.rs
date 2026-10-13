@@ -17,13 +17,11 @@ pub(super) enum Command {
         packet: PresentationPacket,
         framebuffer_only: bool,
         reply: Option<SyncSender<Result<bool>>>,
+
     },
     Tick(Instant, Option<ActivePresentationTiming>),
     Continue(Instant),
     Resize(Size<DevicePixels>),
-    /// Latest-wins native compositor stretch while WM_SIZE changes the client extent.
-    #[cfg(any(test, target_os = "windows"))]
-    StretchResize(Size<DevicePixels>),
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -43,7 +41,6 @@ impl Command {
         !matches!(
             self,
             Self::Resize(_)
-                | Self::StretchResize(_)
                 | Self::Draw { reply: None, .. }
                 | Self::Tick(..)
                 | Self::Continue(..)
@@ -57,8 +54,6 @@ impl Command {
             | Self::Call(_)
             | Self::Shutdown(_)
             | Self::Draw { reply: Some(_), .. } => true,
-            #[cfg(any(test, target_os = "windows"))]
-            Self::StretchResize(_) => true,
             #[cfg(any(test, not(target_os = "windows")))]
             Self::PresentationInterval(_) => true,
             #[cfg(not(target_os = "windows"))]
@@ -131,14 +126,12 @@ impl Queue {
             }).count();
             if resize_count >= 2 {
                 let mut newest_resize = None;
-                let mut newest_stretch = None;
                 for obsolete in state.commands.drain(start..) {
                     first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
                     coalesced_count = coalesced_count
                         .saturating_add(obsolete.coalesced_count.saturating_add(1));
                     match obsolete.command {
                         Command::Resize(size) => newest_resize = Some(size),
-                        Command::StretchResize(size) => newest_stretch = Some(size),
                         Command::Draw { packet: previous, .. } => {
                             packet.merge_pending_damage_from(&previous);
                         }
@@ -147,16 +140,6 @@ impl Queue {
                     }
                 }
                 let size = newest_resize.expect("at least two pending resizes");
-                // Stretch is only meaningful if it matches the latest native
-                // resize. Never replay a stale compositor scale after collapse.
-                if newest_stretch == Some(size) {
-                    state.commands.push_back(QueuedCommand {
-                        command: Command::StretchResize(size),
-                        enqueued_at,
-                        first_enqueued_at,
-                        coalesced_count: 0,
-                    });
-                }
                 state.commands.push_back(QueuedCommand {
                     command: Command::Resize(size),
                     enqueued_at,
@@ -171,19 +154,6 @@ impl Queue {
             .rposition(|queued| queued.command.is_barrier())
             .map_or(0, |index| index + 1);
         match &mut command {
-            #[cfg(any(test, target_os = "windows"))]
-            Command::StretchResize(_) => {
-                // Only replace the immediately preceding stretch; a Draw, swapchain
-                // Resize or resource barrier must observe the prior stretch in order.
-                if state.commands.back().is_some_and(|last| {
-                    matches!(last.command, Command::StretchResize(_))
-                }) {
-                    let previous = state.commands.pop_back()
-                        .expect("last command was a stretch");
-                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
-                    coalesced_count = previous.coalesced_count.saturating_add(1);
-                }
-            }
             Command::Resize(_) => {
                 // Collapse adjacent unconsumed resizes only. Never cross a Draw,
                 // fence-bearing Call, or resource ownership barrier.
@@ -298,6 +268,19 @@ impl Queue {
                 Command::Draw { .. } | Command::Tick(..) | Command::Continue(..)
             )
         })
+    }
+
+    /// A committed scene subsumes optional ticks before resource-control barriers.
+    pub(super) fn has_pending_draw(&self) -> bool {
+        for queued in &self.0.lock().commands {
+            match &queued.command {
+                Command::Draw { .. } => return true,
+                Command::Resize(_) => {}
+                command if command.is_barrier() => break,
+                _ => {}
+            }
+        }
+        false
     }
 
     pub(super) fn has_commands(&self) -> bool {

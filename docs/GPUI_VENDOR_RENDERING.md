@@ -217,12 +217,66 @@ Interactive Win32 resize correctness:
 - The GPUI resize callback attempts a low-latency immediate Window update.
   Reentrant App/Window borrowing from the Win32 size/move modal loop defers one
   coalesced foreground retry that reads the latest authoritative viewport.
-- Compositor stretch of an old frame during live resize uses a per-window typed
-  StretchResize GPU command. Adjacent queued stretches coalesce latest-wins,
-  but never cross Draw, swapchain Resize, or other resource-order barriers.
+  Each live UI frame also reconciles native content size/scale before layout,
+  covering the case where that deferred callback has not run before the frame.
+- Live resize retains native pixel scale. Do not stretch an old framebuffer to
+  hide delayed layout. The UI viewport always follows the client extent; an
+  unscaled backend may retain larger drawable capacity in 128-pixel increments,
+  cropping at the client boundary and using the allocated extent for projection,
+  viewport and attachments. Pointer release settles to the final exact extent.
+  Vulkan requires maintenance1 ONE_TO_ONE scaling with top/left or native Win32
+  gravity. Retained capacity must fit the advertised scaled-image extent limits;
+  unsupported surfaces retain exact-size swapchains.
 - A pure move does not invalidate layout. Resize must ultimately update root
-  constraints, GPUI viewport and drawable extent; stretched pixels are only
-  an interim latency mask, not the resulting correct-size Scene.
+  constraints and GPUI viewport, and render elements at their new layout positions.
+- Submit a changed drawable extent with its matching UI Scene. A retained tick
+  must not consume the pending native extent before the new layout is committed.
+  GPU readiness continuations defer to a queued Draw within the same control-free
+  segment, avoiding an old-layout redraw between Resize and Draw.
+- Keep one latest native extent per display tick. UI commits must be allowed to replace
+  an older GPU packet awaiting readiness; GPU backpressure must not serialize
+  new-size layout behind an obsolete presentation. Queued Resize/Draw pairs
+  remain latest-wins and preserve accumulated damage.
+- A real client-size change may publish and pump its UI commit in the native
+  message turn, before waiting for the next DWM wake. Native size events and DWM
+  dispatch share one per-window cadence, honoring both the display interval and
+  an explicit window FPS limit. The first real change starts immediately; merely
+  entering the move/resize loop does not rebuild an old-size scene. Existing DWM
+  wakes handle coalesced trailing sizes, without an extra timer.
+- Live resize first attempts the UI frame inline through its normal frame
+  lifecycle; a borrowed UI owner falls back to the coalesced sender. Once its
+  matching scene has been queued, the native size-message path waits at most
+  16ms for that per-owner submission serial. Only a successful backend Present
+  (or a superseding submitted packet) acknowledges it; readiness deferral and
+  an old extent's report cannot acknowledge a newer packet. Queue compaction and
+  deferred retries retain the newest serial. The wait releases renderer/App
+  borrows, sleeps on a condition variable and services driver sent messages.
+  Failure, shutdown and the deadline release it. No DwmFlush or GPU fence is
+  added; the acknowledgement does not establish desktop scanout completion.
+  A failed retained reconstruction keeps the new drawable extent pending until
+  a completed recovery draw, instead of tagging the old scene as a new-size frame.
+- Live resize does not mask unpainted strips with an HWND region: doing so can
+  disable themed non-client rendering and only masks delayed content. Native
+  window chrome remains owned by DWM; the existing old-system corner fallback
+  remains separate. No per-resize composition checkpoint is added.
+- Live resize completes new-size geometry even if the progressive draw budget
+  expires. Native edge dragging does not deliver ordinary GPUI pointer input,
+  so it needs this scoped protection from budget-based old-scene fallback.
+  Retained reconstruction failures still use the existing recovery path.
+- Retain committed sized-image pixels during live resize when resource, scale
+  factor and object-fit are unchanged. Do not decode/resample every transient
+  viewport. GPU image geometry follows the current layout; the final resize phase
+  invalidates the root and only deferred image owners once, resolving their final
+  size-specific requests. BMCBL's full-window background instead uses the existing
+  source-keyed ResourceImageLoader: viewport changes only adjust GPU Cover geometry,
+  including after pointer release, without requesting another sized decode.
+  Its bottom-center object position preserves the bottom of the background at
+  wide aspect ratios; other image elements keep their existing default alignment.
+- Poll the renderer's pending submissions before resize on every backend. Vulkan
+  still keeps its driver-level device-idle swapchain replacement barrier. Old blur
+  targets retire on resize; new targets are allocated after packing the new Scene,
+  using its actual capture topology. Resize phase metrics exclude that subsequent
+  blur preparation, so compare resize plus first-frame draw rather than resize alone.
 - Validate grow/shrink, reentrant WM_SIZE, multi-window modal drag and cross-DPI
   moves; collect viewport, native-client and drawable extents plus frame latencies.
 

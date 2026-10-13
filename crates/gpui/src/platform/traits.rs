@@ -172,6 +172,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_minimized(&self) -> bool {
         false
     }
+    /// Whether native interactive resizing currently owns this window's dimensions.
+    /// Sized image elements may reuse decoded pixels until the final size settles.
+    fn is_live_resizing(&self) -> bool {
+        false
+    }
     /// Returns whether the platform is actually presenting this window.
     ///
     /// Platforms with richer occlusion information should override this. The fallback preserves
@@ -241,6 +246,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Updates the cadence limit on an active renderer-owned animation packet.
     fn set_frame_interval(&self, _interval: Option<Duration>) {}
     fn set_frame_request_sender(&self, sender: PlatformFrameRequestSender);
+    /// Registers an opportunistic UI-owner callback during native live resizing.
+    /// Returning false retains delivery through the coalesced frame-request sender.
+    fn on_live_resize_frame(&self, _callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {}
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> DispatchEventResult>);
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>);
     /// Registers a callback for presentation visibility transitions.

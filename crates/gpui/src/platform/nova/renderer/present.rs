@@ -1484,7 +1484,6 @@ impl NovaRenderer {
         // buffers are rebuilt. Only publish the identity transform after the first new-size
         // frame has been successfully presented; resetting it during ResizeBuffers exposes
         // undefined backbuffer contents as black client-area margins.
-        self.reset_live_resize_stretch();
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
         if has_backdrop_blurs {

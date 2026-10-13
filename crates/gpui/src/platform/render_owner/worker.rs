@@ -3,6 +3,7 @@ use super::{
     queue::{Command, Queue},
     schedule::Schedule,
 };
+
 use crate::diagnostics::gpu_owner::{self, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample};
 use crate::{PresentationPacket, platform::NovaRenderer};
 use anyhow::Result;
@@ -117,6 +118,9 @@ pub(super) struct Entry {
     last_logged_swapchain_extent: Option<(u32, u32)>,
     #[cfg(target_os = "windows")]
     requested_swapchain_extent: Option<(u32, u32)>,
+    #[cfg(target_os = "windows")]
+    resize_awaiting_draw: bool,
+
     renderer: NovaRenderer,
     queue: Arc<Queue>,
     status: Arc<Status>,
@@ -150,6 +154,9 @@ impl Entry {
             last_logged_swapchain_extent: None,
             #[cfg(target_os = "windows")]
             requested_swapchain_extent: None,
+            #[cfg(target_os = "windows")]
+            resize_awaiting_draw: false,
+
             renderer,
             queue,
             status,
@@ -180,8 +187,6 @@ impl Entry {
             Command::Tick(..) => GpuOwnerJobKind::Tick,
             Command::Continue(..) => GpuOwnerJobKind::Continue,
             Command::Resize(..) => GpuOwnerJobKind::Resize,
-            #[cfg(any(test, target_os = "windows"))]
-            Command::StretchResize(..) => GpuOwnerJobKind::Resize,
             _ => GpuOwnerJobKind::Control,
         };
         let started_at = Instant::now(); // Command service time, not visual animation time.
@@ -250,6 +255,10 @@ impl Entry {
                 reply,
             } => {
                 #[cfg(target_os = "windows")]
+                {
+                    self.resize_awaiting_draw = false;
+                }
+                #[cfg(target_os = "windows")]
                 if self.window_id != Some(packet.window_id) {
                     self.window_id = Some(packet.window_id);
                     // A GPU control can run before the first scene packet binds the GPUI
@@ -279,15 +288,19 @@ impl Entry {
                     self.tick(now, None);
                 }
             }
-            #[cfg(any(test, target_os = "windows"))]
-            Command::StretchResize(size) => {
-                self.renderer.stretch_surface_for_pending_resize(size);
-            }
             Command::Resize(size) => {
                 #[cfg(target_os = "windows")]
-                if gpu_owner::resize_trace_enabled() {
-                    let target = (size.width.0.max(1) as u32, size.height.0.max(1) as u32);
+                let target = (size.width.0.max(1) as u32, size.height.0.max(1) as u32);
+                #[cfg(target_os = "windows")]
+                {
                     self.requested_swapchain_extent = Some(target);
+                    self.resize_awaiting_draw = true;
+                    // The producer queues the matching Draw next. A retry of
+                    // the old packet must not consume this extent in that gap.
+                    self.schedule.retry_submission(Instant::now(), false);
+                }
+                #[cfg(target_os = "windows")]
+                if gpu_owner::resize_trace_enabled() {
                     log::info!(
                         target: "gpui_resize_trace",
                         "gpui_resize stage=gpu_queued window_id={} owner_id={} physical_px={}x{}",
@@ -332,6 +345,17 @@ impl Entry {
         now: Instant,
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) {
+        #[cfg(target_os = "windows")]
+        if self.resize_awaiting_draw {
+            return;
+        }
+        // A backend-ready callback can arrive between the producer's Resize
+        // and Draw commands. Do not render the old scene at the newly requested
+        // extent: the queued Draw owns the matching layout and samples the
+        // current timeline itself. Resource-control barriers remain ordered.
+        if self.queue.has_pending_draw() {
+            return;
+        }
         #[cfg(not(target_os = "windows"))]
         if self.presentation_clock.is_some()
             && !self.schedule.is_enabled()

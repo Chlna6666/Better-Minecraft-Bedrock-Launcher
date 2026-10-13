@@ -572,6 +572,8 @@ pub struct Window {
     /// a given rem size.
     pub(super) rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
+    pub(crate) live_resize_active: bool,
+    pub(crate) live_resize_image_views: FxHashSet<EntityId>,
     pub(super) layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,

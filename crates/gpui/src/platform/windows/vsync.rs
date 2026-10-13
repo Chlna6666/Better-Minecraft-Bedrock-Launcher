@@ -7,7 +7,7 @@ use std::{
     mem,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::Thread,
     time::{Duration, Instant},
@@ -54,6 +54,7 @@ struct DwmRefreshTiming {
 }
 
 pub(super) struct VSyncScheduler {
+    refresh_interval_ns: AtomicU64,
     active: AtomicBool,
     frame_pending: AtomicBool,
     shutdown: AtomicBool,
@@ -76,6 +77,7 @@ impl ModalFrameTarget {
 impl VSyncScheduler {
     pub(super) fn new() -> Self {
         Self {
+            refresh_interval_ns: AtomicU64::new(DEFAULT_VSYNC_INTERVAL.as_nanos() as u64),
             active: AtomicBool::new(false),
             frame_pending: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
@@ -87,6 +89,10 @@ impl VSyncScheduler {
 
     pub(super) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire) && !self.shutdown.load(Ordering::Acquire)
+    }
+
+    pub(super) fn refresh_interval(&self) -> Duration {
+        Duration::from_nanos(self.refresh_interval_ns.load(Ordering::Acquire))
     }
 
     pub(super) fn request_frame(&self) -> bool {
@@ -217,6 +223,7 @@ pub(super) fn spawn_vsync_thread(
         .name("GPUI DWM VSync".to_string())
         .spawn(move || {
             let interval = dwm_refresh_interval().unwrap_or(DEFAULT_VSYNC_INTERVAL);
+            thread_scheduler.refresh_interval_ns.store(interval.as_nanos() as u64, Ordering::Release);
             let refresh_rate_hz = interval.as_secs_f64().recip();
             log::info!(
                 "GPUI Windows DWM frame pacing enabled: refresh_rate_hz={refresh_rate_hz:.3} interval={interval:?} background_interval={BACKGROUND_FRAME_INTERVAL:?}"
@@ -257,6 +264,9 @@ pub(super) fn spawn_vsync_thread(
                     reported_composition_period: pacing.reported_composition_period,
                     enqueued_at: Instant::now(),
                 };
+                if let Some(interval) = pacing.reported_refresh_period {
+                    thread_scheduler.refresh_interval_ns.store(interval.as_nanos() as u64, Ordering::Release);
+                }
                 // HWND messages reach Win32's nested move loop while winit's outer handler is
                 // busy. Keep the same DWM cadence and a single latest-wins pending frame.
                 if thread_scheduler.post_modal_frame(timing) {

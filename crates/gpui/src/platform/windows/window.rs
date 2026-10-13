@@ -76,6 +76,7 @@ use winit::raw_window_handle::HasWindowHandle as _;
 use winit::window::Window as WinitWindow;
 
 mod startup;
+mod resize;
 use startup::StartupBackground;
 
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
@@ -369,8 +370,10 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // Do not force full-GPU redraw for a pure window move.
                 window.0.size_move_active.set(true);
                 window.0.size_move_has_resized.set(false);
+                let mut cadence = window.0.resize_cadence.get();
+                cadence.reset();
+                window.0.resize_cadence.set(cadence);
                 window.0.vsync_scheduler.wake_modal_ui_tasks();
-                window.request_frame(PlatformFrameRequest::ui_commit());
             }
             // Always keep one LOW-RATE fallback while nested in the OS message
             // loop. Only windows with pending frame/resize work are dispatched.
@@ -402,10 +405,8 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
         }
         SizeMoveLoopAction::SyncExtent => {
             // Let the default/winit chain commit the non-client and client rectangles first, then
-            // publish the authoritative client extent. Do not invoke GPUI callbacks from this
-            // native stack: maximize/restore can deliver WM_SIZE synchronously while the click
-            // handler still owns the high-level Window RefCell. `queue_resize` requests a frame,
-            // and the winit/VSync pump consumes it after the native callback unwinds.
+            // publish the authoritative client extent. Keep only the latest
+            // geometry for the normal cadence without masking unpainted client strips.
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
@@ -413,6 +414,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
                 // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
+                window.dispatch_live_resize_update();
             }
             return result;
         }
@@ -856,6 +858,16 @@ impl WindowsWindow {
     }
 
     pub(crate) fn invoke_request_frame(&self, options: PlatformFrameRequest) {
+        if self.is_live_resizing() && options.needs_ui_commit() {
+            let callback = self.0.state.borrow_mut().callbacks.live_resize_frame.take();
+            if let Some(mut callback) = callback {
+                let handled = callback(options);
+                self.0.state.borrow_mut().callbacks.live_resize_frame = Some(callback);
+                if handled {
+                    return;
+                }
+            }
+        }
         let sender = self.0.state.borrow().callbacks.request_frame.clone();
         if let Some(sender) = sender
             && !sender.request(options)
@@ -1246,6 +1258,7 @@ pub(crate) struct WindowsWindowInner {
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
+    resize_cadence: Cell<resize::Cadence>,
     // Native and watchdog frame starts are separate clocks. OS WM_PAINT and modal
     // UI-task callbacks must not consume the queued scene ahead of DWM.
     last_native_vsync_frame_at: Cell<Option<Instant>>,
@@ -1253,6 +1266,7 @@ pub(crate) struct WindowsWindowInner {
     visibility_report_scheduled: Cell<bool>,
     size_move_active: Cell<bool>,
     size_move_has_resized: Cell<bool>,
+    pending_live_resize_active: Cell<Option<bool>>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     fallback_corner_radius: Option<Pixels>,
@@ -1336,6 +1350,7 @@ fn clear_pending_frame_request_after_timeout(
 #[derive(Default)]
 pub(crate) struct Callbacks {
     pub(crate) request_frame: Option<crate::platform::frame::PlatformFrameRequestSender>,
+    live_resize_frame: Option<Box<dyn FnMut(PlatformFrameRequest) -> bool>>,
     pub(crate) presentation_animation_completed:
         Option<crate::platform::frame::SceneAnimationCompletionSender>,
     pub(crate) input: Option<Box<dyn FnMut(crate::PlatformInput) -> DispatchEventResult>>,
@@ -1352,6 +1367,9 @@ pub(crate) struct Callbacks {
 
 impl WindowsWindow {
     pub(crate) fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
+        let mut cadence = self.0.resize_cadence.get();
+        cadence.configured_interval = interval;
+        self.0.resize_cadence.set(cadence);
         let mut renderer_state = self.0.renderer.borrow_mut();
         if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
             renderer.set_frame_interval(interval);
@@ -1397,6 +1415,12 @@ impl WindowsWindow {
         packet: PresentationPacket,
         framebuffer_only: bool,
     ) -> PlatformFrameResult {
+        // The early presentation phase still owns the previous layout. Only
+        // a real UI Draw may consume the new native extent; framebuffer replay
+        // here would acknowledge a resized surface containing an old-size scene.
+        if framebuffer_only && self.0.pending_renderer_size.get().is_some() {
+            return PlatformFrameResult::Deferred;
+        }
         if matches!(
             *self.0.renderer.borrow(),
             WindowsRendererState::Initializing
@@ -1603,11 +1627,13 @@ impl WindowsWindow {
             pending_resize: Cell::new(None),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
+            resize_cadence: Cell::new(resize::Cadence::default()),
             last_native_vsync_frame_at: Cell::new(None),
             last_unpaced_frame_at: Cell::new(None),
             visibility_report_scheduled: Cell::new(false),
             size_move_active: Cell::new(false),
             size_move_has_resized: Cell::new(false),
+            pending_live_resize_active: Cell::new(None),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             fallback_corner_radius,
@@ -1703,6 +1729,11 @@ impl WindowsWindow {
                     return;
                 }
                 renderer.update_transparency(transparent);
+                renderer.set_live_resize_active(
+                    self.0.pending_live_resize_active.take().unwrap_or(
+                        self.0.size_move_active.get() && self.0.size_move_has_resized.get(),
+                    ),
+                );
                 *self.0.renderer.borrow_mut() = WindowsRendererState::Ready(renderer);
                 self.request_first_presentable_frame();
             }
@@ -1794,10 +1825,14 @@ impl WindowsWindow {
     }
 
     fn set_live_resize_active(&self, active: bool) {
+        // Win32 modal callbacks may reenter a renderer borrow. Keep the newest
+        // transition for the next matching scene, including the final exact settle.
+        self.0.pending_live_resize_active.set(Some(active));
         if let Ok(renderer_state) = self.0.renderer.try_borrow()
             && let WindowsRendererState::Ready(renderer) = &*renderer_state
         {
             renderer.set_live_resize_active(active);
+            self.0.pending_live_resize_active.set(None);
         }
     }
 
@@ -1819,15 +1854,8 @@ impl WindowsWindow {
                 self.native_is_maximized().unwrap_or(false),
             );
         }
-        // Compositor-backed swapchains do not scale on their own, so stretch the previous
-        // frame over the new client size right now, before the next frame applies the
-        // resize to the swapchain buffers. This mirrors the scaling DXGI performs for
-        // HWND flip swapchains and keeps the live-resize gap transparent instead of black.
-        if let Ok(mut renderer_state) = self.0.renderer.try_borrow_mut() {
-            if let WindowsRendererState::Ready(renderer) = &mut *renderer_state {
-                renderer.stretch_for_pending_resize(resize.drawable_size);
-            }
-        }
+        // Keep the previous scene at its native pixel scale until the matching
+        // new layout arrives. Scaling old pixels is not a viewport/layout update.
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
@@ -1916,6 +1944,26 @@ impl WindowsWindow {
         self.sync_size(physical_size, scale_factor);
     }
 
+    fn dispatch_live_resize_update(&self) {
+        // Win32 has already committed this client extent. Do not wait for the
+        // next vblank before building its matching scene. The same per-window
+        // cadence also gates DWM dispatch, so this is not a second frame clock.
+        if !self.is_live_resizing()
+            || self.0.pending_resize.get().is_none()
+            || self.0.frame_dispatch_in_progress.get()
+            || !self.has_pending_native_frame()
+            || !self.0.resize_cadence.get().is_due(
+                Instant::now(), self.0.vsync_scheduler.refresh_interval(),
+            )
+        {
+            return;
+        }
+        self.dispatch_pending_update_with_vsync(None);
+        if super::platform::poll_modal_foreground_tasks() {
+            self.0.vsync_scheduler.wake_modal_ui_tasks();
+        }
+    }
+
     pub(crate) fn dispatch_pending_update(&self) {
         // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer
         // can all reach this method. If each consumes the pending frame, they
@@ -1964,6 +2012,15 @@ impl WindowsWindow {
         // taking it while the callback is temporarily removed from `Callbacks`.
         if self.0.frame_dispatch_in_progress.replace(true) {
             return;
+        }
+        if self.is_live_resizing() {
+            let mut cadence = self.0.resize_cadence.get();
+            if !cadence.accept(Instant::now(), self.0.vsync_scheduler.refresh_interval()) {
+                self.0.frame_dispatch_in_progress.set(false);
+                self.0.vsync_scheduler.request_frame();
+                return;
+            }
+            self.0.resize_cadence.set(cadence);
         }
         if self.0.pending_native_size_retry.replace(false) {
             // The original WM_SIZE arrived during a nested window borrow. Only this
@@ -2042,6 +2099,10 @@ impl WindowsWindow {
                 self.request_frame(PlatformFrameRequest::presentation());
             }
             if options.needs_ui_commit() || (!presented && !had_active_presentation) {
+                // Build the newest size on this native tick even while an older
+                // GPU packet waits for readiness. The owner replaces queued
+                // Resize/Draw pairs; waiting here would force the old layout to
+                // present first and postpone its replacement to another tick.
                 self.invoke_request_frame(options);
             }
         }
@@ -2082,6 +2143,9 @@ impl WindowsWindow {
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return false;
         };
+        if let Some(active) = self.0.pending_live_resize_active.take() {
+            renderer.set_live_resize_active(active);
+        }
         if let Some(size) = self.0.pending_renderer_size.take() {
             if let Err(error) = renderer.update_drawable_size(size) {
                 self.0.pending_renderer_size.set(Some(size));
@@ -2454,6 +2518,10 @@ impl PlatformWindow for WindowsWindow {
         }
     }
 
+    fn is_live_resizing(&self) -> bool {
+        self.0.size_move_active.get() && self.0.size_move_has_resized.get()
+    }
+
     fn default_client_inset(&self) -> Option<Pixels> {
         (!self.0.use_native_decorations).then(Self::default_resize_inset)
     }
@@ -2464,6 +2532,10 @@ impl PlatformWindow for WindowsWindow {
 
     fn set_frame_interval(&self, interval: Option<std::time::Duration>) {
         WindowsWindow::set_frame_interval(self, interval);
+    }
+
+    fn on_live_resize_frame(&self, callback: Box<dyn FnMut(PlatformFrameRequest) -> bool>) {
+        self.0.state.borrow_mut().callbacks.live_resize_frame = Some(callback);
     }
 
     fn set_presentation_animation_completion_sender(
@@ -2483,10 +2555,15 @@ impl PlatformWindow for WindowsWindow {
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
         if !matches!(self.current_visibility(), WindowVisibility::Visible)
-            || !self.try_apply_queued_renderer_resize()
+            || self.0.pending_renderer_size.get().is_some()
         {
             return Ok(None);
         }
+
+        // A retained tick still describes the last committed layout. Leave the new
+        // drawable size pending until submit_render_packet supplies its matching
+        // scene. Submitting an old-size tick can also trigger Vulkan OUT_OF_DATE
+        // recovery before that commit and recreate the swapchain twice.
 
         // Release the pending slot before submission can re-enter its state queries.
         let pending_scene = self.0.pending_scene.borrow_mut().take();
@@ -2687,8 +2764,8 @@ mod tests {
     use super::{
         ClickState, NativeWindowVisibilityAction, SIZE_MOVE_LOOP_TIMER_ID, SizeMoveLoopAction,
         WindowsWindowPresentationState, clear_pending_frame_request_after_timeout,
-        merge_frame_request, renderer_backend_candidates, should_use_native_decorations,
-        should_use_no_redirection_bitmap, size_move_loop_action,
+        merge_frame_request, modal_size_move_watchdog_period, renderer_backend_candidates,
+        should_use_native_decorations, should_use_no_redirection_bitmap, size_move_loop_action,
     };
     use crate::{
         DevicePixels, MouseButton, PlatformFrameRequest, RendererBackend, RendererFallback,
@@ -2697,8 +2774,8 @@ mod tests {
     };
     use std::time::Duration;
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SIZE, WM_TIMER,
-        WM_WINDOWPOSCHANGED,
+        USER_TIMER_MINIMUM, WM_ENTERSIZEMOVE, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_NCDESTROY,
+        WM_SIZE, WM_TIMER, WM_WINDOWPOSCHANGED,
     };
 
     #[test]

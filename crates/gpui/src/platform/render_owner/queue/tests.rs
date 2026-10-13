@@ -31,7 +31,34 @@ fn draw(packet: PresentationPacket) -> Command {
         packet,
         framebuffer_only: false,
         reply: None,
+
     }
+}
+
+
+#[test]
+fn pending_draw_subsumes_ready_tick_without_crossing_controls() {
+    let queue = Queue::default();
+    queue.enqueue(Command::Continue(Instant::now()), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
+    assert!(queue.has_pending_draw());
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    assert!(!queue.has_pending_draw());
+    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
+    assert!(!queue.has_pending_draw(), "a tick must not look beyond resource controls");
+}
+
+#[test]
+fn pending_resize_draw_subsumes_old_tick() {
+    let queue = Queue::default();
+    let extent = size(DevicePixels(640), DevicePixels(480));
+    queue.enqueue(Command::Resize(extent), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
+    assert!(queue.has_pending_draw(), "the matching new-size draw subsumes an old tick");
+    assert!(matches!(queue.take(), Some(Command::Resize(_))));
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    assert!(!queue.has_pending_draw());
 }
 
 #[test]
@@ -161,6 +188,7 @@ fn ticks_coalesce_but_first_frame_is_a_barrier() {
             packet: packet(Arc::new(Scene::default()), 0.0),
             framebuffer_only: false,
             reply: Some(reply),
+
         },
         Command::Tick(now, None),
         Command::Tick(later, None),
@@ -296,6 +324,7 @@ fn closing_releases_a_waiting_first_frame_handshake() {
                 packet: packet(Arc::new(Scene::default()), 0.0),
                 framebuffer_only: false,
                 reply: Some(reply),
+
             },
             || Ok(()),
         )
@@ -416,45 +445,6 @@ fn adjacent_resize_commands_coalesce_without_crossing_draw_barriers() {
 }
 
 #[test]
-fn live_resize_stretch_coalesces_latest_without_crossing_draw_or_resize() {
-    use crate::{DevicePixels, size};
-
-    let queue = Queue::default();
-    let extent = |width, height| size(DevicePixels(width), DevicePixels(height));
-    let first_time = Instant::now();
-
-    queue.enqueue_at(Command::StretchResize(extent(1000, 650)), || Ok(()), first_time)
-        .unwrap();
-    queue.enqueue_at(
-        Command::StretchResize(extent(1120, 720)),
-        || panic!("a pending stretch must already have scheduled the GPU owner"),
-        first_time + Duration::from_millis(1),
-    ).unwrap();
-    let first = queue.take_timed().expect("latest stretch");
-    assert_eq!(first.coalesced_count, 1);
-    assert_eq!(first.first_enqueued_at, first_time);
-    let Command::StretchResize(extent) = first.command else { panic!("expected stretch") };
-    assert_eq!(extent, size(DevicePixels(1120), DevicePixels(720)));
-    assert!(queue.take().is_none());
-
-    queue.enqueue(Command::StretchResize(extent(1200, 750)), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.0)), || Ok(())).unwrap();
-    queue.enqueue(Command::StretchResize(extent(1280, 800)), || Ok(())).unwrap();
-    queue.enqueue(Command::Resize(extent(1280, 800)), || Ok(())).unwrap();
-    queue.enqueue(Command::StretchResize(extent(1320, 850)), || Ok(())).unwrap();
-
-    assert!(matches!(queue.take(), Some(Command::StretchResize(_))));
-    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
-    assert!(matches!(queue.take(), Some(Command::StretchResize(_))));
-    assert!(matches!(queue.take(), Some(Command::Resize(_))));
-    let Some(Command::StretchResize(latest)) = queue.take() else {
-        panic!("stretch following swapchain resize was dropped")
-    };
-    assert_eq!(latest, extent(1320, 850));
-    assert!(queue.take().is_none());
-}
-
-#[test]
 fn live_resize_queue_keeps_only_latest_unexecuted_extent_and_scene() {
     use crate::{DevicePixels, size};
 
@@ -463,23 +453,16 @@ fn live_resize_queue_keeps_only_latest_unexecuted_extent_and_scene() {
     let scene = Arc::new(Scene::default());
     let start = Instant::now();
     for (offset, command) in [
-        (0, Command::StretchResize(extent(800))),
-        (1, Command::Resize(extent(800))),
-        (2, draw(packet(scene.clone(), 0.0))),
-        (3, Command::StretchResize(extent(900))),
-        (4, Command::Resize(extent(900))),
-        (5, draw(packet(scene.clone(), 40.0))),
-        (6, Command::StretchResize(extent(1000))),
-        (7, Command::Resize(extent(1000))),
-        (8, draw(packet(scene, 80.0))),
+        (0, Command::Resize(extent(800))),
+        (1, draw(packet(scene.clone(), 0.0))),
+        (2, Command::Resize(extent(900))),
+        (3, draw(packet(scene.clone(), 40.0))),
+        (4, Command::Resize(extent(1000))),
+        (5, draw(packet(scene, 80.0))),
     ] {
         queue.enqueue_at(command, || Ok(()), start + Duration::from_millis(offset)).unwrap();
     }
 
-    let Some(Command::StretchResize(stretch)) = queue.take() else {
-        panic!("latest matching stretch must be retained");
-    };
-    assert_eq!(stretch, extent(1000));
     let Some(Command::Resize(resize)) = queue.take() else {
         panic!("latest resize must be retained");
     };
@@ -533,6 +516,7 @@ fn live_resize_compaction_preserves_synchronous_first_frame_handshake() {
         packet: packet(scene.clone(), 0.0),
         framebuffer_only: false,
         reply: Some(reply),
+
     }, || Ok(())).unwrap();
     for (side, x) in [(900, 20.0), (1000, 40.0)] {
         queue.enqueue(Command::Resize(extent(side)), || Ok(())).unwrap();

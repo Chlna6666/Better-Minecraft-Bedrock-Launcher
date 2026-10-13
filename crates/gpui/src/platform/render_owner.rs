@@ -27,6 +27,7 @@ use futures::channel::oneshot;
 
 mod queue;
 mod schedule;
+
 #[cfg(all(test, target_os = "windows"))]
 mod tests;
 mod worker;
@@ -151,6 +152,11 @@ pub(crate) fn shutdown() {
     if executor.sender.send(Box::new(Worker::shutdown)).is_err() {
         log::debug!("GPU owner already stopped before shutdown");
     }
+    #[cfg(target_os = "windows")]
+    while !worker.is_finished() {
+        super::windows::service_driver_messages();
+        thread::sleep(Duration::from_millis(1));
+    }
     if worker.join().is_err() {
         log::error!("GPU owner panicked during shutdown");
     }
@@ -164,10 +170,6 @@ pub(crate) struct RenderOwner {
     owner_thread: ThreadId,
     status: Arc<Status>,
     gpu_specs: GpuSpecs,
-    // Immutable backend capability sampled on the GPU owner at creation.
-    // Vulkan/OpenGL never need to enqueue a no-op DXGI stretch per WM_SIZE.
-    #[cfg(target_os = "windows")]
-    supports_native_resize_stretch: bool,
     #[cfg(not(target_os = "windows"))]
     atlas: Arc<dyn crate::PlatformAtlas>,
     #[cfg(not(target_os = "windows"))]
@@ -230,8 +232,6 @@ impl RenderOwner {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let renderer = create()?;
         let gpu_specs = renderer.gpu_specs();
-        #[cfg(target_os = "windows")]
-        let supports_native_resize_stretch = renderer.supports_live_resize_stretch();
         #[cfg(not(target_os = "windows"))]
         let atlas = renderer.platform_atlas();
         #[cfg(not(target_os = "windows"))]
@@ -250,8 +250,6 @@ impl RenderOwner {
             owner_thread: thread::current().id(),
             status,
             gpu_specs,
-            #[cfg(target_os = "windows")]
-            supports_native_resize_stretch,
             #[cfg(not(target_os = "windows"))]
             atlas,
             #[cfg(not(target_os = "windows"))]
@@ -281,12 +279,14 @@ impl RenderOwner {
         #[cfg(target_os = "windows")]
         {
             self.status.pending.store(true, Ordering::Release);
+
             if let Err(error) = self.enqueue(Command::Draw {
                 packet,
                 framebuffer_only,
                 reply: None,
             }) {
                 self.status.pending.store(false, Ordering::Release);
+
                 return Err(error);
             }
             return Ok(false);
@@ -361,19 +361,6 @@ impl RenderOwner {
     pub(super) fn set_live_resize_active(&self, active: bool) {
         if let Err(error) = self.control(move |renderer| renderer.set_live_resize_active(active)) {
             log::warn!("failed to update Windows live-resize state: {error:#}");
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    pub(super) fn stretch_for_pending_resize(&self, size: Size<DevicePixels>) {
-        if !self.supports_native_resize_stretch {
-            return;
-        }
-        // Interactive WM_SIZE may arrive much faster than the GPU can service it. A typed,
-        // latest-wins command avoids filling the global GPU owner with obsolete stretch
-        // closures. Queue coalescing never crosses Draw/Resize or control barriers.
-        if let Err(error) = self.enqueue(Command::StretchResize(size)) {
-            log::error!("failed to queue GPU resize stretch: {error:#}");
         }
     }
 
@@ -485,8 +472,23 @@ impl Drop for RenderOwner {
         }
         // A dropped initialization receiver can release this proxy on the GPU owner itself.
         // In that case its queued shutdown runs after initialization returns, without self-wait.
-        if thread::current().id() != self.owner_thread && receiver.recv().is_err() {
-            log::error!("GPU owner stopped before renderer shutdown completed");
+        if thread::current().id() != self.owner_thread {
+            #[cfg(target_os = "windows")]
+            loop {
+                super::windows::service_driver_messages();
+                match receiver.recv_timeout(Duration::from_millis(1)) {
+                    Ok(()) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        log::error!("GPU owner stopped before renderer shutdown completed");
+                        break;
+                    }
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            if receiver.recv().is_err() {
+                log::error!("GPU owner stopped before renderer shutdown completed");
+            }
         }
     }
 }

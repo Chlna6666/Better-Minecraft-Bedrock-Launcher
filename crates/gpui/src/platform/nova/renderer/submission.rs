@@ -195,28 +195,34 @@ impl NovaRenderer {
     /// Attempts to apply the latest drawable size at a frame boundary without blocking the
     /// native resize event path.
     ///
-    /// DX12 keeps the non-blocking readiness check because its size-dependent resources use
-    /// fence-backed retirement. Vulkan intentionally follows the known-good synchronization
-    /// model used before the live-resize regression: coalesce native events at the platform
-    /// boundary, then complete one exact resize transaction at the render boundary. Trying to
-    /// keep Vulkan permanently non-blocking here can starve resize while animations continuously
-    /// keep one submission in flight, and replacing a presentable swapchain with narrower
-    /// synchronization proved unsafe on Win32 drivers.
+    /// All backends first retire this renderer's submissions by polling. A pending
+    /// resize prevents new old-size submissions, so animations cannot keep this
+    /// check busy forever. Vulkan retains its driver-level device-idle barrier
+    /// for swapchain replacement; it does not wait for unrelated windows in the
+    /// global readiness predicate, which could starve this window indefinitely.
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
-        let width = size.width.0.max(1) as u32;
-        let height = size.height.0.max(1) as u32;
+        let requested = DrawableSize {
+            width: size.width.0.max(1) as u32,
+            height: size.height.0.max(1) as u32,
+        };
+        let capacity =
+            super::resize_plan::planned_size(self.current_size, requested, self.live_resize_active);
+        let retain_capacity = self.live_resize_active
+            && lock_backend(&self.backend).supports_unscaled_presentation(
+                self.swapchain,
+                Extent2d::new(capacity.width, capacity.height)?,
+            )?;
+        let planned = if retain_capacity { capacity } else { requested };
+        let width = planned.width;
+        let height = planned.height;
+        let size = crate::size(DevicePixels(width as i32), DevicePixels(height as i32));
         if self.current_size.width == width && self.current_size.height == height {
-            // A native resize burst may temporarily stretch the old compositor surface and then
-            // coalesce back to the swapchain's existing drawable size. Treating that as a pure
-            // no-op leaves the temporary transform alive indefinitely, so windowed content can
-            // remain linearly scaled/soft until a later real resize (for example maximize) clears
-            // it. Reassert identity even when no buffer resize is required.
-            if let Err(error) =
-                lock_backend(&self.backend).set_swapchain_content_stretch(self.swapchain, None)
-            {
-                log::warn!("failed to reset nova-gfx coalesced resize stretch: {error:#}");
-            }
             return Ok(true);
+        }
+
+        self.poll_pending_submissions()?;
+        if !self.pending_submissions.is_empty() {
+            return Ok(false);
         }
 
         #[cfg(all(
@@ -228,10 +234,7 @@ impl NovaRenderer {
             return Ok(true);
         }
 
-        self.poll_pending_submissions()?;
-        if !self.pending_submissions.is_empty()
-            || lock_backend(&self.backend).has_pending_resize_work(self.swapchain)?
-        {
+        if lock_backend(&self.backend).has_pending_resize_work(self.swapchain)? {
             return Ok(false);
         }
 

@@ -827,6 +827,19 @@ impl Window {
             return;
         };
         self.animation_time.set(frame_started_at);
+        // Ending a native resize may leave the geometry unchanged. Revisit the
+        // root once so deferred size-specific image work settles at that extent.
+        let live_resize_active = self.platform_window.is_live_resizing();
+        if self.live_resize_active != live_resize_active
+            || (live_resize_active
+                && (self.viewport_size != self.platform_window.content_size()
+                    || self.scale_factor != self.platform_window.scale_factor()))
+        {
+            // A nested native resize can defer its App/Window callback behind
+            // this frame. Sample authoritative geometry before building layout,
+            // so a new drawable can never be paired with an old-size root scene.
+            self.content_bounds_changed(cx);
+        }
         self.frame_throttle.record_frame_start(frame_started_at);
         let frame_budget = self.frame_throttle.frame_budget();
 
@@ -1240,7 +1253,11 @@ impl Window {
             self.draw(cx)
         });
         let draw_elapsed = draw_started_at.elapsed();
-        let presented_frame = if presentation || self.needs_present.get() {
+        // A reconstruction failure retains the previous scene. During live
+        // resize it must not consume the pending extent or acknowledge a new
+        // submission serial as though that old geometry were the matching draw.
+        let resize_draw_deferred = self.live_resize_active && self.draw_was_degraded;
+        let presented_frame = if !resize_draw_deferred && (presentation || self.needs_present.get()) {
             measure("frame presentation", || self.present()).is_accepted()
         } else {
             false
@@ -1378,7 +1395,11 @@ impl Window {
     }
 
     pub(crate) fn draw_budget_exhausted(&self) -> bool {
-        if !self.allows_progressive_frame_degradation() {
+        // Native edge dragging does not dispatch GPUI pointer input. A resized
+        // frame must still finish its new geometry instead of discarding it for
+        // the old retained scene when the normal progressive budget expires.
+        // Reconstruction failures may still degrade through their own path.
+        if self.live_resize_active || !self.allows_progressive_frame_degradation() {
             return false;
         }
 
