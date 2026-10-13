@@ -221,7 +221,15 @@ impl Dx11Device {
         chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
         result.map_err(backend)?;
         chain.config.size = size;
-        chain.pacing.reset();
+        // Preserve DXGI frame-ready credit acquired from the auto-reset waitable
+        // object before ResizeBuffers. cancel() above already drains callbacks
+        // without dropping an acquired signal. reset() here would clear the
+        // credit even though no Present occurred and leave the first new-size
+        // frame waiting on a signal that may require that very Present.
+        //
+        // present_steps() consumes the credit only after successful Present.
+        // A replacement swapchain uses a new FrameLatencyWait; old credit cannot
+        // leak across a swapchain-identity change.
         self.stretch(id, None)
     }
     /// Replaces alpha/presentation configuration at a swapchain lifecycle boundary.

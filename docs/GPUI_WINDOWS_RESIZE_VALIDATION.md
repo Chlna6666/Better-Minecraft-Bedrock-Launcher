@@ -72,3 +72,12 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 **跨窗口长尾阻塞**：新增 `gpui_gpu_stall: gpu_owner_submission_wait`（等待超过 8ms）记录后端、等待时间及 GPU 提交数；结合此前 `slow_surface_resize` 的 `submission_wait_us`、`swapchain_us`、`resources_us`，可区分驱动 Fence 阻塞与纹理/资源重建。GPU Worker 仍共享且 Vulkan 的 `try_resize` 保持原有保守同步边界：该轮**没有宣称消除所有跨窗口 GPU 头部阻塞**。
 
 建议同一台 Windows 实机每个后端运行 5 轮：主窗口缩放（50 次边缘拖动）、地图窗口动画并行、快速最大化/还原、多窗口交替缩放、最终固定尺寸 2 秒。重点核对第一次 `stage=present` 的 Drawable 尺寸和是否 `dirty_full=true`，以及 `gpu_owner_submission_wait` 和 `slow_surface_resize` 是否集中在单个后端。若 Vulkan 继续裁剪，接下来定位 Render Graph Scissor 与 Path Mask/Retained root target，而不是立即取消全局的 Retained Layer 机制。
+
+## 2026-10-13 DX11 边缘拖拽真实帧推进修复
+
+- **Win32 Modal UI Wake：** 原先 `RunMainThreadTasks` 外层 winit 事件在模态拖拽期间无法被处理，`main_thread_wakeup_pending=true` 会阻止后续前台任务投递 `WM_MODAL_UI_TASKS`。现把 HWND 唤醒与外层 winit 事件去重分离。模态消息继续去重，不向无法消费事件的 winit 外层队列堆积无效唤醒。
+- **DWM 模态消息保底：** `WM_ENTERSIZEMOVE` 内 DWM 正常调度仍优先；另外仅在该拖拽期间使用 33ms 低频保底检查，DWM 不可用时沿用 Win32 最小周期。只有存在待处理 GPUI/尺寸工作时才进一步分发，不对静止窗口持续重绘。`WM_MODAL_UI_TASKS` 消费前台 Runnable 后立即检查最新窗口尺寸/帧请求。
+- **DX11 自动复位事件：** `FrameLatencyWait::cancel()` 已安全停止旧原生回调但保留已领取的 Ready 信号。此前 `ResizeBuffers` 后再次 `reset()` 可能在首个新尺寸 Present 之前丢弃自动复位的 Ready credit，形成等待首帧与需要首帧触发下一个信号的循环。现只在成功 Present 后 `consume_ready()`，更换 Swapchain 时仍使用新的 pacing 实例。
+- **测试：** 补充外层 winit pending 时原生 Modal HWND 唤醒、多次 Runnable 不积压外层事件、模态保底周期，以及模拟自动复位 Ready 信号在 Resize 前后保留的回归测试。
+
+验收时连续拖拽 DX11 窗口边缘，不仅检查窗口显示旧画面 Stretch，更应检查 Resize 过程中 `stage=scene` 和 `stage=present` 连续出现，并在停止后最终与 Native/Viewport/GPU 目标尺寸收敛。仍必须在实际 Windows GPU 上编译和复测后才能确认修复成功。

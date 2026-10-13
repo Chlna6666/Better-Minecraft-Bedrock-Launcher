@@ -207,6 +207,31 @@ mod tests {
     }
 
     #[test]
+    fn live_resize_must_preserve_first_present_ready_credit() {
+        let event = Event::new();
+        let mut pacing = FrameLatencyWait::default();
+        let (sender, receiver) = mpsc::channel();
+        pacing
+            .arm(event.0, Box::new(move || sender.send(()).unwrap()))
+            .unwrap();
+        // Auto-reset DXGI readiness can be consumed by a native async wait
+        // BEFORE ResizeBuffers. The resized HWND must retain that credit for its
+        // first real Present, which itself may be required to signal again.
+        event.signal();
+        receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(pacing.ready(event.0).unwrap());
+
+        // This models the pre-ResizeBuffers cancel: queued callbacks drain, but
+        // any ready credit acquired from the OS remains valid.
+        pacing.cancel();
+        assert!(pacing.ready(event.0).unwrap());
+        assert_eq!(unsafe { WaitForSingleObject(event.0, 0) }, WAIT_TIMEOUT);
+        // Only a successful Present is allowed to consume the credit.
+        pacing.consume_ready();
+        assert!(!pacing.ready(event.0).unwrap());
+    }
+
+    #[test]
     fn cancellation_does_not_lose_a_signal_already_consumed_by_the_native_wait() {
         let event = Event::new();
         let mut pacing = FrameLatencyWait::default();

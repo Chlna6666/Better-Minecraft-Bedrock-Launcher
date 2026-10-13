@@ -38,6 +38,23 @@ pub(crate) struct WindowsDispatcher {
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
 }
 
+/// The outer winit event is coalesced for throughput, but a native-modal HWND
+/// must still be notified for *each* newly enqueued runnable. An existing outer
+/// wake may remain unconsumed for the entire interactive resize session.
+fn claim_foreground_wakeup(
+    outer_pending: &AtomicBool,
+    wake_modal: impl FnOnce() -> bool,
+) -> bool {
+    // The modal HWND owns delivery while WM_ENTERSIZEMOVE is active. Never add
+    // RunMainThreadTasks user events that winit cannot dispatch until mouse-up:
+    // draining the queue would otherwise reset outer_pending on each native wake
+    // and flood the suspended outer user-event queue with redundant events.
+    if wake_modal() {
+        return false;
+    }
+    !outer_pending.swap(true, Ordering::AcqRel)
+}
+
 impl WindowsDispatcher {
     pub(crate) fn new(
         main_sender: Sender<Runnable>,
@@ -134,10 +151,15 @@ impl PlatformDispatcher for WindowsDispatcher {
     fn dispatch_on_main_thread(&self, runnable: Runnable) {
         match self.main_sender.send(runnable) {
             Ok(_) => {
-                if !self.main_thread_wakeup_pending.swap(true, Ordering::AcqRel) {
-                    // The outer winit loop pauses inside the OS drag/resize modal pump.
-                    // A Win32 task wake remains responsive without forcing a GPU Present.
-                    self.vsync_scheduler.wake_modal_ui_tasks();
+                // The outer winit user-event queue stops dispatching while DefWindowProc
+                // runs its nested WM_ENTERSIZEMOVE loop. Its wakeup_pending flag may
+                // ALREADY be set by a now-stranded RunMainThreadTasks user event.
+                // Therefore the HWND modal wake must happen for *every* runnable,
+                // independently of whether we need another outer winit user event.
+                // VSyncScheduler coalesces the native WM_MODAL_UI_TASKS messages.
+                if claim_foreground_wakeup(&self.main_thread_wakeup_pending, || {
+                    self.vsync_scheduler.wake_modal_ui_tasks()
+                }) {
                     let event_loop_proxy = self.event_loop_proxy.lock().unwrap().clone();
                     if let Some(event_loop_proxy) = event_loop_proxy {
                         if let Err(error) =
@@ -223,5 +245,43 @@ unsafe extern "system" fn run_timer_callback(
     // callback completes.
     unsafe {
         CloseThreadpoolTimer(timer);
+    }
+}
+
+#[cfg(test)]
+mod modal_wake_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn native_modal_wake_survives_already_queued_outer_user_event() {
+        let pending = AtomicBool::new(false);
+        let wakes = AtomicUsize::new(0);
+        // Normally one winit event is queued and coalesced.
+        assert!(claim_foreground_wakeup(&pending, || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+            false
+        }));
+        assert!(pending.load(Ordering::Acquire));
+        // winit cannot consume that outer event during Win32's modal loop.
+        // New GPUI tasks are nevertheless delivered via the active HWND.
+        assert!(!claim_foreground_wakeup(&pending, || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        // The native pump drains tasks and resets the outer flag. The next
+        // runnable must NOT flood the suspended winit user-event queue.
+        pending.store(false, Ordering::Release);
+        assert!(!claim_foreground_wakeup(&pending, || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        assert!(!pending.load(Ordering::Acquire));
+        // Once Win32 exits modal sizing, normal winit event dispatch resumes.
+        assert!(claim_foreground_wakeup(&pending, || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+            false
+        }));
+        assert_eq!(wakes.load(Ordering::SeqCst), 4);
     }
 }

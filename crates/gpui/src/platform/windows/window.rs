@@ -161,16 +161,19 @@ fn native_window(hwnd: HWND) -> Option<WindowsWindow> {
     })
 }
 
-fn start_size_move_timer(hwnd: HWND) {
+/// A lightweight native modal watchdog. DWM VSync remains the normal frame cadence;
+/// this timer only checks whether any window has pending work if the OS temporarily
+/// withholds a posted WM_APP wake during interactive resizing.
+fn modal_size_move_watchdog_period(dwm_active: bool) -> u32 {
+    if dwm_active { 33 } else { USER_TIMER_MINIMUM }
+}
+
+fn start_size_move_timer(hwnd: HWND, dwm_active: bool) {
+    // The DWM path uses a 33ms watchdog, not a redundant 240Hz redraw pump.
+    // If DWM pacing is unavailable, retain the original minimum-period fallback.
+    let period_ms = modal_size_move_watchdog_period(dwm_active);
     // SAFETY: This live HWND owns the fallback timer, removed on exit/destroy.
-    let timer = unsafe {
-        SetTimer(
-            Some(hwnd),
-            SIZE_MOVE_LOOP_TIMER_ID,
-            USER_TIMER_MINIMUM,
-            None,
-        )
-    };
+    let timer = unsafe { SetTimer(Some(hwnd), SIZE_MOVE_LOOP_TIMER_ID, period_ms, None) };
     if timer == 0 {
         log::warn!("failed to start GPUI native size/move redraw timer");
     } else {
@@ -287,11 +290,13 @@ fn dispatch_size_move_frame(hwnd: HWND) {
         return;
     }
 
-    // The fallback timer is event-driven and only dispatches windows with pending work.
+    // The timer is modal-only. Reconcile native geometry, then run bounded
+    // foreground tasks that may build the newest UI Scene. Flush any work queued
+    // by those callbacks in the same nested message-loop turn.
     dispatch_modal_window_updates(hwnd, None);
-    if super::platform::poll_modal_foreground_tasks()
-        && let Some(window) = native_window(hwnd)
-    {
+    let needs_more_tasks = super::platform::poll_modal_foreground_tasks();
+    dispatch_modal_window_updates(hwnd, None);
+    if needs_more_tasks && let Some(window) = native_window(hwnd) {
         window.0.vsync_scheduler.wake_modal_ui_tasks();
     }
 }
@@ -331,11 +336,19 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
 
     match size_move_loop_action(message, wparam.0) {
         SizeMoveLoopAction::Start => {
-            let scheduled = native_window(hwnd)
+            let modal_window = native_window(hwnd);
+            let scheduled = modal_window
+                .as_ref()
                 .is_some_and(|window| window.0.vsync_scheduler.start_modal_loop(hwnd.0 as isize));
-            if !scheduled {
-                start_size_move_timer(hwnd);
+            // The last outer RunMainThreadTasks event can already be coalesced
+            // before WM_ENTERSIZEMOVE. Explicitly wake the modal HWND now so that
+            // pending UI commits are not stranded until WM_EXITSIZEMOVE.
+            if let Some(window) = modal_window.as_ref() {
+                window.0.vsync_scheduler.wake_modal_ui_tasks();
             }
+            // Always keep one LOW-RATE fallback while nested in the OS message
+            // loop. Only windows with pending frame/resize work are dispatched.
+            start_size_move_timer(hwnd, scheduled);
         }
         SizeMoveLoopAction::Tick => {
             dispatch_size_move_frame(hwnd);
@@ -422,7 +435,12 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // GPU reports may be the only reason for this wake. Drain them
                 // independently of GPUI foreground tasks, without a GPU Present.
                 drain_modal_gpu_reports();
-                if super::platform::poll_modal_foreground_tasks() {
+                let needs_more_tasks = super::platform::poll_modal_foreground_tasks();
+                // A foreground runnable can enqueue the newest frame request. Flush
+                // it here rather than waiting for an outer winit user event which
+                // cannot run until the native resize loop exits.
+                dispatch_modal_window_updates(hwnd, None);
+                if needs_more_tasks {
                     window.0.vsync_scheduler.wake_modal_ui_tasks();
                 }
             }
@@ -2717,6 +2735,8 @@ mod tests {
 
     #[test]
     fn native_size_move_messages_drive_one_timer_and_a_final_flush() {
+        assert_eq!(modal_size_move_watchdog_period(true), 33);
+        assert_eq!(modal_size_move_watchdog_period(false), USER_TIMER_MINIMUM);
         assert_eq!(
             size_move_loop_action(WM_ENTERSIZEMOVE, 0),
             SizeMoveLoopAction::Start
