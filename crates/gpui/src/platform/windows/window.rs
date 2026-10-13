@@ -1433,6 +1433,20 @@ impl WindowsWindow {
             // visible background must not turn initialization into a VSync UI rebuild loop.
             return PlatformFrameResult::Deferred;
         }
+        // WM_SIZE may reenter after layout has completed but before Present.
+        // A cached old-size Scene cannot fill an enlarged HWND, regardless of
+        // GPU throughput; presenting it exposes black strips on every backend.
+        // Only the matching viewport generation can consume a pending Resize.
+        if let (Some(layout_extent), Some(native)) =
+            (packet.layout_extent, self.native_client_extent())
+            && native.width > 0
+            && native.height > 0
+            && layout_extent != (native.width, native.height)
+        {
+            self.sync_current_native_size();
+            self.request_frame(PlatformFrameRequest::ui_commit());
+            return PlatformFrameResult::Deferred;
+        }
         if !self.try_apply_queued_renderer_resize() {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }

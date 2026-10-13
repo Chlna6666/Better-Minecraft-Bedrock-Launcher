@@ -1050,6 +1050,9 @@ pub(crate) enum RetainedResourceTrimPolicy {
 /// without borrowing Window state.
 pub(crate) struct PresentationPacket {
     pub(crate) window_id: u64,
+    /// Physical viewport used to construct this immutable Scene. None is allowed
+    /// for synthetic/backend test packets that have no GPUI Window producer.
+    pub(crate) layout_extent: Option<(u32, u32)>,
     pub(crate) scene: Arc<Scene>,
     pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     pub(crate) sampled_active_presentation_animation: bool,
@@ -1146,6 +1149,7 @@ impl PresentationPacket {
         let scene_animation_ids = scene.animation_ids();
         Self {
             window_id: 0,
+            layout_extent: None,
             scene,
             presentation_animation_values,
             sampled_active_presentation_animation: false,

@@ -715,6 +715,13 @@ impl Window {
             self.render_present_mode,
         );
         packet.window_id = self.handle.window_id().as_u64();
+        // The GPU owner must never apply an HWND resize to a Scene built from a
+        // different viewport generation. Capture the *layout* extent, not the
+        // capacity of a possibly oversized swapchain backbuffer.
+        packet.layout_extent = Some((
+            (self.viewport_size.width.0 * self.scale_factor).round().max(0.0) as u32,
+            (self.viewport_size.height.0 * self.scale_factor).round().max(0.0) as u32,
+        ));
         packet.set_frame_interval(self.frame_clock.interval());
         packet
     }
