@@ -426,11 +426,14 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
                 // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
-                // sync_size() already coalesces the authoritative HWND extent and
-                // requests a native frame. Do not run GPUI layout/prepaint/paint
-                // synchronously on the WM_SIZE/WM_WINDOWPOSCHANGED message stack:
-                // an expensive Scene build would block subsequent resize messages.
-                // The modal DWM wake (or bounded fallback) owns the UI commit.
+                // Zed's Win32 path handles the new size during WM_SIZE and
+                // redraws via WM_PAINT. WGPUI likewise synchronizes its wgpu
+                // surface from Resized. A DWM-only deferred layout leaves a
+                // client strip uncovered until the next GPU Present, even when
+                // UI/GPU execution itself is fast. Commit the new *layout*
+                // opportunistically here, with the shared per-window refresh
+                // cadence and the existing reentrant-borrow fallback.
+                window.dispatch_native_resize_frame();
             }
             return result;
         }
@@ -1986,6 +1989,20 @@ impl WindowsWindow {
         // sync_size() always resolves the latest HWND client rectangle, even if
         // winit's cached inner_size still belongs to a previous modal resize.
         self.sync_size(self.window().inner_size(), self.window().scale_factor() as f32);
+    }
+
+    /// Try to produce the matching scene while Win32 is still handling the
+    /// interactive client resize. Unlike the regular watchdog path this is not
+    /// delayed until the next DWM VSync; the shared resize cadence and reentry
+    /// guard prevent excess frames and recursively borrowed GPUI state.
+    ///
+    /// Only a *new* client extent is eligible: WM_WINDOWPOSCHANGED and WM_SIZE
+    /// can describe the same update, and ordinary native moves do not relayout.
+    fn dispatch_native_resize_frame(&self) {
+        if !self.is_live_resizing() || self.0.pending_resize.get().is_none() {
+            return;
+        }
+        self.dispatch_pending_update_with_vsync(None);
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
