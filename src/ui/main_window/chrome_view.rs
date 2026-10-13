@@ -284,7 +284,10 @@ impl Render for NavChromeView {
             .items_center()
             .justify_center()
             .child(chrome::render_nav(state, &self.items, &colors))
-            .with_layout_animation_target(labels_animating)
+            // Chrome-nav's cached boundary has a fixed full-size box. Label
+            // expansion only rearranges descendants inside that box and never
+            // changes the parent shell's flow geometry.
+            .with_local_layout_animation_target(labels_animating)
     }
 }
 

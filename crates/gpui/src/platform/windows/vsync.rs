@@ -85,8 +85,12 @@ impl VSyncScheduler {
         }
     }
 
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire) && !self.shutdown.load(Ordering::Acquire)
+    }
+
     pub(super) fn request_frame(&self) -> bool {
-        if !self.active.load(Ordering::Acquire) {
+        if !self.is_active() {
             return false;
         }
         self.frame_pending.store(true, Ordering::Release);

@@ -126,6 +126,27 @@ impl GpuReportMailbox {
 
 const SIZE_MOVE_LOOP_SUBCLASS_ID: usize = 0x4750_5549;
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 0x4750_5549;
+// WM_PAINT / winit RedrawRequested must never become a second high-frequency
+// animation clock alongside DWM VSync. Recover only if native frame delivery stalls.
+const UNPACED_FRAME_WATCHDOG_INTERVAL: Duration = Duration::from_millis(33);
+
+fn allow_unpaced_native_frame(
+    scheduler_active: bool,
+    now: Instant,
+    last_vsync: Option<Instant>,
+    last_fallback: Option<Instant>,
+) -> bool {
+    if !scheduler_active {
+        return true;
+    }
+    let stalled = last_vsync.is_none_or(|last| {
+        now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL
+    });
+    let fallback_available = last_fallback.is_none_or(|last| {
+        now.saturating_duration_since(last) >= UNPACED_FRAME_WATCHDOG_INTERVAL
+    });
+    stalled && fallback_available
+}
 
 thread_local! {
     static WINDOWS_WITH_SIZE_MOVE_TIMER: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
@@ -1225,6 +1246,10 @@ pub(crate) struct WindowsWindowInner {
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
+    // Native and watchdog frame starts are separate clocks. OS WM_PAINT and modal
+    // UI-task callbacks must not consume the queued scene ahead of DWM.
+    last_native_vsync_frame_at: Cell<Option<Instant>>,
+    last_unpaced_frame_at: Cell<Option<Instant>>,
     visibility_report_scheduled: Cell<bool>,
     size_move_active: Cell<bool>,
     size_move_has_resized: Cell<bool>,
@@ -1578,6 +1603,8 @@ impl WindowsWindow {
             pending_resize: Cell::new(None),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
+            last_native_vsync_frame_at: Cell::new(None),
+            last_unpaced_frame_at: Cell::new(None),
             visibility_report_scheduled: Cell::new(false),
             size_move_active: Cell::new(false),
             size_move_has_resized: Cell::new(false),
@@ -1890,6 +1917,26 @@ impl WindowsWindow {
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
+        // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer
+        // can all reach this method. If each consumes the pending frame, they
+        // defeat VSync coalescing and produce hundreds of uncadenced UI redraws
+        // per second. Let these paths poll tasks/geometry, but leave frame
+        // ownership to the native compositor unless it has stalled.
+        let now = Instant::now();
+        if !allow_unpaced_native_frame(
+            self.0.vsync_scheduler.is_active(),
+            now,
+            self.0.last_native_vsync_frame_at.get(),
+            self.0.last_unpaced_frame_at.get(),
+        ) {
+            if self.has_pending_native_frame() {
+                self.0.vsync_scheduler.request_frame();
+            }
+            return;
+        }
+        if self.0.vsync_scheduler.is_active() {
+            self.0.last_unpaced_frame_at.set(Some(now));
+        }
         self.dispatch_pending_update_with_vsync(None);
     }
 
@@ -1904,6 +1951,7 @@ impl WindowsWindow {
             timing.reported_composition_period,
             event_received_at,
         );
+        self.0.last_native_vsync_frame_at.set(Some(event_received_at));
         self.dispatch_pending_update_with_vsync(Some((timing, event_received_at)));
     }
 
@@ -2784,6 +2832,52 @@ mod tests {
             true,
             RendererBackend::NovaVulkan,
         ));
+    }
+
+    #[test]
+    fn os_redraw_does_not_race_healthy_dwm_vsync() {
+        use super::{allow_unpaced_native_frame, UNPACED_FRAME_WATCHDOG_INTERVAL};
+        use std::time::Instant;
+
+        let now = Instant::now();
+        let fresh_native = now - Duration::from_millis(4);
+        assert!(!allow_unpaced_native_frame(true, now, Some(fresh_native), None));
+        assert!(!allow_unpaced_native_frame(
+            true,
+            now,
+            Some(now - Duration::from_millis(32)),
+            None,
+        ));
+        assert!(allow_unpaced_native_frame(
+            true,
+            now,
+            Some(now - UNPACED_FRAME_WATCHDOG_INTERVAL),
+            None,
+        ));
+        assert!(allow_unpaced_native_frame(false, now, Some(fresh_native), None));
+    }
+
+    #[test]
+    fn stalled_dwm_path_limits_unpaced_frames_to_watchdog_cadence() {
+        use super::allow_unpaced_native_frame;
+        use std::time::Instant;
+
+        let now = Instant::now();
+        assert!(allow_unpaced_native_frame(true, now, None, None));
+        assert!(!allow_unpaced_native_frame(true, now, None, Some(now)));
+        assert!(!allow_unpaced_native_frame(
+            true,
+            now + Duration::from_millis(32),
+            None,
+            Some(now),
+        ));
+        assert!(allow_unpaced_native_frame(
+            true,
+            now + Duration::from_millis(33),
+            None,
+            Some(now),
+        ));
+        assert!(allow_unpaced_native_frame(false, now, None, Some(now)));
     }
 
     #[test]

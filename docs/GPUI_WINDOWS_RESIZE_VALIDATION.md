@@ -113,3 +113,20 @@ P1 响应式迟滞采用 Schmitt trigger 而非全局防抖：主导航标签和
 尚未把所有纯视觉展开组件迁到 GPU Presentation Lane。首页加载脉冲等已有 renderer-owned opacity animation；需要先为带中断/关闭回调的模态、带动态文字的布局展开建立等价的 timeline 生命周期和 Retained Layer，再去掉 CPU 每帧驱动，不能简单替换成 opacity 动画导致文本、裁剪和关闭回调错序。
 
 验收：在 Release 下验证嵌套 CachedView 展开/收起/中途反向/Resize 同时进行，检查布局、文字、背景、Hit-test 同步；每个后端分别进行 5 轮拖拽，收集 Present 成功率、帧间隔 P95/P99、GPU owner queue、resize 子阶段长尾与 GPUI Prepaint；此环境没有 Windows/Rust 工具链，修改本身不构成编译或实机通过。
+
+## 2026-10-13：Windows 帧请求双时钟诊断与修复
+
+最新 DX11 Debug 日志的新证据不是 GPU stall：5 秒窗口（约 5.1–10.2s）中 `frame_requests=1979 draws=1837 presents=1461`，但活动窗口累计 `native_vsync.wake_count` 只从 66 增至 73。该时段 `present_interval_p50_micros=1624`，明显短于显示器报告的约 4166µs 刷新周期。这证明存在大量 **DWM VSync 以外的帧消费**，但不能由此证明显示器扫描出上千帧。日志其他 5 秒窗口仍存在长尾 Prepaint 19/28.9ms，属于独立 CPU 问题。
+
+根因入口：`WindowsApplication::window_event(RedrawRequested)`、`WM_MODAL_UI_TASKS` 和 `WM_TIMER` 都可以进入 `WindowsWindow::dispatch_pending_update()`。旧代码把所有普通 redraw / modal-task 唤醒都视为可提交帧，因此 Win32 的 WM_PAINT 和嵌套尺寸变化消息循环成为第二个不受刷新率约束的帧时钟，与 `VSyncScheduler` 竞争取走同一 `pending_frame_request`。
+
+新约束参考 Flutter 的 scheduleFrame/handleBeginFrame、Chromium 的 BeginImplFrame、Qt Quick 的 threaded scenegraph：
+- `RedrawRequested`、modal 前台任务和 WM_TIMER **可处理事件和查询窗口尺寸，但不直接跨过健康的 DWM 节拍消费绘制请求**；
+- 所有待绘制需求继续进入每窗口 latest-wins mailbox，并用 `VSyncScheduler::request_frame()` 安排下一次显示节拍；
+- 如果该窗口超过 33ms 没有收到可用于更新的原生 VSync，才允许 unpaced watchdog，且每窗口兜底最多每 33ms 一次；DWM 不可用时沿用原先的 winit fallback；
+- 初始隐藏 HWND 的首帧仍走 `request_first_presentable_frame()` 独立握手，不受 WM_PAINT 门限限制；
+- 自带固定边界的 Chrome Nav 标签宽度过渡现在使用局部布局 invalidation，而非继续强制祖先 cached 几何重排；流布局真正变化的其他组件继续使用 `RelayoutSubtree`。
+
+与对照框架的共性是 **一个统一帧节拍、去重的 request、在呈现时采样动画、保留 compositor 自主呈现**。尚未测量此补丁的 Release 帧率；Debug 日志也不能证明实际扫描率。本次差异需要至少在 DX11/DX12/Vulkan/OpenGL + 240Hz 拖拽/不拖拽及导航展开/收起时回归。
+
+验收重点：`request_redraw_count` 对实际 native wake 的异常倍率应显著下降；native VSync 唤醒间隔与 4.17ms 周期更接近；`present_interval_p50` 不应在普通活动场景持续小于实际刷新周期；注意累计 metrics 和 5 秒 delta 混用会导致统计误判。若仍出现 19–29ms Prepaint 长尾，应继续拆分 CachedView selective splice 和元素绘制，但不能重新开放 WM_PAINT 高频绕过。
