@@ -109,7 +109,6 @@ pub fn render_launch_prereq_overlay(
     content = content.child(render_progress_section(
         state,
         &colors,
-        now,
         operation_text,
         progress_percent,
         progress_ratio,
@@ -152,7 +151,6 @@ pub fn render_launch_prereq_overlay(
 fn render_progress_section(
     state: &LaunchPrereqState,
     colors: &ThemeColors,
-    now: Instant,
     operation_text: SharedString,
     progress_percent: u32,
     progress_ratio: f32,
@@ -185,7 +183,7 @@ fn render_progress_section(
                             colors,
                             lucide_gpui::icon!(loader_circle),
                             colors.accent,
-                            state.busy_animation_rotation(now),
+                            state.is_busy(),
                         ))
                         .child(
                             div()
@@ -777,8 +775,25 @@ fn spinning_icon_shell(
     colors: &ThemeColors,
     icon_path: &'static str,
     icon_color: Hsla,
-    rotation: f32,
+    busy: bool,
 ) -> Div {
+    let glyph = svg().path(icon_path).size(px(18.)).text_color(icon_color);
+    let glyph: AnyElement = if busy {
+        glyph
+            .with_visual_animation(
+                "launch-prereq-busy-spinner",
+                Animation::new(std::time::Duration::from_millis(900))
+                    .repeat()
+                    .with_property(AnimationProperty::rotation(
+                        radians(0.0),
+                        radians(std::f32::consts::TAU),
+                    )),
+            )
+            .expect("prerequisite spinner rotation is a renderer visual property")
+            .into_any_element()
+    } else {
+        glyph.into_any_element()
+    };
     div()
         .w(px(36.))
         .h(px(36.))
@@ -790,13 +805,7 @@ fn spinning_icon_shell(
             a: 0.16,
             ..colors.surface
         })
-        .child(
-            svg()
-                .path(icon_path)
-                .size(px(18.))
-                .text_color(icon_color)
-                .with_transformation(Transformation::rotate(radians(rotation))),
-        )
+        .child(glyph)
 }
 
 fn progress_bar(colors: &ThemeColors, ratio: f32) -> Div {

@@ -878,7 +878,7 @@ impl NovaRenderer {
                 self.frame_upload
                     .append_retained_root(self.current_size, &mut summary);
             }
-            log::debug!(
+            log::trace!(
                 target: "gpui::diagnostics",
                 "GPUI color retention result: scene_revision={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={}",
                 scene.revision,

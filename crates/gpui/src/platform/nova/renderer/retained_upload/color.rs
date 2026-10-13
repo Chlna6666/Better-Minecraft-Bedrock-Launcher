@@ -32,7 +32,7 @@ pub(super) fn should_retain_local_animation(
     let eligible = has_animation
         && animated_area * 4. <= viewport_area
         && saved_static_area > added_present_area;
-    log::debug!(
+    log::trace!(
         target: "gpui::diagnostics",
         "GPUI color retention policy: scene_revision={} static_raster_pixels={:.0} animated_output_pixels={:.0} viewport_pixels={:.0} estimated_saved_static_pixels={:.0} added_present_pixels={:.0} has_animation={} eligible={}",
         scene.revision, static_area, animated_area, viewport_area, saved_static_area, added_present_area, has_animation, eligible,

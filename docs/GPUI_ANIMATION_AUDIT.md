@@ -437,3 +437,18 @@ and native filter readback do not substitute for an updated Settings dropdown
 capture with rapid reversal, outside-click dismissal, selection, scrolling,
 theme changes, fractional scale, and stable static siblings. Whole-page theme
 interpolation and the other rows above are not claimed as fixed.
+
+
+## 2026-10-13：降低 Prepaint 长尾的首轮减负
+
+本轮所用 2026-10-13 DX11 Debug 日志中的 19.5ms Frame-generation warning（Prepaint 19.0ms），element_prepaint 的 `self_total_us=170636` 超过了同一帧实际 19ms，暴露此前 element_work 递归计时不正确：子节点结束时栈被截断，已耗时间没有归集到父级，导致 `Div/CachedView` 多层重叠计入。已更正 parent-child 独占计时算法，并设置 `BMCBL_GPUI_ELEMENT_WORK=1` 才进行逐元素时间戳/TLS 和聚合。这是侵入性探针，不能把旧的“self_total”看成真实独占耗时。默认仍提供全帧 Prepaint/Paint 计时和必要的 budget warning；未开启元素探针时 element_top 字段为空。
+
+纯视觉 GPU/Presentation Lane 转换：
+- 导入检查中的 `spinning_icon(now, started_at)` 曾通过 `with_layout_animation_target(true)` 永久请求布局帧；现在图标只创建一次固定尺寸 SVG，声明 `AnimationProperty::rotation` 的 renderer-owned 900ms 重复轨道。
+- 首页启动 Spinner 和 Xbox 忙碌图标的旧 `with_animation(..., |icon, _| icon)` 改为 `with_visual_animation`，无每帧 animator 回调。
+- Windows 启动依赖 Modal 的 Busy Spinner 改为原生重复旋转，非 busy 时保持静态图标；删除 `MainWindowView` 对 `next_busy_animation_deadline` 的整窗 `request_invalidation_at`。状态/进度变化仍通过已有 Notify 更新。
+- 高频 `GPUI color retention policy/result` 从 Debug 改为 Trace，避免默认调试日志每帧分配/格式化/输出；需要完整逐帧策略时开启 `RUST_LOG=gpui::diagnostics=trace`（日志过滤规则按项目当前配置适配）。
+
+此轮**没有**声称解决 Chrome Nav 标签宽度弹簧和首页版本列表的 height/row-stagger CPU Layout 工作，它们影响几何/Hit-test，不能直接把原始内容保持静态而只旋转/缩放 GPU。一旦需求转为“可见性裁剪+静态完整最终布局”，需要引入留在 compositor 的 Reveal/Clip track 并验证输入、遮罩与文本像素一致性。
+
+验收建议：以 Release 同一交互分别测 `BMCBL_GPUI_ELEMENT_WORK` 关闭/开启的 Prepaint P95/P99；确认静态页 + Busy Spinner 不再产生持续 `LayoutAnimation` 请求，Native VSync 仍持续 Present，完成/取消时 Icon 立即停止；在 DX11/DX12/Vulkan/OpenGL 下比较缩放/DPI、图标方向和刷新、恢复、重开状态。用户已有视频/日志可作为改动前症状，当前环境无 Windows/Rust 工具链，无法验证收益值或屏幕真实 FPS。

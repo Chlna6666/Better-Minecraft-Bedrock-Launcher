@@ -185,8 +185,6 @@ struct MainWindowRenderModel {
     launcher_modal_animating: bool,
     #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
-    #[cfg(target_os = "windows")]
-    launch_prereq_busy_deadline: Option<Instant>,
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
     dropdown_visible: bool,
@@ -391,14 +389,8 @@ impl MainWindowView {
         let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(now, cx);
         let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(now);
         #[cfg(target_os = "windows")]
-        let (launch_prereq_visible, launch_prereq_busy_deadline) = {
-            let launch_prereq_state =
-                cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
-            (
-                launch_prereq_state.visible,
-                launch_prereq_state.next_busy_animation_deadline(now),
-            )
-        };
+        let launch_prereq_visible =
+            cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>().visible;
         let (toast_visible, toast_breadcrumb_visible) = {
             let toast_state = cx.global::<crate::ui::components::toast::ToastState>();
             let window_id = window.window_handle().window_id();
@@ -440,8 +432,6 @@ impl MainWindowView {
             launcher_modal_animating,
             #[cfg(target_os = "windows")]
             launch_prereq_visible,
-            #[cfg(target_os = "windows")]
-            launch_prereq_busy_deadline,
             toast_visible,
             toast_breadcrumb_visible,
             dropdown_visible,
@@ -739,10 +729,6 @@ impl MainWindowView {
             #[cfg(target_os = "windows")]
             if model.launch_prereq_visible {
                 auth_blocked = true;
-                if let Some(deadline) = model.launch_prereq_busy_deadline {
-                    window.request_invalidation_at(deadline, cx);
-                }
-
                 let launch_prereq_state =
                     cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>();
                 root = root.child(

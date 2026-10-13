@@ -519,7 +519,7 @@ impl HomePageView {
                     icon_path(lucide_gpui::icon!(loader_circle))
                         .size(px(40.0))
                         .text_color(rgb(0xffffff))
-                        .with_animation(
+                        .with_visual_animation(
                             "home-launch-loading-spinner",
                             Animation::new(Duration::from_secs(1))
                                 .repeat()
@@ -527,8 +527,8 @@ impl HomePageView {
                                     radians(0.0),
                                     radians(std::f32::consts::TAU),
                                 )),
-                            |icon, _progress| icon,
                         )
+                        .expect("loading rotation is a renderer visual property")
                         .into_any_element()
                 } else {
                     icon_path(lucide_gpui::icon!(play))

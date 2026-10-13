@@ -114,7 +114,6 @@ pub struct ImportWindowView {
     conflict_requires_shared_fallback: bool,
     show_conflict_dialog: bool,
     is_inspecting: bool,
-    inspect_started_at: Instant,
     inspect_task_id: Option<String>,
     is_importing: bool,
     launch_after_import: bool,
@@ -232,7 +231,6 @@ impl ImportWindowView {
             conflict_requires_shared_fallback: false,
             show_conflict_dialog: false,
             is_inspecting: false,
-            inspect_started_at: Instant::now(),
             inspect_task_id: None,
             is_importing: false,
             launch_after_import: false,
@@ -284,7 +282,6 @@ impl ImportWindowView {
         }
 
         self.is_inspecting = true;
-        self.inspect_started_at = Instant::now();
         self.preview = None;
         self.batch_previews.clear();
         self.status = None;
@@ -967,7 +964,7 @@ impl Render for ImportWindowView {
                                                         .min_w(px(0.))
                                                         .min_h(px(0.))
                                                         .child(render_preview_card(
-                                                            self, &colors, frame_now, cx,
+                                                            self, &colors, cx,
                                                         )),
                                                 )
                                                 .child(
@@ -1007,7 +1004,7 @@ impl Render for ImportWindowView {
                                                 .flex_col()
                                                 .gap(px(14.))
                                                 .child(render_preview_card(
-                                                    self, &colors, frame_now, cx,
+                                                    self, &colors, cx,
                                                 ))
                                                 .child(render_versions_card(
                                                     self,
@@ -1445,27 +1442,9 @@ fn image_format_for_preview_icon(format: PreviewImageFormat) -> ImageFormat {
     }
 }
 
-fn spinning_icon(
-    now: Instant,
-    started_at: Instant,
-    path: &'static str,
-    size_px: f32,
-    color: Hsla,
-) -> Svg {
-    let elapsed = now.saturating_duration_since(started_at).as_secs_f32();
-    let rotation = (elapsed / 0.9).fract() * std::f32::consts::TAU;
-    svg()
-        .path(path)
-        .w(px(size_px))
-        .h(px(size_px))
-        .text_color(color)
-        .with_transformation(Transformation::rotate(radians(rotation)))
-}
-
 fn render_preview_card(
     this: &ImportWindowView,
     colors: &ThemeColors,
-    now: Instant,
     cx: &App,
 ) -> AnyElement {
     let _i18n = cx.global::<I18n>();
@@ -1475,14 +1454,22 @@ fn render_preview_card(
             .items_center()
             .gap(px(8.))
             .child(
-                spinning_icon(
-                    now,
-                    this.inspect_started_at,
-                    lucide_gpui::icon!(loader_circle),
-                    18.0,
-                    colors.accent,
-                )
-                .with_layout_animation_target(true),
+                // The renderer owns this repeat timeline; inspection does not
+                // enqueue a new UI layout frame for every rotation sample.
+                svg()
+                    .path(lucide_gpui::icon!(loader_circle))
+                    .size(px(18.))
+                    .text_color(colors.accent)
+                    .with_visual_animation(
+                        "import-inspect-spinner",
+                        Animation::new(Duration::from_millis(900))
+                            .repeat()
+                            .with_property(AnimationProperty::rotation(
+                                radians(0.0),
+                                radians(std::f32::consts::TAU),
+                            )),
+                    )
+                    .expect("spinner rotation is a renderer visual property"),
             )
             .child(
                 div()

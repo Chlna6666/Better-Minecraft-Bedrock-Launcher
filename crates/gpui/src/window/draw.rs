@@ -895,27 +895,34 @@ impl Window {
         self.paint_debug_frame_time_overlay(cx);
         self.last_generation_stats.prepaint_elapsed = prepaint_time;
         self.last_generation_stats.paint_elapsed = paint_started_at.elapsed();
-        let element_work = super::element_work::take();
-        self.last_generation_stats.element_prepaint = format!(
-            "elements={} self_total_us={} top={:?}",
-            element_work.prepaint_elements,
-            element_work
-                .prepaint
-                .iter()
-                .map(|(_, elapsed)| elapsed.as_micros())
-                .sum::<u128>(),
-            element_work.prepaint
-        );
-        self.last_generation_stats.element_paint = format!(
-            "elements={} self_total_us={} top={:?}",
-            element_work.paint_elements,
-            element_work
-                .paint
-                .iter()
-                .map(|(_, elapsed)| elapsed.as_micros())
-                .sum::<u128>(),
-            element_work.paint
-        );
+        if super::element_work::enabled() {
+            let element_work = super::element_work::take();
+            self.last_generation_stats.element_prepaint = format!(
+                "elements={} self_total_us={} top={:?}",
+                element_work.prepaint_elements,
+                element_work
+                    .prepaint
+                    .iter()
+                    .map(|(_, elapsed)| elapsed.as_micros())
+                    .sum::<u128>(),
+                element_work.prepaint
+            );
+            self.last_generation_stats.element_paint = format!(
+                "elements={} self_total_us={} top={:?}",
+                element_work.paint_elements,
+                element_work
+                    .paint
+                    .iter()
+                    .map(|(_, elapsed)| elapsed.as_micros())
+                    .sum::<u128>(),
+                element_work.paint
+            );
+        } else {
+            // Avoid per-frame heap allocations and sorting when the invasive
+            // element-level profiler has not been explicitly requested.
+            self.last_generation_stats.element_prepaint.clear();
+            self.last_generation_stats.element_paint.clear();
+        }
         FramePhaseMetrics {
             layout: self
                 .layout_engine

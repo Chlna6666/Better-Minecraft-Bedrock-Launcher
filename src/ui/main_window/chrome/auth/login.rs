@@ -191,15 +191,15 @@ fn busy(state: &RenderState, colors: &ThemeColors) -> AnyElement {
         spinner.into_any_element()
     } else {
         spinner
-            .with_animation(
+            .with_visual_animation(
                 "xbox-auth-busy-spinner",
                 crate::ui::animation::repeating_linear_motion(Duration::from_millis(900))
                     .with_property(AnimationProperty::rotation(
                         radians(0.0),
                         radians(std::f32::consts::TAU),
                     )),
-                |icon, _progress| icon,
             )
+            .expect("auth rotation is a renderer visual property")
             .into_any_element()
     };
     div()
