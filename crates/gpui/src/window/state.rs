@@ -445,6 +445,10 @@ pub(crate) struct CachedViewTraversalContext {
 /// One immutable scene snapshot owned by the presentation domain.
 struct PresentationSnapshot {
     scene: Arc<Scene>,
+    // This extent belongs to the immutable Scene, not to the mutable HWND or
+    // the window's latest viewport. It survives a newer WM_SIZE until the
+    // matching UI generation has actually committed.
+    layout_extent: Option<(u32, u32)>,
     engine_animation_values: SmallVec<[crate::SceneAnimationValue; 4]>,
 }
 
@@ -452,9 +456,11 @@ impl PresentationSnapshot {
     fn new(
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+        layout_extent: Option<(u32, u32)>,
     ) -> Self {
         Self {
             scene,
+            layout_extent,
             engine_animation_values: values.into_iter().collect(),
         }
     }
@@ -484,16 +490,24 @@ impl PresentationState {
         &mut self,
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
+        layout_extent: Option<(u32, u32)>,
     ) {
         match self.pending.as_mut() {
             Some(pending) => {
                 pending.scene = scene;
+                pending.layout_extent = layout_extent;
                 pending.replace_engine_animation_values(values);
             }
             None => {
-                self.pending = Some(PresentationSnapshot::new(scene, values));
+                self.pending = Some(PresentationSnapshot::new(scene, values, layout_extent));
             }
         }
+    }
+
+    /// The size recorded when the active immutable scene was committed.
+    /// An in-flight Windows resize must not relabel the old scene as new-size.
+    pub(crate) fn active_layout_extent(&self) -> Option<(u32, u32)> {
+        self.active.as_ref().and_then(|snapshot| snapshot.layout_extent)
     }
 
     pub(crate) fn activate_pending(&mut self) -> bool {

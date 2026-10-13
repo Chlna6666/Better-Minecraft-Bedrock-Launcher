@@ -265,8 +265,15 @@ impl Window {
             directly_dirty_views,
             accumulate_unpresented_damage,
         );
-        self.presentation_state
-            .publish_pending(self.next_frame.scene.snapshot(), scene_animation_values);
+        let committed_layout_extent = (
+            (self.viewport_size.width.0 * self.scale_factor).round().max(0.0) as u32,
+            (self.viewport_size.height.0 * self.scale_factor).round().max(0.0) as u32,
+        );
+        self.presentation_state.publish_pending(
+            self.next_frame.scene.snapshot(),
+            scene_animation_values,
+            Some(committed_layout_extent),
+        );
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
@@ -715,13 +722,10 @@ impl Window {
             self.render_present_mode,
         );
         packet.window_id = self.handle.window_id().as_u64();
-        // The GPU owner must never apply an HWND resize to a Scene built from a
-        // different viewport generation. Capture the *layout* extent, not the
-        // capacity of a possibly oversized swapchain backbuffer.
-        packet.layout_extent = Some((
-            (self.viewport_size.width.0 * self.scale_factor).round().max(0.0) as u32,
-            (self.viewport_size.height.0 * self.scale_factor).round().max(0.0) as u32,
-        ));
+        // Presentation can replay the previous Scene before the UI finishes
+        // its next WM_SIZE layout. Record the extent belonging to that Scene,
+        // not the newer viewport currently exposed by the native window.
+        packet.layout_extent = self.presentation_state.active_layout_extent();
         packet.set_frame_interval(self.frame_clock.interval());
         packet
     }
