@@ -1448,26 +1448,31 @@ impl WindowsWindow {
             // visible background must not turn initialization into a VSync UI rebuild loop.
             return PlatformFrameResult::Deferred;
         }
-        // WM_SIZE may reenter after layout has completed but before Present.
-        // A cached old-size Scene cannot fill an enlarged HWND, regardless of
-        // GPU throughput; presenting it exposes black strips on every backend.
-        // Only the matching viewport generation can consume a pending Resize.
+        // During a continuous WM_SIZE drag, the HWND may change again
+        // between Scene commit and Present. Rejecting every intermediate
+        // Draw prevents all frames from reaching the GPU until dragging stops.
+        // Allow a real Draw using its own immutable layout extent; the GPU
+        // owner pairs it with the corresponding drawable on consumption.
+        // Framebuffer-only replay is not a real layout update and must wait.
         if let Some(native) = self.native_client_extent()
             && !native_extent_matches_layout(packet.layout_extent, native)
         {
             if crate::diagnostics::gpu_owner::resize_trace_enabled() {
                 log::info!(
                     target: "gpui_resize_trace",
-                    "gpui_resize stage=stale_scene window_id={} layout_px={:?} native_px={}x{}",
+                    "gpui_resize stage=intermediate_scene window_id={} layout_px={:?} native_px={}x{} framebuffer_only={}",
                     self.0.handle.window_id().data().as_ffi(),
                     packet.layout_extent,
                     native.width,
                     native.height,
+                    framebuffer_only,
                 );
             }
             self.sync_current_native_size();
             self.request_frame(PlatformFrameRequest::ui_commit());
-            return PlatformFrameResult::Deferred;
+            if framebuffer_only {
+                return PlatformFrameResult::Deferred;
+            }
         }
         if !self.try_apply_queued_renderer_resize() {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);

@@ -16,6 +16,21 @@ use std::{
     time::Instant,
 };
 
+/// The immutable Scene extent wins over a later queued HWND resize at Draw time.
+#[cfg(any(test, target_os = "windows"))]
+fn scene_resize_before_draw(
+    layout_extent: Option<(u32, u32)>,
+    requested_extent: Option<(u32, u32)>,
+    framebuffer_only: bool,
+) -> Option<(u32, u32)> {
+    if framebuffer_only {
+        return None;
+    }
+    layout_extent.filter(|&(width, height)| {
+        width > 0 && height > 0 && requested_extent != Some((width, height))
+    })
+}
+
 #[derive(Default)]
 pub(super) struct Worker {
     entries: HashMap<u64, Entry>,
@@ -256,6 +271,31 @@ impl Entry {
             } => {
                 #[cfg(target_os = "windows")]
                 {
+                    if let Some((width, height)) = scene_resize_before_draw(
+                        packet.layout_extent,
+                        self.requested_swapchain_extent,
+                        framebuffer_only,
+                    ) {
+                        // The WM_SIZE queue may have moved past this immutable
+                        // Scene. Rebind the GPU drawable extent before Draw to
+                        // prevent mismatched projection, scissors and layers.
+                        self.requested_swapchain_extent = Some((width, height));
+                        self.ready_registration.store(0, Ordering::Release);
+                        self.renderer.update_drawable_size(crate::size(
+                            crate::DevicePixels(width.min(i32::MAX as u32) as i32),
+                            crate::DevicePixels(height.min(i32::MAX as u32) as i32),
+                        ));
+                        if gpu_owner::resize_trace_enabled() {
+                            log::info!(
+                                target: "gpui_resize_trace",
+                                "gpui_resize stage=scene_pair window_id={} owner_id={} physical_px={}x{}",
+                                packet.window_id,
+                                self.id,
+                                width,
+                                height
+                            );
+                        }
+                    }
                     self.resize_awaiting_draw = false;
                 }
                 #[cfg(target_os = "windows")]
@@ -589,5 +629,39 @@ impl Drop for Entry {
         self.ready_registration.store(0, Ordering::Release);
         self.renderer.destroy();
         gpu_owner::unregister(self.id);
+    }
+}
+
+#[cfg(test)]
+mod scene_resize_tests {
+    use super::scene_resize_before_draw;
+
+    #[test]
+    fn intermediate_draw_uses_own_scene_extent() {
+        assert_eq!(
+            scene_resize_before_draw(Some((1200, 800)), Some((1440, 900)), false),
+            Some((1200, 800)),
+        );
+        assert_eq!(
+            scene_resize_before_draw(Some((1440, 900)), Some((1440, 900)), false),
+            None,
+        );
+        assert_eq!(
+            scene_resize_before_draw(Some((1500, 960)), Some((1200, 800)), false),
+            Some((1500, 960)),
+        );
+    }
+
+    #[test]
+    fn replay_and_invalid_extent_do_not_resize() {
+        assert_eq!(
+            scene_resize_before_draw(Some((1200, 800)), Some((1440, 900)), true),
+            None,
+        );
+        assert_eq!(scene_resize_before_draw(None, Some((1440, 900)), false), None);
+        assert_eq!(
+            scene_resize_before_draw(Some((0, 900)), Some((1440, 900)), false),
+            None,
+        );
     }
 }
