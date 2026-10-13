@@ -1103,6 +1103,37 @@ fn content_bounds_change_only_invalidates_viewport_dependent_views(cx: &mut Test
 }
 
 #[gpui::test]
+fn viewport_resize_invalidates_nested_cached_geometry(cx: &mut TestAppContext) {
+    let (root, mut cx) = cx.add_window_view(|_, _| EmptyTestView);
+    cx.update(|window, cx| {
+        let root_id = root.entity_id();
+        let boundary = GlobalElementId::from_path(&[ElementId::InstanceSlot(0)]);
+        let descendant = GlobalElementId::from_path(&[
+            ElementId::InstanceSlot(0),
+            ElementId::InstanceSlot(1),
+        ]);
+        window
+            .invalidator
+            .register_cached_view_retained_target(root_id, &boundary, &boundary);
+        window.invalidator.set_dirty(false);
+
+        {
+            let test_window = window.platform_window.as_test().unwrap();
+            test_window.0.lock().bounds.size.height += px(48.);
+        }
+        window.content_bounds_changed(cx);
+        window.invalidator.set_dirty(false);
+
+        assert!(
+            window
+                .invalidator
+                .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == root_id),
+            "a new viewport must not reuse a descendant's stale cached layout"
+        );
+    });
+}
+
+#[gpui::test]
 fn viewport_size_records_the_current_rendered_view(cx: &mut TestAppContext) {
     let window = cx.add_empty_window();
     window.update(|window, _cx| {

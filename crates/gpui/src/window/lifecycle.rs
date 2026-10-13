@@ -356,6 +356,23 @@ impl WindowInvalidator {
 
     #[track_caller]
     pub fn invalidate_view(&self, entity: EntityId, cx: &mut App) -> bool {
+        self.invalidate_view_with_scope(entity, cx, RetainedInvalidationScope::ReconcileSubtree)
+    }
+
+    /// A changed root viewport invalidates cached geometry, not merely paint.
+    /// Ordinary entity notifications keep their cheaper reconciliation scope.
+    #[track_caller]
+    pub(in crate::window) fn invalidate_layout_view(&self, entity: EntityId, cx: &mut App) -> bool {
+        self.invalidate_view_with_scope(entity, cx, RetainedInvalidationScope::RelayoutSubtree)
+    }
+
+    #[track_caller]
+    fn invalidate_view_with_scope(
+        &self,
+        entity: EntityId,
+        cx: &mut App,
+        scope: RetainedInvalidationScope,
+    ) -> bool {
         let mut inner = self.inner.borrow_mut();
         let location = std::panic::Location::caller();
         let mut diagnostics = inner.dirty_frame_diagnostics.borrow_mut();
@@ -411,9 +428,9 @@ impl WindowInvalidator {
                             .pending_targeted_elements
                             .entry((target_owner, target.retained_id))
                             .and_modify(|scope| {
-                                *scope = scope.merged(RetainedInvalidationScope::ReconcileSubtree)
+                                *scope = scope.merged(scope)
                             })
-                            .or_insert(RetainedInvalidationScope::ReconcileSubtree);
+                            .or_insert(scope);
                     }
                 } else {
                     inner.pending_generic_dirty_views.insert(entity);

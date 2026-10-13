@@ -53,6 +53,10 @@ impl Window {
         let viewport_size = self.platform_window.content_size();
         let display_id = self.platform_window.display().map(|display| display.id());
         let live_resize_active = self.platform_window.is_live_resizing();
+        // A new viewport constraint requires layout relayout of retained root
+        // geometry. A live-resize flag or display-only transition does not.
+        let layout_constraints_changed =
+            self.viewport_size != viewport_size || self.scale_factor != scale_factor;
 
         let text_rasterization_changed =
             self.scale_factor != scale_factor || self.display_id != display_id;
@@ -100,7 +104,11 @@ impl Window {
         // own bounds and paint context are unchanged.
         let root_view_id = self.root.as_ref().map(AnyView::entity_id);
         if let Some(root_id) = root_view_id {
-            self.invalidator.invalidate_view(root_id, cx);
+            if layout_constraints_changed {
+                self.invalidator.invalidate_layout_view(root_id, cx);
+            } else {
+                self.invalidator.invalidate_view(root_id, cx);
+            }
         }
         if !live_resize_active {
             // Only image owners whose target size was deferred need a final
