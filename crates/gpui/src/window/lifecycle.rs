@@ -427,8 +427,8 @@ impl WindowInvalidator {
                         inner
                             .pending_targeted_elements
                             .entry((target_owner, target.retained_id))
-                            .and_modify(|scope| {
-                                *scope = scope.merged(scope)
+                            .and_modify(|existing_scope| {
+                                *existing_scope = existing_scope.merged(scope);
                             })
                             .or_insert(scope);
                     }
