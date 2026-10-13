@@ -449,6 +449,8 @@ struct PresentationSnapshot {
     // the window's latest viewport. It survives a newer WM_SIZE until the
     // matching UI generation has actually committed.
     layout_extent: Option<(u32, u32)>,
+    /// DPI scale used by the Scene's geometry and text rasterization.
+    layout_scale_factor: f32,
     engine_animation_values: SmallVec<[crate::SceneAnimationValue; 4]>,
 }
 
@@ -457,10 +459,12 @@ impl PresentationSnapshot {
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
+        layout_scale_factor: f32,
     ) -> Self {
         Self {
             scene,
             layout_extent,
+            layout_scale_factor,
             engine_animation_values: values.into_iter().collect(),
         }
     }
@@ -491,15 +495,19 @@ impl PresentationState {
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
+        layout_scale_factor: f32,
     ) {
         match self.pending.as_mut() {
             Some(pending) => {
                 pending.scene = scene;
                 pending.layout_extent = layout_extent;
+                pending.layout_scale_factor = layout_scale_factor;
                 pending.replace_engine_animation_values(values);
             }
             None => {
-                self.pending = Some(PresentationSnapshot::new(scene, values, layout_extent));
+                self.pending = Some(PresentationSnapshot::new(
+                    scene, values, layout_extent, layout_scale_factor,
+                ));
             }
         }
     }
@@ -508,6 +516,10 @@ impl PresentationState {
     /// An in-flight Windows resize must not relabel the old scene as new-size.
     pub(crate) fn active_layout_extent(&self) -> Option<(u32, u32)> {
         self.active.as_ref().and_then(|snapshot| snapshot.layout_extent)
+    }
+
+    pub(crate) fn active_layout_scale_factor(&self) -> Option<f32> {
+        self.active.as_ref().map(|snapshot| snapshot.layout_scale_factor)
     }
 
     pub(crate) fn activate_pending(&mut self) -> bool {
@@ -882,24 +894,30 @@ mod presentation_extent_tests {
             Arc::new(Scene::default()),
             [],
             Some((1200, 800)),
+            1.0,
         );
         assert_eq!(presentation.active_layout_extent(), None);
         assert!(presentation.activate_pending());
         assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+        assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
 
         presentation.publish_pending(
             Arc::new(Scene::default()),
             [],
             Some((1300, 850)),
+            1.25,
         );
         presentation.publish_pending(
             Arc::new(Scene::default()),
             [],
             Some((1400, 900)),
+            1.5,
         );
         // Before activation, the active GPU scene still belongs to 1200x800.
         assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+        assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
         assert!(presentation.activate_pending());
         assert_eq!(presentation.active_layout_extent(), Some((1400, 900)));
+        assert_eq!(presentation.active_layout_scale_factor(), Some(1.5));
     }
 }

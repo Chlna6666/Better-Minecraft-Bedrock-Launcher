@@ -273,6 +273,7 @@ impl Window {
             self.next_frame.scene.snapshot(),
             scene_animation_values,
             Some(committed_layout_extent),
+            self.scale_factor,
         );
         let frame_retained_capacity = self.next_frame.retained_capacity();
         let scene_metrics = self.next_frame.scene.frame_metrics();
@@ -716,7 +717,7 @@ impl Window {
                 .copied(),
             presentation_animation_timelines,
             self.animation_time(),
-            self.scale_factor,
+            self.presentation_state.active_layout_scale_factor().unwrap_or(self.scale_factor),
             self.render_dirty_region.clone(),
             self.backdrop_blur_damage_plan.clone(),
             self.render_present_mode,
