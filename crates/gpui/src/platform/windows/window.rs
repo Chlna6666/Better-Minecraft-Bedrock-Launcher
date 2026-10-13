@@ -2508,8 +2508,13 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn request_native_close(&self) {
-        // Window::remove_window may run inside a winit input/paint callback.
-        // Never re-enter WindowsApplication::close_window on that stack.
+        // Native CloseRequested has already taken its one-shot on_close
+        // callback, and owns HWND deregistration. Do not queue it again.
+        if self.0.state.borrow().callbacks.close.is_none() {
+            return;
+        }
+        // Programmatic GPUI close bypasses winit CloseRequested. Dispatch
+        // native deregistration after the current UI callback unwinds.
         if self.0.event_loop_proxy.send_event(WindowsUserEvent::RemoveNativeWindow {
             window_id: self.window().id(),
         }).is_err() {

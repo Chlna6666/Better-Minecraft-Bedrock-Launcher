@@ -1220,7 +1220,12 @@ mod pending_file_drop_tests {
 }
 
 impl WindowsApplication {
-    fn close_window(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId) {
+    fn close_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        notify_gpui: bool,
+    ) {
         let Some(window) = self.windows.get(&window_id).cloned() else {
             return;
         };
@@ -1230,7 +1235,17 @@ impl WindowsApplication {
         // in-flight work is retired, but that must not leave a child on screen
         // or delay the main window's input/message loop.
         window.window().set_visible(false);
-        window.invoke_close();
+        // A native CloseRequested notifies GPUI once. A programmatic close
+        // was already acknowledged by GPUI before this event was queued.
+        if notify_gpui {
+            window.invoke_close();
+        }
+        log::debug!(
+            "GPUI native window close: window_id={:?} notify_gpui={} remaining={}",
+            window_id,
+            notify_gpui,
+            self.windows.len().saturating_sub(1)
+        );
         if self.hovered_window_id == Some(window_id) {
             self.hovered_window_id = None;
         }
@@ -1391,9 +1406,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
             WindowsUserEvent::RemoveNativeWindow { window_id } => {
-                // The GPUI window is already removed. De-register only this HWND,
-                // and let the shared GPU owner retire this window's resources.
-                self.close_window(event_loop, window_id);
+                // GPUI already acknowledged this close; never invoke its
+                // close callback a second time from the native event loop.
+                self.close_window(event_loop, window_id, false);
             }
             WindowsUserEvent::RenderOwnerFrame { window_id } => {
                 // The frame data lives in a per-window latest-wins mailbox. Release
@@ -1514,7 +1529,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             winit::event::WindowEvent::CloseRequested => {
                 let should_close = window.should_close().unwrap_or(true);
                 if should_close {
-                    self.close_window(event_loop, window_id);
+                    self.close_window(event_loop, window_id, true);
                 }
             }
             winit::event::WindowEvent::RedrawRequested => {
