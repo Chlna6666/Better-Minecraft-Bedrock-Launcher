@@ -1,6 +1,12 @@
 use super::*;
 
 impl Window {
+    pub(crate) fn defer_sized_image_resize(&mut self) {
+        if let Some(view_id) = self.current_view_or_root() {
+            self.live_resize_image_views.insert(view_id);
+        }
+    }
+
     pub(crate) fn schedule_image_frame(
         &self,
         deadline: Instant,

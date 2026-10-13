@@ -56,12 +56,42 @@ pub(super) fn render_sized_image(
                 let Some(target) = image_size_for_window(bounds, window) else {
                     return (None, state);
                 };
-                let requested = ImageRenderRequest::new(
+                let mut requested = ImageRenderRequest::new(
                     resource.clone(),
                     target,
                     window.scale_factor(),
                     object_fit,
                 );
+
+                // Native resize changes geometry, not image content. Starting a
+                // decode/resample for every transient size wastes background CPU
+                // and atlas uploads even when the pending lease is replaced later.
+                // GPU object-fit still follows the current element bounds. Source,
+                // scale-factor and fit changes remain real content invalidations.
+                if window.platform_window.is_live_resizing()
+                    && state.current_image.is_some()
+                    && state.sized_image_request.as_ref().is_some_and(|lease| {
+                        lease.request() != &requested
+                            && lease.request().has_same_content(&requested)
+                    })
+                {
+                    window.defer_sized_image_resize();
+                    if let Some(pending) = state.pending_sized_image_drop.take() {
+                        release_sized_image_lease(pending, None, Some(window), cx);
+                    }
+                    let loaded =
+                        render_current_sized_image(&mut state, animation_config, window, cx);
+                    return (loaded, state);
+                }
+                if window.platform_window.is_live_resizing()
+                    && let Some(pending) = state.pending_sized_image_drop.as_ref()
+                    && pending.request().has_same_content(&requested)
+                {
+                    window.defer_sized_image_resize();
+                    // Let the first decode finish instead of replacing it with
+                    // another transient size before any image can become visible.
+                    requested = pending.request().clone();
+                }
 
                 // The committed lease owns the request currently visible on screen. The pending
                 // lease owns only the newest replacement. Replacing B with C moves ownership to C

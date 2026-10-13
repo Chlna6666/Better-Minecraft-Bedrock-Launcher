@@ -106,9 +106,12 @@ pub struct PerformanceMetricsSnapshot {
     pub surface_resize_wait_time: Option<Duration>,
     /// Time spent in the backend swapchain resize for the latest surface resize.
     pub surface_resize_swapchain_time: Option<Duration>,
-    /// Time spent rebuilding size-dependent renderer resources for the latest surface resize.
+    /// Time spent preparing depth/path resources and retiring old targets during the latest
+    /// surface resize. New blur targets are prepared from the next packed scene and are included
+    /// in backend draw time, rather than this resize phase.
     pub surface_resize_resources_time: Option<Duration>,
-    /// End-to-end duration of the latest completed surface resize transaction.
+    /// Duration of the latest completed surface resize transaction, excluding the following
+    /// scene packing, blur-target preparation and first new-size presentation.
     pub surface_resize_total_time: Option<Duration>,
     /// Number of completed surface resize transactions since process start.
     pub surface_resize_count: usize,

@@ -158,6 +158,12 @@ impl ImageRenderRequest {
     pub fn resource(&self) -> &AssetLocation {
         &self.resource
     }
+
+    pub(super) fn has_same_content(&self, other: &Self) -> bool {
+        self.resource == other.resource
+            && self.scale_factor_bits == other.scale_factor_bits
+            && self.object_fit == other.object_fit
+    }
 }
 
 /// AssetLocation image source used to cache compressed bytes before size-specific decoding.

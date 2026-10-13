@@ -426,6 +426,7 @@ impl Element for Img {
         let render_to_bounds =
             self.should_render_to_bounds(cx.image_pipeline_config().bounds_policy);
         let source = &self.source;
+        let image_style = &self.style;
         let object_fit = self.style.object_fit;
         let grayscale = self.style.grayscale;
         let animation_policy = self.animation_policy;
@@ -461,7 +462,7 @@ impl Element for Img {
                         return;
                     };
 
-                    let new_bounds = object_fit.bounds(bounds, frame.size());
+                    let new_bounds = image_style.bounds(bounds, frame.size());
                     let corner_radii = style
                         .corner_radii
                         .to_pixels(window.rem_size())
@@ -532,7 +533,7 @@ impl Element for Img {
                         return;
                     };
 
-                    let new_bounds = object_fit.bounds(bounds, frame.size());
+                    let new_bounds = image_style.bounds(bounds, frame.size());
                     let corner_radii = style
                         .corner_radii
                         .to_pixels(window.rem_size())

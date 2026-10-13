@@ -1,11 +1,12 @@
 use super::super::Stateful;
 use super::element::*;
-use crate::{AnyElement, ObjectFit};
+use crate::{AnyElement, Bounds, DevicePixels, ObjectFit, Pixels, Point, Size};
 
 /// The style of an image element.
 pub struct ImageStyle {
     pub(super) grayscale: bool,
     pub(super) object_fit: ObjectFit,
+    pub(super) object_position: Option<Point<f32>>,
     pub(super) render_to_bounds: bool,
     pub(super) loading: Option<Box<dyn Fn() -> AnyElement>>,
     pub(super) fallback: Option<Box<dyn Fn() -> AnyElement>>,
@@ -16,10 +17,28 @@ impl Default for ImageStyle {
         Self {
             grayscale: false,
             object_fit: ObjectFit::Contain,
+            object_position: None,
             render_to_bounds: false,
             loading: None,
             fallback: None,
         }
+    }
+}
+
+impl ImageStyle {
+    pub(super) fn bounds(
+        &self,
+        bounds: Bounds<Pixels>,
+        image_size: Size<DevicePixels>,
+    ) -> Bounds<Pixels> {
+        let mut fitted = self.object_fit.bounds(bounds, image_size);
+        if let Some(position) = self.object_position {
+            fitted.origin.x =
+                bounds.origin.x + (bounds.size.width - fitted.size.width) * position.x;
+            fitted.origin.y =
+                bounds.origin.y + (bounds.size.height - fitted.size.height) * position.y;
+        }
+        fitted
     }
 }
 
@@ -107,6 +126,17 @@ pub trait StyledImage: Sized {
         self
     }
 
+    /// Align the fitted image within its element without changing layout or decoding.
+    ///
+    /// Each coordinate positions the unused (or cropped) space: 0 aligns to the
+    /// leading edge, 0.5 centers, and 1 aligns to the trailing edge. For example,
+    /// `point(0.5, 1.0)` keeps the bottom of a Cover image visible. When unset,
+    /// the selected [`ObjectFit`] keeps its default alignment.
+    fn object_position(mut self, position: Point<f32>) -> Self {
+        self.image_style().object_position = Some(position);
+        self
+    }
+
     /// Set the object fit for the image.
     fn with_fallback(mut self, fallback: impl Fn() -> AnyElement + 'static) -> Self {
         self.image_style().fallback = Some(Box::new(fallback));
@@ -140,5 +170,30 @@ impl StyledImage for Img {
 impl StyledImage for Stateful<Img> {
     fn image_style(&mut self) -> &mut ImageStyle {
         &mut self.element.style
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{point, px, size};
+
+    #[test]
+    fn bottom_aligned_cover_preserves_bottom_edge_and_aspect_ratio() {
+        let image_size = size(DevicePixels(3840), DevicePixels(2160));
+        let style = ImageStyle {
+            object_fit: ObjectFit::Cover,
+            object_position: Some(point(0.5, 1.0)),
+            ..ImageStyle::default()
+        };
+        for viewport in [size(px(1530.0), px(568.0)), size(px(600.0), px(900.0))] {
+            let bounds = Bounds::new(point(px(10.0), px(60.0)), viewport);
+            let fitted = style.bounds(bounds, image_size);
+            assert!((fitted.bottom() - bounds.bottom()).0.abs() < 0.001);
+            assert!((fitted.center().x - bounds.center().x).0.abs() < 0.001);
+            assert!((fitted.size.width / fitted.size.height - 16.0 / 9.0).abs() < 0.001);
+            assert!(fitted.size.width >= viewport.width);
+            assert!(fitted.size.height >= viewport.height);
+        }
     }
 }

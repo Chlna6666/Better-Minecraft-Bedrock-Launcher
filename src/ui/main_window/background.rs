@@ -121,25 +121,26 @@ impl AppBackgroundView {
                 .id("main-window-background-image")
                 .size_full()
                 .object_fit(ObjectFit::Cover)
+                .object_position(point(0.5, 1.0))
                 .into_any_element(),
-            BackgroundSource::Embedded(path) => img(path.clone())
-                .animation_policy(animation_policy)
-                .id("main-window-background-image")
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .into_any_element(),
-            BackgroundSource::LocalPath(path) => img(path.clone())
-                .animation_policy(animation_policy)
-                .id("main-window-background-image")
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .into_any_element(),
-            BackgroundSource::NetworkUrl(url) => img(url.clone())
-                .animation_policy(animation_policy)
-                .id("main-window-background-image")
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .into_any_element(),
+            BackgroundSource::Embedded(_)
+            | BackgroundSource::LocalPath(_)
+            | BackgroundSource::NetworkUrl(_) => {
+                let resource = background_resource(source)
+                    .expect("resource background variants have an asset location");
+                // Decode/cache by source, independently of the window viewport.
+                // Cover adjusts GPU geometry without resampling/reuploading the bitmap.
+                let image_source = ImageSource::from(move |window: &mut Window, cx: &mut App| {
+                    window.use_asset::<ResourceImageLoader>(&resource, cx)
+                });
+                img(image_source)
+                    .animation_policy(animation_policy)
+                    .id("main-window-background-image")
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .object_position(point(0.5, 1.0))
+                    .into_any_element()
+            }
         }
     }
 
