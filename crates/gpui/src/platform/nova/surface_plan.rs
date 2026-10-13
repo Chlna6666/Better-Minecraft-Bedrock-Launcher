@@ -20,23 +20,27 @@ pub(super) fn resolve_surface_packet(
     }
 }
 
-/// A partial dirty region is unsafe across live resize, animated transforms,
-/// filtered effects or retained composites without a proven source scissor.
-/// Keep this separate from the swapchain's native partial-present capability.
+/// Size transitions invalidate the whole drawable: previously recorded
+/// dirty rectangles and retained source scissors refer to another extent.
+/// Stable animations and static filters still use precise swept-pixel damage,
+/// avoiding repeated full-surface rerasterization on every active frame.
+/// Keep this independent from native partial-present capability.
 pub(super) fn requires_full_drawable_damage(
     packet: &PresentationPacket,
     live_resize_active: bool,
     viewport_changed: bool,
     has_retained_composite_layers: bool,
 ) -> bool {
+    // Only a geometry transition invalidates the whole drawable every frame.
+    // A stable retained root/filter is NOT evidence that all of its pixels are
+    // dirty: repeatedly marking it full negates GPU layer caching and stalls
+    // every backend during otherwise local UI/animation updates.
     live_resize_active
         || viewport_changed
-        || packet.sampled_active_presentation_animation
-        || !packet.presentation_animation_values.is_empty()
-        || !packet.presentation_animation_timelines.is_empty()
-        || packet.scene.has_backdrop_blurs()
-        || !packet.scene.blurs.is_empty()
-        || has_retained_composite_layers
+        || (has_retained_composite_layers
+            && !packet.scene.blurs.is_empty()
+            && (packet.sampled_active_presentation_animation
+                || !packet.presentation_animation_timelines.is_empty()))
 }
 
 /// A newly recreated swapchain has no trustworthy old backbuffer pixels.

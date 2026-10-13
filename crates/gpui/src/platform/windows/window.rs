@@ -344,7 +344,10 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             // before WM_ENTERSIZEMOVE. Explicitly wake the modal HWND now so that
             // pending UI commits are not stranded until WM_EXITSIZEMOVE.
             if let Some(window) = modal_window.as_ref() {
-                window.set_live_resize_active(true);
+                // Native move and native resize share WM_ENTERSIZEMOVE.
+                // Do not force full-GPU redraw for a pure window move.
+                window.0.size_move_active.set(true);
+                window.0.size_move_has_resized.set(false);
                 window.0.vsync_scheduler.wake_modal_ui_tasks();
                 window.request_frame(PlatformFrameRequest::ui_commit());
             }
@@ -361,7 +364,10 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
-                window.set_live_resize_active(false);
+                window.0.size_move_active.set(false);
+                if window.0.size_move_has_resized.replace(false) {
+                    window.set_live_resize_active(false);
+                }
                 // Win32's nested size/move loop suspended outer winit event delivery.
                 // Always request one final fresh GPUI Scene after the modal operation;
                 // stretching the old swapchain pixels is only a transient fallback.
@@ -382,12 +388,9 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
-                // WM_SIZE can be delivered with an unchanged logical size after a
-                // reentrant resize callback. Still drive a real scene commit in
-                // the modal loop, rather than waiting for WM_EXITSIZEMOVE.
-                if message == WM_SIZE && !unsafe { IsIconic(hwnd) }.as_bool() {
-                    window.request_frame(PlatformFrameRequest::ui_commit());
-                }
+                // sync_size only schedules a UI commit when the actual viewport
+                // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
+                // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
             }
             return result;
@@ -406,6 +409,10 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
         SizeMoveLoopAction::Destroy => {
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
+                window.0.size_move_active.set(false);
+                if window.0.size_move_has_resized.replace(false) {
+                    window.set_live_resize_active(false);
+                }
             }
             unregister_native_window(hwnd);
             stop_size_move_timer(hwnd);
@@ -776,7 +783,14 @@ impl WindowsWindow {
     }
 
     fn schedule_visibility_report(&self) {
-        if self.0.state.borrow().last_visibility.get().is_none() {
+        // WM_WINDOWPOSCHANGED/WM_SIZE can run hundreds of times during a drag.
+        // Visibility normally stays constant; avoid queueing hundreds of tasks
+        // in front of the UI resize callback on the same foreground executor.
+        if self.0.state.try_borrow().is_ok_and(|state| {
+            state.last_visibility.get().is_none()
+                || state.last_visibility.get() == Some(self.current_visibility())
+        }) || self.0.visibility_report_scheduled.replace(true)
+        {
             return;
         }
         let window = Rc::downgrade(&self.0);
@@ -787,6 +801,7 @@ impl WindowsWindow {
                     return;
                 };
                 let window = WindowsWindow(window);
+                window.0.visibility_report_scheduled.set(false);
                 let visibility = window.current_visibility();
                 let mut state = window.0.state.borrow_mut();
                 if state.last_visibility.get() == Some(visibility) {
@@ -1210,6 +1225,9 @@ pub(crate) struct WindowsWindowInner {
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
     frame_dispatch_in_progress: Cell<bool>,
+    visibility_report_scheduled: Cell<bool>,
+    size_move_active: Cell<bool>,
+    size_move_has_resized: Cell<bool>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
     fallback_corner_radius: Option<Pixels>,
@@ -1560,6 +1578,9 @@ impl WindowsWindow {
             pending_resize: Cell::new(None),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
+            visibility_report_scheduled: Cell::new(false),
+            size_move_active: Cell::new(false),
+            size_move_has_resized: Cell::new(false),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             fallback_corner_radius,
@@ -1754,6 +1775,11 @@ impl WindowsWindow {
     }
 
     pub(crate) fn queue_resize(&self, resize: PendingWindowsResize) {
+        if self.0.size_move_active.get() && !self.0.size_move_has_resized.replace(true) {
+            // Enable conservative damage only after an actual client-size
+            // transition. This control is enqueued once, not per WM_SIZE.
+            self.set_live_resize_active(true);
+        }
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
@@ -1848,7 +1874,17 @@ impl WindowsWindow {
     }
 
     fn sync_current_native_size(&self) {
-        let physical_size = self.window().inner_size();
+        // While Win32 owns the nested WM_ENTERSIZEMOVE loop, winit's cached
+        // inner size is not the authoritative geometry. Query the HWND directly
+        // so GPUI layout sees the actual client extent on this modal tick.
+        let physical_size = self.native_hwnd().and_then(|hwnd| {
+            let mut rect = RECT::default();
+            unsafe { GetClientRect(hwnd, &mut rect) }.ok()?;
+            Some(winit::dpi::PhysicalSize::new(
+                (rect.right - rect.left).max(0) as u32,
+                (rect.bottom - rect.top).max(0) as u32,
+            ))
+        }).unwrap_or_else(|| self.window().inner_size());
         let scale_factor = self.window().scale_factor() as f32;
         self.sync_size(physical_size, scale_factor);
     }

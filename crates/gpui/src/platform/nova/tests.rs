@@ -3452,5 +3452,7 @@ fn live_resize_and_retained_layers_disable_partial_gpu_scissors() {
     assert!(!requires_full_drawable_damage(&packet, false, false, false));
     assert!(requires_full_drawable_damage(&packet, true, false, false));
     assert!(requires_full_drawable_damage(&packet, false, true, false));
-    assert!(requires_full_drawable_damage(&packet, false, false, true));
+    // A static retained layer must not turn every ordinary frame into
+    // expensive full-drawable re-rasterization.
+    assert!(!requires_full_drawable_damage(&packet, false, false, true));
 }
