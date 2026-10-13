@@ -414,7 +414,11 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
                 // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
-                window.dispatch_live_resize_update();
+                // sync_size() already coalesces the authoritative HWND extent and
+                // requests a native frame. Do not run GPUI layout/prepaint/paint
+                // synchronously on the WM_SIZE/WM_WINDOWPOSCHANGED message stack:
+                // an expensive Scene build would block subsequent resize messages.
+                // The modal DWM wake (or bounded fallback) owns the UI commit.
             }
             return result;
         }
@@ -1942,26 +1946,6 @@ impl WindowsWindow {
         }).unwrap_or_else(|| self.window().inner_size());
         let scale_factor = self.window().scale_factor() as f32;
         self.sync_size(physical_size, scale_factor);
-    }
-
-    fn dispatch_live_resize_update(&self) {
-        // Win32 has already committed this client extent. Do not wait for the
-        // next vblank before building its matching scene. The same per-window
-        // cadence also gates DWM dispatch, so this is not a second frame clock.
-        if !self.is_live_resizing()
-            || self.0.pending_resize.get().is_none()
-            || self.0.frame_dispatch_in_progress.get()
-            || !self.has_pending_native_frame()
-            || !self.0.resize_cadence.get().is_due(
-                Instant::now(), self.0.vsync_scheduler.refresh_interval(),
-            )
-        {
-            return;
-        }
-        self.dispatch_pending_update_with_vsync(None);
-        if super::platform::poll_modal_foreground_tasks() {
-            self.0.vsync_scheduler.wake_modal_ui_tasks();
-        }
     }
 
     pub(crate) fn dispatch_pending_update(&self) {

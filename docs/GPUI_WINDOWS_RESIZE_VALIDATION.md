@@ -130,3 +130,10 @@ P1 响应式迟滞采用 Schmitt trigger 而非全局防抖：主导航标签和
 与对照框架的共性是 **一个统一帧节拍、去重的 request、在呈现时采样动画、保留 compositor 自主呈现**。尚未测量此补丁的 Release 帧率；Debug 日志也不能证明实际扫描率。本次差异需要至少在 DX11/DX12/Vulkan/OpenGL + 240Hz 拖拽/不拖拽及导航展开/收起时回归。
 
 验收重点：`request_redraw_count` 对实际 native wake 的异常倍率应显著下降；native VSync 唤醒间隔与 4.17ms 周期更接近；`present_interval_p50` 不应在普通活动场景持续小于实际刷新周期；注意累计 metrics 和 5 秒 delta 混用会导致统计误判。若仍出现 19–29ms Prepaint 长尾，应继续拆分 CachedView selective splice 和元素绘制，但不能重新开放 WM_PAINT 高频绕过。
+
+## 2026-10-14 Win32 WM_SIZE 消息栈与 GPUI 构帧隔离
+
+- Windows 原生窗口拖拽期间的 `WM_SIZE` / `WM_WINDOWPOSCHANGED` 可能在同一拖动操作内密集触发。此前 `SyncExtent` 除了同步最新客户区尺寸，还直接执行 `dispatch_live_resize_update()`，并经 `on_live_resize_frame` 同步进入 `Window::run_platform_frame()`，从而在 Win32 尺寸消息栈中执行耗时的 GPUI Prepaint/Scene 构建。已有实机日志记录过约 129.5ms Prepaint 长尾；不能让这一长尾阻塞原生尺寸消息链。
+- 现在 `SyncExtent` 只读取 HWND 最新客户区，通过 `sync_size/queue_resize` 合并待处理大小及请求帧，并更新窗口可见性；DWM/modal 帧分发和已有定时保底消费这项 UI 工作。保留 `WM_EXITSIZEMOVE` 的强制最终 UI commit、现有 `resize_cadence` 和 GPU Owner 的 Resize/Draw 队列排序。
+- 这是 **消息栈耗时与事件处理回归的局部修复**，不宣称单独修复四后端的黑边：Resize 之后仍要区分 GPU 旧尺寸帧、Scene 提交和实际 Present，且禁止以持续拉伸掩盖没有提交正确新尺寸 Scene 的问题。
+- Windows 实机验收：启用 `BMCBL_GPUI_RESIZE_TRACE=1`，同一窗口在四后端分别快速拖动、停留、松开鼠标，检查最新 `native/viewport/gpu/scene/present` 收敛；观察 `WM_SIZE` 消息处理时长、`Prepaint p95/p99`、黑边持续时间和双窗口交替 Resize。静态源码检查不能替代 Windows 编译及实际 Present 检验。
