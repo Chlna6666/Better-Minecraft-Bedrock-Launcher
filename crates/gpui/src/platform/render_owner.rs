@@ -350,6 +350,13 @@ impl RenderOwner {
     }
 
     #[cfg(target_os = "windows")]
+    pub(super) fn set_live_resize_active(&self, active: bool) {
+        if let Err(error) = self.control(move |renderer| renderer.set_live_resize_active(active)) {
+            log::warn!("failed to update Windows live-resize state: {error:#}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
     pub(super) fn stretch_for_pending_resize(&self, size: Size<DevicePixels>) {
         // Interactive WM_SIZE may arrive much faster than the GPU can service it. A typed,
         // latest-wins command avoids filling the global GPU owner with obsolete stretch

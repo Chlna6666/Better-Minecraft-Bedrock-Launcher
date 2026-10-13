@@ -125,6 +125,9 @@ pub(super) struct Entry {
     scene: Option<(PresentationPacket, bool)>,
     ready_registration: Arc<AtomicU64>,
     next_ready_registration: u64,
+    // A resize resource/fence wait cannot be satisfied by a DXGI frame-ready
+    // notification. Keep its latest packet alive with bounded GPU-owner polling.
+    ready_poll_required: bool,
     schedule: Schedule,
     job_outcome: GpuOwnerJobOutcome,
     #[cfg(not(target_os = "windows"))]
@@ -155,6 +158,7 @@ impl Entry {
             scene: None,
             ready_registration: Arc::new(AtomicU64::new(0)),
             next_ready_registration: 0,
+            ready_poll_required: false,
             schedule: Schedule::default(),
             job_outcome: GpuOwnerJobOutcome::Control,
             #[cfg(not(target_os = "windows"))]
@@ -406,16 +410,38 @@ impl Entry {
     }
 
     fn ready(&mut self) -> Result<bool> {
-        if self.renderer.can_present_without_wait()? {
+        let can_present = match self.renderer.can_present_without_wait() {
+            Ok(ready) => ready,
+            Err(error) if self.renderer.has_pending_drawable_size() => {
+                // ResizeBuffers / swapchain recreation can transiently fail while
+                // the previous extent is still in use. Keep the newest request
+                // and retry from the GPU owner, not an unrelated DXGI callback.
+                log::debug!("deferring pending drawable resize: {error:#}");
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        if can_present {
+            self.ready_poll_required = false;
             return Ok(true);
+        }
+        if self.renderer.has_pending_drawable_size() {
+            // The size change is still waiting on resources/submission retirement,
+            // not on the old swapchain's frame latency event. Such an event may
+            // never fire again, especially across a Vulkan swapchain recreation.
+            self.ready_registration.store(0, Ordering::Release);
+            self.ready_poll_required = true;
+            return Ok(false);
         }
         if !self
             .renderer
             .presentation_capabilities()
             .frame_ready_notification
         {
+            self.ready_poll_required = true;
             return Ok(false);
         }
+        self.ready_poll_required = false;
         if self.ready_registration.load(Ordering::Acquire) == 0 {
             self.next_ready_registration += 1;
             let generation = self.next_ready_registration;
@@ -462,6 +488,9 @@ impl Entry {
                 Ok(true) => {}
                 Ok(false) => {
                     self.ready_registration.store(0, Ordering::Release);
+                    // This backend did not arm a callback. Do not strand the
+                    // pending scene while the outer Win32 event loop is modal.
+                    self.ready_poll_required = true;
                 }
                 Err(error) => {
                     self.ready_registration.store(0, Ordering::Release);
@@ -495,7 +524,7 @@ impl Entry {
             pending
                 && result.is_ok()
                 && !submitted
-                && self.renderer.has_submission_retry()
+                && (self.renderer.has_submission_retry() || self.ready_poll_required)
                 && self.ready_registration.load(Ordering::Acquire) == 0,
         );
         self.status.pending.store(pending, Ordering::Release);

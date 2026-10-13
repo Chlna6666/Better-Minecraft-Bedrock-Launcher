@@ -344,7 +344,9 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             // before WM_ENTERSIZEMOVE. Explicitly wake the modal HWND now so that
             // pending UI commits are not stranded until WM_EXITSIZEMOVE.
             if let Some(window) = modal_window.as_ref() {
+                window.set_live_resize_active(true);
                 window.0.vsync_scheduler.wake_modal_ui_tasks();
+                window.request_frame(PlatformFrameRequest::ui_commit());
             }
             // Always keep one LOW-RATE fallback while nested in the OS message
             // loop. Only windows with pending frame/resize work are dispatched.
@@ -359,6 +361,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
+                window.set_live_resize_active(false);
                 // Win32's nested size/move loop suspended outer winit event delivery.
                 // Always request one final fresh GPUI Scene after the modal operation;
                 // stretching the old swapchain pixels is only a transient fallback.
@@ -379,6 +382,12 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
+                // WM_SIZE can be delivered with an unchanged logical size after a
+                // reentrant resize callback. Still drive a real scene commit in
+                // the modal loop, rather than waiting for WM_EXITSIZEMOVE.
+                if message == WM_SIZE && !unsafe { IsIconic(hwnd) }.as_bool() {
+                    window.request_frame(PlatformFrameRequest::ui_commit());
+                }
                 window.schedule_visibility_report();
             }
             return result;
@@ -1733,6 +1742,14 @@ impl WindowsWindow {
         match raw_handle {
             rwh::RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
             _ => None,
+        }
+    }
+
+    fn set_live_resize_active(&self, active: bool) {
+        if let Ok(renderer_state) = self.0.renderer.try_borrow()
+            && let WindowsRendererState::Ready(renderer) = &*renderer_state
+        {
+            renderer.set_live_resize_active(active);
         }
     }
 

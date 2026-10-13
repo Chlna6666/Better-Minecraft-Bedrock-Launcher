@@ -168,6 +168,7 @@ pub(crate) struct NovaRenderer {
     first_frame_reported: bool,
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
+    live_resize_active: bool,
     active_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
@@ -276,6 +277,10 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
+    pub(crate) fn set_live_resize_active(&mut self, active: bool) {
+        self.live_resize_active = active;
+    }
+
     pub(crate) fn platform_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
     }
@@ -353,6 +358,16 @@ impl NovaRenderer {
             backdrop_blur_quality,
         );
         self.reconcile_gpu_layer_animation_damage(packet);
+        if requires_full_drawable_damage(
+            packet,
+            self.live_resize_active,
+            self.swapchain_warmup_frames != 0,
+            self.frame_upload.retained_root_blur.is_some()
+                || !self.frame_upload.element_blur_inputs.is_empty(),
+        ) {
+            force_full_drawable_damage_after_resize(packet, self.current_size);
+            self.observe_presentation_packet(packet);
+        }
         if !self.frame_submission_is_ready(&packet.scene)? {
             return Ok(false);
         }
@@ -673,6 +688,16 @@ impl NovaRenderer {
                 backdrop_blur_quality,
             );
             self.reconcile_gpu_layer_animation_damage(&mut packet);
+            if requires_full_drawable_damage(
+                &packet,
+                self.live_resize_active,
+                self.swapchain_warmup_frames != 0,
+                self.frame_upload.retained_root_blur.is_some()
+                    || !self.frame_upload.element_blur_inputs.is_empty(),
+            ) {
+                force_full_drawable_damage_after_resize(&mut packet, self.current_size);
+                self.observe_presentation_packet(&packet);
+            }
             if !self.frame_submission_is_ready(&packet.scene)? {
                 return Ok(false);
             }

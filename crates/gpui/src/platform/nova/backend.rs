@@ -305,6 +305,18 @@ impl NovaBackend {
         }
     }
 
+    /// Only D3D composition surfaces may use a scaled old-frame fallback.
+    /// Vulkan must wait for an actual extent-matched redraw and present.
+    pub(super) fn supports_live_resize_stretch(&self) -> bool {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(_) => true,
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(_) => true,
+            _ => false,
+        }
+    }
+
     /// Stretches composited swapchain content over a pending window resize.
     pub(super) fn set_swapchain_content_stretch(
         &mut self,

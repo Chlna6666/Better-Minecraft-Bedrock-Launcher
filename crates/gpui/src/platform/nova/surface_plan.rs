@@ -20,6 +20,25 @@ pub(super) fn resolve_surface_packet(
     }
 }
 
+/// A partial dirty region is unsafe across live resize, animated transforms,
+/// filtered effects or retained composites without a proven source scissor.
+/// Keep this separate from the swapchain's native partial-present capability.
+pub(super) fn requires_full_drawable_damage(
+    packet: &PresentationPacket,
+    live_resize_active: bool,
+    viewport_changed: bool,
+    has_retained_composite_layers: bool,
+) -> bool {
+    live_resize_active
+        || viewport_changed
+        || packet.sampled_active_presentation_animation
+        || !packet.presentation_animation_values.is_empty()
+        || !packet.presentation_animation_timelines.is_empty()
+        || packet.scene.has_backdrop_blurs()
+        || !packet.scene.blurs.is_empty()
+        || has_retained_composite_layers
+}
+
 /// A newly recreated swapchain has no trustworthy old backbuffer pixels.
 /// Partial GPU scissor and retained target damage must therefore cover its
 /// entire current extent for the first *successfully presented* new-size frame.

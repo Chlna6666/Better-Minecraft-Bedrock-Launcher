@@ -3436,3 +3436,21 @@ fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
         ),
     );
 }
+
+#[test]
+fn live_resize_and_retained_layers_disable_partial_gpu_scissors() {
+    let packet = PresentationPacket::new(
+        Arc::new(crate::Scene::default()),
+        [],
+        [],
+        std::time::Instant::now(),
+        1.0,
+        crate::DirtyRegion::empty(),
+        crate::BackdropBlurDamagePlan::default(),
+        PartialPresentMode::Partial,
+    );
+    assert!(!requires_full_drawable_damage(&packet, false, false, false));
+    assert!(requires_full_drawable_damage(&packet, true, false, false));
+    assert!(requires_full_drawable_damage(&packet, false, true, false));
+    assert!(requires_full_drawable_damage(&packet, false, false, true));
+}

@@ -565,7 +565,9 @@ impl NovaRenderer {
             &packet.dirty_region,
             &self.filters,
             &self.frame_upload.sampled_animation_values,
-            shared_blur_cache_invalid,
+            // Full drawable damage must also invalidate retained source scissors.
+            // A cached source proof from the old viewport is not sufficient here.
+            shared_blur_cache_invalid || packet.force_full_backdrop_blur_refresh,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
         if backdrop_blur_refresh_required || element_blur_refresh_required {

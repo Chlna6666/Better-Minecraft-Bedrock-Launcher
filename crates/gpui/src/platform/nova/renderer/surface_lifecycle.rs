@@ -385,14 +385,18 @@ impl NovaRenderer {
         Ok(())
     }
 
-    /// Stretches the previous frame over the client area while a native resize
-    /// is pending, mirroring the scaling HWND flip swapchains get from DXGI.
+    /// D3D composition surfaces may stretch the previous frame while the
+    /// real new-size buffer is prepared. Vulkan (and other backends) never
+    /// opt into this stale-content fallback.
     ///
     /// Compositor-backed swapchains (DirectComposition) do not scale on their
     /// own, so the platform layer queues this on the GPU owner from the resize
     /// event to keep the old frame covering the new client size until the
     /// next frame applies the resize to the swapchain buffers.
     pub(crate) fn stretch_surface_for_pending_resize(&mut self, size: Size<DevicePixels>) {
+        if !lock_backend(&self.backend).supports_live_resize_stretch() {
+            return;
+        }
         let width = size.width.0.max(1) as u32;
         let height = size.height.0.max(1) as u32;
         if width == self.current_size.width && height == self.current_size.height {
@@ -437,7 +441,6 @@ impl NovaRenderer {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(crate) fn has_pending_drawable_size(&self) -> bool {
         self.pending_drawable_size.is_some()
     }
