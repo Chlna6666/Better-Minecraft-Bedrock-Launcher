@@ -139,6 +139,10 @@ pub(crate) enum WindowsUserEvent {
     RenderOwnerFrame {
         window_id: winit::window::WindowId,
     },
+    /// Programmatic Window::remove_window bypasses winit CloseRequested.
+    RemoveNativeWindow {
+        window_id: winit::window::WindowId,
+    },
     DockMenuAction(usize),
     ActivateApp,
     SetCursorStyle(CursorStyle),
@@ -1386,6 +1390,11 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         match event {
             WindowsUserEvent::RunMainThreadTasks => self.run_foreground_tasks(event_loop),
             WindowsUserEvent::VSync(timing) => self.dispatch_pending_window_updates(timing),
+            WindowsUserEvent::RemoveNativeWindow { window_id } => {
+                // The GPUI window is already removed. De-register only this HWND,
+                // and let the shared GPU owner retire this window's resources.
+                self.close_window(event_loop, window_id);
+            }
             WindowsUserEvent::RenderOwnerFrame { window_id } => {
                 // The frame data lives in a per-window latest-wins mailbox. Release
                 // the registry lookup before invoking potentially reentrant callbacks.

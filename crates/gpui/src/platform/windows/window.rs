@@ -2507,6 +2507,16 @@ impl PlatformWindow for WindowsWindow {
         self.update_presentation_state(WindowsWindowPresentationState::request_hide);
     }
 
+    fn request_native_close(&self) {
+        // Window::remove_window may run inside a winit input/paint callback.
+        // Never re-enter WindowsApplication::close_window on that stack.
+        if self.0.event_loop_proxy.send_event(WindowsUserEvent::RemoveNativeWindow {
+            window_id: self.window().id(),
+        }).is_err() {
+            log::trace!("native event loop already exited while closing GPUI window");
+        }
+    }
+
     fn minimize(&self) {
         minimize_window(self.window());
     }

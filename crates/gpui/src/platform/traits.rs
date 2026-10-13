@@ -231,6 +231,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
     fn show(&self) {}
     fn hide_window(&self) {}
+    /// Remove the native window after GPUI has marked its logical window closed.
+    /// Other platforms already manage this in their window destruction path.
+    fn request_native_close(&self) {}
     fn minimize(&self);
     fn maximize(&self) {
         self.zoom();

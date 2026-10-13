@@ -847,6 +847,11 @@ impl Window {
         // before GPU owner teardown or application quit observers run.
         // This mirrors the immediate hide in Zed's Windows window Drop.
         #[cfg(target_os = "windows")]
-        self.platform_window.hide_window();
+        {
+            self.platform_window.hide_window();
+            // A programmatic GPUI close is not a native CloseRequested event.
+            // Queue removal of the matching HWND in the Windows event loop.
+            self.platform_window.request_native_close();
+        }
     }
 }
