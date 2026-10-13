@@ -111,12 +111,9 @@ impl SurfaceDevice for Dx11Device {
             },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
-            // Native WM_ENTERSIZEMOVE may grow the HWND before the GPU can Present a
-            // resized buffer. DXGI_SCALING_NONE paints that uncovered client area
-            // with the window background (typically black). Both opaque HWND and
-            // transparent DirectComposition flip chains need the last good frame
-            // stretched over that short interval. Once sizes match, mapping is 1:1.
-            Scaling: DXGI_SCALING_STRETCH,
+            // Composition requires STRETCH at creation, but HWND buffers must
+            // stay at native pixel scale while the next-size frame is prepared.
+            Scaling: if composited { DXGI_SCALING_STRETCH } else { DXGI_SCALING_NONE },
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: if composited {
                 DXGI_ALPHA_MODE_PREMULTIPLIED

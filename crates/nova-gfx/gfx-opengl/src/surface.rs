@@ -246,8 +246,15 @@ impl OpenGlDevice {
         self.make_window_current(&chain.window)?;
         let width = chain.config.size.width() as i32;
         let height = chain.config.size.height() as i32;
+        #[cfg(target_os = "windows")]
+        let native_height =
+            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?;
+        #[cfg(not(target_os = "windows"))]
+        let native_height = height;
         // SAFETY: both source and native backbuffer belong to this current context. A
-        // nearest blit flips only orientation; no resolution/quality downgrade occurs.
+        // nearest blit flips only orientation. Anchor to the native top edge when
+        // drawable capacity exceeds the client height, cropping instead of shifting
+        // or stretching the page during live resize.
         unsafe {
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.disable(glow::FRAMEBUFFER_SRGB);
@@ -260,9 +267,9 @@ impl OpenGlDevice {
                 width,
                 height,
                 0,
-                height,
+                native_height,
                 width,
-                0,
+                native_height - height,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );

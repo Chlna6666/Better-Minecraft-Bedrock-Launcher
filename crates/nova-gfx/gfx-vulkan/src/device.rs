@@ -53,6 +53,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 mod compact;
 mod buffer_upload;
 mod relocation;
+mod presentation;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -118,6 +119,7 @@ pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
 
 /// Generic Vulkan device and resource owner.
 pub struct VulkanDevice {
+    native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
     memory_properties_loader: Option<khr::get_physical_device_properties2::Instance>,
     entry: Entry,
     instance: Instance,
@@ -282,12 +284,16 @@ impl VulkanDevice {
             incremental_presentation,
             supports_sampler_anisotropy,
             memory_budget_supported,
+            native_pixel_presentation,
         ) = create_device(
             &instance,
             physical_device,
             queue_families,
             properties2_supported,
+                &entry,
         )?;
+        let native_pixel_presentation = native_pixel_presentation
+            .then(|| khr::get_surface_capabilities2::Instance::new(&entry, &instance));
         let memory_properties_loader = memory_budget_supported
             .then(|| khr::get_physical_device_properties2::Instance::new(&entry, &instance));
         let max_sampler_anisotropy = if supports_sampler_anisotropy {
@@ -316,6 +322,7 @@ impl VulkanDevice {
         )?;
 
         Ok(Self {
+            native_pixel_presentation,
             memory_properties_loader,
             entry,
             instance,
@@ -367,6 +374,37 @@ impl VulkanDevice {
     #[must_use]
     pub fn adapter_name(&self) -> &str {
         &self.adapter_name
+    }
+
+    /// Returns the extent of the allocated WSI images, after native surface capability resolution.
+    /// This may differ from the requested client size; attachments must cover this extent.
+    /// No GPU work or resize is performed.
+    ///
+    /// # Errors
+    /// Returns an invalid-handle error or a surface error for a suspended zero-sized swapchain.
+    pub fn swapchain_size(&self, swapchain: gfx_core::SwapchainId) -> Result<gfx_core::Extent2d> {
+        let extent = self.swapchains.get(swapchain)?.extent;
+        gfx_core::Extent2d::new(extent.width, extent.height)
+    }
+
+    /// Whether this swapchain can retain the given image extent at native pixel scale
+    /// when the client extent changes. Unsupported maintenance1 features, gravity or
+    /// image extent limits return `false`; no resize or GPU work is performed.
+    ///
+    /// # Errors
+    /// Returns an invalid-handle error for an unknown or retired swapchain.
+    pub fn supports_unscaled_presentation(
+        &self,
+        swapchain: gfx_core::SwapchainId,
+        extent: gfx_core::Extent2d,
+    ) -> Result<bool> {
+        let swapchain = self.swapchains.get(swapchain)?;
+        Ok(swapchain.scaled_image_extent_range.is_some_and(|(minimum, maximum)| {
+            extent.width() >= minimum.width
+                && extent.height() >= minimum.height
+                && extent.width() <= maximum.width
+                && extent.height() <= maximum.height
+        }))
     }
 
     /// Creates a native Vulkan surface from raw-window-handle traits.
@@ -513,6 +551,18 @@ impl VulkanDevice {
         if width == 0 || height == 0 {
             return Ok(());
         }
+        let previous = self.swapchains.get(swapchain_id)?;
+        let support =
+            query_swapchain_support(self.physical_device, &self.surface_loader, previous.surface)?;
+        let desired = if previous.native_pixel_scaling {
+            vk::Extent2D { width, height }
+        } else {
+            choose_extent(&support.capabilities, width, height)
+        };
+        if desired == previous.extent {
+            self.swapchains.get_mut(swapchain_id)?.config.size = gfx_core::Extent2d::new(width, height)?;
+            return Ok(());
+        }
         // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
         unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
         let old_swapchain = self.swapchains.get(swapchain_id)?;
@@ -539,6 +589,8 @@ impl VulkanDevice {
     ) -> Result<()> {
         // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
         unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        // Retire queued encoders while their old swapchain fences are still live.
+        self.poll_cleanup();
         let old_swapchain = self.swapchains.get(swapchain_id)?;
         let surface = old_swapchain.surface;
         let old_native_swapchain = old_swapchain.swapchain;
@@ -2071,6 +2123,9 @@ impl VulkanDevice {
         let image_acquire = image_acquire_started.elapsed();
         let image_index = match acquire_result {
             Ok((image_index, false)) => image_index,
+            Ok((image_index, true)) if self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
+                image_index
+            }
             // No image was acquired and the semaphore is unchanged. Keep this frame slot for
             // the next native presentation request; only submission resets its fence.
             Err(vk::Result::NOT_READY | vk::Result::TIMEOUT) => {
@@ -2161,6 +2216,10 @@ impl VulkanDevice {
         };
         match present_result {
             Ok(false) => Ok(()),
+            Ok(true) | Err(vk::Result::SUBOPTIMAL_KHR)
+                if self.swapchains.get(swapchain_id)?.native_pixel_scaling => {
+                    Ok(())
+                }
             Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::SUBOPTIMAL_KHR) => {
                 self.reconfigure_outdated_swapchain(swapchain_id)?;
                 Err(Error::SurfaceOutdated)
@@ -2173,13 +2232,8 @@ impl VulkanDevice {
         &mut self,
         swapchain_id: gfx_core::SwapchainId,
     ) -> Result<()> {
-        // A failed queue_present can leave the just-submitted command encoder in the deferred
-        // queue with a fence owned by the current swapchain. Drain it while those synchronization
-        // objects are still live, before reconfigure_swapchain destroys the old swapchain.
-        // SAFETY: The Vulkan device is live; waiting here is the recovery path for an outdated
-        // presentation surface, not the ordinary frame path.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
-        self.poll_cleanup();
+        // Reconfiguration owns the idle barrier and old-fence retirement. Do not
+        // wait for device idle a second time in outdated-surface recovery.
         let config = self.swapchains.get(swapchain_id)?.config;
         self.reconfigure_swapchain(swapchain_id, config)
     }
@@ -2429,11 +2483,20 @@ impl VulkanDevice {
         let support = query_swapchain_support(self.physical_device, &self.surface_loader, surface)?;
         let surface_format = choose_surface_format(&support.formats, config.format);
         let present_mode = choose_present_mode(&support.present_modes, config.present_mode);
-        let extent = choose_extent(
-            &support.capabilities,
-            config.size.width(),
-            config.size.height(),
-        );
+        let requested_extent = vk::Extent2D {
+            width: config.size.width(),
+            height: config.size.height(),
+        };
+        let mut scaling = self.native_pixel_presentation.as_ref().map(|loader| {
+            presentation::scaling(loader, self.physical_device, surface, present_mode, requested_extent)
+        }).transpose()?.flatten();
+        let native_pixel_scaling = scaling.is_some();
+        let scaled_image_extent_range = scaling.as_ref().map(|scaling| (scaling.minimum, scaling.maximum));
+        let extent = if native_pixel_scaling {
+            requested_extent
+        } else {
+            choose_extent(&support.capabilities, config.size.width(), config.size.height())
+        };
         let mut image_count = support.capabilities.min_image_count.saturating_add(1);
         if support.capabilities.max_image_count > 0 {
             image_count = image_count.min(support.capabilities.max_image_count);
@@ -2453,7 +2516,7 @@ impl VulkanDevice {
             support.capabilities.supported_composite_alpha,
             config.alpha_mode,
         )?;
-        let create_info = vk::SwapchainCreateInfoKHR::default()
+        let mut create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(surface)
             .min_image_count(image_count)
             .image_format(surface_format.format)
@@ -2468,6 +2531,9 @@ impl VulkanDevice {
             .present_mode(present_mode)
             .clipped(true)
             .old_swapchain(old_swapchain);
+        if let Some(scaling) = &mut scaling {
+            create_info = create_info.push_next(&mut scaling.info);
+        }
 
         let support_elapsed = started_at.elapsed();
         let driver_started_at = Instant::now();
@@ -2521,6 +2587,8 @@ impl VulkanDevice {
             extent.height,
         );
         Ok(VulkanSwapchain {
+            native_pixel_scaling,
+            scaled_image_extent_range,
             surface,
             swapchain,
             format: surface_format.format,
@@ -4419,6 +4487,8 @@ struct VulkanSurface {
 }
 
 struct VulkanSwapchain {
+    native_pixel_scaling: bool,
+    scaled_image_extent_range: Option<(vk::Extent2D, vk::Extent2D)>,
     surface: vk::SurfaceKHR,
     swapchain: vk::SwapchainKHR,
     format: vk::Format,
@@ -4519,6 +4589,10 @@ fn create_instance(entry: &Entry, application_name: &str) -> Result<Instance> {
     let mut extension_names = instance_extension_names();
     if supports_memory_properties2(entry)? {
         extension_names.push(khr::get_physical_device_properties2::NAME.as_ptr());
+    }
+    if let Some(maintenance) = presentation::instance_extension(entry)? {
+        extension_names.push(khr::get_surface_capabilities2::NAME.as_ptr());
+        extension_names.push(maintenance.as_ptr());
     }
     let create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
@@ -4666,7 +4740,8 @@ fn create_device(
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
     properties2_supported: bool,
-) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool, bool)> {
+    entry: &Entry,
+) -> Result<(ash::Device, vk::Queue, vk::Queue, bool, bool, bool, bool)> {
     let priorities = [1.0_f32];
     let mut unique_families = vec![indices.graphics];
     if indices.present != indices.graphics {
@@ -4719,10 +4794,31 @@ fn create_device(
         }
         enabled_features.dual_src_blend = vk::TRUE;
     }
-    let create_info = vk::DeviceCreateInfo::default()
+    let maintenance = presentation::device_extension(
+        presentation::instance_extension(entry)?,
+        &available_extensions,
+    );
+    let mut maintenance_features = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default();
+    if maintenance.is_some() {
+        let loader = khr::get_physical_device_properties2::Instance::new(entry, instance);
+        let mut features =
+            vk::PhysicalDeviceFeatures2::default().push_next(&mut maintenance_features);
+        // SAFETY: properties2 was enabled and the selected physical device belongs to this instance.
+        unsafe { loader.get_physical_device_features2(physical_device, &mut features) };
+    }
+    let native_pixel_presentation = maintenance_features.swapchain_maintenance1 == vk::TRUE;
+    if native_pixel_presentation {
+        device_extensions.push(
+            maintenance.expect("queried maintenance feature has an extension").as_ptr(),
+        );
+    }
+    let mut create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
         .enabled_extension_names(&device_extensions)
         .enabled_features(&enabled_features);
+    if native_pixel_presentation {
+        create_info = create_info.push_next(&mut maintenance_features);
+    }
     // SAFETY: Physical device and queue info were selected from this instance.
     let device = unsafe { instance.create_device(physical_device, &create_info, None) }
         .map_err(VulkanError::from)?;
@@ -4737,6 +4833,7 @@ fn create_device(
         incremental_presentation,
         supports_sampler_anisotropy,
         memory_budget_supported,
+        native_pixel_presentation,
     ))
 }
 

@@ -639,11 +639,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // During interactive resizing the HWND client area changes before ResizeBuffers
-                // can publish a frame at the new extent. DXGI scaling keeps the last presented
-                // frame covering that temporary margin; once the buffers match the client size
-                // the mapping is 1:1 again.
-                Scaling: DXGI_SCALING_STRETCH,
+                // Keep native pixel scale during resize. Spare backbuffer capacity is
+                // clipped by the HWND instead of stretching text and geometry.
+                Scaling: DXGI_SCALING_NONE,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
