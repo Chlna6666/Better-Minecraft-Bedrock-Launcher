@@ -189,7 +189,7 @@ pub(super) fn render_nav(
             // Collapsed labels must not enter the scene at all: a zero-width
             // overflow-hidden text still emits clip/glyph primitives that show up
             // as white blocks during interactive resize.
-            let show_label = labels_layout_factor > 0.02 && labels_opacity_factor > 0.02;
+            let show_label = labels_opacity_factor > 0.02;
             let target = item.target.clone();
             div()
                 .id((ElementId::from("main-nav"), item.id.clone()))

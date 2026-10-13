@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
-use crate::ui::state::navigation::NavState;
+use crate::ui::state::navigation::{NavState, NAV_LABEL_BREAKPOINT, nav_labels_visible_for_width};
 use crate::ui::theme::{ThemeColors, dark_colors, lerp_theme_colors, light_colors};
 
 // Bubble-only fallback: inputs and editors keep their own Tab actions.
@@ -225,14 +225,18 @@ impl NavChromeView {
                 }
             }),
             cx.observe_window_bounds(window, |_, window, cx| {
-                let show_labels = window.bounds().size.width >= px(1180.);
-                cx.update_global(|state: &mut NavState, _| {
-                    state.set_labels_target(show_labels, Instant::now());
-                });
-                cx.notify();
+                let width = window.bounds().size.width / px(1.0);
+                let visible = cx.global::<NavState>().labels_target_visible;
+                let next = nav_labels_visible_for_width(width, visible);
+                if next != visible {
+                    cx.update_global(|state: &mut NavState, _| {
+                        state.set_labels_target(next, Instant::now());
+                    });
+                    cx.notify();
+                }
             }),
         ];
-        let show_labels = window.bounds().size.width >= px(1180.);
+        let show_labels = window.bounds().size.width >= px(NAV_LABEL_BREAKPOINT);
         cx.update_global(|state: &mut NavState, _| {
             state.set_labels_target_immediate(show_labels);
         });
@@ -264,6 +268,7 @@ impl Render for NavChromeView {
         }
         let nav = cx.global::<NavState>();
         let ((pill_left_steps, pill_right_steps), nav_animating) = nav.pill_render_state(now);
+        let labels_animating = nav.labels_animating(now);
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
@@ -279,6 +284,7 @@ impl Render for NavChromeView {
             .items_center()
             .justify_center()
             .child(chrome::render_nav(state, &self.items, &colors))
+            .with_layout_animation_target(labels_animating)
     }
 }
 
