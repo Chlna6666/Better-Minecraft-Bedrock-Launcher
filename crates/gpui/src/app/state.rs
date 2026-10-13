@@ -43,7 +43,7 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 type Handler = Box<dyn FnMut(&mut App) -> bool + 'static>;
 type Listener = Box<dyn FnMut(&dyn Any, &mut App) -> bool + 'static>;
 type QuitHandler = Box<dyn FnOnce(&mut App) -> LocalBoxFuture<'static, ()> + 'static>;
-type WindowClosedHandler = Box<dyn FnMut(&mut App)>;
+type WindowClosedHandler = Box<dyn FnMut(WindowId, &mut App)>;
 type ReleaseListener = Box<dyn FnOnce(&mut dyn Any, &mut App) + 'static>;
 type NewEntityListener = Box<dyn FnMut(AnyEntity, &mut Option<&mut Window>, &mut App) + 'static>;
 
@@ -585,10 +585,21 @@ impl App {
         subscription
     }
 
-    /// Register a callback to be invoked when a window is closed
-    /// The window is no longer accessible at the point this callback is invoked.
+    /// Register a callback to be invoked when a window closes.
+    /// The window is no longer accessible when this callback runs.
     pub fn on_window_closed(&self, mut on_closed: impl FnMut(&mut App) + 'static) -> Subscription {
-        let (subscription, activate) = self.window_closed_observers.insert((), Box::new(on_closed));
+        self.on_window_closed_with_id(move |_, cx| on_closed(cx))
+    }
+
+    /// Register a close observer with the exact identity of the closed window.
+    /// Never infer it from the remaining windows during a nested update.
+    pub fn on_window_closed_with_id(
+        &self,
+        on_closed: impl FnMut(WindowId, &mut App) + 'static,
+    ) -> Subscription {
+        let (subscription, activate) = self
+            .window_closed_observers
+            .insert((), Box::new(on_closed));
         activate();
         subscription
     }

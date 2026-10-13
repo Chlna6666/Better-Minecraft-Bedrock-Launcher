@@ -107,7 +107,7 @@ impl App {
                 cx.windows.remove(id);
 
                 cx.window_closed_observers.clone().retain(&(), |callback| {
-                    callback(cx);
+                    callback(id, cx);
                     true
                 });
             } else if let Some(window_slot) = cx.windows.get_mut(id) {

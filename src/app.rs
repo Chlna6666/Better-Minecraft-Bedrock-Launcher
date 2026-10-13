@@ -770,58 +770,40 @@ fn debug_window_options(window_title: &str, cx: &mut App) -> WindowOptions {
     options
 }
 
+// The identity of the closed window is authoritative. Remaining windows can be
+// temporarily removed from the slotmap during reentrant GPUI updates.
+fn should_quit_after_window_close(closed: u64, main: Option<u64>, remaining: usize) -> bool {
+    match main {
+        Some(main_id) => closed == main_id,
+        None => remaining == 0,
+    }
+}
+
 fn register_app_lifecycle(cx: &mut App) {
-    let subscription = cx.on_window_closed(|cx| {
-        let (main_id, debug_id, debug_enabled) =
-            cx.read_global(|debug_state: &crate::ui::window::debug::DebugState, _cx| {
-                (
-                    debug_state.main_window_id,
-                    debug_state.debug_window_id,
-                    debug_state.enabled,
-                )
+    let subscription = cx.on_window_closed_with_id(|closed_id, cx| {
+        let closed_id = closed_id.as_u64();
+        let (main_id, debug_id) =
+            cx.read_global(|state: &crate::ui::window::debug::DebugState, _| {
+                (state.main_window_id, state.debug_window_id)
             });
-
-        let mut any_window = false;
-        let mut has_main = false;
-        let mut has_debug = false;
-        for window in cx.windows() {
-            any_window = true;
-            let window_id = window.window_id().as_u64();
-            if Some(window_id) == main_id {
-                has_main = true;
+        let remaining = cx.windows().len();
+        let main_closed = main_id == Some(closed_id);
+        let debug_closed = debug_id == Some(closed_id);
+        cx.update_global(|state: &mut crate::ui::window::debug::DebugState, _| {
+            if main_closed {
+                state.main_window_id = None;
             }
-            if Some(window_id) == debug_id {
-                has_debug = true;
-            }
-        }
-
-        cx.update_global(|debug_state: &mut crate::ui::window::debug::DebugState, _cx| {
-            if !has_main {
-                debug_state.main_window_id = None;
-            }
-            if !has_debug {
-                debug_state.debug_window_id = None;
-                debug_state.reset_runtime_state();
+            if debug_closed {
+                state.debug_window_id = None;
+                state.reset_runtime_state();
             }
         });
-
+        let should_quit = should_quit_after_window_close(closed_id, main_id, remaining);
         debug!(
-            "window closed main_id={:?} debug_id={:?} has_main={} has_debug={} any_window={} debug_enabled={}",
-            main_id,
-            debug_id,
-            has_main,
-            has_debug,
-            any_window,
-            debug_enabled
+            "window closed id={} main_id={:?} debug_id={:?} remaining={} quit={}",
+            closed_id, main_id, debug_id, remaining, should_quit
         );
-
-        if !any_window {
-            if let Err(error) = crate::utils::diagnostics::mark_clean_shutdown() {
-                warn!(?error, "failed to mark clean shutdown");
-            }
-            cx.quit();
-            force_exit_after_delay(Duration::from_millis(1500));
-        } else if debug_enabled && !has_main && has_debug {
+        if should_quit {
             if let Err(error) = crate::utils::diagnostics::mark_clean_shutdown() {
                 warn!(?error, "failed to mark clean shutdown");
             }
@@ -829,8 +811,7 @@ fn register_app_lifecycle(cx: &mut App) {
             force_exit_after_delay(Duration::from_millis(1500));
         }
     });
-
-    cx.update_global(|subscriptions: &mut AppSubscriptions, _cx| {
+    cx.update_global(|subscriptions: &mut AppSubscriptions, _| {
         subscriptions.window_close = Some(subscription);
     });
 }
@@ -851,7 +832,26 @@ fn force_exit_after_delay(delay: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use super::gpu_power_preference_for_adapter;
+    use super::{gpu_power_preference_for_adapter, should_quit_after_window_close};
+
+    #[test]
+    fn closing_child_never_closes_main() {
+        assert!(!should_quit_after_window_close(2, Some(1), 1));
+        assert!(!should_quit_after_window_close(2, Some(1), 0));
+        assert!(!should_quit_after_window_close(3, Some(1), 2));
+    }
+
+    #[test]
+    fn only_main_close_quits_application_with_other_windows_open() {
+        assert!(should_quit_after_window_close(1, Some(1), 1));
+        assert!(!should_quit_after_window_close(2, Some(1), 1));
+    }
+
+    #[test]
+    fn no_main_window_quits_only_after_last_close() {
+        assert!(!should_quit_after_window_close(4, None, 1));
+        assert!(should_quit_after_window_close(4, None, 0));
+    }
     use gpui::GpuPowerPreference;
 
     #[test]
