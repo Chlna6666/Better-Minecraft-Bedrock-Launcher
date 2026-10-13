@@ -81,3 +81,21 @@ py -3 scripts/verify_gpui_resize.py "C:\path\to\BMCBL\latest.log" --min-windows 
 - **测试：** 补充外层 winit pending 时原生 Modal HWND 唤醒、多次 Runnable 不积压外层事件、模态保底周期，以及模拟自动复位 Ready 信号在 Resize 前后保留的回归测试。
 
 验收时连续拖拽 DX11 窗口边缘，不仅检查窗口显示旧画面 Stretch，更应检查 Resize 过程中 `stage=scene` 和 `stage=present` 连续出现，并在停止后最终与 Native/Viewport/GPU 目标尺寸收敛。仍必须在实际 Windows GPU 上编译和复测后才能确认修复成功。
+
+
+## 2026-10-13：交互式 Resize 性能链路与 GPU 队列合并
+
+本阶段优化的场景是**鼠标持续拖动且客户区实际变化时**，不是仅测 `WM_EXITSIZEMOVE` 后的静态结果。
+
+- Win32 Native：`GetClientRect` 更新最新物理大小；只在真实尺寸变化时进入 GPUI Viewport 更新，纯移动不触发布局。
+- GPUI CPU：`content_bounds_changed` 的根布局约束改变会触发 View / Taffy / Prepaint / Paint。**这部分仍同步执行，不能因为 GPU 线程独立就假设 240Hz 已实现。**
+- GPU Owner：一段尚未执行的 `StretchResize/Resize/Draw/Tick` 如果已经累积了两次以上 Resize，新的完整 Draw 会收敛到最新 `Resize + Draw`（支持的后端保留与最终尺寸匹配的 stretch），并合并前序未提交 damage。不同步、已开始执行的操作不会被取消。
+- 安全边界：不跨越资源控制 `Call`、透明度修改、Shutdown、同步首帧以及其他非 resize 操作；保留旧 scene 的累积 dirty/backdrop damage。
+- 后端策略：Vulkan/OpenGL 不再向 GPU Owner 提交无意义的 D3D 旧帧 stretch 命令；DX11/DX12 按后端能力保留临时 stretch。
+- GPU Render：实际 drawable 改变后仍要求完整正确的 damage，并重建必需的 swapchain/depth/滤镜目标。**本轮没有实现异步资源分配或解除 Vulkan 的保守 Fence 等待。**
+
+建议分别采集 `WM_SIZE/native`、`viewport`、`scene`、`gpu_queued`、`gpu`、`present` 的时间线；结合 Debug 窗口中的 `surface_resize_wait/swapchain/resources/total` 与 `gpui_gpu_stall` 排查。不要把 GPU Owner 接受了队列命令误计为真正 Present 帧率。需要从成功 Present 的时间戳计算帧间隔、p95/p99 和实际 FPS，同时记录输入事件到新尺寸 Present 的延迟。
+
+在 240Hz 显示器上，每刷新周期约 4.17ms；如果 UI Prepaint 本身超过这个预算，就不能期待每次 Resize 都产出完全重排的新 Scene 并达到 240 FPS。之前记录的 130.9ms 帧构建（其中 129.5ms Prepaint）是需要单独用火焰图定位的 CPU 长尾，不能靠优化 Swapchain 处理。
+
+注意：`BMCBL_GPUI_RESIZE_TRACE=1` 会逐阶段写大量日志，**适合定位正确性和因果顺序，不适合作为无扰动 FPS 基准**。测量真实 FPS/延迟时，应使用低开销统计或外部图形帧分析，并对比开启与关闭该变量的结果。

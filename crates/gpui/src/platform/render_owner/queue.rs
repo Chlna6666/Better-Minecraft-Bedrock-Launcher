@@ -36,6 +36,20 @@ pub(super) enum Command {
 }
 
 impl Command {
+    /// Hard ordering boundaries that a newer exact-size draw must never
+    /// overtake while compacting obsolete *unexecuted* native resize frames.
+    #[cfg(any(test, target_os = "windows"))]
+    fn is_resize_compaction_barrier(&self) -> bool {
+        !matches!(
+            self,
+            Self::Resize(_)
+                | Self::StretchResize(_)
+                | Self::Draw { reply: None, .. }
+                | Self::Tick(..)
+                | Self::Continue(..)
+        )
+    }
+
     fn is_barrier(&self) -> bool {
         match self {
             Self::Resize(_)
@@ -98,6 +112,58 @@ impl Queue {
         if matches!(command, Command::Shutdown(_)) {
             state.closing = true;
             state.commands.clear();
+        }
+        // Several WM_SIZE generations can arrive while the shared GPU owner
+        // is busy. Each obsolete Resize + Draw used to be a barrier, forcing
+        // costly intermediate swapchain/blur/depth rebuilds on every backend.
+        // Once a NEW Draw is available, only its newest queued extent and
+        // complete accumulated damage need to reach the GPU. Never cross a
+        // resource-control command or a synchronous first-frame handshake.
+        #[cfg(any(test, target_os = "windows"))]
+        if let Command::Draw { packet, reply: None, .. } = &mut command {
+            let start = state
+                .commands
+                .iter()
+                .rposition(|queued| queued.command.is_resize_compaction_barrier())
+                .map_or(0, |index| index + 1);
+            let resize_count = state.commands.iter().skip(start).filter(|queued| {
+                matches!(queued.command, Command::Resize(_))
+            }).count();
+            if resize_count >= 2 {
+                let mut newest_resize = None;
+                let mut newest_stretch = None;
+                for obsolete in state.commands.drain(start..) {
+                    first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
+                    coalesced_count = coalesced_count
+                        .saturating_add(obsolete.coalesced_count.saturating_add(1));
+                    match obsolete.command {
+                        Command::Resize(size) => newest_resize = Some(size),
+                        Command::StretchResize(size) => newest_stretch = Some(size),
+                        Command::Draw { packet: previous, .. } => {
+                            packet.merge_pending_damage_from(&previous);
+                        }
+                        Command::Tick(..) | Command::Continue(..) => {}
+                        _ => unreachable!("resize compaction must not cross a control barrier"),
+                    }
+                }
+                let size = newest_resize.expect("at least two pending resizes");
+                // Stretch is only meaningful if it matches the latest native
+                // resize. Never replay a stale compositor scale after collapse.
+                if newest_stretch == Some(size) {
+                    state.commands.push_back(QueuedCommand {
+                        command: Command::StretchResize(size),
+                        enqueued_at,
+                        first_enqueued_at,
+                        coalesced_count: 0,
+                    });
+                }
+                state.commands.push_back(QueuedCommand {
+                    command: Command::Resize(size),
+                    enqueued_at,
+                    first_enqueued_at,
+                    coalesced_count: 0,
+                });
+            }
         }
         let barrier = state
             .commands

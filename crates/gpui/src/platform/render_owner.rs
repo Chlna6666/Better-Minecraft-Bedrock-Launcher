@@ -164,6 +164,10 @@ pub(crate) struct RenderOwner {
     owner_thread: ThreadId,
     status: Arc<Status>,
     gpu_specs: GpuSpecs,
+    // Immutable backend capability sampled on the GPU owner at creation.
+    // Vulkan/OpenGL never need to enqueue a no-op DXGI stretch per WM_SIZE.
+    #[cfg(target_os = "windows")]
+    supports_native_resize_stretch: bool,
     #[cfg(not(target_os = "windows"))]
     atlas: Arc<dyn crate::PlatformAtlas>,
     #[cfg(not(target_os = "windows"))]
@@ -226,6 +230,8 @@ impl RenderOwner {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let renderer = create()?;
         let gpu_specs = renderer.gpu_specs();
+        #[cfg(target_os = "windows")]
+        let supports_native_resize_stretch = renderer.supports_live_resize_stretch();
         #[cfg(not(target_os = "windows"))]
         let atlas = renderer.platform_atlas();
         #[cfg(not(target_os = "windows"))]
@@ -244,6 +250,8 @@ impl RenderOwner {
             owner_thread: thread::current().id(),
             status,
             gpu_specs,
+            #[cfg(target_os = "windows")]
+            supports_native_resize_stretch,
             #[cfg(not(target_os = "windows"))]
             atlas,
             #[cfg(not(target_os = "windows"))]
@@ -358,6 +366,9 @@ impl RenderOwner {
 
     #[cfg(target_os = "windows")]
     pub(super) fn stretch_for_pending_resize(&self, size: Size<DevicePixels>) {
+        if !self.supports_native_resize_stretch {
+            return;
+        }
         // Interactive WM_SIZE may arrive much faster than the GPU can service it. A typed,
         // latest-wins command avoids filling the global GPU owner with obsolete stretch
         // closures. Queue coalescing never crosses Draw/Resize or control barriers.

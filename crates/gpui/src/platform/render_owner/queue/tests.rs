@@ -453,3 +453,100 @@ fn live_resize_stretch_coalesces_latest_without_crossing_draw_or_resize() {
     assert_eq!(latest, extent(1320, 850));
     assert!(queue.take().is_none());
 }
+
+#[test]
+fn live_resize_queue_keeps_only_latest_unexecuted_extent_and_scene() {
+    use crate::{DevicePixels, size};
+
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(Scene::default());
+    let start = Instant::now();
+    for (offset, command) in [
+        (0, Command::StretchResize(extent(800))),
+        (1, Command::Resize(extent(800))),
+        (2, draw(packet(scene.clone(), 0.0))),
+        (3, Command::StretchResize(extent(900))),
+        (4, Command::Resize(extent(900))),
+        (5, draw(packet(scene.clone(), 40.0))),
+        (6, Command::StretchResize(extent(1000))),
+        (7, Command::Resize(extent(1000))),
+        (8, draw(packet(scene, 80.0))),
+    ] {
+        queue.enqueue_at(command, || Ok(()), start + Duration::from_millis(offset)).unwrap();
+    }
+
+    let Some(Command::StretchResize(stretch)) = queue.take() else {
+        panic!("latest matching stretch must be retained");
+    };
+    assert_eq!(stretch, extent(1000));
+    let Some(Command::Resize(resize)) = queue.take() else {
+        panic!("latest resize must be retained");
+    };
+    assert_eq!(resize, extent(1000));
+    let Some(QueuedCommand {
+        command: Command::Draw { packet, .. },
+        first_enqueued_at,
+        ..
+    }) = queue.take_timed() else {
+        panic!("only latest full-damage scene must remain");
+    };
+    assert_eq!(first_enqueued_at, start);
+    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(90.0));
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn live_resize_compaction_stops_at_control_and_first_frame_barriers() {
+    use crate::{DevicePixels, size};
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(Scene::default());
+
+    queue.enqueue(Command::Resize(extent(800)), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(scene.clone(), 0.0)), || Ok(())).unwrap();
+    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
+    queue.enqueue(Command::Resize(extent(900)), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(scene.clone(), 20.0)), || Ok(())).unwrap();
+    queue.enqueue(Command::Resize(extent(1000)), || Ok(())).unwrap();
+    queue.enqueue(draw(packet(scene, 40.0)), || Ok(())).unwrap();
+
+    assert!(matches!(queue.take(), Some(Command::Resize(sz)) if sz == extent(800)));
+    assert!(matches!(queue.take(), Some(Command::Draw { .. })));
+    assert!(matches!(queue.take(), Some(Command::Call(_))));
+    assert!(matches!(queue.take(), Some(Command::Resize(sz)) if sz == extent(1000)));
+    let Some(Command::Draw { packet, .. }) = queue.take() else {
+        panic!("latest scene must remain behind the control barrier");
+    };
+    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(30.0));
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn live_resize_compaction_preserves_synchronous_first_frame_handshake() {
+    use crate::{DevicePixels, size};
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(Scene::default());
+    let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+    queue.enqueue(Command::Draw {
+        packet: packet(scene.clone(), 0.0),
+        framebuffer_only: false,
+        reply: Some(reply),
+    }, || Ok(())).unwrap();
+    for (side, x) in [(900, 20.0), (1000, 40.0)] {
+        queue.enqueue(Command::Resize(extent(side)), || Ok(())).unwrap();
+        queue.enqueue(draw(packet(scene.clone(), x)), || Ok(())).unwrap();
+    }
+    let Some(Command::Draw { reply: Some(sender), .. }) = queue.take() else {
+        panic!("synchronous first-frame handshake cannot be removed");
+    };
+    sender.send(Ok(true)).unwrap();
+    assert!(receiver.recv().unwrap().unwrap());
+    assert!(matches!(queue.take(), Some(Command::Resize(sz)) if sz == extent(1000)));
+    let Some(Command::Draw { packet, .. }) = queue.take() else {
+        panic!("latest scene after handshake is required");
+    };
+    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(30.0));
+    assert!(queue.take().is_none());
+}

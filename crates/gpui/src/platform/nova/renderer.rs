@@ -277,6 +277,11 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn supports_live_resize_stretch(&self) -> bool {
+        lock_backend(&self.backend).supports_live_resize_stretch()
+    }
+
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
         self.live_resize_active = active;
     }
