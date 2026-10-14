@@ -65,7 +65,7 @@ impl MapViewerWindowView {
             })
     }
 
-    fn choose_generator_obj(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn choose_generator_obj(&mut self, cx: &mut Context<Self>) {
         if self.generator_busy() {
             return;
         }
