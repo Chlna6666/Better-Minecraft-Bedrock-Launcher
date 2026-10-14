@@ -48,7 +48,7 @@ impl MapViewerWindowView {
             MapImageInstallDestination::NewUpFrame => {
                 let (x, z) = self.map_frame_anchor();
                 (
-                    "创建并写入展示框",
+                    "直接放置到当前世界",
                     if pending.is_some() {
                         format!("锁定位置：X {x} · Y {} · Z {z}；待解析 NBT 分片", self.y_layer)
                     } else {
@@ -57,7 +57,7 @@ impl MapViewerWindowView {
                             self.y_layer, self.map_image.options.columns, self.map_image.options.rows
                         )
                     },
-                    "世界画布显示展示框合成图；右键地图可以精确设置中心，拖动视口不会移动已锁定的位置。",
+                    "点击上方或此处的「直接放置」，BMCBL 会在当前存档中创建支撑方块、展示框和地图记录，无需进入游戏手动摆放。右键地图可调整中心。",
                     true,
                 )
             }
