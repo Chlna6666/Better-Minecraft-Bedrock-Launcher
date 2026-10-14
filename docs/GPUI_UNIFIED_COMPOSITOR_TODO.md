@@ -349,6 +349,13 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 该旧方法只检查候选片段内部 `StartBlur/EndBlur` 配对，不能识别片段起点位于外层 `StartBlur` 或 `StartLayer` 内的情况，返回 true 不代表可单独 Replay。生产链路原已使用更严格的 `range_is_independently_replayable`；现在消除可能被未来调用者误用的重复入口，保留嵌套捕获的拒绝回归测试。无新兼容层。
 - **状态**：代码实现及静态依赖检查，未 Rust 编译/测试、未四后端原生验证；不以删除弱接口声称完整 Scene Replay 已迁移。
 
+## 2026-10-15：修复 CachedView Debug 重放退化，验证 GPU Cache 实际长度
+
+- 起点 master `72c97104f8f8a5a8f164be82487583521b9cad96`。修改 `crates/gpui/src/scene/display_list.rs`、`platform/nova/frame_upload/encode/retained.rs`、`platform/nova/tests.rs` 与本文。
+- **已代码实现、尚未编译**：上轮 Replay 候选二分逻辑在 Debug 模式下仍在每一次重放时执行 `debug_assert!(candidates.windows(2).all(...))`，导致每个 CachedView 片段隐含 O(C) 全表扫描，抵消所声称的热路径优化。将这个排序不变量检查移至 `Scene::finish_with_previous` 完成排序后，只有每帧一次 Debug 校验；生产逻辑继续使用上一帧的有序候选二分，没有新增结构、缓存或场景快照。
+- **GPU resident 防错边界**：同一 `RetainedChunkId` 语义身份不代表可忽略 Packed Quad 数量。缓存复用时额外校验 `quad_count == 本次 chunk.quad_range.len()` 且 `bytes.len() == quad_count * PACKED_QUAD_BYTES`；不一致回退当前帧重新编码，避免旧片段用错误实例数覆盖新布局。新增在保留相同 ID/generation 但真实 Quad 数从 32 增至 64 的异常回放对照测试，要求完全重编码并更新唯一缓存；不会伪造 chunk hit。
+- **验证与后续**：尚无本机 Cargo/rustc、Windows 原生 GPU，未运行 `cargo fmt --all`、GPUI 单测及四后端验证；Debug O(C) 消除为静态代码事实，真实 Prepaint p95/GPU 占用未测。下一步继续检查 Scene Replay → Packed Chunk 身份、FrameUpload 全量实例流与独立 GPU Compositor Lane，待编译验证通过后逐步移除 SceneSlot/Replay，而不是继续增设兼容层。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

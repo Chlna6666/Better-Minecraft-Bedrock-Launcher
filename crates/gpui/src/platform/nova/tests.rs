@@ -1047,6 +1047,67 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
 }
 
 #[test]
+fn mismatched_quad_count_never_reuses_old_resident_payload() {
+    let previous = retained_quad_scene(1);
+    let bounds = bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
+    let mut changed_source = crate::Scene::default();
+    let start = changed_source.len();
+    for _ in 0..64 {
+        changed_source.insert_primitive(Quad {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            ..Quad::default()
+        });
+    }
+    changed_source.record_retained_chunk(
+        GlobalElementId::from_path(&["nova-retained-quad".into()]),
+        1,
+        start..changed_source.len(),
+    );
+    changed_source.finish();
+    let mut replayed = crate::Scene::default();
+    replayed.replay(0..changed_source.len(), &changed_source);
+    replayed.finish();
+    assert_eq!(replayed.prepared_retained_quad_chunks().len(), 1);
+    assert!(replayed.prepared_retained_quad_chunks()[0].replayed);
+
+    let mut cache = RetainedQuadChunkCache::default();
+    let mut upload = FrameUpload::default();
+    let size = DrawableSize {
+        width: 640,
+        height: 480,
+    };
+    let params = RenderingParameters::system();
+    let initial = upload.encode(
+        &mut cache,
+        &previous,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(initial.quad_count, 32);
+    let current = upload.encode(
+        &mut cache,
+        &replayed,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(current.retained_chunk_hits, 0);
+    assert_eq!(current.quad_count, 64);
+    assert_eq!(upload.quads.len(), 64 * PACKED_QUAD_BYTES);
+    assert_eq!(cache.retained_quad_chunks.len(), 1);
+    assert_eq!(
+        cache.retained_quad_chunks.values().next().unwrap().quad_count,
+        64
+    );
+}
+
+#[test]
 fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let previous = retained_quad_scene(1);
     let mut chunk_cache = RetainedQuadChunkCache::default();

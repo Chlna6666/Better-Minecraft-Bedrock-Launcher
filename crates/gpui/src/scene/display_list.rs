@@ -1497,9 +1497,6 @@ impl Scene {
             // candidates starting inside their own source range rather than
             // linearly scanning all siblings for every replay.
             let candidates = if prev_scene.revision != 0 {
-                debug_assert!(candidates
-                    .windows(2)
-                    .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start));
                 let first = candidates
                     .partition_point(|chunk| chunk.scene_range.start < range.start);
                 let end = candidates
@@ -1583,6 +1580,13 @@ impl Scene {
                 .cmp(&right.scene_range.start)
                 .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
         });
+        // Validate the once-per-finish ordering contract here, not on every
+        // CachedView replay. A debug-build full candidate scan per fragment
+        // defeats the binary-search fast path with many retained siblings.
+        debug_assert!(self
+            .retained_chunk_candidates
+            .windows(2)
+            .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start));
         self.prepare_retained_quad_chunks();
         if let Some(previous) = previous
             && self.paint_operations.len() == previous.paint_operations.len()

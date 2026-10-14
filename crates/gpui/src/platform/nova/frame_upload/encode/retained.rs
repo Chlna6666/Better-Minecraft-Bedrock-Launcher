@@ -180,7 +180,12 @@ impl FrameUpload {
         let Some(cached) = cache.retained_quad_chunks.get_mut(&chunk.id) else {
             return false;
         };
+        // Generation identity is a retained semantic proof, but the encoded
+        // payload still must describe this exact primitive count. Reject an
+        // incorrectly preserved generation instead of drawing stale bytes.
         if cached.is_solid != chunk.is_solid
+            || cached.quad_count as usize != chunk.quad_range.len()
+            || cached.bytes.len() != chunk.quad_range.len() * PACKED_QUAD_BYTES
             || self.quads.len() / PACKED_QUAD_BYTES + cached.quad_count as usize > MAX_QUADS
         {
             return false;
