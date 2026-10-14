@@ -30,6 +30,9 @@ pub struct MapPreviewOptions {
     pub auto_fit: bool,
     /// Complete undistorted images by default; cropping and stretching are opt-in.
     pub fit: MapImageFit,
+    /// Ignore fully transparent outer padding when fitting a PNG to the tile mosaic.
+    /// Nontransparent source pixels are never discarded.
+    pub trim_transparent_edges: bool,
     /// Image resampling before 128×128 splitting.
     pub resample: MapResample,
     /// Pixels below this alpha become transparent; others become opaque.
@@ -43,6 +46,7 @@ impl Default for MapPreviewOptions {
             rows: 1,
             auto_fit: false,
             fit: MapImageFit::Contain,
+            trim_transparent_edges: true,
             resample: MapResample::Lanczos3,
             alpha_threshold: 1,
         }
@@ -299,10 +303,25 @@ async fn convert(
     if cancel.is_cancelled() {
         return Err("地图图片转换已取消".to_owned());
     }
+    // The source file's transparent margins are not actual picture content.
+    // Measure visible pixels BEFORE auto-grid sizing, or the grid allocates whole map
+    // records to empty padding. Never remove any pixel above the alpha threshold.
+    let visible_crop = if options.fit == MapImageFit::Contain && options.trim_transparent_edges {
+        visible_alpha_crop(&image, options.alpha_threshold)
+    } else {
+        None
+    };
+    let dimensions = visible_crop.map_or_else(
+        || (image.width(), image.height()),
+        |bounds| (bounds.width, bounds.height),
+    );
     if options.auto_fit {
-        (options.columns, options.rows) = fitted_grid(image.width(), image.height());
+        (options.columns, options.rows) = fitted_grid(dimensions.0, dimensions.1);
     }
-    let crop = crop_for_grid(image.width(), image.height(), options)?;
+    let mut crop = crop_for_grid(image.width(), image.height(), options)?;
+    if let Some(bounds) = visible_crop {
+        crop.rect = bounds;
+    }
     if let Ok(mut store) = previews().lock() {
         store.publish_frame(
             task_id,
@@ -428,16 +447,63 @@ fn validate_options(options: MapPreviewOptions) -> Result<(), String> {
     Ok(())
 }
 
+/// Allocate no more than the source-resolution map budget, but optimize the
+/// *mosaic aspect ratio*, not just two independently rounded pixel dimensions.
+/// A small loss of total map count is acceptable when it prevents large empty bands.
 fn fitted_grid(width: u32, height: u32) -> (u32, u32) {
-    let mut columns = width.div_ceil(128).clamp(1, 64);
-    let mut rows = height.div_ceil(128).clamp(1, 64);
-    let count = columns.saturating_mul(rows);
-    if count > 1024 {
-        let scale = (1024.0 / f64::from(count)).sqrt();
-        columns = (f64::from(columns) * scale).floor().max(1.0) as u32;
-        rows = (f64::from(rows) * scale).floor().max(1.0) as u32;
+    let suggested_columns = width.div_ceil(128).clamp(1, 64);
+    let suggested_rows = height.div_ceil(128).clamp(1, 64);
+    let budget = (suggested_columns * suggested_rows).min(1024);
+    let mut best = (1, 1);
+    let mut best_score = f64::NEG_INFINITY;
+    for columns in 1..=64_u32 {
+        for rows in 1..=(1024 / columns).min(64) {
+            let count = columns * rows;
+            if count > budget {
+                continue;
+            }
+            let numerator = f64::from(width) * f64::from(rows);
+            let denominator = f64::from(height) * f64::from(columns);
+            let ratio = numerator / denominator;
+            let coverage = ratio.min(1.0 / ratio);
+            let detail = f64::from(count) / f64::from(budget);
+            let score = coverage * 0.8 + detail * 0.2;
+            if score > best_score + 1e-12
+                || ((score - best_score).abs() <= 1e-12 && count > best.0 * best.1)
+            {
+                best = (columns, rows);
+                best_score = score;
+            }
+        }
     }
-    (columns, rows)
+    best
+}
+
+/// Return the exact bounding rectangle of pixels that can survive alpha thresholding.
+/// A completely transparent source keeps its original rectangle for deterministic behavior.
+fn visible_alpha_crop(image: &RgbaImage, alpha_threshold: u8) -> Option<MapImageCrop> {
+    let mut min_x = image.width();
+    let mut min_y = image.height();
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let threshold = alpha_threshold.max(1);
+    let mut found = false;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] < threshold {
+            continue;
+        }
+        found = true;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    found.then_some(MapImageCrop {
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x + 1,
+        height: max_y - min_y + 1,
+    })
 }
 
 struct GridCrop {
@@ -580,10 +646,36 @@ mod tests {
     }
 
     #[test]
-    fn automatic_grid_fits_source_dimensions_within_limits() {
-        assert_eq!(fitted_grid(1200, 640), (10, 5));
+    fn automatic_grid_uses_the_source_ratio_within_its_map_budget() {
+        for (width, height) in [(1200, 640), (8192, 8192), (8192, 1), (600, 540)] {
+            let (columns, rows) = fitted_grid(width, height);
+            let budget = (width.div_ceil(128).clamp(1, 64)
+                * height.div_ceil(128).clamp(1, 64)).min(1024);
+            assert!((1..=64).contains(&columns));
+            assert!((1..=64).contains(&rows));
+            assert!(columns * rows <= budget);
+        }
         assert_eq!(fitted_grid(8192, 8192), (32, 32));
         assert_eq!(fitted_grid(8192, 1), (64, 1));
+    }
+
+    #[test]
+    fn contain_trims_only_fully_transparent_outer_padding() {
+        let mut image = RgbaImage::from_pixel(8, 6, Rgba([0, 0, 0, 0]));
+        image.put_pixel(2, 1, Rgba([255, 0, 0, 255]));
+        image.put_pixel(5, 4, Rgba([0, 0, 255, 128]));
+        assert_eq!(
+            visible_alpha_crop(&image, 1),
+            Some(MapImageCrop { x: 2, y: 1, width: 4, height: 4 })
+        );
+        assert_eq!(
+            visible_alpha_crop(&image, 255),
+            Some(MapImageCrop { x: 2, y: 1, width: 1, height: 1 })
+        );
+        assert_eq!(
+            visible_alpha_crop(&RgbaImage::from_pixel(8, 6, Rgba([0, 0, 0, 0])), 1),
+            None,
+        );
     }
 
     #[test]
