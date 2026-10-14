@@ -53,6 +53,17 @@ pub(super) fn upload_frame_buffers<D: BackendResources>(
 ) -> Result<()> {
     let plan_started = Instant::now(); // CPU dirty-range planning, not visual sampling.
     let mut batch = BufferUploadBatch::default();
+    // Static presentation and GPU-only animation frames can have no
+    // device-buffer writes at all. Skip the eleven-stream planning walk and
+    // its animated-kind scans; keep profiling through upload_buffer_batch.
+    if !requires_buffer_upload_planning(
+        upload.source,
+        upload.static_uploads,
+        upload.quad_upload_plan,
+    ) {
+        record_nova_buffer_upload_time(plan_started.elapsed());
+        return upload_buffer_batch(device, &batch);
+    }
     plan_static_buffers(&mut batch, &upload)?;
     plan_quad_buffer(
         &mut batch,
@@ -65,14 +76,33 @@ pub(super) fn upload_frame_buffers<D: BackendResources>(
     upload_buffer_batch(device, &batch)
 }
 
+fn requires_buffer_upload_planning(
+    source: &FrameUpload,
+    static_uploads: StaticUploadMask,
+    quad_upload_plan: &QuadUploadPlan,
+) -> bool {
+    !static_uploads.is_empty()
+        || !matches!(quad_upload_plan, QuadUploadPlan::None)
+        || !source.animated_primitives.is_empty()
+        || source.has_animated_backdrop_blurs()
+}
+
 pub(super) fn upload_buffer_batch<D: BackendResources>(
     device: &mut D,
     batch: &BufferUploadBatch<'_>,
 ) -> Result<()> {
     let started_at = Instant::now(); // CPU upload profiling, not visual animation sampling.
     let writes = batch.writes().len() as u64;
-    let bytes = batch.writes().map(|write| write.data.len() as u64).sum();
-    let stats = gfx_core::ResourceDevice::write_buffer_batch(device, batch.writes())?;
+    // An empty batch is explicitly a no-op in the gfx-core contract.
+    // Avoid entering the native DX11/DX12/Vulkan/GL device layer only to
+    // learn that no writes are pending. Keep the existing zero-byte metrics.
+    let (bytes, stats) = if writes == 0 {
+        (0, gfx_core::BufferUploadStats::default())
+    } else {
+        let bytes = batch.writes().map(|write| write.data.len() as u64).sum();
+        let stats = gfx_core::ResourceDevice::write_buffer_batch(device, batch.writes())?;
+        (bytes, stats)
+    };
     record_nova_buffer_upload_metrics(BufferUploadMetrics {
         requested_writes: batch.requested_writes(),
         requested_bytes: batch.requested_bytes(),
@@ -242,4 +272,52 @@ fn plan_animated_buffers<'a>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_static_and_gpu_only_animation_frames_skip_buffer_planning() {
+        let upload = FrameUpload::default();
+        assert!(!requires_buffer_upload_planning(
+            &upload,
+            StaticUploadMask::default(),
+            &QuadUploadPlan::None,
+        ));
+    }
+
+    #[test]
+    fn new_or_dirty_slot_cannot_skip_upload_planning() {
+        let upload = FrameUpload::default();
+        assert!(requires_buffer_upload_planning(
+            &upload,
+            StaticUploadMask {
+                global: true,
+                ..Default::default()
+            },
+            &QuadUploadPlan::None,
+        ));
+        assert!(requires_buffer_upload_planning(
+            &upload,
+            StaticUploadMask::default(),
+            &QuadUploadPlan::Full,
+        ));
+        assert!(requires_buffer_upload_planning(
+            &upload,
+            StaticUploadMask::default(),
+            &QuadUploadPlan::Ranges(smallvec::smallvec![0..16]),
+        ));
+    }
+
+    #[test]
+    fn zero_write_upload_batch_preserves_empty_metrics_contract() {
+        let batch = BufferUploadBatch::default();
+        assert_eq!(batch.writes().len(), 0);
+        assert_eq!(batch.requested_writes(), 0);
+        assert_eq!(batch.requested_bytes(), 0);
+        assert_eq!(gfx_core::BufferUploadStats::default().calls, 0);
+        assert_eq!(gfx_core::BufferUploadStats::default().bytes, 0);
+    }
 }

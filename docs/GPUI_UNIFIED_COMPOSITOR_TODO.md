@@ -406,6 +406,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未执行】**：同 Arc 与深拷贝相等 Span 的上传间隙必须一致；满驻留时返回 None；同 Arc 元数据倒序、重叠、越界、空范围均强制 Full。使用独立 JS 模型生成 60,000 组随机区间（含不合法区间和非同 Arc 情况），新旧真实上传字节区域对照一致；这不是运行 Rust 单测。
 - **【风险与限制】**：无 rustc/cargo/rustfmt 和 Windows 原生 GPU，未验证 rustfmt、编译、GPUI lib tests、DX11/DX12/Vulkan/OpenGL。该提交只减少 CPU 上传规划扫描和空计划表达，不改变底层 GPU Buffer、Fence、Upload ABI 或跨 Slot 生命周期；实际帧耗时/GPU 占用未测。下一步继续减少 FrameUpload 静态流重复 hash/上传和复用 DrawStep 的有效性检查，持续删除 SceneSlot/Replay 技术债而非添加旁路缓存。
 
+## 2026-10-15：彻底跳过零写入帧的 GPU Buffer 提交
+
+- 基线远程 master `d2154ca382d73c9a222037f5aef2200e12e44788`；修改 `crates/gpui/src/platform/nova/renderer/buffer_upload.rs` 和本唯一 TODO。纵向范围仅涵盖静态/动画 FrameUpload → Borrowed BufferUploadBatch → Native ResourceDevice；无新增 FrameUpload、RenderTree、GPU 缓存或兼容适配层。
+- **【代码实现、未 Rust 编译】**：`upload_frame_buffers` 原先即使全部静态流干净、`QuadUploadPlan::None`、没有 CPU animated primitives 或 animated backdrop-blur pass，仍执行全静态流/Quad/逐类动画的规划遍历。现在通过纯函数 `requires_buffer_upload_planning` 跳过无写入帧的规划步骤，保留原计时入口。
+- **【原生 GPU 快路】**：`upload_buffer_batch` 曾在 `BufferUploadBatch::writes().len() == 0` 时仍调用 `ResourceDevice::write_buffer_batch(device, [])`。新版在此情况下直接采用 `gfx_core::BufferUploadStats::default()`，不进入任一后端 Native Driver 写 Buffer 路径，仍提交 `BufferUploadMetrics` 全 0 和现有计时样本。gfx-core 各后端零批次语义已按代码确认是零调用/零上传；非空情况下完全保留原顺序、Barrier/Fence/Slot 与错误返回。
+- **【测试源码，未执行】**：增加零写入帧判定、静态 dirty Full、Quad Full/局部 Ranges 均须规划，以及空 Batch 统计契约的单测；代码审查确认 GPU-indexed animation tables 的更新并不经此 Native BufferUpload 路径，保留其独立原有更新流程。没有模拟 BackendResources 或运行测试。
+- **【风险与验收】**：当前环境未提供 rustc/cargo/rustfmt，也没有 Windows GPU；尚未执行任何原生后端/单测和性能记录。此改动只会减少无写入帧 CPU 规划与无效 Native API 进入次数，并不能减少实际的 RenderPass/Draw/Present 或证明 GPU 20%+ 占用问题解决。后续应给静止页面、纯 GPU 动画与小 Dropdown 创建独立 profiling 基准，验证每帧写数/绘制数/Present 数，并持续推进 SceneSlot/Replay → 唯一 Paint Chunk 和独立 Compositor Lane。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
