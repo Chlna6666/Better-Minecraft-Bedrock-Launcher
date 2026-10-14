@@ -449,6 +449,25 @@ impl Window {
             return false;
         }
 
+
+        let dispatch_range = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
+        let contains_focus = {
+            let next = &mut self.next_frame.dispatch_tree;
+            let source = &mut self.rendered_frame.dispatch_tree;
+            next.reuse_fragment(
+                dispatch_range,
+                source,
+                self.focus,
+                &mut replay.node_map,
+                replay.restore_parent,
+            )
+        };
+        let Some(contains_focus) = contains_focus else {
+            return false;
+        };
+        // Parent-map validation can reject a selective fragment. Do not
+        // consume tooltip ownership or append input/hit-test records before
+        // that fallible replay has succeeded.
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -469,22 +488,6 @@ impl Window {
         self.text_system.reuse_layouts(
             range.start.line_layout_index.clone()..range.end.line_layout_index.clone(),
         );
-
-        let dispatch_range = range.start.dispatch_tree_index..range.end.dispatch_tree_index;
-        let contains_focus = {
-            let next = &mut self.next_frame.dispatch_tree;
-            let source = &mut self.rendered_frame.dispatch_tree;
-            next.reuse_fragment(
-                dispatch_range,
-                source,
-                self.focus,
-                &mut replay.node_map,
-                replay.restore_parent,
-            )
-        };
-        let Some(contains_focus) = contains_focus else {
-            return false;
-        };
         if contains_focus {
             self.next_frame.focus = self.focus;
         }
@@ -1262,62 +1265,54 @@ impl Window {
             return true;
         }
 
-        let mut included = SmallVec::<[bool; 64]>::with_capacity(count);
-        included.resize(count, false);
-        for (offset, source_index) in source_metadata.clone().enumerate() {
+        // One prefix records both the included bit (difference between
+        // adjacent entries) and the compacted target index. No second heap
+        // bitmap is needed for large selectively replayed subtrees.
+        let mut included_prefix = SmallVec::<[usize; 65]>::with_capacity(count + 1);
+        included_prefix.push(0);
+        for source_index in source_metadata.clone() {
             let key = &self.rendered_frame.retained_element_order[source_index];
             let Some(source_range) = self.rendered_frame.retained_element_ranges.get(key) else {
                 return false;
             };
 
-            // An ancestor of the selective hole starts before this fragment. Do not carry that
-            // proof forward; only complete sibling/descendant subtrees are independently valid.
-            if source_range.metadata_range.start < source_metadata.start
-                || source_range.metadata_range.end > source_metadata.end
-            {
-                continue;
-            }
-
-            if rebase_prepaint_range(
-                &source_range.prepaint_range,
-                source_prepaint,
-                target_prepaint,
-            )
-            .is_none()
-                || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
-                    .is_none()
-                || source_range
-                    .div_self_scene
-                    .as_ref()
-                    .is_some_and(|self_scene| {
+            // Ancestors crossing the rebuilt child are not independently
+            // reusable. All fully contained descendants still require the
+            // complete prepaint, paint and nested Scene rebasing proof.
+            let included = source_range.metadata_range.start >= source_metadata.start
+                && source_range.metadata_range.end <= source_metadata.end;
+            if included
+                && (rebase_prepaint_range(
+                    &source_range.prepaint_range,
+                    source_prepaint,
+                    target_prepaint,
+                )
+                .is_none()
+                    || rebase_paint_range(&source_range.paint_range, source_paint, target_paint)
+                        .is_none()
+                    || source_range.div_self_scene.as_ref().is_some_and(|self_scene| {
                         rebase_scene_range(
                             &self_scene.child_scene_range,
                             source_paint,
                             target_paint,
                         )
                         .is_none()
-                    })
+                    }))
             {
                 return false;
             }
-            included[offset] = true;
-        }
-
-        let mut included_prefix = SmallVec::<[usize; 65]>::with_capacity(count + 1);
-        included_prefix.push(0usize);
-        for include in &included {
             let next = included_prefix
                 .last()
                 .copied()
                 .unwrap_or(0)
-                .saturating_add(if *include { 1 } else { 0 });
+                .saturating_add(if included { 1 } else { 0 });
             included_prefix.push(next);
         }
 
         // A retained record admitted as complete must contain only other admitted records. This
         // catches malformed/non-contiguous metadata before any payload is moved out of the source.
         for (offset, source_index) in source_metadata.clone().enumerate() {
-            if !included[offset] {
+            if included_prefix[offset] == included_prefix[offset + 1] {
                 continue;
             }
             let key = &self.rendered_frame.retained_element_order[source_index];
@@ -1342,7 +1337,7 @@ impl Window {
         }
 
         for (offset, source_index) in source_metadata.clone().enumerate() {
-            if !included[offset] {
+            if included_prefix[offset] == included_prefix[offset + 1] {
                 continue;
             }
             let key = self.rendered_frame.retained_element_order[source_index].clone();
@@ -1478,6 +1473,30 @@ fn frame_range_is_valid(start: usize, end: usize, len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::retained_metadata_fragment_range_is_valid;
+
+    #[test]
+    fn compact_inclusion_prefix_preserves_fragment_membership_and_offsets() {
+        // Test the same inclusion interpretation used during selective
+        // retained-metadata transfer without creating a Window or renderer.
+        for mask in 0u16..=255 {
+            let included: Vec<_> = (0..8).map(|index| mask & (1 << index) != 0).collect();
+            let mut prefix = smallvec::SmallVec::<[usize; 65]>::new();
+            prefix.push(0);
+            for &admit in &included {
+                prefix.push(prefix.last().copied().unwrap_or(0) + usize::from(admit));
+            }
+            for (index, &admit) in included.iter().enumerate() {
+                assert_eq!(prefix[index] != prefix[index + 1], admit);
+                assert_eq!(prefix[index], included[..index].iter().filter(|&&yes| yes).count());
+                for end in index + 1..=included.len() {
+                    assert_eq!(
+                        prefix[end] - prefix[index] == end - index,
+                        included[index..end].iter().all(|&yes| yes),
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn retained_metadata_fragment_range_accepts_empty_slices() {
