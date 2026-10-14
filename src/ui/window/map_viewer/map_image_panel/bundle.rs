@@ -58,6 +58,10 @@ impl MapViewerWindowView {
                     );
                     return;
                 };
+                if chunk.dimension != self.dimension {
+                    toast::error(cx, "所选容器属于其他维度，请在当前维度重新选择目标".into());
+                    return;
+                }
                 (
                     MapBundleInstallTarget::Block(chunk, position),
                     MapImageInstallRefresh::Chunks(refresh_chunks.clone()),
