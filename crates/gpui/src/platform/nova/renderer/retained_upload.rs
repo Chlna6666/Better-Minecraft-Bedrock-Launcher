@@ -76,10 +76,18 @@ fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition
 /// The capture boundary must close every PaintLayer in the prefix. Replay
 /// preserves nested painter ordering; splitting an open layer or a retained
 /// chunk would lose ordering/residency context and keeps the ordinary path.
+struct AutoStaticBackground {
+    /// First foreground DrawOrder; GPU batch splitting uses this boundary.
+    first_dynamic_order: crate::DrawOrder,
+    /// The single retained source Scene is only a semantic content-version proof.
+    /// GPU encoding consumes the original Scene directly, never a copied foreground.
+    blur: crate::PaintBlur,
+}
+
 fn auto_capture_static_background(
     scene: &crate::Scene,
     drawable_size: DrawableSize,
-) -> Option<crate::Scene> {
+) -> Option<AutoStaticBackground> {
     use crate::{Primitive, scene::PaintOperation};
 
     if scene.revision == 0
@@ -130,6 +138,23 @@ fn auto_capture_static_background(
         return None;
     }
 
+    // The GPU batch stream is sorted by DrawOrder. Reject ambiguous boundaries
+    // rather than allowing an equal or reordered primitive into the wrong
+    // render target. Structural PaintLayer markers carry no packed pixels.
+    let first_dynamic_order = match &scene.paint_operations[prefix_end] {
+        PaintOperation::Primitive(primitive) => primitive.order(),
+        _ => return None,
+    };
+    if scene.paint_operations[..prefix_end].iter().any(|operation| {
+        matches!(operation, PaintOperation::Primitive(primitive)
+            if primitive.order() >= first_dynamic_order)
+    }) || scene.paint_operations[prefix_end..].iter().any(|operation| {
+        matches!(operation, PaintOperation::Primitive(primitive)
+            if primitive.order() < first_dynamic_order)
+    }) {
+        return None;
+    }
+
     // Do not synthesize another full-window root. The tight bounds limit
     // the composite draw to the actual static background footprint.
     let viewport = crate::bounds(
@@ -150,29 +175,25 @@ fn auto_capture_static_background(
     background.replay(0..prefix_end, scene);
     background.finish();
 
-    let mut foreground = crate::Scene::default();
-    foreground
-        .animation_values
-        .extend_from_slice(&scene.animation_values);
-    foreground.insert_primitive(crate::PaintBlur {
-        order: 0,
-        animation_id: None,
-        layer_id: Some(crate::GlobalElementId::from_path(&[
-            "nova-auto-static-background".into(),
-        ])),
-        bounds,
-        content_mask: crate::ContentMask::new(viewport),
-        radius: crate::ScaledPixels(0.0),
-        opacity: 1.0,
-        content: Arc::new(background),
-    });
-    foreground.replay(prefix_end..scene.paint_operations.len(), scene);
-    foreground.finish();
-    // The immutable original scene revision is the lifetime key for
-    // packed GPU draw streams. Its stable value allows compositor-only
-    // frames to update animation values without rebuilding the prefix.
-    foreground.revision = scene.revision;
-    Some(foreground)
+    // The original Scene is already finalized. There is no need to create,
+    // replay, sort, and retain another full foreground Scene just to insert
+    // one compositor barrier. Nova adds that boundary to its packed batches.
+    // The smaller source snapshot remains for exact filter residency proofs.
+    Some(AutoStaticBackground {
+        first_dynamic_order,
+        blur: crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: Some(crate::GlobalElementId::from_path(&[
+                "nova-auto-static-background".into(),
+            ])),
+            bounds,
+            content_mask: crate::ContentMask::new(viewport),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: Arc::new(background),
+        },
+    })
 }
 
 fn should_retain_complex_scene_color(scene: &crate::Scene, summary: &FrameUploadSummary) -> bool {
@@ -820,10 +841,10 @@ impl NovaRenderer {
         // The candidate builder rejects non-flat streams, filters, atlas-backed
         // prefixes and unstable resources. Its proven quad/shadow prefix can be
         // retained by default without changing ordinary/complex Scene handling.
-        let captured_scene = (!reusable)
-        .then(|| auto_capture_static_background(scene, self.current_size))
-        .flatten();
-        let scene_to_encode = captured_scene.as_ref().unwrap_or(scene);
+        let auto_background = (!reusable)
+            .then(|| auto_capture_static_background(scene, self.current_size))
+            .flatten();
+        let scene_to_encode = scene;
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
         let mut signature_time = Duration::ZERO;
@@ -849,6 +870,17 @@ impl NovaRenderer {
                 key.premultiplied_alpha,
                 blur_quality,
             );
+            // Capture the encoded static prefix in place. No separate foreground
+            // Scene, second Scene::finish, or second primitive encoding pass.
+            let captured_static_prefix = auto_background.as_ref().is_some_and(|candidate| {
+                self.frame_upload.capture_encoded_static_prefix(
+                    scene,
+                    &candidate.blur,
+                    candidate.first_dynamic_order,
+                    self.current_size,
+                    &mut summary,
+                )
+            });
             encode_time = encode_started_at.elapsed();
             // Element blur composites are intentionally registered after recursive static encode.
             // Their child batches remain ordinary retained source geometry, while only the final
@@ -858,7 +890,7 @@ impl NovaRenderer {
             // Only CPU/GPU-native ordinary primitives can be replayed inside
             // a retained root target. Native surfaces/extensions use the old
             // full-redraw path until they expose their own damage semantics.
-            if captured_scene.is_none()
+            if !captured_static_prefix
                 && !scene_to_encode.requires_full_redraw_fallback()
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
@@ -998,15 +1030,11 @@ mod tests {
             },
         )
         .expect("flat page has independent static prefix");
-        assert_eq!(captured.blurs.len(), 1);
-        assert_eq!(captured.blurs[0].radius, crate::ScaledPixels(0.0));
-        assert_eq!(captured.blurs[0].content.paint_operations.len(), 100);
-        assert_eq!(captured.quads.len(), 1);
-        assert_eq!(
-            captured.quads[0].animation_id,
-            Some(crate::SceneAnimationId(42))
-        );
-        assert_eq!(captured.revision, original.revision);
+        assert_eq!(captured.blur.radius, crate::ScaledPixels(0.0));
+        assert_eq!(captured.blur.content.paint_operations.len(), 100);
+        assert_eq!(captured.first_dynamic_order, original.quads[100].order);
+        assert_eq!(original.quads.len(), 101);
+        assert_eq!(original.quads[100].animation_id, Some(crate::SceneAnimationId(42)));
         let viewport = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
@@ -1020,9 +1048,9 @@ mod tests {
         let size = DrawableSize { width: 640, height: 480 };
         let nested_capture = auto_capture_static_background(&nested, size)
             .expect("a closed nested prefix retains its layer ordering");
-        assert!(matches!(nested_capture.blurs[0].content.paint_operations.first(),
+        assert!(matches!(nested_capture.blur.content.paint_operations.first(),
             Some(crate::scene::PaintOperation::StartLayer(_))));
-        assert!(matches!(nested_capture.blurs[0].content.paint_operations.last(),
+        assert!(matches!(nested_capture.blur.content.paint_operations.last(),
             Some(crate::scene::PaintOperation::EndLayer)));
         let mut split = crate::Scene::default();
         split.push_layer(viewport);
@@ -1070,8 +1098,8 @@ mod tests {
             },
         )
         .expect("changed background still eligible");
-        let before = &captured.blurs[0];
-        let after = &changed.blurs[0];
+        let before = &captured.blur;
+        let after = &changed.blur;
         assert_eq!(before.layer_id, after.layer_id);
         assert!(
             !after
