@@ -23,7 +23,10 @@ pub(super) struct QuadResidentLayout(Arc<[RetainedResidentSpan]>);
 
 impl QuadResidentLayout {
     pub(super) fn from_upload(upload: &FrameUpload) -> Self {
-        Self(Arc::from(upload.resident_quad_spans.clone()))
+        // Construct the immutable resident descriptor directly from the slice. The
+        // old Vec::clone() -> Arc conversion allocated a temporary Vec and
+        // cloned every chunk identity a second time on layout changes.
+        Self(Arc::from(upload.resident_quad_spans.as_slice()))
     }
 
     /// A new Scene revision does not imply a new resident quad layout. Reuse
@@ -48,14 +51,14 @@ impl QuadResidentLayout {
         let Some(previous) = previous else {
             return QuadUploadPlan::Full;
         };
-        // Span ranges are emitted in GPU byte-offset order. A malformed old
-        // layout must never make us skip an upload, so reject it before the
-        // allocation-free ordered merge.
-        if previous.0.iter().any(|span| span.range.is_empty())
-            || previous
-                .0
-                .windows(2)
-                .any(|pair| pair[0].range.end > pair[1].range.start)
+        // Retained ranges are sorted by GPU byte offset, never by Chunk ID.
+        // Validate BOTH generations before omitting any resident bytes:
+        // a malformed current layout could otherwise preserve a coincidentally
+        // matching old span while hiding overlapping/out-of-bounds new bytes.
+        // The old buffer may be larger than the new one after a resize, so its
+        // ranges are checked for ordering but not against the new byte length.
+        if !resident_spans_are_ordered(&previous.0, None)
+            || !resident_spans_are_ordered(&self.0, Some(byte_len))
         {
             return QuadUploadPlan::Full;
         }
@@ -71,6 +74,25 @@ impl QuadResidentLayout {
         });
         dirty_complement(clean, byte_len).unwrap_or(QuadUploadPlan::Full)
     }
+}
+
+/// Reject malformed retained metadata before a partial GPU buffer update.
+/// Validation stays allocation-free; full upload is the conservative fallback.
+fn resident_spans_are_ordered(
+    spans: &[RetainedResidentSpan],
+    byte_len: Option<usize>,
+) -> bool {
+    let mut end = 0usize;
+    for span in spans {
+        if span.range.is_empty()
+            || span.range.start < end
+            || byte_len.is_some_and(|len| span.range.end > len)
+        {
+            return false;
+        }
+        end = span.range.end;
+    }
+    true
 }
 
 fn dirty_complement<'a>(
@@ -180,6 +202,45 @@ mod tests {
             span("right", 2, 32..64),
         ]));
         assert_eq!(current.upload_plan(Some(&previous), 64, true), QuadUploadPlan::Full);
+    }
+
+    #[test]
+    fn malformed_current_ranges_never_skip_upload_using_matching_previous_span() {
+        let previous = QuadResidentLayout(Arc::from([
+            span("first", 1, 0..32),
+            span("second", 1, 32..64),
+        ]));
+        let current_reordered = QuadResidentLayout(Arc::from([
+            span("second", 1, 32..64),
+            span("first", 1, 0..32),
+        ]));
+        let current_overlap = QuadResidentLayout(Arc::from([
+            span("first", 1, 0..32),
+            span("overlap", 1, 16..48),
+        ]));
+        let current_out_of_bounds = QuadResidentLayout(Arc::from([
+            span("first", 1, 0..32),
+            span("overflow", 1, 64..96),
+        ]));
+        for current in [&current_reordered, &current_overlap, &current_out_of_bounds] {
+            assert_eq!(
+                current.upload_plan(Some(&previous), 64, true),
+                QuadUploadPlan::Full
+            );
+        }
+    }
+
+    #[test]
+    fn valid_previous_layout_can_exceed_shrinking_current_buffer_size() {
+        let previous = QuadResidentLayout(Arc::from([
+            span("first", 1, 0..32),
+            span("second", 1, 32..96),
+        ]));
+        let current = QuadResidentLayout(Arc::from([span("first", 1, 0..32)]));
+        assert_eq!(
+            current.upload_plan(Some(&previous), 64, true),
+            QuadUploadPlan::Ranges(vec![32..64])
+        );
     }
 
     #[test]
