@@ -1,3 +1,4 @@
+use crate::ui::components::numeric_field::NumericField;
 use super::editor::*;
 use super::generator_panel::GeneratorPanelState;
 use super::helpers::*;
@@ -1799,6 +1800,16 @@ pub(super) struct TileLayerSnapshotKey {
     pub(super) tile_generation: u64,
 }
 
+/// Numeric parameter editable by keyboard, bounded on explicit commit.
+#[derive(Clone, Copy)]
+pub(super) enum ImportNumericAxis {
+    MapColumns,
+    MapRows,
+    ImageWidth,
+    ImageHeight,
+    ObjSize,
+}
+
 pub struct MapViewerWindowView {
     pub(super) owner_window: AnyWindowHandle,
     pub(super) version: ManagedVersionEntry,
@@ -1832,6 +1843,12 @@ pub struct MapViewerWindowView {
     pub(super) generator: GeneratorPanelState,
     pub(super) image_generator: ImageGeneratorPanelState,
     pub(super) map_image: MapImagePanelState,
+    /// Persistent edit buffers for numeric import parameters.
+    pub(super) num_map_columns: NumericField,
+    pub(super) num_map_rows: NumericField,
+    pub(super) num_image_width: NumericField,
+    pub(super) num_image_height: NumericField,
+    pub(super) num_obj_size: NumericField,
     pub(super) map_focus_handle: FocusHandle,
     pub(super) preview_3d_focus_handle: FocusHandle,
     pub(super) toolbar_state: ToolbarState,
