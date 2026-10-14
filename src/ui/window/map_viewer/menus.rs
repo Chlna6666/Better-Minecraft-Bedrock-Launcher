@@ -168,6 +168,12 @@ impl MapViewerWindowView {
                 move |cx| entity.update(cx, |this, cx| this.open_context_biome_storage_editor(cx))
             }),
         ];
+        // While picking a map destination, put the action in the first menu group,
+        // not in the generic nested editor menu.
+        let mut more_items = more_items;
+        if self.map_image_selecting_block() {
+            more_items.remove(2);
+        }
         let more_open = self.ui_state.context_more_open;
         let more_edit_entries = context_more_edit_entries(more_open, more_items, {
             let entity = cx.entity();
@@ -261,6 +267,28 @@ impl MapViewerWindowView {
             ContextMenuGroup::titled("选区", selection_entries),
             ContextMenuGroup::titled("编辑", more_edit_entries),
         ];
+        if self.map_image_selecting_block() {
+            groups.insert(
+                0,
+                ContextMenuGroup::titled(
+                    "地图物品 · 当前目标",
+                    vec![
+                        ContextMenuEntry::item(
+                            ContextMenuItem::new(format!(
+                                "设为地图写入目标 · {}, {}, {}",
+                                menu.block_x, self.y_layer, menu.block_z
+                            ))
+                            .on_click({
+                                let entity = cx.entity();
+                                move |cx| entity.update(cx, |this, cx| {
+                                    this.open_context_block_entity_at_editor(cx)
+                                })
+                            }),
+                        ),
+                    ],
+                ),
+            );
+        }
         if let Some(actor) = self.professional.entity_context_target.clone() {
             let identifier = actor
                 .identifier
