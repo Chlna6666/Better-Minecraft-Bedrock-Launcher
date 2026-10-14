@@ -329,6 +329,24 @@ impl MapViewerWindowView {
         });
         let player_workspace = PlayerWorkspaceState::new(window, cx);
         let map_image = super::map_image_panel::MapImagePanelState::new(window, cx);
+        let map_defaults = crate::core::minecraft::map::generator::MapPreviewOptions::default();
+        let image_defaults = crate::core::minecraft::map::generator::ImageBlockOptions::default();
+        let obj_defaults = bedrock_voxel::ObjVoxelOptions::default();
+        let num_map_columns = crate::ui::components::numeric_field::NumericField::new(
+            window, cx, map_defaults.columns,
+        );
+        let num_map_rows = crate::ui::components::numeric_field::NumericField::new(
+            window, cx, map_defaults.rows,
+        );
+        let num_image_width = crate::ui::components::numeric_field::NumericField::new(
+            window, cx, image_defaults.width,
+        );
+        let num_image_height = crate::ui::components::numeric_field::NumericField::new(
+            window, cx, image_defaults.height,
+        );
+        let num_obj_size = crate::ui::components::numeric_field::NumericField::new(
+            window, cx, u32::from(obj_defaults.longest_side_blocks),
+        );
         let player_item_catalog_root = PathBuf::from(init.version.path.as_ref());
         let cached_player_item_catalog = cached_item_catalog_snapshot(&player_item_catalog_root);
         let player_item_catalog_loaded = cached_player_item_catalog.is_some();
@@ -359,6 +377,22 @@ impl MapViewerWindowView {
                 }
             },
         ));
+        for (input, axis) in [
+            (&num_map_columns.state, ImportNumericAxis::MapColumns),
+            (&num_map_rows.state, ImportNumericAxis::MapRows),
+            (&num_image_width.state, ImportNumericAxis::ImageWidth),
+            (&num_image_height.state, ImportNumericAxis::ImageHeight),
+            (&num_obj_size.state, ImportNumericAxis::ObjSize),
+        ] {
+            subscriptions.push(cx.subscribe(
+                input,
+                move |this, _input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        this.commit_import_numeric_axis(axis, cx);
+                    }
+                },
+            ));
+        }
         let top_bar_view = cx.new(|_cx| MapTopBarView::default());
         let tool_stripe_view = cx.new(|_cx| MapToolStripeView::default());
         let menu_overlay_view = cx.new(|_cx| MapMenuOverlayView::default());
@@ -434,6 +468,11 @@ impl MapViewerWindowView {
             generator: super::generator_panel::GeneratorPanelState::default(),
             image_generator: super::image_generator_panel::ImageGeneratorPanelState::default(),
             map_image,
+            num_map_columns,
+            num_map_rows,
+            num_image_width,
+            num_image_height,
+            num_obj_size,
             map_focus_handle,
             preview_3d_focus_handle: cx.focus_handle().tab_stop(true),
             toolbar_state: ToolbarState::default(),
