@@ -71,32 +71,34 @@ impl MapViewerWindowView {
                             )
                         }),
                     )
-                    .child(generator_section_title(colors, "地图包写入目标"))
-                    .child(div().flex().flex_wrap().gap(px(6.0)).children(
-                        [
-                            (MapImageInstallDestination::Player, "选中玩家背包"),
-                            (MapImageInstallDestination::SelectedBlock, "选中箱子／潜影盒／空展示框"),
-                            (MapImageInstallDestination::NewUpFrame, "新建朝上展示框"),
-                        ]
-                        .into_iter()
-                        .map(|(destination, label)| {
-                            generator_choice(
-                                colors,
-                                label,
-                                self.map_image.install_destination == destination,
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.set_map_install_destination(destination, cx)
-                                }),
-                            )
-                        }),
-                    ))
+                    .child(generator_section_title(colors, "目标设置"))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child("在中央操作栏选择写入目标；此处仅显示对应目标的参数。"),
+                    )
                     .when(
                         self.map_image.install_destination == MapImageInstallDestination::Player,
                         |panel| {
                             panel.child(self.render_map_player_picker(colors, cx))
+                        },
+                    )
+                    .when(
+                        self.map_image.install_destination == MapImageInstallDestination::SelectedBlock,
+                        |panel| {
+                            panel.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(colors.text_secondary)
+                                    .child(self.map_image.selected_block.map_or_else(
+                                        || "切换到「地图与放置」，在世界地图上右键目标方块，直接选择「设为地图写入目标」。".to_owned(),
+                                        |(_, block)| format!(
+                                            "已选择目标：X {} · Y {} · Z {}。写入前会检测容器类型与容量。",
+                                            block.x, block.y, block.z,
+                                        ),
+                                    )),
+                            )
                         },
                     )
                     .when(self.map_image.install_destination == MapImageInstallDestination::NewUpFrame, |panel| panel
