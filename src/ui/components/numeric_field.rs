@@ -4,11 +4,14 @@
 use super::input::{Input, InputSize, InputState};
 use gpui::{App, AppContext as _, Context, Div, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
 use crate::ui::theme::colors::ThemeColors;
+use std::{cell::Cell, rc::Rc};
 
 /// Independent text edit state; callers commit on Enter/blur and retain their domain constraints.
 #[derive(Clone)]
 pub(crate) struct NumericField {
     pub(crate) state: Entity<InputState>,
+    /// The last value displayed by the owner, separate from the user's in-progress edit.
+    last_synced: Rc<Cell<u32>>,
 }
 
 impl NumericField {
@@ -22,7 +25,10 @@ impl NumericField {
             input.set_text(initial_value.to_string(), cx);
             input
         });
-        Self { state }
+        Self {
+            state,
+            last_synced: Rc::new(Cell::new(initial_value)),
+        }
     }
 
     /// Styled identically in the OBJ, image-block, and map-image parameter inspectors.
@@ -38,12 +44,22 @@ impl NumericField {
 
     /// Explicit setting changes keep edit text synchronized. No Change event is emitted.
     pub(crate) fn sync<V: 'static>(&self, value: u32, cx: &mut Context<V>) {
+        self.last_synced.set(value);
         let value = value.to_string();
         self.state.update(cx, |input, cx| {
             if input.value().as_ref() != value {
                 input.set_text(value, cx);
             }
         });
+    }
+
+    /// Background task results must not erase a partially edited number.
+    /// Preset buttons and explicit commits continue using `sync`, which is authoritative.
+    pub(crate) fn sync_if_pristine<V: 'static>(&self, value: u32, cx: &mut Context<V>) {
+        let current = self.state.read(cx).value();
+        if is_pristine_numeric_input(current.as_ref(), self.last_synced.get()) {
+            self.sync(value, cx);
+        }
     }
 }
 
@@ -79,6 +95,10 @@ pub(crate) fn numeric_dimension_editor(
         .child(div().w_full().min_w(px(0.0)).child(slider))
 }
 
+fn is_pristine_numeric_input(text: &str, synced_value: u32) -> bool {
+    text == synced_value.to_string()
+}
+
 /// Strict decimal integer parsing: reject negative values, fractions, overflows and out-of-range
 /// values instead of silently clamping a user's intended size.
 pub(crate) fn parse_bounded_u32(text: &str, min: u32, max: u32) -> Option<u32> {
@@ -91,12 +111,20 @@ pub(crate) fn parse_bounded_u32(text: &str, min: u32, max: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_bounded_u32;
+    use super::{is_pristine_numeric_input, parse_bounded_u32};
 
     #[test]
     fn accepts_exact_dimensions_in_range() {
         assert_eq!(parse_bounded_u32(" 137 ", 1, 512), Some(137));
         assert_eq!(parse_bounded_u32("64", 1, 64), Some(64));
+    }
+
+    #[test]
+    fn background_sync_preserves_partial_edits() {
+        assert!(is_pristine_numeric_input("128", 128));
+        assert!(!is_pristine_numeric_input("12", 128));
+        assert!(!is_pristine_numeric_input("", 128));
+        assert!(!is_pristine_numeric_input("0128", 128));
     }
 
     #[test]
