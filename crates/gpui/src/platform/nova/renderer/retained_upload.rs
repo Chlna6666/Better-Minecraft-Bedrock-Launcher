@@ -1402,7 +1402,7 @@ mod tests {
 
         assert_eq!(
             retained.quad_upload_plan(0, upload.quads.len()),
-            QuadUploadPlan::Ranges(vec![0..32])
+            QuadUploadPlan::Ranges(smallvec::smallvec![0..32])
         );
         assert_eq!(
             retained.quad_upload_plan(1, upload.quads.len()),

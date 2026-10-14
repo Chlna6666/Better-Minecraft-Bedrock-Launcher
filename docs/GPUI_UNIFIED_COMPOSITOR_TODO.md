@@ -389,6 +389,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【待验证】**：当前环境无 cargo/rustc/rustfmt，不能执行 `cargo fmt --all -- --check`、`cargo check`、`cargo test -p gpui --lib` 与四后端实机测试；应重点关注极高动画频率时批次合并、超出 MAX_QUADS 的截断帧、Canvas 自绘数据，及不匹配 Scene/Batch Bounds 的异常。只有本机 profiler 才能确认 CPU Encode p95 与 GPU DrawCall 效果。
 - **【仍未完成】**：SceneSlot、Scene Replay、根 Scene/Filter 拆分、全量 FrameUpload Staging、跨类型 Paint Chunk、独立 GPU Presentation/Compositor Lane。下一纵向切片应减少 Scene→FrameUpload 的其他源数据重复复制并验证 GPU resident 修改代次，而不是再添加新的并行表示层。
 
+## 2026-10-15：Quad Resident 上传脏区间内联规划，删除常规逐帧 Vec 分配
+
+- 基线远程 master `28473c9519d9f1afb6371ebf1ddc08967c77369d`。修改 `crates/gpui/src/platform/nova/renderer/chunk_upload.rs`、`renderer/retained_upload.rs`、`renderer/retained_upload/sharing.rs` 和本唯一 TODO。遵守 GPU Owner 中 `QuadResidentLayout`/跨帧 slot residency 为单一依据，不引入第二套上传状态或额外 Scene/Chunk 所有者。
+- **【代码实现，未编译】**：`QuadUploadPlan::Ranges(Vec<Range<usize>>)` 改为 `Ranges(SmallVec<[Range<usize>; 4]>)`。多 Chunk 局部修改中常见的 1～4 段脏字节区间可留在计划本身的内联存储，不再为此单独分配堆 Vec；超过四段仍自动 spill，完整保留顺序、半开区间、字节数和原生 API 接收的散射写入语义。
+- 完整上传、空计划、合法性验证、原旧 Slot Range、Chunk ID/generation/hash、资源替换后强制 Full、物理 GPU Buffer 和 `BufferUploadBatch` 都不变。`dirty_complement` 的唯一区间列表仍按全局字节顺序产生，不会与动画局部更新重新排序；不假设 Backend 具备跨 Buffer 的无序执行能力。
+- **【测试源码，未运行】**：将所有已知 `QuadUploadPlan::Ranges(vec![...])` 测试改为 `smallvec!`；新增三个脏区间全部内联、七段碎片自动转堆且正确计算 72 字节上传量、完整保持物理顺序的回归测试。注意本变更在最坏大量碎片情况下依然会分配堆内存，并非消除全部 BufferUploadBatch 阶段 CPU 开销。
+- **【验证】**：仅对 GitHub 源码全局调用点进行了静态审查，**无 Rust Cargo/ rustc / Windows native GPU**，未运行 fmt/check/test/四后端。真实堆分配下降、DX11/12/Vulkan/GL 上传性能和 p95 延迟仍须本地 Profile 测量；不要以此推断 GPU/VRAM 降低。
+- 后续重点：验证 Resident Upload Plan 与 DrawStep/DirtyRegion 的版本一致性，清理冗余 `SceneSlot`、`Scene::replay`、全量 `FrameUpload`、并完成独立 GPU Compositor/Present lane（尚未完成）。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

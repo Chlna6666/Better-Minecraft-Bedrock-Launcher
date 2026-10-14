@@ -1,11 +1,14 @@
 use super::*;
 use std::{ops::Range, sync::Arc};
+use smallvec::SmallVec;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum QuadUploadPlan {
     None,
     Full,
-    Ranges(Vec<Range<usize>>),
+    // Common one-to-four dirty gaps stay inline; many disjoint chunks may
+    // spill without losing a single byte or reordering backend writes.
+    Ranges(SmallVec<[Range<usize>; 4]>),
 }
 
 impl QuadUploadPlan {
@@ -99,7 +102,7 @@ fn dirty_complement<'a>(
     clean: impl Iterator<Item = &'a RetainedResidentSpan>,
     byte_len: usize,
 ) -> Option<QuadUploadPlan> {
-    let mut ranges = Vec::new();
+    let mut ranges = SmallVec::<[Range<usize>; 4]>::new();
     let mut cursor = 0usize;
     let mut retained_any = false;
     for span in clean {
@@ -143,7 +146,7 @@ mod tests {
 
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(vec![0..16, 48..64])
+            QuadUploadPlan::Ranges(smallvec::smallvec![0..16, 48..64])
         );
     }
 
@@ -239,8 +242,49 @@ mod tests {
         let current = QuadResidentLayout(Arc::from([span("first", 1, 0..32)]));
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(vec![32..64])
+            QuadUploadPlan::Ranges(smallvec::smallvec![32..64])
         );
+    }
+
+    #[test]
+    fn common_dirty_ranges_do_not_allocate_a_heap_vector() {
+        let current = QuadResidentLayout(Arc::from([
+            span("left", 1, 16..32),
+            span("right", 1, 48..64),
+        ]));
+        let plan = current.upload_plan(Some(&current), 80, true);
+        match plan {
+            QuadUploadPlan::Ranges(ranges) => {
+                assert!(!ranges.spilled(), "three dirty gaps fit the inline storage");
+                assert_eq!(ranges.as_slice(), &[0..16, 32..48, 64..80]);
+                assert_eq!(ranges.iter().map(Range::len).sum::<usize>(), 48);
+            }
+            other => panic!("expected partial upload: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn more_than_four_dirty_ranges_preserve_order_and_uploaded_bytes() {
+        let current = QuadResidentLayout(Arc::from([
+            span("a", 1, 4..8),
+            span("b", 1, 20..24),
+            span("c", 1, 36..40),
+            span("d", 1, 52..56),
+            span("e", 1, 68..72),
+            span("f", 1, 84..88),
+        ]));
+        let plan = current.upload_plan(Some(&current), 96, true);
+        assert_eq!(plan.uploaded_bytes(96), 72);
+        match plan {
+            QuadUploadPlan::Ranges(ranges) => {
+                assert!(ranges.spilled(), "uncommon fragmented layout may grow");
+                assert_eq!(
+                    ranges.as_slice(),
+                    &[0..4, 8..20, 24..36, 40..52, 56..68, 72..84, 88..96]
+                );
+            }
+            other => panic!("expected partial upload: {other:?}"),
+        }
     }
 
     #[test]
@@ -256,7 +300,7 @@ mod tests {
 
         assert_eq!(
             current.upload_plan(Some(&previous), 64, true),
-            QuadUploadPlan::Ranges(vec![0..32])
+            QuadUploadPlan::Ranges(smallvec::smallvec![0..32])
         );
     }
 }

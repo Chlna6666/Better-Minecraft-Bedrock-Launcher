@@ -308,7 +308,7 @@ mod tests {
         assert!(retained.static_upload_mask(0).quad);
         assert_eq!(
             retained.quad_upload_plan(0, after.quads.len()),
-            QuadUploadPlan::Ranges(vec![gap..after.quads.len()]),
+            QuadUploadPlan::Ranges(smallvec::smallvec![gap..after.quads.len()]),
             "only the animated gap needs uploading into an owned resident buffer"
         );
         retained.invalidate_stream(0, BufferStream::Quad);
