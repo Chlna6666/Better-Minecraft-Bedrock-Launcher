@@ -7,7 +7,7 @@ impl MapViewerWindowView {
     pub(in super::super) fn reset_map_player_search_scroll(&self) {
         self.map_image
             .player_scroll
-            .scroll_to_item(0, ScrollStrategy::Top);
+            .scroll_to_item_strict(0, ScrollStrategy::Top);
     }
 
     pub(in super::super) fn render_map_player_picker(
@@ -154,9 +154,9 @@ impl MapViewerWindowView {
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
                             .child(if query.is_empty() {
-                                format!("共 {total} 位可用玩家")
+                                format!("共 {total} 条记录（含本地 level.dat）")
                             } else {
-                                format!("匹配 {count} / {total} 位玩家")
+                                format!("匹配 {count} / {total} 条记录")
                             }),
                     )
                     .when_some(selected_index, |row, index| {
@@ -165,7 +165,7 @@ impl MapViewerWindowView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
-                                        this.map_image.player_scroll.scroll_to_item(
+                                        this.map_image.player_scroll.scroll_to_item_strict(
                                             index, ScrollStrategy::Center,
                                         );
                                         cx.notify();
@@ -207,9 +207,13 @@ impl MapViewerWindowView {
 }
 
 fn matches_player_query(label: &str, id: &PlayerId, query: &str) -> bool {
-    query.is_empty()
-        || label.to_lowercase().contains(query)
-        || player_id_label(id).to_lowercase().contains(query)
+    if query.trim().is_empty() {
+        return true;
+    }
+    // All search terms must match, but may span the friendly name and storage identifier.
+    // Keep the query source-independent: the virtual list still only builds visible rows.
+    let searchable = format!("{label} {}", player_id_label(id)).to_lowercase();
+    query.split_whitespace().all(|word| searchable.contains(&word.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -226,6 +230,9 @@ mod tests {
             "player_430db2e0"
         ));
         assert!(!matches_player_query("服务器玩家", &player, "missing"));
+        assert!(matches_player_query("服务器玩家", &player, "服务器玩家 8790"));
+        assert!(matches_player_query("服务器玩家", &player, "PLAYER_430db2e0"));
+        assert!(!matches_player_query("服务器玩家", &player, "服务器玩家 missing"));
     }
 
     #[test]
