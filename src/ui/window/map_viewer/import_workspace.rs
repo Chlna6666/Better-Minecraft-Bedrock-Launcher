@@ -65,6 +65,10 @@ impl MapViewerWindowView {
             .child(body)
             .child(self.render_import_workspace_toolbar(colors, cx))
             .when(
+                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage,
+                |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
+            )
+            .when(
                 preview
                     || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                     || self.import_task_snapshot().is_some(),
