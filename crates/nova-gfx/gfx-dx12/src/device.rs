@@ -2513,7 +2513,16 @@ mod platform {
             );
             // This also retires deferred backbuffer references and descriptor
             // releases created earlier in this renderer's teardown.
-            let drained = self.wait_for_pending_work();
+            // Resource destruction above only retires handles; it does not
+            // enqueue new GPU commands. Avoid signaling and waiting for an
+            // empty queue when the last recorded submission already completed.
+            let drained = self.has_pending_gpu_work().and_then(|pending| {
+                if pending {
+                    self.wait_for_pending_work()
+                } else {
+                    Ok(())
+                }
+            });
             // Release IDXGISwapChain3, its backbuffer COM references and the
             // DirectComposition attachment *before* returning control to GPUI.
             // On device removal, drop the swapchain even if the wait fails.
