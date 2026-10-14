@@ -130,10 +130,20 @@ impl MapViewerWindowView {
 
     /// Explicit placement operation; moving or zooming the world viewport has no write side effect.
     fn set_map_frame_anchor_to_viewport(&mut self, cx: &mut Context<Self>) {
+        let position = self.viewport.center_block(self.active_layout);
+        self.set_map_frame_anchor(position, cx);
+    }
+
+    /// Single source of truth for the overlay, target label and eventual world write.
+    pub(super) fn set_map_frame_anchor(&mut self, position: (i32, i32), cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
         }
-        self.map_image.frame_anchor = Some(self.viewport.center_block(self.active_layout));
+        self.map_image.frame_anchor = Some(position);
+        self.status = SharedString::from(format!(
+            "已设置展示框放置中心 X {} · Z {}，尚未修改世界",
+            position.0, position.1,
+        ));
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
         cx.notify();
