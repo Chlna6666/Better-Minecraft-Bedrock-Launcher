@@ -104,8 +104,8 @@ pub struct ImportWindowView {
     import_context: ImportLaunchContext,
     file_paths: Vec<PathBuf>,
     batch_previews: Vec<ImportFilePreview>,
+    preview_index: Option<usize>,
     target: ImportWindowTarget,
-    preview: Option<PackagePreview>,
     selected_folder: Option<SharedString>,
     status: Option<(StatusKind, SharedString)>,
     conflict: Option<ImportCheckResult>,
@@ -221,9 +221,9 @@ impl ImportWindowView {
             import_context,
             file_paths,
             batch_previews: Vec::new(),
+            preview_index: None,
             selected_folder: target.version_folder.clone(),
             target,
-            preview: None,
             status: None,
             conflict: None,
             conflict_count: 0,
@@ -282,7 +282,7 @@ impl ImportWindowView {
         }
 
         self.is_inspecting = true;
-        self.preview = None;
+        self.preview_index = None;
         self.batch_previews.clear();
         self.status = None;
 
@@ -361,7 +361,7 @@ impl ImportWindowView {
 
                 let total = results.len();
                 let mut failed = 0usize;
-                let mut first_preview = None;
+                let mut preview_index = None;
                 let mut entries = Vec::with_capacity(total);
 
                 for inspection in results {
@@ -373,8 +373,8 @@ impl ImportWindowView {
                                 "Import window inspect success: path={}, name={}, kind={}, valid={}",
                                 path_text, preview.name, preview.kind, preview.valid
                             );
-                            if first_preview.is_none() {
-                                first_preview = Some(preview.clone());
+                            if preview_index.is_none() {
+                                preview_index = Some(entries.len());
                             }
                             entries.push(ImportFilePreview {
                                 path,
@@ -397,7 +397,7 @@ impl ImportWindowView {
                     }
                 }
 
-                this.preview = first_preview;
+                this.preview_index = preview_index;
                 this.batch_previews = entries;
                 if failed > 0 {
                     let message = if total == 1 {
@@ -440,6 +440,10 @@ impl ImportWindowView {
         );
         self.inspect_file(cx);
         cx.notify();
+    }
+
+    fn preview(&self) -> Option<&PackagePreview> {
+        self.batch_previews.get(self.preview_index?)?.preview.as_ref()
     }
 
     fn has_invalid_or_failed_preview(&self) -> bool {
@@ -1428,7 +1432,7 @@ fn preview_icon_source(icon: Option<&PreviewIconData>) -> Option<EncodedImageByt
     let icon = icon?;
     Some(EncodedImageBytes::new(
         image_format_for_preview_icon(icon.format.clone()),
-        icon.bytes.clone(),
+        CompressedImageBytes::Owned(icon.bytes.clone()),
     ))
 }
 
@@ -1484,7 +1488,7 @@ fn render_preview_card(
         return render_batch_preview_cards(this, colors, cx);
     }
 
-    if let Some(preview) = &this.preview {
+    if let Some(preview) = this.preview() {
         if is_world_preview(preview) {
             let map_name_label = t!("Import.mapName");
             let map_type_label = t!("Import.mapType");
@@ -2912,7 +2916,7 @@ fn render_conflict_dialog(
     let _i18n = cx.global::<I18n>();
     let conflict_type = conflict.conflict_type.clone();
     let existing_preview = conflict.existing_pack_info.as_ref();
-    let incoming_preview = view.preview.as_ref();
+    let incoming_preview = view.preview();
     let is_shared_fallback = conflict_type.as_deref() == Some("shared_fallback");
     let mixed_batch_conflict =
         view.conflict_requires_overwrite && view.conflict_requires_shared_fallback;

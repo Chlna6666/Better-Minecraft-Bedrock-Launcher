@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
@@ -15,6 +16,8 @@ use zip::ZipArchive;
 
 use crate::core::minecraft::nbt::{NbtTag, parse_root_nbt_with_header};
 use crate::core::minecraft::paths::{GamePathOptions, resolve_target_parent};
+
+mod entries;
 
 // [修改] 预览信息结构体，现在包含完整的 manifest
 #[derive(Debug, Serialize, Clone)]
@@ -26,10 +29,15 @@ pub enum PreviewImageFormat {
     Bmp,
 }
 
+/// Encoded package icon retained by import previews and their UI image sources.
+/// Clones share the original payload; serialization preserves the byte-array representation.
 #[derive(Debug, Serialize, Clone)]
 pub struct PreviewIconData {
+    /// Container format used by the existing preview decoder.
     pub format: PreviewImageFormat,
-    pub bytes: Vec<u8>,
+    /// Immutable shared encoded bytes. The original vector allocation and spare
+    /// capacity remain alive until the last preview or image source releases it.
+    pub bytes: Arc<Vec<u8>>,
 }
 
 fn image_format_from_mime(mime: &str) -> PreviewImageFormat {
@@ -70,7 +78,7 @@ fn normalize_preview_icon(bytes: Vec<u8>) -> Result<(PreviewIconData, u32, u32)>
     Ok((
         PreviewIconData {
             format: PreviewImageFormat::Png,
-            bytes: encoded.into_inner(),
+            bytes: Arc::new(encoded.into_inner()),
         },
         width,
         height,
@@ -583,7 +591,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
                             }
                             let mut buf = Vec::new();
                             if file.read_to_end(&mut buf).is_ok() {
-                                manifest_content = decode_text_bytes(&buf);
+                                manifest_content = decode_text_bytes(buf);
                             }
                             break;
                         }
@@ -688,7 +696,7 @@ pub fn inspect_archive(path: &Path, preferred_lang: Option<&str>) -> Result<Pack
             };
             icon = Some(PreviewIconData {
                 format: image_format_from_mime(mime),
-                bytes: buf,
+                bytes: Arc::new(buf),
             });
         }
 
@@ -1145,6 +1153,9 @@ pub fn scan_archive<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Archi
 
     for i in 0..archive.len() {
         // 顺序读取每个文件条目（避免并行 mutable borrow）
+        if !entries::scan_candidate(archive, i) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             let name = file.name()?.to_string();
             if name.contains("__MACOSX") {
@@ -2096,7 +2107,7 @@ fn get_world_info_from_dir(dir: &Path) -> Result<PackagePreview> {
     if name.is_empty() {
         let level_name_path = dir.join("levelname.txt");
         if level_name_path.exists() {
-            if let Some(level_name) = decode_text_bytes(&fs::read(level_name_path)?) {
+            if let Some(level_name) = decode_text_bytes(fs::read(level_name_path)?) {
                 let trimmed = level_name.trim();
                 if !trimmed.is_empty() {
                     name = trimmed.to_string();
@@ -2622,7 +2633,7 @@ fn get_pack_info_from_dir(
             };
             icon = Some(PreviewIconData {
                 format: image_format_from_mime(mime),
-                bytes: buf,
+                bytes: Arc::new(buf),
             });
             break;
         }
@@ -2774,6 +2785,9 @@ fn read_zip_text_case_insensitive<R: Read + Seek>(
 ) -> Option<String> {
     let target = target_path.replace('\\', "/").to_ascii_lowercase();
     for i in 0..archive.len() {
+        if !entries::name_matches(archive, i, |name| entries::path_eq(name, &target)) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             let Ok(name) = file.name() else {
                 continue;
@@ -2782,7 +2796,7 @@ fn read_zip_text_case_insensitive<R: Read + Seek>(
             if name == target {
                 let mut buf = Vec::new();
                 if file.read_to_end(&mut buf).is_ok() {
-                    if let Some(s) = decode_text_bytes(&buf) {
+                    if let Some(s) = decode_text_bytes(buf) {
                         return Some(s);
                     }
                 }
@@ -2799,7 +2813,7 @@ fn read_zip_text_by_name<R: Read + Seek>(
     let mut file = archive.by_name(path).ok()?;
     let mut buf = Vec::new();
     if file.read_to_end(&mut buf).is_ok() {
-        return decode_text_bytes(&buf);
+        return decode_text_bytes(buf);
     }
     None
 }
@@ -2897,7 +2911,7 @@ fn read_lang_map_for_prefix<R: Read + Seek>(
     lang_map
 }
 
-fn decode_text_bytes(bytes: &[u8]) -> Option<String> {
+fn decode_text_bytes(bytes: Vec<u8>) -> Option<String> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Some(String::from_utf8_lossy(&bytes[3..]).to_string());
     }
@@ -2917,9 +2931,10 @@ fn decode_text_bytes(bytes: &[u8]) -> Option<String> {
             .collect();
         return String::from_utf16(&utf16).ok();
     }
-    if let Ok(s) = String::from_utf8(bytes.to_vec()) {
-        return Some(s);
-    }
+    let bytes = match String::from_utf8(bytes) {
+        Ok(text) => return Some(text),
+        Err(error) => error.into_bytes(),
+    };
     if bytes.len() % 2 == 0 {
         let utf16: Vec<u16> = bytes
             .chunks(2)
@@ -2935,6 +2950,9 @@ fn decode_text_bytes(bytes: &[u8]) -> Option<String> {
 fn list_nested_archives<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Vec<String> {
     let mut paths = Vec::new();
     for i in 0..archive.len() {
+        if !entries::scan_candidate(archive, i) {
+            continue;
+        }
         if let Ok(file) = archive.by_index(i) {
             if file.is_dir() {
                 continue;
@@ -3053,6 +3071,9 @@ fn read_zip_bytes_case_insensitive<R: Read + Seek>(
 ) -> Option<Vec<u8>> {
     let target = target_path.replace('\\', "/").to_ascii_lowercase();
     for i in 0..archive.len() {
+        if !entries::name_matches(archive, i, |name| entries::path_eq(name, &target)) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             let Ok(name) = file.name() else {
                 continue;
@@ -3084,6 +3105,13 @@ fn find_world_icon_under_root<R: Read + Seek>(
     }
 
     for i in 0..archive.len() {
+        if !entries::name_matches(archive, i, |name| {
+            let name = name.replace('\\', "/").to_ascii_lowercase();
+            (root.is_empty() || name.starts_with(&root))
+                && exts.iter().any(|ext| name.ends_with(ext))
+        }) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             if file.is_dir() {
                 continue;
@@ -3122,6 +3150,12 @@ fn find_world_icon_near_manifest<R: Read + Seek>(
     // Fallback: search anywhere in archive
     let exts = ["world_icon.jpeg", "world_icon.jpg", "world_icon.png"];
     for i in 0..archive.len() {
+        if !entries::name_matches(archive, i, |name| {
+            let name = name.replace('\\', "/").to_ascii_lowercase();
+            exts.iter().any(|ext| name.ends_with(ext))
+        }) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             if file.is_dir() {
                 continue;
@@ -3165,6 +3199,12 @@ fn find_any_lang_in_texts<R: Read + Seek>(
     }
 
     for i in 0..archive.len() {
+        if !entries::name_matches(archive, i, |name| {
+            let name = name.replace('\\', "/").to_ascii_lowercase();
+            name.starts_with(&base) && name.ends_with(".lang")
+        }) {
+            continue;
+        }
         if let Ok(mut file) = archive.by_index(i) {
             let Ok(name) = file.name() else {
                 continue;
@@ -3173,7 +3213,7 @@ fn find_any_lang_in_texts<R: Read + Seek>(
             if name.starts_with(&base) && name.ends_with(".lang") {
                 let mut buf = Vec::new();
                 if file.read_to_end(&mut buf).is_ok() {
-                    if let Some(s) = decode_text_bytes(&buf) {
+                    if let Some(s) = decode_text_bytes(buf) {
                         return Some(s);
                     }
                 }
@@ -3248,7 +3288,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
             };
             icon = Some(PreviewIconData {
                 format: image_format_from_mime(mime),
-                bytes: buf,
+                bytes: Arc::new(buf),
             });
         }
     }
@@ -3267,7 +3307,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
                 };
                 icon = Some(PreviewIconData {
                     format: image_format_from_mime(mime),
-                    bytes: buf,
+                    bytes: Arc::new(buf),
                 });
                 break;
             }
@@ -3283,7 +3323,7 @@ fn get_pack_info_from_zip<R: Read + Seek>(
             };
             icon = Some(PreviewIconData {
                 format: image_format_from_mime(mime),
-                bytes: buf,
+                bytes: Arc::new(buf),
             });
             break;
         }

@@ -282,6 +282,13 @@ pub fn get_package_info(
     }
 }
 
+const COMMON_GAME_EXECUTABLES: [&str; 4] = [
+    "Minecraft.Windows.exe",
+    "Minecraft.Win10.DX11.exe",
+    "Minecraft.Education.exe",
+    "Minecraft.exe",
+];
+
 fn collect_game_executable_candidates_in_dir(
     package_dir: &Path,
     identity_name: Option<&str>,
@@ -295,14 +302,7 @@ fn collect_game_executable_candidates_in_dir(
         }
     };
 
-    let common_names = [
-        "Minecraft.Windows.exe",
-        "Minecraft.Win10.DX11.exe",
-        "Minecraft.Education.exe",
-        "Minecraft.exe",
-    ];
-
-    for name in common_names {
+    for name in COMMON_GAME_EXECUTABLES {
         let path = package_dir.join(name);
         if path.exists() {
             push_candidate(path);
@@ -339,15 +339,33 @@ fn collect_game_executable_candidates_in_dir(
 }
 
 pub fn find_game_executable_in_dir(package_dir: &Path, identity_name: &str) -> Option<PathBuf> {
-    collect_game_executable_candidates_in_dir(package_dir, Some(identity_name))
-        .into_iter()
-        .next()
+    for name in COMMON_GAME_EXECUTABLES {
+        let path = package_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    if !identity_name.is_empty() {
+        let path = package_dir.join(format!("{identity_name}.exe"));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    fs::read_dir(package_dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let is_executable = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+        if !is_executable {
+            return None;
+        }
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        (!file_name.contains("CrashSender") && !file_name.contains("Report")).then_some(path)
+    })
 }
 
 pub fn find_any_game_executable_in_dir(package_dir: &Path) -> Option<PathBuf> {
-    collect_game_executable_candidates_in_dir(package_dir, None)
-        .into_iter()
-        .next()
+    find_game_executable_in_dir(package_dir, "")
 }
 
 pub fn get_executable_product_version(exe_path: &Path) -> Result<Option<String>, String> {

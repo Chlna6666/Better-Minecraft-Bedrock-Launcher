@@ -22,6 +22,12 @@ path = "benches/plugin_runtime.rs"
 harness = false
 required-features = ["bench-support"]
 
+[[bench]]
+name = "resource_parsing"
+path = "benches/resource_parsing.rs"
+harness = false
+required-features = ["bench-support"]
+
 [lints.rust]
 unsafe_code = "warn"
 
