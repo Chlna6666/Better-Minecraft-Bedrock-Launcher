@@ -80,8 +80,13 @@ impl MapViewerWindowView {
                         this.task_snapshots
                             .retain(|_, snapshot| is_map_window_task_snapshot(snapshot.as_ref()));
                         for snapshot in snapshots {
+                            let finished_map_preview = this.map_image.task_id.as_deref()
+                                == Some(snapshot.id.as_ref())
+                                && snapshot.is_terminal();
                             this.accept_map_image_task_snapshot(snapshot.as_ref());
-                            if this.map_image.options.auto_fit {
+                            // Do not rewrite the input while the user is typing or while
+                            // unrelated tasks are publishing frequent progress changes.
+                            if finished_map_preview && this.map_image.options.auto_fit {
                                 this.sync_map_grid_numeric_fields(cx);
                             }
                             this.accept_map_install_task_snapshot(snapshot.as_ref(), cx);
