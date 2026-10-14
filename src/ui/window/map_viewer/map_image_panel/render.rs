@@ -54,15 +54,14 @@ impl MapViewerWindowView {
                         div().text_size(px(12.0)).text_color(colors.text_secondary)
                             .child("导出或写入期间保留当前参数和目标；可取消当前任务。"),
                     ))
-                    .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
-                    .child(self.render_grid_axis(GridAxis::Rows, colors, cx))
+                    .child(generator_section_title(colors, "地图网格与画面利用率"))
                     .child(
                         generator_choice(
                             colors,
-                            "按原图尺寸自动匹配分片",
+                            "智能行列 · 按图片比例减少留白",
                             self.map_image.options.auto_fit,
                         )
-                        .when(self.map_image.source.is_some(), |button| {
+                        .when(self.map_image.source.is_some() && !operation_busy, |button| {
                             button.on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _event, _window, cx| {
@@ -71,6 +70,14 @@ impl MapViewerWindowView {
                             )
                         }),
                     )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child("智能模式先去除透明外边距，再匹配横纵比例；必要时增加少量地图张数。手动修改列/行即切换固定网格。"),
+                    )
+                    .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
+                    .child(self.render_grid_axis(GridAxis::Rows, colors, cx))
                     .child(generator_section_title(colors, "目标设置"))
                     .child(
                         div()
