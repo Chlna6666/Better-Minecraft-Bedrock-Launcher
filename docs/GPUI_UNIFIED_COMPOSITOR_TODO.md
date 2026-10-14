@@ -371,6 +371,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **验证**：新增通用静态 sprite bounds 的非单位变换拒绝用例；现有动画 rejection、Quad Packed Batch 测试继续覆盖。静态检查全部 `static_raster_run_visual_bounds` 调用点并核对调用参数数量，未运行 `cargo fmt/check/test`、未在 Windows DX11/DX12/Vulkan/OpenGL 测试、未量化高频 Dropdown 的 CPU/GPU 效果。下一步应测试文本密集页面的 Encode p95，并检查预期的保守裁剪与实际 Render Graph Scissor 是否一致。
 - **未完成**：彻底取消 Scene Replay、SceneSlot、FrameUpload 全量 staging、持久 Paint Chunk 类型统一和 Presentation Lane，不能因为局部减少一次字形遍历便宣布阶段结束。
 
+## 2026-10-15：Quad 可见边界与 Packed Chunk 编码合并（移除生产二次扫描）
+
+- 起点 master `bb2f705aa6d9d6519f32f2b2ea97d246ab9b3a9c`。纵向改动 `crates/gpui/src/platform/nova/frame_upload/encode.rs`、`frame_upload/encode/retained.rs`、`frame_upload/frame.rs`、`platform/nova/tests.rs` 及本文件；没有添加 Scene、RenderTree、RenderCommit、额外 FrameUpload 或第二个 Quad Payload Owner。
+- **生产实现（未编译）**：原 `encode_scene` 即使 Retained Chunk packed bytes 直接从 GPU Owner 的 `Arc<Vec<u8>>` 复用，也调用 `static_packed_quad_batch_bounds` 重新遍历此帧全部源 Quads，导致复用场景仍付出大段 CPU bounds 扫描。现在 `encode_quad_range` 在写入可见 Quad 的同一循环累计当前 Batch 的保守可见边界；静态/动画分组切换时一并提交对应 `batch_visual_bounds`。GPU Owner 的**同一条** `PackedRetainedQuadChunk` 缓存记录增加 `visual_bounds`，在首次/脏内容打包时顺路计算，与 packed bytes、QuadCount、hash 同步失效；重放命中直接提交此前已证明的边界，不扫描旧 Quad 数据。动画、非有限几何返回 None 禁止错误裁剪；零面积 clip 继续被忽略，Count/ABI 未变。
+- **嵌套所有权/批次顺序**：`encode_scene` 不再调用原生产二次扫描（旧算法仅供 `#[cfg(test)]` 测试对照）。在递归 Element Blur 的 `BeginBlur` 与子 Quad 编码之间先将 `batch_visual_bounds` 补齐到当前全局 `batches.len()`；同时覆盖同一 Prepared Batch 连续多个 sibling Blur 的 End/Composite 占位，避免边界与后续 GPU DrawStep 批次错位。其他 Sprite、Underline、Backdrop 和 RenderExtension 继续保留保守判断及原有 Fence/Target 协议。
+- **测试源码（未运行）**：保留两个 32-Quad Chunk 与中间 gap 的独立边界用例；新增 12+1 动画+12 Quad 的分组边界测试；Nova 测试核对 cached/replayed Quad 的边界相同、单个与两个 sibling Element Blur 的 Begin/Quad/End/Composite 全局 metadata 下标对齐。新增字段由测试手动构造的 `PackedRetainedQuadChunk` 同步初始化。
+- **验证限制**：当前环境无 Cargo/rustc/rustfmt 或 Windows GPU。仅已审计调用点和代码依赖；未运行 `cargo fmt/check/test`、DX11/DX12/Vulkan/GL native draw/resize，也未证明 Prepaint p95/CPU/GPU/VRAM 下降。须先本地编译并优先跑 `retained_quad`、`batch_visual_bounds`、`element_blur` 对照后再进一步破坏性改动。仅多出每条 CPU Chunk 缓存记录一个保守 Bounds 元数据，不修改 GPU Shader ABI。
+- **剩余**：SceneSlot、Scene Replay、统一全类型 Paint Chunk、全部 FrameUpload Staging、独立 GPU Compositor Lane 未完成。下一步让 DirtyRegion/DrawStep 使用统一的 Chunk 变更代次并进一步减少不必要的 per-frame DrawStep/Upload 重建，不得引入平行 Scene/RenderTree 中转。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

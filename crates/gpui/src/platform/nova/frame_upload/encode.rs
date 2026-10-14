@@ -55,6 +55,44 @@ fn static_quad_run_visual_bounds(
     )
 }
 
+/// A Quad's conservative visible bounds, computed as the primitive is packed.
+/// Never cull GPU-motion or non-finite geometry based on its static AABB.
+#[inline]
+fn static_quad_visual_bounds(quad: &crate::Quad) -> Option<crate::Bounds<crate::ScaledPixels>> {
+    if quad.animation_id.is_some() {
+        return None;
+    }
+    let visual = quad
+        .bounds
+        .intersect(&quad.content_mask.bounds)
+        .dilate(crate::ScaledPixels(2.0));
+    let values = [
+        visual.origin.x.0,
+        visual.origin.y.0,
+        visual.size.width.0,
+        visual.size.height.0,
+    ];
+    values.into_iter().all(f32::is_finite).then_some(visual)
+}
+
+/// Extends one batch's bounds while packing. False forces the entire batch
+/// uncullable; callers must not recover from a previous animated/invalid Quad.
+#[inline]
+fn merge_static_quad_bounds(
+    bounds: &mut Option<crate::Bounds<crate::ScaledPixels>>,
+    quad: &crate::Quad,
+) -> bool {
+    let Some(visual) = static_quad_visual_bounds(quad) else {
+        return false;
+    };
+    *bounds = Some(match bounds.take() {
+        Some(previous) => previous.union(&visual),
+        None => visual,
+    });
+    true
+}
+
+#[cfg(test)]
 /// Preserve independent static visibility bounds after packing. A single
 /// animated Quad in a large prepared Scene run must not turn *all* the
 /// independent static GPU batches into unbounded commands. Each encoded
@@ -484,13 +522,8 @@ impl FrameUpload {
 
         for batch in scene.prepared_batches() {
             let first_batch = self.batches.len();
-            let source_quad_range = match batch {
-                PreparedSceneBatch::Quads(run) => Some(run.range.clone()),
-                _ => None,
-            };
-            // Quad bounds are derived once from the actually packed batches
-            // below, not from the original run followed by another scan when
-            // a single animated primitive makes the whole run unbounded.
+            // Quad batches publish bounds during packing, including shared
+            // resident chunks; no second traversal of the Scene is required.
             let static_quad_bounds = match batch {
                 PreparedSceneBatch::Quads(_) => None,
                 PreparedSceneBatch::MonochromeSprites { range, .. } => {
@@ -593,6 +626,10 @@ impl FrameUpload {
                         write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
+                        // Recursive Quad encoding appends bounds in global batch order.
+                        // Fill all preceding structural slots (including End/Composite
+                        // from a sibling blur) before entering the next child.
+                        self.batch_visual_bounds.resize(self.batches.len(), None);
                         let child_summary = self.encode_scene(
                             cache,
                             &blur.content,
@@ -621,26 +658,21 @@ impl FrameUpload {
                     });
                 }
             }
-            // Preserve metadata generated recursively by nested blur capture.
-            // Only static quad batches receive known bounds; all other
-            // batches conservatively continue through normal rendering.
+            // Preserve bounds emitted by the Quad writer, including child
+            // blur batches. Other primitive kinds only populate conservative
+            // bounds when their encoding rules prove those bounds safe.
             let last_batch = self.batches.len();
             self.batch_visual_bounds.resize(last_batch, None);
-            if let Some(source_range) = source_quad_range {
-                // The packed stream, not the unencoded Scene run, determines
-                // exactly which Quad instances reached the GPU (including
-                // retained Arc chunks and clipped gaps). Calculate every
-                // emitted batch's bounds once, independently of its siblings.
-                static_packed_quad_batch_bounds(
-                    &scene.quads[source_range],
-                    &self.batches[first_batch..last_batch],
-                    &mut self.batch_visual_bounds[first_batch..last_batch],
-                );
-            } else if let Some(bounds) = static_quad_bounds {
+            if let Some(bounds) = static_quad_bounds {
                 for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
                     *slot = Some(bounds);
                 }
             }
+            debug_assert_eq!(
+                self.batch_visual_bounds.len(),
+                self.batches.len(),
+                "encoded batch bounds must match the global DrawStep batch order",
+            );
         }
         if reset {
             cache.prune_retained_quads();
@@ -1143,6 +1175,43 @@ mod retained_root_tests {
         let right = quad_bounds[2].expect("right packed chunk is static");
         assert!(left.right() < center.origin.x);
         assert!(center.right() < right.origin.x);
+    }
+
+    #[test]
+    fn encoded_animation_between_static_quads_keeps_independent_bounds() {
+        let mut scene = crate::Scene::default();
+        for i in 0..25 {
+            let bounds = crate::bounds(
+                crate::point(crate::ScaledPixels(i as f32 * 16.0), crate::ScaledPixels(8.0)),
+                crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
+            );
+            scene.insert_primitive(crate::Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                animation_id: (i == 12).then_some(crate::SceneAnimationId(4)),
+                ..Default::default()
+            });
+        }
+        scene.finish();
+        let mut upload = FrameUpload::default();
+        let mut cache = RetainedQuadChunkCache::default();
+        upload.encode(
+            &mut cache,
+            &scene,
+            &[],
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
+        );
+        assert_eq!(upload.batches.len(), 3);
+        assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
+        assert!(upload.batch_visual_bounds[0].is_some());
+        assert!(upload.batch_visual_bounds[1].is_none());
+        assert!(upload.batch_visual_bounds[2].is_some());
     }
 
     #[test]

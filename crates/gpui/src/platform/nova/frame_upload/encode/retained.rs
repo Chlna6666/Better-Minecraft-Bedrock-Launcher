@@ -95,7 +95,7 @@ impl FrameUpload {
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
     ) {
-        let (bytes, count) = self.encode_chunk_bytes(cache, scene, chunk);
+        let (bytes, count, visual_bounds) = self.encode_chunk_bytes(cache, scene, chunk);
         if count == 0 {
             return;
         }
@@ -109,6 +109,7 @@ impl FrameUpload {
             (start / PACKED_QUAD_BYTES) as u32,
             count,
             chunk.is_solid,
+            visual_bounds,
             summary,
         );
         if count == chunk.quad_range.len() as u32 {
@@ -124,6 +125,7 @@ impl FrameUpload {
                     byte_hash,
                     quad_count: count,
                     is_solid: chunk.is_solid,
+                    visual_bounds,
                     last_used_epoch: cache.frame_epoch,
                 },
             );
@@ -135,7 +137,7 @@ impl FrameUpload {
         cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
-    ) -> (Vec<u8>, u32) {
+    ) -> (Vec<u8>, u32, Option<crate::Bounds<crate::ScaledPixels>>) {
         // Reset cleared the previous frame's segment references. Reuse a uniquely-owned backing
         // for dirty content, but never copy an Arc still held by another occurrence.
         let mut bytes = cache
@@ -152,6 +154,8 @@ impl FrameUpload {
         }
         bytes.reserve(byte_target);
         let mut count = 0_u32;
+        let mut visual_bounds = None;
+        let mut cullable = true;
         for quad in &scene.quads[chunk.quad_range.clone()] {
             if count as usize == available {
                 break;
@@ -161,11 +165,15 @@ impl FrameUpload {
                     quad.animation_id.is_none(),
                     "retained chunks must be static"
                 );
+                if cullable && !merge_static_quad_bounds(&mut visual_bounds, quad) {
+                    cullable = false;
+                    visual_bounds = None;
+                }
                 write_quad(&mut bytes, quad);
                 count += 1;
             }
         }
-        (bytes, count)
+        (bytes, count, visual_bounds)
     }
 
     fn reuse_retained_quad_chunk(
@@ -213,6 +221,9 @@ impl FrameUpload {
                 count: cached.quad_count,
             }
         });
+        // The content version and conservative cull proof share the one GPU
+        // owner cache record; replay never rescans the original Quad slice.
+        self.batch_visual_bounds.push(cached.visual_bounds);
         summary.quad_count = summary.quad_count.saturating_add(cached.quad_count);
         summary.retained_chunk_hits = summary.retained_chunk_hits.saturating_add(1);
         summary.retained_chunk_reused_bytes = summary
@@ -232,6 +243,8 @@ impl FrameUpload {
         let mut batch_count = 0_u32;
         let mut total_count = 0_u32;
         let mut batch_animated = None;
+        let mut batch_visual_bounds = None;
+        let mut batch_cullable = true;
         for quad in quads {
             if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
                 break;
@@ -242,11 +255,23 @@ impl FrameUpload {
             let animated = quad.animation_id.is_some();
             let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
             if split_static_runs && batch_animated.is_some_and(|old| old != animated) {
-                self.append_quad_batch(batch_first, batch_count, is_solid, summary);
+                self.append_quad_batch(
+                    batch_first,
+                    batch_count,
+                    is_solid,
+                    batch_visual_bounds,
+                    summary,
+                );
                 batch_first = primitive_index;
                 batch_count = 0;
+                batch_visual_bounds = None;
+                batch_cullable = true;
             }
             batch_animated = Some(animated);
+            if batch_cullable && !merge_static_quad_bounds(&mut batch_visual_bounds, quad) {
+                batch_cullable = false;
+                batch_visual_bounds = None;
+            }
             self.quads.write(|bytes| write_quad(bytes, quad));
             register_scene_animated_primitive(
                 self,
@@ -259,7 +284,13 @@ impl FrameUpload {
             total_count = total_count.saturating_add(1);
         }
         if batch_count != 0 {
-            self.append_quad_batch(batch_first, batch_count, is_solid, summary);
+            self.append_quad_batch(
+                batch_first,
+                batch_count,
+                is_solid,
+                batch_visual_bounds,
+                summary,
+            );
         }
         total_count
     }
@@ -269,6 +300,7 @@ impl FrameUpload {
         first: u32,
         count: u32,
         is_solid: bool,
+        visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
         summary: &mut FrameUploadSummary,
     ) {
         self.batches.push(if is_solid {
@@ -276,6 +308,7 @@ impl FrameUpload {
         } else {
             UploadedBatch::Quads { first, count }
         });
+        self.batch_visual_bounds.push(visual_bounds);
         summary.quad_count = summary.quad_count.saturating_add(count);
     }
 

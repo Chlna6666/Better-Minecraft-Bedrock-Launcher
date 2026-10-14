@@ -928,6 +928,12 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     assert_eq!(chunk_cache.retained_quad_chunks.len(), 1);
     assert_eq!(first_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
+    assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
+    assert!(upload.batch_visual_bounds[0].is_some());
+    assert_eq!(
+        cache.retained_quad_chunks.values().next().unwrap().visual_bounds,
+        upload.batch_visual_bounds[0]
+    );
     assert_eq!(
         upload.quads.owned_len(),
         0,
@@ -1002,6 +1008,12 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(replay_summary.retained_chunk_hits, 1);
+    assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
+    assert!(upload.batch_visual_bounds[0].is_some());
+    assert_eq!(
+        upload.batch_visual_bounds[0],
+        chunk_cache.retained_quad_chunks.values().next().unwrap().visual_bounds,
+    );
     assert_eq!(
         upload.quads.owned_len(),
         PACKED_QUAD_BYTES,
@@ -1171,6 +1183,7 @@ fn retained_quad_cache_removes_unused_epochs_without_invalidating_in_flight_arc(
             byte_hash: 17,
             quad_count: 1,
             is_solid: false,
+            visual_bounds: None,
             last_used_epoch: cache.frame_epoch,
         },
     );
@@ -1224,6 +1237,11 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     );
     assert_eq!(initial.retained_chunk_hits, 0);
     assert_eq!(cache.retained_quad_chunks.len(), 1);
+    assert_eq!(upload.batches.len(), upload.batch_visual_bounds.len());
+    assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { .. }));
+    assert!(upload.batch_visual_bounds[0].is_none());
+    assert!(upload.batch_visual_bounds[1].is_some());
+    assert!(upload.batch_visual_bounds[2..].iter().all(Option::is_none));
     let reused = upload.encode(
         &mut cache,
         &second,
@@ -1235,6 +1253,58 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     );
     assert_eq!(reused.retained_chunk_hits, 1);
     assert_eq!(cache.retained_quad_chunks.len(), 1);
+    assert_eq!(upload.batches.len(), upload.batch_visual_bounds.len());
+    assert!(upload.batch_visual_bounds[0].is_none());
+    assert_eq!(
+        upload.batch_visual_bounds[1],
+        cache.retained_quad_chunks.values().next().unwrap().visual_bounds
+    );
+    assert!(upload.batch_visual_bounds[2..].iter().all(Option::is_none));
+}
+
+#[test]
+fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
+    let bounds = bounds(point(px(0.0), px(0.0)), size(px(640.0), px(480.0))).scale(1.0);
+    let mut root = crate::Scene::default();
+    for generation in 1..=2 {
+        root.insert_primitive(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: Arc::new(retained_quad_scene(generation)),
+        });
+    }
+    root.finish();
+    let mut cache = RetainedQuadChunkCache::default();
+    let mut upload = FrameUpload::default();
+    upload.encode(
+        &mut cache,
+        &root,
+        &[],
+        DrawableSize {
+            width: 640,
+            height: 480,
+        },
+        &RenderingParameters::system(),
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(upload.batches.len(), 8);
+    assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
+    for index in [0, 4] {
+        assert!(matches!(upload.batches[index], UploadedBatch::BeginBlur { .. }));
+        assert!(matches!(upload.batches[index + 1], UploadedBatch::Quads { .. } | UploadedBatch::SolidQuads { .. }));
+        assert!(matches!(upload.batches[index + 2], UploadedBatch::EndBlur { .. }));
+        assert!(matches!(upload.batches[index + 3], UploadedBatch::CompositeBlur { .. }));
+        assert!(upload.batch_visual_bounds[index].is_none());
+        assert!(upload.batch_visual_bounds[index + 1].is_some());
+        assert!(upload.batch_visual_bounds[index + 2].is_none());
+        assert!(upload.batch_visual_bounds[index + 3].is_none());
+    }
 }
 
 #[test]

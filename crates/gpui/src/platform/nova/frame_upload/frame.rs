@@ -23,6 +23,9 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) byte_hash: u64,
     pub(in crate::platform::nova) quad_count: u32,
     pub(in crate::platform::nova) is_solid: bool,
+    /// Conservative bounds recorded alongside the same packed bytes. None means
+    /// animated, invalid or otherwise uncullable; never derive it on replay.
+    pub(in crate::platform::nova) visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
     /// Last successful CPU encode epoch which emitted this resident payload.
     pub(in crate::platform::nova) last_used_epoch: u64,
 }
