@@ -442,33 +442,20 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                     });
                 }
                 window.request_frame(PlatformFrameRequest::ui_commit());
-                window.dispatch_native_resize_frame();
             }
             dispatch_size_move_frame(hwnd);
             return result;
         }
         SizeMoveLoopAction::SyncExtent => {
-            // WM_SIZE already describes committed client geometry. Generate its
-            // matching scene before winit delivers queued window events; those
-            // callbacks can consume the resize or enter another native message.
-            // WM_WINDOWPOSCHANGED still delegates first so DefWindowProc sends
-            // WM_SIZE with the final non-client calculation.
-            if message == WM_SIZE
-                && let Some(window) = native_window(hwnd)
-            {
-                window.sync_current_native_size();
-                window.dispatch_native_resize_frame();
-            }
+            // Let Win32 finish its native client-geometry update first. DefWindowProc
+            // also dispatches WM_SIZE from WM_WINDOWPOSCHANGED when appropriate.
+            // Neither native message may execute GPUI layout/prepaint synchronously:
+            // sync_size -> queue_resize records the latest extent/epoch and wakes
+            // the existing modal VSync or fallback redraw consumer.
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
-                // sync_size only schedules a UI commit when the actual viewport
-                // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
-                // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
-                // Handle a changed extent left by a nested callback, without
-                // producing another frame for the same native generation.
-                window.dispatch_native_resize_frame();
             }
             return result;
         }
@@ -2057,47 +2044,6 @@ impl WindowsWindow {
         self.sync_size(self.window().inner_size(), self.window().scale_factor() as f32);
     }
 
-    /// Try to produce the matching scene while Win32 is still handling the
-    /// interactive client resize. Unlike the regular watchdog path this is not
-    /// delayed until the next DWM VSync; the shared resize cadence and reentry
-    /// guard prevent excess frames and recursively borrowed GPUI state.
-    ///
-    /// Only a *new* client extent is eligible: WM_WINDOWPOSCHANGED and WM_SIZE
-    /// can describe the same update, and ordinary native moves do not relayout.
-    fn dispatch_native_resize_frame(&self) {
-        if self.0.frame_dispatch_in_progress.get() {
-            return;
-        }
-        if self.0.pending_resize.get().is_none() && self.0.pending_renderer_size.get().is_none() {
-            return;
-        }
-        let started_at = Instant::now();
-        let pending_extent = self
-            .0
-            .pending_resize
-            .get()
-            .map(|resize| resize.drawable_size);
-        // Queueing the matching scene is the whole obligation of the native
-        // size path. Presenting it is asynchronous: the GPU owner pairs the
-        // newest Resize with the newest matching Scene, and DWM keeps showing
-        // the previous generation until that pair lands. Blocking this Win32
-        // message on the GPU serial (previously up to 100ms) or on DwmFlush
-        // turned every WM_SIZE into a 25-35ms stall, so a continuous drag could
-        // never produce scenes as fast as the client area grew.
-        self.request_frame(PlatformFrameRequest::ui_commit());
-        self.dispatch_pending_update_with_vsync(None);
-        let dispatch_elapsed = started_at.elapsed();
-        if dispatch_elapsed >= Duration::from_millis(16) {
-            log::debug!(
-                target: "gpui_gpu_resize",
-                "native_resize_commit window_id={} extent={:?} ui_dispatch_us={}",
-                self.0.handle.window_id().data().as_ffi(),
-                pending_extent,
-                dispatch_elapsed.as_micros(),
-            );
-        }
-    }
-
     pub(crate) fn dispatch_pending_update(&self) {
         // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer
         // can all reach this method. If each consumes the pending frame, they
@@ -2273,7 +2219,21 @@ impl WindowsWindow {
             return;
         };
         self.0.pending_renderer_size.set(Some(resize));
+        // The resize callback can invalidate layout/prepaint. Measure it on
+        // the scheduled frame consumer, never on the native WM_SIZE stack.
+        let callback_started_at = Instant::now();
         self.invoke_resize(resize.logical_size, resize.scale_factor);
+        let callback_elapsed = callback_started_at.elapsed();
+        if callback_elapsed >= Duration::from_millis(16) {
+            log::debug!(
+                target: "gpui_gpu_resize",
+                "resize_callback window_id={} epoch={} logical={:?} callback_us={}",
+                self.0.handle.window_id().data().as_ffi(),
+                resize.epoch,
+                resize.logical_size,
+                callback_elapsed.as_micros(),
+            );
+        }
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
