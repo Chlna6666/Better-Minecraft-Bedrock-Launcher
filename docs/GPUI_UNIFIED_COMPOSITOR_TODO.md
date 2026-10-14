@@ -294,6 +294,12 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **尚未验证**：无本地 Rust/Cargo 及四后端 GPU，本改动未执行 rustfmt/check/test、Windows Render Graph/Fence 回归；不能宣称显存或 GPU 占用已下降。缓存复用仅代表 CPU 侧元数据/Arc 生命周期，不代表实际 GPU Target 已退休；目标资源仍由原有 Fence/TargetPool 路径管理。
 - **下一步**：验证 FilterSource 迁移后的原生四后端编译与动态页面过滤器数量回落，再推进 CachedView 持久 Paint Chunk 唯一所有权、SceneSlot/Replay/pack_scene 的有依赖删除；仍须验证 Dropdown、Blur、DX11 Resize、DX12 子窗口、Vulkan/OpenGL。
 
+## 2026-10-15：Element Filter 动画快照同代共享
+
+- 接续 master `c6398104e513932b91cec36590d919fd9e9e34b3`。在 `crates/gpui/src/platform/nova/renderer/filters.rs` 中将各 Element Filter 离屏刷新时的动画快照，从逐滤镜独立 `Vec<SceneAnimationValue>` 复制改为同一次成功 Present 的共享不可变 `Arc<[SceneAnimationValue]>`；无动画与 AutoStatic 不分配此快照。不同刷新代次独立持有，未重绘的 Element 继续保存原始采样值，不受其他目标的刷新影响。
+- 正确性：只优化 CPU 样本所有权和复制次数，保持 TextureContentVersion、Source Damage、GPU Shader 采样协议、Filter Target/Fence 和真实动画轨迹语义。新增同代 `Arc::ptr_eq`、跳过目标后的旧采样保留、清除失效版本等源码单测。
+- **未通过验证**：容器仍无 Rust/Cargo 与四后端原生 GPU；没有执行 cargo fmt/check/test 或实机测试。性能效果只可称潜在减少分配，不声称现有瓶颈已经实测解决。下一步需要继续将 FrameUpload 与 retained Paint Chunk 归为单一所有权，按既定删除清单清理 SceneSlot/Replay。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

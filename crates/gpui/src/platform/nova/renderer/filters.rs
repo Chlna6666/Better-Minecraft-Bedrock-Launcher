@@ -13,7 +13,10 @@ pub(super) struct RetainedFilterSource {
     index: u32,
     source: FilterSource,
     /// Last successful OFFSCREEN refresh for this particular filter.
-    animation_values: Vec<crate::SceneAnimationValue>,
+    // All filters refreshed in the same Present share one immutable sample
+    // snapshot; untouched filters retain the samples from their earlier refresh.
+    // None represents an empty sample list without allocating an Arc.
+    animation_values: Option<std::sync::Arc<[crate::SceneAnimationValue]>>,
     /// Content version is independent of compositor transform/opacity samples.
     content_version: TextureContentVersion,
 }
@@ -110,6 +113,7 @@ impl FilterRegistry {
                     && content_bytes == old_bytes
             }
             (FilterSource::Element(current), FilterSource::Element(old)) => {
+                let previous_values = previous.animation_values.as_deref().unwrap_or(&[]);
                 if current.layer_id != old.layer_id
                     || current.bounds != old.bounds
                     || current.content_mask != old.content_mask
@@ -121,7 +125,7 @@ impl FilterRegistry {
                 if current.content.retained_filter_source_matches(
                     &old.content,
                     animation_values,
-                    &previous.animation_values,
+                    previous_values,
                 ) {
                     return true;
                 }
@@ -130,7 +134,7 @@ impl FilterRegistry {
                 // subtree does not invalidate its resident texture.
                 if !std::sync::Arc::ptr_eq(&current.content, &old.content)
                     || !crate::Scene::capture_preserves_source_coordinates(
-                        current.radius, current.animation_id, previous.animation_values.iter(),
+                        current.radius, current.animation_id, previous_values.iter(),
                     )
                     || !crate::Scene::capture_preserves_source_coordinates(
                         current.radius, current.animation_id, animation_values.iter(),
@@ -141,7 +145,7 @@ impl FilterRegistry {
                 let visible_source = current.bounds.intersect(&current.content_mask.bounds);
                 current
                     .content
-                    .gpu_sample_damage(&previous.animation_values, animation_values)
+                    .gpu_sample_damage(previous_values, animation_values)
                     .into_iter()
                     .all(|damage| !damage.intersects(&visible_source))
             }
@@ -210,6 +214,10 @@ impl FilterRegistry {
                 .binary_search_by_key(&previous.index, |(index, _)| *index)
                 .is_ok()
         });
+        // One allocation per nonempty refresh generation, not per filter:
+        // independent targets refreshed on later frames still keep their own
+        // earlier immutable sample snapshots.
+        let mut shared_samples: Option<std::sync::Arc<[crate::SceneAnimationValue]>> = None;
         // Only texture passes actually executed may advance their source version.
         for index in refreshed_indices {
             let Ok(source_position) =
@@ -222,10 +230,14 @@ impl FilterRegistry {
             let snapshot = RetainedFilterSource {
                 index,
                 source: current.clone(),
-                animation_values: if matches!(current, FilterSource::AutoStatic { .. }) {
-                    Vec::new()
+                animation_values: if matches!(current, FilterSource::AutoStatic { .. })
+                    || animation_values.is_empty()
+                {
+                    None
                 } else {
-                    animation_values.to_vec()
+                    Some(std::sync::Arc::clone(shared_samples.get_or_insert_with(|| {
+                        std::sync::Arc::from(animation_values)
+                    })))
                 },
                 content_version: TextureContentVersion(self.next_content_version),
             };
@@ -317,6 +329,56 @@ mod tests {
         assert!(!registry.source_unchanged(0, &real, &[]));
         registry.invalidate();
         assert!(!registry.source_unchanged(0, &changed, &[]));
+    }
+
+    #[test]
+    fn simultaneous_filter_refreshes_share_samples_but_skipped_sources_keep_old_generation() {
+        let mut registry = FilterRegistry::new(None);
+        let source = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        let sources = [
+            (2, FilterSource::Element(source.clone())),
+            (4, FilterSource::Element(source)),
+        ];
+        let sample = |progress| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0.0; 4],
+            to: [1.0, 0.0, 0.0, 0.0],
+        };
+        registry.record_element_blur_inputs(&sources, &[sample(0.2)], [2, 4]);
+        let first = registry.element_blur_inputs[0]
+            .animation_values
+            .as_ref()
+            .expect("first sample snapshot")
+            .clone();
+        let second = registry.element_blur_inputs[1]
+            .animation_values
+            .as_ref()
+            .expect("second sample snapshot");
+        assert!(std::sync::Arc::ptr_eq(&first, second));
+        registry.record_element_blur_inputs(&sources, &[sample(0.8)], [4]);
+        assert!(std::sync::Arc::ptr_eq(
+            &first,
+            registry.element_blur_inputs[0].animation_values.as_ref().unwrap(),
+        ));
+        assert!(!std::sync::Arc::ptr_eq(
+            &first,
+            registry.element_blur_inputs[1].animation_values.as_ref().unwrap(),
+        ));
+        assert_eq!(registry.element_blur_inputs[0].animation_values.as_deref().unwrap()[0].progress, 0.2);
+        assert_eq!(registry.element_blur_inputs[1].animation_values.as_deref().unwrap()[0].progress, 0.8);
+        registry.invalidate();
+        assert!(registry.element_blur_inputs.is_empty());
     }
 
     #[test]
