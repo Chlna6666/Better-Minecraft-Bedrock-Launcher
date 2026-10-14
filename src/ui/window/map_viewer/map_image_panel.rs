@@ -32,6 +32,8 @@ pub(super) struct MapImagePanelState {
     install_destination: MapImageInstallDestination,
     selected_player: PlayerId,
     selected_block: Option<(ChunkPos, BlockPos)>,
+    /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
+    frame_anchor: Option<(i32, i32)>,
     pub(super) player_search: Entity<InputState>,
     player_scroll: UniformListScrollHandle,
     frame_support: &'static str,
@@ -64,6 +66,7 @@ impl MapImagePanelState {
             install_destination: MapImageInstallDestination::Player,
             selected_player: PlayerId::Local,
             selected_block: None,
+            frame_anchor: None,
             player_search,
             player_scroll: UniformListScrollHandle::new(),
             frame_support: "minecraft:stone",
@@ -103,10 +106,33 @@ impl MapViewerWindowView {
         if self.map_image_operation_busy() {
             return;
         }
+        if destination == MapImageInstallDestination::NewUpFrame
+            && self.map_image.frame_anchor.is_none()
+        {
+            self.map_image.frame_anchor = Some(self.viewport.center_block(self.active_layout));
+        }
         self.map_image.install_destination = destination;
         if destination != MapImageInstallDestination::Player {
             self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
         }
+        cx.notify();
+    }
+
+    /// The same anchor drives the on-map outline, UI label and actual NBT transaction.
+    fn map_frame_anchor(&self) -> (i32, i32) {
+        self.map_image
+            .frame_anchor
+            .unwrap_or_else(|| self.viewport.center_block(self.active_layout))
+    }
+
+    /// Explicit placement operation; moving or zooming the world viewport has no write side effect.
+    fn set_map_frame_anchor_to_viewport(&mut self, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() {
+            return;
+        }
+        self.map_image.frame_anchor = Some(self.viewport.center_block(self.active_layout));
+        let colors = self.theme_colors(cx);
+        self.sync_canvas_snapshot(colors, cx);
         cx.notify();
     }
 
@@ -134,7 +160,7 @@ impl MapViewerWindowView {
         {
             return None;
         }
-        let (center_x, center_z) = self.viewport.center_block(self.active_layout);
+        let (center_x, center_z) = self.map_frame_anchor();
         Some(super::model::MapFrameGridPreview {
             min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
             min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
