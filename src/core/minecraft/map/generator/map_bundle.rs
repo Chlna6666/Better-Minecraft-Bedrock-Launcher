@@ -158,6 +158,9 @@ mod tests {
             preview_width: 257,
             preview_height: 128,
             preview_rgba: Vec::new(),
+            placement_width: 0,
+            placement_height: 0,
+            placement_rgba: Vec::new(),
             tiles: (0..2)
                 .map(|column| MapImageTile {
                     column,
@@ -216,6 +219,9 @@ mod tests {
             preview_width: 128,
             preview_height: 128,
             preview_rgba: Vec::new(),
+            placement_width: 0,
+            placement_height: 0,
+            placement_rgba: Vec::new(),
             tiles: vec![MapImageTile {
                 column: 0,
                 row: 0,
