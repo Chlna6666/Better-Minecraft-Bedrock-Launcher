@@ -531,6 +531,9 @@ impl MapViewerWindowView {
         {
             return;
         }
+        // Regenerating image pixels switches back to the image-conversion workflow;
+        // a previously staged external NBT must not silently override the next write.
+        self.map_image.pending_bundle = None;
         self.release_map_image_preview();
         self.map_image.export_task_id = None;
         match start_map_image_preview(source, options) {
