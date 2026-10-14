@@ -71,6 +71,12 @@ pub struct MapPreviewResult {
     pub preview_height: u32,
     /// RGBA preview bitmap with checkerboard transparency and seam lines.
     pub preview_rgba: Vec<u8>,
+    /// Seam-free, uncomposited bitmap for world placement projection.
+    pub placement_width: u32,
+    /// Seam-free placement bitmap height.
+    pub placement_height: u32,
+    /// Real RGBA map pixels at bounded preview resolution (transparent stays transparent).
+    pub placement_rgba: Vec<u8>,
     /// Exact RGBA map tiles in north-up row-major order.
     pub tiles: Vec<MapImageTile>,
 }
@@ -151,6 +157,7 @@ impl PreviewStore {
         self.expire();
         self.frames.remove(&id);
         let bytes = result.preview_rgba.len()
+            + result.placement_rgba.len()
             + result
                 .tiles
                 .iter()
@@ -377,6 +384,11 @@ async fn convert(
                 }
                 true
             })?;
+        if worker_cancel.is_cancelled() {
+            return Err("地图图片转换已取消".to_owned());
+        }
+        let (placement_width, placement_height, placement_rgba) =
+            build_placement_preview(&tiles, options)?;
         Ok::<_, String>(MapPreviewResult {
             source_width: crop.source_width,
             source_height: crop.source_height,
@@ -386,6 +398,9 @@ async fn convert(
             preview_width,
             preview_height,
             preview_rgba,
+            placement_width,
+            placement_height,
+            placement_rgba,
             tiles,
         })
     })
@@ -461,6 +476,38 @@ fn crop_for_grid(width: u32, height: u32, options: MapPreviewOptions) -> Result<
             height: crop_height,
         },
     })
+}
+
+/// Assemble a compact, seam-free RGBA mosaic from the exact tile pixels.
+/// The largest edge stays within 512 pixels even with a 64-map axis.
+fn build_placement_preview(
+    tiles: &[MapImageTile],
+    options: MapPreviewOptions,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let cell = (512 / options.columns.max(options.rows)).clamp(1, 128);
+    let width = options.columns * cell;
+    let height = options.rows * cell;
+    let mut rgba = vec![0_u8; (width * height * 4) as usize];
+    for tile in tiles {
+        if tile.column >= options.columns
+            || tile.row >= options.rows
+            || tile.pixels.rgba.len() != (128 * 128 * 4) as usize
+        {
+            return Err("地图放置预览包含无效分片".to_owned());
+        }
+        for local_y in 0..cell {
+            let source_y = (local_y * 128 / cell) as usize;
+            let output_y = tile.row * cell + local_y;
+            for local_x in 0..cell {
+                let source_x = (local_x * 128 / cell) as usize;
+                let output_x = tile.column * cell + local_x;
+                let src = (source_y * 128 + source_x) * 4;
+                let dst = ((output_y * width + output_x) * 4) as usize;
+                rgba[dst..dst + 4].copy_from_slice(&tile.pixels.rgba[src..src + 4]);
+            }
+        }
+    }
+    Ok((width, height, rgba))
 }
 
 fn build_preview(
@@ -607,6 +654,34 @@ mod tests {
     }
 
     #[test]
+    fn placement_preview_has_no_fake_seams_or_checkerboard() {
+        let options = MapPreviewOptions {
+            columns: 2,
+            rows: 1,
+            ..MapPreviewOptions::default()
+        };
+        let tiles = tile_map_image(
+            vec![0, 0, 0, 0, 50, 100, 150, 255],
+            2,
+            1,
+            MapImageOptions {
+                crop: MapImageCrop { x: 0, y: 0, width: 2, height: 1 },
+                columns: 2,
+                rows: 1,
+                fit: MapImageFit::Stretch,
+                resample: MapResample::Nearest,
+                alpha_threshold: 1,
+            },
+        ).expect("tiles");
+        let (width, height, rgba) = build_placement_preview(&tiles, options).expect("preview");
+        assert_eq!((width, height), (256, 128));
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 0]);
+        let right = ((0 * width + 128) * 4) as usize;
+        assert_eq!(&rgba[right..right + 4], &[50, 100, 150, 255]);
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+    }
+
+    #[test]
     fn released_task_cannot_reinsert_late_result() {
         let id = "map-preview-release-test";
         release_map_preview(id);
@@ -624,6 +699,9 @@ mod tests {
             preview_width: 1,
             preview_height: 1,
             preview_rgba: vec![0; 4],
+            placement_width: 1,
+            placement_height: 1,
+            placement_rgba: vec![0; 4],
             tiles: Vec::new(),
         };
         previews()
