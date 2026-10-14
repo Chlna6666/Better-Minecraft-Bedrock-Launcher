@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use super::{DrawOrder, Primitive};
+use super::DrawOrder;
 
 #[allow(non_camel_case_types, unused)]
 pub(crate) type PathVertex_ScaledPixels = PathVertex<ScaledPixels>;
@@ -477,12 +477,6 @@ where
     #[allow(unused)]
     pub(crate) fn clipped_bounds(&self) -> Bounds<T> {
         self.bounds.intersect(&self.content_mask.bounds)
-    }
-}
-
-impl From<Path<ScaledPixels>> for Primitive {
-    fn from(path: Path<ScaledPixels>) -> Self {
-        Primitive::Path(path)
     }
 }
 

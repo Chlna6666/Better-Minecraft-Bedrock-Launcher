@@ -7,7 +7,7 @@ use std::{
 
 use crate::{Bounds, ContentMask, ScaledPixels, SceneAnimationId};
 
-use super::{DrawOrder, Primitive};
+use super::DrawOrder;
 
 pub use gfx_core::{
     ExtensionDevice, MemoryTrimLevel, RenderPassId, RenderStepDescriptor, ScissorRect,
@@ -230,12 +230,6 @@ impl fmt::Debug for PaintRendererExtension {
             .field("renderer_type", &self.extension.renderer_type())
             .field("animation_id", &self.animation_id)
             .finish()
-    }
-}
-
-impl From<PaintRendererExtension> for Primitive {
-    fn from(extension: PaintRendererExtension) -> Self {
-        Self::RendererExtension(extension)
     }
 }
 

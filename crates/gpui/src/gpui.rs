@@ -21,6 +21,8 @@ mod layout;
 mod platform;
 mod render_pipeline;
 mod scene;
+mod primitives;
+pub use primitives::*;
 mod style;
 mod text_system;
 mod window;
