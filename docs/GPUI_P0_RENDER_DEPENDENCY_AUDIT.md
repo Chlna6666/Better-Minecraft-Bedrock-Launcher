@@ -1,5 +1,7 @@
 # GPUI P0 渲染依赖审计
 
+> **历史审计快照，不是当前架构执行计划。** 当前唯一的 GPUI 统一合成重构状态源是 [GPUI_UNIFIED_COMPOSITOR_TODO.md](GPUI_UNIFIED_COMPOSITOR_TODO.md)。本审计中 RenderTree/RenderCommit 的旧目标、旧 HEAD、旧时间戳和文件位置只保留为历史证据；不得据此重新建立 RenderTree/Scene/RenderCommit/RenderPipeline 多层全窗口表示。维护者已允许破坏性删除旧 Scene 与冗余封装，但必须保留真正的绘制、GPU 和输入功能。
+
 > 范围更新（2026-10-14）：按维护者最新要求，不再建立额外的完整 Render Tree。
 > 本次新增的树、Commit 原型与接入代码已归档并撤回。以下依赖图保留为当前链路的
 > 调查依据；旧方案的删除清单不再作为执行计划。后续优先检查 Element、CachedView、
