@@ -18,6 +18,7 @@ mod bundle;
 mod comparison;
 mod controls;
 mod players;
+mod container_candidates;
 mod render;
 mod target;
 
@@ -37,6 +38,8 @@ pub(super) struct MapImagePanelState {
     /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
     frame_anchor: Option<(i32, i32)>,
     pub(super) player_search: Entity<InputState>,
+    /// Filter for loaded block-entity positions in the current visible overlay.
+    pub(super) container_search: Entity<InputState>,
     player_scroll: UniformListScrollHandle,
     frame_support: &'static str,
     preview: Option<Arc<RenderImage>>,
@@ -60,6 +63,11 @@ impl MapImagePanelState {
             input.set_placeholder("搜索玩家名称 / UUID / 存储 ID", window, cx);
             input
         });
+        let container_search = cx.new(|cx| {
+            let mut input = InputState::new(window, cx);
+            input.set_placeholder("搜索当前已加载方块实体 X / Z", window, cx);
+            input
+        });
         Self {
             source: None,
             pending_bundle: None,
@@ -77,6 +85,7 @@ impl MapImagePanelState {
             selected_block: None,
             frame_anchor: None,
             player_search,
+            container_search,
             player_scroll: UniformListScrollHandle::new(),
             frame_support: "minecraft:stone",
             preview: None,
