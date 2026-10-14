@@ -1,5 +1,6 @@
 pub mod adaptive;
 pub mod button;
+pub mod choice;
 pub mod code_editor;
 pub mod color_picker;
 pub mod context_menu;
