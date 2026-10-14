@@ -451,6 +451,11 @@ impl MapViewerWindowView {
         }
     }
 
+    pub(super) fn sync_map_grid_numeric_fields(&self, cx: &mut Context<Self>) {
+        self.num_map_columns.sync(self.map_image.options.columns, cx);
+        self.num_map_rows.sync(self.map_image.options.rows, cx);
+    }
+
     pub(super) fn set_grid_size(&mut self, axis: GridAxis, value: u32, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
@@ -466,6 +471,7 @@ impl MapViewerWindowView {
         };
         *target = value.clamp(1, max);
         self.map_image.options.auto_fit = false;
+        self.sync_map_grid_numeric_fields(cx);
         self.start_map_preview(cx);
     }
 
@@ -486,6 +492,7 @@ impl MapViewerWindowView {
         if *target != value || self.map_image.options.auto_fit {
             *target = value;
             self.map_image.options.auto_fit = false;
+            self.sync_map_grid_numeric_fields(cx);
             self.release_map_image_preview();
             cx.notify();
         }
