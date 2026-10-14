@@ -240,101 +240,87 @@ impl MapViewerWindowView {
             ImageAxis::Height => self.image_generator.options.height,
         };
         let busy = self.image_generator_busy();
-        let slider_id = match axis {
-            ImageAxis::Width => "image-block-width",
-            ImageAxis::Height => "image-block-height",
+        let (slider_id, title, field) = match axis {
+            ImageAxis::Width => ("image-block-width", "宽度 · X", &self.num_image_width),
+            ImageAxis::Height => ("image-block-height", "高度 · Z", &self.num_image_height),
         };
+        let changed_view = cx.entity().downgrade();
+        let committed_view = changed_view.clone();
+        let slider = Slider::new(
+            slider_id, colors, 1.0, 512.0, value as f32,
+            move |size, app| {
+                let next = size.round().clamp(1.0, 512.0) as u32;
+                if let Err(error) = changed_view.update(app, |this, cx| {
+                    this.update_image_dimension_from_slider(axis, next, cx);
+                    cx.notify();
+                }) {
+                    tracing::warn!(%error, "could not update image dimension slider");
+                }
+            },
+        )
+        .width(px(245.0))
+        .on_commit(move |size, app| {
+            let next = size.round().clamp(1.0, 512.0) as u32;
+            if let Err(error) = committed_view.update(app, |this, cx| {
+                this.set_image_dimension(axis, next, cx);
+            }) {
+                tracing::warn!(%error, "could not apply image dimension slider");
+            }
+        });
+
         div()
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(generator_section_title(
+            .child(generator_section_title(colors, title))
+            .child(crate::ui::components::numeric_field::numeric_dimension_editor(
+                field,
                 colors,
-                match axis {
-                    ImageAxis::Width => "宽度 · X",
-                    ImageAxis::Height => "高度 · Z",
-                },
-            ))
-            .child(div().flex().flex_wrap().gap(px(6.0)).children(
-                [64_u32, 128, 256, 512].into_iter().map(|size| {
-                    generator_choice(colors, format!("{size}"), value == size).when(
-                        !busy,
-                        |button| {
-                            button.on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _event, _window, cx| {
-                                    this.set_image_dimension(axis, size, cx)
-                                }),
-                            )
-                        },
+                "方块",
+                generator_choice(colors, "−", false).when(!busy && value > 1, |button| {
+                    button.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.set_image_dimension(axis, value - 1, cx)
+                        }),
                     )
                 }),
+                generator_choice(colors, "+", false).when(!busy && value < 512, |button| {
+                    button.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.set_image_dimension(axis, value + 1, cx)
+                        }),
+                    )
+                }),
+                slider,
             ))
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
                     .items_center()
-                    .gap(px(8.0))
-                    .child(generator_choice(colors, "−1", false).when(!busy, |button| {
-                        button.on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_image_dimension(axis, value.saturating_sub(1), cx)
-                            }),
-                        )
-                    }))
-                    .when(!busy, |row| row.child(
-                        Slider::new(
-                            slider_id,
-                            colors,
-                            1.0,
-                            512.0,
-                            value as f32,
-                            {
-                                let changed_view = cx.entity().downgrade();
-                                move |value, app| {
-                                    let next = value.round().clamp(1.0, 512.0) as u32;
-                                    if let Err(error) = changed_view.update(app, |this, cx| {
-                                        this.update_image_dimension_from_slider(axis, next, cx);
-                                        cx.notify();
-                                    }) {
-                                        tracing::warn!(%error, "could not update image dimension slider");
-                                    }
-                                }
-                            },
-                        )
-                        .width(px(180.0))
-                        .on_commit({
-                            let committed_view = cx.entity().downgrade();
-                            move |value, app| {
-                                let next = value.round().clamp(1.0, 512.0) as u32;
-                                if let Err(error) = committed_view.update(app, |this, cx| {
-                                    this.set_image_dimension(axis, next, cx);
-                                }) {
-                                    tracing::warn!(%error, "could not apply image dimension slider");
-                                }
-                            }
-                        })
-                    ))
-                    .child(match axis {
-                        ImageAxis::Width => self.num_image_width.control().into_any_element(),
-                        ImageAxis::Height => self.num_image_height.control().into_any_element(),
-                    })
+                    .flex_wrap()
+                    .gap(px(6.0))
                     .child(
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("方块"),
+                            .child("常用尺寸"),
                     )
-                    .child(generator_choice(colors, "+1", false).when(!busy, |button| {
-                        button.on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_image_dimension(axis, value.saturating_add(1), cx)
-                            }),
-                        )
-                    })),
+                    .child(div().flex_1())
+                    .children(
+                        [64_u32, 128, 256, 512].into_iter().map(|size| {
+                            generator_choice(colors, format!("{size}"), value == size)
+                                .when(!busy, |button| {
+                                    button.on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.set_image_dimension(axis, size, cx)
+                                        }),
+                                    )
+                                })
+                        }),
+                    ),
             )
     }
 }
