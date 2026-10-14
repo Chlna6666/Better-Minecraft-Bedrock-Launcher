@@ -30,6 +30,17 @@ pub enum MapResample {
     Lanczos3,
 }
 
+/// How the image fits the map mosaic without changing tile ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapImageFit {
+    /// Keep the whole image and its aspect ratio; unused pixels remain transparent.
+    Contain,
+    /// Crop equal margins to fill the entire grid without distortion.
+    CenterCrop,
+    /// Stretch the full image to the grid, changing its aspect ratio.
+    Stretch,
+}
+
 /// Requested crop and grid resolution for direct Bedrock map pixels.
 ///
 /// The output resolution is exactly `columns × 128` by `rows × 128` pixels. This does not
@@ -45,6 +56,8 @@ pub struct MapImageOptions {
     pub rows: u32,
     /// Sampling used when the crop is scaled to the map grid.
     pub resample: MapResample,
+    /// Source aspect-ratio policy.
+    pub fit: MapImageFit,
     /// Alpha below this value becomes transparent; other pixels become fully opaque.
     pub alpha_threshold: u8,
 }
@@ -127,7 +140,15 @@ pub fn tile_map_image_with_progress(
         MapResample::Nearest => FilterType::Nearest,
         MapResample::Lanczos3 => FilterType::Lanczos3,
     };
-    let mut scaled = resize_rgba(&cropped, output_width, output_height, filter);
+    // Contain only scales the actual content, avoiding a second full-sized padded buffer.
+    let (scaled_width, scaled_height) = if options.fit == MapImageFit::Contain {
+        fit_within_grid(crop.width, crop.height, output_width, output_height)
+    } else {
+        (output_width, output_height)
+    };
+    let offset_x = (output_width - scaled_width) / 2;
+    let offset_y = (output_height - scaled_height) / 2;
+    let mut scaled = resize_rgba(&cropped, scaled_width, scaled_height, filter);
     for pixel in scaled.pixels_mut() {
         if pixel[3] < options.alpha_threshold {
             pixel.0 = [0, 0, 0, 0];
@@ -135,31 +156,46 @@ pub fn tile_map_image_with_progress(
             pixel[3] = 255;
         }
     }
+    let scaled_rgba = scaled.as_raw();
     let mut tiles = Vec::with_capacity(tile_count as usize);
     for row in 0..options.rows {
         for column in 0..options.columns {
-            let rgba = imageops::crop_imm(
-                &scaled,
-                column * MAP_SIDE,
-                row * MAP_SIDE,
-                MAP_SIDE,
-                MAP_SIDE,
-            )
-            .to_image()
-            .into_raw();
+            let mut rgba = vec![0_u8; (MAP_SIDE * MAP_SIDE * 4) as usize];
+            let tile_x = column * MAP_SIDE;
+            let tile_y = row * MAP_SIDE;
+            let first_x = tile_x.max(offset_x);
+            let last_x = (tile_x + MAP_SIDE).min(offset_x + scaled_width);
+            if first_x < last_x {
+                let count = ((last_x - first_x) * 4) as usize;
+                for local_y in 0..MAP_SIDE {
+                    let absolute_y = tile_y + local_y;
+                    if absolute_y < offset_y || absolute_y >= offset_y + scaled_height {
+                        continue;
+                    }
+                    let src = (((absolute_y - offset_y) * scaled_width + first_x - offset_x) * 4) as usize;
+                    let dst = ((local_y * MAP_SIDE + first_x - tile_x) * 4) as usize;
+                    rgba[dst..dst + count].copy_from_slice(&scaled_rgba[src..src + count]);
+                }
+            }
             tiles.push(MapImageTile {
                 column,
                 row,
-                pixels: Pixels {
-                    width: MAP_SIDE,
-                    height: MAP_SIDE,
-                    rgba,
-                },
+                pixels: Pixels { width: MAP_SIDE, height: MAP_SIDE, rgba },
             });
             completed(tiles.len() as u32);
         }
     }
     Ok(tiles)
+}
+
+fn fit_within_grid(source_w: u32, source_h: u32, target_w: u32, target_h: u32) -> (u32, u32) {
+    if u64::from(source_w) * u64::from(target_h) >= u64::from(source_h) * u64::from(target_w) {
+        (target_w, (u64::from(source_h) * u64::from(target_w) / u64::from(source_w))
+            .clamp(1, u64::from(target_h)) as u32)
+    } else {
+        ((u64::from(source_w) * u64::from(target_h) / u64::from(source_h))
+            .clamp(1, u64::from(target_w)) as u32, target_h)
+    }
 }
 
 fn resize_rgba(source: &RgbaImage, width: u32, height: u32, filter: FilterType) -> RgbaImage {
@@ -210,6 +246,7 @@ mod tests {
                 columns: 2,
                 rows: 1,
                 resample: MapResample::Nearest,
+                fit: MapImageFit::Stretch,
                 alpha_threshold: 1,
             },
             |done| completed.push(done),
@@ -234,6 +271,7 @@ mod tests {
             columns: 1,
             rows: 1,
             resample: MapResample::Nearest,
+            fit: MapImageFit::Stretch,
             alpha_threshold: 1,
         };
         assert!(tile_map_image(vec![0; 4], 1, 1, options).is_err());
@@ -253,6 +291,26 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn contain_preserves_source_edges_without_stretching() {
+        let tiles = tile_map_image(
+            vec![255, 0, 0, 255, 0, 0, 255, 255], 2, 1,
+            MapImageOptions {
+                crop: MapImageCrop { x: 0, y: 0, width: 2, height: 1 },
+                columns: 1, rows: 1, resample: MapResample::Nearest,
+                fit: MapImageFit::Contain, alpha_threshold: 1,
+            },
+        ).expect("fit complete image");
+        let pixel = |x: usize, y: usize| {
+            let start = (y * 128 + x) * 4;
+            tiles[0].pixels.rgba[start..start + 4].to_vec()
+        };
+        assert_eq!(pixel(0, 0), [0, 0, 0, 0]);
+        assert_eq!(pixel(0, 32), [255, 0, 0, 255]);
+        assert_eq!(pixel(127, 32), [0, 0, 255, 255]);
+        assert_eq!(pixel(127, 127), [0, 0, 0, 0]);
     }
 
     #[test]
