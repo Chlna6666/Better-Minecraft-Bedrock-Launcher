@@ -1,5 +1,6 @@
 use super::super::players::player_id_label;
 use super::*;
+use crate::ui::components::scroll::Scrollbar;
 
 impl MapViewerWindowView {
     pub(in super::super) fn reset_map_player_search_scroll(&self) {
@@ -45,6 +46,8 @@ impl MapViewerWindowView {
         let count = players.len();
         let view = cx.entity();
         let row_colors = *colors;
+        // The virtual list and the visible draggable scrollbar share the same GPUI ScrollHandle.
+        let scrollbar_handle = self.map_image.player_scroll.0.borrow().base_handle.clone();
         let list = uniform_list("map-import-players", count, move |range, _window, _cx| {
             range
                 .map(|index| {
@@ -111,8 +114,18 @@ impl MapViewerWindowView {
                     .overflow_hidden()
                     .border_1()
                     .border_color(colors.border)
+                    .flex()
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .child(list),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .child(list),
+                    )
+                    .child(
+                        Scrollbar::new("map-import-player-scrollbar", &scrollbar_handle, colors),
+                    ),
             )
             .when(count == 0, |panel| {
                 panel.child(
