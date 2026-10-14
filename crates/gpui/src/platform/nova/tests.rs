@@ -1953,7 +1953,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
 }
 
 #[test]
-fn gaussian_capture_count_churn_reuses_stable_gpu_target_prefix() {
+fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_backdrop_blur_config(index, 2),
         levels: (0..2)
@@ -1986,7 +1986,7 @@ fn gaussian_capture_count_churn_reuses_stable_gpu_target_prefix() {
             .map(|index| test_backdrop_blur_config(index, 2))
             .collect::<Vec<_>>();
         assert!(
-            targets.reuse_stable_prefix_layout(&configs, &[], true, None),
+            targets.reuse_layout(&configs, &[], true, None),
             "a changing active prefix should not allocate new GPU textures",
         );
         assert_eq!(targets.active_variant_count, count as usize);
@@ -2000,24 +2000,82 @@ fn gaussian_capture_count_churn_reuses_stable_gpu_target_prefix() {
     }
     // Different source ownership or a different capture identity is not a
     // stable prefix, even if the texture dimensions happen to match.
-    assert!(!targets.reuse_stable_prefix_layout(
+    assert!(!targets.reuse_layout(
         &[test_backdrop_blur_config(0, 2)],
         &[],
         false,
         None,
     ));
-    assert!(!targets.reuse_stable_prefix_layout(
-        &[test_backdrop_blur_config(1, 2)],
+    assert!(!targets.reuse_layout(
+        &[test_backdrop_blur_config(99, 2)],
         &[],
         true,
         None,
     ));
-    assert!(!targets.reuse_stable_prefix_layout(
+    assert!(!targets.reuse_layout(
         &[test_backdrop_blur_config(0, 2)],
         &[],
         true,
         Some(99),
     ));
+}
+
+#[test]
+fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: test_backdrop_blur_config(index, 2),
+        levels: (0..2)
+            .map(|axis| BackdropBlurLevelTarget {
+                byte_size: 64 * 32 * 4,
+                texture: test_texture_id(index * 2 + axis + 1),
+                texture_view: test_texture_view_id(index * 2 + axis + 1),
+                pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
+            })
+            .collect(),
+        target_resource_sets: vec![test_resource_set_id(index + 20)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: Some(RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(30),
+            texture_view: test_texture_view_id(30),
+        }),
+        source_pass_resource_sets: vec![test_resource_set_id(30)],
+        isolated_sources: Vec::new(),
+        variants: (0..4).map(make_variant).collect(),
+        active_variant_count: 4,
+        retained_root_variant: None,
+    };
+    let original_views = targets
+        .variants
+        .iter()
+        .map(|variant| variant.levels[0].texture_view)
+        .collect::<Vec<_>>();
+    let requested = [2_u32, 0, 3, 1];
+    let configs = requested
+        .map(|index| test_backdrop_blur_config(index, 2));
+    assert!(targets.reuse_layout(&configs, &[], true, None));
+    assert_eq!(targets.active_variant_count, 4);
+    assert_eq!(
+        targets.variants.iter().map(|v| v.levels[0].texture_view).collect::<Vec<_>>(),
+        requested.map(|index| original_views[index as usize]).to_vec(),
+    );
+    // A failed remap must keep the old identities, views and active range intact.
+    let before = targets.variants.iter()
+        .map(|v| (v.config.reuse_key(), v.levels[0].texture_view))
+        .collect::<Vec<_>>();
+    assert!(!targets.reuse_layout(
+        &[test_backdrop_blur_config(99, 2)],
+        &[],
+        true,
+        None,
+    ));
+    assert_eq!(
+        targets.variants.iter()
+            .map(|v| (v.config.reuse_key(), v.levels[0].texture_view))
+            .collect::<Vec<_>>(),
+        before,
+    );
 }
 
 #[test]

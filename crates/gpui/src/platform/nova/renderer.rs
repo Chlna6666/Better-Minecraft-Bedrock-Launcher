@@ -531,30 +531,6 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
-        // Reusing a stable prefix avoids a full target-chain allocation when
-        // popup/filter counts change but the surviving slots are unchanged.
-        // This is shared by DX11, DX12, Vulkan, OpenGL and Metal.
-        if self.filters.targets.as_mut().is_some_and(|targets| {
-            targets.reuse_stable_prefix_layout(
-                self.frame_upload.backdrop_blur_configs(),
-                self.frame_upload.isolated_blur_source_indices(),
-                present::has_root_backdrop_blurs(&self.frame_upload),
-                self.frame_upload.retained_root_blur,
-            )
-        }) {
-            // The allocation is reused, not its previous filtered pixels.
-            // Capture topology changes must refresh the filter output.
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
-            self.invalidate_draw_step_cache();
-            self.invalidate_backdrop_blur_cache();
-            log::debug!(
-                target: "gpui::diagnostics",
-                "GPUI retained target stable prefix reused: active_variants={} allocated_variants={}",
-                self.frame_upload.backdrop_blur_configs().len(),
-                self.filters.targets.as_ref().expect("reused targets exist").variants.len(),
-            );
-            return Ok(());
-        }
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -563,7 +539,11 @@ impl NovaRenderer {
                 self.frame_upload.retained_root_blur,
             )
         }) {
+            // The physical targets are resident, but capture topology changed.
+            // Do not sample filtered pixels from the previous mapping.
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
             self.invalidate_draw_step_cache();
+            self.invalidate_backdrop_blur_cache();
             log::debug!(target: "gpui::diagnostics",
                 "GPUI retained target layout reused: active_variants={} allocated_variants={}",
                 self.frame_upload.backdrop_blur_configs().len(),

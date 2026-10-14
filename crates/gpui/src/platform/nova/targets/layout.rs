@@ -49,26 +49,23 @@ impl BackdropBlurTargets {
         true
     }
 
-    /// Reuse an already allocated GPU target prefix when only the active capture
-    /// count changed. This is safe for both Gaussian and zero-radius captures:
-    /// texture descriptors and their resource sets remain in their original slots.
+    /// Reuse existing GPU target allocations using one identity-based mapping.
     ///
-    /// Unlike flattened capture rebinding, this path does not reinterpret any
-    /// slot's identity. The caller must invalidate filter pixels and draw steps
-    /// because adding/removing captures changes the composition topology.
-    pub(in crate::platform::nova) fn reuse_stable_prefix_layout(
+    /// Stable capture IDs may be reordered or their active count may shrink
+    /// without recreating textures or resource sets. The caller invalidates
+    /// old filtered pixels and draw steps after every topology change.
+    pub(in crate::platform::nova) fn reuse_layout(
         &mut self,
         next: &[BackdropBlurConfig],
         isolated_indices: &[u32],
         needs_root_source: bool,
         root_index: Option<u32>,
     ) -> bool {
-        let next_root = root_index.and_then(|index| {
+        let new_root = root_index.and_then(|index| {
             next.iter()
                 .position(|config| config.contains_member_index(index))
         });
-        if (root_index.is_some() && next_root.is_none())
-            || self.retained_root_variant != next_root
+        if (root_index.is_some() && new_root.is_none())
             || next.len() > self.variants.len()
             || self.source.is_some() != needs_root_source
             || !self
@@ -79,54 +76,57 @@ impl BackdropBlurTargets {
                     .iter()
                     .copied()
                     .filter(|index| blur_requires_isolated_source(next, *index)))
-            || !self.variants.iter().zip(next).all(|(variant, config)| {
-                variant.config.same_target_slot(*config)
-                    && variant.levels.len() == blur_variant_level_count(*config)
-            })
         {
             return false;
         }
 
-        for (variant, config) in self.variants.iter_mut().zip(next) {
-            variant.config = *config;
+        // Validate a one-to-one mapping BEFORE touching live native resource
+        // metadata. This covers stable prefixes and arbitrary capture reorder.
+        let mut permutation = smallvec::SmallVec::<[usize; 8]>::new();
+        for config in next {
+            let Some((old_index, _)) = self.variants.iter().enumerate().find(
+                |(index, variant)| {
+                    !permutation.contains(index)
+                        && variant.config.same_target_slot(*config)
+                        && variant.levels.len() == blur_variant_level_count(*config)
+                },
+            ) else {
+                break;
+            };
+            permutation.push(old_index);
         }
-        self.active_variant_count = next.len();
-        true
-    }
+        let root_identity_preserved = match (self.retained_root_variant, new_root) {
+            (Some(previous), Some(current)) => permutation.get(current) == Some(&previous),
+            _ => true,
+        };
+        if permutation.len() == next.len() && root_identity_preserved {
+            // Move whole variants (including texture views and resource sets),
+            // never move/copy their underlying GPU allocations.
+            let mut old_variants = std::mem::take(&mut self.variants)
+                .into_iter()
+                .map(Some)
+                .collect::<Vec<_>>();
+            let mut reordered = Vec::with_capacity(old_variants.len());
+            for old_index in permutation {
+                reordered.push(old_variants[old_index].take().expect("one-to-one mapping"));
+            }
+            reordered.extend(old_variants.into_iter().flatten());
+            for (variant, config) in reordered.iter_mut().zip(next) {
+                variant.config = *config;
+            }
+            self.variants = reordered;
+            self.active_variant_count = next.len();
+            self.retained_root_variant = new_root;
+            return true;
+        }
 
-    /// Reuse a warmed popup layout without discarding resident window color.
-    /// Only existing slots are reused; growth and
-    /// changed source layouts retain the complete allocation/initialization path.
-    pub(in crate::platform::nova) fn reuse_layout(
-        &mut self,
-        next: &[BackdropBlurConfig],
-        isolated_indices: &[u32],
-        needs_root_source: bool,
-        root_index: Option<u32>,
-    ) -> bool {
-        let Some(old_root) = self.retained_root_variant else {
+        // Keep the existing root-color relocation behavior when a zero-radius
+        // capture changes its flattened member index. This cannot use the
+        // stable-ID permutation, but can still preserve physical textures.
+        let (Some(old_root), Some(new_root)) = (self.retained_root_variant, new_root)
+        else {
             return false;
         };
-        let Some(new_root) = root_index.and_then(|index| {
-            next.iter()
-                .position(|config| config.contains_member_index(index))
-        }) else {
-            return false;
-        };
-        if next.len() > self.variants.len()
-            || self.source.is_some() != needs_root_source
-            || !self
-                .isolated_sources
-                .iter()
-                .map(|source| source.index)
-                .eq(isolated_indices
-                    .iter()
-                    .copied()
-                    .filter(|index| blur_requires_isolated_source(next, *index)))
-        {
-            return false;
-        }
-        // Validate the entire permutation before mutating any live metadata.
         for (index, config) in next.iter().enumerate() {
             let previous = if index == new_root {
                 old_root
@@ -151,4 +151,5 @@ impl BackdropBlurTargets {
         self.retained_root_variant = Some(new_root);
         true
     }
+
 }

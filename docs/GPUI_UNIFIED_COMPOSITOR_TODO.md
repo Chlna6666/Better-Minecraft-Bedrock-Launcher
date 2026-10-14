@@ -141,6 +141,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ### P0-A 共享 GPU Filter / Color Target 生命周期
 
+- [x] **本轮代码（2026-10-14，单一路径压缩）**：删除重复的 `reuse_stable_prefix_layout` 入口，合并进 `reuse_layout`；实现按稳定 Capture 槽身份一对一重排（包括非前缀顺序、缩减活动数），直接搬移 GPU target descriptor/resource-set handle 而不重分配 GPU 纹理；不兼容时保留原有根颜色特殊映射 / zero-radius rebind 路径。新拓扑复用后统一强制刷新滤镜内容与 DrawStep，杜绝错误采样旧像素。
+- [x] 新增模拟 GPU TextureView 身份重排、无分配、失败时不修改旧状态的单元测试，并调整此前仅测稳定前缀的用例覆盖单一复用入口。
+- [ ] **本轮测试未执行**：GitHub 远程编辑环境不提供 Rust/Cargo；需本地运行 `cargo fmt --all -- --check` 和 `cargo test --manifest-path crates/gpui/Cargo.toml --lib gaussian_capture`，再做 Windows 4 后端高频弹窗 Native GPU 回归。不得将代码已提交视为性能证据。
+
 - [x] 审计 Zero-radius Capture、Root Retained Color、目标布局复用路径和最新日志。
 - [x] 增加**稳定前缀布局**复用：在现有 GPU 纹理规格/目标身份均不变且只改变活动 Capture 数时，保留已有分配，不再走完整目标链重建；覆盖 Gaussian Source 情况。变更后保守刷新 Filter Cache 和 DrawStep。
 - [x] 为上述稳定前缀路径增加无实际 GPU 依赖的单元测试，确认 TextureView 身份保留及不兼容时拒绝复用。
@@ -201,8 +205,8 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的 Windows 实机命中率/重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
+- 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
 - 严禁直接执行“删除 Scene”而不建立 GPU Owner 保留内容、资源退休和有序绘制的正确性方案。
 - 下一阶段主要交付物：为 **Scene → FrameUpload → DrawSteps → Present** 建立每一步拥有的全部状态与复制字节账本，确定哪些结构能合并/删除；然后以 GPUI 独立 Dropdown/Blur 实验完成单一合成通路的首次纵向切片。
-- **本次更新仅文档审计，没有删除生产 Scene，也没有声称修复 GPU 占用、Prepaint 或 Resize。**
+- **最近更新**：生产代码中收敛 Nova 滤镜目标复用判断并测试 Capture 重排（尚无 Rust/Windows 运行验证），没有删除 Scene，也没有声称 GPU 占用、Prepaint 或 Resize 已修复。
