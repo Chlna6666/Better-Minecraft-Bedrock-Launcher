@@ -49,6 +49,51 @@ impl BackdropBlurTargets {
         true
     }
 
+    /// Reuse an already allocated GPU target prefix when only the active capture
+    /// count changed. This is safe for both Gaussian and zero-radius captures:
+    /// texture descriptors and their resource sets remain in their original slots.
+    ///
+    /// Unlike flattened capture rebinding, this path does not reinterpret any
+    /// slot's identity. The caller must invalidate filter pixels and draw steps
+    /// because adding/removing captures changes the composition topology.
+    pub(in crate::platform::nova) fn reuse_stable_prefix_layout(
+        &mut self,
+        next: &[BackdropBlurConfig],
+        isolated_indices: &[u32],
+        needs_root_source: bool,
+        root_index: Option<u32>,
+    ) -> bool {
+        let next_root = root_index.and_then(|index| {
+            next.iter()
+                .position(|config| config.contains_member_index(index))
+        });
+        if (root_index.is_some() && next_root.is_none())
+            || self.retained_root_variant != next_root
+            || next.len() > self.variants.len()
+            || self.source.is_some() != needs_root_source
+            || !self
+                .isolated_sources
+                .iter()
+                .map(|source| source.index)
+                .eq(isolated_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| blur_requires_isolated_source(next, *index)))
+            || !self.variants.iter().zip(next).all(|(variant, config)| {
+                variant.config.same_target_slot(*config)
+                    && variant.levels.len() == blur_variant_level_count(*config)
+            })
+        {
+            return false;
+        }
+
+        for (variant, config) in self.variants.iter_mut().zip(next) {
+            variant.config = *config;
+        }
+        self.active_variant_count = next.len();
+        true
+    }
+
     /// Reuse a warmed popup layout without discarding resident window color.
     /// Only existing slots are reused; growth and
     /// changed source layouts retain the complete allocation/initialization path.

@@ -531,6 +531,30 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
+        // Reusing a stable prefix avoids a full target-chain allocation when
+        // popup/filter counts change but the surviving slots are unchanged.
+        // This is shared by DX11, DX12, Vulkan, OpenGL and Metal.
+        if self.filters.targets.as_mut().is_some_and(|targets| {
+            targets.reuse_stable_prefix_layout(
+                self.frame_upload.backdrop_blur_configs(),
+                self.frame_upload.isolated_blur_source_indices(),
+                present::has_root_backdrop_blurs(&self.frame_upload),
+                self.frame_upload.retained_root_blur,
+            )
+        }) {
+            // The allocation is reused, not its previous filtered pixels.
+            // Capture topology changes must refresh the filter output.
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            self.invalidate_draw_step_cache();
+            self.invalidate_backdrop_blur_cache();
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI retained target stable prefix reused: active_variants={} allocated_variants={}",
+                self.frame_upload.backdrop_blur_configs().len(),
+                self.filters.targets.as_ref().expect("reused targets exist").variants.len(),
+            );
+            return Ok(());
+        }
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -573,6 +597,20 @@ impl NovaRenderer {
             );
             return Ok(());
         }
+        log::debug!(
+            target: "gpui::diagnostics",
+            "GPUI retained target recreation required: requested_variants={} previous_allocated={} previous_active={} previous_root={:?} requested_root={:?} old_root_source={} requested_root_source={} old_isolated={} requested_isolated={} in_flight={}",
+            self.frame_upload.backdrop_blur_configs().len(),
+            self.filters.targets.as_ref().map_or(0, |targets| targets.variants.len()),
+            self.filters.targets.as_ref().map_or(0, |targets| targets.active_variant_count),
+            self.filters.targets.as_ref().and_then(|targets| targets.retained_root_variant),
+            self.frame_upload.retained_root_blur,
+            self.filters.targets.as_ref().is_some_and(|targets| targets.source.is_some()),
+            present::has_root_backdrop_blurs(&self.frame_upload),
+            self.filters.targets.as_ref().map_or(0, |targets| targets.isolated_sources.len()),
+            self.frame_upload.isolated_blur_source_indices().len(),
+            self.pending_submissions.len(),
+        );
         // Texture topology changes can destroy the previous cached color
         // targets. Those targets may still be sampled by a previously submitted
         // GPU frame. Wait for the recorded fence completion BEFORE replacing

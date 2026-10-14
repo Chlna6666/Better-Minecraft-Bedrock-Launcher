@@ -1953,6 +1953,74 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
 }
 
 #[test]
+fn gaussian_capture_count_churn_reuses_stable_gpu_target_prefix() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: test_backdrop_blur_config(index, 2),
+        levels: (0..2)
+            .map(|axis| BackdropBlurLevelTarget {
+                byte_size: 64 * 32 * 4,
+                texture: test_texture_id(index * 2 + axis + 1),
+                texture_view: test_texture_view_id(index * 2 + axis + 1),
+                pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
+            })
+            .collect(),
+        target_resource_sets: vec![test_resource_set_id(index + 20)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: Some(RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(30),
+            texture_view: test_texture_view_id(30),
+        }),
+        source_pass_resource_sets: vec![test_resource_set_id(30)],
+        isolated_sources: Vec::new(),
+        variants: (0..4).map(make_variant).collect(),
+        active_variant_count: 4,
+        retained_root_variant: None,
+    };
+    let original_views: Vec<_> = targets.variants.iter()
+        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+        .collect();
+    for count in [2_u32, 3, 4, 1, 4] {
+        let configs = (0..count)
+            .map(|index| test_backdrop_blur_config(index, 2))
+            .collect::<Vec<_>>();
+        assert!(
+            targets.reuse_stable_prefix_layout(&configs, &[], true, None),
+            "a changing active prefix should not allocate new GPU textures",
+        );
+        assert_eq!(targets.active_variant_count, count as usize);
+        assert_eq!(targets.variants.len(), 4);
+        assert_eq!(
+            targets.variants.iter()
+                .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+                .collect::<Vec<_>>(),
+            original_views,
+        );
+    }
+    // Different source ownership or a different capture identity is not a
+    // stable prefix, even if the texture dimensions happen to match.
+    assert!(!targets.reuse_stable_prefix_layout(
+        &[test_backdrop_blur_config(0, 2)],
+        &[],
+        false,
+        None,
+    ));
+    assert!(!targets.reuse_stable_prefix_layout(
+        &[test_backdrop_blur_config(1, 2)],
+        &[],
+        true,
+        None,
+    ));
+    assert!(!targets.reuse_stable_prefix_layout(
+        &[test_backdrop_blur_config(0, 2)],
+        &[],
+        true,
+        Some(99),
+    ));
+}
+
+#[test]
 fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_zero_radius_blur_config(index),

@@ -26,6 +26,7 @@ inventory is tracked in [`GPUI_NAMING_AUDIT.md`](GPUI_NAMING_AUDIT.md).
 - `docs/ASYNC_RUNTIME_MODEL.md`: mandatory background execution, task state,
   and GPUI event-bridge rules.
 - `docs/GPUI_VENDOR_RENDERING.md`: GPUI structure and rendering pipeline.
+- `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`: authoritative unified-frame/compositor refactor status, correctness gates, current blockers and next actions. Read before editing GPUI rendering code.
 - `src/ui/README.md`: UI placement rules and current UI tree.
 - `docs/PROJECT_SPEC.md`: product-level project specification.
 - `docs/PROJECT_PLAN.md`: current project plan, entity icon asset format, and
