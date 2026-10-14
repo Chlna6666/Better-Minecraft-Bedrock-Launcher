@@ -38,9 +38,7 @@ impl MapViewerWindowView {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _event, _window, cx| {
-                                        this.generator.options.longest_side_blocks = size;
-                                        this.start_obj_live_preview(cx);
-                                        cx.notify();
+                                        this.set_obj_precision_size(size, cx);
                                     }),
                                 )
                             })
@@ -67,6 +65,7 @@ impl MapViewerWindowView {
                                             if let Err(error) = changed_view.update(app, |this, cx| {
                                                 if this.generator.options.longest_side_blocks != next {
                                                     this.generator.options.longest_side_blocks = next;
+                                                    this.num_obj_size.sync(u32::from(next), cx);
                                                     this.schedule_obj_live_preview(cx);
                                                 }
                                             }) {
@@ -79,6 +78,7 @@ impl MapViewerWindowView {
                                         let next = value.round().clamp(1.0, 384.0) as u16;
                                         if let Err(error) = committed_view.update(app, |this, cx| {
                                             this.generator.options.longest_side_blocks = next;
+                                            this.num_obj_size.sync(u32::from(next), cx);
                                             this.ensure_obj_live_preview(cx);
                                             cx.notify();
                                         }) {
@@ -91,14 +91,9 @@ impl MapViewerWindowView {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.generator.options.longest_side_blocks = this
-                                            .generator
-                                            .options
-                                            .longest_side_blocks
-                                            .saturating_sub(1)
-                                            .max(1);
-                                        this.start_obj_live_preview(cx);
-                                        cx.notify();
+                                        let size = this.generator.options.longest_side_blocks
+                                            .saturating_sub(1).max(1);
+                                        this.set_obj_precision_size(size, cx);
                                     }),
                                 )
                             }))
@@ -113,14 +108,9 @@ impl MapViewerWindowView {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _event, _window, cx| {
-                                        this.generator.options.longest_side_blocks = this
-                                            .generator
-                                            .options
-                                            .longest_side_blocks
-                                            .saturating_add(1)
-                                            .min(384);
-                                        this.start_obj_live_preview(cx);
-                                        cx.notify();
+                                        let size = this.generator.options.longest_side_blocks
+                                            .saturating_add(1).min(384);
+                                        this.set_obj_precision_size(size, cx);
                                     }),
                                 )
                             })),
