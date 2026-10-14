@@ -364,6 +364,13 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **测试源码（未运行）**：添加 32 Quad 保留块 + 1 Quad 空隙 + 32 Quad 保留块的真实 encode 对照，验证 3 个 Packed Batch 的独立非重叠边界；现有静态、动画、退化 clip、安全回退测试保持。当前环境无 `cargo`/`rustc`/`rustfmt` 和 Windows GPU，尚未编译、测试、截图或验证 DX11/DX12/Vulkan/OpenGL，仍需以本地 `cargo fmt`、`cargo check`、`cargo test` 和真实 Profiler 验收。
 - **未删除**：`SceneSlot`、`Scene::replay`、`NovaRenderer::pack_scene`、全场景 FrameUpload staging；下一步分析 Quad batch bounds 是否应直接由 Scene 已验证的 retained Paint Chunk 维护，以便进一步删除同一场景遍历，而非新增身份缓存。
 
+## 2026-10-15：Monochrome 字形边界裁剪收敛为单次遍历
+
+- 起点 master `b7cd8eaa40920b32d4af974065769e7d817b0160`；修改 `crates/gpui/src/platform/nova/frame_upload/encode.rs` 与本 TODO。完成上轮 Quad Packed Batch 边界统一后的第二项直接热路径收敛，未创建新 RenderTree、状态缓存或 Upload Stage。
+- **代码实现，尚未编译**：原 MonochromeSprite 预先 `sprites.iter().all` 检查是否有非单位 TransformationMatrix，再 `sprites.iter().map` 逐字形聚合裁剪边界；普通文本页面每一个无变换 glyph batch 都会重复扫描一遍。现在把 `has_unbounded_transform` 作为已有 `static_raster_run_visual_bounds` 的第四个输入，与动画安全检查合并，同一遍历完成矩阵证明和可见 bounds union。Quad、Polychrome、Underline 使用 `false`，保留原判定；对真实变换过的 Mono 字形继续返回 None，拒绝不安全的包围盒裁剪。
+- **验证**：新增通用静态 sprite bounds 的非单位变换拒绝用例；现有动画 rejection、Quad Packed Batch 测试继续覆盖。静态检查全部 `static_raster_run_visual_bounds` 调用点并核对调用参数数量，未运行 `cargo fmt/check/test`、未在 Windows DX11/DX12/Vulkan/OpenGL 测试、未量化高频 Dropdown 的 CPU/GPU 效果。下一步应测试文本密集页面的 Encode p95，并检查预期的保守裁剪与实际 Render Graph Scissor 是否一致。
+- **未完成**：彻底取消 Scene Replay、SceneSlot、FrameUpload 全量 staging、持久 Paint Chunk 类型统一和 Presentation Lane，不能因为局部减少一次字形遍历便宣布阶段结束。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

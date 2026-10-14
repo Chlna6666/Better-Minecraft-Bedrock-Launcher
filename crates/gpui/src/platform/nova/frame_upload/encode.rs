@@ -14,13 +14,14 @@ fn static_raster_run_visual_bounds(
         crate::Bounds<crate::ScaledPixels>,
         crate::Bounds<crate::ScaledPixels>,
         Option<crate::SceneAnimationId>,
+        bool,
     )>,
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
     let mut union: Option<crate::Bounds<crate::ScaledPixels>> = None;
-    for (bounds, mask, animation_id) in primitives {
-        // A GPU indexed transition may move the primitive without a new
-        // static upload. Its original AABB cannot be used for command culling.
-        if animation_id.is_some() {
+    for (bounds, mask, animation_id, has_unbounded_transform) in primitives {
+        // GPU transitions and nontrivial glyph transforms can move sampling
+        // outside the original AABB. Neither may produce a cullable batch.
+        if animation_id.is_some() || has_unbounded_transform {
             return None;
         }
         // The guard band accounts for SDF and sprite sampling at the edges.
@@ -49,6 +50,7 @@ fn static_quad_run_visual_bounds(
             quad.bounds,
             quad.content_mask.bounds,
             quad.animation_id,
+            false,
         )),
     )
 }
@@ -74,7 +76,7 @@ fn static_packed_quad_batch_bounds(
             _ => continue,
         };
         *bounds = static_raster_run_visual_bounds(encoded.by_ref().take(count).map(|quad| {
-            (quad.bounds, quad.content_mask.bounds, quad.animation_id)
+            (quad.bounds, quad.content_mask.bounds, quad.animation_id, false)
         }));
     }
 }
@@ -494,19 +496,14 @@ impl FrameUpload {
                 PreparedSceneBatch::MonochromeSprites { range, .. } => {
                     let sprites = &scene.monochrome_sprites[range.clone()];
                     // A transformed glyph may rotate outside its rectangle.
-                    // Keep such batches uncullable until transformed corners
-                    // are precomputed conservatively during scene encode.
-                    if sprites.iter().all(|sprite| {
-                        sprite.transformation == crate::TransformationMatrix::unit()
-                    }) {
-                        static_raster_run_visual_bounds(sprites.iter().map(|sprite| (
-                            sprite.bounds,
-                            sprite.content_mask.bounds,
-                            sprite.animation_id,
-                        )))
-                    } else {
-                        None
-                    }
+                    // Check the transform while unioning each glyph once,
+                    // rather than scanning the whole glyph batch twice.
+                    static_raster_run_visual_bounds(sprites.iter().map(|sprite| (
+                        sprite.bounds,
+                        sprite.content_mask.bounds,
+                        sprite.animation_id,
+                        sprite.transformation != crate::TransformationMatrix::unit(),
+                    )))
                 }
                 PreparedSceneBatch::PolychromeSprites { range, .. } => {
                     static_raster_run_visual_bounds(
@@ -514,6 +511,7 @@ impl FrameUpload {
                             sprite.bounds,
                             sprite.content_mask.bounds,
                             sprite.animation_id,
+                            false,
                         )),
                     )
                 }
@@ -523,6 +521,7 @@ impl FrameUpload {
                             line.bounds,
                             line.content_mask.bounds,
                             line.animation_id,
+                            false,
                         )),
                     )
                 }
@@ -1012,16 +1011,20 @@ mod retained_root_tests {
             crate::size(crate::ScaledPixels(6.0), crate::ScaledPixels(7.0)),
         );
         let bounds = static_raster_run_visual_bounds([
-            (bounds_a, bounds_a, None),
-            (bounds_b, bounds_b, None),
+            (bounds_a, bounds_a, None, false),
+            (bounds_b, bounds_b, None, false),
         ]).expect("static sprite coverage");
         assert!(bounds.origin.x <= bounds_a.origin.x);
         assert!(bounds.right() >= bounds_b.right());
         assert!(bounds.bottom() >= bounds_b.bottom());
         assert!(static_raster_run_visual_bounds([
-            (bounds_a, bounds_a, Some(crate::SceneAnimationId(1))),
-            (bounds_b, bounds_b, None),
+            (bounds_a, bounds_a, Some(crate::SceneAnimationId(1)), false),
+            (bounds_b, bounds_b, None, false),
         ]).is_none());
+        assert!(static_raster_run_visual_bounds([
+            (bounds_a, bounds_a, None, false),
+            (bounds_b, bounds_b, None, true),
+        ]).is_none(), "transformed glyph batches must not be culled using untransformed AABBs");
     }
 
     #[test]
