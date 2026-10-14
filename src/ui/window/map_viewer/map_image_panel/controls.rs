@@ -99,13 +99,19 @@ impl MapViewerWindowView {
                             }
                         })
                     })
+                    .child(match axis {
+                        GridAxis::Columns => self.num_map_columns.control().into_any_element(),
+                        GridAxis::Rows => self.num_map_rows.control().into_any_element(),
+                    })
                     .child(
                         div()
-                            .min_w(px(48.0))
-                            .text_center()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child(count_label),
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child(if self.map_image.options.auto_fit {
+                                count_label
+                            } else {
+                                "张".to_owned()
+                            }),
                     )
                     .child(generator_choice(colors, "+1", false).when(
                         count < max_count,
