@@ -40,6 +40,7 @@ pub(super) struct MapImagePanelState {
     preview: Option<Arc<RenderImage>>,
     /// Actual translucent map pixels for world-space placement (without checkerboard or seams).
     placement_preview: Option<Arc<RenderImage>>,
+    show_placement_inspector: bool,
     preview_done: u32,
     grid_estimated: bool,
     preview_note: Option<String>,
@@ -72,6 +73,7 @@ impl MapImagePanelState {
             frame_support: "minecraft:stone",
             preview: None,
             placement_preview: None,
+            show_placement_inspector: true,
             preview_done: 0,
             grid_estimated: false,
             preview_note: None,
@@ -100,6 +102,30 @@ enum GridAxis {
 impl MapViewerWindowView {
     pub(super) fn map_image_installing_to_player(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::Player
+    }
+
+    pub(super) fn map_image_placement_inspector_visible(&self) -> bool {
+        self.map_image.show_placement_inspector
+    }
+
+    pub(super) fn toggle_map_image_placement_inspector(&mut self, cx: &mut Context<Self>) {
+        self.map_image.show_placement_inspector = !self.map_image.show_placement_inspector;
+        cx.notify();
+    }
+
+    pub(super) fn map_image_workflow_status_label(&self) -> String {
+        if self.map_image.source.is_none() {
+            "待选择源图片".to_owned()
+        } else if self.map_image_busy() {
+            "正在生成地图像素".to_owned()
+        } else if self.map_image.preview.is_some() && self.map_image.placement_preview.is_some() {
+            format!(
+                "{} × {} 张地图 · 预览就绪",
+                self.map_image.options.columns, self.map_image.options.rows,
+            )
+        } else {
+            "地图预览未完成，请重新生成".to_owned()
+        }
     }
 
     fn set_map_install_destination(
