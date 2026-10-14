@@ -23,6 +23,8 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) byte_hash: u64,
     pub(in crate::platform::nova) quad_count: u32,
     pub(in crate::platform::nova) is_solid: bool,
+    /// Last successful CPU encode epoch which emitted this resident payload.
+    pub(in crate::platform::nova) last_used_epoch: u64,
 }
 
 /// GPU-owner lifetime cache for unchanged CachedView Quad payloads.
@@ -32,7 +34,9 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
 pub(in crate::platform::nova) struct RetainedQuadChunkCache {
     pub(in crate::platform::nova) retained_quad_chunks:
         FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
-    pub(in crate::platform::nova) active_retained_chunk_ids_scratch: FxHashSet<RetainedChunkId>,
+    /// Monotonic successful encode epoch; replaces a second HashSet of copied
+    /// GlobalElementIds just to track liveness across one recursive encode.
+    pub(in crate::platform::nova) frame_epoch: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

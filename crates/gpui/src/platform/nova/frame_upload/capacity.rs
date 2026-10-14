@@ -70,10 +70,6 @@ impl FrameUpload {
         stream_capacity
             .saturating_add(chunk_capacity)
             .saturating_add(
-                cache.active_retained_chunk_ids_scratch.capacity()
-                    * std::mem::size_of::<RetainedChunkId>(),
-            )
-            .saturating_add(
                 self.resident_quad_spans.capacity() * std::mem::size_of::<RetainedResidentSpan>(),
             )
     }
@@ -407,7 +403,6 @@ impl RetainedQuadChunkCache {
     /// Release GPU-owner cache payloads on pressure. Immutable upload segments
     /// already borrowed by an in-flight draw remain alive through their Arc.
     pub(in crate::platform::nova) fn trim(&mut self, level: GpuiMemoryTrimLevel) {
-        self.active_retained_chunk_ids_scratch.clear();
         if matches!(
             level,
             GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
@@ -420,6 +415,5 @@ impl RetainedQuadChunkCache {
             GpuiMemoryTrimLevel::Aggressive => 0,
         };
         self.retained_quad_chunks.shrink_to(floor);
-        self.active_retained_chunk_ids_scratch.shrink_to(floor);
     }
 }

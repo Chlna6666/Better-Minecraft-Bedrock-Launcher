@@ -3,7 +3,6 @@ use std::hash::Hasher;
 use std::ops::Range;
 
 const WORKING_SET_TRIM_MULTIPLIER: usize = 4;
-const CHUNK_SCRATCH_MIN_CAPACITY: usize = 16;
 
 /// Splitting every alternating animated/static primitive would increase
 /// driver draw-call overhead. Split only when the run contains a substantial
@@ -75,9 +74,6 @@ impl FrameUpload {
             {
                 continue;
             }
-            // Track all admitted child/root CachedView chunks in the single
-            // GPU-owner cache, not only the outer Scene's candidates.
-            cache.active_retained_chunk_ids_scratch.insert(chunk.id.clone());
             self.encode_quad_range(
                 &scene.quads[cursor..chunk.quad_range.start],
                 is_solid,
@@ -128,6 +124,7 @@ impl FrameUpload {
                     byte_hash,
                     quad_count: count,
                     is_solid: chunk.is_solid,
+                    last_used_epoch: cache.frame_epoch,
                 },
             );
         }
@@ -173,14 +170,14 @@ impl FrameUpload {
 
     fn reuse_retained_quad_chunk(
         &mut self,
-        cache: &RetainedQuadChunkCache,
+        cache: &mut RetainedQuadChunkCache,
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
     ) -> bool {
         if !chunk.replayed {
             return false;
         }
-        let Some(cached) = cache.retained_quad_chunks.get(&chunk.id) else {
+        let Some(cached) = cache.retained_quad_chunks.get_mut(&chunk.id) else {
             return false;
         };
         if cached.is_solid != chunk.is_solid
@@ -188,6 +185,9 @@ impl FrameUpload {
         {
             return false;
         }
+        // Only a successful accepted replay marks this payload resident in
+        // the current frame. Rejected/fully clipped chunks do not survive trim.
+        cached.last_used_epoch = cache.frame_epoch;
         let byte_start = self.quads.len();
         let first = (byte_start / PACKED_QUAD_BYTES) as u32;
         self.quads
@@ -278,24 +278,19 @@ impl FrameUpload {
 
 impl RetainedQuadChunkCache {
     pub(super) fn begin_frame(&mut self) {
-        self.active_retained_chunk_ids_scratch.clear();
+        // Zero is reserved as the never-used marker. On wrap, retire all
+        // map entries rather than accidentally validating an ancient epoch.
+        self.frame_epoch = self.frame_epoch.wrapping_add(1);
+        if self.frame_epoch == 0 {
+            self.retained_quad_chunks.clear();
+            self.frame_epoch = 1;
+        }
     }
 
     pub(super) fn prune_retained_quads(&mut self) {
-        let active_chunk_count = self.active_retained_chunk_ids_scratch.len();
-        {
-            let active_chunks = &self.active_retained_chunk_ids_scratch;
-            self.retained_quad_chunks
-                .retain(|id, _| active_chunks.contains(id));
-        }
-        self.active_retained_chunk_ids_scratch.clear();
-        let scratch_target = CHUNK_SCRATCH_MIN_CAPACITY.max(active_chunk_count);
-        if self.active_retained_chunk_ids_scratch.capacity()
-            > scratch_target.saturating_mul(WORKING_SET_TRIM_MULTIPLIER)
-        {
-            self.active_retained_chunk_ids_scratch
-                .shrink_to(scratch_target);
-        }
+        let epoch = self.frame_epoch;
+        self.retained_quad_chunks
+            .retain(|_, chunk| chunk.last_used_epoch == epoch);
     }
 }
 

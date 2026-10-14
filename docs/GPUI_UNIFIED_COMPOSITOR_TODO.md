@@ -309,6 +309,13 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **测试源码（未运行）**：更新全部已定位的 `FrameUpload::encode`、内存统计、bench、Native GPU 测试消费者；新增释放/重新构造 FrameUpload 后仍能命中驻留 payload，以及嵌套 Element Blur 下的 Retained Chunk 不被根帧错误裁剪的对照测试。需要 `cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib retained_quad`，Windows DX11/DX12/Vulkan/OpenGL 及 Live Resize/Fence 实机验证，当前环境未运行。
 - **不能标记已完成**：SceneSlot、`Scene::replay`、`Scene::finish`、`NovaRenderer::pack_scene`、全场景 FrameUpload staging、完整持久 Paint Chunk、GPU property compositor lane 仍存在。下一次必须先编译/验证此所有权迁移，随后推进直接以 CachedView Chunk 变化集驱动 GPU resident encode/DrawStep，移除更多 Scene Replay 与全帧打包链路，不添加新包装中转。
 
+## 2026-10-15：修复迁移后测试并用 Chunk Epoch 清理存活集合
+
+- 基线 HEAD：`005d3f7551f016aaa3eb8273e9e4d8879be87eea`。源码追踪确认上轮 `crates/gpui/src/platform/nova/tests.rs` 的独立 FrameUpload 生命周期测试漏声明 `chunk_cache`，另有两处旧 `upload.retained_quad_chunks` 访问；本次一并修复。前一版**尚未通过 Rust 测试**，不能将其描述为已编译。
+- 以 GPU Owner 的 `RetainedQuadChunkCache.frame_epoch` 和各 `PackedRetainedQuadChunk.last_used_epoch` 替代每次完整编码复制所有 `RetainedChunkId/GlobalElementId` 的临时活跃 HashSet。只有实际完成打包/复用的 Chunk 写入本轮 epoch；包括递归 Element Blur 的 CachedView；根层完成后对唯一缓存按 epoch 原地 retain。u64 epoch 溢出时清空旧缓存，避免错误命中。此变更不产生第二份持久 Paint 状态，不能推导出 GPU VRAM 降低。
+- 修改范围：`frame_upload/frame.rs`、`frame_upload/encode/retained.rs`、`frame_upload/capacity.rs`、`platform/nova/tests.rs`、本 TODO。同步删除 HashSet scratch 的统计、Trim、测试假设，增加过期 Chunk 释放时仍由外部 `Arc` 持有旧字节的测试。
+- 当前仅静态检查，**未运行 cargo fmt/check/test，也无四后端实机验证**。下一步必须优先本地编译上轮及本轮 GPU Owner 迁移，然后推进真正 CachedView → Paint Chunk 唯一记录，清除 SceneSlot/Replay/pack_scene；不要仅增加旁路缓存。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

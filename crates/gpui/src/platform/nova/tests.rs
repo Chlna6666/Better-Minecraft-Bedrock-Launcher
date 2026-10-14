@@ -935,14 +935,13 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         upload.retained_quad_memory(&chunk_cache).used_bytes,
         (32 * PACKED_QUAD_BYTES) as u64
     );
-    assert!(chunk_cache.active_retained_chunk_ids_scratch.is_empty());
-    let active_chunk_scratch_capacity = chunk_cache.active_retained_chunk_ids_scratch.capacity();
-    assert!(
-        active_chunk_scratch_capacity >= 1,
-        "retained cache pruning should keep its hash allocation hot"
-    );
+    assert_eq!(chunk_cache.frame_epoch, 1);
+    assert!(chunk_cache
+        .retained_quad_chunks
+        .values()
+        .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch));
 
-    let cached_bytes_ptr = upload
+    let cached_bytes_ptr = chunk_cache
         .retained_quad_chunks
         .values()
         .next()
@@ -964,7 +963,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         BackdropBlurQuality::Full,
     );
     assert_eq!(same_generation_summary.retained_chunk_hits, 0);
-    let same_generation_cached = upload
+    let same_generation_cached = chunk_cache
         .retained_quad_chunks
         .values()
         .next()
@@ -974,11 +973,11 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         cached_bytes_ptr,
         "dirty retained chunks should reuse their byte backing allocation"
     );
-    assert_eq!(
-        chunk_cache.active_retained_chunk_ids_scratch.capacity(),
-        active_chunk_scratch_capacity,
-        "stable retained working sets should reuse the liveness hash table"
-    );
+    assert_eq!(chunk_cache.frame_epoch, 2);
+    assert!(chunk_cache
+        .retained_quad_chunks
+        .values()
+        .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch));
 
     let mut partially_dirty = crate::Scene::default();
     partially_dirty.replay(0..previous.len(), &previous);
@@ -1048,6 +1047,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
 #[test]
 fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let previous = retained_quad_scene(1);
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let size = DrawableSize {
         width: 640,
@@ -1089,6 +1089,34 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         upload.quads.shared_bytes().next().unwrap().as_ptr(),
         old_ptr
     );
+}
+
+#[test]
+fn retained_quad_cache_removes_unused_epochs_without_invalidating_in_flight_arc() {
+    let mut cache = RetainedQuadChunkCache::default();
+    let payload = Arc::new(vec![7u8; PACKED_QUAD_BYTES]);
+    let handle = Arc::downgrade(&payload);
+    let id = crate::RetainedChunkId::new(
+        GlobalElementId::from_path(&["retained-epoch".into()]),
+        1,
+    );
+    cache.begin_frame();
+    cache.retained_quad_chunks.insert(
+        id,
+        PackedRetainedQuadChunk {
+            bytes: Arc::clone(&payload),
+            byte_hash: 17,
+            quad_count: 1,
+            is_solid: false,
+            last_used_epoch: cache.frame_epoch,
+        },
+    );
+    cache.begin_frame();
+    cache.prune_retained_quads();
+    assert!(cache.retained_quad_chunks.is_empty());
+    assert!(handle.upgrade().is_some());
+    drop(payload);
+    assert!(handle.upgrade().is_none());
 }
 
 #[test]
