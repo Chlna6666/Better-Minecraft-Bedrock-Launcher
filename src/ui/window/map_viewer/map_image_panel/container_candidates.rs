@@ -50,10 +50,13 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> Div {
         let overlay_enabled = self.overlay_options.block_entities;
+        // A previous dimension/view's cache can remain present during a new query.
+        // Do not present those positions as current until the requested overlay completes.
+        let overlay_ready = overlay_enabled && self.professional.overlay_complete;
         let query = self.map_image.container_search.read(cx).value();
         let query = query.trim().to_lowercase();
         let center = self.viewport.center_block(self.active_layout);
-        let (matches, positions) = if overlay_enabled {
+        let (matches, positions) = if overlay_ready {
             self.professional.overlay_paint.as_ref().map_or(
                 (0, Vec::new()),
                 |overlay| {
@@ -107,8 +110,8 @@ impl MapViewerWindowView {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child(if self.professional.overlay_loading {
-                                "正在更新可见范围索引…".to_owned()
+                            .child(if !overlay_ready {
+                                "正在等待当前维度与可见范围索引完成…".to_owned()
                             } else {
                                 format!("匹配 {matches} 条位置记录 · 按距视口中心排序，最多显示 {MAX_VISIBLE_CANDIDATES} 条")
                             }),
@@ -127,7 +130,7 @@ impl MapViewerWindowView {
                             }),
                         )
                     }))
-                    .when(matches == 0 && !self.professional.overlay_loading, |panel| {
+                    .when(matches == 0 && overlay_ready, |panel| {
                         panel.child(
                             div()
                                 .text_size(px(11.0))
