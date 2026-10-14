@@ -399,9 +399,16 @@ impl MapViewerWindowView {
                 self.map_image.preview_done = result.tiles.len() as u32;
                 self.map_image.grid_estimated = false;
                 self.map_image.preview_note = Some(format!(
-                    "源图 {}×{}；裁剪 x={} y={} {}×{}；输出 {}×{} 张地图，实际像素 {}×{}。深色线仅表示分片边界。",
+                    "源图 {}×{}；{} x={} y={} {}×{}；输出 {}×{} 张地图，实际像素 {}×{}。深色线仅表示分片边界。",
                     result.source_width,
                     result.source_height,
+                    if self.map_image.options.fit == MapImageFit::Contain
+                        && self.map_image.options.trim_transparent_edges
+                    {
+                        "自动移除透明空白后的内容区域"
+                    } else {
+                        "原图裁剪区域"
+                    },
                     result.crop.x,
                     result.crop.y,
                     result.crop.width,
