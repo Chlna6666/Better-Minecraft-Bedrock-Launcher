@@ -21,9 +21,9 @@ mod controls;
 const IMAGE_PREVIEW_REFRESH_DELAY: Duration = Duration::from_millis(180);
 
 pub(super) struct ImageGeneratorPanelState {
-    source: Option<PathBuf>,
+    pub(super) source: Option<PathBuf>,
     output: Option<PathBuf>,
-    options: ImageBlockOptions,
+    pub(super) options: ImageBlockOptions,
     preview_options: Option<ImageBlockOptions>,
     task_id: Option<String>,
     pub(super) preview_task_id: Option<String>,
@@ -96,7 +96,7 @@ impl MapViewerWindowView {
         }
     }
 
-    fn set_image_dimension(&mut self, axis: ImageAxis, size: u32, cx: &mut Context<Self>) {
+    pub(super) fn set_image_dimension(&mut self, axis: ImageAxis, size: u32, cx: &mut Context<Self>) {
         if self.image_generator_busy() {
             return;
         }
