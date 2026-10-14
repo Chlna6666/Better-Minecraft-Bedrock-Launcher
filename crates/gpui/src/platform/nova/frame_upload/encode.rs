@@ -746,9 +746,10 @@ mod retained_root_tests {
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
                 crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
             );
+            let mut chunk_cache = RetainedQuadChunkCache::default();
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
-            &mut chunk_cache,
+                &mut chunk_cache,
                 &scene,
                 &[],
                 size,
@@ -813,6 +814,7 @@ mod retained_root_tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut upload = FrameUpload::default();
         let mut summary = upload.encode(
             &mut chunk_cache,

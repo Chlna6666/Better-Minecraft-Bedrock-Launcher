@@ -875,6 +875,7 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
 #[test]
 fn frame_upload_globals_follow_surface_alpha_mode() {
     let scene = crate::Scene::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
@@ -908,6 +909,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 #[test]
 fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let previous = retained_quad_scene(1);
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let rendering_parameters = RenderingParameters::system();
     let drawable_size = DrawableSize {
@@ -1201,6 +1203,7 @@ fn frame_upload_records_scene_animation_bindings() {
     );
     scene.finish();
 
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
@@ -1241,6 +1244,7 @@ fn frame_upload_records_scene_animation_values() {
         to: [1.0, 0.0, 0.0, 0.0],
     });
 
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
