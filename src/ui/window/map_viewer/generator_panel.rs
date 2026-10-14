@@ -14,9 +14,9 @@ mod parameters;
 mod render;
 
 pub(super) struct GeneratorPanelState {
-    source: Option<PathBuf>,
+    pub(super) source: Option<PathBuf>,
     output: Option<PathBuf>,
-    options: ObjVoxelOptions,
+    pub(super) options: ObjVoxelOptions,
     task_id: Option<String>,
     pub(super) preview_task_id: Option<String>,
     pub(super) preview_processed: bool,
