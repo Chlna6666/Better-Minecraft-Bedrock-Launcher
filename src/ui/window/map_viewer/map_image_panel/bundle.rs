@@ -9,7 +9,7 @@ use crate::core::minecraft::map::generator::{
 use ::bedrock_world::block::BlockState;
 
 impl MapViewerWindowView {
-    pub(super) fn install_map_bundle_selected(&mut self, cx: &mut Context<Self>) {
+    pub(in super::super) fn install_map_bundle_selected(&mut self, cx: &mut Context<Self>) {
         self.install_map_bundle(self.map_image.install_destination, None, cx);
     }
 
