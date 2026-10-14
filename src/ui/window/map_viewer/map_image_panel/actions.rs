@@ -33,8 +33,12 @@ impl MapViewerWindowView {
                     "玩家：{}",
                     super::super::players::player_id_label(&self.map_image.selected_player)
                 ),
-                "地图物品会发放到玩家物品栏／潜影盒，不在世界中建造展示框。",
-                true,
+                if self.map_image.selected_player.storage_key().is_some() {
+                    "地图物品会发放到所选玩家的物品栏或潜影盒，不在世界中建造展示框。"
+                } else {
+                    "当前玩家存储在 level.dat，不能与 map 记录原子写入；请选择列表中可写入的服务器玩家。"
+                },
+                self.map_image.selected_player.storage_key().is_some(),
             ),
             MapImageInstallDestination::SelectedBlock => (
                 "写入所选容器",
@@ -81,7 +85,7 @@ impl MapViewerWindowView {
         } else if !ready {
             "地图像素未准备好，请先完成转换或刷新预览"
         } else if !target_ready {
-            "请先在世界地图上指定有效写入目标"
+            "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
         } else {
             "地图像素已就绪。检查目标后再确认写入，不会在预览时修改存档"
         };
