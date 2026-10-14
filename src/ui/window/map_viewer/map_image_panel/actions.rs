@@ -31,10 +31,18 @@ impl MapViewerWindowView {
                 "写入所选容器",
                 self.map_image.selected_block.map_or_else(
                     || "尚未选择容器或展示框".to_owned(),
-                    |(_, block)| format!("已选目标：{}, {}, {}", block.x, block.y, block.z),
+                    |(chunk, block)| {
+                        if chunk.dimension == self.dimension {
+                            format!("已选目标：{}, {}, {}", block.x, block.y, block.z)
+                        } else {
+                            "原目标属于其他维度，请在当前维度重新选择".to_owned()
+                        }
+                    },
                 ),
-                "在地图中右键一个箱子、潜影盒或空展示框，选择菜单顶部的「设为地图写入目标」。",
-                self.map_image.selected_block.is_some(),
+                "在地图上右键目标方块，选择首项「设为地图写入目标」；选中后会在世界画布高亮位置。",
+                self.map_image.selected_block.is_some_and(|(chunk, _)| {
+                    chunk.dimension == self.dimension
+                }),
             ),
             MapImageInstallDestination::NewUpFrame => {
                 let (x, z) = self.map_frame_anchor();
@@ -44,7 +52,7 @@ impl MapViewerWindowView {
                         "锁定位置：X {x} · Y {} · Z {z}；{}×{} 张",
                         self.y_layer, self.map_image.options.columns, self.map_image.options.rows
                     ),
-                    "地图中的网格和图片为放置预览；拖动世界视口不会改变已锁定的位置。",
+                    "世界画布显示展示框合成图；右键地图可以精确设置中心，拖动视口不会移动已锁定的位置。",
                     true,
                 )
             }
