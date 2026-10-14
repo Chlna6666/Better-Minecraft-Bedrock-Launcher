@@ -151,6 +151,7 @@ impl MapViewerWindowView {
                                             }),
                                     )
                                 })
+                                .child(self.render_map_container_candidates(colors, cx))
                         },
                     )
                     .when(self.map_image.install_destination == MapImageInstallDestination::NewUpFrame, |panel| panel
