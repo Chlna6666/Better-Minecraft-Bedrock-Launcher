@@ -151,27 +151,43 @@ pub(super) fn write_paint_blur(
     blur: &crate::PaintBlur,
     drawable_size: DrawableSize,
 ) {
-    write_u32_vec(bytes, blur.order);
+    write_paint_blur_fields(
+        bytes,
+        blur.order,
+        blur.bounds,
+        blur.content_mask,
+        blur.radius,
+        blur.opacity,
+        drawable_size,
+    );
+}
+
+/// Encode a compositor/filter record without constructing a synthetic Scene.
+/// Shader ABI is identical for real element filters and GPU-owned root color.
+pub(super) fn write_paint_blur_fields(
+    bytes: &mut Vec<u8>,
+    order: crate::DrawOrder,
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    content_mask: crate::ContentMask<crate::ScaledPixels>,
+    radius: crate::ScaledPixels,
+    opacity: f32,
+    drawable_size: DrawableSize,
+) {
+    write_u32_vec(bytes, order);
     write_u32_vec(bytes, 1);
     write_u32_vec(bytes, 1);
-    // A zero-radius PaintBlur is GPUI's retained compositor layer. Its target contains the cached
-    // subtree pixels themselves, so sharing that target with an adjacent compositor is unsafe:
-    // refreshing either layer begins with an attachment clear and would erase the other retained
-    // layer before the main pass samples it. Mark zero-filter layers as overlap-recompute slots so
-    // canonical blur-config merging keeps each compositor on an independent GPU target.
-    write_u32_vec(bytes, u32::from(blur.radius.0 <= 0.0));
-    // Display bounds. Future composite-only animation may change these independently.
-    write_bounds_scaled(bytes, &blur.bounds);
-    write_content_mask(bytes, &blur.content_mask);
+    // Zero-radius compositor outputs are independent GPU targets: merging
+    // them would clear one layer while another still samples its contents.
+    write_u32_vec(bytes, u32::from(radius.0 <= 0.0));
+    write_bounds_scaled(bytes, &bounds);
+    write_content_mask(bytes, &content_mask);
     write_corners(bytes, &Default::default());
-    // Source bounds occupy the backdrop-tint slot for element/composite layers. They intentionally
-    // equal display bounds today, making this ABI groundwork behavior-preserving.
-    write_bounds_scaled(bytes, &blur.bounds);
-    write_f32_vec(bytes, blur.radius.0);
+    write_bounds_scaled(bytes, &bounds);
+    write_f32_vec(bytes, radius.0);
     write_f32_vec(bytes, 1.0);
     write_f32_vec(bytes, drawable_size.width as f32);
     write_f32_vec(bytes, drawable_size.height as f32);
-    write_f32_vec(bytes, blur.opacity);
+    write_f32_vec(bytes, opacity);
     write_u32_vec(bytes, 1);
 }
 
@@ -344,4 +360,47 @@ fn write_i32_vec(bytes: &mut Vec<u8>, value: i32) {
 
 pub(super) fn write_f32_vec(bytes: &mut Vec<u8>, value: f32) {
     bytes.extend_from_slice(&value.to_ne_bytes());
+}
+
+#[cfg(test)]
+mod compositor_record_tests {
+    use super::*;
+
+    #[test]
+    fn field_encoder_matches_element_blur_shader_abi() {
+        let size = DrawableSize {
+            width: 1280,
+            height: 720,
+        };
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(12.0), crate::ScaledPixels(24.0)),
+            crate::size(crate::ScaledPixels(300.0), crate::ScaledPixels(180.0)),
+        );
+        for radius in [0.0, 4.5] {
+            let blur = crate::PaintBlur {
+                order: 21,
+                animation_id: None,
+                layer_id: None,
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                radius: crate::ScaledPixels(radius),
+                opacity: 0.75,
+                content: std::sync::Arc::new(crate::Scene::default()),
+            };
+            let mut element = Vec::new();
+            write_paint_blur(&mut element, &blur, size);
+            let mut direct = Vec::new();
+            write_paint_blur_fields(
+                &mut direct,
+                blur.order,
+                blur.bounds,
+                blur.content_mask,
+                blur.radius,
+                blur.opacity,
+                size,
+            );
+            assert_eq!(direct.len(), PACKED_BACKDROP_BLUR_BYTES);
+            assert_eq!(direct, element);
+        }
+    }
 }

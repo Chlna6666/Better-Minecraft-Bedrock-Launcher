@@ -139,17 +139,18 @@ impl FrameUpload {
             ..Default::default()
         };
         self.quads.write(|bytes| write_quad(bytes, &clear_quad));
-        let root_blur = crate::PaintBlur {
-            order: 0,
-            animation_id: None,
-            layer_id: None,
+        // Root color is already GPU-resident; constructing an empty Scene
+        // solely to encode its compositor descriptor wastes a separate Arc
+        // allocation and confuses capture ownership with presentation data.
+        write_paint_blur_fields(
+            &mut self.backdrop_blurs,
+            0,
             bounds,
-            content_mask: crate::ContentMask::new(bounds),
-            radius: crate::ScaledPixels(0.0),
-            opacity: 1.0,
-            content: std::sync::Arc::new(crate::Scene::default()),
-        };
-        write_paint_blur(&mut self.backdrop_blurs, &root_blur, drawable_size);
+            crate::ContentMask::new(bounds),
+            crate::ScaledPixels(0.0),
+            1.0,
+            drawable_size,
+        );
         self.batches.insert(0, UploadedBatch::BeginBlur { index: root_index });
         self.batch_visual_bounds.insert(0, None);
         self.batches.push(UploadedBatch::EndBlur { index: root_index });
