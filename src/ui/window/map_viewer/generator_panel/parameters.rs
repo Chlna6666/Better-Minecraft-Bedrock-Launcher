@@ -102,16 +102,12 @@ impl MapViewerWindowView {
                                     }),
                                 )
                             }))
+                            .child(self.num_obj_size.control())
                             .child(
                                 div()
-                                    .min_w(px(48.0))
-                                    .text_center()
-                                    .text_size(px(12.0))
-                                    .text_color(colors.text_primary)
-                                    .child(format!(
-                                        "{} 方块",
-                                        self.generator.options.longest_side_blocks
-                                    )),
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child("方块"),
                             )
                             .child(generator_choice(colors, "+1", false).when(!busy, |button| {
                                 button.on_mouse_down(
