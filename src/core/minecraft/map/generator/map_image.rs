@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::core::minecraft::map::image::{
-    MapImageCrop, MapImageOptions, MapImageTile, MapResample, tile_map_image_with_progress,
+    MapImageCrop, MapImageFit, MapImageOptions, MapImageTile, MapResample, tile_map_image_with_progress,
 };
 use bedrock_world::surface::CancelFlag;
 use image::{Rgba, RgbaImage, imageops};
@@ -28,8 +28,8 @@ pub struct MapPreviewOptions {
     pub rows: u32,
     /// Fit the grid to the decoded source dimensions before splitting.
     pub auto_fit: bool,
-    /// Whether to remove equal source margins to match the map-grid ratio.
-    pub center_crop: bool,
+    /// Complete undistorted images by default; cropping and stretching are opt-in.
+    pub fit: MapImageFit,
     /// Image resampling before 128×128 splitting.
     pub resample: MapResample,
     /// Pixels below this alpha become transparent; others become opaque.
@@ -42,7 +42,7 @@ impl Default for MapPreviewOptions {
             columns: 1,
             rows: 1,
             auto_fit: false,
-            center_crop: true,
+            fit: MapImageFit::Contain,
             resample: MapResample::Lanczos3,
             alpha_threshold: 1,
         }
@@ -326,6 +326,7 @@ async fn convert(
                 columns: options.columns,
                 rows: options.rows,
                 resample: options.resample,
+                fit: options.fit,
                 alpha_threshold: options.alpha_threshold,
             },
             |_| {
@@ -435,7 +436,7 @@ fn crop_for_grid(width: u32, height: u32, options: MapPreviewOptions) -> Result<
     if width == 0 || height == 0 {
         return Err("图片没有有效像素".to_owned());
     }
-    let (x, y, crop_width, crop_height) = if options.center_crop {
+    let (x, y, crop_width, crop_height) = if options.fit == MapImageFit::CenterCrop {
         let source_ratio = u64::from(width) * u64::from(options.rows);
         let grid_ratio = u64::from(height) * u64::from(options.columns);
         if source_ratio > grid_ratio {
@@ -515,6 +516,7 @@ mod tests {
             MapPreviewOptions {
                 columns: 1,
                 rows: 1,
+                fit: MapImageFit::CenterCrop,
                 ..MapPreviewOptions::default()
             },
         )
@@ -582,6 +584,7 @@ mod tests {
                 columns: 2,
                 rows: 1,
                 resample: MapResample::Nearest,
+                fit: MapImageFit::Stretch,
                 alpha_threshold: 1,
             },
         )
