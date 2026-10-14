@@ -98,5 +98,5 @@ fn build_blocking_response(
     }
 
     let bytes = response.bytes()?;
-    Ok(output.body(http_client::AsyncBody::from(bytes.to_vec()))?)
+    Ok(output.body(http_client::AsyncBody::from(bytes))?)
 }

@@ -1,4 +1,7 @@
-use gpui::{App, PerformanceMetricsSnapshot, Timer, performance_metrics_snapshot};
+use gpui::{
+    App, PerformanceMetricsSnapshot, Timer, gpu_owner_metrics_snapshot,
+    performance_metrics_snapshot,
+};
 use std::time::Duration;
 
 const LOG_INTERVAL: Duration = Duration::from_secs(5);
@@ -54,15 +57,34 @@ fn duration_micros(duration: Option<Duration>) -> u128 {
 
 pub(crate) fn start(cx: &mut App) {
     let mut previous = performance_metrics_snapshot();
+    let mut previous_owner_jobs = gpu_owner_metrics_snapshot().completed_jobs;
     cx.spawn(async move |_cx| {
         loop {
             Timer::after(LOG_INTERVAL).await;
             let current = performance_metrics_snapshot();
             emit_snapshot(&previous, &current);
+            emit_gpu_owner_log(&mut previous_owner_jobs);
             previous = current;
         }
     })
     .detach();
+}
+
+fn emit_gpu_owner_log(previous_jobs: &mut u64) {
+    let metrics = gpu_owner_metrics_snapshot();
+    if metrics.completed_jobs == *previous_jobs {
+        return;
+    }
+    *previous_jobs = metrics.completed_jobs;
+    tracing::debug!(
+        target: "gpui::diagnostics",
+        owner_busy_ratio = metrics.owner_busy_ratio,
+        owner_cpu_busy_ratio = ?metrics.owner_cpu_busy_ratio,
+        blocking_wait_us = metrics.owner_blocking_wait_time_us,
+        sample_age_ms = ?metrics.sample_age_ms,
+        windows = ?metrics.windows,
+        "GPUI GPU owner diagnostics (lifetime totals, recent completed-job distributions)"
+    );
 }
 
 fn emit_snapshot(previous: &PerformanceMetricsSnapshot, current: &PerformanceMetricsSnapshot) {
