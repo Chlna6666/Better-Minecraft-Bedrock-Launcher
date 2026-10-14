@@ -2,7 +2,7 @@
 //! The GPUI Input owns the edit buffer: parsers never mutate business state on every keystroke.
 
 use super::input::{Input, InputSize, InputState};
-use gpui::{App, Context, Entity, Styled, Window, px};
+use gpui::{App, AppContext as _, Context, Entity, Styled, Window, px};
 
 /// Independent text edit state; callers commit on Enter/blur and retain their domain constraints.
 #[derive(Clone)]

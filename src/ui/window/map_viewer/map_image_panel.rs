@@ -49,6 +49,11 @@ pub(super) struct MapImagePanelState {
 }
 
 impl MapImagePanelState {
+    /// Preview task identifier used to match task snapshots without exposing mutable state.
+    pub(super) fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<MapViewerWindowView>) -> Self {
         let player_search = cx.new(|cx| {
             let mut input = InputState::new(window, cx);

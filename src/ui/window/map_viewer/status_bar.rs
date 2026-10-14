@@ -80,7 +80,7 @@ impl MapViewerWindowView {
                         this.task_snapshots
                             .retain(|_, snapshot| is_map_window_task_snapshot(snapshot.as_ref()));
                         for snapshot in snapshots {
-                            let finished_map_preview = this.map_image.task_id.as_deref()
+                            let finished_map_preview = this.map_image.task_id()
                                 == Some(snapshot.id.as_ref())
                                 && snapshot.is_terminal();
                             this.accept_map_image_task_snapshot(snapshot.as_ref());
