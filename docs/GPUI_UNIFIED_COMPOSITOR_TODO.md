@@ -343,6 +343,12 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **测试源码**：16 个兄弟 Cache Chunk、跨越两次 Replay 的父 Chunk、排序与跨片段保留、未完成 Scene 回退以及后置候选更新后的 revision 失效；另用独立随机区间脚本对照原始逐项扫描，36,000 组结果一致。**没有执行 Rust 编译、rustfmt、单测及 DX11/DX12/Vulkan/OpenGL 实机测试**，不宣称 Prepaint 或 GPU 占用已实测下降。
 - **后续删除清单**：`SceneSlot`、`Scene::replay`、`pack_scene`、全量 `FrameUpload` staging、全类型持久 Paint Chunk 尚未删除。本改动优化现存 Replay 热路径，而非以额外长期层阻碍后续破坏性迁移。下轮先运行 Cargo 验证，并从 CachedView 的纯 Quad/Shadow 可持久段扩展向单一 GPU resident 变更集。
 
+## 2026-10-15：移除仅局部平衡的弱 Blur Replay 校验
+
+- 基线 master `f252280cdb26b9f426f6a29765620ae7dcf6db8e`；删除 `crates/gpui/src/scene/display_list.rs` 的 `range_has_balanced_element_blurs`，同步清理 `crates/gpui/src/scene/tests.rs` 中仅测试该弱接口的断言。源码搜索确认无生产消费者。
+- 该旧方法只检查候选片段内部 `StartBlur/EndBlur` 配对，不能识别片段起点位于外层 `StartBlur` 或 `StartLayer` 内的情况，返回 true 不代表可单独 Replay。生产链路原已使用更严格的 `range_is_independently_replayable`；现在消除可能被未来调用者误用的重复入口，保留嵌套捕获的拒绝回归测试。无新兼容层。
+- **状态**：代码实现及静态依赖检查，未 Rust 编译/测试、未四后端原生验证；不以删除弱接口声称完整 Scene Replay 已迁移。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
