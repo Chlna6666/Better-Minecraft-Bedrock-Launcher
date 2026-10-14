@@ -1137,13 +1137,31 @@ pub(super) struct PastePreviewImage {
     pub(super) height: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub(super) struct MapFrameGridPreview {
     pub(super) min_block_x: i32,
     pub(super) min_block_z: i32,
     pub(super) columns: u32,
     pub(super) rows: u32,
+    /// Reuse an already-generated bitmap, rather than allocating for each canvas frame.
+    pub(super) image: Option<Arc<RenderImage>>,
 }
+
+impl PartialEq for MapFrameGridPreview {
+    fn eq(&self, other: &Self) -> bool {
+        self.min_block_x == other.min_block_x
+            && self.min_block_z == other.min_block_z
+            && self.columns == other.columns
+            && self.rows == other.rows
+            && match (&self.image, &other.image) {
+                (None, None) => true,
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                _ => false,
+            }
+    }
+}
+
+impl Eq for MapFrameGridPreview {}
 
 #[derive(Clone)]
 pub(super) struct CopiedChunkPreviewImage {
