@@ -61,7 +61,7 @@ impl Default for ImageGeneratorPanelState {
 }
 
 #[derive(Clone, Copy)]
-enum ImageAxis {
+pub(super) enum ImageAxis {
     Width,
     Height,
 }
