@@ -27,93 +27,95 @@ impl MapViewerWindowView {
                                 .child("尺寸已更新，正在准备新的方块预览…"),
                         )
                     })
-                    .child(div().flex().flex_wrap().gap(px(6.0)).children(
-                        [16_u16, 32, 64, 128, 256, 384].into_iter().map(|size| {
-                            generator_choice(
-                                colors,
-                                format!("{size}"),
-                                self.generator.options.longest_side_blocks == size,
-                            )
-                            .when(!busy, |button| {
+                    .child({
+                        let changed_view = cx.entity().downgrade();
+                        let committed_view = changed_view.clone();
+                        let size = self.generator.options.longest_side_blocks;
+                        let slider = Slider::new(
+                            "obj-longest-side",
+                            colors,
+                            1.0,
+                            384.0,
+                            f32::from(size),
+                            move |value, app| {
+                                let next = value.round().clamp(1.0, 384.0) as u16;
+                                if let Err(error) = changed_view.update(app, |this, cx| {
+                                    if this.generator.options.longest_side_blocks != next {
+                                        this.generator.options.longest_side_blocks = next;
+                                        this.num_obj_size.sync(u32::from(next), cx);
+                                        this.schedule_obj_live_preview(cx);
+                                    }
+                                }) {
+                                    tracing::warn!(%error, "could not update OBJ size slider");
+                                }
+                            },
+                        )
+                        .width(px(245.0))
+                        .on_commit(move |value, app| {
+                            let next = value.round().clamp(1.0, 384.0) as u16;
+                            if let Err(error) = committed_view.update(app, |this, cx| {
+                                this.generator.options.longest_side_blocks = next;
+                                this.num_obj_size.sync(u32::from(next), cx);
+                                this.ensure_obj_live_preview(cx);
+                                cx.notify();
+                            }) {
+                                tracing::warn!(%error, "could not apply OBJ size slider");
+                            }
+                        });
+
+                        crate::ui::components::numeric_field::numeric_dimension_editor(
+                            &self.num_obj_size,
+                            colors,
+                            "方块",
+                            generator_choice(colors, "−", false).when(!busy && size > 1, |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(move |this, _event, _window, cx| {
-                                        this.set_obj_precision_size(size, cx);
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.set_obj_precision_size(size - 1, cx)
                                     }),
                                 )
-                            })
-                        }),
-                    ))
+                            }),
+                            generator_choice(colors, "+", false).when(!busy && size < 384, |button| {
+                                button.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.set_obj_precision_size(size + 1, cx)
+                                    }),
+                                )
+                            }),
+                            slider,
+                        )
+                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.0))
-                            .child(div().text_size(px(11.0)).text_color(colors.text_secondary).child("精细尺寸"))
-                            .when(!busy, |row| {
-                                let changed_view = cx.entity().downgrade();
-                                let committed_view = changed_view.clone();
-                                row.child(
-                                    Slider::new(
-                                        "obj-longest-side",
-                                        colors,
-                                        1.0,
-                                        384.0,
-                                        f32::from(self.generator.options.longest_side_blocks),
-                                        move |value, app| {
-                                            let next = value.round().clamp(1.0, 384.0) as u16;
-                                            if let Err(error) = changed_view.update(app, |this, cx| {
-                                                if this.generator.options.longest_side_blocks != next {
-                                                    this.generator.options.longest_side_blocks = next;
-                                                    this.num_obj_size.sync(u32::from(next), cx);
-                                                    this.schedule_obj_live_preview(cx);
-                                                }
-                                            }) {
-                                                tracing::warn!(%error, "could not update OBJ size slider");
-                                            }
-                                        },
-                                    )
-                                    .width(px(180.0))
-                                    .on_commit(move |value, app| {
-                                        let next = value.round().clamp(1.0, 384.0) as u16;
-                                        if let Err(error) = committed_view.update(app, |this, cx| {
-                                            this.generator.options.longest_side_blocks = next;
-                                            this.num_obj_size.sync(u32::from(next), cx);
-                                            this.ensure_obj_live_preview(cx);
-                                            cx.notify();
-                                        }) {
-                                            tracing::warn!(%error, "could not apply OBJ size slider");
-                                        }
-                                    }),
-                                )
-                            })
-                            .child(generator_choice(colors, "−1", false).when(!busy, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        let size = this.generator.options.longest_side_blocks
-                                            .saturating_sub(1).max(1);
-                                        this.set_obj_precision_size(size, cx);
-                                    }),
-                                )
-                            }))
-                            .child(self.num_obj_size.control())
+                            .flex_wrap()
+                            .gap(px(6.0))
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .text_color(colors.text_secondary)
-                                    .child("方块"),
+                                    .child("常用尺寸"),
                             )
-                            .child(generator_choice(colors, "+1", false).when(!busy, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _event, _window, cx| {
-                                        let size = this.generator.options.longest_side_blocks
-                                            .saturating_add(1).min(384);
-                                        this.set_obj_precision_size(size, cx);
-                                    }),
-                                )
-                            })),
+                            .child(div().flex_1())
+                            .children(
+                                [16_u16, 64, 128, 256].into_iter().map(|size| {
+                                    generator_choice(
+                                        colors,
+                                        format!("{size}"),
+                                        self.generator.options.longest_side_blocks == size,
+                                    )
+                                    .when(!busy, |button| {
+                                        button.on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.set_obj_precision_size(size, cx)
+                                            }),
+                                        )
+                                    })
+                                }),
+                            ),
                     )
                     .child(generator_section_title(colors, "填充方式"))
                     .child(
