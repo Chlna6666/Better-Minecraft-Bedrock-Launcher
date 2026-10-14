@@ -2582,10 +2582,10 @@ mod tests {
     #[test]
     fn replay_structure_index_matches_prefix_scan_for_nested_and_invalid_ranges() {
         let mut scene = Scene::default();
-        let quad = PaintOperation::Primitive(Primitive::Quad(Quad::default()));
-        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 132));
+        let quad = || PaintOperation::Primitive(Primitive::Quad(Quad::default()));
+        scene.paint_operations.extend((0..132).map(|_| quad()));
         scene.paint_operations.push(PaintOperation::StartLayer(Bounds::default()));
-        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 4));
+        scene.paint_operations.extend((0..4).map(|_| quad()));
         scene.paint_operations.push(PaintOperation::StartBlur(BlurCapture {
             animation_id: None,
             layer_id: None,
@@ -2594,10 +2594,10 @@ mod tests {
             radius: ScaledPixels(2.0),
             opacity: 1.0,
         }));
-        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 5));
+        scene.paint_operations.extend((0..5).map(|_| quad()));
         scene.paint_operations.push(PaintOperation::EndBlur);
         scene.paint_operations.push(PaintOperation::EndLayer);
-        scene.paint_operations.extend(std::iter::repeat_n(quad, 132));
+        scene.paint_operations.extend((0..132).map(|_| quad()));
         scene.revision = 1;
         let len = scene.paint_operations.len();
         for start in 0..=len {
