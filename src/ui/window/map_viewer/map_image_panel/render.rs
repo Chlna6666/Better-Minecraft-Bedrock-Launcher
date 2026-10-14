@@ -170,7 +170,7 @@ impl MapViewerWindowView {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child("按地图行列在世界画布中心铺设朝上展示框；默认石头支撑，可选其他支撑块。框位必须为空，支撑位可为空或已是所选方块。"),
+                            .child("在当前地图编辑器中直接写入世界展示框（无需进入游戏手动摆放）；默认石头支撑，可选其他支撑块。框位必须为空，支撑位可为空或已是所选方块。"),
                     ))
                     .child(
                         div()
@@ -218,6 +218,37 @@ impl MapViewerWindowView {
                                 )
                         }),
                     ))
+                    .when(self.map_image.options.fit == MapImageFit::Contain, |panel| {
+                        panel
+                            .child(
+                                generator_choice(
+                                    colors,
+                                    "自动去除 PNG 透明外边距",
+                                    self.map_image.options.trim_transparent_edges,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        if this.map_image_operation_busy() {
+                                            return;
+                                        }
+                                        this.map_image.options.trim_transparent_edges =
+                                            !this.map_image.options.trim_transparent_edges;
+                                        this.start_map_preview(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child(if self.map_image.options.auto_fit {
+                                        "自动行列会按可见内容比例选择分片；固定行列仍可能产生必要留白。"
+                                    } else {
+                                        "当前为固定行列。为了减少留白，请使用「按原图尺寸自动匹配分片」。"
+                                    }),
+                            )
+                    })
                     .child(generator_section_title(colors, "缩放采样"))
                     .child(div().flex().gap(px(6.0)).children(
                         [
