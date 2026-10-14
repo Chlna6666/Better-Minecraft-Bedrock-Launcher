@@ -78,10 +78,10 @@ impl MapViewerWindowView {
                             slider_id,
                             colors,
                             1.0,
-                            64.0,
+                            max_count as f32,
                             count as f32,
                             move |value, app| {
-                                let next = value.round().clamp(1.0, 64.0) as u32;
+                                let next = value.round().clamp(1.0, max_count as f32) as u32;
                                 if let Err(error) = changed_view.update(app, |this, cx| {
                                     this.set_grid_size_from_slider(axis, next, cx);
                                 }) {
@@ -91,7 +91,7 @@ impl MapViewerWindowView {
                         )
                         .width(px(180.0))
                         .on_commit(move |value, app| {
-                            let next = value.round().clamp(1.0, 64.0) as u32;
+                            let next = value.round().clamp(1.0, max_count as f32) as u32;
                             if let Err(error) = committed_view.update(app, |this, cx| {
                                 this.set_grid_size(axis, next, cx);
                             }) {
