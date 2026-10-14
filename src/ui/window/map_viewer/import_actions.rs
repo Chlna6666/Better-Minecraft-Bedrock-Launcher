@@ -56,7 +56,7 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> impl IntoElement {
         let actions = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.render_obj_import_actions(colors, cx),
             MapViewerRightPanel::ImageGenerator => self.render_image_import_actions(colors, cx),
