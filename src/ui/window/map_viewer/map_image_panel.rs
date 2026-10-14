@@ -194,19 +194,40 @@ impl MapViewerWindowView {
     pub(super) fn map_frame_grid_preview(&self) -> Option<super::model::MapFrameGridPreview> {
         if !self.ui_state.right_panel_open
             || self.ui_state.active_right_panel != MapViewerRightPanel::MapImage
-            || self.map_image.install_destination != MapImageInstallDestination::NewUpFrame
-            || self.map_image.source.is_none()
+            || self.ui_state.import_workspace_mode
+                != super::state::ImportWorkspaceMode::Placement
         {
             return None;
         }
-        let (center_x, center_z) = self.map_frame_anchor();
-        Some(super::model::MapFrameGridPreview {
-            min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
-            min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
-            columns: self.map_image.options.columns,
-            rows: self.map_image.options.rows,
-            image: self.map_image.placement_preview.clone(),
-        })
+        match self.map_image.install_destination {
+            MapImageInstallDestination::Player => None,
+            MapImageInstallDestination::SelectedBlock => {
+                let (chunk, block) = self.map_image.selected_block?;
+                if chunk.dimension != self.dimension {
+                    return None;
+                }
+                Some(super::model::MapFrameGridPreview {
+                    min_block_x: block.x,
+                    min_block_z: block.z,
+                    columns: 1,
+                    rows: 1,
+                    image: None,
+                })
+            }
+            MapImageInstallDestination::NewUpFrame => {
+                if self.map_image.source.is_none() {
+                    return None;
+                }
+                let (center_x, center_z) = self.map_frame_anchor();
+                Some(super::model::MapFrameGridPreview {
+                    min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
+                    min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
+                    columns: self.map_image.options.columns,
+                    rows: self.map_image.options.rows,
+                    image: self.map_image.placement_preview.clone(),
+                })
+            }
+        }
     }
 
     pub(super) fn accept_map_install_task_snapshot(
