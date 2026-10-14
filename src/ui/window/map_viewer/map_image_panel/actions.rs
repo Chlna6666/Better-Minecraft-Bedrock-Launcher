@@ -17,6 +17,7 @@ impl MapViewerWindowView {
                     .is_some_and(|task| task.status.as_ref() == "completed")
             });
         let selected = self.map_image.install_destination;
+        let pending = self.map_image.pending_bundle.as_ref();
         let (primary, target, tip, target_ready) = match selected {
             MapImageInstallDestination::Player => (
                 "写入玩家背包",
@@ -48,10 +49,14 @@ impl MapViewerWindowView {
                 let (x, z) = self.map_frame_anchor();
                 (
                     "创建并写入展示框",
-                    format!(
-                        "锁定位置：X {x} · Y {} · Z {z}；{}×{} 张",
-                        self.y_layer, self.map_image.options.columns, self.map_image.options.rows
-                    ),
+                    if pending.is_some() {
+                        format!("锁定位置：X {x} · Y {} · Z {z}；待解析 NBT 分片", self.y_layer)
+                    } else {
+                        format!(
+                            "锁定位置：X {x} · Y {} · Z {z}；{}×{} 张",
+                            self.y_layer, self.map_image.options.columns, self.map_image.options.rows
+                        )
+                    },
                     "世界画布显示展示框合成图；右键地图可以精确设置中心，拖动视口不会移动已锁定的位置。",
                     true,
                 )
@@ -59,6 +64,8 @@ impl MapViewerWindowView {
         };
         let status = if busy {
             "写入／导出中，暂时锁定目标与参数"
+        } else if pending.is_some() {
+            "已暂存 NBT 文件：请检查目标后确认导入。外部文件尚无地图像素预览"
         } else if self.map_image.source.is_none() {
             "第一步：在右侧选择图片，生成真实地图像素"
         } else if converting {
@@ -135,6 +142,14 @@ impl MapViewerWindowView {
                             .child(tip),
                     ),
             )
+            .when_some(pending, |bar, path| {
+                bar.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(colors.text_primary)
+                        .child(format!("待确认文件：{}", path.display())),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -142,17 +157,25 @@ impl MapViewerWindowView {
                     .items_center()
                     .gap(px(8.0))
                     .child(
-                        generator_choice(colors, primary, ready && target_ready && !busy)
-                            .when(ready && target_ready && !busy, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.install_map_bundle_selected(cx)
-                                    }),
-                                )
-                            }),
+                        generator_choice(
+                            colors,
+                            if pending.is_some() { "确认 NBT 导入并写入" } else { primary },
+                            (ready || pending.is_some()) && target_ready && !busy,
+                        )
+                        .when((ready || pending.is_some()) && target_ready && !busy, |button| {
+                            button.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    if this.map_image.pending_bundle.is_some() {
+                                        this.confirm_pending_map_bundle(cx);
+                                    } else {
+                                        this.install_map_bundle_selected(cx);
+                                    }
+                                }),
+                            )
+                        }),
                     )
-                    .when(ready && !busy, |bar| {
+                    .when(ready && pending.is_none() && !busy, |bar| {
                         bar.child(
                             generator_choice(colors, "导出地图包…", false).on_mouse_down(
                                 MouseButton::Left,
@@ -162,7 +185,11 @@ impl MapViewerWindowView {
                     })
                     .when(!busy, |bar| {
                         bar.child(
-                            generator_choice(colors, "导入地图包／容器 NBT…", false)
+                            generator_choice(
+                                colors,
+                                if pending.is_some() { "更换待导入 NBT…" } else { "选择地图包／容器 NBT…" },
+                                false,
+                            )
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
@@ -171,8 +198,16 @@ impl MapViewerWindowView {
                                 ),
                         )
                     })
+                    .when(pending.is_some() && !busy, |bar| {
+                        bar.child(
+                            generator_choice(colors, "取消待导入", false).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.cancel_pending_map_bundle(cx)),
+                            ),
+                        )
+                    })
                     .when(
-                        self.map_image.source.is_some() && !converting && !busy,
+                        self.map_image.source.is_some() && pending.is_none() && !converting && !busy,
                         |bar| {
                             bar.child(generator_choice(colors, "重新生成", false).on_mouse_down(
                                 MouseButton::Left,
