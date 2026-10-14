@@ -581,17 +581,22 @@ fn build_preview(
     options: MapPreviewOptions,
     mut completed: impl FnMut(u32, u32, u32, &[u8]) -> bool,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    const SEAM: u32 = 3;
-    let cell = (512 / options.columns.max(options.rows)).clamp(16, 128);
-    let width = options.columns * (cell + SEAM) + SEAM;
-    let height = options.rows * (cell + SEAM) + SEAM;
+    // Constrain the complete preview, including all tile seam guides.
+    // The old minimum cell size of 16 pixels expanded 64-column previews
+    // beyond 1200px, forcing another downscale and making seams dominate.
+    const PREVIEW_LIMIT: u32 = 512;
+    let major_axis = options.columns.max(options.rows);
+    let seam = if major_axis > 16 { 1 } else { 3 };
+    let cell = ((PREVIEW_LIMIT - (major_axis + 1) * seam) / major_axis).clamp(1, 128);
+    let width = options.columns * (cell + seam) + seam;
+    let height = options.rows * (cell + seam) + seam;
     let mut preview = RgbaImage::from_pixel(width, height, Rgba([36, 38, 43, 255]));
     for (index, tile) in tiles.iter().enumerate() {
         let source = RgbaImage::from_raw(128, 128, tile.pixels.rgba.clone())
             .ok_or_else(|| "地图分片像素长度不正确".to_owned())?;
         let scaled = imageops::resize(&source, cell, cell, imageops::FilterType::Nearest);
-        let origin_x = SEAM + tile.column * (cell + SEAM);
-        let origin_y = SEAM + tile.row * (cell + SEAM);
+        let origin_x = seam + tile.column * (cell + seam);
+        let origin_y = seam + tile.row * (cell + seam);
         for (x, y, pixel) in scaled.enumerate_pixels() {
             let background = if ((x / 8) + (y / 8)) % 2 == 0 {
                 192_u8
@@ -743,6 +748,30 @@ mod tests {
         let seam = (3 + 128) as usize * 4;
         assert_eq!(&preview[seam..seam + 4], &[36, 38, 43, 255]);
         assert_eq!(width, 265);
+    }
+
+    #[test]
+    fn large_map_grid_preview_stays_bounded_with_all_seams() {
+        let single_tile = MapImageTile {
+            column: 63,
+            row: 0,
+            pixels: bedrock_world::map_item::Pixels {
+                width: 128,
+                height: 128,
+                rgba: vec![255; 128 * 128 * 4],
+            },
+        };
+        let options = MapPreviewOptions {
+            columns: 64,
+            rows: 1,
+            ..MapPreviewOptions::default()
+        };
+        let (width, height, pixels) = build_preview(
+            &[single_tile], options, |_, _, _, _| true
+        ).expect("bounded preview");
+        assert!(width <= 512);
+        assert!(height <= 512);
+        assert_eq!(pixels.len(), (width * height * 4) as usize);
     }
 
     #[test]
