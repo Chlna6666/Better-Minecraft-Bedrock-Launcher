@@ -377,6 +377,14 @@ impl MapViewerWindowView {
                 }
             },
         ));
+        subscriptions.push(cx.subscribe(
+            &map_image.container_search,
+            |this, _input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
         for (input, axis) in [
             (&num_map_columns.state, ImportNumericAxis::MapColumns),
             (&num_map_rows.state, ImportNumericAxis::MapRows),
