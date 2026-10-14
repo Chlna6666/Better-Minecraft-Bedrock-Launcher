@@ -3,7 +3,7 @@
 use super::generator_panel::generator_choice;
 use crate::ui::components::button::{primary_button, secondary_button};
 use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
-use super::map_image_panel::GridAxis;
+use super::map_image_panel::{GridAxis, MapImageInstallDestination};
 use super::image_generator_panel::ImageAxis;
 use super::prelude::*;
 use super::state::ImportWorkspaceMode;
@@ -98,6 +98,10 @@ impl MapViewerWindowView {
     fn render_import_workspace_toolbar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
+        let frame_target = is_map_image
+            && !preview
+            && self.map_image.install_destination == MapImageInstallDestination::NewUpFrame;
+        let can_place = self.map_image_can_place_world_grid();
         let source_available = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.generator.source.is_some(),
             MapViewerRightPanel::ImageGenerator => self.image_generator.source.is_some(),
@@ -147,12 +151,35 @@ impl MapViewerWindowView {
                 )
             })
             .child(div().flex_1())
-            .when(is_map_image, |bar| {
+            .when(is_map_image && !frame_target, |bar| {
                 bar.child(
                     div()
                         .text_size(px(11.0))
                         .text_color(colors.text_secondary)
                         .child(self.map_image_workflow_status_label()),
+                )
+            })
+            .when(frame_target, |bar| {
+                bar.child(
+                    primary_button(
+                        colors,
+                        "map-image-place-directly-in-world",
+                        if self.map_image_operation_busy() {
+                            "正在写入世界…"
+                        } else {
+                            "直接放置到当前世界"
+                        },
+                    )
+                    .opacity(if can_place { 1.0 } else { 0.46 })
+                    .when(can_place, |button| {
+                        button.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.install_map_bundle_selected(cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                    }),
                 )
             })
             .when(is_map_image && !preview && !self.map_image_installing_to_player(), |bar| {
