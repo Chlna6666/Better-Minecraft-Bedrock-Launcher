@@ -9,9 +9,9 @@ use super::*;
 pub(super) struct TextureContentVersion(pub(super) u64);
 
 #[derive(Clone)]
-pub(super) struct RetainedElementFilterSource {
+pub(super) struct RetainedFilterSource {
     index: u32,
-    blur: crate::PaintBlur,
+    source: FilterSource,
     /// Last successful OFFSCREEN refresh for this particular filter.
     animation_values: Vec<crate::SceneAnimationValue>,
     /// Content version is independent of compositor transform/opacity samples.
@@ -25,7 +25,7 @@ pub(super) struct FilterRegistry {
     /// Sources sampled in the most recent successfully presented GPU frame.
     /// Snapshotting only on success prevents a deferred/failed present from
     /// validating an output texture that was never updated.
-    pub(super) element_blur_inputs: Vec<RetainedElementFilterSource>,
+    pub(super) element_blur_inputs: Vec<RetainedFilterSource>,
     /// Last successfully submitted shader animation samples. A GPU-side
     /// retained target must be invalidated against this precise snapshot,
     /// not merely the latest UI View invalidation.
@@ -72,86 +72,103 @@ impl FilterRegistry {
     pub(super) fn source_unchanged(
         &self,
         index: u32,
-        current: &crate::PaintBlur,
+        current: &FilterSource,
         animation_values: &[crate::SceneAnimationValue],
     ) -> bool {
         let Some(previous) = self
             .element_blur_inputs
             .iter()
-            .find(|previous| previous.index == index)
+            .find(|previous| previous.index == index && previous.content_version.0 != 0)
         else {
             return false;
         };
-        if current.layer_id != previous.blur.layer_id
-            || previous.content_version.0 == 0
-            || current.bounds != previous.blur.bounds
-            || current.content_mask != previous.blur.content_mask
-            || current.radius != previous.blur.radius
-        {
-            return false;
-        }
+        match (current, &previous.source) {
+            (
+                FilterSource::AutoStatic {
+                    bounds, content_mask, content_hash, content_bytes,
+                },
+                FilterSource::AutoStatic {
+                    bounds: old_bounds,
+                    content_mask: old_mask,
+                    content_hash: old_hash,
+                    content_bytes: old_bytes,
+                },
+            ) => {
+                bounds == old_bounds
+                    && content_mask == old_mask
+                    && content_hash == old_hash
+                    && content_bytes == old_bytes
+            }
+            (FilterSource::Element(current), FilterSource::Element(old)) => {
+                if current.layer_id != old.layer_id
+                    || current.bounds != old.bounds
+                    || current.content_mask != old.content_mask
+                    || current.radius != old.radius
+                {
+                    return false;
+                }
 
-        if current.content.retained_filter_source_matches(
-            &previous.blur.content,
-            animation_values,
-            &previous.animation_values,
-        ) {
-            return true;
-        }
+                if current.content.retained_filter_source_matches(
+                    &old.content,
+                    animation_values,
+                    &previous.animation_values,
+                ) {
+                    return true;
+                }
 
-        // A changing child can remain fully outside an identity capture's
-        // visible source region. Its GPU samples do not invalidate the
-        // resident parent texture when neither old nor new pixels reach it.
-        // Preserve the conservative path for filters, remapped coordinates,
-        // and newly built child Scenes (whose static painter content may differ).
-        if !std::sync::Arc::ptr_eq(&current.content, &previous.blur.content)
-            || !crate::Scene::capture_preserves_source_coordinates(
-                current.radius, current.animation_id, previous.animation_values.iter(),
-            )
-            || !crate::Scene::capture_preserves_source_coordinates(
-                current.radius, current.animation_id, animation_values.iter(),
-            )
-        {
-            return false;
+                // A changed GPU sample outside an identical identity-capture
+                // subtree does not invalidate its resident texture.
+                if !std::sync::Arc::ptr_eq(&current.content, &old.content)
+                    || !crate::Scene::capture_preserves_source_coordinates(
+                        current.radius, current.animation_id, previous.animation_values.iter(),
+                    )
+                    || !crate::Scene::capture_preserves_source_coordinates(
+                        current.radius, current.animation_id, animation_values.iter(),
+                    )
+                {
+                    return false;
+                }
+                let visible_source = current.bounds.intersect(&current.content_mask.bounds);
+                current
+                    .content
+                    .gpu_sample_damage(&previous.animation_values, animation_values)
+                    .into_iter()
+                    .all(|damage| !damage.intersects(&visible_source))
+            }
+            // A slot changing between root auto-cache and element blur can
+            // never inherit an unrelated texture content version.
+            _ => false,
         }
-        let visible_source = current.bounds.intersect(&current.content_mask.bounds);
-        current
-            .content
-            .gpu_sample_damage(&previous.animation_values, animation_values)
-            .into_iter()
-            .all(|damage| !damage.intersects(&visible_source))
     }
 
-    /// Preserve a resident identity compositor only when its immutable source
-    /// scene is identical. Structural/content changes retain the full refresh.
+    /// Partial source damage is meaningful only for a real Element subtree.
+    /// AutoStatic contains no animated content; packed byte fingerprints
+    /// determine whether the whole source must be rebuilt.
     pub(super) fn local_source_damage(
         &self,
         index: u32,
-        current: &crate::PaintBlur,
+        current: &FilterSource,
         animation_values: &[crate::SceneAnimationValue],
     ) -> Option<crate::DirtyRegion> {
         let previous = self
             .element_blur_inputs
             .iter()
-            .find(|source| source.index == index)?;
-        // begin_refresh marks the pending frame invalid before pass planning.
-        // The prior successful source snapshot still proves resident pixels;
-        // forced/target invalidation is handled by the caller and clears it.
-        if previous.content_version.0 == 0
-            || current.layer_id != previous.blur.layer_id
-            || current.bounds != previous.blur.bounds
-            || current.content_mask != previous.blur.content_mask
-            || current.radius != previous.blur.radius
-            || !std::sync::Arc::ptr_eq(&current.content, &previous.blur.content)
+            .find(|source| source.index == index && source.content_version.0 != 0)?;
+        let (FilterSource::Element(current), FilterSource::Element(old)) =
+            (current, &previous.source)
+        else {
+            return None;
+        };
+        if current.layer_id != old.layer_id
+            || current.bounds != old.bounds
+            || current.content_mask != old.content_mask
+            || current.radius != old.radius
+            || !std::sync::Arc::ptr_eq(&current.content, &old.content)
             || !crate::Scene::capture_preserves_source_coordinates(
-                current.radius,
-                current.animation_id,
-                self.last_gpu_animation_values.iter(),
+                current.radius, current.animation_id, self.last_gpu_animation_values.iter(),
             )
             || !crate::Scene::capture_preserves_source_coordinates(
-                current.radius,
-                current.animation_id,
-                animation_values.iter(),
+                current.radius, current.animation_id, animation_values.iter(),
             )
         {
             return None;
@@ -169,7 +186,7 @@ impl FilterRegistry {
 
     pub(super) fn record_element_blur_inputs(
         &mut self,
-        sources: &[(u32, crate::PaintBlur)],
+        sources: &[(u32, FilterSource)],
         animation_values: &[crate::SceneAnimationValue],
         refreshed_indices: impl IntoIterator<Item = u32>,
     ) {
@@ -181,10 +198,14 @@ impl FilterRegistry {
                 continue;
             };
             self.next_content_version = self.next_content_version.wrapping_add(1).max(1);
-            let snapshot = RetainedElementFilterSource {
+            let snapshot = RetainedFilterSource {
                 index,
-                blur: current.clone(),
-                animation_values: animation_values.to_vec(),
+                source: current.clone(),
+                animation_values: if matches!(current, FilterSource::AutoStatic { .. }) {
+                    Vec::new()
+                } else {
+                    animation_values.to_vec()
+                },
                 content_version: TextureContentVersion(self.next_content_version),
             };
             if let Some(previous) = self
@@ -237,6 +258,52 @@ mod tests {
     }
 
     #[test]
+    fn auto_static_source_is_resident_only_after_successful_target_refresh() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(256.0), crate::ScaledPixels(128.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 0x123456789abcdef0,
+            content_bytes: 4096,
+        };
+        assert!(!registry.source_unchanged(0, &source, &[]));
+        registry.record_element_blur_inputs(&[(0, source.clone())], &[], []);
+        assert!(!registry.source_unchanged(0, &source, &[]));
+        registry.record_element_blur_inputs(&[(0, source.clone())], &[], [0]);
+        assert!(registry.source_unchanged(0, &source, &[]));
+        let version = registry.layer_content_version(0).expect("resident texture");
+        let changed = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 0x123456789abcdef1,
+            content_bytes: 4096,
+        };
+        assert!(!registry.source_unchanged(0, &changed, &[]));
+        assert_eq!(registry.layer_content_version(0), Some(version));
+        registry.record_element_blur_inputs(&[(0, changed.clone())], &[], [0]);
+        assert!(registry.source_unchanged(0, &changed, &[]));
+        assert_ne!(registry.layer_content_version(0), Some(version));
+
+        let real = FilterSource::Element(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        });
+        assert!(!registry.source_unchanged(0, &real, &[]));
+        registry.invalidate();
+        assert!(!registry.source_unchanged(0, &changed, &[]));
+    }
+
+    #[test]
     fn isolated_blur_reuses_source_when_only_composite_opacity_changes() {
         let mut registry = FilterRegistry::new(None);
         let scene = std::sync::Arc::new(crate::Scene::default());
@@ -250,20 +317,20 @@ mod tests {
             opacity: 1.0,
             content: scene,
         };
-        registry.record_element_blur_inputs(&[(3, blur.clone())], &[], [3]);
+        registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], [3]);
         let mut changed_composite = blur.clone();
         changed_composite.opacity = 0.5;
-        assert!(registry.source_unchanged(3, &changed_composite, &[]));
+        assert!(registry.source_unchanged(3, &FilterSource::Element(changed_composite.clone()), &[]));
         let first_version = registry.layer_content_version(3).expect("first resident texture");
-        registry.record_element_blur_inputs(&[(3, blur.clone())], &[], []);
+        registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], []);
         assert_eq!(registry.layer_content_version(3), Some(first_version));
-        registry.record_element_blur_inputs(&[(3, blur.clone())], &[], [3]);
+        registry.record_element_blur_inputs(&[(3, FilterSource::Element(blur.clone()))], &[], [3]);
         assert_ne!(registry.layer_content_version(3), Some(first_version));
         changed_composite.radius = crate::ScaledPixels(12.0);
-        assert!(!registry.source_unchanged(3, &changed_composite, &[]));
-        assert!(!registry.source_unchanged(4, &blur, &[]));
+        assert!(!registry.source_unchanged(3, &FilterSource::Element(changed_composite.clone()), &[]));
+        assert!(!registry.source_unchanged(4, &FilterSource::Element(blur.clone()), &[]));
         registry.invalidate();
-        assert!(!registry.source_unchanged(3, &blur, &[]));
+        assert!(!registry.source_unchanged(3, &FilterSource::Element(blur.clone()), &[]));
     }
 
     #[test]
@@ -279,16 +346,16 @@ mod tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        registry.record_element_blur_inputs(&[(4, source.clone())], &[], [4]);
+        registry.record_element_blur_inputs(&[(4, FilterSource::Element(source.clone()))], &[], [4]);
         let previous_version = registry.layer_content_version(4).expect("resident source");
-        assert!(registry.source_unchanged(4, &source, &[]));
+        assert!(registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
         source.layer_id = Some(crate::GlobalElementId::from_path(&["page-two".into()]));
-        assert!(!registry.source_unchanged(4, &source, &[]));
+        assert!(!registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
         // A reused flattened index must never imply that the old GPU texture
         // already holds the new layer's pixels.
-        registry.record_element_blur_inputs(&[(4, source.clone())], &[], [4]);
+        registry.record_element_blur_inputs(&[(4, FilterSource::Element(source.clone()))], &[], [4]);
         assert_ne!(registry.layer_content_version(4), Some(previous_version));
-        assert!(registry.source_unchanged(4, &source, &[]));
+        assert!(registry.source_unchanged(4, &FilterSource::Element(source.clone()), &[]));
     }
 
     #[test]
@@ -324,26 +391,26 @@ mod tests {
             content: std::sync::Arc::new(scene),
         };
         let mut registry = FilterRegistry::new(None);
-        registry.record_element_blur_inputs(&[(1, source.clone())], &[sample(0.2)], [1]);
+        registry.record_element_blur_inputs(&[(1, FilterSource::Element(source.clone()))], &[sample(0.2)], [1]);
         registry.record_submission(BackdropBlurQuality::Full, 0);
         registry.last_gpu_animation_values.push(sample(0.2));
         registry.begin_refresh();
         assert_eq!(
             registry
-                .local_source_damage(1, &source, &[sample(0.8)])
+                .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.8)])
                 .expect("local source damage")
                 .union_bounds(),
             Some(bounds)
         );
         assert!(
             registry
-                .local_source_damage(1, &source, &[sample(0.2)])
+                .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.2)])
                 .is_none()
         );
         source.radius = crate::ScaledPixels(8.);
         assert!(
             registry
-                .local_source_damage(1, &source, &[sample(0.8)])
+                .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.8)])
                 .is_none()
         );
         source.radius = crate::ScaledPixels(0.);
@@ -352,7 +419,7 @@ mod tests {
         source.content = std::sync::Arc::new(replacement);
         assert!(
             registry
-                .local_source_damage(1, &source, &[sample(0.8)])
+                .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.8)])
                 .is_none()
         );
     }
@@ -394,15 +461,15 @@ mod tests {
             content: std::sync::Arc::new(child),
         };
         let mut registry = FilterRegistry::new(None);
-        registry.record_element_blur_inputs(&[(2, source.clone())], &[sample(0.1)], [2]);
-        assert!(registry.source_unchanged(2, &source, &[sample(0.9)]));
+        registry.record_element_blur_inputs(&[(2, FilterSource::Element(source.clone()))], &[sample(0.1)], [2]);
+        assert!(registry.source_unchanged(2, &FilterSource::Element(source.clone()), &[sample(0.9)]));
         let mut filtered = source.clone();
         filtered.radius = crate::ScaledPixels(8.);
-        assert!(!registry.source_unchanged(2, &filtered, &[sample(0.9)]));
+        assert!(!registry.source_unchanged(2, &FilterSource::Element(filtered.clone()), &[sample(0.9)]));
         let mut shifted = source.clone();
         shifted.bounds = far_bounds;
         shifted.content_mask = crate::ContentMask::new(far_bounds);
-        assert!(!registry.source_unchanged(2, &shifted, &[sample(0.9)]));
+        assert!(!registry.source_unchanged(2, &FilterSource::Element(shifted.clone()), &[sample(0.9)]));
     }
 
     #[test]

@@ -1624,6 +1624,47 @@ mod per_layer_damage_tests {
     };
 
     #[test]
+    fn auto_static_source_detects_changes_without_window_damage() {
+        let mut frame = FrameUpload::default();
+        frame.blur_content_ranges_cache.push(BlurContentRange {
+            index: 2,
+            depth: 0,
+            content_start: 0,
+            content_end: 0,
+        });
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(64.0), crate::ScaledPixels(64.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 123,
+            content_bytes: 128,
+        };
+        frame.element_blur_inputs.push((2, source.clone()));
+        let empty = crate::DirtyRegion::empty();
+        let mut filters = FilterRegistry::new(None);
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
+            vec![2]
+        );
+        filters.record_element_blur_inputs(&frame.element_blur_inputs, &[], [2]);
+        assert!(dirty_element_blur_indices(&frame, &empty, &filters, &[], false).is_empty());
+        frame.element_blur_inputs[0].1 = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 124,
+            content_bytes: 128,
+        };
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
+            vec![2],
+            "content change must recapture even when the window has no dirty rect"
+        );
+    }
+
+    #[test]
     fn isolated_source_damage_does_not_depend_on_window_damage() {
         let mut frame = FrameUpload::default();
         frame.blur_content_ranges_cache.push(BlurContentRange {
@@ -1642,7 +1683,7 @@ mod per_layer_damage_tests {
             opacity: 1.0,
             content: std::sync::Arc::new(crate::Scene::default()),
         };
-        frame.element_blur_inputs.push((7, source.clone()));
+        frame.element_blur_inputs.push((7, FilterSource::Element(source.clone())));
         let empty = crate::DirtyRegion::empty();
         let mut filters = FilterRegistry::new(None);
         assert_eq!(
@@ -1652,7 +1693,10 @@ mod per_layer_damage_tests {
         );
         filters.record_element_blur_inputs(&frame.element_blur_inputs, &[], [7]);
         assert!(dirty_element_blur_indices(&frame, &empty, &filters, &[], false).is_empty());
-        frame.element_blur_inputs[0].1.radius = crate::ScaledPixels(5.0);
+        let FilterSource::Element(blur) = &mut frame.element_blur_inputs[0].1 else {
+            panic!("test source should be an element blur");
+        };
+        blur.radius = crate::ScaledPixels(5.0);
         assert_eq!(
             dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
             vec![7],

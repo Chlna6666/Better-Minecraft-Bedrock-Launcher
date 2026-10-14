@@ -415,9 +415,17 @@ impl NovaRenderer {
             // A changed isolated subtree is independently dirty even when the
             // window DirtyRegion is empty or covers a different element.
             // Its source must be captured rather than clipping to unrelated pixels.
+            // A newly encoded static background is not a partial animation
+            // update. When its packed source fingerprint changes, recapture
+            // the whole retained target even if window damage is a tiny rect
+            // or empty (the old texture version belongs to different bytes).
+            let auto_static_rebuild = self.frame_upload.element_blur_inputs.iter().any(
+                |(index, source)| *index == range.index
+                    && matches!(source, FilterSource::AutoStatic { .. }),
+            );
             let layer_force_full = requires_full_isolated_layer_refresh(
                 is_retained_root,
-                force_full,
+                force_full || auto_static_rebuild,
                 config,
                 self.current_size,
                 damage,

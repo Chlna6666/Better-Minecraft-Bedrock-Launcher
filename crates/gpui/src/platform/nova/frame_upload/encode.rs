@@ -1,5 +1,5 @@
 use super::*;
-use std::ops::Range;
+use std::{hash::Hasher, ops::Range};
 
 mod backdrop;
 mod paths;
@@ -170,14 +170,15 @@ impl FrameUpload {
     /// Wrap the existing packed static prefix in a zero-radius GPU color
     /// target, without replaying or re-encoding an independent foreground Scene.
     ///
-    /// The original Scene is already finalized, so normal Quad/Shadow streams
-    /// are authoritative. Only batch boundaries change. The retained source
-    /// Scene in 'blur' exists solely for exact content-version comparisons.
+    /// The original Scene is finalized: Quad/Shadow streams are authoritative.
+    /// FilterRegistry compares this source's packed content fingerprint; no
+    /// Background or Foreground Scene is retained for automatic capture.
     /// Reject any unsorted or unsupported batch topology before mutation.
     pub(in crate::platform::nova) fn capture_encoded_static_prefix(
         &mut self,
         scene: &crate::Scene,
-        blur: &crate::PaintBlur,
+        bounds: crate::Bounds<crate::ScaledPixels>,
+        content_mask: crate::ContentMask<crate::ScaledPixels>,
         first_dynamic_order: crate::DrawOrder,
         drawable_size: DrawableSize,
         summary: &mut FrameUploadSummary,
@@ -243,6 +244,64 @@ impl FrameUpload {
         let Some((mut end_index, retained_count)) = boundary else {
             return false;
         };
+        // Fingerprint the actual ordered packed source, not just raw Scene
+        // revision or unordered Quad/Shadow arrays. Clip-degenerate instances
+        // have already been removed and no temporary flattened buffer is made.
+        // Preflight all ranges before mutating batches so rejection is atomic.
+        let mut fingerprint = collections::FxHasher::default();
+        let mut content_bytes = 0usize;
+        for (position, batch) in self.batches.iter().enumerate().take(end_index + 1) {
+            let take = if position == end_index {
+                retained_count
+            } else {
+                match *batch {
+                    UploadedBatch::Quads { count, .. }
+                    | UploadedBatch::SolidQuads { count, .. }
+                    | UploadedBatch::Shadows { count, .. } => count as usize,
+                    _ => return false,
+                }
+            };
+            if take == 0 {
+                continue;
+            }
+            match *batch {
+                UploadedBatch::Quads { first, .. }
+                | UploadedBatch::SolidQuads { first, .. } => {
+                    fingerprint.write_u8(u8::from(matches!(
+                        *batch,
+                        UploadedBatch::SolidQuads { .. }
+                    )));
+                    fingerprint.write_usize(take);
+                    let start = (first as usize).saturating_mul(PACKED_QUAD_BYTES);
+                    let size = take.saturating_mul(PACKED_QUAD_BYTES);
+                    let end = start.saturating_add(size);
+                    if end > self.quads.len() || end - start != size {
+                        return false;
+                    }
+                    for (_, bytes) in self.quads.slices(start..end) {
+                        fingerprint.write(bytes);
+                    }
+                    content_bytes = content_bytes.saturating_add(size);
+                }
+                UploadedBatch::Shadows { first, .. } => {
+                    fingerprint.write_u8(2);
+                    fingerprint.write_usize(take);
+                    let start = (first as usize).saturating_mul(PACKED_SHADOW_BYTES);
+                    let size = take.saturating_mul(PACKED_SHADOW_BYTES);
+                    let end = start.saturating_add(size);
+                    let Some(bytes) = self.shadows.get(start..end) else {
+                        return false;
+                    };
+                    fingerprint.write(bytes);
+                    content_bytes = content_bytes.saturating_add(size);
+                }
+                _ => return false,
+            }
+        }
+        if content_bytes == 0 {
+            return false;
+        }
+
         if retained_count != 0 {
             // A single prepared run may straddle the static/dynamic boundary.
             // Preserve its original instance order and exact buffer offsets.
@@ -292,8 +351,24 @@ impl FrameUpload {
         }
 
         let index = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-        write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
-        self.element_blur_inputs.push((index, blur.clone()));
+        write_paint_blur_fields(
+            &mut self.backdrop_blurs,
+            0,
+            bounds,
+            content_mask,
+            crate::ScaledPixels(0.0),
+            1.0,
+            drawable_size,
+        );
+        self.element_blur_inputs.push((
+            index,
+            FilterSource::AutoStatic {
+                bounds,
+                content_mask,
+                content_hash: fingerprint.finish(),
+                content_bytes,
+            },
+        ));
         self.batches.insert(0, UploadedBatch::BeginBlur { index });
         self.batch_visual_bounds.insert(0, None);
         // The leading BeginBlur shifts the first foreground batch by one.
@@ -508,7 +583,7 @@ impl FrameUpload {
                             continue;
                         }
 
-                        self.element_blur_inputs.push((blur_index, blur.clone()));
+                        self.element_blur_inputs.push((blur_index, FilterSource::Element(blur.clone())));
                         write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
@@ -629,6 +704,73 @@ mod retained_root_tests {
     use super::*;
 
     #[test]
+    fn auto_static_fingerprint_tracks_source_pixels_not_foreground_animation() {
+        fn encoded_source(static_width: f32, foreground_width: f32) -> (u64, usize) {
+            let mut scene = crate::Scene::default();
+            for index in 0..100 {
+                let bounds = crate::bounds(
+                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                    crate::size(
+                        crate::ScaledPixels(if index == 50 { static_width } else { 12.0 }),
+                        crate::ScaledPixels(12.0),
+                    ),
+                );
+                scene.insert_primitive(crate::Quad {
+                    bounds,
+                    content_mask: crate::ContentMask::new(bounds),
+                    ..Default::default()
+                });
+            }
+            let animated_bounds = crate::bounds(
+                crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(20.0)),
+                crate::size(crate::ScaledPixels(foreground_width), crate::ScaledPixels(12.0)),
+            );
+            scene.insert_primitive(crate::Quad {
+                bounds: animated_bounds,
+                content_mask: crate::ContentMask::new(animated_bounds),
+                animation_id: Some(crate::SceneAnimationId(99)),
+                ..Default::default()
+            });
+            scene.finish();
+            let size = DrawableSize {
+                width: 640,
+                height: 480,
+            };
+            let viewport = crate::bounds(
+                crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+                crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+            );
+            let mut upload = FrameUpload::default();
+            let mut summary = upload.encode(
+                &scene,
+                &[],
+                size,
+                &RenderingParameters::system(),
+                false,
+                BackdropBlurQuality::Full,
+            );
+            assert!(upload.capture_encoded_static_prefix(
+                &scene,
+                viewport,
+                crate::ContentMask::new(viewport),
+                scene.quads.last().unwrap().order,
+                size,
+                &mut summary,
+            ));
+            let FilterSource::AutoStatic { content_hash, content_bytes, .. } =
+                &upload.element_blur_inputs[0].1
+            else {
+                panic!("automatic capture must not allocate an Element Scene");
+            };
+            (*content_hash, *content_bytes)
+        }
+
+        let initial = encoded_source(12.0, 20.0);
+        assert_eq!(initial, encoded_source(12.0, 24.0));
+        assert_ne!(initial, encoded_source(18.0, 20.0));
+    }
+
+    #[test]
     fn auto_static_capture_splits_packed_quads_without_reencoding_foreground() {
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -676,7 +818,8 @@ mod retained_root_tests {
         let old_quad_len = upload.quads.len();
         assert!(upload.capture_encoded_static_prefix(
             &scene,
-            &capture,
+            capture.bounds,
+            capture.content_mask,
             scene.quads.last().unwrap().order,
             size,
             &mut summary,
@@ -748,7 +891,8 @@ mod retained_root_tests {
         let original_bytes = upload.shadows.clone();
         assert!(upload.capture_encoded_static_prefix(
             &scene,
-            &blur,
+            blur.bounds,
+            blur.content_mask,
             scene.shadows.last().unwrap().order,
             size,
             &mut summary,
@@ -808,7 +952,8 @@ mod retained_root_tests {
         let previous_len = upload.batches.len();
         assert!(!upload.capture_encoded_static_prefix(
             &scene,
-            &blur,
+            blur.bounds,
+            blur.content_mask,
             scene.quads.last().unwrap().order,
             size,
             &mut summary,

@@ -170,6 +170,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ### P1 统一帧内容表示与合成提交
 
+- [x] **2026-10-15 自动背景 Source Scene Replay/Finish 全部删除（仅代码实现，未经 Rust 编译和 GPU 实机验证）**：原来的 `auto_capture_static_background` 不再创建 Background `Scene` 或 `Arc<Scene>`。使用现有唯一的 `FrameUpload` 直接从已编码、排除 Clip 退化的 Quad/Shadow 有序 Batch 中计算源内容指纹（类型、实例数、打包字节和顺序），原位插入已有 Blur Marker；新源只保存 Bounds/ContentMask/Hash/Bytes，而非第二套 Paint 所有权。
+- [x] **统一 Filter Source 输入类型（仅代码实现）**：`FilterSource::Element(PaintBlur)` 保留嵌套 Element Blur 的原有 Scene/动画语义，`FilterSource::AutoStatic` 仅保存 GPU 静态源内容身份；同一个 `FilterRegistry` 依据成功 Present 的离屏目标刷新单调 `TextureContentVersion`，新旧 Source 类型变化不可复用旧目标。自动静态源内容指纹改变时强制整层刷新，避免脏矩形为空或不足导致旧纹理被误保留，原有 Filter 创建/退休机制不变。
+- [x] **单测源码（未运行）**：静态内容变动失效、前景动画变动不失效、Filter 内容版本只在成功刷新时推进、AutoStatic 与真实 Element 类型隔离、Quad/Shadow Batch 切分与空 Clip 退化回退。
+- [ ] **未完成验收**：本地 `cargo fmt --all -- --check`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib auto_static`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib retained_filters`，Windows DX11/DX12/Vulkan/GL 的 Dropdown/Blur/动画/Resize/切换页面及目标 GPU Timing。无 Rust 工具链，不能声称测试通过或性能改善；Scene/SceneSlot/全局 Replay/FrameUpload 主链路仍未删除。
 - [x] **2026-10-15 自动背景捕获删除整份 Foreground Scene（代码层，未编译）**：`auto_capture_static_background` 不再 `Scene::replay(prefix_end..)` 构建动态前景、副本 `Scene::finish` 后再次编码；只构建一份静态背景 Source Scene 用于原有 Filter 内容版本/失效证明。`pack_scene` 直接对唯一原始 Scene 编码一次，再由 `FrameUpload::capture_encoded_static_prefix` 按原始 DrawOrder、排除零面积 Clip 后的 Quad/Shadow GPU 实例索引，原地切分最多一个混合 Batch，插入 BeginBlur/EndBlur/CompositeBlur，重建现有 FilterConfig。动态数据的 Source Batch 无额外完整 Scene 或二次编码。不能安全切分时不修改编码结果，回退已有直接绘制/Root Color 策略，而不是保留原 Foreground Scene 兼容路径。
 - [x] **2026-10-15 测试源码（尚未运行）**：静态100 Quad+动态1 Quad（两段 Batch）、静态100 Shadow+动态1 Shadow（Shadow 单 Batch 内切分）、裁剪掉动态后的拒绝/无副作用、旧/新 Source Content 改变正确失效、Blur marker/source 范围。必须测试 Layer 嵌套、不同 Solid 混合、滚动、DPI/Resize、动画和 Filter Target Fence。
 - [ ] **仍未完成**：最终删除静态 Background 的 `Scene::replay/finish` 与 `Arc<Scene>` 内容身份依赖。应让持久 Paint Chunk/Source ContentVersion 取代 Source Scene 的深度对比，在 FrameSlot 和 GPU Filter Owner 同一代次下管理。避免新建 RenderTree/RenderCommit 或 FrameUpload 第二份全场景容器。
@@ -273,6 +277,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 旧前景 Scene 会变更上传 Primitive instance 排序和 Painter-order；因此严格要求录制次序的 DrawOrder 分界：前缀操作 Order 小于动态第一个 Order，后缀不小于；编码后以**裁剪后的有效实例计数**确认已分组 Batch，且仅对 Quad/Shadow 合法批次切开。任一条件不成立原地回退，而非部分提交 Batch。保留单一 Source Scene 用于 `FilterRegistry::source_unchanged` 的原内容版本证明，不能简化成只看 revision。
 - GPU Target：不改变 Shader 136 字节 blur ABI、原有元素模糊目标分配及 Fence 退休；已复用 `FrameUpload::refresh_backdrop_blur_configs/rebuild_backdrop_blur_passes`。DX11/DX12/Vulkan/GL Native Buffer、重合阴影、Clip、零面积、Live Resize 均**没有**实测。
 - 下一步：Source ContentVersion 脱离背景 Scene，并对 auto source Texture Residency 接入持久 Paint Chunk 原有逻辑，最终从代码删除所有自动背景 Scene Replay；在此之前 P1/P3 保持未完成。
+
+## 2026-10-15：自动静态背景内容身份从 Scene 移至 GPU 编码/Filter Owner
+
+- 起点 HEAD `80e17ecdfe52f672a5c7d7e24f39285a397ce07b`，生产代码：`crates/gpui/src/platform/nova/frame_upload/frame.rs`、`frame_upload/encode.rs`、`renderer/retained_upload.rs`、`renderer/filters.rs`、`renderer/draw_steps.rs`；修正 `renderer/present.rs` 单测中旧 Source 类型。
+- **本次真正删除**：`auto_capture_static_background` 的 `Scene::default` / `Scene::replay(0..prefix_end)` / `Scene::finish` / `Arc::new(background)`；自动背景不会再复制任何子 Scene。Encoder 的源指纹按实际渲染的有效 Quad/Shadow Batch 次序读取打包字节，不能仅凭 Scene revision/ElementID 跳过内容变更。
+- **无新的所有权层**：唯一 `FrameUpload` 仍持有本帧临时批次，唯一 `FilterRegistry` 仍持有在成功 GPU 提交后才推进的内容版本；`FilterSource` 替换原有 `Vec<(u32,PaintBlur)>` 语义类型而非建立并存缓存；AutoStatic 不持有 Scene。真正的 Element Blur 保持旧的深度匹配与动画区域计算。
+- **正确性边界**：AutoStatic 仅接受原来已证明的 96+ 个纯 Quad/Shadow 静态前缀；Layer 必须平衡，不能有 Retained Chunk/Atlas/Shader Effects/混合跨顺序。已编码 Batch 不合法仍原子回退；指纹差异或未验证目标强制重绘完整源，不依赖窗口 DirtyRect 的覆盖范围。Blur Target 创建/更新/提交时序不变。
+- **下一步起点**：验证新 Source Type 的所有消费者、单元测试和 GPU 原生渲染；补齐单一 Paint Chunk 的真实版本/所有权并继续消除 SceneSlot/Scene Replay 和双重 CPU FrameUpload，在验收前 P1/P3 未完成。
 
 ## 跨对话恢复协议（必须执行）
 

@@ -1,6 +1,23 @@
 use super::*;
 use std::ops::Range;
 
+/// Exactly one representation of an isolated GPU filter source.
+///
+/// Real nested Element filters retain their child Scene. The automatic static
+/// background is already encoded in the owning FrameUpload and carries only
+/// a content fingerprint: it never manufactures another Scene/Replay tree.
+#[derive(Clone)]
+pub(in crate::platform::nova) enum FilterSource {
+    Element(crate::PaintBlur),
+    AutoStatic {
+        bounds: crate::Bounds<crate::ScaledPixels>,
+        content_mask: crate::ContentMask<crate::ScaledPixels>,
+        /// Hash of ordered, visible packed Quad/Shadow source batches.
+        content_hash: u64,
+        content_bytes: usize,
+    },
+}
+
 pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) bytes: Arc<Vec<u8>>,
     pub(in crate::platform::nova) byte_hash: u64,
@@ -106,8 +123,8 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_passes: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blurs: Vec<u8>,
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
-    /// Per-element captured input in packed blur-index order (not output damage).
-    pub(in crate::platform::nova) element_blur_inputs: Vec<(u32, crate::PaintBlur)>,
+    /// Captured filter sources in packed blur-index order, including AutoStatic.
+    pub(in crate::platform::nova) element_blur_inputs: Vec<(u32, FilterSource)>,
     /// Synthetic zero-filter root compositor, stored in the existing retained blur targets.
     pub(in crate::platform::nova) retained_root_blur: Option<u32>,
     /// One immutable transparent quad used as a Replace-blend rect clear.
