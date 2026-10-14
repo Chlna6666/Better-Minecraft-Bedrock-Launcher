@@ -87,7 +87,7 @@ impl MapViewerWindowView {
                             // Do not rewrite the input while the user is typing or while
                             // unrelated tasks are publishing frequent progress changes.
                             if finished_map_preview && this.map_image.options.auto_fit {
-                                this.sync_map_grid_numeric_fields(cx);
+                                this.sync_map_grid_numeric_fields_if_pristine(cx);
                             }
                             this.accept_map_install_task_snapshot(snapshot.as_ref(), cx);
                             this.accept_structure_preview_task_snapshot(snapshot.as_ref(), cx);
