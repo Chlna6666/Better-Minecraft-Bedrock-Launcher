@@ -246,19 +246,5 @@ pub(super) fn generator_choice(
     label: impl Into<SharedString>,
     selected: bool,
 ) -> Div {
-    div()
-        .px(px(10.0))
-        .py(px(7.0))
-        .rounded(px(6.0))
-        .border_1()
-        .border_color(colors.border)
-        .bg(if selected {
-            colors.surface_hover
-        } else {
-            colors.surface
-        })
-        .text_size(px(12.0))
-        .text_color(colors.text_primary)
-        .cursor_pointer()
-        .child(label.into())
+    crate::ui::components::choice::choice_chip(colors, label, selected)
 }
