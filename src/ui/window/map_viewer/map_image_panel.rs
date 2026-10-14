@@ -36,6 +36,8 @@ pub(super) struct MapImagePanelState {
     player_scroll: UniformListScrollHandle,
     frame_support: &'static str,
     preview: Option<Arc<RenderImage>>,
+    /// Actual translucent map pixels for world-space placement (without checkerboard or seams).
+    placement_preview: Option<Arc<RenderImage>>,
     preview_done: u32,
     grid_estimated: bool,
     preview_note: Option<String>,
@@ -66,6 +68,7 @@ impl MapImagePanelState {
             player_scroll: UniformListScrollHandle::new(),
             frame_support: "minecraft:stone",
             preview: None,
+            placement_preview: None,
             preview_done: 0,
             grid_estimated: false,
             preview_note: None,
@@ -137,7 +140,7 @@ impl MapViewerWindowView {
             min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
             columns: self.map_image.options.columns,
             rows: self.map_image.options.rows,
-            image: self.map_image.preview.clone(),
+            image: self.map_image.placement_preview.clone(),
         })
     }
 
@@ -180,6 +183,7 @@ impl MapViewerWindowView {
             release_map_preview(&task_id);
         }
         self.map_image.preview = None;
+        self.map_image.placement_preview = None;
         self.map_image.preview_options = None;
         self.map_image.preview_done = 0;
         self.map_image.grid_estimated = false;
@@ -244,6 +248,20 @@ impl MapViewerWindowView {
             self.map_image.preview_note = Some("预览结果已释放或过期，请重新转换".to_owned());
             return;
         };
+        // Create the actual world overlay once on task completion, not during canvas paint.
+        // The UI comparison image deliberately contains visual seams and is kept separate.
+        match RenderImage::from_raw_pixels(
+            result.placement_width,
+            result.placement_height,
+            ImagePixelFormat::Rgba8,
+            result.placement_rgba.clone(),
+        ) {
+            Ok(image) => self.map_image.placement_preview = Some(Arc::new(image)),
+            Err(error) => {
+                self.map_image.placement_preview = None;
+                tracing::warn!(%error, "map placement image creation failed");
+            }
+        }
         match RenderImage::from_raw_pixels(
             result.preview_width,
             result.preview_height,
