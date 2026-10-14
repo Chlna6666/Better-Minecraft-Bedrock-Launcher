@@ -356,6 +356,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **GPU resident 防错边界**：同一 `RetainedChunkId` 语义身份不代表可忽略 Packed Quad 数量。缓存复用时额外校验 `quad_count == 本次 chunk.quad_range.len()` 且 `bytes.len() == quad_count * PACKED_QUAD_BYTES`；不一致回退当前帧重新编码，避免旧片段用错误实例数覆盖新布局。新增在保留相同 ID/generation 但真实 Quad 数从 32 增至 64 的异常回放对照测试，要求完全重编码并更新唯一缓存；不会伪造 chunk hit。
 - **验证与后续**：尚无本机 Cargo/rustc、Windows 原生 GPU，未运行 `cargo fmt --all`、GPUI 单测及四后端验证；Debug O(C) 消除为静态代码事实，真实 Prepaint p95/GPU 占用未测。下一步继续检查 Scene Replay → Packed Chunk 身份、FrameUpload 全量实例流与独立 GPU Compositor Lane，待编译验证通过后逐步移除 SceneSlot/Replay，而不是继续增设兼容层。
 
+## 2026-10-15：Quad 可见性边界按实际 Packed Batch 统一计算
+
+- 起点 HEAD `e9fcc8aa4ebfd0fb074a6093526245681865a0fe`；修改 `crates/gpui/src/platform/nova/frame_upload/encode.rs` 和唯一 TODO。目标是减少 Scene→FrameUpload 重复 CPU 遍历，不引入新 Scene/RenderTree/额外 FrameUpload。
+- **实现**：原 `encode_scene` 对每一个 Quad Prepared Run 先调用 `static_quad_run_visual_bounds` 遍历原始 Quad，再执行 packed encoding；仅当任一动画令预判失效时，才再次调用 `static_packed_quad_batch_bounds` 按真实上传 Batch 重扫。改为所有 Quad Run 编码完成后统一按已打包的 `UploadedBatch::{Quads,SolidQuads}` 及有效可见 Quad（跳过零面积 clip）计算一次每批可见边界。源 Run 中有 GPU-indexed 动画的 Batch 仍返回无边界并禁止错误裁剪，未含动画的兄弟 Batch 保留独立裁剪，嵌套 Element Blur 子 Batch 的 metadata 保持原有增量处理；Sprite/Underline 仍用各自先验计算，不调整 Shader ABI。
+- **价值和风险**：静态场景不再对每个 Packed Chunk 套用整段 Run 的宽泛联合边界，提高按批次进行 Scissor/DirtyRegion 裁剪的机会；混合动画场景不再进行一次必然失败的整段 Quad bounds 前置遍历。仍会在编码后遍历有效 Quad 一次生成原有 metadata，不能宣称避免整个 FrameUpload、GPU copy 或已测量 GPU 占用下降。
+- **测试源码（未运行）**：添加 32 Quad 保留块 + 1 Quad 空隙 + 32 Quad 保留块的真实 encode 对照，验证 3 个 Packed Batch 的独立非重叠边界；现有静态、动画、退化 clip、安全回退测试保持。当前环境无 `cargo`/`rustc`/`rustfmt` 和 Windows GPU，尚未编译、测试、截图或验证 DX11/DX12/Vulkan/OpenGL，仍需以本地 `cargo fmt`、`cargo check`、`cargo test` 和真实 Profiler 验收。
+- **未删除**：`SceneSlot`、`Scene::replay`、`NovaRenderer::pack_scene`、全场景 FrameUpload staging；下一步分析 Quad batch bounds 是否应直接由 Scene 已验证的 retained Paint Chunk 维护，以便进一步删除同一场景遍历，而非新增身份缓存。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

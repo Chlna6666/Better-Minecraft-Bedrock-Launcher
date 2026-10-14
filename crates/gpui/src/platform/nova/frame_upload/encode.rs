@@ -40,6 +40,7 @@ fn static_raster_run_visual_bounds(
     union
 }
 
+#[cfg(test)]
 fn static_quad_run_visual_bounds(
     quads: &[crate::Quad],
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
@@ -485,10 +486,11 @@ impl FrameUpload {
                 PreparedSceneBatch::Quads(run) => Some(run.range.clone()),
                 _ => None,
             };
+            // Quad bounds are derived once from the actually packed batches
+            // below, not from the original run followed by another scan when
+            // a single animated primitive makes the whole run unbounded.
             let static_quad_bounds = match batch {
-                PreparedSceneBatch::Quads(run) => {
-                    static_quad_run_visual_bounds(&scene.quads[run.range.clone()])
-                }
+                PreparedSceneBatch::Quads(_) => None,
                 PreparedSceneBatch::MonochromeSprites { range, .. } => {
                     let sprites = &scene.monochrome_sprites[range.clone()];
                     // A transformed glyph may rotate outside its rectangle.
@@ -625,19 +627,20 @@ impl FrameUpload {
             // batches conservatively continue through normal rendering.
             let last_batch = self.batches.len();
             self.batch_visual_bounds.resize(last_batch, None);
-            if let Some(bounds) = static_quad_bounds {
-                for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
-                    *slot = Some(bounds);
-                }
-            } else if let Some(source_range) = source_quad_range {
-                // Mixed dynamic/static runs can emit several independently
-                // resident batches. Give the static ones precise bounds even
-                // though the *prepared* run as a whole is not cullable.
+            if let Some(source_range) = source_quad_range {
+                // The packed stream, not the unencoded Scene run, determines
+                // exactly which Quad instances reached the GPU (including
+                // retained Arc chunks and clipped gaps). Calculate every
+                // emitted batch's bounds once, independently of its siblings.
                 static_packed_quad_batch_bounds(
                     &scene.quads[source_range],
                     &self.batches[first_batch..last_batch],
                     &mut self.batch_visual_bounds[first_batch..last_batch],
                 );
+            } else if let Some(bounds) = static_quad_bounds {
+                for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
+                    *slot = Some(bounds);
+                }
             }
         }
         if reset {
@@ -1071,6 +1074,72 @@ mod retained_root_tests {
         assert!(packed_bounds[0].is_some());
         assert!(packed_bounds[1].is_none());
         assert!(packed_bounds[2].is_some());
+    }
+
+    #[test]
+    fn retained_quad_batches_receive_independent_bounds_after_single_packing_pass() {
+        let mut scene = crate::Scene::default();
+        let paint_quads = |scene: &mut crate::Scene, x: f32, count: usize| {
+            let start = scene.len();
+            for _ in 0..count {
+                let bounds = crate::bounds(
+                    crate::point(crate::ScaledPixels(x), crate::ScaledPixels(10.0)),
+                    crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
+                );
+                scene.insert_primitive(crate::Quad {
+                    bounds,
+                    content_mask: crate::ContentMask::new(bounds),
+                    ..Default::default()
+                });
+            }
+            start..scene.len()
+        };
+        let left = paint_quads(&mut scene, 10.0, 32);
+        let gap = paint_quads(&mut scene, 150.0, 1);
+        let right = paint_quads(&mut scene, 280.0, 32);
+        assert_eq!(gap.len(), 1);
+        scene.record_retained_chunk(
+            crate::GlobalElementId::from_path(&["left-quad-batch".into()]),
+            1,
+            left,
+        );
+        scene.record_retained_chunk(
+            crate::GlobalElementId::from_path(&["right-quad-batch".into()]),
+            1,
+            right,
+        );
+        scene.finish();
+        assert_eq!(scene.prepared_retained_quad_chunks().len(), 2);
+
+        let mut cache = RetainedQuadChunkCache::default();
+        let mut upload = FrameUpload::default();
+        upload.encode(
+            &mut cache,
+            &scene,
+            &[],
+            DrawableSize {
+                width: 640,
+                height: 480,
+            },
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
+        );
+        let quad_bounds: Vec<_> = upload
+            .batches
+            .iter()
+            .zip(&upload.batch_visual_bounds)
+            .filter_map(|(batch, bounds)| match batch {
+                UploadedBatch::Quads { .. } | UploadedBatch::SolidQuads { .. } => Some(*bounds),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(quad_bounds.len(), 3);
+        let left = quad_bounds[0].expect("left packed chunk is static");
+        let center = quad_bounds[1].expect("unretained gap is static");
+        let right = quad_bounds[2].expect("right packed chunk is static");
+        assert!(left.right() < center.origin.x);
+        assert!(center.right() < right.origin.x);
     }
 
     #[test]
