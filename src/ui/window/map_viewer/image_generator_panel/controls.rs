@@ -317,13 +317,15 @@ impl MapViewerWindowView {
                             }
                         })
                     ))
+                    .child(match axis {
+                        ImageAxis::Width => self.num_image_width.control().into_any_element(),
+                        ImageAxis::Height => self.num_image_height.control().into_any_element(),
+                    })
                     .child(
                         div()
-                            .min_w(px(72.0))
-                            .text_center()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child(format!("{value} 方块")),
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child("方块"),
                     )
                     .child(generator_choice(colors, "+1", false).when(!busy, |button| {
                         button.on_mouse_down(
