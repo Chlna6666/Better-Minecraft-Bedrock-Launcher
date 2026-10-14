@@ -539,7 +539,7 @@ impl OverlayLayerSnapshot {
             slime_runs: snapshot.slime_runs.clone(),
             selection: snapshot.selection,
             paste_preview: snapshot.paste_preview.clone(),
-            map_frame_preview: snapshot.map_frame_preview,
+            map_frame_preview: snapshot.map_frame_preview.clone(),
             paste_preview_images: snapshot.paste_preview_images.clone(),
             paste_preview_images_generation: snapshot.paste_preview_images_generation,
             highlighted_slime_candidate: snapshot.highlighted_slime_candidate.clone(),
@@ -1420,7 +1420,7 @@ fn render_professional_overlay_layer(snapshot: &OverlayLayerSnapshot) -> Div {
     let slime_runs = snapshot.slime_runs.clone();
     let selection = snapshot.selection;
     let paste_preview = snapshot.paste_preview.clone();
-    let map_frame_preview = snapshot.map_frame_preview;
+    let map_frame_preview = snapshot.map_frame_preview.clone();
     let paste_preview_images = snapshot.paste_preview_images.clone();
     let highlighted_slime_candidate = snapshot.highlighted_slime_candidate.clone();
     let history_visualization = snapshot.history_visualization.clone();
