@@ -1340,6 +1340,16 @@ impl MapViewerWindowView {
                 .is_focused(window)
         });
 
+        let import_numeric_focused = [
+            &self.num_map_columns.state,
+            &self.num_map_rows.state,
+            &self.num_image_width.state,
+            &self.num_image_height.state,
+            &self.num_obj_size.state,
+        ]
+        .into_iter()
+        .any(|input| input.focus_handle(cx).is_focused(window));
+
         self.editor_state.focus_handle(cx).is_focused(window)
             || self
                 .map_image
@@ -1352,6 +1362,7 @@ impl MapViewerWindowView {
                 .focus_handle(cx)
                 .is_focused(window)
             || map_input_focused
+            || import_numeric_focused
     }
 
     pub(super) fn rebuild_paste_preview_images(&mut self, cx: &mut Context<Self>) {
