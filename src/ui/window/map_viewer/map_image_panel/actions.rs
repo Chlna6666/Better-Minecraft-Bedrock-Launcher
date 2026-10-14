@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::components::button::{ghost_button, primary_button, secondary_button};
 
 impl MapViewerWindowView {
     /// One action bar for all map-image destinations. Selection is kept next to
@@ -18,6 +19,13 @@ impl MapViewerWindowView {
             });
         let selected = self.map_image.install_destination;
         let pending = self.map_image.pending_bundle.as_ref();
+        let action_enabled = (ready || pending.is_some()) && !busy;
+        // The frame-grid placement workspace owns the visible top primary action.
+        // Do not display an identical second primary button in the bottom inspector.
+        let top_places_frame = self.ui_state.import_workspace_mode
+            == super::super::state::ImportWorkspaceMode::Placement
+            && selected == MapImageInstallDestination::NewUpFrame
+            && pending.is_none();
         let (primary, target, tip, target_ready) = match selected {
             MapImageInstallDestination::Player => (
                 "写入玩家背包",
@@ -156,28 +164,36 @@ impl MapViewerWindowView {
                     .flex_wrap()
                     .items_center()
                     .gap(px(8.0))
-                    .child(
-                        generator_choice(
-                            colors,
-                            if pending.is_some() { "确认 NBT 导入并写入" } else { primary },
-                            (ready || pending.is_some()) && target_ready && !busy,
-                        )
-                        .when((ready || pending.is_some()) && target_ready && !busy, |button| {
-                            button.on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    if this.map_image.pending_bundle.is_some() {
-                                        this.confirm_pending_map_bundle(cx);
-                                    } else {
-                                        this.install_map_bundle_selected(cx);
-                                    }
-                                }),
+                    .when(!top_places_frame, |bar| {
+                        bar.child(
+                            primary_button(
+                                colors,
+                                "map-import-primary-action",
+                                if pending.is_some() {
+                                    "确认 NBT 导入并写入"
+                                } else {
+                                    primary
+                                },
                             )
-                        }),
-                    )
+                            .opacity(if action_enabled && target_ready { 1.0 } else { 0.45 })
+                            .when(action_enabled && target_ready, |button| {
+                                button.on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        if this.map_image.pending_bundle.is_some() {
+                                            this.confirm_pending_map_bundle(cx);
+                                        } else {
+                                            this.install_map_bundle_selected(cx);
+                                        }
+                                    }),
+                                )
+                            }),
+                        )
+                    })
                     .when(ready && pending.is_none() && !busy, |bar| {
                         bar.child(
-                            generator_choice(colors, "导出地图包…", false).on_mouse_down(
+                            secondary_button(colors, "map-import-export-bundle", "导出地图包…")
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| this.export_map_bundle(cx)),
                             ),
@@ -185,10 +201,14 @@ impl MapViewerWindowView {
                     })
                     .when(!busy, |bar| {
                         bar.child(
-                            generator_choice(
+                            secondary_button(
                                 colors,
-                                if pending.is_some() { "更换待导入 NBT…" } else { "选择地图包／容器 NBT…" },
-                                false,
+                                "map-import-select-nbt",
+                                if pending.is_some() {
+                                    "更换 NBT…"
+                                } else {
+                                    "导入地图包／容器 NBT…"
+                                },
                             )
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -200,7 +220,8 @@ impl MapViewerWindowView {
                     })
                     .when(pending.is_some() && !busy, |bar| {
                         bar.child(
-                            generator_choice(colors, "取消待导入", false).on_mouse_down(
+                            ghost_button(colors, "map-import-cancel-staged-nbt", "取消待导入")
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| this.cancel_pending_map_bundle(cx)),
                             ),
@@ -209,7 +230,8 @@ impl MapViewerWindowView {
                     .when(
                         self.map_image.source.is_some() && pending.is_none() && !converting && !busy,
                         |bar| {
-                            bar.child(generator_choice(colors, "重新生成", false).on_mouse_down(
+                            bar.child(ghost_button(colors, "map-import-regenerate-preview", "重新生成")
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.release_map_image_preview();
