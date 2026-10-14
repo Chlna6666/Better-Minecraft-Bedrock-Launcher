@@ -903,12 +903,18 @@ impl NovaRenderer {
                 StaticUploadSignature::from_frame_upload(&self.frame_upload);
             signature_time = signature_started_at.elapsed();
             hashed_bytes = signature_hashed_bytes;
+            // Prepare the immutable layout before mutably replacing its owner.
+            // Equal span sets share the previous Arc without rebuilding descriptors.
+            let quad_layout = QuadResidentLayout::from_upload_reusing(
+                &self.retained_upload.current_quad_layout,
+                &self.frame_upload,
+            );
             self.retained_upload.replace(
                 key,
                 summary,
                 self.frame_resources.len(),
                 static_signature,
-                QuadResidentLayout::from_upload(&self.frame_upload),
+                quad_layout,
             );
         }
         // GPU-indexed source animations are intentionally absent from `animated_primitives`.
