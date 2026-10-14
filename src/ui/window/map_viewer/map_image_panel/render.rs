@@ -173,25 +173,25 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child("多图按网格编号；写入玩家背包时分组为潜影盒，写入现有箱子时在箱内分组。"),
                     )
-                    .child(generator_section_title(colors, "裁剪比例"))
+                    .child(generator_section_title(colors, "图片适配方式"))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
-                        [(true, "居中裁剪 · 匹配拼图比例"), (false, "保留全图 · 可拉伸")]
-                            .into_iter()
-                            .map(|(center_crop, label)| {
-                                generator_choice(
-                                    colors,
-                                    label,
-                                    self.map_image.options.center_crop == center_crop,
-                                )
+                        [
+                            (MapImageFit::Contain, "完整图片 · 等比留边"),
+                            (MapImageFit::CenterCrop, "居中裁切 · 丢失边缘"),
+                            (MapImageFit::Stretch, "完整拉伸 · 可能变形"),
+                        ]
+                        .into_iter()
+                        .map(|(fit, label)| {
+                            generator_choice(colors, label, self.map_image.options.fit == fit)
                                 .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _event, _window, cx| {
-                                            if this.map_image_operation_busy() { return; }
-                                            this.map_image.options.center_crop = center_crop;
-                                            this.start_map_preview(cx);
-                                        }),
-                                    )
-                            }),
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _event, _window, cx| {
+                                        if this.map_image_operation_busy() { return; }
+                                        this.map_image.options.fit = fit;
+                                        this.start_map_preview(cx);
+                                    }),
+                                )
+                        }),
                     ))
                     .child(generator_section_title(colors, "缩放采样"))
                     .child(div().flex().gap(px(6.0)).children(
