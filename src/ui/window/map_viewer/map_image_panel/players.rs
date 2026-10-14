@@ -90,7 +90,11 @@ impl MapViewerWindowView {
                                         .truncate()
                                         .text_size(px(10.0))
                                         .text_color(row_colors.text_secondary)
-                                        .child(player_id_label(id)),
+                                        .child(if id.storage_key().is_none() {
+                                            "level.dat · 不支持直接写入地图记录".to_owned()
+                                        } else {
+                                            player_id_label(id)
+                                        }),
                                 ),
                         )
                         .when(is_selected, |row| {
@@ -125,6 +129,14 @@ impl MapViewerWindowView {
                     .truncate()
                     .child(format!("已选：{selected_label}")),
             )
+            .when(self.map_image.selected_player.storage_key().is_none(), |panel| {
+                panel.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(colors.text_secondary)
+                        .child("当前玩家不可原子写入。请搜索并选择下方可写入的玩家。"),
+                )
+            })
             .child(
                 Input::new(&self.map_image.player_search)
                     .cleanable(true)
