@@ -4,38 +4,12 @@ use std::ops::Range;
 
 const WORKING_SET_TRIM_MULTIPLIER: usize = 4;
 
-/// Splitting every alternating animated/static primitive would increase
-/// driver draw-call overhead. Split only when the run contains a substantial
-/// static portion and has at most a few state transitions; this lets spatial
-/// culling discard stable batches beside a small animation.
-fn should_split_static_dynamic_quads(quads: &[crate::Quad]) -> bool {
-    const MIN_STATIC_RUN: usize = 8;
-    const MAX_TRANSITIONS: usize = 8;
-    let mut previous = None;
-    let mut transitions = 0usize;
-    let mut static_run = 0usize;
-    let mut longest_static_run = 0usize;
-    for quad in quads {
-        if clip_is_degenerate(&quad.content_mask) {
-            continue;
-        }
-        let animated = quad.animation_id.is_some();
-        if previous.is_some_and(|old| old != animated) {
-            transitions += 1;
-            if transitions > MAX_TRANSITIONS {
-                return false;
-            }
-        }
-        previous = Some(animated);
-        if animated {
-            static_run = 0;
-        } else {
-            static_run += 1;
-            longest_static_run = longest_static_run.max(static_run);
-        }
-    }
-    transitions > 0 && longest_static_run >= MIN_STATIC_RUN
-}
+/// Do not emit hundreds of native draws when static/animated Quads alternate.
+/// The paint stream itself is the only source of truth: measure the split
+/// heuristic in the encoding pass, then merge at most nine tentative batches
+/// when splitting would be counterproductive.
+const MIN_STATIC_QUAD_RUN: usize = 8;
+const MAX_QUAD_ANIMATION_TRANSITIONS: usize = 8;
 
 /// The display-list producer sorts and deduplicates retained spans into
 /// non-overlapping Quad index ranges. Seek to the first possible overlap
@@ -110,8 +84,8 @@ impl FrameUpload {
             count,
             chunk.is_solid,
             visual_bounds,
-            summary,
         );
+        summary.quad_count = summary.quad_count.saturating_add(count);
         if count == chunk.quad_range.len() as u32 {
             self.resident_quad_spans.push(RetainedResidentSpan {
                 id: chunk.id.clone(),
@@ -238,13 +212,21 @@ impl FrameUpload {
         is_solid: bool,
         summary: &mut FrameUploadSummary,
     ) -> u32 {
-        let split_static_runs = should_split_static_dynamic_quads(quads);
-        let mut batch_first = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+        let initial_batch = self.batches.len();
+        let initial_quad = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
+        let mut batch_first = initial_quad;
         let mut batch_count = 0_u32;
         let mut total_count = 0_u32;
-        let mut batch_animated = None;
+        let mut previous_animated = None;
+        let mut transitions = 0usize;
+        let mut static_run = 0usize;
+        let mut longest_static_run = 0usize;
         let mut batch_visual_bounds = None;
         let mut batch_cullable = true;
+
+        // Pack and classify in the same pass. Split tentatively at the first
+        // eight state changes; after the ninth we keep one continuing batch.
+        // Invalid and clipped Quads do not enter GPU memory or the heuristic.
         for quad in quads {
             if self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS {
                 break;
@@ -254,20 +236,28 @@ impl FrameUpload {
             }
             let animated = quad.animation_id.is_some();
             let primitive_index = (self.quads.len() / PACKED_QUAD_BYTES) as u32;
-            if split_static_runs && batch_animated.is_some_and(|old| old != animated) {
-                self.append_quad_batch(
-                    batch_first,
-                    batch_count,
-                    is_solid,
-                    batch_visual_bounds,
-                    summary,
-                );
-                batch_first = primitive_index;
-                batch_count = 0;
-                batch_visual_bounds = None;
-                batch_cullable = true;
+            if previous_animated.is_some_and(|old| old != animated) {
+                transitions = transitions.saturating_add(1);
+                if transitions <= MAX_QUAD_ANIMATION_TRANSITIONS {
+                    self.append_quad_batch(
+                        batch_first,
+                        batch_count,
+                        is_solid,
+                        batch_visual_bounds,
+                    );
+                    batch_first = primitive_index;
+                    batch_count = 0;
+                    batch_visual_bounds = None;
+                    batch_cullable = true;
+                }
             }
-            batch_animated = Some(animated);
+            previous_animated = Some(animated);
+            if animated {
+                static_run = 0;
+            } else {
+                static_run = static_run.saturating_add(1);
+                longest_static_run = longest_static_run.max(static_run);
+            }
             if batch_cullable && !merge_static_quad_bounds(&mut batch_visual_bounds, quad) {
                 batch_cullable = false;
                 batch_visual_bounds = None;
@@ -283,15 +273,25 @@ impl FrameUpload {
             batch_count = batch_count.saturating_add(1);
             total_count = total_count.saturating_add(1);
         }
+
         if batch_count != 0 {
-            self.append_quad_batch(
-                batch_first,
-                batch_count,
-                is_solid,
-                batch_visual_bounds,
-                summary,
-            );
+            self.append_quad_batch(batch_first, batch_count, is_solid, batch_visual_bounds);
         }
+        // Mixed runs are worth splitting only when they contain a substantial
+        // static section and no more than eight state changes. Collapse the
+        // tentative contiguous batches in-place otherwise; no new Scene,
+        // Upload stream, or temporary batch vector is created.
+        if transitions > 0
+            && (transitions > MAX_QUAD_ANIMATION_TRANSITIONS
+                || longest_static_run < MIN_STATIC_QUAD_RUN)
+        {
+            self.batches.truncate(initial_batch);
+            self.batch_visual_bounds.truncate(initial_batch);
+            self.append_quad_batch(initial_quad, total_count, is_solid, None);
+        }
+        // Count exactly the written instances once, independent of how many
+        // candidate batches were retained or collapsed.
+        summary.quad_count = summary.quad_count.saturating_add(total_count);
         total_count
     }
 
@@ -301,7 +301,6 @@ impl FrameUpload {
         count: u32,
         is_solid: bool,
         visual_bounds: Option<crate::Bounds<crate::ScaledPixels>>,
-        summary: &mut FrameUploadSummary,
     ) {
         self.batches.push(if is_solid {
             UploadedBatch::SolidQuads { first, count }
@@ -309,9 +308,7 @@ impl FrameUpload {
             UploadedBatch::Quads { first, count }
         });
         self.batch_visual_bounds.push(visual_bounds);
-        summary.quad_count = summary.quad_count.saturating_add(count);
     }
-
 }
 
 impl RetainedQuadChunkCache {
@@ -352,13 +349,13 @@ mod static_dynamic_batch_tests {
         let mut source = vec![plain; 10];
         source.push(animated);
         source.extend([plain; 10]);
-        assert!(should_split_static_dynamic_quads(&source));
 
         let mut upload = FrameUpload::default();
         let mut summary = FrameUploadSummary::default();
         let count = upload.encode_quad_range(&source, false, &mut summary);
         assert_eq!(count, 21);
         assert_eq!(summary.quad_count, 21);
+        assert_eq!(upload.quads.len(), 21 * PACKED_QUAD_BYTES);
         assert_eq!(upload.batches.len(), 3);
         assert!(matches!(upload.batches[0], UploadedBatch::Quads { count: 10, .. }));
         assert!(matches!(upload.batches[1], UploadedBatch::Quads { count: 1, .. }));
@@ -415,10 +412,124 @@ mod static_dynamic_batch_tests {
         let source: Vec<_> = (0..32)
             .map(|index| if index % 2 == 0 { plain } else { animated })
             .collect();
-        assert!(!should_split_static_dynamic_quads(&source));
         let mut upload = FrameUpload::default();
         let mut summary = FrameUploadSummary::default();
         upload.encode_quad_range(&source, false, &mut summary);
         assert_eq!(upload.batches.len(), 1);
+        assert_eq!(upload.batch_visual_bounds.len(), 1);
+        assert!(upload.batch_visual_bounds[0].is_none());
+        assert_eq!(summary.quad_count, 32);
+    }
+
+    #[test]
+    fn short_static_runs_merge_without_paint_order_or_bounds_loss() {
+        let rect = crate::bounds(
+            crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(15.0)),
+            crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(25.0)),
+        );
+        let plain = crate::Quad {
+            bounds: rect,
+            content_mask: crate::ContentMask::new(rect),
+            ..Default::default()
+        };
+        let mut animated = plain;
+        animated.animation_id = Some(crate::SceneAnimationId(7));
+        let source = [plain, plain, animated, plain, plain];
+        let mut upload = FrameUpload::default();
+        let mut summary = FrameUploadSummary::default();
+        assert_eq!(upload.encode_quad_range(&source, false, &mut summary), 5);
+        assert_eq!(summary.quad_count, 5);
+        assert_eq!(upload.quads.len(), 5 * PACKED_QUAD_BYTES);
+        assert_eq!(upload.batches.len(), 1);
+        assert_eq!(upload.batch_visual_bounds, vec![None]);
+        assert!(matches!(upload.batches[0], UploadedBatch::Quads { first: 0, count: 5 }));
+    }
+
+    #[test]
+    fn split_policy_matches_the_previous_full_scan_for_visible_quads() {
+        let rect = crate::bounds(
+            crate::point(crate::ScaledPixels(5.0), crate::ScaledPixels(5.0)),
+            crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
+        );
+        let plain = crate::Quad {
+            bounds: rect,
+            content_mask: crate::ContentMask::new(rect),
+            ..Default::default()
+        };
+        let mut animated = plain;
+        animated.animation_id = Some(crate::SceneAnimationId(11));
+        let mut clipped = plain;
+        clipped.content_mask = crate::ContentMask::default();
+        let mut seed = 0x9e37_79b9_u32;
+        for _ in 0..400 {
+            let len = (seed as usize % 80) + 1;
+            let mut source = Vec::with_capacity(len);
+            for _ in 0..len {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                source.push(match seed % 9 {
+                    0 | 1 | 2 => animated,
+                    3 => clipped,
+                    _ => plain,
+                });
+            }
+            let visible: Vec<_> = source
+                .iter()
+                .filter(|quad| !clip_is_degenerate(&quad.content_mask))
+                .collect();
+            let transitions = visible
+                .windows(2)
+                .filter(|pair| pair[0].animation_id.is_some() != pair[1].animation_id.is_some())
+                .count();
+            let mut longest_static_run = 0usize;
+            let mut static_run = 0usize;
+            for quad in &visible {
+                if quad.animation_id.is_some() {
+                    static_run = 0;
+                } else {
+                    static_run += 1;
+                    longest_static_run = longest_static_run.max(static_run);
+                }
+            }
+            let should_split = transitions > 0
+                && transitions <= MAX_QUAD_ANIMATION_TRANSITIONS
+                && longest_static_run >= MIN_STATIC_QUAD_RUN;
+            let mut expected_counts = Vec::new();
+            if should_split {
+                for quad in &visible {
+                    let animated = quad.animation_id.is_some();
+                    if expected_counts.last().is_none_or(|(state, _)| *state != animated) {
+                        expected_counts.push((animated, 0u32));
+                    }
+                    expected_counts.last_mut().unwrap().1 += 1;
+                }
+            } else if !visible.is_empty() {
+                expected_counts.push((
+                    visible.iter().any(|q| q.animation_id.is_some()),
+                    visible.len() as u32,
+                ));
+            }
+            let mut upload = FrameUpload::default();
+            let mut summary = FrameUploadSummary::default();
+            let emitted = upload.encode_quad_range(&source, false, &mut summary);
+            assert_eq!(emitted as usize, visible.len());
+            assert_eq!(summary.quad_count, emitted);
+            assert_eq!(upload.quads.len(), emitted as usize * PACKED_QUAD_BYTES);
+            assert_eq!(upload.quads.owned_len(), upload.quads.len());
+            assert_eq!(upload.batches.len(), expected_counts.len());
+            assert_eq!(upload.batch_visual_bounds.len(), expected_counts.len());
+            let mut first = 0u32;
+            for (index, (animated, count)) in expected_counts.into_iter().enumerate() {
+                assert!(matches!(
+                    upload.batches[index],
+                    UploadedBatch::Quads { first: actual_first, count: actual_count }
+                        if actual_first == first && actual_count == count
+                ));
+                assert_eq!(upload.batch_visual_bounds[index].is_none(), animated);
+                first += count;
+            }
+        }
     }
 }
+

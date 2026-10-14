@@ -380,6 +380,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **验证限制**：当前环境无 Cargo/rustc/rustfmt 或 Windows GPU。仅已审计调用点和代码依赖；未运行 `cargo fmt/check/test`、DX11/DX12/Vulkan/GL native draw/resize，也未证明 Prepaint p95/CPU/GPU/VRAM 下降。须先本地编译并优先跑 `retained_quad`、`batch_visual_bounds`、`element_blur` 对照后再进一步破坏性改动。仅多出每条 CPU Chunk 缓存记录一个保守 Bounds 元数据，不修改 GPU Shader ABI。
 - **剩余**：SceneSlot、Scene Replay、统一全类型 Paint Chunk、全部 FrameUpload Staging、独立 GPU Compositor Lane 未完成。下一步让 DirtyRegion/DrawStep 使用统一的 Chunk 变更代次并进一步减少不必要的 per-frame DrawStep/Upload 重建，不得引入平行 Scene/RenderTree 中转。
 
+## 2026-10-15：Quad 打包与动画分段决策合并到单次遍历
+
+- 起点 master `d584eb4f525e8e4fbf8445131004fb7724cf5d62`。修改 `crates/gpui/src/platform/nova/frame_upload/encode/retained.rs` 与本唯一 TODO；不创建并行场景、DrawStep、批次缓存或新增 GPU Owner。此前已实现 Retained Chunk Packed Bytes/Bounds 共同所有权，继续减少未保留 Quad Gap 的 CPU 工作。
+- **【代码实现，未编译】**：删除编码前的 `should_split_static_dynamic_quads(quads)` 全量预扫描。现在 `encode_quad_range` 打包有效 Quad 时顺带统计动画状态切换、最长静态连续段与保守边界；最多在前 8 次切换处暂时追加批次。编码结束后，仅当动画切换 >0 且 <=8、最长静态段 >=8 时保留拆分；否则将本次局部新增批次和边界**原地**截断为一个连续 GPU Batch，无额外 Vec 或重复源 Quad 扫描。超过阈值即停止继续产生候选 Batch，防止动画高频交替造成大量临时提交。
+- **【正确性收敛】**：`append_quad_batch` 只记录 `UploadedBatch` 与索引对齐的 `batch_visual_bounds`，`encode_quad_range` 按实际发出的 Quad 总数更新 `summary.quad_count` **一次**，合并候选后不会二次计数；`encode_retained_quad_chunk` 同样直接按编码实例数更新 summary。缓存命中原路径不变，仍使用唯一 GPU Owner 的 `PackedRetainedQuadChunk`。合并静态/动画混合 Batch 设 Bounds=None，避免危险的局部裁剪；不可见零面积 Quad 不计入切换与 GPU 实例。
+- **【测试源码，未运行】**：原有 10+1+10 和高频交替两个 Batch 测试保持，增加短静态段自动合并与计数断言；新增 400 轮包含静态、动画、零面积裁剪的随机 Quad Pattern，对照旧阈值语义、Batch 数量、first/count、bounds 是否可裁剪以及 `summary.quad_count`。本次还使用独立脚本对 100,000 条随机 trace 比对旧/新拆分判定一致性；这不是 Rust 编译或运行测试。
+- **【待验证】**：当前环境无 cargo/rustc/rustfmt，不能执行 `cargo fmt --all -- --check`、`cargo check`、`cargo test -p gpui --lib` 与四后端实机测试；应重点关注极高动画频率时批次合并、超出 MAX_QUADS 的截断帧、Canvas 自绘数据，及不匹配 Scene/Batch Bounds 的异常。只有本机 profiler 才能确认 CPU Encode p95 与 GPU DrawCall 效果。
+- **【仍未完成】**：SceneSlot、Scene Replay、根 Scene/Filter 拆分、全量 FrameUpload Staging、跨类型 Paint Chunk、独立 GPU Presentation/Compositor Lane。下一纵向切片应减少 Scene→FrameUpload 的其他源数据重复复制并验证 GPU resident 修改代次，而不是再添加新的并行表示层。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
