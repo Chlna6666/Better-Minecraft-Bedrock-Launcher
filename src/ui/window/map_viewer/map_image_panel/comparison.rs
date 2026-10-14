@@ -14,7 +14,7 @@ impl MapViewerWindowView {
                 |(_, block)| format!("目标：{}, {}, {}", block.x, block.y, block.z),
             ),
             MapImageInstallDestination::NewUpFrame => {
-                let (x, z) = self.viewport.center_block(self.active_layout);
+                let (x, z) = self.map_frame_anchor();
                 format!(
                     "展示框中心：{x}, {}, {z} · {}×{} 张",
                     self.y_layer, self.map_image.options.columns, self.map_image.options.rows,
