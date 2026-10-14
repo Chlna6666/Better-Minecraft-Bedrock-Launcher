@@ -9,6 +9,11 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
     ) -> Div {
         let player = super::super::players::player_id_label(&self.map_image.selected_player);
+        let inventory_image = if self.map_image.pending_bundle.is_some() {
+            None
+        } else {
+            self.map_image.preview.as_ref()
+        };
         let columns = self.map_image.options.columns;
         let rows = self.map_image.options.rows;
         div()
@@ -29,10 +34,14 @@ impl MapViewerWindowView {
             )
             .child(import_preview_label(
                 colors,
-                format!(
-                    "目标玩家：{player} · {columns} 列 × {rows} 行 · {} 张地图物品",
-                    columns * rows
-                ),
+                if self.map_image.pending_bundle.is_some() {
+                    format!("目标玩家：{player} · 外部 NBT 暂存待确认（图像未解析）")
+                } else {
+                    format!(
+                        "目标玩家：{player} · {columns} 列 × {rows} 行 · {} 张地图物品",
+                        columns * rows
+                    )
+                },
             ))
             .child(
                 div()
@@ -43,17 +52,21 @@ impl MapViewerWindowView {
                     .rounded(px(8.0))
                     .bg(colors.surface)
                     .overflow_hidden()
-                    .when_some(self.map_image.preview.as_ref(), |pane, preview| {
+                    .when_some(inventory_image, |pane, preview| {
                         pane.child(
                             img(preview.clone())
                                 .size_full()
                                 .object_fit(ObjectFit::Contain),
                         )
                     })
-                    .when(self.map_image.preview.is_none(), |pane| {
+                    .when(inventory_image.is_none(), |pane| {
                         pane.child(import_preview_label(
                             colors,
-                            "尚未生成地图像素。请先选择图片并完成转换。",
+                            if self.map_image.pending_bundle.is_some() {
+                                "外部 NBT 只暂存了路径，还没有地图像素预览。"
+                            } else {
+                                "尚未生成地图像素。请先选择图片并完成转换。"
+                            },
                         ))
                     }),
             )
@@ -68,6 +81,11 @@ impl MapViewerWindowView {
         &self,
         colors: &ThemeColors,
     ) -> Div {
+        let placement_image = if self.map_image.pending_bundle.is_some() {
+            None
+        } else {
+            self.map_image.preview.as_ref()
+        };
         let target = match self.map_image.install_destination {
             MapImageInstallDestination::Player => "目标：玩家背包；不修改世界地形".to_owned(),
             MapImageInstallDestination::SelectedBlock => self.map_image.selected_block.map_or_else(
@@ -76,10 +94,14 @@ impl MapViewerWindowView {
             ),
             MapImageInstallDestination::NewUpFrame => {
                 let (x, z) = self.map_frame_anchor();
-                format!(
-                    "展示框中心：{x}, {}, {z} · {}×{} 张",
-                    self.y_layer, self.map_image.options.columns, self.map_image.options.rows,
-                )
+                if self.map_image.pending_bundle.is_some() {
+                    format!("展示框中心：{x}, {}, {z} · 待解析 NBT 网格", self.y_layer)
+                } else {
+                    format!(
+                        "展示框中心：{x}, {}, {z} · {}×{} 张",
+                        self.y_layer, self.map_image.options.columns, self.map_image.options.rows,
+                    )
+                }
             }
         };
         div()
@@ -96,7 +118,7 @@ impl MapViewerWindowView {
             .gap(px(6.0))
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| cx.stop_propagation())
             .child(import_preview_label(colors, "地图物品 · 分片结果"))
-            .when_some(self.map_image.preview.as_ref(), |panel, preview| {
+            .when_some(placement_image, |panel, preview| {
                 panel.child(
                     div()
                         .w_full()
@@ -105,8 +127,15 @@ impl MapViewerWindowView {
                         .child(img(preview.clone()).size_full().object_fit(ObjectFit::Contain)),
                 )
             })
-            .when(self.map_image.preview.is_none(), |panel| {
-                panel.child(import_preview_label(colors, "选择图片并完成转换后显示地图像素"))
+            .when(placement_image.is_none(), |panel| {
+                panel.child(import_preview_label(
+                    colors,
+                    if self.map_image.pending_bundle.is_some() {
+                        "外部 NBT 未提供即时图像预览；这里仅显示目标信息。"
+                    } else {
+                        "选择图片并完成转换后显示地图像素"
+                    },
+                ))
             })
             .child(import_preview_label(colors, target))
             .child(import_preview_label(
