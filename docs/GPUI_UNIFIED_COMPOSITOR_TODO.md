@@ -398,6 +398,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【验证】**：仅对 GitHub 源码全局调用点进行了静态审查，**无 Rust Cargo/ rustc / Windows native GPU**，未运行 fmt/check/test/四后端。真实堆分配下降、DX11/12/Vulkan/GL 上传性能和 p95 延迟仍须本地 Profile 测量；不要以此推断 GPU/VRAM 降低。
 - 后续重点：验证 Resident Upload Plan 与 DrawStep/DirtyRegion 的版本一致性，清理冗余 `SceneSlot`、`Scene::replay`、全量 `FrameUpload`、并完成独立 GPU Compositor/Present lane（尚未完成）。
 
+## 2026-10-15：共享 Arc 的 GPU Quad Resident Layout 单遍脏区间验证
+
+- 起点 `34a2091b5de771208bf5ee316265086ad75c0243`；变更 `crates/gpui/src/platform/nova/renderer/chunk_upload.rs` 与唯一 TODO。未引入第二套 GPU Chunk/Scene/FrameUpload 所有者。
+- **【代码实现；未 Rust 编译】**：`QuadResidentLayout::from_upload_reusing` 已在完全相同的 Chunk ID/generation/hash/位置序列时直接共享 `Arc<[RetainedResidentSpan]>`；原 `upload_plan` 对这类相同对象仍各遍历旧布局、新布局并执行逐项归并。新增 `Arc::ptr_eq` 精确快路：利用现有 `dirty_complement` 在**单次遍历中同时验证范围顺序、是否越界、是否为空**以及生成脏字节间隙，不再扫两份等价元数据。Arc 指针不相同则保留原严格比较逻辑，不使用指针相等作为跳过范围合法性校验的理由。
+- **【消除空工作】**：若当前被确认共享的保留 Span 覆盖全部 GPU Quad 字节，虽然静态签名可能由于动画拓扑发生变化，但本轮物理 Quad Bytes 没有缺口，`dirty_complement` 返回 `QuadUploadPlan::None` 而非 `Ranges(SmallVec::new())`；两者原生写入字节均为 0，后者仍要保留无用的区间状态。零 span、异常 Range、被替换 Slot、新旧内容不同仍走 Full 或既有安全局部上传。
+- **【测试源码，未执行】**：同 Arc 与深拷贝相等 Span 的上传间隙必须一致；满驻留时返回 None；同 Arc 元数据倒序、重叠、越界、空范围均强制 Full。使用独立 JS 模型生成 60,000 组随机区间（含不合法区间和非同 Arc 情况），新旧真实上传字节区域对照一致；这不是运行 Rust 单测。
+- **【风险与限制】**：无 rustc/cargo/rustfmt 和 Windows 原生 GPU，未验证 rustfmt、编译、GPUI lib tests、DX11/DX12/Vulkan/OpenGL。该提交只减少 CPU 上传规划扫描和空计划表达，不改变底层 GPU Buffer、Fence、Upload ABI 或跨 Slot 生命周期；实际帧耗时/GPU 占用未测。下一步继续减少 FrameUpload 静态流重复 hash/上传和复用 DrawStep 的有效性检查，持续删除 SceneSlot/Replay 技术债而非添加旁路缓存。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

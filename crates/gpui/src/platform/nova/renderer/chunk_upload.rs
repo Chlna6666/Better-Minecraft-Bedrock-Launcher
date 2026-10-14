@@ -54,6 +54,15 @@ impl QuadResidentLayout {
         let Some(previous) = previous else {
             return QuadUploadPlan::Full;
         };
+        // The GPU owner intentionally shares one Arc when the ordered resident
+        // layout has not changed. In that common case the old and new layout
+        // are the *same* allocation: dirty_complement performs all necessary
+        // ordering/bounds validation and finds gaps in one pass. Do not scan
+        // and compare both copies of identical metadata on every slot update.
+        if Arc::ptr_eq(&self.0, &previous.0) {
+            return dirty_complement(self.0.iter(), byte_len)
+                .unwrap_or(QuadUploadPlan::Full);
+        }
         // Retained ranges are sorted by GPU byte offset, never by Chunk ID.
         // Validate BOTH generations before omitting any resident bytes:
         // a malformed current layout could otherwise preserve a coincidentally
@@ -121,7 +130,13 @@ fn dirty_complement<'a>(
     if cursor < byte_len {
         ranges.push(cursor..byte_len);
     }
-    Some(QuadUploadPlan::Ranges(ranges))
+    if ranges.is_empty() {
+        // A changed upload token may describe only animation topology while
+        // every physical Quad byte remains resident. Avoid a zero-write plan.
+        Some(QuadUploadPlan::None)
+    } else {
+        Some(QuadUploadPlan::Ranges(ranges))
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +163,62 @@ mod tests {
             current.upload_plan(Some(&previous), 64, true),
             QuadUploadPlan::Ranges(smallvec::smallvec![0..16, 48..64])
         );
+    }
+
+    #[test]
+    fn identical_arc_layout_uses_single_validated_gap_walk() {
+        let original = QuadResidentLayout(Arc::from([
+            span("left", 1, 16..32),
+            span("right", 1, 48..64),
+        ]));
+        let reused = original.clone();
+        assert!(Arc::ptr_eq(&original.0, &reused.0));
+        assert_eq!(
+            reused.upload_plan(Some(&original), 80, true),
+            QuadUploadPlan::Ranges(smallvec::smallvec![0..16, 32..48, 64..80])
+        );
+        // A deep-copied but equivalent descriptor must have the same plan.
+        let independent = QuadResidentLayout(Arc::from(original.0.as_ref()));
+        assert!(!Arc::ptr_eq(&original.0, &independent.0));
+        assert_eq!(
+            independent.upload_plan(Some(&original), 80, true),
+            reused.upload_plan(Some(&original), 80, true)
+        );
+    }
+
+    #[test]
+    fn identical_arc_with_complete_residency_needs_no_quad_upload() {
+        let layout = QuadResidentLayout(Arc::from([span("whole", 2, 0..64)]));
+        assert_eq!(
+            layout.upload_plan(Some(&layout), 64, true),
+            QuadUploadPlan::None
+        );
+        assert_eq!(layout.upload_plan(Some(&layout), 64, false), QuadUploadPlan::None);
+    }
+
+    #[test]
+    fn malformed_shared_layout_still_forces_full_upload() {
+        let invalid_layouts = [
+            QuadResidentLayout(Arc::from([
+                span("right", 1, 32..64),
+                span("left", 1, 0..32),
+            ])),
+            QuadResidentLayout(Arc::from([
+                span("left", 1, 0..32),
+                span("overlap", 1, 16..48),
+            ])),
+            QuadResidentLayout(Arc::from([span("overflow", 1, 32..96)])),
+            QuadResidentLayout(Arc::from([span("empty", 1, 16..16)])),
+        ];
+        for layout in &invalid_layouts {
+            let shared = layout.clone();
+            assert!(Arc::ptr_eq(&layout.0, &shared.0));
+            assert_eq!(
+                shared.upload_plan(Some(layout), 64, true),
+                QuadUploadPlan::Full,
+                "same-Arc reuse must not bypass range validation"
+            );
+        }
     }
 
     #[test]
