@@ -63,8 +63,15 @@ impl MapViewerWindowView {
             _ => self.render_map_import_actions(colors, cx),
         };
         let task = self.import_task_snapshot();
+        // Keep the command surface inside the visible center workspace instead of
+        // placing it after a full-height canvas and clipping it below the viewport.
         div()
-            .flex_none()
+            .absolute()
+            .left(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .max_h(px(252.0))
+            .overflow_y_scrollbar()
             .m(px(12.0))
             .occlude()
             .p(px(10.0))
