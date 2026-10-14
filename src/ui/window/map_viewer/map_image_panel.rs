@@ -436,7 +436,7 @@ impl MapViewerWindowView {
         })
     }
 
-    fn choose_map_source(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn choose_map_source(&mut self, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
         }
