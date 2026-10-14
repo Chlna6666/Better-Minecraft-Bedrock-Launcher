@@ -789,6 +789,25 @@ fn paint_frame_grid_preview(
 ) {
     let max_block_x = preview.min_block_x.saturating_add(preview.columns as i32);
     let max_block_z = preview.min_block_z.saturating_add(preview.rows as i32);
+    // Project the already-generated mosaic into the exact world-space grid.
+    // This does not rebuild the preview or allocate per-tile textures during pan/zoom.
+    if let Some(image) = preview.image.as_deref() {
+        let left = screen_x_for_block(bounds, viewport, layout, preview.min_block_x);
+        let right = screen_x_for_block(bounds, viewport, layout, max_block_x);
+        let top = screen_y_for_block(bounds, viewport, layout, preview.min_block_z);
+        let bottom = screen_y_for_block(bounds, viewport, layout, max_block_z);
+        if right > left && bottom > top {
+            let rect = Bounds {
+                origin: point(px(left.floor()), px(top.floor())),
+                size: size(px((right - left).ceil()), px((bottom - top).ceil())),
+            };
+            if let Err(error) =
+                window.paint_images(std::iter::once(ImagePaintRequest::new(rect, image)))
+            {
+                tracing::debug!(?error, "failed to paint map-frame image preview");
+            }
+        }
+    }
     let color = rgb(0x4ade80).into();
     paint_block_rect(
         bounds,
