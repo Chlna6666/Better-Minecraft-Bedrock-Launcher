@@ -50,7 +50,17 @@ impl MapViewerWindowView {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let inventory_target = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
             && self.map_image_installing_to_player();
-        let body = if preview {
+        let source_missing = match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator => self.generator.source.is_none(),
+            MapViewerRightPanel::ImageGenerator => self.image_generator.source.is_none(),
+            MapViewerRightPanel::MapImage => {
+                self.map_image.source.is_none() && self.map_image.pending_bundle.is_none()
+            }
+            _ => false,
+        };
+        let body = if source_missing {
+            self.render_import_source_empty_state(colors, cx).into_any_element()
+        } else if preview {
             self.render_import_result(colors, cx).into_any_element()
         } else if inventory_target {
             self.render_map_image_inventory_workspace(colors).into_any_element()
@@ -85,6 +95,12 @@ impl MapViewerWindowView {
     fn render_import_workspace_toolbar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
+        let source_available = match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator => self.generator.source.is_some(),
+            MapViewerRightPanel::ImageGenerator => self.image_generator.source.is_some(),
+            MapViewerRightPanel::MapImage => self.map_image.source.is_some(),
+            _ => false,
+        };
         div()
             .absolute()
             .top(px(8.0))
@@ -117,6 +133,16 @@ impl MapViewerWindowView {
                         )
                 }),
             )
+            .when(source_available, |bar| {
+                bar.child(
+                    generator_choice(colors, "更换素材…", false).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| {
+                            this.choose_import_source_from_workspace(cx)
+                        }),
+                    ),
+                )
+            })
             .child(div().flex_1())
             .when(is_map_image, |bar| {
                 bar.child(
@@ -171,6 +197,89 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .child(body)
+    }
+
+    /// Shared entry point for every import mode. The file picker is not buried in settings.
+    fn choose_import_source_from_workspace(&mut self, cx: &mut Context<Self>) {
+        match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator => self.choose_generator_obj(cx),
+            MapViewerRightPanel::ImageGenerator => self.choose_generator_image(cx),
+            MapViewerRightPanel::MapImage => self.choose_map_source(cx),
+            _ => {}
+        }
+    }
+
+    /// Deliberately empty preview area: actionable, centered, and keyboard-focusable through
+    /// the same reusable choice control used by the configuration panel.
+    fn render_import_source_empty_state(
+        &self,
+        colors: &ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (title, description, action) = match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator => (
+                "从 OBJ 模型开始",
+                "选择 OBJ 模型。支持关联 MTL 与同目录纹理，转换结果会显示在这里。",
+                "选择 OBJ 模型…",
+            ),
+            MapViewerRightPanel::ImageGenerator => (
+                "从图片创建方块模型",
+                "导入 PNG、JPEG、TGA 或 WebP，先预览比例和色彩，再调整目标尺寸。",
+                "选择图片…",
+            ),
+            MapViewerRightPanel::MapImage => (
+                "从图片创建地图物品",
+                "导入图片后可预览每张 128×128 地图、编辑拼图网格，再选择写入目标。",
+                "选择图片…",
+            ),
+            _ => ("选择源素材", "选择素材以开始转换。", "选择素材…"),
+        };
+        div()
+            .size_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .pt(px(68.0))
+            .pb(px(12.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .max_w(px(480.0))
+                    .w_full()
+                    .mx(px(20.0))
+                    .p(px(24.0))
+                    .rounded(px(12.0))
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.surface)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .text_size(px(17.0))
+                            .text_color(colors.text_primary)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(colors.text_secondary)
+                            .text_center()
+                            .child(description),
+                    )
+                    .child(
+                        generator_choice(colors, action, true).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.choose_import_source_from_workspace(cx);
+                            }),
+                        ),
+                    ),
+            )
     }
 
     pub(super) fn render_import_block_canvas(
