@@ -38,6 +38,23 @@ fn should_split_static_dynamic_quads(quads: &[crate::Quad]) -> bool {
     transitions > 0 && longest_static_run >= MIN_STATIC_RUN
 }
 
+/// The display-list producer sorts and deduplicates retained spans into
+/// non-overlapping Quad index ranges. Seek to the first possible overlap
+/// instead of rescanning every retained chunk for each prepared Quad batch.
+/// Keep the paint-order range check at the caller: chunks may not cross a
+/// prepared batch's solid/non-solid draw-state boundary.
+fn retained_chunks_overlapping(
+    chunks: &[crate::PreparedRetainedQuadChunk],
+    range: Range<usize>,
+) -> &[crate::PreparedRetainedQuadChunk] {
+    if range.is_empty() {
+        return &chunks[..0];
+    }
+    let start = chunks.partition_point(|chunk| chunk.quad_range.end <= range.start);
+    let end = start + chunks[start..].partition_point(|chunk| chunk.quad_range.start < range.end);
+    &chunks[start..end]
+}
+
 impl FrameUpload {
     pub(super) fn encode_retained_quads(
         &mut self,
@@ -47,10 +64,10 @@ impl FrameUpload {
         summary: &mut FrameUploadSummary,
     ) {
         let mut cursor = range.start;
-        for chunk in scene.prepared_retained_quad_chunks() {
-            if chunk.quad_range.end <= range.start || chunk.quad_range.start >= range.end {
-                continue;
-            }
+        for chunk in retained_chunks_overlapping(
+            scene.prepared_retained_quad_chunks(),
+            range.clone(),
+        ) {
             if chunk.quad_range.start < cursor
                 || chunk.quad_range.end > range.end
                 || chunk.is_solid != is_solid
@@ -306,6 +323,40 @@ mod static_dynamic_batch_tests {
         assert!(matches!(upload.batches[0], UploadedBatch::Quads { count: 10, .. }));
         assert!(matches!(upload.batches[1], UploadedBatch::Quads { count: 1, .. }));
         assert!(matches!(upload.batches[2], UploadedBatch::Quads { count: 10, .. }));
+    }
+
+    #[test]
+    fn overlapping_retained_chunks_matches_full_scan_for_sliced_batches() {
+        let chunks: Vec<_> = (0..48)
+            .map(|index| crate::PreparedRetainedQuadChunk {
+                id: RetainedChunkId::new(
+                    crate::GlobalElementId::from_path(&[format!("span-{index}").into()]),
+                    1,
+                ),
+                quad_range: index * 8..index * 8 + 8,
+                replayed: true,
+                is_solid: index % 2 == 0,
+            })
+            .collect();
+        // All ranges are sorted and disjoint, as guaranteed by Scene::finish.
+        // Compare against the previous full scan, including adjacent boundaries
+        // and ranges which cross multiple solid/non-solid prepared batches.
+        for start in 0..=(48 * 8) {
+            for width in [1, 2, 7, 8, 9, 31, 64] {
+                let end = (start + width).min(48 * 8);
+                let expected: Vec<_> = chunks
+                    .iter()
+                    .filter(|chunk| chunk.quad_range.end > start && chunk.quad_range.start < end)
+                    .map(|chunk| &chunk.id)
+                    .collect();
+                let actual: Vec<_> = retained_chunks_overlapping(&chunks, start..end)
+                    .iter()
+                    .map(|chunk| &chunk.id)
+                    .collect();
+                assert_eq!(actual, expected, "batch={start}..{end}");
+            }
+        }
+        assert!(retained_chunks_overlapping(&chunks, 16..16).is_empty());
     }
 
     #[test]

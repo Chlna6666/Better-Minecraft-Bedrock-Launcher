@@ -1836,6 +1836,20 @@ impl Scene {
                 continue;
             }
 
+            // Reject incomplete/nonexclusive Quad index runs before scanning
+            // paint operations. This O(log Quads) check is independent of order
+            // barriers and prevents an O(PaintOperations) pass for candidates
+            // which cannot be represented as one resident GPU range.
+            let quad_start = self.quads.partition_point(|quad| quad.order < first_order);
+            let quad_end = self.quads.partition_point(|quad| quad.order <= last_order);
+            if quad_end.saturating_sub(quad_start) != quad_count {
+                continue;
+            }
+
+            // Do not replace this proof with just the sorted primitive arrays:
+            // nested Blur captures can record child paint operations not present
+            // in this Scene's flat primitive vectors. All outside operations
+            // must remain outside the retained order interval.
             let order_is_exclusive =
                 self.paint_operations
                     .iter()
@@ -1856,12 +1870,6 @@ impl Scene {
                         }
                     });
             if !order_is_exclusive {
-                continue;
-            }
-
-            let quad_start = self.quads.partition_point(|quad| quad.order < first_order);
-            let quad_end = self.quads.partition_point(|quad| quad.order <= last_order);
-            if quad_end.saturating_sub(quad_start) != quad_count {
                 continue;
             }
             prepared.push(PreparedRetainedQuadChunk {
