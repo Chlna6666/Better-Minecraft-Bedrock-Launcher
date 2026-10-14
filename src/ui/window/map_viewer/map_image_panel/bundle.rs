@@ -13,15 +13,35 @@ impl MapViewerWindowView {
         self.install_map_bundle(self.map_image.install_destination, None, cx);
     }
 
+    /// File selection is a read-only staging action, never an implicit world write.
     pub(super) fn import_map_bundle_file_selected(&mut self, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() {
+            return;
+        }
         if let Some(path) = pick_file_path_with_filter("地图包或 Bedrock 容器 NBT", &["nbt"])
         {
-            self.install_map_bundle(
-                self.map_image.install_destination,
-                Some(PathBuf::from(path)),
-                cx,
+            self.map_image.pending_bundle = Some(PathBuf::from(path));
+            self.status = SharedString::from(
+                "已暂存外部地图包，检查写入目标后在中央操作栏确认导入",
             );
+            self.set_import_workspace_mode(super::super::state::ImportWorkspaceMode::Placement, cx);
+            cx.notify();
         }
+    }
+
+    pub(super) fn confirm_pending_map_bundle(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.map_image.pending_bundle.clone() else {
+            return;
+        };
+        self.install_map_bundle(self.map_image.install_destination, Some(input), cx);
+    }
+
+    pub(super) fn cancel_pending_map_bundle(&mut self, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() {
+            return;
+        }
+        self.map_image.pending_bundle = None;
+        cx.notify();
     }
 
     fn install_map_bundle(
@@ -133,6 +153,8 @@ impl MapViewerWindowView {
         };
         match result {
             Ok(task_id) => {
+                // Clear the staged input only once a visible, cancellable Task owns the write.
+                self.map_image.pending_bundle = None;
                 if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
                     self.task_snapshots
                         .insert(snapshot.id.clone(), Arc::new(snapshot));
