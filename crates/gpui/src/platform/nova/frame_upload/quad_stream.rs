@@ -247,12 +247,12 @@ mod tests {
         frame.quads.append_shared(Arc::clone(&bytes), 1);
         assert_eq!(frame.quads.len(), 64);
         assert_eq!(frame.quads.owned_len(), 0);
-        assert_eq!(frame.retained_quad_memory().used_bytes, 32);
+        assert_eq!(frame.retained_quad_memory(&RetainedQuadChunkCache::default()).used_bytes, 32);
         assert_eq!(
-            frame.retained_quad_memory().capacity_bytes,
+            frame.retained_quad_memory(&RetainedQuadChunkCache::default()).capacity_bytes,
             bytes.capacity() as u64
         );
         frame.quads.clear();
-        assert_eq!(frame.retained_quad_memory(), crate::MemoryUsage::default());
+        assert_eq!(frame.retained_quad_memory(&RetainedQuadChunkCache::default()), crate::MemoryUsage::default());
     }
 }

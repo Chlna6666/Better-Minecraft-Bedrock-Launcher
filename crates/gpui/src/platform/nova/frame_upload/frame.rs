@@ -25,6 +25,16 @@ pub(in crate::platform::nova) struct PackedRetainedQuadChunk {
     pub(in crate::platform::nova) is_solid: bool,
 }
 
+/// GPU-owner lifetime cache for unchanged CachedView Quad payloads.
+/// The FrameUpload is only an encoding scratch frame: it borrows this single
+/// cache instead of retaining an independent cross-frame ownership map.
+#[derive(Default)]
+pub(in crate::platform::nova) struct RetainedQuadChunkCache {
+    pub(in crate::platform::nova) retained_quad_chunks:
+        FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
+    pub(in crate::platform::nova) active_retained_chunk_ids_scratch: FxHashSet<RetainedChunkId>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::platform::nova) struct RetainedResidentSpan {
     pub(in crate::platform::nova) id: RetainedChunkId,
@@ -189,10 +199,5 @@ pub(in crate::platform::nova) struct FrameUpload {
     /// Reused encoder buffer for path-rasterization cache misses. The final cache entry remains an
     /// independent Arc<[u8]>; this buffer only removes the short-lived per-path Vec allocation.
     pub(in crate::platform::nova) path_rasterization_encode_scratch: Vec<u8>,
-    pub(in crate::platform::nova) retained_quad_chunks:
-        FxHashMap<RetainedChunkId, PackedRetainedQuadChunk>,
-    /// Reusable liveness set for retained quad-cache pruning. The set is empty between reset
-    /// encodes, but keeping its buckets avoids rebuilding a hash table every retained frame.
-    pub(in crate::platform::nova) active_retained_chunk_ids_scratch: FxHashSet<RetainedChunkId>,
     pub(in crate::platform::nova) resident_quad_spans: Vec<RetainedResidentSpan>,
 }

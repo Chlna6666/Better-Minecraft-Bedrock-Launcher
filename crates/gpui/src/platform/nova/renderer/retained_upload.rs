@@ -569,6 +569,8 @@ impl StaticUploadMask {
 
 #[derive(Default)]
 pub(super) struct RetainedUpload {
+    /// Sole owner of packed retained Quad payloads across Scene revisions.
+    pub(super) quad_chunks: RetainedQuadChunkCache,
     key: Option<UploadKey>,
     summary: FrameUploadSummary,
     static_signature: Option<StaticUploadSignature>,
@@ -844,6 +846,7 @@ impl NovaRenderer {
             self.atlas
                 .copy_placements_into(&mut self.frame_upload.atlas_placements);
             summary = self.frame_upload.encode(
+                &mut self.retained_upload.quad_chunks,
                 scene,
                 presentation_animation_values,
                 self.current_size,

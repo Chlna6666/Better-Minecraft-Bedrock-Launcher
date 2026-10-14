@@ -147,7 +147,7 @@ fn verify_replay(renderer: &mut NovaRenderer, base: &crate::Scene) -> (usize, us
         );
     }
     assert_eq!(
-        renderer.frame_upload.retained_quad_memory().used_bytes,
+        renderer.frame_upload.retained_quad_memory(&renderer.retained_upload.quad_chunks).used_bytes,
         (64 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(

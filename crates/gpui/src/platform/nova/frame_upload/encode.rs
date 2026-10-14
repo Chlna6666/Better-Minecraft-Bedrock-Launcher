@@ -86,6 +86,7 @@ fn clip_is_degenerate(mask: &crate::ContentMask<crate::ScaledPixels>) -> bool {
 impl FrameUpload {
     pub(in crate::platform::nova) fn encode(
         &mut self,
+        cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
@@ -93,7 +94,9 @@ impl FrameUpload {
         premultiplied_alpha: bool,
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
+        cache.begin_frame();
         self.encode_scene(
+            cache,
             scene,
             presentation_animation_values,
             drawable_size,
@@ -384,6 +387,7 @@ impl FrameUpload {
 
     fn encode_scene(
         &mut self,
+        cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
@@ -528,6 +532,7 @@ impl FrameUpload {
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
                     self.encode_retained_quads(
+                        cache,
                         scene,
                         quad_run.range.clone(),
                         quad_run.is_solid,
@@ -588,6 +593,7 @@ impl FrameUpload {
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
                         let child_summary = self.encode_scene(
+                            cache,
                             &blur.content,
                             &[],
                             drawable_size,
@@ -635,7 +641,7 @@ impl FrameUpload {
             }
         }
         if reset {
-            self.prune_retained_quads(scene);
+            cache.prune_retained_quads();
             self.refresh_backdrop_blur_configs();
             self.rebuild_backdrop_blur_passes();
         }
@@ -742,6 +748,7 @@ mod retained_root_tests {
             );
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
+            &mut chunk_cache,
                 &scene,
                 &[],
                 size,
@@ -808,6 +815,7 @@ mod retained_root_tests {
         };
         let mut upload = FrameUpload::default();
         let mut summary = upload.encode(
+            &mut chunk_cache,
             &scene,
             &[],
             size,
@@ -880,7 +888,9 @@ mod retained_root_tests {
             content: std::sync::Arc::new(crate::Scene::default()),
         };
         let mut upload = FrameUpload::default();
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
+            &mut chunk_cache,
             &scene,
             &[],
             size,
@@ -941,7 +951,9 @@ mod retained_root_tests {
             content: std::sync::Arc::new(crate::Scene::default()),
         };
         let mut upload = FrameUpload::default();
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
+            &mut chunk_cache,
             &scene,
             &[],
             size,
@@ -1010,6 +1022,7 @@ mod retained_root_tests {
     #[test]
     fn synthetic_root_reuses_zero_filter_target_and_records_transparent_clear() {
         let mut upload = FrameUpload::default();
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         let size = DrawableSize { width: 640, height: 480 };
         let mut summary = FrameUploadSummary::default();
         assert!(upload.append_retained_root(size, &mut summary));
@@ -1061,6 +1074,7 @@ mod retained_root_tests {
     #[test]
     fn retained_root_never_overruns_filter_or_quad_buffers() {
         let mut upload = FrameUpload::default();
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         upload.backdrop_blurs.resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
         let mut summary = FrameUploadSummary::default();
         assert!(!upload.append_retained_root(DrawableSize { width: 8, height: 8 }, &mut summary));

@@ -58,6 +58,7 @@ fn retained_chunks_overlapping(
 impl FrameUpload {
     pub(super) fn encode_retained_quads(
         &mut self,
+        cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         range: Range<usize>,
         is_solid: bool,
@@ -74,14 +75,17 @@ impl FrameUpload {
             {
                 continue;
             }
+            // Track all admitted child/root CachedView chunks in the single
+            // GPU-owner cache, not only the outer Scene's candidates.
+            cache.active_retained_chunk_ids_scratch.insert(chunk.id.clone());
             self.encode_quad_range(
                 &scene.quads[cursor..chunk.quad_range.start],
                 is_solid,
                 summary,
             );
-            if !self.reuse_retained_quad_chunk(chunk, summary) {
+            if !self.reuse_retained_quad_chunk(cache, chunk, summary) {
                 summary.retained_chunk_misses = summary.retained_chunk_misses.saturating_add(1);
-                self.encode_retained_quad_chunk(scene, chunk, summary);
+                self.encode_retained_quad_chunk(cache, scene, chunk, summary);
             }
             cursor = chunk.quad_range.end;
         }
@@ -90,11 +94,12 @@ impl FrameUpload {
 
     fn encode_retained_quad_chunk(
         &mut self,
+        cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
     ) {
-        let (bytes, count) = self.encode_chunk_bytes(scene, chunk);
+        let (bytes, count) = self.encode_chunk_bytes(cache, scene, chunk);
         if count == 0 {
             return;
         }
@@ -116,7 +121,7 @@ impl FrameUpload {
                 range: start..self.quads.len(),
                 byte_hash,
             });
-            self.retained_quad_chunks.insert(
+            cache.retained_quad_chunks.insert(
                 chunk.id.clone(),
                 PackedRetainedQuadChunk {
                     bytes,
@@ -130,12 +135,13 @@ impl FrameUpload {
 
     fn encode_chunk_bytes(
         &mut self,
+        cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
         chunk: &crate::PreparedRetainedQuadChunk,
     ) -> (Vec<u8>, u32) {
         // Reset cleared the previous frame's segment references. Reuse a uniquely-owned backing
         // for dirty content, but never copy an Arc still held by another occurrence.
-        let mut bytes = self
+        let mut bytes = cache
             .retained_quad_chunks
             .remove(&chunk.id)
             .and_then(|cached| Arc::try_unwrap(cached.bytes).ok())
@@ -167,13 +173,14 @@ impl FrameUpload {
 
     fn reuse_retained_quad_chunk(
         &mut self,
+        cache: &RetainedQuadChunkCache,
         chunk: &crate::PreparedRetainedQuadChunk,
         summary: &mut FrameUploadSummary,
     ) -> bool {
         if !chunk.replayed {
             return false;
         }
-        let Some(cached) = self.retained_quad_chunks.get(&chunk.id) else {
+        let Some(cached) = cache.retained_quad_chunks.get(&chunk.id) else {
             return false;
         };
         if cached.is_solid != chunk.is_solid
@@ -267,14 +274,14 @@ impl FrameUpload {
         summary.quad_count = summary.quad_count.saturating_add(count);
     }
 
-    pub(super) fn prune_retained_quads(&mut self, scene: &crate::Scene) {
+}
+
+impl RetainedQuadChunkCache {
+    pub(super) fn begin_frame(&mut self) {
         self.active_retained_chunk_ids_scratch.clear();
-        self.active_retained_chunk_ids_scratch.extend(
-            scene
-                .prepared_retained_quad_chunks()
-                .iter()
-                .map(|chunk| chunk.id.clone()),
-        );
+    }
+
+    pub(super) fn prune_retained_quads(&mut self) {
         let active_chunk_count = self.active_retained_chunk_ids_scratch.len();
         {
             let active_chunks = &self.active_retained_chunk_ids_scratch;

@@ -875,6 +875,7 @@ impl NovaRenderer {
             }
         }
         self.frame_upload.trim_retained_capacity(level);
+        self.retained_upload.quad_chunks.trim(level);
         self.draw_step_scratch.trim_retained_capacity(level);
         if matches!(
             level,

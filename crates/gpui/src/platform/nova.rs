@@ -85,6 +85,7 @@ pub(crate) use frame_upload::{
 pub(crate) struct FrameUploadBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
+    quad_chunks: RetainedQuadChunkCache,
     rendering_parameters: RenderingParameters,
 }
 
@@ -94,12 +95,14 @@ impl FrameUploadBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
+            quad_chunks: RetainedQuadChunkCache::default(),
             rendering_parameters: RenderingParameters::system(),
         }
     }
 
     pub(crate) fn next_frame(&mut self) -> (usize, usize, usize, usize, usize) {
         let summary = self.upload.encode(
+            &mut self.quad_chunks,
             &self.scene,
             &[],
             DrawableSize {
@@ -116,7 +119,7 @@ impl FrameUploadBenchmarkCore {
                 .saturating_add(usize::try_from(summary.backdrop_blur_count).unwrap_or(usize::MAX)),
             self.upload.batches.len(),
             self.upload.uploaded_bytes(),
-            self.upload.retained_byte_capacity(),
+            self.upload.retained_byte_capacity(&self.quad_chunks),
             self.upload.backdrop_blur_configs().len(),
         )
     }
@@ -126,6 +129,7 @@ impl FrameUploadBenchmarkCore {
 pub(crate) struct PathPackingBenchmarkCore {
     scene: crate::Scene,
     upload: FrameUpload,
+    quad_chunks: RetainedQuadChunkCache,
     rendering_parameters: RenderingParameters,
 }
 
@@ -135,6 +139,7 @@ impl PathPackingBenchmarkCore {
         Self {
             scene,
             upload: FrameUpload::default(),
+            quad_chunks: RetainedQuadChunkCache::default(),
             rendering_parameters: RenderingParameters::system(),
         }
     }
@@ -143,6 +148,7 @@ impl PathPackingBenchmarkCore {
         self.upload.path_rasterization_cache.clear();
         self.upload.path_geometry_hash_memo.clear();
         let summary = self.upload.encode(
+            &mut self.quad_chunks,
             &self.scene,
             &[],
             DrawableSize {

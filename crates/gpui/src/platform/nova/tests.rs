@@ -883,6 +883,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
     };
 
     upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         drawable_size,
@@ -893,6 +894,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
     assert_eq!(read_u32_at(&upload.globals, 8), 0);
 
     upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         drawable_size,
@@ -913,6 +915,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         height: 480,
     };
     let first_summary = upload.encode(
+        &mut chunk_cache,
         &previous,
         &[],
         drawable_size,
@@ -920,7 +923,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         false,
         BackdropBlurQuality::Full,
     );
-    assert_eq!(upload.retained_quad_chunks.len(), 1);
+    assert_eq!(chunk_cache.retained_quad_chunks.len(), 1);
     assert_eq!(first_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
     assert_eq!(
@@ -929,11 +932,11 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         "chunk miss packs directly into shared storage"
     );
     assert_eq!(
-        upload.retained_quad_memory().used_bytes,
+        upload.retained_quad_memory(&chunk_cache).used_bytes,
         (32 * PACKED_QUAD_BYTES) as u64
     );
-    assert!(upload.active_retained_chunk_ids_scratch.is_empty());
-    let active_chunk_scratch_capacity = upload.active_retained_chunk_ids_scratch.capacity();
+    assert!(chunk_cache.active_retained_chunk_ids_scratch.is_empty());
+    let active_chunk_scratch_capacity = chunk_cache.active_retained_chunk_ids_scratch.capacity();
     assert!(
         active_chunk_scratch_capacity >= 1,
         "retained cache pruning should keep its hash allocation hot"
@@ -952,6 +955,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     );
     let same_generation = retained_quad_scene(1);
     let same_generation_summary = upload.encode(
+        &mut chunk_cache,
         &same_generation,
         &[],
         drawable_size,
@@ -971,7 +975,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         "dirty retained chunks should reuse their byte backing allocation"
     );
     assert_eq!(
-        upload.active_retained_chunk_ids_scratch.capacity(),
+        chunk_cache.active_retained_chunk_ids_scratch.capacity(),
         active_chunk_scratch_capacity,
         "stable retained working sets should reuse the liveness hash table"
     );
@@ -988,6 +992,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     });
     partially_dirty.finish();
     let replay_summary = upload.encode(
+        &mut chunk_cache,
         &partially_dirty,
         &[],
         drawable_size,
@@ -1006,13 +1011,13 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         cached_bytes_ptr
     );
     let shared = Arc::downgrade(upload.quads.shared_bytes().next().unwrap());
-    upload.retained_quad_chunks.clear();
+    chunk_cache.retained_quad_chunks.clear();
     assert!(
         shared.upgrade().is_some(),
         "current presentation retains trimmed chunk payloads"
     );
     assert_eq!(
-        upload.retained_quad_memory().used_bytes,
+        upload.retained_quad_memory(&chunk_cache).used_bytes,
         (32 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(
@@ -1023,6 +1028,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
 
     let changed_generation = retained_quad_scene(2);
     let changed_summary = upload.encode(
+        &mut chunk_cache,
         &changed_generation,
         &[],
         drawable_size,
@@ -1032,11 +1038,112 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     );
     assert_eq!(changed_summary.retained_chunk_hits, 0);
     assert_eq!(upload.resident_quad_spans.len(), 1);
-    assert_eq!(upload.retained_quad_chunks.len(), 1);
+    assert_eq!(chunk_cache.retained_quad_chunks.len(), 1);
     assert!(
         shared.upgrade().is_none(),
         "reset releases the previous frame's segment references"
     );
+}
+
+#[test]
+fn retained_quad_payload_outlives_per_frame_packing_scratch() {
+    let previous = retained_quad_scene(1);
+    let mut upload = FrameUpload::default();
+    let size = DrawableSize {
+        width: 640,
+        height: 480,
+    };
+    let params = RenderingParameters::system();
+    upload.encode(
+        &mut chunk_cache,
+        &previous,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    let old_ptr = chunk_cache
+        .retained_quad_chunks
+        .values()
+        .next()
+        .unwrap()
+        .bytes
+        .as_ptr();
+    drop(upload);
+    let mut replayed = crate::Scene::default();
+    replayed.replay(0..previous.len(), &previous);
+    replayed.finish();
+    let mut upload = FrameUpload::default();
+    let summary = upload.encode(
+        &mut chunk_cache,
+        &replayed,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(summary.retained_chunk_hits, 1);
+    assert_eq!(
+        upload.quads.shared_bytes().next().unwrap().as_ptr(),
+        old_ptr
+    );
+}
+
+#[test]
+fn nested_element_retained_chunks_survive_root_pruning() {
+    let child = retained_quad_scene(1);
+    let mut replayed_child = crate::Scene::default();
+    replayed_child.replay(0..child.len(), &child);
+    replayed_child.finish();
+    let bounds = bounds(point(px(0.0), px(0.0)), size(px(640.0), px(480.0))).scale(1.0);
+    let root = |content: crate::Scene| {
+        let mut scene = crate::Scene::default();
+        scene.insert_primitive(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: Arc::new(content),
+        });
+        scene.finish();
+        scene
+    };
+    let first = root(child);
+    let second = root(replayed_child);
+    let mut cache = RetainedQuadChunkCache::default();
+    let mut upload = FrameUpload::default();
+    let params = RenderingParameters::system();
+    let size = DrawableSize {
+        width: 640,
+        height: 480,
+    };
+    let initial = upload.encode(
+        &mut cache,
+        &first,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(initial.retained_chunk_hits, 0);
+    assert_eq!(cache.retained_quad_chunks.len(), 1);
+    let reused = upload.encode(
+        &mut cache,
+        &second,
+        &[],
+        size,
+        &params,
+        false,
+        BackdropBlurQuality::Full,
+    );
+    assert_eq!(reused.retained_chunk_hits, 1);
+    assert_eq!(cache.retained_quad_chunks.len(), 1);
 }
 
 #[test]
@@ -1068,6 +1175,7 @@ fn frame_upload_records_scene_animation_bindings() {
 
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         DrawableSize {
@@ -1107,6 +1215,7 @@ fn frame_upload_records_scene_animation_values() {
 
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         DrawableSize {
@@ -1141,7 +1250,9 @@ fn frame_upload_accepts_presentation_animation_values_outside_scene() {
     };
 
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let summary = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[presentation_value],
         DrawableSize {
@@ -1204,12 +1315,14 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     scene.finish();
 
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let drawable_size = DrawableSize {
         width: 64,
         height: 64,
     };
 
     let first = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         drawable_size,
@@ -1228,6 +1341,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
     );
 
     let second = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         drawable_size,
@@ -1358,8 +1472,10 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
         0.625,
     );
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
 
     let summary = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         DrawableSize {
@@ -1407,8 +1523,10 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
         0.4,
     );
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
 
     let summary = upload.encode(
+        &mut chunk_cache,
         &scene,
         &[],
         DrawableSize {
@@ -1432,6 +1550,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 #[test]
 fn draw_steps_preserve_supported_batch_order_and_resources() {
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     append_test_backdrop_blur(&mut upload);
     upload
         .batches
@@ -1590,6 +1709,7 @@ fn draw_steps_preserve_supported_batch_order_and_resources() {
 #[test]
 fn path_mask_draw_steps_merge_adjacent_contiguous_vertices() {
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     upload.batches.push(UploadedBatch::PathRasterization {
         first_vertex: 0,
         vertex_count: 6,
@@ -1639,6 +1759,7 @@ fn draw_steps_merge_adjacent_compatible_draw_batches() {
         kind: AtlasTextureKind::Monochrome,
     };
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     upload.batches.push(UploadedBatch::MonoSprites {
         texture_id: mono_texture_id,
         first: 0,
@@ -1753,6 +1874,7 @@ fn draw_steps_emit_zero_instance_clear_step_when_scene_is_empty() {
 #[test]
 fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     upload
         .batches
         .push(UploadedBatch::Quads { first: 0, count: 1 });
@@ -1810,6 +1932,7 @@ fn backdrop_blur_source_steps_stop_at_first_blur_batch() {
 #[test]
 fn present_draw_steps_continue_after_backdrop_blur_batch() {
     let mut upload = FrameUpload::default();
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     append_test_backdrop_blur(&mut upload);
     upload
         .batches

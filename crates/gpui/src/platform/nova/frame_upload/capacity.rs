@@ -3,10 +3,13 @@ use super::*;
 impl FrameUpload {
     /// Counts cache and frame references by their shared backing, including trimmed cache entries
     /// still needed by the current presentation. Packed bytes never count twice.
-    pub(in crate::platform::nova) fn retained_quad_memory(&self) -> crate::MemoryUsage {
+    pub(in crate::platform::nova) fn retained_quad_memory(
+        &self,
+        cache: &RetainedQuadChunkCache,
+    ) -> crate::MemoryUsage {
         let mut seen = FxHashSet::default();
         let mut usage = crate::MemoryUsage::default();
-        for bytes in self
+        for bytes in cache
             .retained_quad_chunks
             .values()
             .map(|chunk| &chunk.bytes)
@@ -20,7 +23,10 @@ impl FrameUpload {
         usage
     }
 
-    pub(in crate::platform::nova) fn retained_byte_capacity(&self) -> usize {
+    pub(in crate::platform::nova) fn retained_byte_capacity(
+        &self,
+        cache: &RetainedQuadChunkCache,
+    ) -> usize {
         let stream_capacity = [
             self.globals.capacity(),
             self.text_raster_params.capacity(),
@@ -60,11 +66,11 @@ impl FrameUpload {
         ]
         .into_iter()
         .fold(0, usize::saturating_add);
-        let chunk_capacity = self.retained_quad_memory().capacity_bytes as usize;
+        let chunk_capacity = self.retained_quad_memory(cache).capacity_bytes as usize;
         stream_capacity
             .saturating_add(chunk_capacity)
             .saturating_add(
-                self.active_retained_chunk_ids_scratch.capacity()
+                cache.active_retained_chunk_ids_scratch.capacity()
                     * std::mem::size_of::<RetainedChunkId>(),
             )
             .saturating_add(
@@ -221,21 +227,6 @@ impl FrameUpload {
         }
 
         self.resident_quad_spans.clear();
-        self.active_retained_chunk_ids_scratch.clear();
-        if matches!(
-            level,
-            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
-        ) {
-            self.retained_quad_chunks.clear();
-        }
-        let retained_chunk_floor = match level {
-            GpuiMemoryTrimLevel::Light => 64,
-            GpuiMemoryTrimLevel::Moderate => 16,
-            GpuiMemoryTrimLevel::Aggressive => 0,
-        };
-        self.retained_quad_chunks.shrink_to(retained_chunk_floor);
-        self.active_retained_chunk_ids_scratch
-            .shrink_to(retained_chunk_floor);
         trim_upload_vec(&mut self.resident_quad_spans, 16, multiplier);
     }
 
@@ -409,5 +400,26 @@ fn trim_upload_vec<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     let target = floor.max(1);
     if vec.capacity() > target.saturating_mul(multiplier.max(1)) {
         vec.shrink_to(target);
+    }
+}
+
+impl RetainedQuadChunkCache {
+    /// Release GPU-owner cache payloads on pressure. Immutable upload segments
+    /// already borrowed by an in-flight draw remain alive through their Arc.
+    pub(in crate::platform::nova) fn trim(&mut self, level: GpuiMemoryTrimLevel) {
+        self.active_retained_chunk_ids_scratch.clear();
+        if matches!(
+            level,
+            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
+        ) {
+            self.retained_quad_chunks.clear();
+        }
+        let floor = match level {
+            GpuiMemoryTrimLevel::Light => 64,
+            GpuiMemoryTrimLevel::Moderate => 16,
+            GpuiMemoryTrimLevel::Aggressive => 0,
+        };
+        self.retained_quad_chunks.shrink_to(floor);
+        self.active_retained_chunk_ids_scratch.shrink_to(floor);
     }
 }

@@ -300,6 +300,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 正确性：只优化 CPU 样本所有权和复制次数，保持 TextureContentVersion、Source Damage、GPU Shader 采样协议、Filter Target/Fence 和真实动画轨迹语义。新增同代 `Arc::ptr_eq`、跳过目标后的旧采样保留、清除失效版本等源码单测。
 - **未通过验证**：容器仍无 Rust/Cargo 与四后端原生 GPU；没有执行 cargo fmt/check/test 或实机测试。性能效果只可称潜在减少分配，不声称现有瓶颈已经实测解决。下一步需要继续将 FrameUpload 与 retained Paint Chunk 归为单一所有权，按既定删除清单清理 SceneSlot/Replay。
 
+## 2026-10-15：Retained Quad 持久编码缓存迁入 GPU Owner，统一嵌套 Chunk 存活范围
+
+- 起始 master：`363195999e129e64fcd34176e6b5e794b725748c`。本次修改 `crates/gpui/src/platform/nova/frame_upload/{frame.rs,encode.rs,encode/retained.rs,capacity.rs,quad_stream.rs}`、`platform/nova/renderer/{retained_upload.rs,memory.rs}`、`platform/nova/renderer.rs`、`platform/nova/renderer/shared_buffers/native_tests/chunks.rs`、`platform/nova.rs`、`platform/nova/tests.rs`；本文是唯一进度文档。
+- **真实所有权迁移（代码实现，未编译）**：`RetainedQuadChunkCache { retained_quad_chunks, active_retained_chunk_ids_scratch }` 是 GPU Owner 下 `RetainedUpload.quad_chunks` 的独占持久成员；这两个跨帧容器从 `FrameUpload` 删除。本帧编码器只借用 `&mut RetainedQuadChunkCache`，`FrameUpload.quads` 只持有相同不可变 Arc 源的分段引用、增量 dirty gaps 与本帧 `resident_quad_spans`。不引入 RenderTree、RenderCommit、另一份 packed byte 缓存或 Scene 兼容层。
+- **嵌套失效修复**：原 `FrameUpload::prune_retained_quads(scene)` 只采集根 Scene Chunk，递归 Element Blur Scene 编出的保留 Chunk 即使已进缓存也会被误删。现在编码入口先 `cache.begin_frame()`，每个实际准入的 Quad Chunk 在递归编码中标记存活，根编码结束时对唯一 GPU 缓存进行一次 `prune_retained_quads()`。完成纹理提交前不修改 GPU Fence/Target/FrameSlot；已借入当前帧的 Arc 在缓存 Trim 后仍有独立生命周期。
+- **内存/压力路径同步**：`retained_quad_memory` 与 `retained_byte_capacity` 接受 GPU 缓存所有者并按 Arc 地址去重，`NovaRenderer::trim_retained_capacity` 对临时 FrameUpload 和持久 Quad 缓存分别执行裁剪；两套 bench 明确持有自身测试用缓存。内存统计仍不能替代驱动 VRAM 实测。
+- **测试源码（未运行）**：更新全部已定位的 `FrameUpload::encode`、内存统计、bench、Native GPU 测试消费者；新增释放/重新构造 FrameUpload 后仍能命中驻留 payload，以及嵌套 Element Blur 下的 Retained Chunk 不被根帧错误裁剪的对照测试。需要 `cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib retained_quad`，Windows DX11/DX12/Vulkan/OpenGL 及 Live Resize/Fence 实机验证，当前环境未运行。
+- **不能标记已完成**：SceneSlot、`Scene::replay`、`Scene::finish`、`NovaRenderer::pack_scene`、全场景 FrameUpload staging、完整持久 Paint Chunk、GPU property compositor lane 仍存在。下一次必须先编译/验证此所有权迁移，随后推进直接以 CachedView Chunk 变化集驱动 GPU resident encode/DrawStep，移除更多 Scene Replay 与全帧打包链路，不添加新包装中转。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -315,6 +324,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
+- **最新待验证起点（2026-10-15）**：本轮将 Nova Retained Quad 持久 packed 缓存唯一所有权迁到 `RetainedUpload.quad_chunks`，同时递归收集嵌套滤镜内 CachedView Chunk 存活；优先本地编译及 retained-quad 单测，修复任何类型/可见性/接口不一致后再扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
 - 严禁直接执行“删除 Scene”而不建立 GPU Owner 保留内容、资源退休和有序绘制的正确性方案。
