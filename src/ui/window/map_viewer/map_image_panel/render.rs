@@ -94,18 +94,63 @@ impl MapViewerWindowView {
                     .when(
                         self.map_image.install_destination == MapImageInstallDestination::SelectedBlock,
                         |panel| {
-                            panel.child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(colors.text_secondary)
-                                    .child(self.map_image.selected_block.map_or_else(
-                                        || "切换到「地图与放置」，在世界地图上右键目标方块，直接选择「设为地图写入目标」。".to_owned(),
-                                        |(_, block)| format!(
-                                            "已选择目标：X {} · Y {} · Z {}。写入前会检测容器类型与容量。",
-                                            block.x, block.y, block.z,
-                                        ),
-                                    )),
-                            )
+                            panel
+                                .child(
+                                    div()
+                                        .text_size(px(12.0))
+                                        .text_color(colors.text_primary)
+                                        .child(self.map_image.selected_block.map_or_else(
+                                            || "未选择容器或展示框".to_owned(),
+                                            |(chunk, block)| {
+                                                if chunk.dimension != self.dimension {
+                                                    "所选目标在其他维度，请重新选择".to_owned()
+                                                } else {
+                                                    format!(
+                                                        "已选：X {} · Y {} · Z {}",
+                                                        block.x, block.y, block.z,
+                                                    )
+                                                }
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(colors.text_secondary)
+                                        .child("在世界地图上右键方块，选择「设为地图写入目标」。写入任务会检查容器类型和容量。"),
+                                )
+                                .when(self.map_image.selected_block.is_some(), |panel| {
+                                    panel.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(
+                                                crate::ui::components::button::secondary_button(
+                                                    colors, "map-container-focus", "定位目标",
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _, _, cx| {
+                                                        this.focus_selected_map_image_block(cx);
+                                                    }),
+                                                ),
+                                            )
+                                            .when(!self.map_image_operation_busy(), |row| {
+                                                row.child(
+                                                    crate::ui::components::button::ghost_button(
+                                                        colors, "map-container-clear", "清除选择",
+                                                    )
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(|this, _, _, cx| {
+                                                            this.clear_selected_map_image_block(cx);
+                                                        }),
+                                                    ),
+                                                )
+                                            }),
+                                    )
+                                })
                         },
                     )
                     .when(self.map_image.install_destination == MapImageInstallDestination::NewUpFrame, |panel| panel
