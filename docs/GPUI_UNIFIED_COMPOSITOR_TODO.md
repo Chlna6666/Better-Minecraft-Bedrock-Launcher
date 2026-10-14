@@ -316,6 +316,13 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 修改范围：`frame_upload/frame.rs`、`frame_upload/encode/retained.rs`、`frame_upload/capacity.rs`、`platform/nova/tests.rs`、本 TODO。同步删除 HashSet scratch 的统计、Trim、测试假设，增加过期 Chunk 释放时仍由外部 `Arc` 持有旧字节的测试。
 - 当前仅静态检查，**未运行 cargo fmt/check/test，也无四后端实机验证**。下一步必须优先本地编译上轮及本轮 GPU Owner 迁移，然后推进真正 CachedView → Paint Chunk 唯一记录，清除 SceneSlot/Replay/pack_scene；不要仅增加旁路缓存。
 
+## 2026-10-15：大型 Scene 的 CachedView 结构隔离校验去重复前缀扫描
+
+- 起点 `1e7ddc3261688a6a3a704556d1645fe85f0fa13c`，代码变更 `crates/gpui/src/scene/display_list.rs`；保持本文件为唯一进度记录。
+- **代码实现（未编译）**：`Scene::range_is_independently_replayable` 原本每次验证都从全场景 `paint_operations[0..range.start]` 逐项计算 Blur/Layer 深度，再扫描目标范围；多个 CachedView、Selective Splice、普通 Retained Element 重复判断同一已完成 Scene 时，可能产生重复 O(N) 前缀扫描。对已完成且 PaintOperation >=256 的 Scene，第一次查询惰性建立仅含 Blur/Layer Begin/End 的稀疏结构边界索引，后续以 `partition_point` 求边界前缀状态，复杂度按结构屏障数为 O(log B) 每次查询。静态 Quad/文本操作不在索引中，不构建新的绘制树或双份权威内容；小场景及正在构建/回放的 Scene 继续按原代码扫描。
+- **保守正确性**：空区间、越界、区间起点处于未闭合 Blur/Layer、前缀出现不匹配关闭、区间内部不匹配关闭，均保留原语义。索引由唯一 `paint_operations` 派生，`Scene::clear`、`finish_with_previous` 取消旧计算结果，未完成 Scene `revision=0` 不读取旧索引。新增正常嵌套与错误结构下逐区间对照旧扫描单测。稀疏索引仅属于过渡期 Scene 的加速元数据，长期目标仍是单一持久 Paint Chunk/依赖索引；不将 Scene 标记完成。
+- **验证**：已静态检查算法和调用关系；无 Rust/Cargo、Windows 原生 GPU，未执行 rustfmt/check/test，不声明 Prepaint p95 改善。须重点测多个嵌套 CachedView 的命中率/Prepaint p50/p95/p99、内存增量和普通小页面冷启动。后续仍须移除 SceneSlot/Replay 与重复 FrameUpload staging，并测试 Blur、Dropdown、DX11/DX12/Vulkan/GL。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

@@ -5,6 +5,7 @@ use smallvec::SmallVec;
 use super::BoundsTree;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use super::geometry::{is_solid_quad, slice_range, trim_vec_capacity};
 use super::{
@@ -48,6 +49,9 @@ pub(crate) struct Scene {
     blur_captures: Vec<BlurCaptureState>,
     retained_chunk_candidates: Vec<RetainedChunkCandidate>,
     prepared_retained_quad_chunks: Vec<PreparedRetainedQuadChunk>,
+    /// Sparse, derived Blur/Layer boundaries for repeated CachedView reuse proofs.
+    /// Lazily computed only for large, finished display lists; never owns paint content.
+    replay_structure_index: OnceLock<ReplayStructureIndex>,
 }
 
 /// Exact retained subtree identity used by Nova's packed-chunk cache.
@@ -83,6 +87,71 @@ pub(crate) struct PreparedRetainedQuadChunk {
     pub(crate) quad_range: Range<usize>,
     pub(crate) replayed: bool,
     pub(crate) is_solid: bool,
+}
+
+/// A sparse structural prefix state after one Start/End Blur or Layer operation.
+/// Ordinary primitives do not allocate entries; the index is derived from the
+/// authoritative paint_operations, not a second display list or RenderTree.
+#[derive(Clone, Copy, Default)]
+struct ReplayBoundary {
+    after_operation: usize,
+    blur_depth: usize,
+    layer_depth: usize,
+    invalid_prefix: bool,
+}
+
+#[derive(Default)]
+struct ReplayStructureIndex {
+    boundaries: Vec<ReplayBoundary>,
+}
+
+impl ReplayStructureIndex {
+    fn new(operations: &[PaintOperation]) -> Self {
+        let mut state = ReplayBoundary::default();
+        let mut boundaries = Vec::new();
+        for (index, operation) in operations.iter().enumerate() {
+            match operation {
+                PaintOperation::StartBlur(_) => {
+                    state.blur_depth = state.blur_depth.saturating_add(1);
+                }
+                PaintOperation::EndBlur => match state.blur_depth.checked_sub(1) {
+                    Some(depth) => state.blur_depth = depth,
+                    None => state.invalid_prefix = true,
+                },
+                PaintOperation::StartLayer(_) => {
+                    state.layer_depth = state.layer_depth.saturating_add(1);
+                }
+                PaintOperation::EndLayer => match state.layer_depth.checked_sub(1) {
+                    Some(depth) => state.layer_depth = depth,
+                    None => state.invalid_prefix = true,
+                },
+                PaintOperation::Primitive(_) => continue,
+            }
+            state.after_operation = index + 1;
+            boundaries.push(state);
+        }
+        Self { boundaries }
+    }
+
+    fn state_at(&self, operation_boundary: usize) -> ReplayBoundary {
+        let end = self
+            .boundaries
+            .partition_point(|state| state.after_operation <= operation_boundary);
+        if end == 0 {
+            ReplayBoundary::default()
+        } else {
+            self.boundaries[end - 1]
+        }
+    }
+
+    fn range_is_independently_replayable(&self, range: Range<usize>) -> bool {
+        let start = self.state_at(range.start);
+        if start.invalid_prefix || start.blur_depth != 0 || start.layer_depth != 0 {
+            return false;
+        }
+        let end = self.state_at(range.end);
+        !end.invalid_prefix && end.blur_depth == 0 && end.layer_depth == 0
+    }
 }
 
 struct BlurCaptureState {
@@ -235,6 +304,7 @@ impl Scene {
         self.blur_captures.clear();
         self.retained_chunk_candidates.clear();
         self.prepared_retained_quad_chunks.clear();
+        self.replay_structure_index.take();
 
         if primitive_count_before_clear == 0 {
             self.idle_clear_frames = self.idle_clear_frames.saturating_add(1);
@@ -314,6 +384,26 @@ impl Scene {
     /// fragment at window-root or another cached boundary would detach the pixels from their
     /// original capture and corrupt blur/composite output.
     pub(crate) fn range_is_independently_replayable(&self, range: Range<usize>) -> bool {
+        if range.start > range.end || range.end > self.paint_operations.len() {
+            return false;
+        }
+        if range.is_empty() {
+            return true;
+        }
+        // Most text/quad operations contain no structural barriers. For a
+        // large finished Scene, repeated nested CachedView checks can reuse a
+        // sparse Blur/Layer prefix index rather than walking 0..range.end on
+        // every query. In-progress paint always uses the original scan.
+        if self.revision != 0 && self.paint_operations.len() >= 256 {
+            return self
+                .replay_structure_index
+                .get_or_init(|| ReplayStructureIndex::new(&self.paint_operations))
+                .range_is_independently_replayable(range);
+        }
+        self.range_is_independently_replayable_by_scan(range)
+    }
+
+    fn range_is_independently_replayable_by_scan(&self, range: Range<usize>) -> bool {
         if range.start > range.end || range.end > self.paint_operations.len() {
             return false;
         }
@@ -1473,6 +1563,9 @@ impl Scene {
     }
 
     fn finish_with_previous(&mut self, previous: Option<&Scene>) {
+        // A previous finalized generation may have been reused as scratch.
+        // The next immutable revision must derive its structural index anew.
+        self.replay_structure_index.take();
         debug_assert!(
             self.blur_captures.is_empty(),
             "element blur capture must be closed before finishing a scene"
@@ -1586,6 +1679,10 @@ impl Scene {
             + self.blur_captures.capacity()
             + self.retained_chunk_candidates.capacity()
             + self.prepared_retained_quad_chunks.capacity()
+            + self
+                .replay_structure_index
+                .get()
+                .map_or(0, |index| index.boundaries.capacity())
     }
 
     pub(crate) fn trim_for_reuse_against(&mut self, current: &Self) {
@@ -2481,6 +2578,57 @@ fn paint_operations_match_for_damage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_structure_index_matches_prefix_scan_for_nested_and_invalid_ranges() {
+        let mut scene = Scene::default();
+        let quad = PaintOperation::Primitive(Primitive::Quad(Quad::default()));
+        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 132));
+        scene.paint_operations.push(PaintOperation::StartLayer(Bounds::default()));
+        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 4));
+        scene.paint_operations.push(PaintOperation::StartBlur(BlurCapture {
+            animation_id: None,
+            layer_id: None,
+            bounds: Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: ScaledPixels(2.0),
+            opacity: 1.0,
+        }));
+        scene.paint_operations.extend(std::iter::repeat_n(quad.clone(), 5));
+        scene.paint_operations.push(PaintOperation::EndBlur);
+        scene.paint_operations.push(PaintOperation::EndLayer);
+        scene.paint_operations.extend(std::iter::repeat_n(quad, 132));
+        scene.revision = 1;
+        let len = scene.paint_operations.len();
+        for start in 0..=len {
+            for end in start..=len {
+                assert_eq!(
+                    scene.range_is_independently_replayable(start..end),
+                    scene.range_is_independently_replayable_by_scan(start..end),
+                    "structural range {start}..{end}"
+                );
+            }
+        }
+        // A corrupted unmatched close must poison only ranges reaching it,
+        // not an earlier completed prefix. The index retains this fact.
+        scene.replay_structure_index.take();
+        scene.paint_operations.insert(134, PaintOperation::EndBlur);
+        scene.revision = 2;
+        for start in 0..=scene.paint_operations.len() {
+            let end = scene.paint_operations.len();
+            assert_eq!(
+                scene.range_is_independently_replayable(start..end),
+                scene.range_is_independently_replayable_by_scan(start..end),
+                "invalid structural prefix {start}..{end}"
+            );
+        }
+        // A mutable/in-progress Scene may not reuse a completed old index.
+        scene.revision = 0;
+        assert_eq!(
+            scene.range_is_independently_replayable(0..135),
+            scene.range_is_independently_replayable_by_scan(0..135)
+        );
+    }
 
     #[test]
     fn gpu_resident_source_uses_submitted_animation_samples_not_ui_dirty_views() {
