@@ -70,7 +70,8 @@ impl MapViewerWindowView {
             .child(self.render_import_workspace_toolbar(colors, cx))
             .when(
                 !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
-                    && !inventory_target,
+                    && !inventory_target
+                    && self.map_image_placement_inspector_visible(),
                 |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
             )
             .when(
@@ -83,6 +84,7 @@ impl MapViewerWindowView {
 
     fn render_import_workspace_toolbar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
+        let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
         div()
             .absolute()
             .top(px(8.0))
@@ -100,8 +102,8 @@ impl MapViewerWindowView {
             })
             .children(
                 [
-                    (ImportWorkspaceMode::Preview, "转换预览"),
-                    (ImportWorkspaceMode::Placement, "地图与放置"),
+                    (ImportWorkspaceMode::Preview, if is_map_image { "1 · 图片转换" } else { "转换预览" }),
+                    (ImportWorkspaceMode::Placement, if is_map_image { "2 · 目标预览" } else { "地图与放置" }),
                 ]
                 .into_iter()
                 .map(|(mode, label)| {
@@ -116,6 +118,33 @@ impl MapViewerWindowView {
                 }),
             )
             .child(div().flex_1())
+            .when(is_map_image, |bar| {
+                bar.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(colors.text_secondary)
+                        .child(self.map_image_workflow_status_label()),
+                )
+            })
+            .when(is_map_image && !preview && !self.map_image_installing_to_player(), |bar| {
+                bar.child(
+                    generator_choice(
+                        colors,
+                        if self.map_image_placement_inspector_visible() {
+                            "收起缩略图"
+                        } else {
+                            "显示缩略图"
+                        },
+                        false,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _event, _window, cx| {
+                            this.toggle_map_image_placement_inspector(cx)
+                        }),
+                    ),
+                )
+            })
             .when(
                 preview && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
                 |bar| {
