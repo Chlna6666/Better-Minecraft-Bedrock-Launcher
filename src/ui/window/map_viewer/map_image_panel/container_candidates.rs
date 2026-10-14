@@ -110,12 +110,26 @@ impl MapViewerWindowView {
                         div()
                             .text_size(px(11.0))
                             .text_color(colors.text_secondary)
-                            .child(if !overlay_ready {
-                                "正在等待当前维度与可见范围索引完成…".to_owned()
-                            } else {
+                            .child(if overlay_ready {
                                 format!("匹配 {matches} 条位置记录 · 按距视口中心排序，最多显示 {MAX_VISIBLE_CANDIDATES} 条")
+                            } else if self.professional.overlay_loading {
+                                "正在读取当前维度的可见范围索引…".to_owned()
+                            } else {
+                                "当前没有已验证的索引结果；可以重试加载。".to_owned()
                             }),
                     )
+                    .when(!overlay_ready && !self.professional.overlay_loading, |panel| {
+                        panel.child(
+                            secondary_button(colors, "map-retry-container-candidates", "重新读取候选")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.refresh_professional_overlays(cx);
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                    })
                     .children(positions.into_iter().map(|(x, z)| {
                         ghost_button(
                             colors,
