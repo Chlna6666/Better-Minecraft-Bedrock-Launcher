@@ -10,6 +10,27 @@ impl MapViewerWindowView {
                 == super::super::state::ImportWorkspaceMode::Placement
     }
 
+    /// World-context interaction is active only for the frame-grid placement workflow.
+    pub(in super::super) fn map_image_positioning_frames(&self) -> bool {
+        self.import_workspace_active()
+            && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+            && self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
+            && self.ui_state.import_workspace_mode
+                == super::super::state::ImportWorkspaceMode::Placement
+    }
+
+    /// Select an exact world coordinate with the context menu. No world writes occur.
+    pub(in super::super) fn select_map_frame_center_from_context(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(menu) = self.context_menu else {
+            return;
+        };
+        self.context_menu = None;
+        self.set_map_frame_anchor((menu.block_x, menu.block_z), cx);
+    }
+
     /// Remember a destination without changing the NBT document or writing to the world.
     /// The install operation validates the current container and available slots.
     pub(in super::super) fn select_map_image_block(
