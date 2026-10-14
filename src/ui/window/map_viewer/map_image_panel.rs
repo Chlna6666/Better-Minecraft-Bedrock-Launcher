@@ -494,6 +494,15 @@ impl MapViewerWindowView {
         self.num_map_rows.sync(self.map_image.options.rows, cx);
     }
 
+    /// Task completion is informative, not an explicit user edit. Preserve typed values
+    /// until Enter/blur commits them; leave preset/slider synchronization authoritative.
+    pub(super) fn sync_map_grid_numeric_fields_if_pristine(&self, cx: &mut Context<Self>) {
+        self.num_map_columns
+            .sync_if_pristine(self.map_image.options.columns, cx);
+        self.num_map_rows
+            .sync_if_pristine(self.map_image.options.rows, cx);
+    }
+
     pub(super) fn set_grid_size(&mut self, axis: GridAxis, value: u32, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
