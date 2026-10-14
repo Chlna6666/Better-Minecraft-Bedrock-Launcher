@@ -69,6 +69,17 @@ impl FilterRegistry {
         self.last_gpu_animation_values.clear();
     }
 
+    /// The GPU owns one resident source snapshot per flattened filter index.
+    /// Keep the snapshots sorted so unchanged-layer queries need no frame-local
+    /// hash table or repeated linear scan.
+    fn source_at(&self, index: u32) -> Option<&RetainedFilterSource> {
+        let position = self
+            .element_blur_inputs
+            .binary_search_by_key(&index, |source| source.index)
+            .ok()?;
+        self.element_blur_inputs.get(position)
+    }
+
     pub(super) fn source_unchanged(
         &self,
         index: u32,
@@ -76,9 +87,8 @@ impl FilterRegistry {
         animation_values: &[crate::SceneAnimationValue],
     ) -> bool {
         let Some(previous) = self
-            .element_blur_inputs
-            .iter()
-            .find(|previous| previous.index == index && previous.content_version.0 != 0)
+            .source_at(index)
+            .filter(|previous| previous.content_version.0 != 0)
         else {
             return false;
         };
@@ -151,9 +161,8 @@ impl FilterRegistry {
         animation_values: &[crate::SceneAnimationValue],
     ) -> Option<crate::DirtyRegion> {
         let previous = self
-            .element_blur_inputs
-            .iter()
-            .find(|source| source.index == index && source.content_version.0 != 0)?;
+            .source_at(index)
+            .filter(|source| source.content_version.0 != 0)?;
         let (FilterSource::Element(current), FilterSource::Element(old)) =
             (current, &previous.source)
         else {
@@ -190,13 +199,25 @@ impl FilterRegistry {
         animation_values: &[crate::SceneAnimationValue],
         refreshed_indices: impl IntoIterator<Item = u32>,
     ) {
-        // Only texture passes actually executed are allowed to advance their
-        // source snapshot. A global Present can skip several unaffected blurs.
+        // The encoder allocates flattened filter indices monotonically, even
+        // through nested captures. The source list is therefore ordered by index.
+        // A successful Present is also the ownership boundary: discard snapshots
+        // for filters absent from this frame, releasing their child Scene Arcs.
+        // Keep present-but-unrefreshed sources at their previous GPU version.
+        debug_assert!(sources.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        self.element_blur_inputs.retain(|previous| {
+            sources
+                .binary_search_by_key(&previous.index, |(index, _)| *index)
+                .is_ok()
+        });
+        // Only texture passes actually executed may advance their source version.
         for index in refreshed_indices {
-            let Some((_, current)) = sources.iter().find(|(source_index, _)| *source_index == index)
+            let Ok(source_position) =
+                sources.binary_search_by_key(&index, |(source_index, _)| *source_index)
             else {
                 continue;
             };
+            let current = &sources[source_position].1;
             self.next_content_version = self.next_content_version.wrapping_add(1).max(1);
             let snapshot = RetainedFilterSource {
                 index,
@@ -208,14 +229,12 @@ impl FilterRegistry {
                 },
                 content_version: TextureContentVersion(self.next_content_version),
             };
-            if let Some(previous) = self
+            match self
                 .element_blur_inputs
-                .iter_mut()
-                .find(|previous| previous.index == index)
+                .binary_search_by_key(&index, |previous| previous.index)
             {
-                *previous = snapshot;
-            } else {
-                self.element_blur_inputs.push(snapshot);
+                Ok(position) => self.element_blur_inputs[position] = snapshot,
+                Err(position) => self.element_blur_inputs.insert(position, snapshot),
             }
         }
     }
@@ -224,10 +243,7 @@ impl FilterRegistry {
     /// after a successful presentation. A retained layer skipped by the Render
     /// Graph keeps its previous version.
     pub(super) fn layer_content_version(&self, index: u32) -> Option<TextureContentVersion> {
-        self.element_blur_inputs
-            .iter()
-            .find(|source| source.index == index)
-            .map(|source| source.content_version)
+        self.source_at(index).map(|source| source.content_version)
     }
 
     pub(super) fn record_submission(
@@ -301,6 +317,39 @@ mod tests {
         assert!(!registry.source_unchanged(0, &real, &[]));
         registry.invalidate();
         assert!(!registry.source_unchanged(0, &changed, &[]));
+    }
+
+    #[test]
+    fn removed_filter_releases_nested_scene_without_invalidating_live_source() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::Bounds::default();
+        let live = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 123,
+            content_bytes: 4096,
+        };
+        let scene = std::sync::Arc::new(crate::Scene::default());
+        let removed = FilterSource::Element(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(4.0),
+            opacity: 1.0,
+            content: std::sync::Arc::clone(&scene),
+        });
+        // A reversed refresh order must not disturb the sorted resident index.
+        registry.record_element_blur_inputs(&[(2, live.clone()), (7, removed)], &[], [7, 2]);
+        assert_eq!(registry.element_blur_inputs.iter().map(|source| source.index).collect::<Vec<_>>(), vec![2, 7]);
+        assert_eq!(std::sync::Arc::strong_count(&scene), 2);
+        let live_version = registry.layer_content_version(2);
+        registry.record_element_blur_inputs(&[(2, live.clone())], &[], []);
+        assert_eq!(registry.layer_content_version(2), live_version);
+        assert!(registry.source_unchanged(2, &live, &[]));
+        assert_eq!(registry.layer_content_version(7), None);
+        assert_eq!(std::sync::Arc::strong_count(&scene), 1);
     }
 
     #[test]

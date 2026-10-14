@@ -286,6 +286,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **正确性边界**：AutoStatic 仅接受原来已证明的 96+ 个纯 Quad/Shadow 静态前缀；Layer 必须平衡，不能有 Retained Chunk/Atlas/Shader Effects/混合跨顺序。已编码 Batch 不合法仍原子回退；指纹差异或未验证目标强制重绘完整源，不依赖窗口 DirtyRect 的覆盖范围。Blur Target 创建/更新/提交时序不变。
 - **下一步起点**：验证新 Source Type 的所有消费者、单元测试和 GPU 原生渲染；补齐单一 Paint Chunk 的真实版本/所有权并继续消除 SceneSlot/Scene Replay 和双重 CPU FrameUpload，在验收前 P1/P3 未完成。
 
+## 2026-10-15：FilterRegistry 退役源快照与有序索引
+
+- 起点 HEAD：`90ea49cc54e3fd4cd40d5664b4a3814d57ad08b5`；修改 `crates/gpui/src/platform/nova/renderer/filters.rs`，同步本唯一进度文档。
+- **代码实现，未编译验证**：成功 Present 后，仅移除本帧已不存在的 FilterSource 驻留快照；仍在帧内但未执行离屏刷新者保持原 TextureContentVersion，不会凭普通 Present 伪造源更新。消失的 Element FilterSource 不再长期强持有旧子 `Arc<Scene>`。
+- 保留唯一 GPU FilterRegistry 所有者，源列表采用已存在的 `Vec` 按 index 有序插入，查找和活动源裁剪使用二分；不创建 RenderTree/RenderCommit/第二份缓存。依赖 `FrameUpload::encode_scene` 按 packed backdrop index 单调分配 source 的事实，加入 debug 断言及测试覆盖反序刷新、未刷新版本延续、旧 Scene Arc 释放。
+- **尚未验证**：无本地 Rust/Cargo 及四后端 GPU，本改动未执行 rustfmt/check/test、Windows Render Graph/Fence 回归；不能宣称显存或 GPU 占用已下降。缓存复用仅代表 CPU 侧元数据/Arc 生命周期，不代表实际 GPU Target 已退休；目标资源仍由原有 Fence/TargetPool 路径管理。
+- **下一步**：验证 FilterSource 迁移后的原生四后端编译与动态页面过滤器数量回落，再推进 CachedView 持久 Paint Chunk 唯一所有权、SceneSlot/Replay/pack_scene 的有依赖删除；仍须验证 Dropdown、Blur、DX11 Resize、DX12 子窗口、Vulkan/OpenGL。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
