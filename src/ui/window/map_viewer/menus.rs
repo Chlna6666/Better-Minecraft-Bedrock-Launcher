@@ -288,6 +288,27 @@ impl MapViewerWindowView {
                     ],
                 ),
             );
+        } else if self.map_image_positioning_frames() {
+            groups.insert(
+                0,
+                ContextMenuGroup::titled(
+                    "地图物品 · 放置中心",
+                    vec![
+                        ContextMenuEntry::item(
+                            ContextMenuItem::new(format!(
+                                "将此处设为展示框中心 · X {} / Z {}",
+                                menu.block_x, menu.block_z,
+                            ))
+                            .on_click({
+                                let entity = cx.entity();
+                                move |cx| entity.update(cx, |this, cx| {
+                                    this.select_map_frame_center_from_context(cx)
+                                })
+                            }),
+                        ),
+                    ],
+                ),
+            );
         }
         if let Some(actor) = self.professional.entity_context_target.clone() {
             let identifier = actor
