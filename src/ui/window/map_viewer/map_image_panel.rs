@@ -117,7 +117,9 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn map_image_workflow_status_label(&self) -> String {
-        if self.map_image.source.is_none() {
+        if self.map_image.pending_bundle.is_some() {
+            "外部 NBT 待确认 · 内容未预览".to_owned()
+        } else if self.map_image.source.is_none() {
             "待选择源图片".to_owned()
         } else if self.map_image_busy() {
             "正在生成地图像素".to_owned()
