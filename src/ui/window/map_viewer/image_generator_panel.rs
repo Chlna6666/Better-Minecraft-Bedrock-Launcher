@@ -80,7 +80,7 @@ impl MapViewerWindowView {
             })
     }
 
-    fn choose_generator_image(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn choose_generator_image(&mut self, cx: &mut Context<Self>) {
         if self.image_generator_busy() {
             return;
         }
