@@ -72,7 +72,7 @@ impl MapImagePanelState {
             export_task_id: None,
             install_task_id: None,
             install_refresh: None,
-            install_destination: MapImageInstallDestination::Player,
+            install_destination: MapImageInstallDestination::NewUpFrame,
             selected_player: PlayerId::Local,
             selected_block: None,
             frame_anchor: None,
@@ -175,6 +175,15 @@ impl MapViewerWindowView {
     }
 
     /// The same anchor drives the on-map outline, UI label and actual NBT transaction.
+    pub(super) fn ensure_map_image_frame_anchor(&mut self) {
+        if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
+            && self.map_image.frame_anchor.is_none()
+        {
+            self.map_image.frame_anchor =
+                Some(self.viewport.center_block(self.active_layout));
+        }
+    }
+
     fn map_frame_anchor(&self) -> (i32, i32) {
         self.map_image
             .frame_anchor
