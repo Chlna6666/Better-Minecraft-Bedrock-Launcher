@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use crate::core::minecraft::map::image::MapResample;
+use crate::core::minecraft::map::image::{MapImageFit, MapResample};
 
 use super::generator_panel::{generator_choice, generator_section_title};
 use super::model::MapViewerWindowView;
@@ -137,6 +137,7 @@ impl MapViewerWindowView {
             min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
             columns: self.map_image.options.columns,
             rows: self.map_image.options.rows,
+            image: self.map_image.preview.clone(),
         })
     }
 
