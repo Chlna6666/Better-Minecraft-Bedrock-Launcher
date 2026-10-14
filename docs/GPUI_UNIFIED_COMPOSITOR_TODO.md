@@ -335,6 +335,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 起点 HEAD `118d1cadd0a68f163d2f2177f5514be07d7b9ef1`。通过 GitHub 代码搜索审计 `upload.encode(`，发现上轮 GPU Owner 缓存迁移尚遗漏 `platform/nova/renderer/retained_upload/sharing.rs`、`platform/nova/tests/sprite_gpu.rs`、`platform/nova/tests/sprite_gpu/relocation.rs` 三处测试/硬件验证子模块，仍按旧版 `FrameUpload::encode(scene,...)` 调用。现均改为独立 `RetainedQuadChunkCache` 可变借用并保持原场景数据和 GPU 资源流程不变。
 - 这属于**编译接口完整性修复**，不是新增功能，尚无 Rust 编译或四后端实机验证。迁移是否真正通过以本地 `cargo check` 与 `cargo test` 为准，不能以静态审查替代。
 
+## 2026-10-15：CachedView Scene Replay 候选范围二分，移除每片段全量扫描
+
+- 基线 master `faa7f4725cb7ef5c0c895757874d7fc2181542ef`；修改 `crates/gpui/src/scene/display_list.rs` 与本唯一进度文档。保留原始 `Scene::paint_operations` 和 `retained_chunk_candidates`，**不创建第二份 RenderTree/Chunk ID 索引**。
+- **代码实现，未 Rust 编译**：`Scene::finish_with_previous` 原地按候选 `scene_range.start` 排序（相同起点优先较大的结束位置），令完成帧候选区间可二分。`Scene::replay` 对已完成上一帧通过两个 `partition_point` 收窄起点落在重放片段内的候选，再保留既有 `scene_range.end <= range.end` 的完整包含证明。这样多个独立兄弟 CachedView 局部重放不再为每个片段线性遍历全部候选；复杂度由每片段 O(C) 降至 O(log C + K)，K 为该片段起点内候选（包括与片段终点重叠但需要过滤的候选）。多层嵌套父范围、断开的 Replay 片段不被错误继承。
+- **正确性边界**：构建中的 Scene（`revision == 0`）候选可能仍是 append 顺序，继续使用原全扫描；`record_retained_chunk` 写入新的候选时将 `revision` 标回 0，不允许在再次 `finish` 之前消费过时的有序证明。候选排序在 `prepare_retained_quad_chunks` 前完成；Prepared Chunk 的保守 painter-order/独占验证、GPU Arc/Fence、离屏滤镜不变。
+- **测试源码**：16 个兄弟 Cache Chunk、跨越两次 Replay 的父 Chunk、排序与跨片段保留、未完成 Scene 回退以及后置候选更新后的 revision 失效；另用独立随机区间脚本对照原始逐项扫描，36,000 组结果一致。**没有执行 Rust 编译、rustfmt、单测及 DX11/DX12/Vulkan/OpenGL 实机测试**，不宣称 Prepaint 或 GPU 占用已实测下降。
+- **后续删除清单**：`SceneSlot`、`Scene::replay`、`pack_scene`、全量 `FrameUpload` staging、全类型持久 Paint Chunk 尚未删除。本改动优化现存 Replay 热路径，而非以额外长期层阻碍后续破坏性迁移。下轮先运行 Cargo 验证，并从 CachedView 的纯 Quad/Shadow 可持久段扩展向单一 GPU resident 变更集。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

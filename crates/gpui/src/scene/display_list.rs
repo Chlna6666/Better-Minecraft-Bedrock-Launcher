@@ -331,6 +331,9 @@ impl Scene {
         if scene_range.is_empty() {
             return;
         }
+        // Candidate insertion invalidates the finished-order proof even when
+        // the drawn pixels did not change. The next finish() restores it.
+        self.revision = 0;
         self.retained_chunk_candidates.push(RetainedChunkCandidate {
             id: RetainedChunkId::new(identity, generation),
             scene_range,
@@ -1521,7 +1524,26 @@ impl Scene {
         if retain_order && !self.retained_prefix_invalid && self.paint_operations.len() == range_end
         {
             self.retained_prefix_verified_len = range_end;
-            for chunk in &prev_scene.retained_chunk_candidates {
+            let candidates = &prev_scene.retained_chunk_candidates;
+            // A completed Scene sorts its *existing* candidate storage by
+            // paint-operation start. CachedView fragment replays only inspect
+            // candidates starting inside their own source range rather than
+            // linearly scanning all siblings for every replay.
+            let candidates = if prev_scene.revision != 0 {
+                debug_assert!(candidates
+                    .windows(2)
+                    .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start));
+                let first = candidates
+                    .partition_point(|chunk| chunk.scene_range.start < range.start);
+                let end = candidates
+                    .partition_point(|chunk| chunk.scene_range.start < range.end);
+                &candidates[first..end]
+            } else {
+                // Partially built Scenes have not reached finish() yet and
+                // may still have candidates in their original append order.
+                candidates.as_slice()
+            };
+            for chunk in candidates {
                 if chunk.scene_range.start < range.start || chunk.scene_range.end > range.end {
                     continue;
                 }
@@ -1585,6 +1607,15 @@ impl Scene {
         self.renderer_extensions
             .sort_unstable_by_key(|extension| extension.order);
         self.prepare_batches();
+        // Preserve one candidate authority and sort it in place. Recording
+        // remains cheap append-only during Paint; finished Scenes permit
+        // O(log chunks + locally overlapping chunks) replay lookups.
+        self.retained_chunk_candidates.sort_unstable_by(|left, right| {
+            left.scene_range
+                .start
+                .cmp(&right.scene_range.start)
+                .then_with(|| right.scene_range.end.cmp(&left.scene_range.end))
+        });
         self.prepare_retained_quad_chunks();
         if let Some(previous) = previous
             && self.paint_operations.len() == previous.paint_operations.len()
@@ -2628,6 +2659,87 @@ mod tests {
             scene.range_is_independently_replayable(0..135),
             scene.range_is_independently_replayable_by_scan(0..135)
         );
+    }
+
+    #[test]
+    fn cached_view_fragment_replay_copies_only_contained_sorted_chunks() {
+        let bounds = Bounds::new(
+            crate::point(ScaledPixels(0.0), ScaledPixels(0.0)),
+            crate::size(ScaledPixels(32.0), ScaledPixels(32.0)),
+        );
+        let mut previous = Scene::default();
+        let mut ranges = Vec::new();
+        // Post-order parent ownership overlaps all child ranges; the parent
+        // candidate must not migrate when only one half is replayed.
+        for index in 0..16 {
+            let start = previous.len();
+            for _ in 0..32 {
+                previous.insert_primitive(Quad {
+                    bounds,
+                    content_mask: crate::ContentMask::new(bounds),
+                    ..Quad::default()
+                });
+            }
+            let end = previous.len();
+            previous.record_retained_chunk(
+                GlobalElementId::from_path(&[format!("child-{index}").into()]),
+                7,
+                start..end,
+            );
+            ranges.push(start..end);
+        }
+        previous.record_retained_chunk(
+            GlobalElementId::from_path(&["parent".into()]),
+            7,
+            0..previous.len(),
+        );
+        previous.finish();
+        assert!(previous
+            .retained_chunk_candidates
+            .windows(2)
+            .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start));
+        assert_eq!(previous.retained_chunk_candidates.len(), 17);
+
+        let split = ranges[7].end;
+        let mut replayed = Scene::default();
+        replayed.replay(0..split, &previous);
+        replayed.replay(split..previous.len(), &previous);
+        assert!(!replayed.retained_prefix_invalid);
+        // The outer candidate crosses both replay calls, so only the sixteen
+        // complete child chunks are replayed. No second ID index is stored.
+        assert_eq!(replayed.retained_chunk_candidates.len(), 16);
+        assert!(replayed.retained_chunk_candidates.iter().all(|chunk| chunk.replayed));
+        replayed.finish();
+        assert_eq!(replayed.prepared_retained_quad_chunks().len(), 16);
+        assert!(replayed.prepared_retained_quad_chunks().iter().all(|chunk| chunk.replayed));
+
+        // A late metadata change makes the source mutable again; the
+        // binary-search proof cannot be used until finish() is called.
+        previous.record_retained_chunk(
+            GlobalElementId::from_path(&["late-candidate".into()]),
+            7,
+            ranges[0].clone(),
+        );
+        assert_eq!(previous.revision, 0);
+
+        // The unfinalized source path remains safe even before sorting.
+        let mut unfinished = Scene::default();
+        let child = ranges[0].clone();
+        for _ in 0..32 {
+            unfinished.insert_primitive(Quad {
+                bounds,
+                content_mask: crate::ContentMask::new(bounds),
+                ..Quad::default()
+            });
+        }
+        unfinished.record_retained_chunk(
+            GlobalElementId::from_path(&["unfinished".into()]),
+            1,
+            child.clone(),
+        );
+        let mut replayed_unfinished = Scene::default();
+        replayed_unfinished.replay(child, &unfinished);
+        assert_eq!(replayed_unfinished.retained_chunk_candidates.len(), 1);
     }
 
     #[test]
