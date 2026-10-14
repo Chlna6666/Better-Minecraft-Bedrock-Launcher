@@ -330,6 +330,11 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 起点 HEAD `953db6be081650e38aaaded60e44d4511b7f6d88`。对上轮迁移后的全部 `platform/nova/tests.rs` 和 `platform/nova/frame_upload/encode.rs` 单测函数做静态变量作用域审查，确认另外 6 处 `&mut chunk_cache` 调用缺少对应声明（分别 4 处、2 处），现已在各自测试作用域创建 `RetainedQuadChunkCache::default()`，不修改生产函数、GPU ABI 或资源生命周期。
 - 静态逐测试函数检索中已无未声明 `chunk_cache`；此结论不等同 Rust 编译/测试通过。仍须本地运行 `cargo fmt --all -- --check`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib retained_quad` 及普通 GPUI 单测，禁止用 CI 替代。
 
+## 2026-10-15：补齐 FrameUpload 子模块剩余调用点
+
+- 起点 HEAD `118d1cadd0a68f163d2f2177f5514be07d7b9ef1`。通过 GitHub 代码搜索审计 `upload.encode(`，发现上轮 GPU Owner 缓存迁移尚遗漏 `platform/nova/renderer/retained_upload/sharing.rs`、`platform/nova/tests/sprite_gpu.rs`、`platform/nova/tests/sprite_gpu/relocation.rs` 三处测试/硬件验证子模块，仍按旧版 `FrameUpload::encode(scene,...)` 调用。现均改为独立 `RetainedQuadChunkCache` 可变借用并保持原场景数据和 GPU 资源流程不变。
+- 这属于**编译接口完整性修复**，不是新增功能，尚无 Rust 编译或四后端实机验证。迁移是否真正通过以本地 `cargo check` 与 `cargo test` 为准，不能以静态审查替代。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

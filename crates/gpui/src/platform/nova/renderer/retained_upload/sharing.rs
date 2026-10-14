@@ -254,8 +254,10 @@ mod tests {
                 wavy: 0,
             });
             scene.finish();
+            let mut chunk_cache = RetainedQuadChunkCache::default();
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
+                &mut chunk_cache,
                 &scene,
                 &[],
                 DrawableSize {

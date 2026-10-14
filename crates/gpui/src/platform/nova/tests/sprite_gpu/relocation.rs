@@ -105,6 +105,7 @@ pub(super) fn verify_atlas_compaction<D>(
             )
             .expect("GPU atlas compact")
         );
+        let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut upload = FrameUpload::default();
         atlas.copy_placements_into(&mut upload.atlas_placements);
         let relocated = upload.atlas_placements[&old.tile_id];
@@ -139,6 +140,7 @@ pub(super) fn verify_atlas_compaction<D>(
             }
         }
         upload.encode(
+            &mut chunk_cache,
             &scene,
             &[],
             DrawableSize {

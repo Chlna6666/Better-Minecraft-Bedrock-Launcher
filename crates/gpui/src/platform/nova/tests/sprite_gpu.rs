@@ -253,8 +253,10 @@ fn color_target<D: BackendResources>(device: &mut D, size: Extent2d) -> (Texture
 }
 
 fn upload_globals<D: BackendResources>(device: &mut D, buffers: resources::FrameResourceBuffers) {
+    let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     upload.encode(
+        &mut chunk_cache,
         &crate::Scene::default(),
         &[],
         DrawableSize {
