@@ -38,6 +38,11 @@ impl MapViewerWindowView {
                 self.set_paste_preview(anchor, PasteTransform::default(), 0.0, None, cx);
             }
         }
+        if mode == ImportWorkspaceMode::Placement
+            && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+        {
+            self.ensure_map_image_frame_anchor();
+        }
         self.ui_state.import_workspace_mode = mode;
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
