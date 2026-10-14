@@ -770,6 +770,43 @@ mod tests {
     }
 
     #[test]
+    fn transparent_trim_contain_keeps_all_colored_edges_in_map_order() {
+        let mut image = RgbaImage::from_pixel(8, 3, Rgba([0, 0, 0, 0]));
+        for (x, color) in [
+            (2, [255, 0, 0, 255]),
+            (3, [0, 255, 0, 255]),
+            (4, [0, 0, 255, 255]),
+            (5, [255, 255, 0, 255]),
+        ] {
+            image.put_pixel(x, 1, Rgba(color));
+        }
+        let crop = visible_alpha_crop(&image, 1).expect("nontransparent bounds");
+        assert_eq!(crop, MapImageCrop { x: 2, y: 1, width: 4, height: 1 });
+        let tiles = tile_map_image(
+            image.into_raw(), 8, 3,
+            MapImageOptions {
+                crop, columns: 2, rows: 1,
+                fit: MapImageFit::Contain,
+                resample: MapResample::Nearest,
+                alpha_threshold: 1,
+            },
+        ).expect("two map records");
+        assert_eq!(tiles.len(), 2);
+        assert_eq!((tiles[0].column, tiles[0].row), (0, 0));
+        assert_eq!((tiles[1].column, tiles[1].row), (1, 0));
+        let pixel = |tile: usize, x: usize, y: usize| -> &[u8] {
+            let offset = (y * 128 + x) * 4;
+            &tiles[tile].pixels.rgba[offset..offset + 4]
+        };
+        assert_eq!(pixel(0, 0, 0), &[0, 0, 0, 0]);
+        assert_eq!(pixel(0, 0, 32), &[255, 0, 0, 255]);
+        assert_eq!(pixel(0, 127, 32), &[0, 255, 0, 255]);
+        assert_eq!(pixel(1, 0, 32), &[0, 0, 255, 255]);
+        assert_eq!(pixel(1, 127, 32), &[255, 255, 0, 255]);
+        assert_eq!(pixel(1, 127, 127), &[0, 0, 0, 0]);
+    }
+
+    #[test]
     fn large_map_grid_preview_stays_bounded_with_all_seams() {
         let single_tile = MapImageTile {
             column: 63,
