@@ -79,6 +79,23 @@ impl MapViewerWindowView {
         }
     }
 
+    pub(super) fn set_obj_precision_size(
+        &mut self,
+        value: u16,
+        cx: &mut Context<Self>,
+    ) {
+        if self.generator_busy() {
+            return;
+        }
+        let value = value.clamp(1, 384);
+        if self.generator.options.longest_side_blocks != value {
+            self.generator.options.longest_side_blocks = value;
+            self.start_obj_live_preview(cx);
+        }
+        self.num_obj_size.sync(u32::from(value), cx);
+        cx.notify();
+    }
+
     pub(super) fn start_obj_live_preview(&mut self, cx: &mut Context<Self>) {
         self.cancel_obj_preview_refresh();
         if self.generator.preview_options == Some(self.generator.options)
