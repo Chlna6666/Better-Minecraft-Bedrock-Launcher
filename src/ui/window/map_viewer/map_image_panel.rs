@@ -22,10 +22,10 @@ mod render;
 mod target;
 
 pub(super) struct MapImagePanelState {
-    source: Option<PathBuf>,
+    pub(super) source: Option<PathBuf>,
     /// User-selected external map bundle, pending explicit target confirmation.
-    pending_bundle: Option<PathBuf>,
-    options: MapPreviewOptions,
+    pub(super) pending_bundle: Option<PathBuf>,
+    pub(super) options: MapPreviewOptions,
     task_id: Option<String>,
     preview_options: Option<MapPreviewOptions>,
     export_task_id: Option<String>,
@@ -451,7 +451,7 @@ impl MapViewerWindowView {
         }
     }
 
-    fn set_grid_size(&mut self, axis: GridAxis, value: u32, cx: &mut Context<Self>) {
+    pub(super) fn set_grid_size(&mut self, axis: GridAxis, value: u32, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() {
             return;
         }
