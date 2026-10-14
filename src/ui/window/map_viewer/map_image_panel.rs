@@ -31,7 +31,7 @@ pub(super) struct MapImagePanelState {
     export_task_id: Option<String>,
     install_task_id: Option<String>,
     install_refresh: Option<MapImageInstallRefresh>,
-    install_destination: MapImageInstallDestination,
+    pub(super) install_destination: MapImageInstallDestination,
     selected_player: PlayerId,
     selected_block: Option<(ChunkPos, BlockPos)>,
     /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
@@ -433,7 +433,7 @@ impl MapViewerWindowView {
         })
     }
 
-    fn map_image_operation_busy(&self) -> bool {
+    pub(super) fn map_image_operation_busy(&self) -> bool {
         self.map_write_busy()
             || [
                 &self.map_image.export_task_id,
