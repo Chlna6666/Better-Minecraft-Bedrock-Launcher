@@ -218,7 +218,9 @@ impl MapViewerWindowView {
                 })
             }
             MapImageInstallDestination::NewUpFrame => {
-                if self.map_image.source.is_none() {
+                // An external NBT bundle has not been decoded for pixel preview.
+                // Never project a previous image conversion as though it were the NBT payload.
+                if self.map_image.source.is_none() || self.map_image.pending_bundle.is_some() {
                     return None;
                 }
                 let (center_x, center_z) = self.map_frame_anchor();
