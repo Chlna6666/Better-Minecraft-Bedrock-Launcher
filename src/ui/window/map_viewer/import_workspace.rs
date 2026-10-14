@@ -48,8 +48,12 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
+        let inventory_target = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+            && self.map_image_installing_to_player();
         let body = if preview {
             self.render_import_result(colors, cx).into_any_element()
+        } else if inventory_target {
+            self.render_map_image_inventory_workspace(colors).into_any_element()
         } else {
             self.canvas_view.clone().into_any_element()
         };
@@ -65,7 +69,8 @@ impl MapViewerWindowView {
             .child(body)
             .child(self.render_import_workspace_toolbar(colors, cx))
             .when(
-                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage,
+                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+                    && !inventory_target,
                 |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
             )
             .when(
