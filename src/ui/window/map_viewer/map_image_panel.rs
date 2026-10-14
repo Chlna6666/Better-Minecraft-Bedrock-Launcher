@@ -97,7 +97,7 @@ pub(super) enum MapImageInstallDestination {
 }
 
 #[derive(Clone, Copy)]
-enum GridAxis {
+pub(super) enum GridAxis {
     Columns,
     Rows,
 }
