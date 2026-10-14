@@ -617,10 +617,20 @@ impl Window {
         frame_request: PlatformFrameRequest,
         frame_started_at: Instant,
     ) -> Option<PlatformFrameRequest> {
+        // A changed native viewport is a geometry transaction, not an animation
+        // sample. Delaying it to a configured FPS deadline leaves the enlarged
+        // HWND displaying the previous surface even when rendering is fast.
+        let native_resize = self.platform_window.is_live_resizing()
+            && (self.viewport_size != self.platform_window.content_size()
+                || self.scale_factor != self.platform_window.scale_factor());
         let frame = self.frame_clock_state.borrow_mut().receive_frame(
             frame_request,
             frame_started_at,
-            self.frame_clock.interval(),
+            if native_resize {
+                None
+            } else {
+                self.frame_clock.interval()
+            },
         );
         match frame {
             ReceivedPlatformFrame::Ready(request) => Some(request),

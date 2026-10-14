@@ -78,7 +78,9 @@ pub struct TaffyLayoutEngine {
     pub(super) node_fingerprints: FxHashMap<LayoutId, Option<u64>>,
     node_layout_metadata: FxHashMap<LayoutId, NodeLayoutMetadata>,
     pub(super) measured_subtrees: FxHashSet<LayoutId>,
-    root_constraints: FxHashMap<LayoutId, Size<AvailableSpaceKey>>,
+    // Taffy stores device-pixel geometry; equal logical constraints at a new
+    // DPI must not reuse the previous physical layout.
+    root_constraints: FxHashMap<LayoutId, (Size<AvailableSpaceKey>, u32)>,
     pub(super) subtree_scratch: Vec<LayoutId>,
     layout_bounds_scratch_space: Vec<LayoutId>,
     root_diagnostic_ids: FxHashMap<LayoutId, GlobalElementId>,
@@ -676,9 +678,13 @@ impl TaffyLayoutEngine {
     ) {
         let started_at = Instant::now();
         self.roots_computed = self.roots_computed.saturating_add(1);
-        let constraints = size(
-            AvailableSpaceKey::from(available_space.width),
-            AvailableSpaceKey::from(available_space.height),
+        let scale_factor = window.scale_factor();
+        let constraints = (
+            size(
+                AvailableSpaceKey::from(available_space.width),
+                AvailableSpaceKey::from(available_space.height),
+            ),
+            scale_factor.to_bits(),
         );
         let parent = self.taffy.parent(id.into());
         let reusable = parent.is_none()
@@ -711,8 +717,6 @@ impl TaffyLayoutEngine {
         // this frame. Parent placement changes their absolute coordinates even
         // when this is the parent's first computation.
         self.invalidate_subtree_bounds(id);
-
-        let scale_factor = window.scale_factor();
 
         let transform = |v: AvailableSpace| match v {
             AvailableSpace::Definite(pixels) => {

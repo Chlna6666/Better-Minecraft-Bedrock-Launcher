@@ -195,6 +195,26 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         true
     }
     fn content_size(&self) -> Size<Pixels>;
+    /// Authoritative native client-geometry generation currently exposed by the window.
+    ///
+    /// A platform that owns a real Win32 client rectangle publishes a new value each
+    /// time that rectangle (or its DPI scale) actually changes. Layout, Scene and
+    /// presentation compare this generation instead of inferring identity from size,
+    /// so a window that returns to a previous size is still a new generation.
+    /// Platforms whose size updates are already frame-synchronous report 0.
+    fn content_epoch(&self) -> u64 {
+        0
+    }
+    /// Records the geometry generation of the frame GPUI last committed.
+    ///
+    /// Pointer coordinates must be interpreted in the same generation as the
+    /// hitboxes they will be tested against, so platforms with asynchronous
+    /// native resizing convert input through the committed scale factor.
+    fn set_committed_geometry(&self, _epoch: u64, _size: Size<Pixels>, _scale_factor: f32) {}
+    /// DPI scale of the committed frame rather than of the newest pending native size.
+    fn committed_scale_factor(&self) -> f32 {
+        self.scale_factor()
+    }
     fn resize(&mut self, size: Size<Pixels>);
     fn set_window_origin(&mut self, _origin: Point<Pixels>) -> bool {
         false

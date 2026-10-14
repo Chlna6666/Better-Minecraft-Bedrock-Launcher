@@ -696,6 +696,7 @@ impl Platform for WindowsPlatform {
         self.inner
             .native_owner_closing
             .store(true, Ordering::Release);
+        super::hide_native_windows();
         if let Some(proxy) = self.event_loop_proxy.lock().unwrap().clone() {
             let _ = proxy.send_event(WindowsUserEvent::Quit);
         }
@@ -1554,7 +1555,9 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
                 self.hovered_window_id = Some(window_id);
-                let scale_factor = window.scale_factor();
+                // Hit-testing runs against the committed frame's hitboxes, so the
+                // live cursor must be converted in that same geometry generation.
+                let scale_factor = window.committed_scale_factor();
                 let position = point(
                     Pixels(position.x as f32 / scale_factor),
                     Pixels(position.y as f32 / scale_factor),
@@ -1659,7 +1662,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 if let Some(button) = mouse_button_from_winit(button) {
                     let mut window_state = window.0.state.borrow_mut();
                     let modifiers = self.current_modifiers;
-                    let scale_factor = window_state.scale_factor.get();
+                    let scale_factor = window.committed_scale_factor();
                     let position = window
                         .native_hwnd()
                         .and_then(|hwnd| current_cursor_position(hwnd, scale_factor))
@@ -1707,7 +1710,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
             }
             winit::event::WindowEvent::MouseWheel { delta, phase, .. } => {
                 let mut state = window.0.state.borrow_mut();
-                let scale_factor = state.scale_factor.get();
+                let scale_factor = window.committed_scale_factor();
                 let position = window
                     .native_hwnd()
                     .and_then(|hwnd| current_cursor_position(hwnd, scale_factor))
@@ -1744,7 +1747,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
                 }
             }
             winit::event::WindowEvent::Touch(touch) => {
-                let scale_factor = window.scale_factor();
+                let scale_factor = window.committed_scale_factor();
                 let position = point(
                     Pixels(touch.location.x as f32 / scale_factor),
                     Pixels(touch.location.y as f32 / scale_factor),
@@ -1832,6 +1835,7 @@ impl ApplicationHandler<WindowsUserEvent> for WindowsApplication {
         self.inner
             .native_owner_closing
             .store(true, Ordering::Release);
+        super::hide_native_windows();
         self.vsync_scheduler.shutdown();
         if !self.inner.handle_end_session() {
             log::warn!(

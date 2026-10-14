@@ -195,6 +195,22 @@ fn native_window(hwnd: HWND) -> Option<WindowsWindow> {
     })
 }
 
+/// Retire visibility before application callbacks and GPU resource destruction.
+pub(super) fn hide_native_windows() {
+    let windows = WINDOWS_BY_HWND.with(|registry| {
+        registry
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(WindowsWindow)
+            .collect::<Vec<_>>()
+    });
+    // ShowWindow can send messages reentrantly; release the registry borrow first.
+    for window in windows {
+        window.hide_window();
+    }
+}
+
 /// A lightweight native modal watchdog. DWM VSync remains the normal frame cadence;
 /// this timer only checks whether any window has pending work if the OS temporarily
 /// withholds a posted WM_APP wake during interactive resizing.
@@ -401,7 +417,8 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
                 window.0.size_move_active.set(false);
-                if window.0.size_move_has_resized.replace(false) {
+                let resized = window.0.size_move_has_resized.replace(false);
+                if resized {
                     window.set_live_resize_active(false);
                 }
                 // Win32's nested size/move loop suspended outer winit event delivery.
@@ -410,15 +427,38 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // Pure moves pay for at most this one final reconciliation, never a
                 // recurring frame or GPU animation pump.
                 window.sync_current_native_size();
+                if resized && let Some(extent) = window.native_client_extent() {
+                    // Exiting releases temporary GPU capacity even when the
+                    // client extent did not change. Pair that settle with a
+                    // fresh scene before accepting subsequent client input.
+                    window.queue_resize(PendingWindowsResize {
+                        epoch: window.0.size_epoch.get(),
+                        logical_size: window.content_size(),
+                        scale_factor: window.scale_factor(),
+                        drawable_size: crate::size(
+                            DevicePixels(extent.width as i32),
+                            DevicePixels(extent.height as i32),
+                        ),
+                    });
+                }
                 window.request_frame(PlatformFrameRequest::ui_commit());
+                window.dispatch_native_resize_frame();
             }
             dispatch_size_move_frame(hwnd);
             return result;
         }
         SizeMoveLoopAction::SyncExtent => {
-            // Let the default/winit chain commit the non-client and client rectangles first, then
-            // publish the authoritative client extent. Keep only the latest
-            // geometry for the normal cadence without masking unpainted client strips.
+            // WM_SIZE already describes committed client geometry. Generate its
+            // matching scene before winit delivers queued window events; those
+            // callbacks can consume the resize or enter another native message.
+            // WM_WINDOWPOSCHANGED still delegates first so DefWindowProc sends
+            // WM_SIZE with the final non-client calculation.
+            if message == WM_SIZE
+                && let Some(window) = native_window(hwnd)
+            {
+                window.sync_current_native_size();
+                window.dispatch_native_resize_frame();
+            }
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
@@ -426,13 +466,8 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                 // changes. WM_SIZE/WM_WINDOWPOSCHANGED often describe the same
                 // generation, so forcing another commit here defeats coalescing.
                 window.schedule_visibility_report();
-                // Zed's Win32 path handles the new size during WM_SIZE and
-                // redraws via WM_PAINT. WGPUI likewise synchronizes its wgpu
-                // surface from Resized. A DWM-only deferred layout leaves a
-                // client strip uncovered until the next GPU Present, even when
-                // UI/GPU execution itself is fast. Commit the new *layout*
-                // opportunistically here, with the shared per-window refresh
-                // cadence and the existing reentrant-borrow fallback.
+                // Handle a changed extent left by a nested callback, without
+                // producing another frame for the same native generation.
                 window.dispatch_native_resize_frame();
             }
             return result;
@@ -877,7 +912,9 @@ impl WindowsWindow {
     }
 
     pub(crate) fn invoke_request_frame(&self, options: PlatformFrameRequest) {
-        if self.is_live_resizing() && options.needs_ui_commit() {
+        if (self.is_live_resizing() || self.0.pending_renderer_size.get().is_some())
+            && options.needs_ui_commit()
+        {
             let callback = self.0.state.borrow_mut().callbacks.live_resize_frame.take();
             if let Some(mut callback) = callback {
                 let handled = callback(options);
@@ -1273,6 +1310,16 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) content_ready: Arc<AtomicBool>,
     presentation_state: Cell<WindowsWindowPresentationState>,
     pending_resize: Cell<Option<PendingWindowsResize>>,
+    // Monotonic Win32 client-geometry generation. It changes only when the
+    // authoritative HWND client extent or DPI scale actually changed, so an
+    // unchanged size can never masquerade as a newer layout generation.
+    size_epoch: Cell<u64>,
+    // Committed input geometry, mirrored from the frame GPUI last finished.
+    // Plain cells (not a state borrow) so pointer conversion never re-enters the
+    // window state during input handling.
+    committed_epoch: Cell<u64>,
+    committed_logical_size: Cell<Size<Pixels>>,
+    committed_scale_factor: Cell<f32>,
     // WM_SIZE may arrive while a reentrant input/visibility callback borrows state.
     // Retain one retry bit so the next native cadence re-reads the authoritative HWND size.
     pending_native_size_retry: Cell<bool>,
@@ -1287,7 +1334,7 @@ pub(crate) struct WindowsWindowInner {
     size_move_has_resized: Cell<bool>,
     pending_live_resize_active: Cell<Option<bool>>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
-    pub(crate) pending_renderer_size: Cell<Option<Size<DevicePixels>>>,
+    pub(crate) pending_renderer_size: Cell<Option<PendingWindowsResize>>,
     fallback_corner_radius: Option<Pixels>,
     pub(crate) winit_window: OnceCell<Arc<WinitWindow>>,
     pending_scene: RefCell<Option<QueuedScene>>,
@@ -1320,6 +1367,11 @@ fn defer_scene_until_native_frame(
 
 #[derive(Clone, Copy)]
 pub(crate) struct PendingWindowsResize {
+    /// Authoritative client-size generation this geometry belongs to.
+    ///
+    /// Win32 owns the newest generation; a Scene may only be presented at the
+    /// drawable extent of the generation it was laid out for.
+    pub(crate) epoch: u64,
     pub(crate) logical_size: Size<Pixels>,
     pub(crate) drawable_size: Size<DevicePixels>,
     pub(crate) scale_factor: f32,
@@ -1448,12 +1500,9 @@ impl WindowsWindow {
             // visible background must not turn initialization into a VSync UI rebuild loop.
             return PlatformFrameResult::Deferred;
         }
-        // During a continuous WM_SIZE drag, the HWND may change again
-        // between Scene commit and Present. Rejecting every intermediate
-        // Draw prevents all frames from reaching the GPU until dragging stops.
-        // Allow a real Draw using its own immutable layout extent; the GPU
-        // owner pairs it with the corresponding drawable on consumption.
-        // Framebuffer-only replay is not a real layout update and must wait.
+        // Native resize frames submit before returning to Win32. If a nested
+        // native message changed the extent, rebuild for that extent rather
+        // than restoring an obsolete smaller drawable on the GPU owner.
         if let Some(native) = self.native_client_extent()
             && !native_extent_matches_layout(packet.layout_extent, native)
         {
@@ -1470,11 +1519,9 @@ impl WindowsWindow {
             }
             self.sync_current_native_size();
             self.request_frame(PlatformFrameRequest::ui_commit());
-            if framebuffer_only {
-                return PlatformFrameResult::Deferred;
-            }
+            return PlatformFrameResult::Deferred;
         }
-        if !self.try_apply_queued_renderer_resize(packet.layout_extent) {
+        if !self.try_apply_queued_renderer_resize(packet.layout_extent, packet.layout_epoch) {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }
         let (result, has_submitted_frame, pending_gpu_work) = {
@@ -1670,6 +1717,11 @@ impl WindowsWindow {
             content_ready: Arc::new(AtomicBool::new(false)),
             presentation_state: Cell::new(presentation_state),
             pending_resize: Cell::new(None),
+            size_epoch: Cell::new(0),
+            // Before the first frame the native geometry is the input geometry.
+            committed_epoch: Cell::new(0),
+            committed_logical_size: Cell::new(actual_logical_size),
+            committed_scale_factor: Cell::new(scale_factor),
             pending_native_size_retry: Cell::new(false),
             frame_dispatch_in_progress: Cell::new(false),
             resize_cadence: Cell::new(resize::Cadence::default()),
@@ -1952,6 +2004,7 @@ impl WindowsWindow {
         state.logical_size.set(logical_size);
         state.scale_factor.set(scale_factor);
         drop(state);
+        let epoch = self.advance_size_epoch();
 
         if crate::diagnostics::gpu_owner::resize_trace_enabled() {
             // Query the real Win32 client rectangle, not just winit's event payload:
@@ -1981,6 +2034,7 @@ impl WindowsWindow {
             );
         }
         self.queue_resize(PendingWindowsResize {
+            epoch,
             logical_size,
             drawable_size: Size {
                 width: DevicePixels(physical_size.width as i32),
@@ -1988,6 +2042,13 @@ impl WindowsWindow {
             },
             scale_factor,
         });
+    }
+
+    /// Publishes the next Win32 client-geometry generation.
+    fn advance_size_epoch(&self) -> u64 {
+        let epoch = self.0.size_epoch.get().wrapping_add(1).max(1);
+        self.0.size_epoch.set(epoch);
+        epoch
     }
 
     pub(crate) fn sync_current_native_size(&self) {
@@ -2004,10 +2065,37 @@ impl WindowsWindow {
     /// Only a *new* client extent is eligible: WM_WINDOWPOSCHANGED and WM_SIZE
     /// can describe the same update, and ordinary native moves do not relayout.
     fn dispatch_native_resize_frame(&self) {
-        if !self.is_live_resizing() || self.0.pending_resize.get().is_none() {
+        if self.0.frame_dispatch_in_progress.get() {
             return;
         }
+        if self.0.pending_resize.get().is_none() && self.0.pending_renderer_size.get().is_none() {
+            return;
+        }
+        let started_at = Instant::now();
+        let pending_extent = self
+            .0
+            .pending_resize
+            .get()
+            .map(|resize| resize.drawable_size);
+        // Queueing the matching scene is the whole obligation of the native
+        // size path. Presenting it is asynchronous: the GPU owner pairs the
+        // newest Resize with the newest matching Scene, and DWM keeps showing
+        // the previous generation until that pair lands. Blocking this Win32
+        // message on the GPU serial (previously up to 100ms) or on DwmFlush
+        // turned every WM_SIZE into a 25-35ms stall, so a continuous drag could
+        // never produce scenes as fast as the client area grew.
+        self.request_frame(PlatformFrameRequest::ui_commit());
         self.dispatch_pending_update_with_vsync(None);
+        let dispatch_elapsed = started_at.elapsed();
+        if dispatch_elapsed >= Duration::from_millis(16) {
+            log::debug!(
+                target: "gpui_gpu_resize",
+                "native_resize_commit window_id={} extent={:?} ui_dispatch_us={}",
+                self.0.handle.window_id().data().as_ffi(),
+                pending_extent,
+                dispatch_elapsed.as_micros(),
+            );
+        }
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
@@ -2061,7 +2149,12 @@ impl WindowsWindow {
         }
         if self.is_live_resizing() {
             let mut cadence = self.0.resize_cadence.get();
-            if !cadence.accept(Instant::now(), self.0.vsync_scheduler.refresh_interval()) {
+            if !cadence.accept(
+                Instant::now(),
+                self.0.vsync_scheduler.refresh_interval(),
+                self.0.pending_resize.get().is_some()
+                    || self.0.pending_renderer_size.get().is_some(),
+            ) {
                 self.0.frame_dispatch_in_progress.set(false);
                 self.0.vsync_scheduler.request_frame();
                 return;
@@ -2179,12 +2272,16 @@ impl WindowsWindow {
         let Some(resize) = self.0.pending_resize.take() else {
             return;
         };
-        self.0.pending_renderer_size.set(Some(resize.drawable_size));
+        self.0.pending_renderer_size.set(Some(resize));
         self.invoke_resize(resize.logical_size, resize.scale_factor);
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
-    fn try_apply_queued_renderer_resize(&self, scene_extent: Option<(u32, u32)>) -> bool {
+    fn try_apply_queued_renderer_resize(
+        &self,
+        scene_extent: Option<(u32, u32)>,
+        scene_epoch: u64,
+    ) -> bool {
         let mut renderer_state = self.0.renderer.borrow_mut();
         let WindowsRendererState::Ready(renderer) = &mut *renderer_state else {
             return false;
@@ -2192,16 +2289,23 @@ impl WindowsWindow {
         if let Some(active) = self.0.pending_live_resize_active.take() {
             renderer.set_live_resize_active(active);
         }
-        if let Some(size) = self.0.pending_renderer_size.take() {
-            let pending_extent = (size.width.0.max(0) as u32, size.height.0.max(0) as u32);
-            if scene_extent.is_some_and(|layout| layout != pending_extent) {
+        if let Some(resize) = self.0.pending_renderer_size.take() {
+            let pending_extent = (
+                resize.drawable_size.width.0.max(0) as u32,
+                resize.drawable_size.height.0.max(0) as u32,
+            );
+            if resize.epoch != scene_epoch
+                || scene_extent.is_some_and(|layout| layout != pending_extent)
+            {
                 // WM_SIZE is already ahead of this Scene. Do not enqueue a
                 // future-size Resize before an old-size Draw (which would
                 // immediately have to reverse it on the GPU owner).
                 // Keep the latest extent for the subsequent UI commit.
-                self.0.pending_renderer_size.set(Some(size));
-            } else if let Err(error) = renderer.update_drawable_size(size) {
-                self.0.pending_renderer_size.set(Some(size));
+                self.0.pending_renderer_size.set(Some(resize));
+            } else if let Err(error) = renderer
+                .update_drawable_size(resize.drawable_size, resize.epoch)
+            {
+                self.0.pending_renderer_size.set(Some(resize));
                 log::error!("failed to queue Windows GPU resize: {error:#}");
                 return false;
             }
@@ -2272,6 +2376,23 @@ impl PlatformWindow for WindowsWindow {
     /// whether the mouse collides with other elements of GPUI).
     fn content_size(&self) -> Size<Pixels> {
         self.0.state.borrow().logical_size.get()
+    }
+
+    fn content_epoch(&self) -> u64 {
+        self.0.size_epoch.get()
+    }
+
+    fn set_committed_geometry(&self, epoch: u64, size: Size<Pixels>, scale_factor: f32) {
+        self.0.committed_epoch.set(epoch);
+        self.0.committed_logical_size.set(size);
+        self.0.committed_scale_factor.set(scale_factor);
+    }
+
+    /// Win32 resize messages can run far ahead of the last committed Scene.
+    /// Pointer input is matched against that Scene's hitboxes, so it must be
+    /// converted with the committed scale instead of the newest native DPI.
+    fn committed_scale_factor(&self) -> f32 {
+        self.0.committed_scale_factor.get()
     }
 
     fn is_content_ready(&self) -> bool {

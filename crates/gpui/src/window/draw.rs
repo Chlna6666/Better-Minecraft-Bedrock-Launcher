@@ -102,6 +102,9 @@ impl Window {
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
         let _element_arena_scope = ElementArenaScope::enter();
         let frame_started_at = Instant::now();
+        // The geometry this frame is laid out with is fixed for its whole
+        // lifetime; a native resize arriving later is a new generation.
+        self.next_frame_epoch = self.viewport_epoch;
         let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
         let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
         let force_full_redraw = self.force_full_redraw.get() || debug_force_full_redraw;
@@ -273,6 +276,7 @@ impl Window {
             self.next_frame.scene.snapshot(),
             scene_animation_values,
             Some(committed_layout_extent),
+            self.next_frame_epoch,
             self.scale_factor,
         );
         let frame_retained_capacity = self.next_frame.retained_capacity();
@@ -286,6 +290,17 @@ impl Window {
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
+        // Hitboxes, hit-test geometry and the scene become committed together:
+        // pointer input must be interpreted in this generation, not in the
+        // newest native one, or a fast edge drag tests live coordinates against
+        // the previous layout.
+        self.committed_epoch = self.next_frame_epoch;
+        self.committed_scale_factor = self.scale_factor;
+        self.platform_window.set_committed_geometry(
+            self.committed_epoch,
+            self.viewport_size,
+            self.scale_factor,
+        );
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         #[cfg(target_os = "windows")]
         if force_full_redraw && crate::diagnostics::gpu_owner::resize_trace_enabled() {
@@ -727,6 +742,9 @@ impl Window {
         // its next WM_SIZE layout. Record the extent belonging to that Scene,
         // not the newer viewport currently exposed by the native window.
         packet.layout_extent = self.presentation_state.active_layout_extent();
+        // The Scene's own generation, never the newest native one: the GPU owner
+        // pairs a drawable resize with the Scene built for that generation.
+        packet.layout_epoch = self.presentation_state.active_layout_epoch();
         packet.set_frame_interval(self.frame_clock.interval());
         packet
     }

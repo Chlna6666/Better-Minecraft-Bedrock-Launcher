@@ -21,6 +21,19 @@ mod resize_plan_tests {
     use super::*;
 
     #[test]
+    fn equal_extents_still_require_the_resize_generation_to_match() {
+        let size = crate::size(DevicePixels(500), DevicePixels(500));
+        let request = DrawableSizeRequest {
+            size,
+            epoch: Some(7),
+        };
+
+        assert!(!request.applies_to(Some(6)));
+        assert!(request.applies_to(Some(7)));
+        assert!(!request.applies_to(None));
+    }
+
+    #[test]
     fn resize_reuses_unpromoted_one_pixel_path_mask() {
         let old = DrawableSize { width: 1000, height: 700 };
         let placeholder = Extent2d::new(1, 1).unwrap();
@@ -327,17 +340,21 @@ impl NovaRenderer {
         Ok(())
     }
 
-    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+    pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: Option<u64>) {
+        let request = DrawableSizeRequest { size, epoch };
         if self.live_resize_active {
-            self.live_resize_size = Some(size);
+            self.live_resize_size = Some(request);
         }
-        self.pending_drawable_size = Some(size);
+        self.pending_drawable_size = Some(request);
     }
 
     /// Applies the newest coalesced drawable size only when the GPU/swapchain can be replaced
     /// immediately. Returning `false` tells the caller to skip rendering this frame; importantly,
     /// no new old-size GPU work is submitted while resize backpressure is active.
-    pub(super) fn apply_pending_drawable_size(&mut self) -> Result<bool> {
+    pub(super) fn apply_pending_drawable_size(
+        &mut self,
+        scene_epoch: Option<u64>,
+    ) -> Result<bool> {
         #[cfg(all(
             feature = "nova-gfx-vulkan",
             any(target_os = "windows", target_os = "linux", target_os = "freebsd")
@@ -350,24 +367,31 @@ impl NovaRenderer {
                 if actual.width() != self.current_size.width
                     || actual.height() != self.current_size.height
                 {
-                    self.pending_drawable_size = Some(crate::size(
-                        DevicePixels(actual.width() as i32),
-                        DevicePixels(actual.height() as i32),
-                    ));
+                    self.pending_drawable_size = Some(DrawableSizeRequest {
+                        size: crate::size(
+                            DevicePixels(actual.width() as i32),
+                            DevicePixels(actual.height() as i32),
+                        ),
+                        epoch: None,
+                    });
                 }
             }
         }
-        let Some(size) = self.pending_drawable_size.take() else {
+        let Some(request) = self.pending_drawable_size.take() else {
             return Ok(true);
         };
-        match self.try_resize(size) {
+        if !request.applies_to(scene_epoch) {
+            self.pending_drawable_size = Some(request);
+            return Ok(false);
+        }
+        match self.try_resize(request.size) {
             Ok(true) => Ok(true),
             Ok(false) => {
-                self.pending_drawable_size = Some(size);
+                self.pending_drawable_size = Some(request);
                 Ok(false)
             }
             Err(error) => {
-                self.pending_drawable_size = Some(size);
+                self.pending_drawable_size = Some(request);
                 Err(error)
             }
         }
@@ -380,7 +404,7 @@ impl NovaRenderer {
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub(crate) fn viewport_size(&self) -> Size<DevicePixels> {
         if let Some(size) = self.pending_drawable_size {
-            return size;
+            return size.size;
         }
         Size {
             width: DevicePixels(self.current_size.width as i32),

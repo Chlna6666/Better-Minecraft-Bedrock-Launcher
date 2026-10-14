@@ -90,6 +90,18 @@ pub(super) struct DrawableSize {
     pub(super) height: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct DrawableSizeRequest {
+    pub(super) size: Size<DevicePixels>,
+    pub(super) epoch: Option<u64>,
+}
+
+impl DrawableSizeRequest {
+    pub(super) fn applies_to(self, scene_epoch: Option<u64>) -> bool {
+        self.epoch.is_none_or(|epoch| scene_epoch == Some(epoch))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct NovaRendererAtlas(Arc<NovaAtlas>);
 
@@ -158,7 +170,7 @@ pub(crate) struct NovaRenderer {
     draw_step_scratch: DrawStepScratch,
     path_mask_residency: path_mask::Residency,
     current_size: DrawableSize,
-    pending_drawable_size: Option<Size<DevicePixels>>,
+    pending_drawable_size: Option<DrawableSizeRequest>,
     atlas: Arc<NovaAtlas>,
     rendering_parameters: RenderingParameters,
     diagnostics: NovaRenderDiagnostics,
@@ -170,7 +182,7 @@ pub(crate) struct NovaRenderer {
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
     live_resize_active: bool,
-    live_resize_size: Option<Size<DevicePixels>>,
+    live_resize_size: Option<DrawableSizeRequest>,
     active_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
@@ -281,8 +293,11 @@ fn retire_replaced_path_rasterization_resources<D>(
 impl NovaRenderer {
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
         if self.live_resize_active && !active {
-            if let Some(size) = self.live_resize_size.take() {
-                self.pending_drawable_size = Some(size);
+            // Ending the gesture releases temporary capacity. The release keeps
+            // its original generation so it is applied together with a matching
+            // Scene instead of resizing an unpainted surface on its own.
+            if let Some(request) = self.live_resize_size.take() {
+                self.pending_drawable_size = Some(request);
             }
         }
         self.live_resize_active = active;
@@ -296,8 +311,11 @@ impl NovaRenderer {
     ///
     /// Windows consumes this as a platform-frame preflight. A saturated DXGI queue is therefore a
     /// deferred presentation rather than synchronous work on GPUI's UI thread.
-    pub(crate) fn can_present_without_wait(&mut self) -> Result<bool> {
-        if !self.apply_pending_drawable_size()? {
+    pub(crate) fn can_present_without_wait(
+        &mut self,
+        scene_epoch: Option<u64>,
+    ) -> Result<bool> {
+        if !self.apply_pending_drawable_size(scene_epoch)? {
             return Ok(false);
         }
         lock_backend(&self.backend).can_present_without_wait(self.swapchain)
@@ -342,7 +360,10 @@ impl NovaRenderer {
         packet: &mut PresentationPacket,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
-        if !self.apply_pending_drawable_size()? {
+        // The drawable extent is applied only for the Scene generation that
+        // requested it. An older Scene keeps drawing into the current drawable,
+        // and a newer request stays pending for its own Scene.
+        if !self.apply_pending_drawable_size(Some(packet.layout_epoch))? {
             return Ok(false);
         }
         self.observe_presentation_packet(&packet);
@@ -675,7 +696,7 @@ impl NovaRenderer {
         self.pending_animation_completions
             .extend(packet.sample_animations(packet.frame_time));
         let result = (|| {
-            if !self.apply_pending_drawable_size()? {
+        if !self.apply_pending_drawable_size(Some(packet.layout_epoch))? {
                 return Ok(false);
             }
             self.observe_presentation_packet(&packet);

@@ -77,6 +77,8 @@ impl Borrow<GlobalElementId> for ReconcileKey {
 /// inheritance and transforms are still identical before replaying old prepaint/paint ranges.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RetainedPaintContext {
+    /// Scene primitives are already in device pixels; a DPI transition cannot replay them.
+    pub(crate) device_scale_factor: f32,
     pub(crate) opacity: f32,
     pub(crate) scale: f32,
     pub(crate) translation: Point<Pixels>,

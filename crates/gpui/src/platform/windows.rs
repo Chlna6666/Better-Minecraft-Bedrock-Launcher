@@ -50,3 +50,14 @@ pub(super) fn service_driver_messages() {
         )
     };
 }
+
+/// Completes the compositor checkpoint for a submitted native resize frame.
+/// Ordinary presentation does not wait here. The HWND thread calls this after
+/// the matching Present acknowledgment, outside App/Window/backend borrows.
+#[allow(unsafe_code)]
+pub(super) fn finish_resize_presentation() -> anyhow::Result<()> {
+    // SAFETY: DwmFlush has no pointer parameters. The matching Present has
+    // already returned on the GPU owner, which remains free to service windows.
+    let result = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() };
+    result.map_err(|error| anyhow::anyhow!("DWM resize presentation checkpoint failed: {error}"))
+}

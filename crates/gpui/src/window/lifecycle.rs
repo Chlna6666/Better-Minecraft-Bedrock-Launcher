@@ -51,6 +51,10 @@ pub(crate) enum RetainedInvalidationScope {
     #[default]
     ElementOnly,
     ReconcileSubtree,
+    /// Recompute geometry after viewport constraints change. An explicit cached
+    /// view may replay only if its new bounds and complete cache key are equal.
+    /// Content/context invalidation merges to a stronger scope below.
+    ReflowSubtree,
     InvalidateSubtree,
     /// Invalidate layout ancestors; old cached geometry must never be spliced.
     RelayoutSubtree,
@@ -359,15 +363,8 @@ impl WindowInvalidator {
         self.invalidate_view_with_scope(entity, cx, RetainedInvalidationScope::ReconcileSubtree)
     }
 
-    /// A changed root viewport invalidates cached geometry, not merely paint.
-    /// Ordinary entity notifications keep their cheaper reconciliation scope.
     #[track_caller]
-    pub(in crate::window) fn invalidate_layout_view(&self, entity: EntityId, cx: &mut App) -> bool {
-        self.invalidate_view_with_scope(entity, cx, RetainedInvalidationScope::RelayoutSubtree)
-    }
-
-    #[track_caller]
-    fn invalidate_view_with_scope(
+    pub(in crate::window) fn invalidate_view_with_scope(
         &self,
         entity: EntityId,
         cx: &mut App,
@@ -796,6 +793,27 @@ impl WindowInvalidator {
         global_id: &GlobalElementId,
         owner_shares_view_route: &impl Fn(EntityId) -> bool,
     ) -> bool {
+        self.retained_path_is_dirty_for_route(global_id, owner_shares_view_route, false)
+    }
+
+    /// Explicit cached views validate fresh outer bounds, clipping, paint
+    /// context and content identity before replay. A viewport-only reflow does
+    /// not intrinsically dirty their descendants; general elements still need
+    /// fresh traversal because their own bounds cannot prove child geometry.
+    pub(in crate::window) fn cached_view_path_is_dirty_for_view_route(
+        &self,
+        global_id: &GlobalElementId,
+        owner_shares_view_route: &impl Fn(EntityId) -> bool,
+    ) -> bool {
+        self.retained_path_is_dirty_for_route(global_id, owner_shares_view_route, true)
+    }
+
+    fn retained_path_is_dirty_for_route(
+        &self,
+        global_id: &GlobalElementId,
+        owner_shares_view_route: &impl Fn(EntityId) -> bool,
+        cached_view: bool,
+    ) -> bool {
         let inner = self.inner.borrow();
         if !inner.active_targeted_replay {
             return true;
@@ -804,7 +822,12 @@ impl WindowInvalidator {
             .active_targeted_elements
             .iter()
             .any(|((owner, dirty), scope)| {
-                retained_path_requires_repaint(global_id, dirty, *scope)
+                let scope = if cached_view && *scope == RetainedInvalidationScope::ReflowSubtree {
+                    RetainedInvalidationScope::ReconcileSubtree
+                } else {
+                    *scope
+                };
+                retained_path_requires_repaint(global_id, dirty, scope)
                     && owner_shares_view_route(*owner)
             })
     }
@@ -958,7 +981,7 @@ fn retained_path_requires_repaint(
     scope: RetainedInvalidationScope,
 ) -> bool {
     global_element_path_is_prefix(candidate, dirty)
-        || scope >= RetainedInvalidationScope::InvalidateSubtree
+        || scope >= RetainedInvalidationScope::ReflowSubtree
             && global_element_path_is_prefix(dirty, candidate)
 }
 
@@ -1275,6 +1298,37 @@ mod retained_dirty_scope_tests {
             invalidator
                 .retained_path_is_dirty_for_view_route(&descendant, &|owner| owner == second_view,)
         );
+    }
+
+    #[test]
+    fn viewport_reflow_preserves_cached_boundary_validation_and_stronger_dirty_scope() {
+        let invalidator = WindowInvalidator::new();
+        let view = EntityId::from(1);
+        let boundary = path(&[0]);
+        let descendant = path(&[0, 1]);
+        invalidator.set_dirty(false);
+        invalidator.invalidate_retained_path_with_scope(
+            view,
+            Some(&boundary),
+            RetainedInvalidationScope::ReflowSubtree,
+        );
+        invalidator.set_dirty(false);
+        assert!(invalidator.retained_path_is_dirty(&descendant));
+        assert!(!invalidator.cached_view_path_is_dirty_for_view_route(&descendant, &|_| true));
+        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&boundary, &|_| true));
+
+        invalidator.invalidate_retained_path_with_scope(
+            view,
+            Some(&boundary),
+            RetainedInvalidationScope::ReflowSubtree,
+        );
+        invalidator.invalidate_retained_path_with_scope(
+            view,
+            Some(&boundary),
+            RetainedInvalidationScope::InvalidateSubtree,
+        );
+        invalidator.set_dirty(false);
+        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&descendant, &|_| true));
     }
 
     #[test]

@@ -1053,6 +1053,12 @@ pub(crate) struct PresentationPacket {
     /// Physical viewport used to construct this immutable Scene. None is allowed
     /// for synthetic/backend test packets that have no GPUI Window producer.
     pub(crate) layout_extent: Option<(u32, u32)>,
+    /// Native client-geometry generation of the layout extent above.
+    ///
+    /// A drawable resize may only be applied to a Scene of the same generation.
+    /// Size equality is not sufficient: a window can return to a previous size
+    /// while its layout, DPI and content belong to a newer generation.
+    pub(crate) layout_epoch: u64,
     pub(crate) scene: Arc<Scene>,
     pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     pub(crate) sampled_active_presentation_animation: bool,
@@ -1150,6 +1156,7 @@ impl PresentationPacket {
         Self {
             window_id: 0,
             layout_extent: None,
+            layout_epoch: 0,
             scene,
             presentation_animation_values,
             sampled_active_presentation_animation: false,

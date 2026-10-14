@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-/// One cadence shared by native size messages and DWM wakes for this window.
+/// Paces presentation wakes; changed native extents form an immediate resize transaction.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Cadence {
     pub(super) configured_interval: Option<Duration>,
@@ -21,8 +21,13 @@ impl Cadence {
             .is_none_or(|last| now.saturating_duration_since(last) >= interval)
     }
 
-    pub(super) fn accept(&mut self, now: Instant, display_interval: Duration) -> bool {
-        if !self.is_due(now, display_interval) {
+    pub(super) fn accept(
+        &mut self,
+        now: Instant,
+        display_interval: Duration,
+        extent_changed: bool,
+    ) -> bool {
+        if !extent_changed && !self.is_due(now, display_interval) {
             return false;
         }
         self.last_started_at = Some(now);
@@ -39,17 +44,29 @@ mod tests {
         let now = Instant::now();
         let interval = Duration::from_millis(16);
         let mut cadence = Cadence::default();
-        assert!(cadence.accept(now, interval));
+        assert!(cadence.accept(now, interval, false));
         // A size event followed by a DWM wake must not generate a second frame.
-        assert!(!cadence.accept(now + Duration::from_millis(1), interval));
-        assert!(!cadence.accept(now + Duration::from_millis(15), interval));
-        assert!(cadence.accept(now + interval, interval));
+        assert!(!cadence.accept(now + Duration::from_millis(1), interval, false));
+        assert!(!cadence.accept(now + Duration::from_millis(15), interval, false));
+        assert!(cadence.accept(now + interval, interval, false));
 
         // A new native gesture starts immediately, preserving an explicit FPS limit.
         cadence.configured_interval = Some(Duration::from_millis(33));
         cadence.reset();
-        assert!(cadence.accept(now + Duration::from_millis(17), interval));
-        assert!(!cadence.accept(now + Duration::from_millis(33), interval));
-        assert!(cadence.accept(now + Duration::from_millis(50), interval));
+        assert!(cadence.accept(now + Duration::from_millis(17), interval, false));
+        assert!(!cadence.accept(now + Duration::from_millis(33), interval, false));
+        assert!(cadence.accept(now + Duration::from_millis(50), interval, false));
+    }
+
+    #[test]
+    fn changed_extent_submits_immediately_and_paces_following_vsync() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(16);
+        let mut cadence = Cadence::default();
+        cadence.configured_interval = Some(Duration::from_millis(33));
+        assert!(cadence.accept(now, interval, true));
+        assert!(cadence.accept(now + Duration::from_millis(1), interval, true));
+        assert!(!cadence.accept(now + Duration::from_millis(2), interval, false));
+        assert!(cadence.accept(now + Duration::from_millis(34), interval, false));
     }
 }

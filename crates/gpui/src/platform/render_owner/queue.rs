@@ -21,7 +21,11 @@ pub(super) enum Command {
     },
     Tick(Instant, Option<ActivePresentationTiming>),
     Continue(Instant),
-    Resize(Size<DevicePixels>),
+    Resize {
+        size: Size<DevicePixels>,
+        /// Native client-geometry generation, or `None` for an unversioned resize.
+        epoch: Option<u64>,
+    },
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -34,13 +38,18 @@ pub(super) enum Command {
 }
 
 impl Command {
+    #[cfg(any(test, target_os = "windows"))]
+    fn resize(size: Size<DevicePixels>) -> Self {
+        Self::Resize { size, epoch: None }
+    }
+
     /// Hard ordering boundaries that a newer exact-size draw must never
     /// overtake while compacting obsolete *unexecuted* native resize frames.
     #[cfg(any(test, target_os = "windows"))]
     fn is_resize_compaction_barrier(&self) -> bool {
         !matches!(
             self,
-            Self::Resize(_)
+            Self::Resize { .. }
                 | Self::Draw { reply: None, .. }
                 | Self::Tick(..)
                 | Self::Continue(..)
@@ -49,7 +58,7 @@ impl Command {
 
     fn is_barrier(&self) -> bool {
         match self {
-            Self::Resize(_)
+            Self::Resize { .. }
             | Self::Transparency(_)
             | Self::Call(_)
             | Self::Shutdown(_)
@@ -122,7 +131,7 @@ impl Queue {
                 .rposition(|queued| queued.command.is_resize_compaction_barrier())
                 .map_or(0, |index| index + 1);
             let resize_count = state.commands.iter().skip(start).filter(|queued| {
-                matches!(queued.command, Command::Resize(_))
+                matches!(queued.command, Command::Resize { .. })
             }).count();
             if resize_count >= 2 {
                 let mut newest_resize = None;
@@ -131,7 +140,7 @@ impl Queue {
                     coalesced_count = coalesced_count
                         .saturating_add(obsolete.coalesced_count.saturating_add(1));
                     match obsolete.command {
-                        Command::Resize(size) => newest_resize = Some(size),
+                        Command::Resize { size, epoch } => newest_resize = Some((size, epoch)),
                         Command::Draw { packet: previous, .. } => {
                             packet.merge_pending_damage_from(&previous);
                         }
@@ -139,9 +148,9 @@ impl Queue {
                         _ => unreachable!("resize compaction must not cross a control barrier"),
                     }
                 }
-                let size = newest_resize.expect("at least two pending resizes");
+                let (size, epoch) = newest_resize.expect("at least two pending resizes");
                 state.commands.push_back(QueuedCommand {
-                    command: Command::Resize(size),
+                    command: Command::Resize { size, epoch },
                     enqueued_at,
                     first_enqueued_at,
                     coalesced_count: 0,
@@ -154,11 +163,11 @@ impl Queue {
             .rposition(|queued| queued.command.is_barrier())
             .map_or(0, |index| index + 1);
         match &mut command {
-            Command::Resize(_) => {
+            Command::Resize { .. } => {
                 // Collapse adjacent unconsumed resizes only. Never cross a Draw,
                 // fence-bearing Call, or resource ownership barrier.
                 if state.commands.back().is_some_and(|last| {
-                    matches!(last.command, Command::Resize(_))
+                    matches!(last.command, Command::Resize { .. })
                 }) {
                     let previous = state.commands.pop_back()
                         .expect("the previous command was checked");
@@ -275,7 +284,7 @@ impl Queue {
         for queued in &self.0.lock().commands {
             match &queued.command {
                 Command::Draw { .. } => return true,
-                Command::Resize(_) => {}
+                Command::Resize { .. } => {}
                 command if command.is_barrier() => break,
                 _ => {}
             }

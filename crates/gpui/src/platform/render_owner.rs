@@ -364,9 +364,17 @@ impl RenderOwner {
         }
     }
 
-    /// Accepts a resize in command order; target recreation runs on the next GPU frame.
-    pub(super) fn update_drawable_size(&mut self, size: Size<DevicePixels>) -> Result<()> {
-        self.enqueue(Command::Resize(size))?;
+    /// Accepts a resize in command order; target recreation runs on the next GPU frame
+    /// whose Scene belongs to the same native geometry generation.
+    pub(super) fn update_drawable_size(
+        &mut self,
+        size: Size<DevicePixels>,
+        epoch: u64,
+    ) -> Result<()> {
+        self.enqueue(Command::Resize {
+            size,
+            epoch: Some(epoch),
+        })?;
         #[cfg(not(target_os = "windows"))]
         {
             self.viewport_size = size;

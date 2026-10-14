@@ -471,6 +471,11 @@ impl Window {
             None
         };
 
+        // An unmapped window has no rendered frame yet; its initial geometry is
+        // the baseline generation that pointer input may already be interpreted in.
+        let initial_epoch = platform_window.content_epoch();
+        let committed_scale_factor = platform_window.committed_scale_factor();
+
         Ok(Window {
             handle,
             invalidator,
@@ -486,6 +491,10 @@ impl Window {
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
+            viewport_epoch: initial_epoch,
+            next_frame_epoch: initial_epoch,
+            committed_epoch: initial_epoch,
+            committed_scale_factor,
             live_resize_active: false,
             live_resize_image_views: FxHashSet::default(),
             layout_engine: Some(TaffyLayoutEngine::new()),

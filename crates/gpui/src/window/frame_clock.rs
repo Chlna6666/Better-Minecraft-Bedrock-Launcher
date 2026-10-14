@@ -11,6 +11,8 @@ use crate::{PlatformFrameRequest, Task};
 /// that window's frame requests and retained-animation samples. The platform compositor may
 /// present less often than the selected rate, and pending requests are merged until the next
 /// eligible frame.
+/// Native client-size reconciliation remains immediate during live resize so a
+/// configured rate cannot leave newly exposed client pixels on an old layout.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum FrameClock {
     /// Follow the native window and display cadence. This is the default.

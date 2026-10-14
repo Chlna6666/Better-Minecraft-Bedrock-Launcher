@@ -11,6 +11,7 @@ use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 mod completion_render;
 mod presentation_ownership;
+mod resize;
 
 #[cfg(test)]
 #[derive(Default)]
@@ -3133,7 +3134,7 @@ fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(cx: &mut T
         let pending_scene = Arc::new(scene);
         window
             .presentation_state
-            .publish_pending(Arc::clone(&pending_scene), [], Some((1200, 700)), 1.0);
+            .publish_pending(Arc::clone(&pending_scene), [], Some((1200, 700)), 1, 1.0);
         assert!(window.presentation_state.has_pending_scene());
         window.needs_present.set(true);
         window.scene_animation_needs_commit.set(true);

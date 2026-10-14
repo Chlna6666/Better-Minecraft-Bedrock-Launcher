@@ -33,6 +33,7 @@ struct CachedViewState {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CachedViewPaintContext {
+    device_scale_factor: f32,
     opacity: f32,
     scale: f32,
     translation: Point<Pixels>,
@@ -585,6 +586,7 @@ impl Element for CachedView {
                     let content_mask = window.content_mask();
                     let text_style = window.text_style();
                     let paint_context = CachedViewPaintContext {
+                        device_scale_factor: window.scale_factor(),
                         opacity: window.element_opacity(),
                         scale: window.element_visual_transform.scale,
                         translation: window.element_visual_transform.translation,

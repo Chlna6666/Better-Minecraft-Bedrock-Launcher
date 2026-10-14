@@ -209,10 +209,10 @@ fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRendere
         renderer.update_drawable_size(crate::size(
             DevicePixels(extent.0 as i32),
             DevicePixels(extent.1 as i32),
-        ));
+        ), None);
         present_geometry(renderer, extent);
         if supports_capacity {
-            assert_eq!(renderer.committed_drawable_extent(), (640, 640));
+            assert_eq!(renderer.committed_drawable_extent(), (768, 768));
             if let Some(depth) = depth {
                 assert_eq!(
                     renderer.depth_texture, depth,
@@ -225,7 +225,7 @@ fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRendere
     let allocated = renderer.committed_drawable_extent();
     let depth = renderer.depth_texture;
     window.resize(500, 500);
-    renderer.update_drawable_size(crate::size(DevicePixels(500), DevicePixels(500)));
+    renderer.update_drawable_size(crate::size(DevicePixels(500), DevicePixels(500)), None);
     present_geometry(renderer, (500, 500));
     assert_eq!(
         renderer.committed_drawable_extent(),
@@ -255,10 +255,10 @@ fn verify_extent(
     window.resize(width, height);
     let size = crate::size(DevicePixels(width as i32), DevicePixels(height as i32));
     let started = Instant::now();
-    renderer.update_drawable_size(size);
+    renderer.update_drawable_size(size, None);
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     while !renderer
-        .apply_pending_drawable_size()
+        .apply_pending_drawable_size(None)
         .expect("exact resize")
     {
         assert!(Instant::now() < deadline, "pending resize must converge");

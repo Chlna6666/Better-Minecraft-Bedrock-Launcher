@@ -449,6 +449,11 @@ struct PresentationSnapshot {
     // the window's latest viewport. It survives a newer WM_SIZE until the
     // matching UI generation has actually committed.
     layout_extent: Option<(u32, u32)>,
+    /// Native client-geometry generation that produced this Scene.
+    ///
+    /// Presentation must not relabel an older Scene as a newer generation, and
+    /// the GPU owner must not bind it to a newer drawable extent.
+    layout_epoch: u64,
     /// DPI scale used by the Scene's geometry and text rasterization.
     layout_scale_factor: f32,
     engine_animation_values: SmallVec<[crate::SceneAnimationValue; 4]>,
@@ -459,11 +464,13 @@ impl PresentationSnapshot {
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
+        layout_epoch: u64,
         layout_scale_factor: f32,
     ) -> Self {
         Self {
             scene,
             layout_extent,
+            layout_epoch,
             layout_scale_factor,
             engine_animation_values: values.into_iter().collect(),
         }
@@ -495,18 +502,24 @@ impl PresentationState {
         scene: Arc<Scene>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
+        layout_epoch: u64,
         layout_scale_factor: f32,
     ) {
         match self.pending.as_mut() {
             Some(pending) => {
                 pending.scene = scene;
                 pending.layout_extent = layout_extent;
+                pending.layout_epoch = layout_epoch;
                 pending.layout_scale_factor = layout_scale_factor;
                 pending.replace_engine_animation_values(values);
             }
             None => {
                 self.pending = Some(PresentationSnapshot::new(
-                    scene, values, layout_extent, layout_scale_factor,
+                    scene,
+                    values,
+                    layout_extent,
+                    layout_epoch,
+                    layout_scale_factor,
                 ));
             }
         }
@@ -516,6 +529,13 @@ impl PresentationState {
     /// An in-flight Windows resize must not relabel the old scene as new-size.
     pub(crate) fn active_layout_extent(&self) -> Option<(u32, u32)> {
         self.active.as_ref().and_then(|snapshot| snapshot.layout_extent)
+    }
+
+    /// Native geometry generation of the active immutable Scene. A Scene whose
+    /// generation no longer matches the window must be replaced before it can be
+    /// presented at the new drawable extent.
+    pub(crate) fn active_layout_epoch(&self) -> u64 {
+        self.active.as_ref().map_or(0, |snapshot| snapshot.layout_epoch)
     }
 
     pub(crate) fn active_layout_scale_factor(&self) -> Option<f32> {
@@ -598,6 +618,17 @@ pub struct Window {
     /// a given rem size.
     pub(super) rem_size_override_stack: SmallVec<[Pixels; 8]>,
     pub(crate) viewport_size: Size<Pixels>,
+    /// Native client-geometry generation of the current viewport size.
+    ///
+    /// This is the generation the next Scene is laid out for. It is distinct from
+    /// the committed epoch, which describes the frame currently on screen.
+    pub(crate) viewport_epoch: u64,
+    /// Generation captured when the in-flight frame's geometry was fixed.
+    pub(super) next_frame_epoch: u64,
+    /// Generation of the committed frame whose hitboxes receive input.
+    pub(crate) committed_epoch: u64,
+    /// DPI scale the committed frame was painted with.
+    pub(crate) committed_scale_factor: f32,
     pub(crate) live_resize_active: bool,
     pub(crate) live_resize_image_views: FxHashSet<EntityId>,
     pub(super) layout_engine: Option<TaffyLayoutEngine>,
@@ -894,30 +925,36 @@ mod presentation_extent_tests {
             Arc::new(Scene::default()),
             [],
             Some((1200, 800)),
+            1,
             1.0,
         );
         assert_eq!(presentation.active_layout_extent(), None);
         assert!(presentation.activate_pending());
         assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+        assert_eq!(presentation.active_layout_epoch(), 1);
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
 
         presentation.publish_pending(
             Arc::new(Scene::default()),
             [],
             Some((1300, 850)),
+            2,
             1.25,
         );
         presentation.publish_pending(
             Arc::new(Scene::default()),
             [],
             Some((1400, 900)),
+            3,
             1.5,
         );
         // Before activation, the active GPU scene still belongs to 1200x800.
         assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));
+        assert_eq!(presentation.active_layout_epoch(), 1);
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
         assert!(presentation.activate_pending());
         assert_eq!(presentation.active_layout_extent(), Some((1400, 900)));
+        assert_eq!(presentation.active_layout_epoch(), 3);
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.5));
     }
 }

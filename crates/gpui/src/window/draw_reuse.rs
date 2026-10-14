@@ -28,7 +28,7 @@ impl Window {
         }
         let view_path = self.rendered_frame.dispatch_tree.view_path(view_id);
         self.invalidator
-            .retained_path_is_dirty_for_view_route(retained_id, &|owner| {
+            .cached_view_path_is_dirty_for_view_route(retained_id, &|owner| {
                 owner == view_id
                     || view_path.contains(&owner)
                     || self
@@ -740,6 +740,7 @@ impl Window {
 
     pub(crate) fn current_retained_paint_context(&self) -> RetainedPaintContext {
         RetainedPaintContext {
+            device_scale_factor: self.scale_factor(),
             opacity: self.element_opacity,
             scale: self.element_visual_transform.scale,
             translation: self.element_visual_transform.translation,

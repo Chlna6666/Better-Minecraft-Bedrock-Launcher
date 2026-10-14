@@ -16,19 +16,20 @@ use std::{
     time::Instant,
 };
 
-/// The immutable Scene extent wins over a later queued HWND resize at Draw time.
+/// Whether a queued native resize may be applied while drawing this Scene.
+///
+/// The drawable extent and the Scene that paints it form one transaction. A
+/// resize request belongs to exactly one native geometry generation; applying it
+/// while drawing another generation either paints a stale Scene into a new
+/// backbuffer or rebinds the drawable backwards and forces a second
+/// ResizeBuffers. Unversioned requests keep the platform-agnostic behaviour.
 #[cfg(any(test, target_os = "windows"))]
-fn scene_resize_before_draw(
-    layout_extent: Option<(u32, u32)>,
-    requested_extent: Option<(u32, u32)>,
-    framebuffer_only: bool,
-) -> Option<(u32, u32)> {
-    if framebuffer_only {
-        return None;
+fn resize_matches_scene(requested_epoch: Option<u64>, scene_epoch: u64, unversioned: bool) -> bool {
+    match requested_epoch {
+        None => true,
+        Some(_) if unversioned => true,
+        Some(epoch) => epoch == scene_epoch,
     }
-    layout_extent.filter(|&(width, height)| {
-        width > 0 && height > 0 && requested_extent != Some((width, height))
-    })
 }
 
 #[derive(Default)]
@@ -134,6 +135,8 @@ pub(super) struct Entry {
     #[cfg(target_os = "windows")]
     requested_swapchain_extent: Option<(u32, u32)>,
     #[cfg(target_os = "windows")]
+    requested_swapchain_epoch: Option<u64>,
+    #[cfg(target_os = "windows")]
     resize_awaiting_draw: bool,
 
     renderer: NovaRenderer,
@@ -170,6 +173,8 @@ impl Entry {
             #[cfg(target_os = "windows")]
             requested_swapchain_extent: None,
             #[cfg(target_os = "windows")]
+            requested_swapchain_epoch: None,
+            #[cfg(target_os = "windows")]
             resize_awaiting_draw: false,
 
             renderer,
@@ -201,7 +206,7 @@ impl Entry {
             Command::Draw { .. } => GpuOwnerJobKind::Draw,
             Command::Tick(..) => GpuOwnerJobKind::Tick,
             Command::Continue(..) => GpuOwnerJobKind::Continue,
-            Command::Resize(..) => GpuOwnerJobKind::Resize,
+            Command::Resize { .. } => GpuOwnerJobKind::Resize,
             _ => GpuOwnerJobKind::Control,
         };
         let started_at = Instant::now(); // Command service time, not visual animation time.
@@ -271,30 +276,26 @@ impl Entry {
             } => {
                 #[cfg(target_os = "windows")]
                 {
-                    if let Some((width, height)) = scene_resize_before_draw(
-                        packet.layout_extent,
-                        self.requested_swapchain_extent,
-                        framebuffer_only,
-                    ) {
-                        // The WM_SIZE queue may have moved past this immutable
-                        // Scene. Rebind the GPU drawable extent before Draw to
-                        // prevent mismatched projection, scissors and layers.
-                        self.requested_swapchain_extent = Some((width, height));
-                        self.ready_registration.store(0, Ordering::Release);
-                        self.renderer.update_drawable_size(crate::size(
-                            crate::DevicePixels(width.min(i32::MAX as u32) as i32),
-                            crate::DevicePixels(height.min(i32::MAX as u32) as i32),
-                        ));
-                        if gpu_owner::resize_trace_enabled() {
-                            log::info!(
-                                target: "gpui_resize_trace",
-                                "gpui_resize stage=scene_pair window_id={} owner_id={} physical_px={}x{}",
-                                packet.window_id,
-                                self.id,
-                                width,
-                                height
-                            );
-                        }
+                    // A newer native generation stays queued for its own Scene.
+                    // This Draw keeps the drawable it was laid out for, which is
+                    // still the committed swapchain extent.
+                    if let Some((width, height)) = self.requested_swapchain_extent
+                        && !resize_matches_scene(
+                            self.requested_swapchain_epoch,
+                            packet.layout_epoch,
+                            framebuffer_only,
+                        )
+                        && gpu_owner::resize_trace_enabled()
+                    {
+                        log::info!(
+                            target: "gpui_resize_trace",
+                            "gpui_resize stage=scene_generation_lag window_id={} owner_id={} scene_epoch={} requested_px={}x{}",
+                            packet.window_id,
+                            self.id,
+                            packet.layout_epoch,
+                            width,
+                            height
+                        );
                     }
                     self.resize_awaiting_draw = false;
                 }
@@ -328,12 +329,13 @@ impl Entry {
                     self.tick(now, None);
                 }
             }
-            Command::Resize(size) => {
+            Command::Resize { size, epoch } => {
                 #[cfg(target_os = "windows")]
                 let target = (size.width.0.max(1) as u32, size.height.0.max(1) as u32);
                 #[cfg(target_os = "windows")]
                 {
                     self.requested_swapchain_extent = Some(target);
+                    self.requested_swapchain_epoch = epoch;
                     self.resize_awaiting_draw = true;
                     // The producer queues the matching Draw next. A retry of
                     // the old packet must not consume this extent in that gap.
@@ -353,7 +355,7 @@ impl Entry {
                 // Target recreation may cancel the backend's old readiness registration.
                 // Old callbacks must not consume a later registration or wake a closed window.
                 self.ready_registration.store(0, Ordering::Release);
-                self.renderer.update_drawable_size(size);
+                self.renderer.update_drawable_size(size, epoch);
             }
             Command::Call(operation) => operation(&mut self.renderer),
             Command::Transparency(transparent) => {
@@ -408,7 +410,7 @@ impl Entry {
             self.present_scene()
         } else {
             (|| {
-                if !self.ready()? {
+                if !self.ready(None)? {
                     return Ok(false);
                 }
                 let eligibility_time = Instant::now();
@@ -453,7 +455,8 @@ impl Entry {
     }
 
     fn present_scene(&mut self) -> Result<bool> {
-        if !self.ready()? {
+        let scene_epoch = self.scene.as_ref().map(|(packet, _)| packet.layout_epoch);
+        if !self.ready(scene_epoch)? {
             return Ok(false);
         }
         let Some((mut packet, framebuffer_only)) = self.scene.take() else {
@@ -473,8 +476,8 @@ impl Entry {
         }
     }
 
-    fn ready(&mut self) -> Result<bool> {
-        let can_present = match self.renderer.can_present_without_wait() {
+    fn ready(&mut self, scene_epoch: Option<u64>) -> Result<bool> {
+        let can_present = match self.renderer.can_present_without_wait(scene_epoch) {
             Ok(ready) => ready,
             Err(error) if self.renderer.has_pending_drawable_size() => {
                 // ResizeBuffers / swapchain recreation can transiently fail while
@@ -653,34 +656,17 @@ impl Drop for Entry {
 
 #[cfg(test)]
 mod scene_resize_tests {
-    use super::scene_resize_before_draw;
+    use super::resize_matches_scene;
 
     #[test]
-    fn intermediate_draw_uses_own_scene_extent() {
-        assert_eq!(
-            scene_resize_before_draw(Some((1200, 800)), Some((1440, 900)), false),
-            Some((1200, 800)),
-        );
-        assert_eq!(
-            scene_resize_before_draw(Some((1440, 900)), Some((1440, 900)), false),
-            None,
-        );
-        assert_eq!(
-            scene_resize_before_draw(Some((1500, 960)), Some((1200, 800)), false),
-            Some((1500, 960)),
-        );
+    fn resize_submission_requires_matching_native_generation() {
+        assert!(resize_matches_scene(Some(7), 7, false));
+        assert!(!resize_matches_scene(Some(7), 6, false));
     }
 
     #[test]
-    fn replay_and_invalid_extent_do_not_resize() {
-        assert_eq!(
-            scene_resize_before_draw(Some((1200, 800)), Some((1440, 900)), true),
-            None,
-        );
-        assert_eq!(scene_resize_before_draw(None, Some((1440, 900)), false), None);
-        assert_eq!(
-            scene_resize_before_draw(Some((0, 900)), Some((1440, 900)), false),
-            None,
-        );
+    fn unversioned_resize_keeps_existing_backend_behavior() {
+        assert!(resize_matches_scene(None, 7, false));
+        assert!(resize_matches_scene(Some(7), 6, true));
     }
 }

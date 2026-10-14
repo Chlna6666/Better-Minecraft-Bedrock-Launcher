@@ -210,6 +210,14 @@ Windows input and backpressure invariants:
   blocking-wait time and idle Present counts for DX11/DX12/Vulkan/OpenGL independently.
 
 Interactive Win32 resize correctness:
+- Viewport reflow recomputes general element geometry. Explicit cached views
+  may replay when fresh bounds, clipping, paint context and content fingerprint
+  all match; stronger content/context invalidation remains a descendant barrier.
+  Both element and cached-view paint contexts include device DPI scale because
+  retained primitives already contain physical-pixel geometry. DPI/display
+  transitions remain a hard reconstruction barrier.
+  Root layout constraints also include device scale; equal logical sizes cannot
+  reuse Taffy's old physical geometry at a new DPI.
 - WM_SIZE is an authoritative geometry edge, not a request to redraw every View.
   If native size synchronization encounters a window-state borrow conflict, retain
   a per-HWND retry bit and rearm the native cadence; the global DWM dispatcher
@@ -233,32 +241,41 @@ Interactive Win32 resize correctness:
   must not consume the pending native extent before the new layout is committed.
   GPU readiness continuations defer to a queued Draw within the same control-free
   segment, avoiding an old-layout redraw between Resize and Draw.
-- Keep one latest native extent per display tick. UI commits must be allowed to replace
+- Keep one latest pending native extent. UI commits must be allowed to replace
   an older GPU packet awaiting readiness; GPU backpressure must not serialize
   new-size layout behind an obsolete presentation. Queued Resize/Draw pairs
   remain latest-wins and preserve accumulated damage.
 - A real client-size change may publish and pump its UI commit in the native
   message turn, before waiting for the next DWM wake. Native size events and DWM
-  dispatch share one per-window cadence, honoring both the display interval and
-  an explicit window FPS limit. The first real change starts immediately; merely
-  entering the move/resize loop does not rebuild an old-size scene. Existing DWM
+  dispatch share one per-window cadence. Changed client extents submit immediately;
+  presentation-only wakes honor the display interval and explicit window FPS limit.
+  Merely entering the move/resize loop does not rebuild an old-size scene. Existing DWM
   wakes handle coalesced trailing sizes, without an extra timer.
 - Live resize first attempts the UI frame inline through its normal frame
   lifecycle; a borrowed UI owner falls back to the coalesced sender. Once its
   matching scene has been queued, the native size-message path waits at most
-  16ms for that per-owner submission serial. Only a successful backend Present
-  (or a superseding submitted packet) acknowledges it; readiness deferral and
-  an old extent's report cannot acknowledge a newer packet. Queue compaction and
-  deferred retries retain the newest serial. The wait releases renderer/App
-  borrows, sleeps on a condition variable and services driver sent messages.
-  Failure, shutdown and the deadline release it. No DwmFlush or GPU fence is
-  added; the acknowledgement does not establish desktop scanout completion.
+  100ms for its GPU-owner acknowledgment. Only a successful backend Present
+  acknowledges it; readiness deferral does not. A replacing Draw releases the
+  previous caller without acknowledging submission. Deferred retries retain the
+  reply until submission or failure. The wait runs after the frame callback
+  releases renderer/App borrows, waits on a channel and services driver sent messages.
+  Failure, shutdown and the deadline release it. No additional GPU fence is
+  added; the acknowledgment does not establish physical scanout completion.
+  A matching resize Present acknowledges the native thread, which passes the DWM
+  compositor checkpoint outside App/Window/backend borrows before returning the
+  native resize message. The shared GPU owner does not wait for this checkpoint.
+  Native resize diagnostics separate submission and compositor waits. The final
+  extent after exiting the size/move loop uses the same resize transaction.
+  Ordinary frames keep asynchronous presentation. Changed native viewport
+  frames also bypass a configured UI FPS deadline, while presentation-only work
+  remains paced. The native receipt is drained even if a nested dispatch already
+  consumed the pending size slot.
   A failed retained reconstruction keeps the new drawable extent pending until
   a completed recovery draw, instead of tagging the old scene as a new-size frame.
 - Live resize does not mask unpainted strips with an HWND region: doing so can
   disable themed non-client rendering and only masks delayed content. Native
   window chrome remains owned by DWM; the existing old-system corner fallback
-  remains separate. No per-resize composition checkpoint is added.
+  remains separate.
 - Live resize completes new-size geometry even if the progressive draw budget
   expires. Native edge dragging does not deliver ordinary GPUI pointer input,
   so it needs this scoped protection from budget-based old-scene fallback.

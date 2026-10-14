@@ -1,4 +1,5 @@
 use super::*;
+use super::lifecycle::RetainedInvalidationScope;
 
 impl Window {
     fn invalidate_text_rasterization(&mut self) {
@@ -73,6 +74,11 @@ impl Window {
         self.viewport_size = viewport_size;
         self.display_id = display_id;
         self.live_resize_active = live_resize_active;
+        // The viewport now carries the newest authoritative native geometry, so
+        // scenes laid out from it belong to that generation. Scenes from the
+        // previous generation stay valid for what is already on screen, but they
+        // must never be rebound to the new drawable extent.
+        self.viewport_epoch = self.platform_window.content_epoch();
         self.mouse_position = self.platform_window.mouse_position();
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
@@ -104,8 +110,16 @@ impl Window {
         // own bounds and paint context are unchanged.
         let root_view_id = self.root.as_ref().map(AnyView::entity_id);
         if let Some(root_id) = root_view_id {
-            if layout_constraints_changed {
-                self.invalidator.invalidate_layout_view(root_id, cx);
+            if text_rasterization_changed || layout_constraints_changed {
+                let scope = if text_rasterization_changed {
+                    // Old scene coordinates and glyph atlas entries belong to
+                    // the previous physical scale/display, even if logical
+                    // bounds stayed equal. This is a hard replay barrier.
+                    RetainedInvalidationScope::RelayoutSubtree
+                } else {
+                    RetainedInvalidationScope::ReflowSubtree
+                };
+                self.invalidator.invalidate_view_with_scope(root_id, cx, scope);
             } else {
                 self.invalidator.invalidate_view(root_id, cx);
             }
