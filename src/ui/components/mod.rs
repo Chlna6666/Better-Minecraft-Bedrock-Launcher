@@ -8,6 +8,7 @@ pub mod dropdown;
 pub mod html_renderer;
 pub mod icon;
 pub mod input;
+pub mod numeric_field;
 pub mod markdown_renderer;
 pub mod minecraft_text;
 pub mod modal;
