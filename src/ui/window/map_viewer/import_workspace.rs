@@ -1,6 +1,7 @@
 //! Import previews and placement controls owned by the central workspace.
 
 use super::generator_panel::generator_choice;
+use crate::ui::components::button::{primary_button, secondary_button};
 use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
 use super::map_image_panel::GridAxis;
 use super::image_generator_panel::ImageAxis;
@@ -137,7 +138,7 @@ impl MapViewerWindowView {
             )
             .when(source_available, |bar| {
                 bar.child(
-                    generator_choice(colors, "更换素材…", false).on_mouse_down(
+                    secondary_button(colors, "map-import-change-source", "更换素材…").on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _event, _window, cx| {
                             this.choose_import_source_from_workspace(cx)
@@ -352,7 +353,7 @@ impl MapViewerWindowView {
                             .child(description),
                     )
                     .child(
-                        generator_choice(colors, action, true).on_mouse_down(
+                        primary_button(colors, "map-import-choose-source", action).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _event, _window, cx| {
                                 this.choose_import_source_from_workspace(cx);
