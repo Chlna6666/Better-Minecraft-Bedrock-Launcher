@@ -100,7 +100,7 @@ impl MapViewerWindowView {
                 panel.child(
                     div()
                         .w_full()
-                        .h(px(212.0))
+                        .h(px(152.0))
                         .overflow_hidden()
                         .child(img(preview.clone()).size_full().object_fit(ObjectFit::Contain)),
                 )
@@ -111,7 +111,14 @@ impl MapViewerWindowView {
             .child(import_preview_label(colors, target))
             .child(import_preview_label(
                 colors,
-                "绿色网格对应世界放置范围；预览不会修改存档",
+                match self.map_image.install_destination {
+                    MapImageInstallDestination::SelectedBlock =>
+                        "地图上高亮的是选中容器。此卡片预览待写入物品，不代表容器内已经存在这些地图。",
+                    MapImageInstallDestination::NewUpFrame =>
+                        "世界画布展示地图拼图与绿色分片网格；右键地图可重新指定中心。",
+                    MapImageInstallDestination::Player =>
+                        "背包地图物品预览，不会修改世界地形。",
+                },
             ))
     }
 
