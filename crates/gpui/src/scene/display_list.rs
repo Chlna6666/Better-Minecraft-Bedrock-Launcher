@@ -1800,6 +1800,14 @@ impl Scene {
     fn prepare_retained_quad_chunks(&mut self) {
         let mut prepared = std::mem::take(&mut self.prepared_retained_quad_chunks);
         prepared.clear();
+
+        // A large set of independently retained siblings can otherwise scan
+        // the entire paint-operation list once for every eligible candidate.
+        // Build an ephemeral order-count index only if there is enough work to
+        // amortize sorting. No second display list or persistent render tree.
+        let use_order_index =
+            self.retained_chunk_candidates.len() >= 8 && self.paint_operations.len() >= 128;
+        let mut sorted_primitive_orders: Option<Vec<DrawOrder>> = None;
         for candidate in &self.retained_chunk_candidates {
             let Some(operations) = self.paint_operations.get(candidate.scene_range.clone()) else {
                 continue;
@@ -1846,29 +1854,47 @@ impl Scene {
                 continue;
             }
 
-            // Do not replace this proof with just the sorted primitive arrays:
-            // nested Blur captures can record child paint operations not present
-            // in this Scene's flat primitive vectors. All outside operations
-            // must remain outside the retained order interval.
-            let order_is_exclusive =
-                self.paint_operations
-                    .iter()
-                    .enumerate()
-                    .all(|(index, operation)| {
-                        if candidate.scene_range.contains(&index) {
-                            return true;
+            // Preserve the full PaintOperation proof: nested Blur captures
+            // can record child operations absent from this Scene's flat Quad
+            // array. Counting ALL primitive operations, including those inside
+            // captures and duplicate draw orders, is exactly equivalent to
+            // scanning every operation outside this candidate.
+            let order_is_exclusive = if use_order_index {
+                let sorted_orders = sorted_primitive_orders.get_or_insert_with(|| {
+                    let mut orders: Vec<DrawOrder> = self
+                        .paint_operations
+                        .iter()
+                        .filter_map(|operation| match operation {
+                            PaintOperation::Primitive(primitive) => Some(primitive.order()),
+                            _ => None,
+                        })
+                        .collect();
+                    orders.sort_unstable();
+                    orders
+                });
+                retained_order_range_is_exclusive(
+                    sorted_orders,
+                    first_order,
+                    last_order,
+                    quad_count,
+                )
+            } else {
+                self.paint_operations.iter().enumerate().all(|(index, operation)| {
+                    if candidate.scene_range.contains(&index) {
+                        return true;
+                    }
+                    match operation {
+                        PaintOperation::Primitive(primitive) => {
+                            let order = primitive.order();
+                            order < first_order || order > last_order
                         }
-                        match operation {
-                            PaintOperation::Primitive(primitive) => {
-                                let order = primitive.order();
-                                order < first_order || order > last_order
-                            }
-                            PaintOperation::StartLayer(_)
-                            | PaintOperation::EndLayer
-                            | PaintOperation::StartBlur(_)
-                            | PaintOperation::EndBlur => true,
-                        }
-                    });
+                        PaintOperation::StartLayer(_)
+                        | PaintOperation::EndLayer
+                        | PaintOperation::StartBlur(_)
+                        | PaintOperation::EndBlur => true,
+                    }
+                })
+            };
             if !order_is_exclusive {
                 continue;
             }
@@ -1896,6 +1922,53 @@ impl Scene {
             true
         });
         self.prepared_retained_quad_chunks = prepared;
+    }
+}
+
+/// Every admitted candidate operation is a Quad within [first, last].
+/// Thus the total number of primitive operations in that inclusive order
+/// interval must exactly equal the candidate's Quad count. This detects
+/// external operations (including nested blur and duplicate DrawOrder) without
+/// losing the original painter-order barrier proof.
+fn retained_order_range_is_exclusive(
+    sorted_orders: &[DrawOrder],
+    first: DrawOrder,
+    last: DrawOrder,
+    candidate_quad_count: usize,
+) -> bool {
+    let begin = sorted_orders.partition_point(|&order| order < first);
+    let end = sorted_orders.partition_point(|&order| order <= last);
+    end - begin == candidate_quad_count
+}
+
+#[cfg(test)]
+mod retained_order_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_coverage_matches_full_outside_operation_scan_with_duplicate_orders() {
+        for count in 1..=32 {
+            // Duplicates and non-monotonic operation order mirror nested
+            // captures and layers whose painter order is not insertion order.
+            let original: Vec<DrawOrder> = (0..count)
+                .map(|index| ((index * 11 + 3) % 17) as DrawOrder)
+                .collect();
+            let mut sorted = original.clone();
+            sorted.sort_unstable();
+            for start in 0..original.len() {
+                for end in start + 1..=original.len() {
+                    let candidate = &original[start..end];
+                    let first = *candidate.iter().min().unwrap();
+                    let last = *candidate.iter().max().unwrap();
+                    let old = original.iter().enumerate().all(|(index, &order)| {
+                        (start..end).contains(&index) || order < first || order > last
+                    });
+                    let new =
+                        retained_order_range_is_exclusive(&sorted, first, last, candidate.len());
+                    assert_eq!(new, old, "count={count} candidate={start}..{end}");
+                }
+            }
+        }
     }
 }
 
