@@ -1,6 +1,7 @@
 use super::super::players::player_id_label;
 use super::*;
 use crate::ui::components::scroll::Scrollbar;
+use crate::ui::components::button::ghost_button;
 
 impl MapViewerWindowView {
     pub(in super::super) fn reset_map_player_search_scroll(&self) {
@@ -43,6 +44,7 @@ impl MapViewerWindowView {
             |(_, label)| label.to_string(),
         );
         players.retain(|(id, label)| matches_player_query(label, id, &query));
+        let selected_index = players.iter().position(|(id, _)| *id == selected);
         let count = players.len();
         let view = cx.entity();
         let row_colors = *colors;
@@ -54,22 +56,51 @@ impl MapViewerWindowView {
                     let (id, label) = &players[index];
                     let player = id.clone();
                     let view = view.clone();
+                    let is_selected = *id == selected;
                     div()
-                        .h(px(36.0))
+                        .h(px(44.0))
                         .w_full()
                         .min_w(px(0.0))
-                        .px(px(6.0))
+                        .px(px(8.0))
                         .flex()
                         .items_center()
-                        .bg(if *id == selected {
+                        .gap(px(6.0))
+                        .bg(if is_selected {
                             row_colors.surface_hover
                         } else {
                             row_colors.surface
                         })
                         .cursor_pointer()
-                        .text_size(px(12.0))
-                        .text_color(row_colors.text_primary)
-                        .child(div().min_w(px(0.0)).truncate().child(label.clone()))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.0))
+                                        .text_color(row_colors.text_primary)
+                                        .child(label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(10.0))
+                                        .text_color(row_colors.text_secondary)
+                                        .child(player_id_label(id)),
+                                ),
+                        )
+                        .when(is_selected, |row| {
+                            row.child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(row_colors.accent)
+                                    .child("✓ 已选"),
+                            )
+                        })
                         .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                             view.update(cx, |this, cx| {
                                 this.set_map_image_player(player.clone(), cx)
@@ -102,9 +133,34 @@ impl MapViewerWindowView {
             )
             .child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(colors.text_secondary)
-                    .child(format!("{count} / {total} 位玩家")),
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child(if query.is_empty() {
+                                format!("共 {total} 位可用玩家")
+                            } else {
+                                format!("匹配 {count} / {total} 位玩家")
+                            }),
+                    )
+                    .when_some(selected_index, |row, index| {
+                        row.child(
+                            ghost_button(colors, "map-player-scroll-to-selection", "定位已选")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.map_image.player_scroll.scroll_to_item(
+                                            index, ScrollStrategy::Center,
+                                        );
+                                        cx.notify();
+                                    }),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
