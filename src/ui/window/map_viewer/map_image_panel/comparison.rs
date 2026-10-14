@@ -2,6 +2,67 @@ use super::super::import_workspace::import_preview_label;
 use super::*;
 
 impl MapViewerWindowView {
+    /// Inventory delivery is not a world placement. Show the actual map mosaic and
+    /// selected player here instead of opening an unrelated terrain canvas.
+    pub(in super::super) fn render_map_image_inventory_workspace(
+        &self,
+        colors: &ThemeColors,
+    ) -> Div {
+        let player = super::super::players::player_id_label(&self.map_image.selected_player);
+        let columns = self.map_image.options.columns;
+        let rows = self.map_image.options.rows;
+        div()
+            .size_full()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .pt(px(66.0))
+            .p(px(16.0))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(colors.text_primary)
+                    .child("背包写入预览"),
+            )
+            .child(import_preview_label(
+                colors,
+                format!(
+                    "目标玩家：{player} · {columns} 列 × {rows} 行 · {} 张地图物品",
+                    columns * rows
+                ),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .min_w(px(0.0))
+                    .p(px(16.0))
+                    .rounded(px(8.0))
+                    .bg(colors.surface)
+                    .overflow_hidden()
+                    .when_some(self.map_image.preview.as_ref(), |pane, preview| {
+                        pane.child(
+                            img(preview.clone())
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                    })
+                    .when(self.map_image.preview.is_none(), |pane| {
+                        pane.child(import_preview_label(
+                            colors,
+                            "尚未生成地图像素。请先选择图片并完成转换。",
+                        ))
+                    }),
+            )
+            .child(import_preview_label(
+                colors,
+                "这是发放给玩家的地图物品，不会放置展示框或修改地图地形。若要在世界中铺设，请在下方选择「新建展示框」。",
+            ))
+    }
+
     /// Non-destructive placement inspector sharing the generated map image.
     pub(in super::super) fn render_map_image_placement_thumbnail(
         &self,
