@@ -23,6 +23,8 @@ mod target;
 
 pub(super) struct MapImagePanelState {
     source: Option<PathBuf>,
+    /// User-selected external map bundle, pending explicit target confirmation.
+    pending_bundle: Option<PathBuf>,
     options: MapPreviewOptions,
     task_id: Option<String>,
     preview_options: Option<MapPreviewOptions>,
@@ -55,6 +57,7 @@ impl MapImagePanelState {
         });
         Self {
             source: None,
+            pending_bundle: None,
             options: MapPreviewOptions {
                 auto_fit: true,
                 ..MapPreviewOptions::default()
@@ -437,6 +440,7 @@ impl MapViewerWindowView {
             pick_file_path_with_filter("图片", &["png", "jpg", "jpeg", "tga", "webp"])
         {
             self.map_image.source = Some(PathBuf::from(path));
+            self.map_image.pending_bundle = None;
             self.map_image.preview_options = None;
             self.map_image.options.auto_fit = true;
             self.start_map_preview(cx);
