@@ -454,20 +454,34 @@ fn fitted_grid(width: u32, height: u32) -> (u32, u32) {
     let suggested_columns = width.div_ceil(128).clamp(1, 64);
     let suggested_rows = height.div_ceil(128).clamp(1, 64);
     let budget = (suggested_columns * suggested_rows).min(1024);
+    // With only a single square map, a 2:1 image loses half of the canvas.
+    // Allow a modest number of additional maps when they substantially improve
+    // the aspect ratio. Do not unexpectedly multiply the grid to reach an
+    // exact rational ratio (e.g. 600:540 -> 10×9 maps).
+    let limit = budget
+        .saturating_mul(3)
+        .div_ceil(2)
+        .max(budget.saturating_add(1))
+        .min(1024);
     let mut best = (1, 1);
     let mut best_score = f64::NEG_INFINITY;
     for columns in 1..=64_u32 {
         for rows in 1..=(1024 / columns).min(64) {
             let count = columns * rows;
-            if count > budget {
+            if count > limit {
                 continue;
             }
             let numerator = f64::from(width) * f64::from(rows);
             let denominator = f64::from(height) * f64::from(columns);
             let ratio = numerator / denominator;
             let coverage = ratio.min(1.0 / ratio);
-            let detail = f64::from(count) / f64::from(budget);
-            let score = coverage * 0.8 + detail * 0.2;
+            let relative_cost = f64::from(count) / f64::from(budget);
+            let detail_score = if count <= budget {
+                relative_cost * 0.2
+            } else {
+                0.2 - (relative_cost - 1.0) * 0.3
+            };
+            let score = coverage * 0.8 + detail_score;
             if score > best_score + 1e-12
                 || ((score - best_score).abs() <= 1e-12 && count > best.0 * best.1)
             {
@@ -658,8 +672,13 @@ mod tests {
                 * height.div_ceil(128).clamp(1, 64)).min(1024);
             assert!((1..=64).contains(&columns));
             assert!((1..=64).contains(&rows));
-            assert!(columns * rows <= budget);
+            assert!(columns * rows <= budget.saturating_mul(3).div_ceil(2).max(budget + 1));
+            assert!(columns * rows <= 1024);
         }
+        assert_eq!(fitted_grid(128, 64), (2, 1));
+        assert_eq!(fitted_grid(64, 128), (1, 2));
+        assert_eq!(fitted_grid(1000, 200), (10, 2));
+        assert_eq!(fitted_grid(600, 540), (5, 5));
         assert_eq!(fitted_grid(8192, 8192), (32, 32));
         assert_eq!(fitted_grid(8192, 1), (64, 1));
     }
