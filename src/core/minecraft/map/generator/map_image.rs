@@ -512,7 +512,7 @@ fn visible_alpha_crop(image: &RgbaImage, alpha_threshold: u8) -> Option<MapImage
         max_x = max_x.max(x);
         max_y = max_y.max(y);
     }
-    found.then_some(MapImageCrop {
+    found.then(|| MapImageCrop {
         x: min_x,
         y: min_y,
         width: max_x - min_x + 1,
