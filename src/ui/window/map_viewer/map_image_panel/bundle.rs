@@ -66,7 +66,7 @@ impl MapViewerWindowView {
                 )
             }
             MapImageInstallDestination::NewUpFrame => {
-                let (x, z) = self.viewport.center_block(self.active_layout);
+                let (x, z) = self.map_frame_anchor();
                 let position = BlockPos {
                     x,
                     y: self.y_layer,
