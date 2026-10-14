@@ -135,7 +135,17 @@ pub fn tile_map_image_with_progress(
     }
     let source = RgbaImage::from_raw(source_width, source_height, source_rgba)
         .ok_or_else(|| anyhow!("source RGBA byte count does not match dimensions"))?;
-    let cropped = imageops::crop_imm(&source, crop.x, crop.y, crop.width, crop.height).to_image();
+    // A full-image crop is the common case. Reuse the decoded buffer instead of
+    // allocating and copying a second potentially 256 MiB image.
+    let cropped = if crop.x == 0
+        && crop.y == 0
+        && crop.width == source_width
+        && crop.height == source_height
+    {
+        source
+    } else {
+        imageops::crop_imm(&source, crop.x, crop.y, crop.width, crop.height).to_image()
+    };
     let filter = match options.resample {
         MapResample::Nearest => FilterType::Nearest,
         MapResample::Lanczos3 => FilterType::Lanczos3,
@@ -148,7 +158,7 @@ pub fn tile_map_image_with_progress(
     };
     let offset_x = (output_width - scaled_width) / 2;
     let offset_y = (output_height - scaled_height) / 2;
-    let mut scaled = resize_rgba(&cropped, scaled_width, scaled_height, filter);
+    let mut scaled = resize_rgba(cropped, scaled_width, scaled_height, filter);
     for pixel in scaled.pixels_mut() {
         if pixel[3] < options.alpha_threshold {
             pixel.0 = [0, 0, 0, 0];
@@ -198,16 +208,20 @@ fn fit_within_grid(source_w: u32, source_h: u32, target_w: u32, target_h: u32) -
     }
 }
 
-fn resize_rgba(source: &RgbaImage, width: u32, height: u32, filter: FilterType) -> RgbaImage {
-    let mut premultiplied = source.clone();
-    for pixel in premultiplied.pixels_mut() {
+fn resize_rgba(mut source: RgbaImage, width: u32, height: u32, filter: FilterType) -> RgbaImage {
+    // No sampling is necessary when dimensions already match. Keep the original
+    // pixel bytes exactly and avoid a needless full-image clone and resize pass.
+    if source.dimensions() == (width, height) {
+        return source;
+    }
+    for pixel in source.pixels_mut() {
         let alpha = u16::from(pixel[3]);
         for channel in &mut pixel.0[..3] {
             *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
         }
     }
 
-    let mut scaled = imageops::resize(&premultiplied, width, height, filter);
+    let mut scaled = imageops::resize(&source, width, height, filter);
     for pixel in scaled.pixels_mut() {
         let alpha = u32::from(pixel[3]);
         if alpha == 0 {
@@ -314,6 +328,15 @@ mod tests {
     }
 
     #[test]
+    fn matching_dimensions_do_not_mutate_source_pixels() {
+        let source = RgbaImage::from_raw(
+            2, 1, vec![77, 88, 99, 140, 11, 22, 33, 44]
+        ).expect("source");
+        let result = resize_rgba(source, 2, 1, FilterType::Lanczos3);
+        assert_eq!(result.as_raw(), &[77, 88, 99, 140, 11, 22, 33, 44]);
+    }
+
+    #[test]
     fn lanczos_keeps_transparent_edge_color_premultiplied() {
         let source = RgbaImage::from_fn(2, 1, |x, _| {
             if x == 0 {
@@ -322,7 +345,7 @@ mod tests {
                 image::Rgba([120, 220, 80, 255])
             }
         });
-        let image = resize_rgba(&source, 16, 1, FilterType::Lanczos3);
+        let image = resize_rgba(source, 16, 1, FilterType::Lanczos3);
         for pixel in image.pixels() {
             if (16..=239).contains(&pixel[3]) {
                 assert!(pixel[0] >= 118);
