@@ -1,7 +1,9 @@
 //! Import previews and placement controls owned by the central workspace.
 
 use super::generator_panel::generator_choice;
-use super::model::{MapViewerWindowView, PasteTransform};
+use super::model::{ImportNumericAxis, MapViewerWindowView, PasteTransform};
+use super::map_image_panel::GridAxis;
+use super::image_generator_panel::ImageAxis;
 use super::prelude::*;
 use super::state::ImportWorkspaceMode;
 
@@ -197,6 +199,84 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .child(body)
+    }
+
+    /// Commit only complete, valid numeric values. Mid-edit strings never run conversions.
+    pub(super) fn commit_import_numeric_axis(
+        &mut self,
+        axis: ImportNumericAxis,
+        cx: &mut Context<Self>,
+    ) {
+        let (parsed, previous, min, max) = match axis {
+            ImportNumericAxis::MapColumns => {
+                let other = self.map_image.options.rows.max(1);
+                let max = (1024 / other).min(64);
+                (self.num_map_columns.parse(cx, 1, max),
+                    self.map_image.options.columns, 1, max)
+            }
+            ImportNumericAxis::MapRows => {
+                let other = self.map_image.options.columns.max(1);
+                let max = (1024 / other).min(64);
+                (self.num_map_rows.parse(cx, 1, max),
+                    self.map_image.options.rows, 1, max)
+            }
+            ImportNumericAxis::ImageWidth => (
+                self.num_image_width.parse(cx, 1, 512),
+                self.image_generator.options.width, 1, 512,
+            ),
+            ImportNumericAxis::ImageHeight => (
+                self.num_image_height.parse(cx, 1, 512),
+                self.image_generator.options.height, 1, 512,
+            ),
+            ImportNumericAxis::ObjSize => (
+                self.num_obj_size.parse(cx, 1, 384),
+                u32::from(self.generator.options.longest_side_blocks), 1, 384,
+            ),
+        };
+        if let Some(value) = parsed {
+            if value != previous {
+                match axis {
+                    ImportNumericAxis::MapColumns => {
+                        self.set_grid_size(GridAxis::Columns, value, cx);
+                    }
+                    ImportNumericAxis::MapRows => {
+                        self.set_grid_size(GridAxis::Rows, value, cx);
+                    }
+                    ImportNumericAxis::ImageWidth => {
+                        self.set_image_dimension(ImageAxis::Width, value, cx);
+                    }
+                    ImportNumericAxis::ImageHeight => {
+                        self.set_image_dimension(ImageAxis::Height, value, cx);
+                    }
+                    ImportNumericAxis::ObjSize => {
+                        self.set_obj_precision_size(value as u16, cx);
+                    }
+                }
+            }
+        } else {
+            self.status = SharedString::from(format!(
+                "请输入 {min}–{max} 范围内的整数，已恢复为 {previous}",
+            ));
+        }
+        // Normalize leading zeros and restore invalid edits without forcing a new task.
+        match axis {
+            ImportNumericAxis::MapColumns => self.num_map_columns.sync(
+                self.map_image.options.columns, cx,
+            ),
+            ImportNumericAxis::MapRows => self.num_map_rows.sync(
+                self.map_image.options.rows, cx,
+            ),
+            ImportNumericAxis::ImageWidth => self.num_image_width.sync(
+                self.image_generator.options.width, cx,
+            ),
+            ImportNumericAxis::ImageHeight => self.num_image_height.sync(
+                self.image_generator.options.height, cx,
+            ),
+            ImportNumericAxis::ObjSize => self.num_obj_size.sync(
+                u32::from(self.generator.options.longest_side_blocks), cx,
+            ),
+        }
+        cx.notify();
     }
 
     /// Shared entry point for every import mode. The file picker is not buried in settings.
