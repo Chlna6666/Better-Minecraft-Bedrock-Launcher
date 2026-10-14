@@ -98,6 +98,10 @@ enum GridAxis {
 }
 
 impl MapViewerWindowView {
+    pub(super) fn map_image_installing_to_player(&self) -> bool {
+        self.map_image.install_destination == MapImageInstallDestination::Player
+    }
+
     fn set_map_install_destination(
         &mut self,
         destination: MapImageInstallDestination,
@@ -112,9 +116,8 @@ impl MapViewerWindowView {
             self.map_image.frame_anchor = Some(self.viewport.center_block(self.active_layout));
         }
         self.map_image.install_destination = destination;
-        if destination != MapImageInstallDestination::Player {
-            self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
-        }
+        // Picking a destination always opens the matching review workspace.
+        self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
         cx.notify();
     }
 
