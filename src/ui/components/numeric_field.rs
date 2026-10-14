@@ -2,7 +2,8 @@
 //! The GPUI Input owns the edit buffer: parsers never mutate business state on every keystroke.
 
 use super::input::{Input, InputSize, InputState};
-use gpui::{App, AppContext as _, Context, Entity, Styled, Window, px};
+use gpui::{App, AppContext as _, Context, Div, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
+use crate::ui::theme::colors::ThemeColors;
 
 /// Independent text edit state; callers commit on Enter/blur and retain their domain constraints.
 #[derive(Clone)]
@@ -44,6 +45,38 @@ impl NumericField {
             }
         });
     }
+}
+
+/// Shared compact dimension editor: one input-first stepper and one independent slider
+/// track. The caller owns range checks and conversion callbacks; the component owns spacing.
+pub(crate) fn numeric_dimension_editor(
+    field: &NumericField,
+    colors: &ThemeColors,
+    unit: impl Into<SharedString>,
+    decrease: impl IntoElement,
+    increase: impl IntoElement,
+    slider: impl IntoElement,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(decrease)
+                .child(field.control())
+                .child(increase)
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(colors.text_secondary)
+                        .child(unit.into()),
+                ),
+        )
+        .child(div().w_full().min_w(px(0.0)).child(slider))
 }
 
 /// Strict decimal integer parsing: reject negative values, fractions, overflows and out-of-range
