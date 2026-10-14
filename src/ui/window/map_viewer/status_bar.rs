@@ -81,6 +81,9 @@ impl MapViewerWindowView {
                             .retain(|_, snapshot| is_map_window_task_snapshot(snapshot.as_ref()));
                         for snapshot in snapshots {
                             this.accept_map_image_task_snapshot(snapshot.as_ref());
+                            if this.map_image.options.auto_fit {
+                                this.sync_map_grid_numeric_fields(cx);
+                            }
                             this.accept_map_install_task_snapshot(snapshot.as_ref(), cx);
                             this.accept_structure_preview_task_snapshot(snapshot.as_ref(), cx);
                             this.task_snapshots.insert(snapshot.id.clone(), snapshot);
