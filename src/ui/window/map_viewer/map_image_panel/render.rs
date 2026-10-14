@@ -104,6 +104,29 @@ impl MapViewerWindowView {
                     .child(
                         div()
                             .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(colors.text_primary)
+                                    .child({
+                                        let (x, z) = self.map_frame_anchor();
+                                        format!("已锁定放置中心：X {x} · Z {z}")
+                                    }),
+                            )
+                            .child(generator_choice(
+                                colors, "将当前位置设为放置中心", false,
+                            ).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_map_frame_anchor_to_viewport(cx)
+                                }),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
                             .items_center()
                             .gap(px(8.0))
                             .child(generator_choice(colors, "Y −1", false).on_mouse_down(
