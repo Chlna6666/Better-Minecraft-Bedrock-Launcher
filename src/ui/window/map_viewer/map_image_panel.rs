@@ -112,6 +112,23 @@ impl MapViewerWindowView {
         self.map_image.install_destination == MapImageInstallDestination::Player
     }
 
+    /// World write is possible only after the conversion Task has completed and
+    /// its pixels have been accepted into the active preview. An old or partial
+    /// preview must not enable the placement action.
+    pub(super) fn map_image_can_place_world_grid(&self) -> bool {
+        self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
+            && self.map_image.pending_bundle.is_none()
+            && self.map_image.source.is_some()
+            && self.map_image.placement_preview.is_some()
+            && !self.map_image_operation_busy()
+            && !self.map_write_busy()
+            && self.map_image.task_id.as_deref().is_some_and(|id| {
+                self.task_snapshots.get(id).is_some_and(|task| {
+                    task.status.as_ref() == "completed"
+                })
+            })
+    }
+
     pub(super) fn map_image_placement_inspector_visible(&self) -> bool {
         self.map_image.show_placement_inspector
     }
