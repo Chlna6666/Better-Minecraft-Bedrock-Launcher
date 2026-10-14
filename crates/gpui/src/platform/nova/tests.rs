@@ -2051,18 +2051,24 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         .iter()
         .map(|variant| variant.levels[0].texture_view)
         .collect::<Vec<_>>();
+    let backing_allocation = targets.variants.as_ptr();
     let requested = [2_u32, 0, 3, 1];
     let configs = requested
         .map(|index| test_backdrop_blur_config(index, 2));
     assert!(targets.reuse_layout(&configs, &[], true, None));
     assert_eq!(targets.active_variant_count, 4);
     assert_eq!(
+        targets.variants.as_ptr(),
+        backing_allocation,
+        "reordering must not replace the CPU target descriptor allocation",
+    );
+    assert_eq!(
         targets.variants.iter().map(|v| v.levels[0].texture_view).collect::<Vec<_>>(),
         requested.map(|index| original_views[index as usize]).to_vec(),
     );
     // A failed remap must keep the old identities, views and active range intact.
     let before = targets.variants.iter()
-        .map(|v| (v.config.reuse_key(), v.levels[0].texture_view))
+        .map(|v| (v.config, v.levels[0].texture_view))
         .collect::<Vec<_>>();
     assert!(!targets.reuse_layout(
         &[test_backdrop_blur_config(99, 2)],
@@ -2070,12 +2076,11 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         true,
         None,
     ));
-    assert_eq!(
-        targets.variants.iter()
-            .map(|v| (v.config.reuse_key(), v.levels[0].texture_view))
-            .collect::<Vec<_>>(),
-        before,
-    );
+    assert!(targets.variants.iter().zip(before).all(|(variant, (config, view))| {
+        variant.config.same_target_slot(config)
+            && variant.levels[0].texture_view == view
+    }));
+    assert_eq!(targets.variants.as_ptr(), backing_allocation);
 }
 
 #[test]

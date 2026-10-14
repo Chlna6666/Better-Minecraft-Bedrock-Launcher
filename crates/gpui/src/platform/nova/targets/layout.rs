@@ -100,21 +100,21 @@ impl BackdropBlurTargets {
             _ => true,
         };
         if permutation.len() == next.len() && root_identity_preserved {
-            // Move whole variants (including texture views and resource sets),
-            // never move/copy their underlying GPU allocations.
-            let mut old_variants = std::mem::take(&mut self.variants)
-                .into_iter()
-                .map(Some)
-                .collect::<Vec<_>>();
-            let mut reordered = Vec::with_capacity(old_variants.len());
-            for old_index in permutation {
-                reordered.push(old_variants[old_index].take().expect("one-to-one mapping"));
+            // Reorder in place: preserve the Vec allocation and every native
+            // texture/view/resource-set handle. The validated one-to-one
+            // mapping ensures that each remaining capture still has a match
+            // in the unplaced suffix after earlier swaps.
+            for (target_index, config) in next.iter().enumerate() {
+                let source_index = (target_index..self.variants.len())
+                    .find(|&index| {
+                        let variant = &self.variants[index];
+                        variant.config.same_target_slot(*config)
+                            && variant.levels.len() == blur_variant_level_count(*config)
+                    })
+                    .expect("validated target permutation");
+                self.variants.swap(target_index, source_index);
+                self.variants[target_index].config = *config;
             }
-            reordered.extend(old_variants.into_iter().flatten());
-            for (variant, config) in reordered.iter_mut().zip(next) {
-                variant.config = *config;
-            }
-            self.variants = reordered;
             self.active_variant_count = next.len();
             self.retained_root_variant = new_root;
             return true;
