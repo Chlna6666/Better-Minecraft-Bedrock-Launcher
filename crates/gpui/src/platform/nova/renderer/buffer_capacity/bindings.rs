@@ -229,11 +229,9 @@ pub(in crate::platform::nova::renderer) fn rebind_slot<D: BackendResources>(
             frame.poly_sprite_resource_set = *new;
         }
     }
-    // Only the native Root owner was rebound. Once all new sets are published,
-    // refresh the logical Variant's borrowed IDs before retiring old sets.
-    if let Some(targets) = renderer.filters.targets.as_mut() {
-        targets.sync_root_borrowed_resource_sets();
-    }
+    // Root descriptors belong exclusively to RootColorTarget. The matching
+    // Filter slot keeps only its native Texture/View identity, so no borrowed
+    // descriptor mirrors survive this atomic binding replacement.
     release_sets(device, replaced.into_iter().map(|(old, _)| old));
     Ok(())
 }

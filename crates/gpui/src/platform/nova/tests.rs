@@ -2727,6 +2727,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         pass_resource_sets: root_level.pass_resource_sets.clone(),
         composite_resource_sets: targets.variants[5].target_resource_sets.clone(),
     });
+    // Match the production constructor: only native RootColorTarget owns
+    // ResourceSet IDs. The zero-radius Filter slot borrows Texture/View only.
+    targets.variants[5].levels[0].pass_resource_sets.clear();
+    targets.variants[5].target_resource_sets.clear();
     assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
     assert!(targets.can_preserve_root_color_capture());
     assert!(targets.root_color_target.is_some(),
@@ -2734,10 +2738,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
     assert_eq!(targets.byte_size(), 6 * 64 * 32 * 4,
         "a borrowed zero-radius Root descriptor must not double-count GPU residency");
-    assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets,
-        targets.variants[5].levels[0].pass_resource_sets);
-    assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets,
-        targets.variants[5].target_resource_sets);
+    assert!(targets.variants[5].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[5].target_resource_sets.is_empty());
+    assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets.len(), 1);
+    assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets.len(), 1);
     let mut residency = FilterRegistry::new(None);
     residency.record_root_color_present(Some(original_root_identity), true);
     let root_version = residency.root_color_content_version().expect("submitted Root");
@@ -2754,8 +2758,12 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         assert!(residency.root_color_resident_on(&targets));
         let native_owner = targets.root_color_target.as_ref().unwrap();
         let logical = &targets.variants[root as usize];
-        assert_eq!(native_owner.pass_resource_sets, logical.levels[0].pass_resource_sets);
-        assert_eq!(native_owner.composite_resource_sets, logical.target_resource_sets);
+        assert!(logical.levels[0].pass_resource_sets.is_empty(),
+            "Root Graph must not mirror native pass ResourceSets");
+        assert!(logical.target_resource_sets.is_empty(),
+            "Root Graph must not mirror native composite ResourceSets");
+        assert_eq!(native_owner.pass_resource_sets.len(), 1);
+        assert_eq!(native_owner.composite_resource_sets.len(), 1);
         residency.record_root_color_present(targets.root_color_texture_identity(), false);
         assert_eq!(residency.root_color_content_version(), Some(root_version));
         assert!(
@@ -2803,26 +2811,40 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     assert!(!without_owner.root_capture_is_compatible(&reintroduced_root, Some(3)),
         "a Filter scratch allocation must not silently become a Native Root");
 
-    // Binding growth replaces descriptor IDs on the *native owner*, never on
-    // a borrowed Filter Variant. Graph consumers must observe the new owner
-    // bindings even before its logical mirror is refreshed.
+    // Binding growth replaces descriptor IDs only on the native owner.
+    // Both Render Graph consumers must read the new sets without any
+    // descriptor IDs cached on the logical Filter Variant.
     let new_pass_set = test_resource_set_id(901);
     let new_composite_set = test_resource_set_id(902);
     let logical_config = test_zero_radius_blur_config(3);
     targets.root_color_target.as_mut().unwrap().pass_resource_sets[0] = new_pass_set;
     targets.root_color_target.as_mut().unwrap().composite_resource_sets[0] = new_composite_set;
-    assert_ne!(targets.variants[3].levels[0].pass_resource_sets[0], new_pass_set);
+    assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[3].target_resource_sets.is_empty());
     assert_eq!(targets.resource_set_for_config(logical_config, 0), Some(new_composite_set));
     let composite = targets.direct_composite_target(logical_config, 0)
         .expect("the Render Graph resolves the native Root Color");
     assert_eq!(composite.source_resource_set, new_pass_set);
     assert_eq!(composite.texture_view, original_root_view);
-    targets.sync_root_borrowed_resource_sets();
-    assert_eq!(targets.variants[3].levels[0].pass_resource_sets[0], new_pass_set);
-    assert_eq!(targets.variants[3].target_resource_sets[0], new_composite_set);
+    assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[3].target_resource_sets.is_empty());
     assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets[0], new_pass_set);
     assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets[0],
         new_composite_set);
+
+    // Mixed zero-radius popup layouts may reassign a spare native target.
+    // This fallback must compare against the Root owner's binding capacity,
+    // not empty descriptor mirrors on the logical root capture.
+    let remapped = [0, 1, 42, 3].map(test_zero_radius_blur_config);
+    assert!(targets.reuse_layout(&remapped, &[], false, Some(3), None),
+        "Root-owned descriptor capacity must not disable warmed slot reuse");
+    assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
+    assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[3].target_resource_sets.is_empty());
+    assert_eq!(targets.variants.len(), 6);
+    assert_eq!(targets.resource_set_for_config(remapped[3], 0), Some(new_composite_set));
+    assert_eq!(targets.direct_composite_target(remapped[3], 0)
+        .unwrap().source_resource_set, new_pass_set);
 
     // Replacing the underlying native allocation without a source pass
     // cannot import the old Root Color version, even if a flattened capture

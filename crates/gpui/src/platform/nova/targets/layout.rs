@@ -230,7 +230,7 @@ impl BackdropBlurTargets {
         // invalidate unproven captured pixels before any later sampling.
         let root_physical = self.retained_root_variant
             .filter(|_| new_root.is_some())
-            .and_then(|index| self.variants.get(index));
+            .and_then(|_| self.root_color_target.as_ref());
         let mut rebound_zero_radius = 0usize;
         for (new_index, config) in next.iter().copied().enumerate() {
             if permutation[new_index] != usize::MAX {
@@ -242,10 +242,11 @@ impl BackdropBlurTargets {
                         (!permutation.contains(&old)
                             && variant.config.radius() == 0.0
                             && variant.levels.len() == 1
-                            && variant.levels[0].byte_size == root.levels[0].byte_size
+                            && variant.levels[0].byte_size == root.target.byte_size
                             && variant.levels[0].pass_resource_sets.len()
-                                == root.levels[0].pass_resource_sets.len()
-                            && variant.target_resource_sets.len() == root.target_resource_sets.len())
+                                == root.pass_resource_sets.len()
+                            && variant.target_resource_sets.len()
+                                == root.composite_resource_sets.len())
                             .then_some(old)
                     }) {
                         permutation[new_index] = source;

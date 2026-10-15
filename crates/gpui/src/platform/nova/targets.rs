@@ -35,14 +35,14 @@ pub(super) struct BackdropBlurTargets {
     pub(super) retained_root_variant: Option<usize>,
     /// Physical allocation owner for the synthetic Root Color. The matching
     /// zero-radius variant is only a logical Filter/Render Graph binding: it
-    /// borrows this Texture/View and must never free it as filter scratch.
+    /// borrows this Texture/View but stores no Root ResourceSet IDs or ownership.
     /// A later phase can move this owner out of the filter chain without
     /// changing the native texture or its consumers.
     pub(super) root_color_target: Option<RootColorTarget>,
 }
 
 /// Unique native lifetime authority for the full-resolution Root Color.
-/// Filter variants may BORROW these handles to encode Render Graph steps;
+/// Filter Graph consumers resolve its descriptor IDs directly here;
 /// only this owner retires the allocation and its per-frame ResourceSets.
 #[derive(Clone)]
 pub(super) struct RootColorTarget {
@@ -134,21 +134,6 @@ impl BackdropBlurTargets {
                 source.target.texture == root_texture
                     || source.target.texture_view == root_view
             })
-    }
-
-    /// Republish the Root owner's descriptor handles into its non-owning
-    /// logical Filter slot after the atomic frame-binding replacement.
-    /// The physical owner is never updated from a borrowed Variant.
-    pub(super) fn sync_root_borrowed_resource_sets(&mut self) {
-        let Some(root) = self.root_color_target.as_ref() else { return };
-        if let Some(variant) = self.variants.iter_mut().find(|variant| {
-            variant.levels.len() == 1
-                && variant.levels[0].texture == root.target.texture
-                && variant.levels[0].texture_view == root.target.texture_view
-        }) {
-            variant.levels[0].pass_resource_sets.clone_from(&root.pass_resource_sets);
-            variant.target_resource_sets.clone_from(&root.composite_resource_sets);
-        }
     }
 
     /// Only a single-member zero-filter output has an independently initialized texture.
@@ -526,8 +511,10 @@ where
                     descriptor.format,
                 )?
             };
+            // A Root logical variant has no descriptor ownership or mirror.
+            // The native RootColorTarget is consulted by every Graph consumer.
             let pass_resource_sets = if root_variant == Some(variant_index) {
-                root_color_target.as_ref().expect("root owner exists").pass_resource_sets.clone()
+                Vec::new()
             } else {
                 let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
                 for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
@@ -552,7 +539,7 @@ where
         }
 
         let target_resource_sets = if root_variant == Some(variant_index) {
-            root_color_target.as_ref().expect("root owner exists").composite_resource_sets.clone()
+            Vec::new()
         } else {
             let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
             for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
@@ -647,8 +634,8 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
             // Collect unique physical targets. They must not be destroyed
             // while any other variant's descriptor set still references them.
             if root_color_target.as_ref().is_some_and(|root| root.target.texture == target.texture) {
-                // The non-owning root variant's sampler/pass sets were already
-                // retired above; its native texture is owned only by RootColor.
+                // Root's descriptors and Texture/View are retired only by its
+                // independent native owner, not this logical Filter variant.
                 continue;
             }
             if gathered_textures.insert(target.texture) {
