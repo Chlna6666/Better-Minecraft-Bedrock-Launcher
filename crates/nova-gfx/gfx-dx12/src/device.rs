@@ -2504,7 +2504,9 @@ mod platform {
         /// ResizeBuffers follows the separate resize path. Run the fence wait
         /// on the GPU owner, never on the Windows UI message thread.
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
+            log::debug!(target: "nova_dx12_surface", "DX12 swapchain close: taking registry record");
             let mut swapchain = self.swapchains.take(swapchain)?;
+            log::debug!(target: "nova_dx12_surface", "DX12 swapchain close: resetting frame pacing");
             swapchain.frame_pacing.reset();
             let started_at = Instant::now();
             log::debug!(
@@ -2513,19 +2515,14 @@ mod platform {
             );
             // This also retires deferred backbuffer references and descriptor
             // releases created earlier in this renderer's teardown.
-            // Resource destruction above only retires handles; it does not
-            // enqueue new GPU commands. Avoid signaling and waiting for an
-            // empty queue when the last recorded submission already completed.
-            let drained = self.has_pending_gpu_work().and_then(|pending| {
-                if pending {
-                    self.wait_for_pending_work()
-                } else {
-                    Ok(())
-                }
-            });
+            // Submission fences are signaled before Present, so a completed
+            // submission does not cover DXGI's later queue work. Signal here
+            // to retire presentation as well before releasing native resources.
+            let drained = self.wait_for_pending_work();
             // Release IDXGISwapChain3, its backbuffer COM references and the
             // DirectComposition attachment *before* returning control to GPUI.
             // On device removal, drop the swapchain even if the wait fails.
+            log::debug!(target: "nova_dx12_surface", "DX12 swapchain close: releasing native resources drain_result={drained:?}");
             drop(swapchain);
             let elapsed = started_at.elapsed();
             if elapsed >= Duration::from_millis(16) {
@@ -6712,6 +6709,7 @@ mod platform {
             // Stop/drain the native wait before releasing the DXGI swapchain or
             // handle, including live registry records dropped with the device.
             self.frame_pacing.reset();
+            log::debug!(target: "nova_dx12_surface", "DX12 swapchain drop: frame pacing reset");
             if let Some(handle) = self.frame_latency_waitable.take() {
                 // SAFETY: This record uniquely owns the DXGI-returned handle;
                 // no wait or callback can still access it after reset.
@@ -6719,6 +6717,7 @@ mod platform {
                     log::warn!("DX12 frame-latency handle cleanup failed: {error}");
                 }
             }
+            log::debug!(target: "nova_dx12_surface", "DX12 swapchain drop: releasing COM fields");
         }
     }
 

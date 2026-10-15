@@ -251,7 +251,7 @@ fn default_log_filter(debug_enabled: bool, gpui_trace_enabled: bool) -> String {
     // Only the explicitly selected GPUI diagnostic target gets trace-level
     // output. Network crates and the rest of GPUI keep their original levels.
     let gpui_trace = if gpui_trace_enabled {
-        ",gpui=debug,gpui::diagnostics=trace,bmcbl::ui::render_trace=trace"
+        ",gpui=debug,gpui::diagnostics=trace,bmcbl::ui::render_trace=trace,nova_dx12_surface=debug"
     } else {
         ""
     };
