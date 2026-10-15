@@ -13,6 +13,9 @@ impl TasksPageView {
 
         self.active = active;
         if active {
+            // A resident page may have missed Theme/I18n updates while inactive.
+            // Reactivation must refresh its cached visual tree even if tasks are unchanged.
+            cx.notify();
             self.apply_render_model(super::build_render_model(), cx);
         }
     }
@@ -73,12 +76,18 @@ impl TasksPageView {
 
         this._subscriptions
             .push(
-                cx.observe_global::<crate::ui::state::theme::ThemeState>(|_, cx| {
-                    cx.notify();
+                cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+                    if this.active {
+                        cx.notify();
+                    }
                 }),
             );
         this._subscriptions
-            .push(cx.observe_global::<I18n>(|_, cx| cx.notify()));
+            .push(cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }));
         let stream_task = cx.spawn_stream(task_events, |this, delivery, cx| {
             let mut render_model_changed = false;
             match delivery {
