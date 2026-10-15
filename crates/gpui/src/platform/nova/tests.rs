@@ -2714,9 +2714,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         root_color_target: None,
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
-    let original_root_identity = targets.root_color_texture_identity()
-        .expect("valid, active native Root target");
+    assert!(targets.root_color_texture_identity().is_none(),
+        "a logical Filter slot cannot claim native Root residency without its owner");
     let root_level = &targets.variants[5].levels[0];
+    let original_root_identity = (root_level.texture, root_level.texture_view);
     targets.root_color_target = Some(RootColorTarget {
         target: RenderTarget {
             byte_size: root_level.byte_size,
@@ -2802,14 +2803,23 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     assert!(!without_owner.root_capture_is_compatible(&reintroduced_root, Some(3)),
         "a Filter scratch allocation must not silently become a Native Root");
 
-    // Frame-slot buffer growth updates the borrowing logical variant first.
-    // After the atomic binding transaction the native owner must receive
-    // exactly the new sets; it may never retire already replaced handles.
+    // Binding growth replaces descriptor IDs on the *native owner*, never on
+    // a borrowed Filter Variant. Graph consumers must observe the new owner
+    // bindings even before its logical mirror is refreshed.
     let new_pass_set = test_resource_set_id(901);
     let new_composite_set = test_resource_set_id(902);
-    targets.variants[3].levels[0].pass_resource_sets[0] = new_pass_set;
-    targets.variants[3].target_resource_sets[0] = new_composite_set;
-    targets.refresh_root_resource_sets();
+    let logical_config = test_zero_radius_blur_config(3);
+    targets.root_color_target.as_mut().unwrap().pass_resource_sets[0] = new_pass_set;
+    targets.root_color_target.as_mut().unwrap().composite_resource_sets[0] = new_composite_set;
+    assert_ne!(targets.variants[3].levels[0].pass_resource_sets[0], new_pass_set);
+    assert_eq!(targets.resource_set_for_config(logical_config, 0), Some(new_composite_set));
+    let composite = targets.direct_composite_target(logical_config, 0)
+        .expect("the Render Graph resolves the native Root Color");
+    assert_eq!(composite.source_resource_set, new_pass_set);
+    assert_eq!(composite.texture_view, original_root_view);
+    targets.sync_root_borrowed_resource_sets();
+    assert_eq!(targets.variants[3].levels[0].pass_resource_sets[0], new_pass_set);
+    assert_eq!(targets.variants[3].target_resource_sets[0], new_composite_set);
     assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets[0], new_pass_set);
     assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets[0],
         new_composite_set);

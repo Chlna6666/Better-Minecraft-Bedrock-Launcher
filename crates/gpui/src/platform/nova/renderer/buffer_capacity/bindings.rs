@@ -139,7 +139,19 @@ fn append_blur_bindings<'a>(
             backdrop_blur_pass_resource_bindings(buffers, source.target.texture_view, sampler),
         ));
     }
+    // Root descriptors are owned and rebound exactly once through RootColorTarget.
+    // Its logical Variant contains only borrowed IDs and must not create a
+    // second binding transaction for the same physical output.
+    let root_identity = targets.root_color_target.as_ref()
+        .map(|root| (root.target.texture, root.target.texture_view));
     for variant in &mut targets.variants {
+        if root_identity.is_some_and(|(texture, view)| {
+            variant.levels.len() == 1
+                && variant.levels[0].texture == texture
+                && variant.levels[0].texture_view == view
+        }) {
+            continue;
+        }
         let source_view = variant
             .levels
             .last()
@@ -157,6 +169,18 @@ fn append_blur_bindings<'a>(
                 backdrop_blur_pass_resource_bindings(buffers, level.texture_view, sampler),
             ));
         }
+    }
+    if let Some(root) = targets.root_color_target.as_mut() {
+        bindings.push((
+            &mut root.composite_resource_sets[slot],
+            layouts.1,
+            backdrop_blur_resource_bindings(buffers, root.target.texture_view, sampler),
+        ));
+        bindings.push((
+            &mut root.pass_resource_sets[slot],
+            layouts.0,
+            backdrop_blur_pass_resource_bindings(buffers, root.target.texture_view, sampler),
+        ));
     }
 }
 
@@ -205,11 +229,10 @@ pub(in crate::platform::nova::renderer) fn rebind_slot<D: BackendResources>(
             frame.poly_sprite_resource_set = *new;
         }
     }
-    // Root Color owns its descriptor-set lifetime separately from logical
-    // Filter variants. The new sets become authoritative only after every
-    // frame binding has been created and installed successfully.
+    // Only the native Root owner was rebound. Once all new sets are published,
+    // refresh the logical Variant's borrowed IDs before retiring old sets.
     if let Some(targets) = renderer.filters.targets.as_mut() {
-        targets.refresh_root_resource_sets();
+        targets.sync_root_borrowed_resource_sets();
     }
     release_sets(device, replaced.into_iter().map(|(old, _)| old));
     Ok(())

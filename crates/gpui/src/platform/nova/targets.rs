@@ -56,11 +56,7 @@ impl BackdropBlurTargets {
     /// handle, never by the position of a temporary flattened Blur index.
     /// A popup may move this variant without moving its physical pixels.
     pub(super) fn retained_root_texture_view(&self) -> Option<TextureViewId> {
-        let index = self.retained_root_variant?;
-        if index >= self.active_variant_count {
-            return None;
-        }
-        self.variants.get(index)?.levels.last().map(|target| target.texture_view)
+        self.root_color_texture_identity().map(|(_, view)| view)
     }
 
     /// Physical identity for the synthetic Root Color (not its flattened
@@ -79,14 +75,13 @@ impl BackdropBlurTargets {
         let [level] = variant.levels.as_slice() else {
             return None;
         };
-        if let Some(root_color) = self.root_color_target.as_ref() {
-            if root_color.target.texture != level.texture
-                || root_color.target.texture_view != level.texture_view
-            {
-                return None;
-            }
+        let root_color = self.root_color_target.as_ref()?;
+        if root_color.target.texture != level.texture
+            || root_color.target.texture_view != level.texture_view
+        {
+            return None;
         }
-        Some((level.texture, level.texture_view))
+        Some((root_color.target.texture, root_color.target.texture_view))
     }
 
     /// Changing a Root role is a physical ownership change even if all
@@ -141,18 +136,18 @@ impl BackdropBlurTargets {
             })
     }
 
-    /// Binding growth may replace one frame slot's ResourceSets without moving
-    /// its native Texture. Publish the borrowed, updated sets back to their
-    /// single Root owner only after the complete rebind transaction succeeds.
-    pub(super) fn refresh_root_resource_sets(&mut self) {
-        let Some(root) = self.root_color_target.as_mut() else { return };
-        if let Some(variant) = self.variants.iter().find(|variant| {
+    /// Republish the Root owner's descriptor handles into its non-owning
+    /// logical Filter slot after the atomic frame-binding replacement.
+    /// The physical owner is never updated from a borrowed Variant.
+    pub(super) fn sync_root_borrowed_resource_sets(&mut self) {
+        let Some(root) = self.root_color_target.as_ref() else { return };
+        if let Some(variant) = self.variants.iter_mut().find(|variant| {
             variant.levels.len() == 1
                 && variant.levels[0].texture == root.target.texture
                 && variant.levels[0].texture_view == root.target.texture_view
         }) {
-            root.pass_resource_sets.clone_from(&variant.levels[0].pass_resource_sets);
-            root.composite_resource_sets.clone_from(&variant.target_resource_sets);
+            variant.levels[0].pass_resource_sets.clone_from(&root.pass_resource_sets);
+            variant.target_resource_sets.clone_from(&root.composite_resource_sets);
         }
     }
 
@@ -257,13 +252,16 @@ impl BackdropBlurTargets {
         config: BackdropBlurConfig,
         frame_resource_index: usize,
     ) -> Option<ResourceSetId> {
-        self.variants
+        let variant = self.variants
             .iter()
             .take(self.active_variant_count)
-            .find(|variant| variant.config.covers(config))?
-            .target_resource_sets
-            .get(frame_resource_index)
-            .copied()
+            .find(|variant| variant.config.covers(config))?;
+        if let (Some(root), [level]) = (self.root_color_target.as_ref(), variant.levels.as_slice()) {
+            if root.target.texture == level.texture && root.target.texture_view == level.texture_view {
+                return root.composite_resource_sets.get(frame_resource_index).copied();
+            }
+        }
+        variant.target_resource_sets.get(frame_resource_index).copied()
     }
 
     /// Returns whether the existing GPU texture layout can serve the next frame.
@@ -460,18 +458,35 @@ where
         configs.iter().position(|config| config.contains_member_index(root)
             && config.radius() == 0.0)
     });
-    let mut root_color_target = root_variant
-        .map(|_| create_render_texture_target(
+    let root_color_target = if root_variant.is_some() {
+        let target = create_render_texture_target(
             device,
             &format!("{label} independent root color"),
             descriptor.size,
             descriptor.format,
-        ).map(|target| RootColorTarget {
-            target,
-            pass_resource_sets: Vec::new(),
-            composite_resource_sets: Vec::new(),
-        }))
-        .transpose()?;
+        )?;
+        let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+        let mut composite_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                label: Some(format!("{label} root color pass frame {index} resource set")),
+                layout: descriptor.pass_resource_set_layout,
+                bindings: backdrop_blur_pass_resource_bindings(
+                    &buffers, target.texture_view, descriptor.sampler,
+                ),
+            })?);
+            composite_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                label: Some(format!("{label} root color composite frame {index} resource set")),
+                layout: descriptor.blur_resource_set_layout,
+                bindings: backdrop_blur_resource_bindings(
+                    &buffers, target.texture_view, descriptor.sampler,
+                ),
+            })?);
+        }
+        Some(RootColorTarget { target, pass_resource_sets, composite_resource_sets })
+    } else {
+        None
+    };
     let mut variants = Vec::with_capacity(configs.len());
     for (variant_index, config) in configs.iter().copied().enumerate() {
         let downsample = u32::from(config.downsample().max(1));
@@ -511,16 +526,23 @@ where
                     descriptor.format,
                 )?
             };
-            let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                    label: Some(format!(
-                        "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
-                    )),
-                    layout: descriptor.pass_resource_set_layout,
-                    bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
-                })?);
-            }
+            let pass_resource_sets = if root_variant == Some(variant_index) {
+                root_color_target.as_ref().expect("root owner exists").pass_resource_sets.clone()
+            } else {
+                let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
+                for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                    sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                        label: Some(format!(
+                            "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
+                        )),
+                        layout: descriptor.pass_resource_set_layout,
+                        bindings: backdrop_blur_pass_resource_bindings(
+                            &buffers, target.texture_view, descriptor.sampler,
+                        ),
+                    })?);
+                }
+                sets
+            };
             levels.push(BackdropBlurLevelTarget {
                 byte_size: target.byte_size,
                 texture: target.texture,
@@ -529,33 +551,32 @@ where
             });
         }
 
-        let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            let source_texture_view = levels
-                .last()
-                .expect("every blur variant owns at least one target")
-                .texture_view;
-            target_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!(
-                    "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
-                )),
-                layout: descriptor.blur_resource_set_layout,
-                bindings: backdrop_blur_resource_bindings(&buffers, source_texture_view, descriptor.sampler),
-            })?);
-        }
-
+        let target_resource_sets = if root_variant == Some(variant_index) {
+            root_color_target.as_ref().expect("root owner exists").composite_resource_sets.clone()
+        } else {
+            let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                let source_texture_view = levels
+                    .last()
+                    .expect("every blur variant owns at least one target")
+                    .texture_view;
+                sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                    label: Some(format!(
+                        "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
+                    )),
+                    layout: descriptor.blur_resource_set_layout,
+                    bindings: backdrop_blur_resource_bindings(
+                        &buffers, source_texture_view, descriptor.sampler,
+                    ),
+                })?);
+            }
+            sets
+        };
         variants.push(BackdropBlurVariantTargets {
             config,
             levels,
             target_resource_sets,
         });
-    }
-
-    // Record the Root's two per-frame descriptor families under its native
-    // owner. Its matching logical Variant only lends these IDs to DrawSteps.
-    if let (Some(root), Some(index)) = (root_color_target.as_mut(), root_variant) {
-        root.pass_resource_sets.clone_from(&variants[index].levels[0].pass_resource_sets);
-        root.composite_resource_sets.clone_from(&variants[index].target_resource_sets);
     }
 
     Ok(BackdropBlurTargets {
