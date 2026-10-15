@@ -423,6 +423,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【验证门槛】**：环境无 cargo/rustc/rustfmt、没有原生 Windows GPU；未编译、未跑 Rust 单测或四后端。需本地 `cargo fmt --all -- --check`、`cargo check -p gpui`、`cargo test -p gpui --lib draw_step_cache` 和 `path_mask_cache`，通过后用动画完成、Atlas repack、Element Blur Root Capture、resize 场景截图与 GPU trace 验证无陈旧 RenderStep。
 - **【未完成】**：该代次是当前 FrameUpload 的**同一个根编码序列**，并非长期统一 Paint Chunk version；SceneSlot、Scene Replay、全场景 FrameUpload Staging、DrawStep/DirtyRegion 跨类型持久增量和独立 GPU Compositor Lane 仍待破坏性重构。下一步基于真实 Present / DrawStep 请求计数确认静态页面的重复提交来源。
 
+## 2026-10-15：原生 RendererExtension 动态 DrawStep 的跨帧正确性
+
+- **起点**：master `8f4f0f0da7d475ca7e160ad788491521f076dc4c`；检查 `crates/gpui/src/platform/nova/renderer/draw_steps.rs`、`renderer/draw_step_scratch.rs`、`platform/nova/draw.rs`、`renderer.rs`。本次代码仅修改 `draw_steps.rs`，同步本 TODO。不增加第二套 Scene、FrameUpload、缓存 Owner 或功能配置开关。
+- **【定位的真实风险】**：此前新统一的 `FrameUpload.encode_generation` 仅在完整根 Scene 编码时变更，而 `prepare_renderer_extensions(frame_time)` 每帧重新调用扩展，生成可变的原生 `RenderStepDescriptor`。主 `DrawStepCacheKey` 在同一 revision/encode_generation/size 下仍可能命中旧描述符：GPU Buffer、管线、资源绑定或扩展输出变动均可变成错误绘制。另 `prepare_renderer_extension` 原先只有进入 native prepare 后才 `steps.clear()`；若上一帧可见、本帧 Scissor 不可见而提前返回，则 `renderer_extension_steps` 仍包含上一帧命令。
+- **【代码实现，尚未 Rust 编译】**：凡根 FrameUpload 含 `renderer_extensions`，现有 `DrawStepScratch.prepare_steps` 使用 scene revision=0 的**现成非缓存路径**，每帧读取本帧原生扩展 DrawSteps；纯 GPUI 场景则继续以 `encode_generation` + Scene Revision/Frame Slot/Atlas/Alpha/Size 保留并复用 DrawStep。新增泛型 `prepare_renderer_extension_step_storage` 在每帧遍历扩展前一次性 resize/truncate 并 clear 全部步骤 Vec，沿用其 capacity；任一扩展因 bounds/mask/空 scissor 提前返回时已无历史命令；成功 prepare 后原有顺序、Scissor 及 `draw_steps_for_upload_into` 的输出不变。
+- **【测试源码未运行】**：新增真实 `DrawStepScratch` 的扩展帧不命中、扩展移除后恢复稳定缓存测试；以及扩展命令在被遮挡前清空、Vec capacity 复用和数量缩减的纯函数测试。当前环境检查仍无 `cargo/rustc/rustfmt`，没有 GPU，四后端未验证；提交只证明源码层面规避旧描述符，并未实测 DrawStep 耗时或 GPU 20% 占用下降。应先在 Windows/Linux 用动态 RendererExtension 与窗口遮挡/移动对照源缓冲和 GPU Trace，核查空命令不造成意外空帧。
+- **【继续任务】**：向源代码中对齐 `Render Graph → Present` 的帧请求源与静态场景跳过策略，不能仅因 Buffer Upload/DrawStep Cache 正常就认为 Present 不再被唤醒。统一 Paint Chunk → GPU Compositor Lane、SceneSlot/Scene Replay/FrameUpload 老路径的安全迁移仍未完成。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

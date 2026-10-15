@@ -28,12 +28,38 @@ pub(super) struct PreparedElementBlurLayer {
     pub(super) preserve_retained_source: bool,
 }
 
+/// A renderer extension prepares its GPU commands on every presentation tick;
+/// it must never reuse the previous frame's flattened native descriptors.
+fn draw_step_cache_revision(scene_revision: u64, has_renderer_extensions: bool) -> u64 {
+    if has_renderer_extensions { 0 } else { scene_revision }
+}
+
+/// Retain each extension's vector allocation while dropping all previous-frame
+/// commands, even when the next prepare exits early due to empty visibility.
+fn prepare_renderer_extension_step_storage<T>(
+    steps: &mut Vec<Vec<T>>,
+    extension_count: usize,
+) {
+    steps.resize_with(extension_count, Vec::new);
+    steps.truncate(extension_count);
+    for extension_steps in steps {
+        extension_steps.clear();
+    }
+}
+
 impl NovaRenderer {
     pub(super) fn prepare_draw_steps(&mut self, scene_revision: u64) {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let cache_key = DrawStepCacheKey {
-            scene_revision,
+            // Extensions supply fresh RenderStepDescriptors (and may replace GPU
+            // resources) for *every* presentation frame, without re-encoding
+            // the producer Scene. Never reuse an old descriptor list for them.
+            // The zero-revision lane already builds into uncached scratch.
+            scene_revision: draw_step_cache_revision(
+                scene_revision,
+                !self.frame_upload.renderer_extensions.is_empty(),
+            ),
             // Scene revision alone does not identify this compiled batch topology:
             // atlas placement, blur quality and retained-root admission can
             // rebuild the FrameUpload without changing the producer Scene.
@@ -71,12 +97,10 @@ impl NovaRenderer {
 
     pub(super) fn prepare_renderer_extensions(&mut self, frame_time: Instant) -> Result<()> {
         let extension_count = self.frame_upload.renderer_extensions.len();
-        self.frame_upload
-            .renderer_extension_steps
-            .resize_with(extension_count, Vec::new);
-        self.frame_upload
-            .renderer_extension_steps
-            .truncate(extension_count);
+        prepare_renderer_extension_step_storage(
+            &mut self.frame_upload.renderer_extension_steps,
+            extension_count,
+        );
         let viewport = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let active_types = self.active_renderer_extension_types();
         self.release_inactive_renderer_extensions(&active_types);
@@ -145,7 +169,6 @@ impl NovaRenderer {
             &mut self.renderer_registry,
             &mut self.frame_upload.renderer_extension_steps[index],
         );
-        steps.clear();
         backend.with_extension_device(|device| {
             registry.prepare(extension.extension.as_ref(), device, context, steps)
         })?;
@@ -1395,6 +1418,56 @@ mod tests {
         assert!(partial.width <= full.width);
         assert!(partial.height <= full.height);
         assert!(partial.width < full.width || partial.height < full.height);
+    }
+}
+
+#[cfg(test)]
+mod renderer_extension_cache_tests {
+    use super::*;
+
+    #[test]
+    fn live_extension_disables_retained_draw_step_cache() {
+        let mut scratch = DrawStepScratch::default();
+        let mut key = DrawStepCacheKey {
+            scene_revision: draw_step_cache_revision(7, true),
+            encode_generation: 3,
+            size: DrawableSize { width: 64, height: 64 },
+            frame_resource_index: 0,
+            atlas_texture_generation: None,
+            atlas_texture_count: 0,
+            premultiplied_alpha: false,
+        };
+        assert_eq!(key.scene_revision, 0);
+        scratch.prepare_steps(key, 2, |steps| steps.clear());
+        assert!(!scratch.draw_step_cache_hit);
+        scratch.prepare_steps(key, 2, |_| {});
+        assert!(!scratch.draw_step_cache_hit);
+
+        // Once the extension is gone, ordinary retained scenes can reuse
+        // their static commands in the same GPU frame-resource slot.
+        key.scene_revision = draw_step_cache_revision(7, false);
+        scratch.prepare_steps(key, 2, |steps| steps.clear());
+        assert!(!scratch.draw_step_cache_hit);
+        scratch.prepare_steps(key, 2, |_| panic!("static cache was not reused"));
+        assert!(scratch.draw_step_cache_hit);
+    }
+
+    #[test]
+    fn clipped_extension_discards_old_steps_before_scissor_check() {
+        let mut steps = vec![vec![4u8, 5, 6], vec![7, 8]];
+        let first_capacity = steps[0].capacity();
+        prepare_renderer_extension_step_storage(&mut steps, 2);
+        assert_eq!(steps.len(), 2);
+        assert!(steps.iter().all(Vec::is_empty));
+        assert_eq!(steps[0].capacity(), first_capacity);
+
+        steps[0].push(9);
+        prepare_renderer_extension_step_storage(&mut steps, 1);
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].is_empty());
+
+        prepare_renderer_extension_step_storage(&mut steps, 0);
+        assert!(steps.is_empty());
     }
 }
 
