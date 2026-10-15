@@ -164,12 +164,12 @@ impl MapViewerWindowView {
                             .child(
                                 div()
                                     .text_size(px(12.0))
-                                    .text_color(if self.map_image.frame_anchor.is_some() {
+                                    .text_color(if self.map_frame_confirmed_center().is_some() {
                                         colors.text_primary
                                     } else {
                                         colors.danger
                                     })
-                                    .child(self.map_image.frame_anchor.map_or_else(
+                                    .child(self.map_frame_confirmed_center().map_or_else(
                                         || "未选择放置位置：请点击下方按钮，然后在中央地图上点选".to_owned(),
                                         |(x, z)| format!("已选择中心：X {x} · Z {z}"),
                                     )),
@@ -180,7 +180,7 @@ impl MapViewerWindowView {
                                     "map-frame-pick-world-center",
                                     if self.map_image.picking_frame_center {
                                         "正在选点 · 点击地图选择位置"
-                                    } else if self.map_image.frame_anchor.is_some() {
+                                    } else if self.map_frame_confirmed_center().is_some() {
                                         "重新在地图上选择中心"
                                     } else {
                                         "在地图上选择放置位置"
