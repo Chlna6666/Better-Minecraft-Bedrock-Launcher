@@ -570,14 +570,10 @@ pub fn render_overlay(window: &mut Window, state: &DropdownOverlayState) -> AnyE
                 .pb(px(4.))
                 .child(option_list),
         )
-        .composite_layer_with_id(active.id.clone())
-        .with_visual_animation(
-            active.id.clone(),
-            motion
-                .animation()
-                .with_opacity(0.78 + 0.22 * (1.0 - target), 0.78 + 0.22 * target),
-        )
-        .expect("opacity is a declared presentation property")
+        // ClipReveal already owns a retained capture of the full menu. Do not nest a
+        // second identity composite and an opacity track: those create an extra
+        // offscreen source even though the popup has no independently animated content.
+        // The single reveal animation retains the popup identity across retargets.
         .with_visual_animation(
             active.id.clone(),
             motion

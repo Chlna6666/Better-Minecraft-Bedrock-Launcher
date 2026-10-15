@@ -491,6 +491,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【下一步 P0 资源拆分】**：把根颜色 `Texture+View+per-slot ResourceSet+content version+size/format generation` 全部放到唯一 RootColorTarget owner，真正移除 Root 对 FilterVariant 的物理依赖；以 Scene `PaintBlur.layer_id` 作为明确稳定 Capture ID（无 ID 必须保守处理），`CaptureId → Target/Generation` 单一索引替代当前 `BackdropBlurConfig.member_first/last` 作为资源身份，重排时保留稳定 Target，淘汰者由提交 Fence 完成后退休；建立 popup 插入、删除、重排、缩放动画、resize 和 in-flight 多帧测试。完成这一步后再复核一层局部 GPU Composite：背景像素与子 Capture 的 Dirty 必须分离，不允许 popup 的透明度/平移/缩放样本重放 Root static Scene。
 - **【P1 GPU Timestamp 评估】**：仓库已有 Vulkan `vk::QueryType::TIMESTAMP` 及 DX12 `D3D12_QUERY_HEAP_TYPE_TIMESTAMP` 用于局部 GPU 上传计时，但 `gfx-core` 尚无跨 DX11/DX12/Vulkan/OpenGL 的通用 RenderPass 时间戳契约；不能把 CPU `Instant::elapsed` 记作 GPU Pass 耗时。后续需统一 `GPU_PASS_ROOT_REFRESH`、`ELEMENT_SOURCE`、`GAUSSIAN_H`、`GAUSSIAN_V`、`FINAL_COMPOSITE`、`SWAPCHAIN_PRESENT` 标签与每 FrameSlot QueryRange；在提交栅栏完成后延迟无阻塞 Resolve/Readback，DX11 disjoint、DX12 frequency、VK validBits/timestampPeriod、GL availability 单独校准，不支持时标记 unavailable，防止 UI 线程/共享 GPU Owner 同步等待。这项 P1 仍**未实现**。
 
+## 2026-10-15：公共 Dropdown 单 Capture Reveal（待 GPU Trace 验收）
+
+- 远程起点 `f24fe7cd88b01a817ed2e48f3480ca05d8307aa8`，修改 `src/ui/components/dropdown.rs` 与本唯一进度文档；仅影响公共 Dropdown 弹层，不修改首页独立版本下拉框、不改变 GPUI/Nova-GFX Shader ABI。
+- **【源码证据】**：公共弹层原先嵌套 `composite_layer_with_id(active.id)`、Opacity 动画、ClipReveal 动画。`ClipReveal` 在 `paint_scene_animation` 必定经 `with_scene_composite_animation → paint_composite_layer` 捕获整个菜单，内部 Opacity 对显式 Composite Layer 再做一次独立零滤镜捕获；两级源目标可能扩大 Render Graph 和纹理写入。`.occlude()` 仅调用 `occlude_mouse()`，是命中测试而非 GPU 像素遮挡或 DirtyRegion 操作。
+- **【代码实现；未编译】**：公共菜单只保留同一个 `active.id` 标识的 GPU ClipReveal 子树捕获，删除重复显式 Composite 和独立 Opacity Track；不引入另一套缓存、动画时间循环或条件性全页 Render。固定边缘、原有 220/160 ms 曲线、反向中断与菜单内容/滚动/输入事件不变。**视觉取舍**：移除了菜单展开/收起时 0.78↔1.0 的轻微整体渐隐，保留 Reveal；不是无损像素等价变更。首页独立下拉框不受影响。
+- **【实例隔离审查】**：`DropdownState` 使用 `window.use_keyed_state(id)`，每个触发器持有独立选项/滚动/phase；全局 `DropdownOverlayState.active_by_window` 当前每个窗口最多一个活动菜单，其他实例的内容不会自动进入此菜单。切换 phase 仍会通知拥有该 Dropdown 的父 View，全窗口 Root/Paint 及 Root Color GPU Target 是否在动画每帧重绘仍需由现有 Trace 验证，不能仅凭源代码宣称已彻底局部合成。
+- **【验收阻塞】**：当前环境无 cargo/rustc/rustfmt/Windows 原生 GPU，未执行编译、单测及 DX11/DX12/Vulkan/OpenGL 实机。必须对比相同窗口/刷新率、Blur on/off、单/多个 Dropdown 连续快速点击：`gpui frame work`、`gpui presentation gate`、Capture 数量/Pass 次数、Root target version、retained_copy_pixels、GPU Draw/Present/实际占用与动画完整性。期望单个公共菜单 Capture 从嵌套目标收敛至一个，**GPU 40%→多少尚未知**；RootColorTarget 物理所有权分离、Fence 退休和异步 GPU Timestamp 仍未完成。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
