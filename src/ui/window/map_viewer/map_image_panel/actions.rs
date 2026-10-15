@@ -128,10 +128,29 @@ impl MapViewerWindowView {
                     let reason = error.strip_prefix("validation failed: ").unwrap_or(error);
                     bar.child(
                         div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.0))
                             .w_full()
-                            .text_size(px(12.0))
-                            .text_color(colors.danger)
-                            .child(format!("无法在此放置：{reason}")),
+                            .child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .text_color(colors.danger)
+                                    .child(format!("无法在此放置：{reason}")),
+                            )
+                            .child(
+                                secondary_button(
+                                    colors, "map-frame-raise-and-recheck",
+                                    "展示框 Y +1 并重新检查",
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.step_y(1, cx);
+                                        this.check_map_frame_grid(cx);
+                                    }),
+                                ),
+                            ),
                     )
                 },
             )
