@@ -455,6 +455,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未运行】**：新增 8 种三阶段有效/无效组合全排列的固定顺序、Barrier 数、资源 Count、纹理 first/last/Residency 验证；另验证多个只读消费者不产生 Read→Read Hazard。使用独立 JS 逻辑参照逐个比较旧/新 8 种拓扑的 Pass、Hazard 顺序/访问类型及生命周期数组，结果一致；**不能替代 Rust 测试、native GPU Barrier Test 或本地性能测量**。
 - **【后续风险与目标】**：本改动减少即使静态 DrawStep 缓存命中时仍执行的 CPU Graph Planning；并非证明实际静态窗口不会重复 Present，也不能证明 20–30% GPU 占用下降。下一步应拿刚加入的 `gpui presentation gate` / `gpui frame work` 与 Nova Pass/Present 实机 5 秒 Trace 确认帧请求源和 Graph 次数。依然未完成跨类型持久 Paint Chunk、GPU Resident Buffer/DrawStep/DirtyRegion 内容版本统一、SceneSlot/Replay/FrameUpload 淘汰、独立 Compositor Lane；不得仅凭固定 Graph 声称全链路统一。
 
+## 2026-10-15：单遍动画 Stream 共享判断与 GPU Slot 签名差异复用
+
+- **远程基线**：master `cf69dacaba2aff331fa80aa22473580a42463b60`。修改 `crates/gpui/src/platform/nova/resources/buffers/streams.rs`、`renderer/retained_upload/sharing.rs`、`renderer/retained_upload.rs` 和本唯一 TODO。只整合现有 BufferStream/RetainedUpload 的元数据工作；不创建第二套 GPU owner、FrameUpload 或重叠资源缓存。
+- **【代码实现，未编译】**：`BufferStream` 使用显式 `#[repr(u8)]` 和 `index()`；10 个成员与 `ALL` 的 canonical 顺序相同，测试校验映射，避免 per-stream `ALL.iter().position()`。对于每帧 `RetainedUpload::update_shareability`，删除原来每个 Stream 重复扫描全部 `animated_primitives` 的逻辑：初始化可共享位，一次遍历全部 CPU-patched Primitive 按原有 AnimatedPrimitiveKind 标记 Quad/Shadow/Mono/Poly/BlurRecords 不可共享；`BlurPasses` 独立继续按 `has_animated_backdrop_blurs()` 判定，未改 GPU Indexed Animation promotion。
+- **【Slot 生命周期正确性】**：原 `mark_uploaded(slot)` 对每个 10 流调用 `stream_state`，重新取 Slot 签名、复制签名并匹配。现在从同一权威 `StaticUploadSignature::diff(previous)` **一次**计算各流 dirty 位并与此前 `uploaded_shareable` provenance 合并。保留「CPU Patch 后即使之后不再动画、签名相同，也不能在没有静态基础字节重新上传时错误共享」的语义；新版本真正上传或 Buffer 重建后恢复共享。每个 Slot 独立，FrameSlot/COW Buffer/Fence/Barrier 不变。
+- **【回归验证】**：新增顺序映射、全部 10 种 Stream 的 CPU Patch → 静态签名相同保持非共享 → invalidate/re-upload 恢复共享，以及 PolySprites 单流改变不污染 Quad 的测试源码。另独立 JavaScript 模型比较 100,000 组随机旧/新 Slot 签名与共享状态、2,048 组动画 Primitive 类型序列，结果完全一致。**这不是 Rust 编译/测试**。
+- **【未验证/下一步】**：当前容器仍无 `cargo`、`rustc`、`rustfmt`，没有 Windows/Linux 原生 GPU。需本地编译、运行 `gpui` 单测及四后端回归，确认 Scene revision 切换、CPU Patch 尾帧、Slot 轮换、Buffer Replace、live resize 均不发生错误共享。性能收益仅限减少元数据查询与 CPU 扫描；真正重复的 Frame Request → DrawStep → Native Present 和 Paint Chunk/SceneSlot 重构尚未解决。后续应针对重复的 `AnimatedPrimitive` 编码与 `FrameUpload` 全场景 staging 开始纵向迁移，不能把简单循环减少误认为统一 Compositor 已完成。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

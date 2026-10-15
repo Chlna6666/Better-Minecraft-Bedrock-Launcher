@@ -32,20 +32,24 @@ impl RetainedUpload {
         &mut self,
         upload: &FrameUpload,
     ) {
-        for (index, stream) in BufferStream::ALL.into_iter().enumerate() {
-            let kind = match stream {
-                BufferStream::Quad => Some(AnimatedPrimitiveKind::Quad),
-                BufferStream::Shadow => Some(AnimatedPrimitiveKind::Shadow),
-                BufferStream::MonoSprites => Some(AnimatedPrimitiveKind::MonochromeSprite),
-                BufferStream::PolySprites => Some(AnimatedPrimitiveKind::PolychromeSprite),
-                BufferStream::BlurRecords => Some(AnimatedPrimitiveKind::BackdropBlur),
-                _ => None,
+        // The GPU frame encodes each CPU-patched primitive exactly once.
+        // Mark its owning stream unshareable in the same linear walk instead
+        // of scanning the entire animated stream ten times on every frame.
+        self.current_shareable.fill(true);
+        for primitive in &upload.animated_primitives {
+            let stream = match primitive.kind {
+                AnimatedPrimitiveKind::Quad => BufferStream::Quad,
+                AnimatedPrimitiveKind::Shadow => BufferStream::Shadow,
+                AnimatedPrimitiveKind::MonochromeSprite => BufferStream::MonoSprites,
+                AnimatedPrimitiveKind::PolychromeSprite => BufferStream::PolySprites,
+                AnimatedPrimitiveKind::BackdropBlur => BufferStream::BlurRecords,
             };
-            self.current_shareable[index] = !upload
-                .animated_primitives
-                .iter()
-                .any(|primitive| Some(primitive.kind) == kind)
-                && !(stream == BufferStream::BlurPasses && upload.has_animated_backdrop_blurs());
+            self.current_shareable[stream.index()] = false;
+        }
+        // CPU/filter-driven blur pass parameters have their own source
+        // stream. Never infer its shareability from BlurRecords alone.
+        if upload.has_animated_backdrop_blurs() {
+            self.current_shareable[BufferStream::BlurPasses.index()] = false;
         }
     }
 
@@ -53,10 +57,7 @@ impl RetainedUpload {
         &self,
         stream: BufferStream,
     ) -> bool {
-        let index = BufferStream::ALL
-            .iter()
-            .position(|candidate| *candidate == stream)
-            .expect("known static stream");
+        let index = stream.index();
         self.current_shareable[index]
     }
 
@@ -65,10 +66,7 @@ impl RetainedUpload {
         slot: usize,
         stream: BufferStream,
     ) -> (bool, bool, bool) {
-        let index = BufferStream::ALL
-            .iter()
-            .position(|candidate| *candidate == stream)
-            .expect("known static stream");
+        let index = stream.index();
         let Some(mut current) = self.static_signature else {
             return (false, false, true);
         };
@@ -118,10 +116,7 @@ impl RetainedUpload {
         });
         *previous.stream_mut(stream) = *signature.stream_mut(stream);
         self.uploaded_slots[slot] = Some(previous);
-        let index = BufferStream::ALL
-            .iter()
-            .position(|candidate| *candidate == stream)
-            .expect("known static stream");
+        let index = stream.index();
         self.uploaded_shareable[slot][index] = true;
         if stream == BufferStream::Quad {
             self.uploaded_quad_layouts[slot] = self.uploaded_quad_layouts[source].clone();
@@ -154,6 +149,68 @@ mod tests {
         retained.update_shareability(upload);
         retained.mark_uploaded(0);
         retained
+    }
+
+    #[test]
+    fn every_stream_preserves_cpu_patch_history_until_real_static_replacement() {
+        let upload = FrameUpload::default();
+        for stream in BufferStream::ALL {
+            let mut retained = resident(&upload);
+            retained.current_shareable[stream.index()] = false;
+            retained.mark_uploaded(0);
+            for candidate in BufferStream::ALL {
+                assert_eq!(
+                    retained.stream_state(0, candidate).0,
+                    candidate != stream,
+                    "only the patched stream must stop sharing"
+                );
+            }
+            // Clearing the animation flag without changing base bytes must
+            // not claim the slot contains a new immutable static version.
+            retained.update_shareability(&upload);
+            retained.mark_uploaded(0);
+            assert!(!retained.stream_state(0, stream).0);
+            retained.invalidate_stream(0, stream);
+            retained.mark_uploaded(0);
+            assert!(retained.stream_state(0, stream).0);
+        }
+    }
+
+    #[test]
+    fn unchanged_frame_restores_all_stream_shareability_only_when_valid() {
+        let upload = FrameUpload::default();
+        let mut retained = resident(&upload);
+        assert!(BufferStream::ALL.into_iter().all(|stream| retained.stream_shareable(stream)));
+
+        let quad = BufferStream::Quad;
+        retained.current_shareable[quad.index()] = false;
+        retained.mark_uploaded(0);
+        assert!(!retained.stream_state(0, quad).0);
+        retained.update_shareability(&upload);
+        retained.mark_uploaded(0);
+        assert!(!retained.stream_state(0, quad).0, "matching CPU-patched bytes must not be shared");
+        retained.invalidate_stream(0, quad);
+        retained.mark_uploaded(0);
+        assert!(retained.stream_state(0, quad).0, "a fresh static replacement restores sharing");
+        for stream in BufferStream::ALL {
+            assert!(retained.stream_shareable(stream));
+        }
+    }
+
+    #[test]
+    fn slot_signature_mismatch_changes_only_its_stream_provenance() {
+        let upload = FrameUpload::default();
+        let mut retained = resident(&upload);
+        let changed = BufferStream::PolySprites;
+        let untouched = BufferStream::Quad;
+        retained.current_shareable[changed.index()] = false;
+        retained.mark_uploaded(0);
+        retained.update_shareability(&upload);
+        retained.invalidate_stream(0, changed);
+        assert!(retained.stream_state(0, changed).2);
+        retained.mark_uploaded(0);
+        assert!(retained.stream_state(0, changed).0);
+        assert!(retained.stream_state(0, untouched).0);
     }
 
     #[test]
@@ -190,10 +247,7 @@ mod tests {
     #[test]
     fn cpu_patch_history_is_not_shareable_until_static_contents_are_replaced() {
         let mut retained = resident(&FrameUpload::default());
-        let index = BufferStream::ALL
-            .iter()
-            .position(|stream| *stream == BufferStream::BlurPasses)
-            .unwrap();
+        let index = BufferStream::BlurPasses.index();
         retained.current_shareable[index] = false;
         retained.mark_uploaded(0);
         assert!(!retained.stream_state(0, BufferStream::BlurPasses).0);

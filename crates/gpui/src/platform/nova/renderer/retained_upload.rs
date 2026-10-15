@@ -724,13 +724,31 @@ impl RetainedUpload {
         let Some(signature) = self.static_signature else {
             return;
         };
+        // A slot has exactly one authoritative static-signature comparison.
+        // Reuse its stream-level dirty flags to decide which streams have
+        // physically received fresh base bytes. Matching CPU-patched streams
+        // retain their previous non-shareable provenance until re-uploaded.
+        let previous = self.uploaded_slots.get(slot).copied().flatten();
+        let changed = signature.diff(previous);
+        let refreshed = [
+            changed.text_raster,
+            changed.quad,
+            changed.shadow,
+            changed.path_rasterization_vertex,
+            changed.path_sprite,
+            changed.mono_sprite,
+            changed.poly_sprite,
+            changed.underline,
+            changed.backdrop_blur_pass,
+            changed.backdrop_blur,
+        ];
+        let old_shareable = self
+            .uploaded_shareable
+            .get(slot)
+            .copied()
+            .unwrap_or([false; 10]);
         let shareable = std::array::from_fn(|index| {
-            self.current_shareable[index]
-                && (self.stream_state(slot, BufferStream::ALL[index]).2
-                    || self
-                        .uploaded_shareable
-                        .get(slot)
-                        .is_some_and(|streams| streams[index]))
+            self.current_shareable[index] && (refreshed[index] || old_shareable[index])
         });
         if let Some(uploaded) = self.uploaded_slots.get_mut(slot) {
             *uploaded = Some(signature);

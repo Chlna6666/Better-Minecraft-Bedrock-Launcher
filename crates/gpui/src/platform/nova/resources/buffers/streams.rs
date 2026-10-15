@@ -1,6 +1,7 @@
 //! Buffer identities and capacities travel together when a slot adopts a resident version.
 use super::*;
 
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::platform::nova) enum BufferStream {
     TextRaster,
@@ -16,6 +17,13 @@ pub(in crate::platform::nova) enum BufferStream {
 }
 
 impl BufferStream {
+    /// Canonical GPU stream position shared by resident slot signatures,
+    /// upload provenance and BufferStream::ALL. A new stream must extend
+    /// these together rather than adding a parallel lookup table.
+    pub(in crate::platform::nova) const fn index(self) -> usize {
+        self as usize
+    }
+
     pub(in crate::platform::nova) const ALL: [Self; 10] = [
         Self::TextRaster,
         Self::Quad,
@@ -147,5 +155,17 @@ impl FrameResourceBuffers {
             self.backdrop_blur_buffer,
             self.animation_value_buffer,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_buffer_stream_identity_matches_resident_signature_order() {
+        for (expected, stream) in BufferStream::ALL.into_iter().enumerate() {
+            assert_eq!(stream.index(), expected);
+        }
     }
 }
