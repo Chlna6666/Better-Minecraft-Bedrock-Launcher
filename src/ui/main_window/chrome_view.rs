@@ -275,18 +275,21 @@ impl Render for NavChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let (colors, theme_animating) = colors(window, cx);
-        tracing::trace!(
-            target: "bmcbl::ui::render_trace",
-            component = "chrome-nav",
-            theme_animating,
-            "chrome view render"
-        );
         if theme_animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         let nav = cx.global::<NavState>();
         let ((pill_left_steps, pill_right_steps), nav_animating) = nav.pill_render_state(now);
         let labels_animating = nav.labels_animating(now);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-nav",
+            theme_animating,
+            nav_animating,
+            labels_animating,
+            active_route = nav.visual_active_index(),
+            "chrome view render"
+        );
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),

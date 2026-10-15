@@ -172,8 +172,24 @@ fn auto_capture_static_background(
         match primitive {
             Primitive::Quad(_) | Primitive::Shadow(_) => {}
             _ if !saw_dynamic => {
-                // The first non-Quad/Shadow must not silently turn an atlas
-                // or renderer-owned texture into a retained static source.
+                // A sprite/atlas dependency cannot become a static GPU texture
+                // without versioning its atlas placement/content first.
+                let kind = match primitive {
+                    Primitive::Path(_) => "path",
+                    Primitive::Underline(_) => "underline",
+                    Primitive::MonochromeSprite(_) => "monochrome_sprite",
+                    Primitive::PolychromeSprite(_) => "polychrome_sprite",
+                    Primitive::Surface(_) => "native_surface",
+                    Primitive::BackdropBlur(_) => "backdrop_blur",
+                    Primitive::Blur(_) => "blur",
+                    Primitive::RendererExtension(_) => "renderer_extension",
+                    Primitive::Quad(_) | Primitive::Shadow(_) => "quad_or_shadow",
+                };
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI AutoStatic prefix blocker: scene_revision={} operation_index={} kind={} static_prefix={}",
+                    scene.revision, index, kind, static_prefix,
+                );
                 return reject_auto_static_capture(scene, "non_quad_or_shadow_static_prefix");
             },
             Primitive::Surface(_) | Primitive::RendererExtension(_)
