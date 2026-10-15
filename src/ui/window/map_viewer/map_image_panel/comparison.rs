@@ -103,15 +103,15 @@ impl MapViewerWindowView {
                 }
             }
         };
+        // This is an optional inspector column, not an overlay over world tiles.
         div()
-            .absolute()
-            .top(px(66.0))
-            .right(px(12.0))
-            .w(px(260.0))
+            .flex_none()
+            .h_full()
+            .w(px(254.0))
             .p(px(10.0))
-            .rounded(px(8.0))
+            .border_l_1()
+            .border_color(colors.border)
             .bg(colors.surface)
-            .occlude()
             .flex()
             .flex_col()
             .gap(px(6.0))
