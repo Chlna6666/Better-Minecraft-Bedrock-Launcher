@@ -439,6 +439,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未运行】**：增加稀疏 packed Blur Index [1,4,7,13,21] 与反向/乱序查询、缺失值/空表的回归测试。该 Lookup 不改变 Deepest-First GPU pass 排序，避免嵌套滤镜父子顺序倒置。
 - **【验证及风险】**：没有在容器执行 cargo/rustc/rustfmt、DX11/DX12/Vulkan/OpenGL 本地编译与原生绘制；静态审查仍不足以证明 GPU 占用或静态 Present 问题得到解决。本轮保留原有 Frame Scheduling 空动画 tick 跳过语义，没有引入旁路静态 Present skip（其 WSI、GPU 动画和待提交 Scene 关系尚需实机追踪）。后续聚焦 View/Window Frame Request → GPU Render Graph/Present 的实际 5 秒计数和 DirtyRegion 证据，再考虑独立 Compositor Lane。
 
+## 2026-10-15：追踪静态窗口 Frame Request → Present，分离空动画 Cadence 与显式 WSI
+
+- 起点远程 master `05443561392c97f82ca1e0725fb3d842b127696f`。本阶段修改 `crates/gpui/src/window/frame_lifecycle.rs`、`crates/gpui/src/platform/frame.rs` 与本唯一 TODO；不新增帧状态所有者、不变更原生 Swapchain/DrawStep/Render Graph 语义、不添加不受证明的「静态强制跳 Present」分支。
+- **【静态审查】**：`run_presentation_phase` 已用 `PlatformFrameRequest::resolve_animation_presentation(presentation_ready)` 在空动画 Cadence、没有待激活 Scene/未完成 Present 时屏蔽 Swapchain 提交；Required（WSI/外部渲染/显式 Present）不能因为 UI 看似静态而取消。既有 per-window 指标统计 redraw/draw/present，但 `log_frame_work_decision` 在 Trace 中输出常量 `request_id=0`，也未显示已经有的 `DirtyFrameDiagnostics.frame_request_reasons` 与首次请求 caller，使 5 秒高占用追踪无法区分动画、notify 与外部原生请求。
+- **【代码实现，未编译】**：新增不分配内存的 Trace 诊断 `gpui presentation gate`：分别输出 pending Scene、未完成 Present、animation_visual、ready、原始/resolve 后的 Presentation Request、UI Commit、已提交 Scene、窗口可见/最小化与实际 early submit。现有 `gpui frame work` Trace 去除始终为 0 的假 request_id，输出已收集的 request reason bitset 和首次 reason/source(file:line)，并保留 dirty / render provenance、draw/present/skip 标志。诊断仅在 `log::Level::Trace` 打开时执行，**不**额外派发平台帧或插入渲染 Thread/Queue，Trace 内状态仍保持原生命周期，不误称来源掩码代表全部 WSI 事件。
+- **【测试源码，未运行】**：新增 `PlatformFrameRequest` 三组调度契约测试：无视觉变化的动画 Tick 取消 Present 但保留 UI Tick；与 WSI/Required 合并后的 Present 不可吞掉；有损伤动画保留 Present。行为生产代码未改，避免未验证的帧跳过造成 DX11 拖拽、Vulkan live resize、最小化恢复黑屏回归。
+- **【验收与下一步】**：当前容器缺少 cargo/rustc/rustfmt，Windows/Linux 四后端实机、GPU trace 与耗电/吞吐尚未验证。需本地运行 FrameRequest/Window 测试并用 `RUST_LOG=gpui=trace` 对静态 5 秒、Dropdown 展开/收起、Blur on/off、动画结束 5 秒分别收集 `gpui presentation gate`、`gpui frame work` 和 Nova draw_step_cache_hit / upload_bytes / actual_present，对比帧请求源；若发生纯 Presentation 多余提交，再修改**真实发起者**，而非添加第三套节流或缓存。统一 Paint Chunk/Compositor Lane、SceneSlot/Replay 删除仍未完成。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

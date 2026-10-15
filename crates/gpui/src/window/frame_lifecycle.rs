@@ -945,6 +945,7 @@ impl Window {
         // A plain cadence wake is not a guaranteed image change. If it carried no
         // animation damage and no older pending frame, do not submit a redundant
         // full Swapchain pass. Explicit presentation requests retain priority.
+        let cadence_present_requested = frame_request.needs_presentation();
         let frame_request = frame_request.resolve_animation_presentation(presentation_ready);
         let submitted_early = should_present_before_ui_commit(
             presentation_ready,
@@ -953,6 +954,29 @@ impl Window {
             self.visibility.is_visible(),
             self.platform_window.is_minimized(),
         ) && self.present_framebuffer_only().is_accepted();
+
+        // The UI frame request and the native compositor's presentation are
+        // separate domains. Trace their decision together to distinguish an
+        // animation cadence that correctly did nothing from a WSI/explicit
+        // present or a newly activated immutable Scene. Never guess "idle"
+        // from the GPU upload count alone.
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "gpui presentation gate: window={} pending_scene={} pending_unpresented={} animation_visual={} ready={} present_requested={} present_resolved={} ui_commit={} committed_scene={} visible={} minimized={} submitted_early={}",
+                self.handle.window_id().as_u64(),
+                pending_scene_commit,
+                preserve_unpresented_damage,
+                presentation_tick,
+                presentation_ready,
+                cadence_present_requested,
+                frame_request.needs_presentation(),
+                frame_request.needs_ui_commit(),
+                self.has_completed_rendered_frame,
+                self.visibility.is_visible(),
+                self.platform_window.is_minimized(),
+                submitted_early,
+            );
+        }
 
         PresentationPhaseOutcome {
             submitted_early,
@@ -1159,9 +1183,8 @@ impl Window {
             let first_view_dirty_entity = dirty_frame_diagnostics.first_view_dirty_entity;
             let first_notify_entity = dirty_frame_diagnostics.first_notify_entity;
             log::trace!(
-                "gpui frame request: window={} request_id={} dirty={} ui_commit={} presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
+                "gpui frame work: window={} dirty={} ui_commit={} presentation={} pending_present={} active={} minimized={} draw={} present={} skip={} defer_inactive_dirty={} request_reasons=0x{:04x} first_request_reason={:?} first_request_source={:?} dirty_refreshes={} dirty_view_marks={} direct_dirty_views={} traversal_ancestor_views={} dirty_notify_invalidations={} first_view_dirty_entity={:?} first_view_dirty_entity_type={:?} first_notify_entity={:?} first_notify_entity_type={:?}",
                 self.handle.window_id().as_u64(),
-                0,
                 decision.activity.dirty,
                 frame_request.needs_ui_commit(),
                 frame_request.needs_presentation(),
@@ -1172,6 +1195,9 @@ impl Window {
                 decision.submit_visible_frame,
                 decision.skip_frame,
                 decision.defer_inactive_dirty_draw,
+                dirty_frame_diagnostics.frame_request_reasons,
+                dirty_frame_diagnostics.first_frame_request.map(|request| request.reason),
+                dirty_frame_diagnostics.first_frame_request.map(|request| (request.source_file, request.source_line)),
                 dirty_frame_diagnostics.refreshes,
                 dirty_frame_diagnostics.view_dirty,
                 dirty_frame_diagnostics.direct_dirty_views,

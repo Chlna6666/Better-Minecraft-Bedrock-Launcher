@@ -365,6 +365,40 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_animation_cadence_does_not_force_a_swapchain_present() {
+        let cadence = PlatformFrameRequest::animation_tick();
+        assert!(cadence.needs_ui_commit());
+        assert!(cadence.needs_presentation());
+        let resolved = cadence.resolve_animation_presentation(false);
+        assert!(resolved.needs_ui_commit(), "the UI tick must still progress");
+        assert!(!resolved.needs_presentation(), "no pixels changed");
+        assert!(resolved.requires_frame(), "the UI callback was not discarded");
+    }
+
+    #[test]
+    fn merged_wsi_or_explicit_present_survives_idle_animation_cadence() {
+        let wsi = PlatformFrameRequest::presentation();
+        let merged = PlatformFrameRequest::animation_tick().merge(wsi);
+        let resolved = merged.resolve_animation_presentation(false);
+        assert!(resolved.needs_presentation(), "explicit WSI present is mandatory");
+        assert!(resolved.needs_ui_commit(), "the animation tick is not lost");
+        assert!(wsi.resolve_animation_presentation(false).needs_presentation());
+        assert!(
+            PlatformFrameRequest::ui_commit_and_presentation()
+                .resolve_animation_presentation(false)
+                .needs_presentation()
+        );
+    }
+
+    #[test]
+    fn animation_with_damage_preserves_present_cadence() {
+        let cadence = PlatformFrameRequest::animation_tick();
+        let resolved = cadence.resolve_animation_presentation(true);
+        assert!(resolved.needs_presentation());
+        assert!(resolved.needs_ui_commit());
+    }
+
+    #[test]
     fn merges_transitively_connected_damage() {
         let mut region = DirtyRegion::empty();
         region.push(rect(0.0, 10.0));
