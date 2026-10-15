@@ -86,7 +86,7 @@ impl MapViewerWindowView {
         } else if pending.is_some() {
             "已暂存 NBT 文件：请检查目标后确认导入。外部文件尚无地图像素预览"
         } else if self.map_image.source.is_none() {
-            "第一步：在右侧选择图片，生成真实地图像素"
+            "第一步：点击中央「选择图片」导入素材，生成真实地图像素"
         } else if converting {
             "正在转换图片，完成后可选择写入目标"
         } else if !ready {
