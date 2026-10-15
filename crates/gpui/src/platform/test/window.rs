@@ -269,12 +269,14 @@ impl PlatformWindow for TestWindow {
         false
     }
 
-    #[cfg(test)]
     fn owns_scene_animations(&self) -> bool {
-        if self.0.lock().owns_scene_animations {
-            true
-        } else {
-            self.has_active_presentation_animations()
+        #[cfg(test)]
+        {
+            self.0.lock().owns_scene_animations
+        }
+        #[cfg(not(test))]
+        {
+            false
         }
     }
 

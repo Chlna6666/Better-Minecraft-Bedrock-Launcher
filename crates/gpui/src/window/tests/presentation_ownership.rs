@@ -110,6 +110,6 @@ fn ui_owner_completes_scene_animation_without_native_ack(cx: &mut TestAppContext
     let active_count = window.update(|window, _cx| window.animation_engine.borrow().active_count());
     window.update(|window, _cx| window.remove_window());
     drop(test_window);
-    assert_eq!(query_count, 1);
+    assert_eq!(query_count, 0);
     assert_eq!(active_count, 0);
 }

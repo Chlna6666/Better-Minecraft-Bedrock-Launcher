@@ -2741,6 +2741,12 @@ impl PlatformWindow for WindowsWindow {
         renderer.present_active_frame(now, timing)
     }
 
+    fn owns_scene_animations(&self) -> bool {
+        // The GPU owner retains queued/deferred timelines even when presentation is
+        // waiting for frame readiness. UI sampling must not take over in that gap.
+        true
+    }
+
     fn has_active_presentation_animations(&self) -> bool {
         if self.0.pending_scene.borrow().is_some() {
             return true;

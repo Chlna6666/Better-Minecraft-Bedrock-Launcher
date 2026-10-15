@@ -1447,7 +1447,38 @@ impl Scene {
         }
     }
 
+    fn replay_animation_values(&mut self, range: Range<usize>, previous: &Scene) {
+        if previous.animation_values.is_empty() {
+            return;
+        }
+        let referenced: FxHashSet<_> = previous.paint_operations[range]
+            .iter()
+            .filter_map(|operation| match operation {
+                PaintOperation::Primitive(primitive) => primitive.animation_id(),
+                _ => None,
+            })
+            .collect();
+        let mut emitted: FxHashSet<_> = self
+            .animation_values
+            .iter()
+            .map(|value| (value.animation_id, value.property))
+            .collect();
+        // Samples are part of the replayed content's binding proof. Keep a freshly
+        // emitted sample when an executing wrapper retargets the same stable id.
+        self.animation_values.extend(
+            previous
+                .animation_values
+                .iter()
+                .filter(|value| {
+                    referenced.contains(&value.animation_id)
+                        && emitted.insert((value.animation_id, value.property))
+                })
+                .copied(),
+        );
+    }
+
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        self.replay_animation_values(range.clone(), prev_scene);
         self.revision = 0;
         let replay_start = self.paint_operations.len();
         let range_end = range.end;
@@ -3021,6 +3052,18 @@ mod tests {
             crate::point(ScaledPixels(20.0), ScaledPixels(30.0)),
             crate::size(ScaledPixels(80.0), ScaledPixels(20.0)),
         )]);
+        // Custom easing may overshoot either endpoint. Damage follows the actual
+        // visible samples, rather than needing an unbounded declaration envelope.
+        for (previous, next, left) in [(0.5, 1.25, 60.0), (-0.25, 0.5, 20.0)] {
+            let dirty = scene.presentation_animation_damage(&[sample(previous)], &[sample(next)]);
+            assert_eq!(
+                dirty.as_slice(),
+                &[Bounds::new(
+                    crate::point(ScaledPixels(left), ScaledPixels(30.0)),
+                    crate::size(ScaledPixels(80.0), ScaledPixels(20.0)),
+                )]
+            );
+        }
     }
 
     #[test]

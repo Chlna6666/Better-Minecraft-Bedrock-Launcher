@@ -1145,7 +1145,12 @@ impl AnimationEngine {
             match timeline.driver {
                 AnimationDriver::Gpu | AnimationDriver::Paint | AnimationDriver::Auto => {
                     has_gpu_or_paint = true;
-                    if let Some(bounds) = timeline.bounds {
+                    // Scene-bound tracks have exact old/new sampled pixel damage. Their
+                    // declaration envelope (possibly the whole viewport for custom easing)
+                    // must not override that damage with a second, coarser region.
+                    if timeline.scene_animation.is_none()
+                        && let Some(bounds) = timeline.bounds
+                    {
                         dirty_bounds.push(bounds);
                     }
                 }
@@ -1423,6 +1428,38 @@ fn resolve_specs_driver<'a>(specs: impl IntoIterator<Item = &'a AnimationSpec>) 
 #[cfg(test)]
 mod geometry_tests {
     use super::*;
+
+    #[test]
+    fn scene_bound_tick_uses_sampled_damage_instead_of_declaration_envelope() {
+        let now = Instant::now();
+        let element = GlobalElementId::from_path(&[crate::ElementId::from("translation")]);
+        let viewport = Bounds::new(
+            crate::Point::default(),
+            crate::size(crate::px(1200.), crate::px(800.)),
+        );
+        let mut engine = AnimationEngine::new();
+        engine.start_transition(
+            &element,
+            TransitionProperty::Translation,
+            AnimationSpec::new(Duration::from_secs(1)).driver(AnimationDriver::Paint),
+            now,
+        );
+        engine.set_transition_bounds(&element, TransitionProperty::Translation, viewport);
+        let unbound = engine.tick(now);
+        assert_eq!(unbound.dirty_bounds.as_slice(), &[viewport]);
+        assert!(engine.bind_scene_animation(
+            &element,
+            TransitionProperty::Translation,
+            SceneAnimationId(77),
+            [0.; 4],
+            [20., 0., 0., 0.]
+        ));
+        let bound = engine.tick(now + Duration::from_millis(50));
+        assert!(bound.has_gpu_or_paint);
+        assert!(bound.dirty_bounds.is_empty());
+        assert_eq!(bound.scene_values.len(), 1);
+        assert_eq!(bound.active_count, 1);
+    }
 
     #[test]
     fn scrolling_origin_preserves_animation_phase_and_clip_relative_to_content() {

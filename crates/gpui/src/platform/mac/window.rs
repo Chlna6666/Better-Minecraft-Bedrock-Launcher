@@ -966,6 +966,11 @@ impl Drop for MacWindow {
 }
 
 impl PlatformWindow for MacWindow {
+    fn owns_scene_animations(&self) -> bool {
+        // Native Metal currently receives UI-sampled animation values with each draw.
+        false
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.0.as_ref().lock().bounds()
     }

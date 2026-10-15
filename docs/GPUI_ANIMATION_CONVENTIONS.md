@@ -194,12 +194,15 @@ For an interruptible reveal driven by application state, sample the spring from 
 timestamp, keep the collection at full height, and apply the sample to a retained clip:
 
 ```rust
-let progress = spring.sample(window.animation_time()).value.clamp(0.0, 1.0);
+let sample = spring.sample(window.animation_time());
+let progress = sample.value.clamp(0.0, 1.0);
 let panel = panel
     .composite_layer()
-    .with_sampled_animation(
+    .with_stable_sampled_animation(
+        "panel-reveal",
         AnimationProperty::vertical_reveal(VerticalRevealEdge::Bottom, 0.0, 1.0),
         progress,
+        !sample.done,
     );
 ```
 

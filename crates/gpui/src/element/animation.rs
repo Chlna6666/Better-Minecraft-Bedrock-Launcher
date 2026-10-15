@@ -843,32 +843,14 @@ pub trait AnimationExt {
         }
     }
 
-    /// Paint this element into a retained scene animation using a caller-sampled progress value.
-    ///
-    /// This legacy form allocates a frame-local animation id and therefore requires descendants to
-    /// repaint whenever the sample changes. Use [`AnimationExt::with_stable_sampled_animation`] for
-    /// recurring caller-sampled motion whose static descendants should remain replayable.
-    fn with_sampled_animation(
-        self,
-        property: AnimationProperty,
-        progress: f32,
-    ) -> SampledAnimationElement<Self>
-    where
-        Self: Sized,
-    {
-        SampledAnimationElement {
-            element: Some(self),
-            property,
-            progress,
-        }
-    }
-
     /// Paint caller-sampled motion with one persistent scene-animation identity.
     ///
     /// `id` is retained with the element state. When `animating` is true this wrapper schedules the
     /// next compositor-paced sample by invalidating only its own paint context; descendants keep
     /// their previous primitive ranges and continue referring to the same animation id. Use this
     /// only when layout is already at final geometry and the sampled property is visual-only.
+    /// Non-identity samples remain applied when `animating` is false, without requesting more
+    /// frames. Changing translation or opacity endpoints preserves the primitive binding.
     fn with_stable_sampled_animation(
         self,
         id: impl Into<ElementId>,
@@ -911,7 +893,10 @@ pub trait AnimationExt {
     /// Layout animation limited to an absolute-positioned/local subtree.
     /// Only use if ancestor flow geometry cannot change with its progress.
     #[track_caller]
-    fn with_local_layout_animation_target(self, animating: bool) -> LayoutAnimationTargetElement<Self>
+    fn with_local_layout_animation_target(
+        self,
+        animating: bool,
+    ) -> LayoutAnimationTargetElement<Self>
     where
         Self: Sized,
     {
@@ -1006,113 +991,6 @@ impl<E: IntoElement + 'static> Element for LayoutAnimationTargetElement<E> {
     }
 }
 
-/// An element whose static primitives are retained while the caller supplies motion progress.
-pub struct SampledAnimationElement<E> {
-    element: Option<E>,
-    property: AnimationProperty,
-    progress: f32,
-}
-
-/// Opaque prepaint state for [`SampledAnimationElement`].
-#[doc(hidden)]
-pub struct SampledAnimationPrepaintState {
-    animation_id: SceneAnimationId,
-}
-
-impl<E: IntoElement + 'static> IntoElement for SampledAnimationElement<E> {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
-impl<E: IntoElement + 'static> Element for SampledAnimationElement<E> {
-    type RequestLayoutState = AnyElement;
-    type PrepaintState = SampledAnimationPrepaintState;
-    // The animation id above is scene-local and is allocated during prepaint. If an ancestor
-    // replays this wrapper, the current frame never records a matching SceneAnimationValue and
-    // retained primitives keep a stale frame-local binding. Always execute this boundary so its
-    // descendants are rebound to the current scene id before paint.
-    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
-        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (crate::LayoutId, Self::RequestLayoutState) {
-        let mut element = self
-            .element
-            .take()
-            .expect("sampled animation element should only be laid out once")
-            .into_any_element();
-        (element.request_layout(window, cx), element)
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        let animation_id = window.next_frame.scene.allocate_animation_id();
-        window.with_retained_replay_barrier(true, |window| element.prepaint(window, cx));
-        SampledAnimationPrepaintState { animation_id }
-    }
-
-    fn paint(
-        &mut self,
-        _global_id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        element: &mut Self::RequestLayoutState,
-        state: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let (from, to) =
-            self.property
-                .resolved_values(bounds, window.scale_factor(), window.visual_scale());
-        window
-            .next_frame
-            .scene
-            .push_animation_value(crate::SceneAnimationValue {
-                animation_id: state.animation_id,
-                property: self.property.property,
-                progress: if self.progress.is_finite() {
-                    self.progress
-                } else {
-                    0.0
-                },
-                from,
-                to,
-            });
-        paint_scene_animation(
-            window,
-            state.animation_id,
-            self.property,
-            bounds,
-            from,
-            to,
-            |window| element.paint(window, cx),
-        );
-    }
-}
-
 #[derive(Clone)]
 #[doc(hidden)]
 pub struct StableSampledAnimationState {
@@ -1120,6 +998,27 @@ pub struct StableSampledAnimationState {
     property: AnimationProperty,
     frame_pending: Rc<Cell<bool>>,
     bound: bool,
+}
+
+impl StableSampledAnimationState {
+    fn update(mut self, property: AnimationProperty, bound: bool) -> (Self, bool) {
+        // Translation/opacity endpoints are dynamic values, not primitive ownership. In
+        // particular, caller-sampled springs may submit new endpoints on every frame.
+        let compatible = self.property == property
+            || (self.property.property == property.property
+                && self.property.capture_subtree == property.capture_subtree
+                && matches!(
+                    property.property,
+                    TransitionProperty::Translation | TransitionProperty::Opacity
+                ));
+        let binding_changed = !compatible || self.bound != bound;
+        if !compatible {
+            self.animation_id = allocate_stable_sampled_animation_id();
+        }
+        self.property = property;
+        self.bound = bound;
+        (self, binding_changed)
+    }
 }
 
 /// A caller-sampled scene animation whose primitive ownership survives retained replay.
@@ -1142,6 +1041,10 @@ impl<E: IntoElement + 'static> IntoElement for StableSampledAnimationElement<E> 
 impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
     type RequestLayoutState = AnyElement;
     type PrepaintState = Option<StableSampledAnimationState>;
+    // This wrapper must emit this commit's sample even when its descendants replay.
+    // Its stable binding lets the descendants reuse their ranges without a paint barrier.
+    const RETAINED_REPLAY_CAPABILITY: crate::RetainedReplayCapability =
+        crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -1170,7 +1073,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         &mut self,
         global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         element: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
@@ -1178,32 +1081,32 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         let global_id = global_id.expect(
             "StableSampledAnimationElement always supplies an element id for state tracking",
         );
+        let (from, to) =
+            self.property
+                .resolved_values(bounds, window.scale_factor(), window.visual_scale());
+        let bound = self.animating
+            || !crate::Scene::animation_sample_is_identity(&crate::SceneAnimationValue {
+                animation_id: SceneAnimationId(0),
+                property: self.property.property,
+                progress: self.progress,
+                from,
+                to,
+            });
         let (state, binding_changed) = window.with_element_state(
             global_id,
             |state: Option<StableSampledAnimationState>, _window| {
-                let (mut state, property_changed) = match state {
-                    Some(state) if state.property == self.property => (state, false),
-                    Some(state) => (
-                        StableSampledAnimationState {
-                            animation_id: allocate_stable_sampled_animation_id(),
-                            property: self.property,
-                            frame_pending: state.frame_pending,
-                            bound: false,
-                        },
-                        true,
-                    ),
+                let (state, binding_changed) = match state {
+                    Some(state) => state.update(self.property, bound),
                     None => (
                         StableSampledAnimationState {
                             animation_id: allocate_stable_sampled_animation_id(),
                             property: self.property,
                             frame_pending: Rc::new(Cell::new(false)),
-                            bound: false,
+                            bound,
                         },
                         true,
                     ),
                 };
-                let binding_changed = property_changed || state.bound != self.animating;
-                state.bound = self.animating;
                 ((state.clone(), binding_changed), state)
             },
         );
@@ -1212,7 +1115,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
         // boundary, retained rows may keep a stale SceneAnimationId after the transition ends.
         window.with_retained_replay_barrier(binding_changed, |window| element.prepaint(window, cx));
 
-        self.animating.then_some(state)
+        bound.then_some(state)
     }
 
     fn paint(
@@ -1257,7 +1160,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             |window| element.paint(window, cx),
         );
 
-        if !state.frame_pending.replace(true) {
+        if self.animating && !state.frame_pending.replace(true) {
             let frame_pending = state.frame_pending.clone();
             let view_id = window.current_view();
             let retained_id = window
@@ -2168,11 +2071,39 @@ mod tests {
     }
 
     #[test]
-    fn sampled_animation_owns_frame_local_retained_boundary() {
-        assert_eq!(
-            <SampledAnimationElement<crate::Div> as Element>::RETAINED_REPLAY_CAPABILITY,
-            crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary
+    fn stable_sampled_endpoints_preserve_binding_but_capture_changes_rebind() {
+        let property = AnimationProperty::translation_opacity(
+            Point::default(),
+            Point::new(crate::px(0.), crate::px(16.)),
+            1.,
+            0.2,
         );
+        let state = StableSampledAnimationState {
+            animation_id: allocate_stable_sampled_animation_id(),
+            property,
+            frame_pending: Rc::new(Cell::new(false)),
+            bound: true,
+        };
+        let id = state.animation_id;
+        let property = AnimationProperty::translation_opacity(
+            Point::default(),
+            Point::new(crate::px(0.), crate::px(-2.)),
+            1.,
+            0.8,
+        );
+        let (state, changed) = state.update(property, true);
+        assert!(!changed);
+        assert_eq!(state.animation_id, id);
+        assert_eq!(state.property, property);
+        let (state, changed) = state.update(
+            AnimationProperty {
+                capture_subtree: true,
+                ..property
+            },
+            true,
+        );
+        assert!(changed);
+        assert_ne!(state.animation_id, id);
     }
 
     #[test]

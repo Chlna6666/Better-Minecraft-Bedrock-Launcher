@@ -303,11 +303,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     ///
     /// Independent presentation owners must return true even before a queued scene is accepted:
     /// the UI must not complete its timelines before the platform successfully presents them.
-    /// This query must not wait for an independent presentation thread. Platforms without such
-    /// an owner retain the existing committed-scene behavior by default.
-    fn owns_scene_animations(&self) -> bool {
-        self.has_active_presentation_animations()
-    }
+    /// This is a platform ownership contract, not a current-activity query: it must remain stable
+    /// while scenes are queued, deferred, or waiting for native frame readiness. It must not wait
+    /// for a presentation thread. Every platform must explicitly declare its owner; platforms
+    /// sampled by the UI return false.
+    fn owns_scene_animations(&self) -> bool;
     fn set_presentation_animation_completion_sender(
         &self,
         _sender: SceneAnimationCompletionSender,

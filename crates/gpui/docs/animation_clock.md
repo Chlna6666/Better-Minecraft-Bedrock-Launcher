@@ -156,8 +156,9 @@ true even while a scene is queued or deferred: a UI tick cannot finish those
 timelines before successful native presentation reports their completion. This
 ownership query must not synchronously wait for the presentation thread.
 UI-only visual and layout timelines still advance on the UI frame clock.
-Platforms using the default implementation retain their existing committed-scene
-activity check and UI fallback behavior.
+Every platform explicitly declares this ownership independently of current scene activity.
+UI-sampled platforms, including the current native macOS Metal path, return false; independent
+Nova presentation owners return true while queued, deferred, or waiting for native frame readiness.
 
 CPU-only filter/damage planning may sample lightweight geometry, but it must use
 the same current-frame animation sample as renderer-visible values.

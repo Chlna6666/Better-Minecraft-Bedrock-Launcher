@@ -1203,6 +1203,32 @@ fn retained_quad_chunk_keeps_exact_identity_and_generation_on_replay() {
 }
 
 #[test]
+fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
+    let mut previous = Scene::default();
+    let range = append_retained_test_quads(&mut previous, 1);
+    let id = SceneAnimationId(1 << 30);
+    // Use the insertion API to give both the operation and packed primitive the binding.
+    let quad = previous.quads[0].clone();
+    previous.clear();
+    previous.insert_animated_primitive(quad, id);
+    let sample = |animation_id, progress| SceneAnimationValue {
+        animation_id, property: crate::TransitionProperty::Opacity, progress,
+        from: [0.; 4], to: [1., 0., 0., 0.],
+    };
+    previous.push_animation_value(sample(id, 0.25));
+    previous.push_animation_value(sample(SceneAnimationId(id.0 + 1), 0.5));
+    let mut replayed = Scene::default();
+    replayed.replay(range.clone(), &previous);
+    assert_eq!(replayed.animation_values, vec![sample(id, 0.25)]);
+    replayed.replay(range.clone(), &previous);
+    assert_eq!(replayed.animation_values.len(), 1);
+    let mut updated = Scene::default();
+    updated.push_animation_value(sample(id, 0.75));
+    updated.replay(range, &previous);
+    assert_eq!(updated.animation_values, vec![sample(id, 0.75)]);
+}
+
+#[test]
 fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
     let mut left = Scene::default();
     let left_range = append_retained_test_quads(&mut left, 32);

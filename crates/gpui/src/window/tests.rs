@@ -12,6 +12,7 @@ use std::{cell::Cell, cell::RefCell, rc::Rc};
 mod completion_render;
 mod presentation_ownership;
 mod resize;
+mod sampled_animation;
 
 #[cfg(test)]
 #[derive(Default)]
