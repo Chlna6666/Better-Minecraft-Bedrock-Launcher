@@ -307,6 +307,41 @@ impl BackdropBlurTargets {
                     }
                 }
             }
+            // A Gaussian scratch allocation is keyed physically by the
+            // downsample/level geometry, not its ephemeral flattened member
+            // index or blur radius. When the Root has an independent pinned
+            // owner, an unmatched Gaussian may borrow an unused SAME-SIZE
+            // two-pass target. Its previous filtered pixels remain untrusted;
+            // the renderer's topology invalidation must rebuild the output.
+            //
+            // Never use Root's one-level Texture/View, and never substitute a
+            // different downsample or frame-slot descriptor capacity.
+            if config.radius() > 0.0 && new_root.is_some()
+                && pinned.is_some() && self.root_color_target.is_some()
+            {
+                let root = self.root_color_target.as_ref().expect("checked above");
+                if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
+                    (!permutation.contains(&old)
+                        && native_root_slot != Some(old)
+                        && variant.config.radius() > 0.0
+                        && variant.config.downsample() == config.downsample()
+                        && variant.levels.len() == blur_variant_level_count(config)
+                        && variant.levels.iter().all(|level| {
+                            level.pass_resource_sets.len() == root.pass_resource_sets.len()
+                        })
+                        && variant.target_resource_sets.len()
+                            == root.composite_resource_sets.len())
+                        .then_some(old)
+                }) {
+                    permutation[new_index] = source;
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "GPUI Gaussian scratch target rebound: new_slot={} old_slot={} downsample={} levels={}",
+                        new_index, source, config.downsample(), blur_variant_level_count(config),
+                    );
+                    continue;
+                }
+            }
             log::trace!(
                 target: "gpui::diagnostics",
                 "GPUI filter layout reuse rejected: reason=target_slot_mismatch new_slot={} radius={} levels={} old_active={} old_allocated={} pinned={:?}",

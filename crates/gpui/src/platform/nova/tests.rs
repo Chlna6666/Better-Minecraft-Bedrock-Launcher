@@ -2610,6 +2610,95 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
 }
 
 #[test]
+fn gaussian_capture_shift_reuses_compatible_scratch_without_moving_native_root() {
+    let make_variant = |index: u32| {
+        let root = index == 3;
+        BackdropBlurVariantTargets {
+            config: if root { test_zero_radius_blur_config(index) }
+                else { test_gaussian_capture_config(index) },
+            levels: (0..if root { 1 } else { 2 })
+                .map(|axis| BackdropBlurLevelTarget {
+                    byte_size: 64 * 32 * 4,
+                    texture: test_texture_id(index * 2 + axis + 1),
+                    texture_view: test_texture_view_id(index * 2 + axis + 1),
+                    pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
+                })
+                .collect(),
+            target_resource_sets: vec![test_resource_set_id(index + 20)],
+        }
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
+        variants: (0..4).map(make_variant).collect(),
+        active_variant_count: 4,
+        retained_root_variant: Some(3),
+        root_color_target: None,
+    };
+    let root_level = &targets.variants[3].levels[0];
+    let native = RenderTarget {
+        byte_size: root_level.byte_size,
+        texture: root_level.texture,
+        texture_view: root_level.texture_view,
+    };
+    targets.root_color_target = Some(RootColorTarget {
+        target: native,
+        pass_resource_sets: vec![test_resource_set_id(100)],
+        composite_resource_sets: vec![test_resource_set_id(101)],
+    });
+    targets.variants[3].levels[0].pass_resource_sets.clear();
+    targets.variants[3].target_resource_sets.clear();
+    let old_gaussian_views = (0..3)
+        .map(|index| targets.variants[index].levels[0].texture_view)
+        .collect::<Vec<_>>();
+
+    // The flattened index 41 is not a new Gaussian physical geometry:
+    // bind it to spare Gaussian target 1 while indices 2 and 0 keep their
+    // exact existing slots, and the Root keeps its unique physical owner.
+    let shifted = [
+        test_gaussian_capture_config(41),
+        test_gaussian_capture_config(2),
+        test_gaussian_capture_config(0),
+        test_zero_radius_blur_config(3),
+    ];
+    assert!(targets.reuse_layout(&shifted, &[], false, Some(3), None));
+    assert_eq!(targets.active_variant_count, 4);
+    assert_eq!(targets.variants[0].levels[0].texture_view, old_gaussian_views[1]);
+    assert_eq!(targets.variants[1].levels[0].texture_view, old_gaussian_views[2]);
+    assert_eq!(targets.variants[2].levels[0].texture_view, old_gaussian_views[0]);
+    assert_eq!(targets.root_color_texture_identity(),
+        Some((native.texture, native.texture_view)));
+    assert_eq!(targets.resource_set_for_config(shifted[3], 0),
+        Some(test_resource_set_id(101)));
+    assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[3].target_resource_sets.is_empty());
+
+    // Downsampling changes the native horizontal/final attachment sizes;
+    // the lookup must reject this without partially permuting any target.
+    let before = targets.variants.iter().map(|v| (v.config,
+        v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>()))
+        .collect::<Vec<_>>();
+    let incompatible = [
+        test_backdrop_blur_config(2, 2),
+        shifted[1],
+        shifted[2],
+        shifted[3],
+    ];
+    assert!(!targets.reuse_layout(&incompatible, &[], false, Some(3), None));
+    let after = targets.variants.iter().map(|v| (v.config,
+        v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>()))
+        .collect::<Vec<_>>();
+    assert_eq!(before.len(), after.len());
+    assert!(before.iter().zip(after.iter()).all(|((old_config, old_views), (new_config, new_views))| {
+        old_config.same_target_slot(*new_config) && old_views == new_views
+    }));
+    assert_eq!(targets.root_color_texture_identity(),
+        Some((native.texture, native.texture_view)));
+}
+
+#[test]
 fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_gaussian_capture_config(index),
