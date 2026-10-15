@@ -33,6 +33,26 @@ pub(super) struct BackdropBlurTargets {
 }
 
 impl BackdropBlurTargets {
+    /// The resident full-window color texture is identified by its actual GPU
+    /// handle, never by the position of a temporary flattened Blur index.
+    /// A popup may move this variant without moving its physical pixels.
+    pub(super) fn retained_root_texture_view(&self) -> Option<TextureViewId> {
+        let index = self.retained_root_variant?;
+        if index >= self.active_variant_count {
+            return None;
+        }
+        self.variants.get(index)?.levels.last().map(|target| target.texture_view)
+    }
+
+    /// A full-window color cache may survive a Capture reorder only when
+    /// the original native-resolution target remains an unfiltered layer.
+    pub(super) fn can_preserve_root_color_capture(&self) -> bool {
+        self.retained_root_texture_view().is_some()
+            && self.source.is_none()
+            && self.isolated_sources.is_empty()
+            && self.variants.iter().all(|variant| variant.config.radius() == 0.0)
+    }
+
     pub(super) fn byte_size(&self) -> u64 {
         let mut textures = FxHashSet::default();
         self.isolated_sources

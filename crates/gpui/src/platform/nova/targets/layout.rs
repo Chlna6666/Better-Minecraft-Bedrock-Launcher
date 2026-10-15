@@ -4,9 +4,11 @@ impl BackdropBlurTargets {
     /// Rebind full-resolution zero-radius capture textures when a popup changes
     /// the flattened capture order/count but no actual Gaussian target is needed.
     ///
-    /// All previous source pixels become untrusted: the caller MUST invalidate
-    /// filter residency and force a full first refresh after this mapping change.
-    /// This path only avoids reallocating textures and GPU resource bindings.
+    /// Other Capture pixels become untrusted: the caller MUST invalidate their
+    /// source versions and fully initialize each remapped Capture on first use.
+    /// A previous Root Color can retain its pixels only after the caller proves
+    /// the pre/post-rebind GPU TextureView and resident epoch are identical.
+    /// This path only reorders existing textures and GPU resource bindings.
     pub(in crate::platform::nova) fn rebind_zero_radius_layout(
         &mut self,
         next: &[BackdropBlurConfig],
@@ -36,8 +38,9 @@ impl BackdropBlurTargets {
         // Every admitted target has exactly one native-resolution color texture.
         // No per-slot source or Gaussian dimensions change with the flattened index.
         // Preserve a warmed window-root allocation when both layouts contain it.
-        // Other layouts may rebind child-only slots, but ALL old pixel residency
-        // is invalidated by ensure_backdrop_blur_targets before the next draw.
+        // Other layouts may rebind child-only slots; their source residency
+        // must be invalidated before the next draw. Root pixels may survive
+        // only under the renderer's explicit physical texture identity check.
         if let (Some(old_root), Some(new_root)) = (old_root, new_root) {
             self.variants.swap(old_root, new_root);
         }

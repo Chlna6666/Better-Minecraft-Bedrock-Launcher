@@ -521,6 +521,19 @@ impl NovaRenderer {
         Ok(())
     }
 
+    /// Only the exact native-color target may survive a Capture topology
+    /// rebind; none of the Gaussian/filter source pixels are inherited.
+    fn root_color_reuse_eligible(&self) -> bool {
+        self.filters.is_valid()
+            && self.filters.root_color_content_version().is_some()
+            && self.filters.targets.as_ref().is_some_and(
+                BackdropBlurTargets::can_preserve_root_color_capture,
+            )
+            && !present::has_root_backdrop_blurs(&self.frame_upload)
+            && self.frame_upload.backdrop_blur_configs().iter()
+                .all(|config| config.radius() == 0.0)
+    }
+
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
         if self.filters.targets.as_ref().is_some_and(|targets| {
             targets.is_layout_compatible(
@@ -531,6 +544,12 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
+        // Preserve a *physical* full-window color target when the capture DAG
+        // changes only its zero-radius children. This proof must be made on
+        // native texture handles, not packed Blur member indices.
+        let prior_root_view = self.filters.targets.as_ref()
+            .and_then(BackdropBlurTargets::retained_root_texture_view);
+        let root_eligible = self.root_color_reuse_eligible();
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -539,13 +558,23 @@ impl NovaRenderer {
                 self.frame_upload.retained_root_blur,
             )
         }) {
-            // The physical targets are resident, but capture topology changed.
-            // Do not sample filtered pixels from the previous mapping.
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            // The native root survives an exact texture-view match, even if
+            // its flattened member index changed. All OTHER capture versions
+            // become untrusted and are individually rebuilt on first use.
+            let preserve_root_color = root_eligible
+                && prior_root_view == self.filters.targets.as_ref()
+                    .and_then(BackdropBlurTargets::retained_root_texture_view);
+            if preserve_root_color {
+                self.filters.invalidate_element_sources_preserving_root_color();
+            } else {
+                self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+                self.invalidate_backdrop_blur_cache();
+            }
             self.invalidate_draw_step_cache();
-            self.invalidate_backdrop_blur_cache();
             log::debug!(target: "gpui::diagnostics",
-                "GPUI retained target layout reused: active_variants={} allocated_variants={}",
+                "GPUI retained target layout reused: root_color_preserved={} root_content_version={:?} active_variants={} allocated_variants={}",
+                preserve_root_color,
+                self.filters.root_color_content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
                 self.filters.targets.as_ref().expect("reused targets exist").variants.len());
             return Ok(());
@@ -558,8 +587,12 @@ impl NovaRenderer {
         // For zero-radius capture-only layouts, a popup can change the number
         // and flattened order of captures without changing texture dimensions.
         // Rebind warmed texture slots instead of destroying the whole target chain.
-        // This mapping deliberately invalidates ALL old pixels: slot indices and
-        // cached filter snapshots no longer describe the same source content.
+        // Old Filter captures lose their flattened index identity. The root
+        // color may keep its pixels only if its native view still matches;
+        // every other capture must be rebuilt before it can be sampled.
+        let prior_root_view = self.filters.targets.as_ref()
+            .and_then(BackdropBlurTargets::retained_root_texture_view);
+        let root_eligible = self.root_color_reuse_eligible();
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.rebind_zero_radius_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -567,12 +600,21 @@ impl NovaRenderer {
                 self.frame_upload.retained_root_blur,
             )
         }) {
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            let preserve_root_color = root_eligible
+                && prior_root_view == self.filters.targets.as_ref()
+                    .and_then(BackdropBlurTargets::retained_root_texture_view);
+            if preserve_root_color {
+                self.filters.invalidate_element_sources_preserving_root_color();
+            } else {
+                self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+                self.invalidate_backdrop_blur_cache();
+            }
             self.invalidate_draw_step_cache();
-            self.invalidate_backdrop_blur_cache();
             log::debug!(
                 target: "gpui::diagnostics",
-                "GPUI zero-radius retained target layout rebound: active_variants={}",
+                "GPUI zero-radius retained target layout rebound: root_color_preserved={} root_content_version={:?} active_variants={}",
+                preserve_root_color,
+                self.filters.root_color_content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
             );
             return Ok(());

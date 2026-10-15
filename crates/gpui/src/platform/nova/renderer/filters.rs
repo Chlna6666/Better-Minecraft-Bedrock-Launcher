@@ -34,6 +34,10 @@ pub(super) struct FilterRegistry {
     /// not merely the latest UI View invalidation.
     pub(super) last_gpu_animation_values: Vec<crate::SceneAnimationValue>,
     next_content_version: u64,
+    /// Resident window color has an independent content epoch. A popup's
+    /// flattened filter-index change must not reset this epoch while the
+    /// physical root texture and its pixels remain the same.
+    root_color_version: Option<TextureContentVersion>,
     valid: bool,
 }
 
@@ -50,6 +54,7 @@ impl FilterRegistry {
             element_blur_inputs: Vec::new(),
             last_gpu_animation_values: Vec::new(),
             next_content_version: 0,
+            root_color_version: None,
         }
     }
 
@@ -66,10 +71,37 @@ impl FilterRegistry {
     }
 
     pub(super) fn invalidate(&mut self) {
+        self.root_color_version = None;
         self.valid = false;
         self.quality = None;
         self.element_blur_inputs.clear();
         self.last_gpu_animation_values.clear();
+    }
+
+    /// A target-layout-only reorder can preserve the full-window color
+    /// texture when its native handle is unchanged. All indexed Element
+    /// snapshots are conservatively retired: their index can now describe a
+    /// different GPU target, and first refresh must initialize its pixels.
+    /// Unlike invalidate(), this leaves the independent root color version
+    /// and the shared atlas/quality validity intact.
+    pub(super) fn invalidate_element_sources_preserving_root_color(&mut self) {
+        self.element_blur_inputs.clear();
+        self.last_gpu_animation_values.clear();
+    }
+
+    pub(super) fn root_color_content_version(&self) -> Option<TextureContentVersion> {
+        self.root_color_version
+    }
+
+    /// Called only after successful GPU submission. Skipped root passes do
+    /// not mutate texture content or advance the root's epoch.
+    pub(super) fn record_root_color_present(&mut self, active: bool, refreshed: bool) {
+        if !active {
+            self.root_color_version = None;
+        } else if refreshed {
+            self.next_content_version = self.next_content_version.wrapping_add(1).max(1);
+            self.root_color_version = Some(TextureContentVersion(self.next_content_version));
+        }
     }
 
     /// The GPU owns one resident source snapshot per flattened filter index.
@@ -272,6 +304,44 @@ impl FilterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_color_version_survives_only_texture_preserving_topology_rebind() {
+        let mut registry = FilterRegistry::new(None);
+        assert_eq!(registry.root_color_content_version(), None);
+        registry.record_submission(BackdropBlurQuality::Full, 9);
+        registry.record_root_color_present(true, true);
+        let resident = registry.root_color_content_version().expect("resident color");
+        let source = FilterSource::AutoStatic {
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            content_hash: 0xbeef,
+            content_bytes: 64,
+        };
+        registry.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
+        assert!(registry.source_unchanged(3, &source, &[]));
+
+        registry.invalidate_element_sources_preserving_root_color();
+        assert!(
+            !registry.source_unchanged(3, &source, &[]),
+            "a remapped popup must rebuild even when an old index had valid pixels"
+        );
+        assert_eq!(registry.root_color_content_version(), Some(resident));
+        assert!(!registry.refresh_required(BackdropBlurQuality::Full, false));
+        registry.record_root_color_present(true, false);
+        assert_eq!(registry.root_color_content_version(), Some(resident));
+        registry.record_root_color_present(true, true);
+        assert_ne!(registry.root_color_content_version(), Some(resident));
+
+        // A native target retirement, a resize, or atlas invalidation still
+        // discards the physical root residency as well as filter snapshots.
+        registry.record_root_color_present(false, false);
+        assert!(registry.root_color_content_version().is_none());
+        registry.record_root_color_present(true, true);
+        registry.invalidate();
+        assert!(registry.root_color_content_version().is_none());
+        assert!(registry.refresh_required(BackdropBlurQuality::Full, false));
+    }
 
     #[test]
     fn retained_filters_reuse_until_source_quality_or_targets_change() {

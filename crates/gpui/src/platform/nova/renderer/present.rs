@@ -1492,6 +1492,10 @@ impl NovaRenderer {
                 &self.frame_upload.sampled_animation_values,
                 element_blur_layers.iter().map(|layer| layer.index),
             );
+            self.filters.record_root_color_present(
+                root_scene_color_cached,
+                root_scene_color_refreshes != 0,
+            );
             self.filters
                 .record_submission(backdrop_blur_quality, atlas_content_generation);
         } else {

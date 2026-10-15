@@ -449,9 +449,14 @@ impl NovaRenderer {
                 self.frame_upload.element_blur_source_for_index(range.index),
                 Some(FilterSource::AutoStatic { .. })
             );
+            // A remapped or newly allocated capture has no proven GPU
+            // contents. Never use a tiny window damage rect to initialize
+            // only a fraction of an uninitialized offscreen texture.
+            let capture_uninitialized = !is_retained_root
+                && self.filters.layer_content_version(range.index).is_none();
             let layer_force_full = requires_full_isolated_layer_refresh(
                 is_retained_root,
-                force_full || auto_static_rebuild,
+                force_full || auto_static_rebuild || capture_uninitialized,
                 config,
                 self.current_size,
                 damage,
@@ -1494,6 +1499,10 @@ mod independent_layer_source_damage_tests {
             crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),
         ));
         assert!(!requires_full_isolated_layer_refresh(false, false, config, size, &dirty));
+        assert!(
+            requires_full_isolated_layer_refresh(false, true, config, size, &dirty),
+            "a newly allocated or remapped Capture must initialize the entire target"
+        );
         assert!(requires_full_isolated_layer_refresh(true, true, config, size, &dirty));
     }
 }

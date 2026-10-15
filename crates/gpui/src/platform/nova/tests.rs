@@ -2390,6 +2390,8 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         retained_root_variant: Some(5),
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
+    assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
+    assert!(targets.can_preserve_root_color_capture());
     for (count, root) in [(4_u32, 3_u32), (5, 4), (6, 5), (4, 3)] {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
@@ -2397,6 +2399,11 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         assert!(targets.rebind_zero_radius_layout(&configs, false, Some(root)));
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.retained_root_variant, Some(root as usize));
+        assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
+        assert!(
+            targets.can_preserve_root_color_capture(),
+            "zero-radius popup count churn must not discard root GPU identity"
+        );
         assert_eq!(
             targets.variants[root as usize].levels[0].texture_view,
             original_root_view,
