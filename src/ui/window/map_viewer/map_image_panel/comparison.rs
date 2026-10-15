@@ -92,14 +92,17 @@ impl MapViewerWindowView {
                 |(_, block)| format!("目标：{}, {}, {}", block.x, block.y, block.z),
             ),
             MapImageInstallDestination::NewUpFrame => {
-                let (x, z) = self.map_frame_anchor();
-                if self.map_image.pending_bundle.is_some() {
+                if let Some((x, z)) = self.map_frame_confirmed_center() {
+                    if self.map_image.pending_bundle.is_some() {
                     format!("展示框中心：{x}, {}, {z} · 待解析 NBT 网格", self.y_layer)
                 } else {
                     format!(
                         "展示框中心：{x}, {}, {z} · {}×{} 张",
                         self.y_layer, self.map_image.options.columns, self.map_image.options.rows,
                     )
+                    }
+                } else {
+                    "尚未在当前维度选择展示框放置位置".to_owned()
                 }
             }
         };
