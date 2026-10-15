@@ -29,6 +29,8 @@ impl MapViewerWindowView {
         } else {
             None
         };
+        let needs_position = frame_preview && !needs_target_review
+            && (self.map_image.frame_anchor.is_none() || self.map_image.picking_frame_center);
         let check_running = check.is_some_and(|task| !task.is_terminal());
         let check_passed = self.map_frame_preflight_passed();
         let action_enabled = (ready || pending.is_some()) && !busy && !check_running
@@ -65,18 +67,18 @@ impl MapViewerWindowView {
                 }),
             ),
             MapImageInstallDestination::NewUpFrame => {
-                let (x, z) = self.map_frame_anchor();
+                let target = if let Some((x, z)) = self.map_image.frame_anchor {
+                    format!(
+                        "已选择中心：X {x} · Y {} · Z {z}；{}×{} 张地图",
+                        self.y_layer, self.map_image.options.columns, self.map_image.options.rows
+                    )
+                } else {
+                    "尚未选择放置位置；不会自动使用地图视口中心".to_owned()
+                };
                 (
                     "直接放置到当前世界",
-                    if pending.is_some() {
-                        format!("锁定位置：X {x} · Y {} · Z {z}；待解析 NBT 分片", self.y_layer)
-                    } else {
-                        format!(
-                            "锁定位置：X {x} · Y {} · Z {z}；{}×{} 张",
-                            self.y_layer, self.map_image.options.columns, self.map_image.options.rows
-                        )
-                    },
-                    "只读检查不会修改存档；检测通过后才能放置。若位置冲突，请在右侧调整中心或 Y 层。",
+                    target,
+                    "在地图上左键选择放置中心，预览完整网格范围；然后检查空位与支撑，最后确认写入。",
                     true,
                 )
             }
@@ -94,7 +96,13 @@ impl MapViewerWindowView {
         } else if !target_ready {
             "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
         } else if needs_target_review {
-            "先进入目标预览，锁定放置中心后再检查冲突和写入存档"
+            "先进入目标预览，再在世界地图上主动选取放置中心"
+        } else if needs_position {
+            if self.map_image.picking_frame_center {
+                "选点模式：请左键点击中央世界地图；不会写入存档"
+            } else {
+                "第二步：在地图上选择展示框中心；没有选点时不允许预检和写入"
+            }
         } else if frame_preview && check_running {
             "正在后台检查展示框网格；不会修改存档"
         } else if frame_preview && !check_passed {
@@ -224,6 +232,12 @@ impl MapViewerWindowView {
                                 "确认 NBT 导入并写入"
                             } else if needs_target_review {
                                 "下一步 · 目标预览"
+                            } else if needs_position {
+                                if self.map_image.picking_frame_center {
+                                    "取消选点模式"
+                                } else {
+                                    "在地图上选择放置中心"
+                                }
                             } else if frame_preview && !check_passed {
                                 if check_running { "检查中…" } else { "检查放置区域" }
                             } else {
@@ -239,6 +253,12 @@ impl MapViewerWindowView {
                                         this.set_import_workspace_mode(
                                             super::super::state::ImportWorkspaceMode::Placement, cx
                                         );
+                                    } else if needs_position {
+                                        if this.map_image.picking_frame_center {
+                                            this.cancel_map_frame_center_pick(cx);
+                                        } else {
+                                            this.begin_map_frame_center_pick(cx);
+                                        }
                                     } else if this.map_image.pending_bundle.is_some() {
                                         this.confirm_pending_map_bundle(cx);
                                     } else if this.map_image.install_destination
