@@ -269,6 +269,7 @@ impl Render for SettingsContentView {
             system_font_names.as_ref(),
             &settings_layout,
         )
+        .into_any_element()
     }
 }
 
