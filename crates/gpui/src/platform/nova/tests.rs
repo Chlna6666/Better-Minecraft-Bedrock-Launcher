@@ -2731,6 +2731,35 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
             None,
         ));
     }
+    // A closed Gaussian/isolated popup can leave scratch GPU textures warm.
+    // They are independent from the Root Color physical view and must not
+    // invalidate its resident content version simply by being allocated.
+    targets.variants[4].config = test_backdrop_blur_config(4, 2);
+    targets.isolated_sources.push(IsolatedBlurSource {
+        index: 4,
+        target: RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(90),
+            texture_view: test_texture_view_id(90),
+        },
+        pass_resource_sets: vec![test_resource_set_id(90)],
+    });
+    assert_eq!(targets.active_variant_count, 4);
+    assert_eq!(targets.active_isolated_source_count, 0);
+    assert!(targets.can_preserve_root_color_capture(),
+        "inactive Gaussian/scratch residency must not discard Root Color");
+    targets.variants[1].config = test_backdrop_blur_config(1, 2);
+    assert!(!targets.can_preserve_root_color_capture(),
+        "a live Gaussian source still requires the conservative root proof");
+    targets.variants[1].config = test_zero_radius_blur_config(1);
+    assert!(targets.can_preserve_root_color_capture());
+    targets.isolated_sources[0].target.texture_view = original_root_view;
+    assert!(!targets.can_preserve_root_color_capture(),
+        "aliased scratch View cannot share Root Color residency");
+    targets.isolated_sources[0].target.texture_view = test_texture_view_id(90);
+    targets.isolated_sources[0].target.texture = targets.variants[3].levels[0].texture;
+    assert!(!targets.can_preserve_root_color_capture(),
+        "two Views of one native Texture cannot be independent Root owners");
 }
 
 #[test]

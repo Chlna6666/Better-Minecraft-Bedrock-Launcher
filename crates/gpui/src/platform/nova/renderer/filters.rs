@@ -309,13 +309,16 @@ impl FilterRegistry {
         else {
             return None;
         };
+        // The snapshot of the last *successful refresh for this layer* owns
+        // the pixels we are updating. The global last-presented GPU sample may
+        // have advanced while this particular filter was skipped.
+        let previous_values = previous.animation_values.as_deref().unwrap_or(&[]);
         if current.layer_id != old.layer_id
             || current.bounds != old.bounds
             || current.content_mask != old.content_mask
             || current.radius != old.radius
-            || !std::sync::Arc::ptr_eq(&current.content, &old.content)
             || !crate::Scene::capture_preserves_source_coordinates(
-                current.radius, current.animation_id, self.last_gpu_animation_values.iter(),
+                current.radius, current.animation_id, previous_values.iter(),
             )
             || !crate::Scene::capture_preserves_source_coordinates(
                 current.radius, current.animation_id, animation_values.iter(),
@@ -323,15 +326,31 @@ impl FilterRegistry {
         {
             return None;
         }
+        // A UI commit may rebuild an equivalent child Scene into another Arc.
+        // Prove *all* recursive static paint operations identical before
+        // reusing any of the old texture. Passing empty sample arrays here
+        // intentionally checks structural paint, then gpu_sample_damage below
+        // accounts for every actual animation sample difference.
+        let same_paint = std::sync::Arc::ptr_eq(&current.content, &old.content)
+            || current.content.retained_filter_source_matches(&old.content, &[], &[]);
+        if !same_paint {
+            return None;
+        }
         let bounds = current.bounds.intersect(&current.content_mask.bounds);
         let mut damage = crate::DirtyRegion::empty();
-        for region in current
-            .content
-            .gpu_sample_damage(&self.last_gpu_animation_values, animation_values)
-        {
+        for region in current.content.gpu_sample_damage(previous_values, animation_values) {
             damage.push(region.intersect(&bounds));
         }
-        (!damage.is_empty()).then_some(damage)
+        let result = (!damage.is_empty()).then_some(damage);
+        if result.is_some() && !std::sync::Arc::ptr_eq(&current.content, &old.content) {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI isolated source partial damage reused across equivalent Scene revisions: index={} changed_rects={}",
+                index,
+                result.as_ref().map_or(0, crate::DirtyRegion::rect_count),
+            );
+        }
+        result
     }
 
     pub(super) fn record_element_blur_inputs(
@@ -854,11 +873,79 @@ mod tests {
         let mut replacement = crate::Scene::default();
         replacement.replay(0..source.content.len(), &source.content);
         source.content = std::sync::Arc::new(replacement);
-        assert!(
+        assert_eq!(
             registry
                 .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.8)])
-                .is_none()
+                .expect("equivalent Arc-rebuilt content must retain local damage")
+                .union_bounds(),
+            Some(bounds)
         );
+    }
+
+    #[test]
+    fn isolated_source_uses_last_resident_samples_not_last_submitted_frame() {
+        let area = crate::bounds(
+            crate::point(crate::ScaledPixels(12.), crate::ScaledPixels(14.)),
+            crate::size(crate::ScaledPixels(100.), crate::ScaledPixels(80.)),
+        );
+        let mut scene = crate::Scene::default();
+        scene.insert_animated_primitive(
+            crate::Quad {
+                bounds: area,
+                content_mask: crate::ContentMask::new(area),
+                ..Default::default()
+            },
+            crate::SceneAnimationId(21),
+        );
+        let old_scene = std::sync::Arc::new(scene);
+        let sample = |progress| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(21),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        let old_source = crate::PaintBlur {
+            order: 0, animation_id: None, layer_id: None,
+            bounds: area, content_mask: crate::ContentMask::new(area),
+            radius: crate::ScaledPixels(0.0), opacity: 1.0,
+            content: old_scene.clone(),
+        };
+        let mut registry = FilterRegistry::new(None);
+        registry.record_element_blur_inputs(
+            &[(1, FilterSource::Element(old_source.clone()))],
+            &[sample(0.2)], [1],
+        );
+        // A newer frame can be submitted without refreshing this texture.
+        // Its resident pixels must still be compared against sample(0.2).
+        registry.last_gpu_animation_values = vec![sample(0.7)];
+        let mut equivalent = crate::Scene::default();
+        equivalent.replay(0..old_scene.len(), &old_scene);
+        let mut rebuilt = old_source;
+        rebuilt.content = std::sync::Arc::new(equivalent);
+        assert_eq!(
+            registry.local_source_damage(
+                1, &FilterSource::Element(rebuilt.clone()), &[sample(0.7)],
+            ).expect("old resident sample must cause damage").union_bounds(),
+            Some(area),
+        );
+        // A genuinely changed static child may not inherit old source texels.
+        let mut changed = crate::Scene::default();
+        changed.insert_animated_primitive(
+            crate::Quad {
+                bounds: crate::bounds(
+                    crate::point(crate::ScaledPixels(20.), crate::ScaledPixels(14.)),
+                    crate::size(crate::ScaledPixels(100.), crate::ScaledPixels(80.)),
+                ),
+                content_mask: crate::ContentMask::new(area),
+                ..Default::default()
+            },
+            crate::SceneAnimationId(21),
+        );
+        rebuilt.content = std::sync::Arc::new(changed);
+        assert!(registry.local_source_damage(
+            1, &FilterSource::Element(rebuilt), &[sample(0.7)],
+        ).is_none(), "changing static painter geometry must force full capture");
     }
 
     #[test]
