@@ -1,9 +1,72 @@
 # GPUI 统一构帧与合成链路：持续执行 TODO
 
 > 状态：进行中。此文件是独立维护 GPUI/Nova-GFX 渲染重构的唯一进度入口；不是 BMCBL 业务 UI TODO。
-> 更新日期：2026-10-14（UTC）。初始依据：master `405a7133eec7e093ad93681ed725de6a69a89cfb`、GPUI/Nova 源码及 2026-10-14 DX11 本地调试日志。
+> 看板核对：2026-10-15，基线 master `678d02079f895186b5dc33d88a08592d753fdc87`；2026-10-14 的 DX11 与 2026-10-15 的 DX12 日志均为**历史基线**，不是当前代码的验收记录。原始文档初始基线 `405a7133eec7e093ad93681ed725de6a69a89cfb`。
 > **所有后续对话/代理在编辑前必须重新读取 master HEAD、本文和相关源码，不得使用本文件的历史 HEAD 直接写入。**
 > 本文是唯一执行状态源；[GPUI P0 历史依赖审计](GPUI_P0_RENDER_DEPENDENCY_AUDIT.md)仅作已发生事实与当时源码快照参考，其旧 RenderTree/RenderCommit 方案不再是目标。
+
+## 最新执行看板（唯一实时任务表，2026-10-15）
+
+**本节是当前决策依据**；下面 `P0-A / P0-B / P1–P3` 的长勾选记录与逐提交小节是**历史实现账本**，不再用它们单独认定完成。新增任务或改变状态先改此表，并在原有历史章节记对应提交/验证证据，不另建 TODO 文件。
+
+**状态语义**：`已提交·待验证`＝仓库中存在实现/测试源码，但**无可复核的当前 HEAD Rust 构建、测试及目标后端证据**；`部分实现`＝某条路径已写，但全任务边界尚未闭合；`待处理`＝尚未实现任务要求。只可依据实际结果将状态推进到「编译通过 → 对应测试通过 → 指定后端实机通过 → 完成」。尚无记录不等于用户从未本地测试，标记为**未提供证据**。不使用没有实测来源的 GPU 百分比、帧时间、显存节省数据。
+
+| ID | 优先级 / 现状 | 下一可执行切片（完成时必须有的产物） | 前置与验收出口 |
+| --- | --- | --- | --- |
+| **P0-01** | P0 · **已提交·待验证** | **构建与单测阻塞清零**：检查 GPUI/Nova 当前 master 的 Rust fmt/check、`AutoStatic`、`gaussian_capture`、`retained_filters`、`chunk_upload`、设置 Trace/TOML 兼容性；出现 E0308/E0616/visibility/borrow 错误按实际源码修复并提交，**不以 CI 代替本地测试** | 无前置；记录命令、后端 Feature、错误/通过输出、测试数与对应 commit；未提供证据前其余 P0 全是“待验证” |
+| **P0-02** | P0 · **已提交·待验证** | **Trace 实际启停验收**：设置 → 启动器 → `GPUI / Nova 详细 Trace` 独立开关；持久化→完整重启→开启/关闭分别确认 `frame_metrics`、`gpui::diagnostics=trace`、`latest.log`；旧配置缺少键时默认 false；验证日志滚动限制 | P0-01；`src/config/*`、`src/ui/views/settings/*`、`src/app.rs`、`src/startup.rs`、`src/utils/logger.rs`；不触发 Debug 子窗口、不以环境变量绕过 |
+| **P0-03** | P0 · **部分实现** | **同一次实验的时间线闭环**：将 UI Dropdown 打开/收起、Re-target、页面切换、Frame Request 的原因、`static_prefix_captured`、`auto_static_relocation`、`GPUI AutoStatic submitted`、Draw/Present 按 `window_id` / scene revision / 事件顺序关联；确认 `src/ui/components/dropdown.rs` 与 `dropdown_overlay.rs` 现存 `tracing::trace!` **不会仅凭 `gpui::diagnostics=trace` 自动进入日志**，补安全的 UI 侧定向 Trace 或关联字段，不全局开启所有库 trace | P0-01/02；一份可复现完整 Trace + 帧事件对照，保留低开销默认关闭语义 |
+| **P0-04** | P0 · **已提交·待验证** | **AutoStatic 静态前缀真缓存命中**：公共 Dropdown 连续展开/回收与首页版本下拉 A/B；记录 `static_prefix_captured=true`、成功 Present 后 `source_index=Some`、稳定动画帧 `refreshed_layers=0`、`source_draw_steps=0`，且 `native_view/content_version` 无故不变更；失效/Resize 首帧允许必要重绘 | P0-01～03；逐帧结果及截图，不能把 “Capture candidate” 误报为真实 GPU 缓存命中；涉及 `renderer/{retained_upload,present,filters}.rs` |
+| **P0-05** | P0 · **已提交·待验证** | **Filter Target 高水位复用**：Gaussian/Root/Element + AutoStatic 混合，预热 3→4→6 后连续 6→3→4→6；`active_isolated/allocated_isolated`、`layout reused/recreated`、物理 View、ResourceSet、Filter 输出内容版本一起核验；新 Slot、资源变化必须重绘而非采样旧像素 | P0-01～04；容量以内不应每次重新 create/destroy 全链；容量以外可重建；必须校验异步 Fence / GPU in-flight / 多窗口 / Blur on/off |
+| **P0-06** | P0 · **待处理** | **Root Color 和 Filter Capture 真实资源所有权分离**：根颜色不再使用 `retained_root_blur`/零半径 Blur 充当永久语义所有者；把 RootColor 的尺寸、内容版本、物理 View、Fence 退休和 Filter DAG 依赖独立定义，迁移旧消费者并删除冗余旧所有者 | P0-04/05 的实机正确性基线；跨 Popup 不无故失效、Resize/透明/Clip/Mask/Texture 别名不出现旧帧；不要再增加第二套 Root 缓存 |
+| **P0-07** | P0 · **部分实现** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
+| **P0-08** | P0 · **部分实现** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
+| **P0-09** | P0 · **部分实现** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
+| **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
+| **P1-02** | P1 · **部分实现** | **唯一持久 Paint Artifact + 局部失效**：用持久 Chunk/Order/Filter/Property 依赖代替逐帧全量 Scene replay 与 Scene Finish；完成 CachedView 嵌套、中断/重定向动画、重排 Painter Order、纯 Composite 属性更新时不重建内容 | P1-01；相同输入下画面像素等价、静态 Buffer upload=0、变化只上传受影响范围；一条局部纵切跑通后再扩展 |
+| **P1-03** | P1 · **待处理** | **唯一 GPU 消费协议**：替换 `PresentationPacket.scene` 全量快照与 `SceneSlot` 主链路，GPU Owner 的 Create/Update/Remove/Animation/Damage/Surface epoch 有顺序的增量提交；队列 latest-wins 不丢删除/资源操作 | P1-02 + P0-09；断帧、动画中断、跨窗口、Resize、队列拥塞与 GPU Fence 下正确；不额外建立 RenderTree/RenderCommit 等价影子结构 |
+| **P2-01** | P2 · **待处理** | **显存预算与资源退休**：Filter/Root/Path/Atlas/Buffer 的 alloc/reuse/retire/budget/fragmentation/idle-trim 指标；统一资源所有者、Fence 退休，避免已预热 Spare Target 无限驻留 | P0-05/06、P1-03；高频弹层结束、关闭子窗口及 Resize 后 residency/peak/retire 可回落；DX11/DX12/VK/GL 资源生命周期等价 |
+| **P2-02** | P2 · **部分实现** | **原生 GPU 时间与 Render Graph 同步**：查询各后端 GPU pass timestamp、Copy/Upload、Filter、Composite、Present 的可比较时长；图资源版号和 Alias RD/WR/WAW barrier、Load/Clear/Scissor 与多 FrameSlot 保护 | P0-07、P2-01；不能用 Owner CPU busy 替代 GPU 时间；跨页面、跨帧物理 alias、首帧、Resize 后输出像素正确 |
+| **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
+| **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
+| **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 关键依赖 / 严格执行顺序
+
+1. **先闭环 P0-01 + P0-02**：如果新编译器错误或 Trace 未生效，**先修正确性和可观测性**，不得继续加缓存、猜 GPU40% 的原因。保留用户并发提交的 UI 改动。
+2. **再做 P0-03～05 的同一次采样**：先验证「是否获得静态前缀 Capture」，再检查「是否发生物理纹理重排」，最后才看「真正 GPU 离屏命令与 Pass 是否省去」。静态背景缺席则记录「不满足准入」，不是命中。
+3. **若 P0-04/05 正确但 GPU 仍高，推进 P0-07/08；若仍重复 Recreate，优先查 P0-05 或 P0-06 的物理 Target 依赖；若 Resize 或子窗口仍崩溃，P0-09 优先于性能微优化。**
+4. **有证据才推进架构**：P1-01→P1-02→P1-03→P2 资源/Barrier→P3 真删除。禁止先删除底层 Scene 后临时复制另一棵树保功能；中间迁移保持渲染正常但**最终无旧兼容入口**。
+
+### 最小本地验证命令与实验协议（待执行）
+
+```powershell
+# Windows 代码与测试（在仓库根目录；按实际 Feature 增补 Backend 参数）
+cargo fmt --all -- --check
+cargo check --workspace --no-default-features
+cargo test --manifest-path crates/gpui/Cargo.toml --lib auto_static
+cargo test --manifest-path crates/gpui/Cargo.toml --lib gaussian_capture
+cargo test --manifest-path crates/gpui/Cargo.toml --lib retained_filters
+cargo test --manifest-path crates/gpui/Cargo.toml --lib chunk_upload
+cargo test gpui_trace
+```
+
+- 开启 `设置 → 启动器 → GPUI / Nova 详细 Trace` 并**完整重启**；默认关闭。文件 `BMCBL/logs/latest.log`；分别记录应用版本/HEAD、系统 GPU 使用率、驱动、窗口物理大小、DPI、240Hz/实际 Present Mode、后台模糊开关、采样起止时间与操作次数。Trace 会影响 CPU/log IO，测性能必须额外复测 Trace 关闭的版本。
+- 固定一组 5–10 秒静止基线，再分别执行：公共 Dropdown 快速反复开/关、展开中打断与反向、两个 Dropdown 互斥切换、首页版本下拉对照、静态页面 / Blur 开关、页面切换与 Resize、多窗口打开关闭。每组单独记录，不能把多窗口或不同尺寸的样本混在同一 FPS/GPU 百分比中。
+- **Capture 判定**：同一 `window_id` 对齐 `GPUI color retention result static_prefix_candidate/static_prefix_captured`、`GPUI retained target layout reused/recreated` 和 `GPUI AutoStatic submitted`；成功 Present 后稳定帧 `source_dirty=false`、`refreshed_layers=0`、`source_draw_steps=0`，而 `native_view/content_version` 与前次相同。`auto_static_relocation=None` 在无拓扑变化时正常；源内容/尺寸真变时版本刷新**必须**发生。
+- **Filter 高水位判定**：首次超出物理容量的 3→4→6 可以分配；容量预热后的 6→3→4→6 不应周期性全链重建。比对 `active_isolated`、`allocated_isolated`、`composite_passes`、`blur_source_pixels`、`blur_target_pixels` 与目标 bytes。`target_bytes`/Owner busy 不是实际显存峰值或 GPU Shader 时间。
+- **窗口与性能判定**：静态 idle 不持续无效提交；DX11/DX12/VK/GL 下 Popup 的可见内容、层次、Alpha、Clip、Blur、文字、焦点均一致；Windows 240Hz 拖拽、DComp/透明、小窗关闭、最小化恢复无黑边、拉伸或崩溃；最终记录 CPU Layout/Prepaint/Draw/Present p50/p95/p99 与可用的 native GPU 时间。对于尚无 GPU timestamp 的后端明确标记「GPU 原生耗时未知」，不造数。
+
+### 当前缺失的验收证据（不得据此宣布已完成）
+
+| 证据 | 当前仓库可核实状态 | 补齐后更新哪些任务 |
+| --- | --- | --- |
+| Windows Cargo fmt/check/tests 的完整成功输出 | 仓库有测试源码；**此对话未取得当前 HEAD 本地执行结果** | P0-01/P0-02/P0-04/P0-05 |
+| 当前 HEAD 开启/关闭 Trace 的日志与设置重启截图 | 开关与过滤器源码已提交；**没有新的运行日志** | P0-02/P0-03 |
+| 最新公共 Dropdown vs 首页版本下拉可对齐的逐帧 Trace + 系统 GPU 指标 | **只有旧版 2026-10-15 DX12 日志**（24 次 Target recreated；单帧 12 Composite Pass；GPU Owner busy≈20.6%–21.3%，与任务管理器 GPU40% 不可互换） | P0-03～08 |
+| 四后端真机像素/Resize/子窗口关闭 + Fence/VRAM 回收 | 仓库存在修复代码与模拟测试；**无本阶段四后端验收附件** | P0-05/06/09、P2、P3 |
+| 最终单权威 Paint/Compositor 与旧 Scene 消除 | 有 retained chunk/partial upload 改动；`Scene/SceneSlot/PresentationPacket.scene` 等仍在 | P1～P3 |
+
 
 ## 不可更改的工程目标
 
@@ -137,7 +200,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 最终完成 = **旧全窗口 Scene 真实删除 + 不存在另一个等价全量 RenderTree/FrameUpload + UI 局部计算可量化 + GPU 资源跨帧复用可验证 + Windows Resize 正确 + 四后端等价 + 不留兼容/遗留文件技术债**。不得仅以编译通过、减少一处分配或新增 TODO 证明整项工作完成。
 
-## 阶段与状态（勾选代表代码/文档已写，不代表四后端实机验证）
+## 分阶段历史实现账本（勾选仅代表提交过代码/测试源码；当前状态以顶部执行看板为准）
 
 ### P0-A 共享 GPU Filter / Color Target 生命周期
 
@@ -210,7 +273,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - [ ] BMCBL 实机回归，尤其页面切换、弹窗、地图、透明/模糊与输入法。
 - [ ] 对比 CPU 帧长尾、GPU Present 频率、显存、上传量、Filter Target Recreate、资源回收；不可编造提升百分比。
 
-## 本次改动的边界与验证状态
+## 2026-10-14 阶段性边界与验证状态（历史快照，不代表最新 master）
 
 - **代码层面（累计）**：稳定 Filter Target 复用、Win32 WM_SIZE 同步构帧入口删除、Retained Quad 布局共享/局部上传、按排序 Chunk 区间编码和 Scene Chunk 完整性前置检查。均是已有单链路的局部纵切，尚未删除 Scene/FrameUpload，也不能宣称统一合成器已完成。
 - **本地编译/测试**：当前运行环境未提供 Rust/Cargo、Windows GPU，也不能通过容器连接 GitHub 克隆仓库；已做源码静态审查与 2695 例 JavaScript 区间算法等价检查。Rust 单元测试已加入源码，**未运行**；没有 Cargo fmt/check/test 或 Windows 四后端实机结果。
@@ -562,12 +625,9 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 9. 破坏性修改时同步更新**删除清单中的符号搜索结果**与真实消费者；若存在多个等价的 Frame/Scene/Chunk 权威所有者，视为技术债未清，不能标记阶段完成。
 10. 此文档的勾选状态必须区分【代码实现】【编译通过】【单测通过】【DX11/DX12/VK/GL 原生验证】；不可因为静态审计与提交创建就视为已验证。
 
-## 下一次对话的直接起点
+## 下一次对话的直接起点（动态恢复入口）
 
-- **当前最新待验证起点（2026-10-15）**：先使用 BMCBL 设置 → 启动器内新增的 `GPUI / Nova 详细 Trace` 开关（**需重启**）在 Windows 开启 `frame_metrics` 与 `gpui::diagnostics=trace`，收集公共 Dropdown 及首页下拉 3→4→6→3 Target 数量切换日志，再核对 `GPUI AutoStatic submitted` 的 `refreshed_layers/source_draw_steps/native_view/content_version`、`active_isolated/allocated_isolated` 和 GPU Owner/FPS、实际任务管理器 GPU 占用。执行本地 cargo fmt/check/测试并分 DX11/DX12/Vulkan/OpenGL 实机，未验证不得关闭 P0。
-- **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
-- 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
-- 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
-- 严禁直接执行“删除 Scene”而不建立 GPU Owner 保留内容、资源退休和有序绘制的正确性方案。
-- 下一阶段主要交付物：为 **Scene → FrameUpload → DrawSteps → Present** 建立每一步拥有的全部状态与复制字节账本，确定哪些结构能合并/删除；然后以 GPUI 独立 Dropdown/Blur 实验完成单一合成通路的首次纵向切片。
-- **最近更新（2026-10-15）**：在 `331ae0a4` 基线上，Nova Retained Quad Batch 选择由逐批全量扫描改为基于 Scene 既有排序的区间二分；Scene Quad 完整性前置检查跳过部分不必要的 paint-order 全表证明。新增对照测试，尚无 Rust/Windows 运行验证；没有删除 Scene，未证明 GPU 占用、Prepaint 或 Resize 已修复。
+1. **先重新读取远程 master HEAD、本文顶部 `最新执行看板`、`docs/AI.md` 与最近提交差异**，不要复用本文历史 commit 当最新基线。
+2. **按 ID 选择最小切片**：优先 `P0-01` 取得 Windows Cargo 成果并修实际错误；接着 `P0-02` 验证 Trace 启停，然后 `P0-03～05` 收集公共 Dropdown 与首页下拉的同条件对照。如发生 DX12 子窗口崩溃或 DX11 live resize 不出帧，转 `P0-09` 正确性优先。
+3. **每次更新需要写在顶部任务表**：状态、源码位置/commit、对应测试命令、日志/截图或未提供原因、是否通过实际 GPU 后端验证；历史小节仅追加事实，不重新建并行 TODO。
+4. **提交范围**：本次 TODO 整理只涉及本文，未修改 BMCBL/GPUI 代码。下一次实现任务再改源码；须按非强制快进 GitHub blob→tree→commit→compare→expected_sha 的提交流程，禁止在未重读 HEAD 时覆盖用户 UI 提交。
