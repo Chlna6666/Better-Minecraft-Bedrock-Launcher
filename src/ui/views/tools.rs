@@ -35,8 +35,7 @@ struct ToolsRenderSignature {
     discovery_retrying: bool,
     online_error: Option<SharedString>,
     online_log: SharedString,
-    abandoned_nodes_ptr: usize,
-    abandoned_nodes_len: usize,
+    abandoned_nodes: Vec<SharedString>,
     abandoned_nodes_visible: bool,
     easytier_running: bool,
     easytier_hostname: SharedString,
@@ -48,10 +47,8 @@ struct ToolsRenderSignature {
     host_room_code: SharedString,
     peers_loading: bool,
     network_nodes_expanded: bool,
-    players_ptr: usize,
-    players_len: usize,
-    peers_ptr: usize,
-    peers_len: usize,
+    players: Vec<state::OnlinePlayerEntry>,
+    peers: Vec<state::OnlinePeerEntry>,
 }
 
 impl ToolsRenderSignature {
@@ -79,8 +76,7 @@ impl ToolsRenderSignature {
             discovery_retrying: state.discovery_retrying,
             online_error: state.online_error.clone(),
             online_log: state.online_log.clone(),
-            abandoned_nodes_ptr: state.abandoned_nodes.as_ptr() as usize,
-            abandoned_nodes_len: state.abandoned_nodes.len(),
+            abandoned_nodes: state.abandoned_nodes.clone(),
             abandoned_nodes_visible: state.are_abandoned_nodes_visible(),
             easytier_running: state.easytier_running,
             easytier_hostname: state.easytier_hostname.clone(),
@@ -92,10 +88,8 @@ impl ToolsRenderSignature {
             host_room_code: state.host_room_code.clone(),
             peers_loading: state.peers_loading,
             network_nodes_expanded: state.network_nodes_expanded,
-            players_ptr: state.players.as_ptr() as usize,
-            players_len: state.players.len(),
-            peers_ptr: state.peers.as_ptr() as usize,
-            peers_len: state.peers.len(),
+            players: state.players.clone(),
+            peers: state.peers.clone(),
         }
     }
 }
@@ -215,5 +209,42 @@ pub fn render_tools_overlay(
         ToolsTab::Online => {
             online::render_online_overlay(colors, i18n, window_width, window_height, state)
         }
+    }
+}
+
+#[cfg(test)]
+mod render_signature_tests {
+    use super::*;
+
+    #[test]
+    fn detects_in_place_list_edits_without_pointer_or_length_changes() {
+        let mut state = ToolsPageState::default();
+        state.abandoned_nodes.push(SharedString::from("node-a"));
+        state.players.push(state::OnlinePlayerEntry {
+            player_name: SharedString::from("player-a"),
+            client_id: SharedString::from("client-a"),
+            is_room_host: false,
+        });
+        let before = ToolsRenderSignature::from_state(&state);
+
+        state.abandoned_nodes[0] = SharedString::from("node-b");
+        assert!(before != ToolsRenderSignature::from_state(&state));
+
+        state.abandoned_nodes[0] = SharedString::from("node-a");
+        state.players[0].player_name = SharedString::from("player-b");
+        assert!(before != ToolsRenderSignature::from_state(&state));
+    }
+
+    #[test]
+    fn identical_list_values_do_not_invalidate() {
+        let mut state = ToolsPageState::default();
+        state.players.push(state::OnlinePlayerEntry {
+            player_name: SharedString::from("player"),
+            client_id: SharedString::from("client"),
+            is_room_host: false,
+        });
+        let before = ToolsRenderSignature::from_state(&state);
+        state.players = state.players.clone();
+        assert!(before == ToolsRenderSignature::from_state(&state));
     }
 }
