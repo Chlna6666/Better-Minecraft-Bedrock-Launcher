@@ -205,6 +205,12 @@ pub(in crate::platform::nova::renderer) fn rebind_slot<D: BackendResources>(
             frame.poly_sprite_resource_set = *new;
         }
     }
+    // Root Color owns its descriptor-set lifetime separately from logical
+    // Filter variants. The new sets become authoritative only after every
+    // frame binding has been created and installed successfully.
+    if let Some(targets) = renderer.filters.targets.as_mut() {
+        targets.refresh_root_resource_sets();
+    }
     release_sets(device, replaced.into_iter().map(|(old, _)| old));
     Ok(())
 }

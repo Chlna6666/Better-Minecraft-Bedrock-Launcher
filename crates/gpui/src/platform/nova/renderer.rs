@@ -597,6 +597,9 @@ impl NovaRenderer {
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
                 present::has_root_backdrop_blurs(&self.frame_upload),
+            ) && targets.root_capture_is_compatible(
+                self.frame_upload.backdrop_blur_configs(),
+                self.frame_upload.retained_root_blur,
             )
         }) {
             return Ok(());
@@ -604,6 +607,14 @@ impl NovaRenderer {
         // Preserve a *physical* full-window color target when the capture DAG
         // changes only its zero-radius children. This proof must be made on
         // native texture handles, not packed Blur member indices.
+        // A chain created without a Root does not own the independent native
+        // Root allocation. It must be recreated when a Root first appears:
+        // reinterpreting a scratch target as root would violate both the
+        // ownership and content-version proofs.
+        let root_needs_allocation = self.frame_upload.retained_root_blur.is_some()
+            && self.filters.targets.as_ref().is_some_and(|targets| {
+                targets.root_color_target.is_none()
+            });
         let root_eligible = self.root_color_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
         let auto_static_indices = auto_static_eligible.then(|| {
@@ -614,7 +625,7 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        if self.filters.targets.as_mut().is_some_and(|targets| {
+        if !root_needs_allocation && self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
@@ -660,7 +671,7 @@ impl NovaRenderer {
         // Old Filter captures lose their flattened index identity. The root
         // color may keep its pixels only if its native view still matches;
         // every other capture must be rebuilt before it can be sampled.
-        if self.filters.targets.as_mut().is_some_and(|targets| {
+        if !root_needs_allocation && self.filters.targets.as_mut().is_some_and(|targets| {
             targets.rebind_zero_radius_layout(
                 self.frame_upload.backdrop_blur_configs(),
                 present::has_root_backdrop_blurs(&self.frame_upload),
@@ -805,10 +816,18 @@ impl NovaRenderer {
                 anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
             }
         };
-        let mut next_backdrop_blur_targets = next_backdrop_blur_targets;
-        next_backdrop_blur_targets.retained_root_variant = self.frame_upload.retained_root_blur
-            .and_then(|index| next_backdrop_blur_targets.variants.iter()
-                .position(|variant| variant.config.contains_member_index(index)));
+        // Creation resolves the Root physical owner and its logical slot in
+        // one transaction. Never patch the slot here: doing so could attach a
+        // borrowed Filter descriptor to a different native allocation.
+        debug_assert_eq!(
+            next_backdrop_blur_targets.retained_root_variant,
+            self.frame_upload.retained_root_blur.and_then(|index| {
+                next_backdrop_blur_targets.variants.iter().position(|variant| {
+                    variant.config.contains_member_index(index)
+                        && variant.config.radius() == 0.0
+                })
+            }),
+        );
         log::debug!(target: "gpui::diagnostics",
             "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={}",
             next_backdrop_blur_targets.active_variant_count,

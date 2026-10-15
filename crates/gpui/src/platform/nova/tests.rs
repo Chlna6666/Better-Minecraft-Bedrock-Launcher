@@ -2207,6 +2207,7 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
+        root_color_target: None,
     };
     let original_view = targets.exclusive_zero_radius_capture_view(3).unwrap();
     let shorter = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
@@ -2245,6 +2246,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
+        root_color_target: None,
     };
     let texture_ids = targets.variants.iter()
         .map(|variant| variant.levels[0].texture_view)
@@ -2319,6 +2321,7 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
+        root_color_target: None,
     };
     let root_view = targets.retained_root_texture_view();
     let original_source_views = targets.isolated_sources.iter()
@@ -2407,6 +2410,7 @@ fn mixed_gaussian_and_zero_radius_popup_reindex_preserves_root_and_scratch() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: Some(3),
+        root_color_target: None,
     };
     let physical_root = targets.retained_root_texture_view();
     let physical_spare_zero = targets.variants[2].levels[0].texture_view;
@@ -2487,6 +2491,7 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
         variants: (0..3).map(make_variant).collect(),
         active_variant_count: 3,
         retained_root_variant: Some(2),
+        root_color_target: None,
     };
     let before_views = targets.variants.iter()
         .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
@@ -2538,6 +2543,7 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
         }],
         active_variant_count: 1,
         retained_root_variant: None,
+        root_color_target: None,
     };
     let before = targets.isolated_sources[0].target.texture_view;
     assert!(!targets.reuse_layout(&[config, config], &[0, 1], false, None, None));
@@ -2572,6 +2578,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
+        root_color_target: None,
     };
     let original_views: Vec<_> = targets.variants.iter()
         .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
@@ -2644,6 +2651,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
+        root_color_target: None,
     };
     let original_views = targets
         .variants
@@ -2703,12 +2711,32 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
+        root_color_target: None,
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
     let original_root_identity = targets.root_color_texture_identity()
         .expect("valid, active native Root target");
+    let root_level = &targets.variants[5].levels[0];
+    targets.root_color_target = Some(RootColorTarget {
+        target: RenderTarget {
+            byte_size: root_level.byte_size,
+            texture: root_level.texture,
+            texture_view: root_level.texture_view,
+        },
+        pass_resource_sets: root_level.pass_resource_sets.clone(),
+        composite_resource_sets: targets.variants[5].target_resource_sets.clone(),
+    });
     assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
     assert!(targets.can_preserve_root_color_capture());
+    assert!(targets.root_color_target.is_some(),
+        "the native Root allocation must have one dedicated owner");
+    assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
+    assert_eq!(targets.byte_size(), 6 * 64 * 32 * 4,
+        "a borrowed zero-radius Root descriptor must not double-count GPU residency");
+    assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets,
+        targets.variants[5].levels[0].pass_resource_sets);
+    assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets,
+        targets.variants[5].target_resource_sets);
     let mut residency = FilterRegistry::new(None);
     residency.record_root_color_present(Some(original_root_identity), true);
     let root_version = residency.root_color_content_version().expect("submitted Root");
@@ -2723,6 +2751,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
         assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
         assert!(residency.root_color_resident_on(&targets));
+        let native_owner = targets.root_color_target.as_ref().unwrap();
+        let logical = &targets.variants[root as usize];
+        assert_eq!(native_owner.pass_resource_sets, logical.levels[0].pass_resource_sets);
+        assert_eq!(native_owner.composite_resource_sets, logical.target_resource_sets);
         residency.record_root_color_present(targets.root_color_texture_identity(), false);
         assert_eq!(residency.root_color_content_version(), Some(root_version));
         assert!(
@@ -2741,14 +2773,62 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
             None,
         ));
     }
+    // Root can disappear while the physical allocation remains in a warm
+    // spare slot. Its later return must borrow that same Texture/View, and
+    // any old content epoch must be cleared while no Root is presented.
+    let temporarily_no_root = (0..3)
+        .map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(!targets.root_capture_is_compatible(&temporarily_no_root, None));
+    assert!(targets.rebind_zero_radius_layout(
+        &temporarily_no_root, false, None, None,
+    ));
+    assert!(targets.root_capture_is_compatible(&temporarily_no_root, None));
+    assert_eq!(targets.root_color_target.as_ref().unwrap().target.texture_view,
+        original_root_view);
+    residency.record_root_color_present(None, false);
+    assert_eq!(residency.root_color_content_version(), None);
+    let reintroduced_root = (0..4)
+        .map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(!targets.root_capture_is_compatible(&reintroduced_root, Some(3)));
+    assert!(targets.rebind_zero_radius_layout(
+        &reintroduced_root, false, Some(3), None,
+    ));
+    assert!(targets.root_capture_is_compatible(&reintroduced_root, Some(3)));
+    assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
+    residency.record_root_color_present(Some(original_root_identity), true);
+    assert!(residency.root_color_resident_on(&targets));
+    let mut without_owner = targets.clone();
+    without_owner.root_color_target = None;
+    assert!(!without_owner.root_capture_is_compatible(&reintroduced_root, Some(3)),
+        "a Filter scratch allocation must not silently become a Native Root");
+
+    // Frame-slot buffer growth updates the borrowing logical variant first.
+    // After the atomic binding transaction the native owner must receive
+    // exactly the new sets; it may never retire already replaced handles.
+    let new_pass_set = test_resource_set_id(901);
+    let new_composite_set = test_resource_set_id(902);
+    targets.variants[3].levels[0].pass_resource_sets[0] = new_pass_set;
+    targets.variants[3].target_resource_sets[0] = new_composite_set;
+    targets.refresh_root_resource_sets();
+    assert_eq!(targets.root_color_target.as_ref().unwrap().pass_resource_sets[0], new_pass_set);
+    assert_eq!(targets.root_color_target.as_ref().unwrap().composite_resource_sets[0],
+        new_composite_set);
+
     // Replacing the underlying native allocation without a source pass
     // cannot import the old Root Color version, even if a flattened capture
     // index and the target's other descriptor metadata are unchanged.
     let mut different_native = targets.clone();
     different_native.variants[3].levels[0].texture = test_texture_id(777);
+    assert!(different_native.root_color_texture_identity().is_none(),
+        "the borrowed Filter variant may never impersonate a different Root allocation");
     assert!(!residency.root_color_resident_on(&different_native));
     residency.record_root_color_present(different_native.root_color_texture_identity(), false);
     assert_eq!(residency.root_color_content_version(), None);
+    // Only a genuine Native owner replacement, accompanied by a new Root
+    // rendering pass, can establish a version for the replacement Texture.
+    different_native.root_color_target.as_mut().unwrap().target.texture =
+        test_texture_id(777);
+    assert!(different_native.root_color_texture_identity().is_some());
     residency.record_root_color_present(different_native.root_color_texture_identity(), true);
     assert!(residency.root_color_resident_on(&different_native));
     assert_ne!(residency.root_color_content_version(), Some(root_version));
@@ -2795,6 +2875,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let targets = BackdropBlurTargets {
         active_variant_count: 1,
         retained_root_variant: None,
+        root_color_target: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),
@@ -2862,6 +2943,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     let targets = BackdropBlurTargets {
         active_variant_count: 0,
         retained_root_variant: None,
+        root_color_target: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),

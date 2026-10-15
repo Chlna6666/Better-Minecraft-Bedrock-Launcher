@@ -90,6 +90,9 @@ impl NovaRenderer {
                     self.frame_upload.backdrop_blur_configs(),
                     self.frame_upload.isolated_blur_source_indices(),
                     super::present::has_root_backdrop_blurs(&self.frame_upload),
+                ) || !targets.root_capture_is_compatible(
+                    self.frame_upload.backdrop_blur_configs(),
+                    self.frame_upload.retained_root_blur,
                 )
             });
         let atlas_retirement =

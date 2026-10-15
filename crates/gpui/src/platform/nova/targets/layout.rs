@@ -61,8 +61,19 @@ impl BackdropBlurTargets {
         } else {
             None
         };
-        if let (Some(old_root), Some(new_root)) = (old_root, new_root) {
-            self.variants.swap(old_root, new_root);
+        // When a popup temporarily disables Root Color, the physical owner
+        // remains allocated. Reintroducing Root must find that same Texture,
+        // never relabel an arbitrary scratch target as the Root allocation.
+        let previous_root_owner = old_root.or_else(|| {
+            let native = self.root_color_target.as_ref()?.target;
+            self.variants.iter().position(|variant| {
+                variant.levels.len() == 1
+                    && variant.levels[0].texture == native.texture
+                    && variant.levels[0].texture_view == native.texture_view
+            })
+        });
+        if let (Some(previous), Some(current)) = (previous_root_owner, new_root) {
+            self.variants.swap(previous, current);
         } else if let Some((old, new)) = auto_static_slots {
             self.variants.swap(old, new);
         }
@@ -123,8 +134,16 @@ impl BackdropBlurTargets {
         // retain the SAME physical output texture across flattened index moves.
         // The source fingerprint check happens in FilterRegistry before this
         // method is called, not by guessing from a matching filter config.
+        let previous_root_owner = self.retained_root_variant.or_else(|| {
+            let native = self.root_color_target.as_ref()?.target;
+            self.variants.iter().position(|variant| {
+                variant.levels.len() == 1
+                    && variant.levels[0].texture == native.texture
+                    && variant.levels[0].texture_view == native.texture_view
+            })
+        });
         let pinned = if let (Some(previous), Some(current)) =
-            (self.retained_root_variant, new_root)
+            (previous_root_owner, new_root)
         {
             Some((previous, current))
         } else if self.retained_root_variant.is_none() && new_root.is_none() {
