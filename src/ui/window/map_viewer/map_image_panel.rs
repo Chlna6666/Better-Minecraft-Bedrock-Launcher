@@ -132,12 +132,13 @@ impl MapViewerWindowView {
     pub(super) fn map_frame_preflight_key(&self) -> String {
         let (x, z) = self.map_frame_anchor();
         format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.dimension.id(),
             x, self.y_layer, z,
             self.map_image.options.columns, self.map_image.options.rows,
             self.map_image.frame_support,
             self.map_image.task_id.as_deref().unwrap_or_default(),
+            self.professional.map_info_invalidation_generation,
         )
     }
 
