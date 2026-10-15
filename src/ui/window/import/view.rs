@@ -14,7 +14,8 @@ use crate::ui::components::minecraft_text::MinecraftFormattedText;
 use crate::ui::components::scroll::ScrollableElement;
 use crate::ui::components::toast;
 use crate::ui::hooks::use_launcher::{
-    LaunchVersionDescriptor, read_launcher_snapshot, start_launcher, sync_launcher_state,
+    LaunchVersionDescriptor, LauncherSnapshot, launcher_snapshot_changed,
+    read_launcher_snapshot, start_launcher, sync_launcher_state,
 };
 use crate::ui::hooks::use_local_versions::{
     ensure_local_versions_loaded, read_local_versions_snapshot,
@@ -119,6 +120,7 @@ pub struct ImportWindowView {
     launch_after_import: bool,
     close_after_launch_completion: bool,
     launch_completion_close_scheduled: bool,
+    launcher_snapshot: LauncherSnapshot,
     titlebar_gesture: crate::ui::window::chrome::TitlebarGesture,
     two_column_layout: bool,
     header_compact_controls: bool,
@@ -171,17 +173,49 @@ impl ImportWindowView {
         cx: &mut Context<Self>,
     ) -> Self {
         ensure_local_versions_loaded(false, cx);
+        let local_versions = cx.global::<LocalVersionsState>();
+        let mut local_versions_signature = (
+            local_versions.catalog_generation,
+            local_versions.snapshot_revision,
+            local_versions.loaded,
+            local_versions.loading,
+            local_versions.loading_force_refresh,
+            local_versions.refresh_pending,
+            local_versions.error.clone(),
+        );
+        let launcher_snapshot = read_launcher_snapshot(cx);
         let mut subscriptions = vec![
-            cx.observe_global::<LocalVersionsState>(|this, cx| {
-                this.sync_selected_folder(cx);
-                cx.notify();
+            cx.observe_global::<LocalVersionsState>(move |this, cx| {
+                let state = cx.global::<LocalVersionsState>();
+                let next_signature = (
+                    state.catalog_generation,
+                    state.snapshot_revision,
+                    state.loaded,
+                    state.loading,
+                    state.loading_force_refresh,
+                    state.refresh_pending,
+                    state.error.clone(),
+                );
+                if local_versions_signature != next_signature {
+                    local_versions_signature = next_signature;
+                    this.sync_selected_folder(cx);
+                    cx.notify();
+                }
             }),
             cx.observe_global::<ThemeState>(|_, cx| {
                 cx.notify();
             }),
             cx.observe_global::<LauncherState>(|this, cx| {
-                if this.presentation == ImportPresentation::Window
-                    || this.close_after_launch_completion
+                let next = read_launcher_snapshot(cx);
+                let changed = launcher_snapshot_changed(&this.launcher_snapshot, &next);
+                let modal_was_visible = this.launcher_snapshot.show_modal;
+                if changed {
+                    this.launcher_snapshot = next;
+                }
+                if changed
+                    && ((this.presentation == ImportPresentation::Window
+                        && (modal_was_visible || this.launcher_snapshot.show_modal))
+                        || this.close_after_launch_completion)
                 {
                     cx.notify();
                 }
@@ -203,7 +237,19 @@ impl ImportWindowView {
                     }
                 },
             ));
-            subscriptions.push(cx.observe_global::<toast::ToastState>(|_, cx| cx.notify()));
+            let toast_window_id = gpui::WindowId::from(owner_window_id);
+            let mut toast_revision = toast::window_content_revision(
+                toast_window_id,
+                cx.global::<toast::ToastState>(),
+            );
+            subscriptions.push(cx.observe_global::<toast::ToastState>(move |_, cx| {
+                let next_revision =
+                    toast::window_content_revision(toast_window_id, cx.global::<toast::ToastState>());
+                if toast_revision != next_revision {
+                    toast_revision = next_revision;
+                    cx.notify();
+                }
+            }));
             subscriptions.push(cx.observe_global_in::<I18n>(window, |_this, window, cx| {
                 window.set_title(t!("Import.title").as_ref());
                 cx.notify();
@@ -250,6 +296,7 @@ impl ImportWindowView {
             launch_after_import: false,
             close_after_launch_completion: false,
             launch_completion_close_scheduled: false,
+            launcher_snapshot,
             titlebar_gesture: crate::ui::window::chrome::TitlebarGesture::default(),
             two_column_layout: initial_content_width >= IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
             header_compact_controls: initial_header_width <= IMPORT_WINDOW_COMPACT_WIDTH_PX,
@@ -883,7 +930,9 @@ impl Drop for ImportWindowView {
 impl Render for ImportWindowView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame_now = window.animation_time();
-        sync_launcher_state(frame_now, cx);
+        if self.presentation == ImportPresentation::Window {
+            sync_launcher_state(frame_now, cx);
+        }
         let window_width_px = if self.presentation == ImportPresentation::Overlay {
             ((window.bounds().size.width / px(1.0)) - 32.0).min(900.0)
         } else {
@@ -916,7 +965,13 @@ impl Render for ImportWindowView {
         let column_gap = if is_overlay { 16.0 } else { 24.0 };
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
         let versions = read_local_versions_snapshot(cx);
-        let launcher_snapshot = read_launcher_snapshot(cx);
+        let launcher_snapshot = if self.presentation == ImportPresentation::Window
+            || self.close_after_launch_completion
+        {
+            self.launcher_snapshot.clone()
+        } else {
+            Default::default()
+        };
         if self.close_after_launch_completion
             && !self.launch_completion_close_scheduled
             && launcher_snapshot
