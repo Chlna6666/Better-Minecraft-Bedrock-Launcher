@@ -969,3 +969,38 @@ fn shulker_item(
     )?;
     Ok(box_item)
 }
+
+#[cfg(test)]
+mod frame_grid_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn frame_positions_match_north_up_preview_for_even_sized_grid() {
+        let positions = frame_grid_positions(
+            BlockPos { x: -108, y: 64, z: 178 }, 10, 6,
+        ).expect("valid grid");
+        assert_eq!(positions.len(), 60);
+        assert_eq!(
+            (positions[0].x, positions[0].y, positions[0].z),
+            (-113, 64, 175)
+        );
+        assert_eq!(
+            (positions[9].x, positions[9].z),
+            (-104, 175)
+        );
+        assert_eq!(
+            (positions[59].x, positions[59].z),
+            (-104, 180)
+        );
+    }
+
+    #[test]
+    fn frame_positions_reject_coordinate_overflow() {
+        assert!(frame_grid_positions(
+            BlockPos { x: i32::MAX, y: 64, z: 0 }, 3, 1,
+        ).is_err());
+        assert!(frame_grid_positions(
+            BlockPos { x: i32::MIN, y: 64, z: 0 }, 4, 1,
+        ).is_err());
+    }
+}
