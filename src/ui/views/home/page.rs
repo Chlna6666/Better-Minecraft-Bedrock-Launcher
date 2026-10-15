@@ -130,8 +130,16 @@ impl HomePageView {
             };
 
         let subscriptions = vec![
-            cx.observe_global::<ThemeState>(|_, cx| cx.notify()),
-            cx.observe_global::<I18n>(|_, cx| cx.notify()),
+            cx.observe_global::<ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
         ];
 
         let mut this = Self {

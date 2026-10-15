@@ -32,13 +32,6 @@ impl ManageTabBodyView {
                     cx.notify();
                 }
             }),
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
-                |this, cx| {
-                    if this.active {
-                        cx.notify();
-                    }
-                },
-            ),
         ];
 
         Self {
