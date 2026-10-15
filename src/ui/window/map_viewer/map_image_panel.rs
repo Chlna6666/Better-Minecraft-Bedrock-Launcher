@@ -90,7 +90,7 @@ impl MapImagePanelState {
             frame_support: "minecraft:stone",
             preview: None,
             placement_preview: None,
-            show_placement_inspector: true,
+            show_placement_inspector: false,
             preview_done: 0,
             grid_estimated: false,
             preview_note: None,
