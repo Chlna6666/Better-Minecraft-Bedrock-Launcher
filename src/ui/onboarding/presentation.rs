@@ -362,20 +362,19 @@ fn animated_welcome_feature(
         _ => ("onboarding-welcome-feature-2", 130),
     };
 
-    row.with_animations(
+    row.with_visual_animation(
         id,
-        vec![
-            Animation::new(Duration::from_millis(delay)),
-            crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(260)),
-        ],
-        |this, animation_index, progress| {
-            if animation_index == 0 {
-                this.opacity(0.0).ml(px(10.0))
-            } else {
-                this.opacity(progress).ml(px((1.0 - progress) * 10.0))
-            }
-        },
+        crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(260))
+            .delay(Duration::from_millis(delay))
+            .fill_mode(FillMode::Both)
+            .with_property(AnimationProperty::translation_opacity(
+                point(px(10.0), px(0.0)),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
     )
+    .expect("feature entrance declares presentation properties")
     .into_any_element()
 }
 

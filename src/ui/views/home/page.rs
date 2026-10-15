@@ -320,6 +320,7 @@ impl HomePageView {
             .as_ref()
             .is_some_and(|folder| folder.as_ref() == version.folder.as_ref());
         let folder = version.folder.clone();
+        let motion_id = (ElementId::from("home-version-item-motion"), folder.clone());
         let item_bg = if selected {
             Hsla { a: 0.10, ..accent }
         } else {
@@ -376,8 +377,6 @@ impl HomePageView {
         div()
             .id((ElementId::from("home-version-item"), folder.clone()))
             .relative()
-            .top(px(10.0 * (1.0 - item_factor)))
-            .opacity(item_factor)
             .w_full()
             .h(px(item_height_px))
             .px(px(12.0))
@@ -475,6 +474,18 @@ impl HomePageView {
                     this.begin_dropdown_transition(false);
                     cx.notify();
                 }),
+            )
+            .with_stable_sampled_animation(
+                motion_id,
+                AnimationProperty::clipped_translation_opacity(
+                    point(px(0.0), px(10.0)),
+                    Point::default(),
+                    0.0,
+                    1.0,
+                ),
+                item_factor,
+                // The dropdown's layout target owns the shared spring cadence.
+                false,
             )
             .into_any_element()
     }
@@ -594,9 +605,11 @@ impl HomePageView {
             icon_path(lucide_gpui::icon!(chevron_down))
                 .size(px(16.0))
                 .text_color(rgb(0xffffff))
-                .with_sampled_animation(
+                .with_stable_sampled_animation(
+                    "home-version-chevron-motion",
                     AnimationProperty::rotation(radians(0.0), radians(std::f32::consts::PI)),
                     dropdown_factor,
+                    false,
                 )
                 .into_any_element()
         };

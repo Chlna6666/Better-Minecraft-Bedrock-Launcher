@@ -28,9 +28,7 @@ pub(in crate::ui::main_window) struct RenderState {
     rows: Vec<Row>,
     open: bool,
     progress: f32,
-    pub(in crate::ui::main_window) animating: bool,
     dialog_animating: bool,
-    rows_animating: bool,
     reduced_motion: bool,
     pending_delete: Option<String>,
     feedback: Option<String>,
@@ -73,12 +71,6 @@ impl RenderState {
             .filter(|row| row.present || row.opacity > 0.001)
             .collect();
         let dialog_animating = !immediate && !sample.done;
-        let rows_animating = !immediate
-            && state.dialog_open
-            && state
-                .rows
-                .iter()
-                .any(|row| row.presence.is_animating(now) || row.selection.is_animating(now));
         Self {
             snapshot: state.snapshot.clone(),
             rows,
@@ -88,9 +80,7 @@ impl RenderState {
             } else {
                 sample.value
             },
-            animating: dialog_animating || rows_animating,
             dialog_animating,
-            rows_animating,
             reduced_motion: immediate,
             pending_delete: state.pending_delete_account_id.clone(),
             feedback: state.feedback.clone(),
@@ -107,9 +97,7 @@ impl RenderState {
             self.available = false;
             self.open = false;
             self.progress = 0.0;
-            self.animating = false;
             self.dialog_animating = false;
-            self.rows_animating = false;
         }
         self
     }

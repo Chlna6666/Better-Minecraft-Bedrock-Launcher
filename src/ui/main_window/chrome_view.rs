@@ -279,13 +279,11 @@ impl Render for NavChromeView {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         let nav = cx.global::<NavState>();
-        let ((pill_left_steps, pill_right_steps), nav_animating) = nav.pill_render_state(now);
         let labels_animating = nav.labels_animating(now);
         tracing::trace!(
             target: "bmcbl::ui::render_trace",
             component = "chrome-nav",
             theme_animating,
-            nav_animating,
             labels_animating,
             active_route = nav.visual_active_index(),
             "chrome view render"
@@ -293,9 +291,7 @@ impl Render for NavChromeView {
         let state = chrome::NavRenderState {
             window_width: window.bounds().size.width,
             visual_active_index: nav.visual_active_index(),
-            pill_left_steps,
-            pill_right_steps,
-            nav_animating,
+            pill_from_index: nav.pill_from_index,
             labels_layout_factor: nav.labels_layout_factor(now),
             labels_opacity_factor: nav.labels_opacity_factor(now),
         };
@@ -412,7 +408,7 @@ impl Render for AuthChromeView {
             self.trigger_bounds.clone(),
         )
         .blocked(self.blocked);
-        if theme_animating || state.animating {
+        if theme_animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         div()
