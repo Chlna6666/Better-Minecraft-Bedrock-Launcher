@@ -30,7 +30,7 @@ impl MapViewerWindowView {
             None
         };
         let needs_position = frame_preview && !needs_target_review
-            && (self.map_image.frame_anchor.is_none() || self.map_image.picking_frame_center);
+            && (self.map_frame_confirmed_center().is_none() || self.map_image.picking_frame_center);
         let check_running = check.is_some_and(|task| !task.is_terminal());
         let check_passed = self.map_frame_preflight_passed();
         let action_enabled = (ready || pending.is_some()) && !busy && !check_running
@@ -67,7 +67,7 @@ impl MapViewerWindowView {
                 }),
             ),
             MapImageInstallDestination::NewUpFrame => {
-                let target = if let Some((x, z)) = self.map_image.frame_anchor {
+                let target = if let Some((x, z)) = self.map_frame_confirmed_center() {
                     format!(
                         "已选择中心：X {x} · Y {} · Z {z}；{}×{} 张地图",
                         self.y_layer, self.map_image.options.columns, self.map_image.options.rows
