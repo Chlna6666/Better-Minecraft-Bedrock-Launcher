@@ -188,8 +188,13 @@ impl MainWindowView {
         self._route_subscriptions
             .push(cx.observe_global::<gpui_router::RouterState>(|this, cx| {
                 let route = crate::ui::navigation::current_route_target(cx);
+                let route_changed = this.last_route_for_side_effects.as_ref() != Some(&route);
+                // RouterState also publishes same-route history changes. Keep the page-data
+                // reconciliation, but only rebuild the root when the visible route changes.
                 this.handle_route_change_without_window(route, cx);
-                cx.notify();
+                if route_changed {
+                    cx.notify();
+                }
             }));
 
         self._reactor_subscriptions
