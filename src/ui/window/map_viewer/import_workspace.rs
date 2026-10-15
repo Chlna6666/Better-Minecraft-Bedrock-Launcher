@@ -92,12 +92,26 @@ impl MapViewerWindowView {
                     || self.import_task_snapshot().is_some(),
                 |workspace| workspace.child(self.render_import_actions(colors, cx)),
             )
-            .child(body)
-            .when(
-                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
-                    && !inventory_target
-                    && self.map_image_placement_inspector_visible(),
-                |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .min_h(px(0.0))
+                            .child(body),
+                    )
+                    .when(
+                        !preview
+                            && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+                            && !inventory_target
+                            && self.map_image_placement_inspector_visible(),
+                        |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
+                    ),
             )
     }
 
