@@ -3,6 +3,9 @@
 //! does not replace that provenance with a global cache invalidation.
 use super::*;
 
+#[cfg(test)]
+mod root_lifecycle_tests;
+
 /// Logical content version of an offscreen GPU target, advanced only when a
 /// successful Present made the freshly rendered texels eligible for reuse.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -516,7 +519,7 @@ mod tests {
     #[test]
     fn zero_filter_target_reorder_preserves_only_same_layer_and_texture() {
         let mut registry = FilterRegistry::new(None);
-        let make = |name: &str| FilterSource::Element(crate::PaintBlur {
+        let make = |name: &'static str| FilterSource::Element(crate::PaintBlur {
             order: 0,
             animation_id: None,
             layer_id: Some(crate::GlobalElementId::from_path(&[name.into()])),

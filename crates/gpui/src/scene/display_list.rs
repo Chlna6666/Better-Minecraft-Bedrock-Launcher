@@ -2707,7 +2707,7 @@ mod tests {
         let mut ranges = Vec::new();
         // Post-order parent ownership overlaps all child ranges; the parent
         // candidate must not migrate when only one half is replayed.
-        for index in 0..16 {
+        for index in 0_u32..16 {
             let start = previous.len();
             for _ in 0..32 {
                 previous.insert_primitive(Quad {
@@ -2718,7 +2718,7 @@ mod tests {
             }
             let end = previous.len();
             previous.record_retained_chunk(
-                GlobalElementId::from_path(&[format!("child-{index}").into()]),
+                GlobalElementId::from_path(&[("child", index).into()]),
                 7,
                 start..end,
             );

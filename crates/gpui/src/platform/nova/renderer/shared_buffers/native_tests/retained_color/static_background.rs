@@ -1,7 +1,12 @@
 //! Verify automatic page capture through native pixels and actual source-pass work.
 use super::*;
 
-fn page(size: DrawableSize, revision: u64, background: crate::Rgba) -> Arc<crate::Scene> {
+pub(super) fn page(
+    size: DrawableSize,
+    revision: u64,
+    background: crate::Rgba,
+    captured_foreground: bool,
+) -> Arc<crate::Scene> {
     let viewport = bounds(0., 0., size.width as f32, size.height as f32);
     let mut scene = crate::Scene::default();
     // A painter-ordered static prefix followed by independently animated foreground.
@@ -16,10 +21,14 @@ fn page(size: DrawableSize, revision: u64, background: crate::Rgba) -> Arc<crate
         scene.pop_layer();
     }
     scene.pop_layer();
-    scene.insert_animated_primitive(
-        quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
-        crate::SceneAnimationId(1),
-    );
+    if captured_foreground {
+        popup(&mut scene, viewport);
+    } else {
+        scene.insert_animated_primitive(
+            quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
+            crate::SceneAnimationId(1),
+        );
+    }
     scene.finish();
     scene.revision = revision;
     Arc::new(scene)
@@ -38,10 +47,10 @@ fn verify(backend: RendererBackend) {
     )
     .expect("native renderer");
     let target = super::super::target(&renderer);
-    let first = page(renderer.current_size, 1, crate::rgb(0x204060));
+    let first = page(renderer.current_size, 1, crate::rgb(0x204060), false);
     // Revision zero bypasses automatic capture. This is the direct painter
     // stream reference, so both paths cannot share the same grouping mistake.
-    let direct = page(renderer.current_size, 0, crate::rgb(0x204060));
+    let direct = page(renderer.current_size, 0, crate::rgb(0x204060), false);
     while renderer.swapchain_warmup_frames > 0 {
         pixels(&mut renderer, &first, target, 0., [sample(0.)], true);
     }
@@ -90,16 +99,16 @@ fn verify(backend: RendererBackend) {
 
     // An unrelated commit preserves the independent source; an actual source
     // change refreshes it even though the only supplied spatial damage is local.
-    let unchanged = page(renderer.current_size, 2, crate::rgb(0x204060));
+    let unchanged = page(renderer.current_size, 2, crate::rgb(0x204060), false);
     pixels(&mut renderer, &unchanged, target, 0., [sample(0.8)], false);
     assert_eq!(
         crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
         0
     );
-    let changed = page(renderer.current_size, 3, crate::rgb(0x406080));
+    let changed = page(renderer.current_size, 3, crate::rgb(0x406080), false);
     let local = pixels(&mut renderer, &changed, target, 0.8, [sample(0.2)], false);
     assert!(crate::performance_metrics_snapshot().backdrop_blur_source_pixels > 0);
-    let changed_direct = page(renderer.current_size, 0, crate::rgb(0x406080));
+    let changed_direct = page(renderer.current_size, 0, crate::rgb(0x406080), false);
     let full = pixels(
         &mut renderer,
         &changed_direct,

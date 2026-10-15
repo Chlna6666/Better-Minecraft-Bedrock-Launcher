@@ -128,7 +128,7 @@ impl Render for FrameLocalBoundaryRoot {
     }
 }
 
-fn any_view_scene_ranges(window: &Window) -> Vec<Range<usize>> {
+fn any_view_scene_ranges(window: &Window, leaf_ids: [EntityId; 2]) -> Vec<Range<usize>> {
     let mut ranges = window
         .rendered_frame
         .element_states
@@ -141,6 +141,7 @@ fn any_view_scene_ranges(window: &Window) -> Vec<Range<usize>> {
                 .inner
                 .downcast_ref::<Option<CachedViewState>>()?
                 .as_ref()
+                .filter(|state| leaf_ids.contains(&state.weak_view.view.entity_id()))
                 .map(|state| {
                     state.paint_range.start.scene_index()..state.paint_range.end.scene_index()
                 })
@@ -211,15 +212,16 @@ fn frame_local_cache_boundary_rebases_ranges_across_variable_sibling(cx: &mut Te
     let baseline_before_renders = before_renders.get();
     let baseline_after_renders = after_renders.get();
     assert!(baseline_before_renders > 0 && baseline_after_renders > 0);
+    let leaf_ids = root.update(cx, |root, _| [root.before.entity_id(), root.after.entity_id()]);
 
     let ranges_10 = cx
-        .update_window(window, |_, window, _| any_view_scene_ranges(window))
+        .update_window(window, |_, window, _| any_view_scene_ranges(window, leaf_ids))
         .unwrap();
     assert_eq!(ranges_10.len(), 2);
 
     targeted_resize(&root, &variable_path, 100, window, cx);
     let ranges_100 = cx
-        .update_window(window, |_, window, _| any_view_scene_ranges(window))
+        .update_window(window, |_, window, _| any_view_scene_ranges(window, leaf_ids))
         .unwrap();
     assert_eq!(ranges_100.len(), 2);
     assert_eq!(before_renders.get(), baseline_before_renders);
@@ -232,7 +234,7 @@ fn frame_local_cache_boundary_rebases_ranges_across_variable_sibling(cx: &mut Te
 
     targeted_resize(&root, &variable_path, 3, window, cx);
     let ranges_3 = cx
-        .update_window(window, |_, window, _| any_view_scene_ranges(window))
+        .update_window(window, |_, window, _| any_view_scene_ranges(window, leaf_ids))
         .unwrap();
     assert_eq!(ranges_3.len(), 2);
     assert_eq!(before_renders.get(), baseline_before_renders);

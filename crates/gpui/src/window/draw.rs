@@ -497,6 +497,7 @@ impl Window {
         } else {
             DirtyRegion::empty()
         };
+        let accumulated_full = dirty_region.is_full();
 
         let scene_requires_full_redraw = self.next_frame.scene.requires_full_redraw_fallback();
         // Backdrop-filter output depends on pixels rendered before it. When a blur primitive is
@@ -533,6 +534,8 @@ impl Window {
             || scene_requires_full_redraw
             || (backdrop_blur_topology_changed && !local_root_blur_topology)
             || recovery_scene_uncovered;
+        let mut spatial_area = dirty_region.area();
+        let mut empty_damage_fallback = false;
 
         if requires_full_redraw {
             if scene_requires_full_redraw {
@@ -573,12 +576,22 @@ impl Window {
                 dirty_region.push(bounds);
             }
 
+            spatial_area = dirty_region.area();
             if dirty_region.is_empty() && self.next_frame.retained_scene_segments.is_empty() {
+                empty_damage_fallback = true;
                 dirty_region.mark_full(viewport);
             } else if !dirty_region.is_empty() {
                 dirty_region.coalesce_if_large(viewport, DIRTY_REGION_FULL_REDRAW_RATIO);
             }
         }
+
+        log::trace!(target: "gpui::diagnostics",
+            "GPUI damage decision: window_id={} scene_revision={} full={} forced={} scene_fallback={} blur_topology={} local_blur_topology={} recovery={} accumulated_full={} empty_fallback={} spatial_area={} direct_views={:?}",
+            self.handle.window_id().as_u64(), self.next_frame.scene.revision,
+            dirty_region.is_full(), force_full_redraw, scene_requires_full_redraw,
+            backdrop_blur_topology_changed, local_root_blur_topology,
+            recovery_scene_uncovered, accumulated_full, empty_damage_fallback,
+            spatial_area, directly_dirty_views);
 
         if self.recovering_degraded_draw && dirty_region.is_full() {
             self.recovery_full_redraw_count = self.recovery_full_redraw_count.saturating_add(1);

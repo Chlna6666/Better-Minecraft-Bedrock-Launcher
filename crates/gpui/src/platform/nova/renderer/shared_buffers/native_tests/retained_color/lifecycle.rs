@@ -87,4 +87,69 @@ pub(super) fn verify(
         );
         assert!(local == full, "reopened popup must match a complete redraw");
     }
+    verify_root_reactivation(renderer, open, target);
+}
+
+fn verify_root_reactivation(
+    renderer: &mut NovaRenderer,
+    scene: &Arc<crate::Scene>,
+    target: (TextureId, TextureViewId),
+) {
+    present_auto_static(renderer, target);
+
+    let local = pixels(
+        renderer,
+        scene,
+        target,
+        0.8,
+        [
+            popup_sample(0.8, PopupPlacement::Sibling),
+            panel_sample(1.0),
+        ],
+        false,
+    );
+    assert!(renderer.frame_upload.retained_root_blur.is_some());
+    assert!(renderer.filters.root_color_content_version().is_some());
+    let full = pixels(
+        renderer,
+        scene,
+        target,
+        0.8,
+        [
+            popup_sample(0.8, PopupPlacement::Sibling),
+            panel_sample(1.0),
+        ],
+        true,
+    );
+    assert!(
+        local == full,
+        "reactivated Root must contain freshly rendered pixels"
+    );
+}
+
+fn present_auto_static(renderer: &mut NovaRenderer, target: (TextureId, TextureViewId)) {
+    let direct = static_background::page(renderer.current_size, 0, crate::rgb(0x406080), true);
+    let reference = pixels(
+        renderer,
+        &direct,
+        target,
+        0.8,
+        [popup_sample(0.8, PopupPlacement::Sibling)],
+        true,
+    );
+    let auto_static = static_background::page(renderer.current_size, 3, crate::rgb(0x406080), true);
+    let captured = pixels(
+        renderer,
+        &auto_static,
+        target,
+        0.8,
+        [popup_sample(0.8, PopupPlacement::Sibling)],
+        true,
+    );
+    assert!(renderer.frame_upload.retained_root_blur.is_none());
+    assert!(renderer.filters.root_color_content_version().is_none());
+    assert!(
+        captured == reference,
+        "AutoStatic and independent Popup must match direct pixels"
+    );
 }

@@ -15,14 +15,10 @@ mod tests;
 const HISTORY_CAPACITY: usize = 1_024;
 
 /// Enables three-stage Win32 ClientSize/GPUI Viewport/GPU Swapchain resize tracing.
-/// Disabled by default: only one cached environment-variable check on Windows.
+/// Uses the application's existing diagnostic Trace switch.
 #[cfg(target_os = "windows")]
 pub(crate) fn resize_trace_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("BMCBL_GPUI_RESIZE_TRACE")
-            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-    })
+    log::log_enabled!(target: "gpui::diagnostics", log::Level::Trace)
 }
 thread_local! {
     static BLOCKING_WAIT: Cell<Option<Duration>> = const { Cell::new(None) };

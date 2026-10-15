@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod cache_tests;
+
 use super::*;
 use std::hash::Hasher;
 use std::ops::Range;
@@ -331,6 +334,7 @@ impl RetainedQuadChunkCache {
 
 #[cfg(test)]
 mod static_dynamic_batch_tests {
+
     use super::*;
 
     #[test]
@@ -367,7 +371,7 @@ mod static_dynamic_batch_tests {
         let chunks: Vec<_> = (0..48)
             .map(|index| crate::PreparedRetainedQuadChunk {
                 id: RetainedChunkId::new(
-                    crate::GlobalElementId::from_path(&[format!("span-{index}").into()]),
+                    crate::GlobalElementId::from_path(&[("span", index).into()]),
                     1,
                 ),
                 quad_range: index * 8..index * 8 + 8,

@@ -245,6 +245,22 @@ pub(in crate::platform::nova) fn test_backdrop_blur_config(
     )
 }
 
+#[cfg(test)]
+pub(in crate::platform::nova) fn test_gaussian_capture_config(
+    member_index: u32,
+) -> BackdropBlurConfig {
+    BackdropBlurConfig::new(
+        0,
+        member_index,
+        member_index,
+        1,
+        2,
+        12.0,
+        [0.0, 0.0, 64.0, 32.0],
+        false,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::platform::nova) struct BackdropBlurRun {
     pub(in crate::platform::nova) first: u32,

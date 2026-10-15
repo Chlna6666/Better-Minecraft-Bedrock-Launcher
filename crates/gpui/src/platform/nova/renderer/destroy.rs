@@ -70,13 +70,17 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     resources: WindowResources,
     backend: &str,
 ) {
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=path");
     destroy_path_mask_target(device, resources.path, backend);
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=filters");
     if let Some(blur) = resources.blur {
         destroy_backdrop_blur_target_chain(device, blur, backend);
     }
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=atlas");
     for (atlas_id, texture) in resources.atlas {
         destroy_gpu_atlas_texture(device, texture, backend, atlas_id);
     }
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=frames");
     let buffers: FxHashSet<_> = resources
         .frames
         .iter()
@@ -88,6 +92,7 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     for buffer in buffers {
         release(device.destroy_buffer(buffer), "frame buffer");
     }
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=depth");
     release(
         device.destroy_texture_view(resources.depth.texture_view),
         "depth view",
@@ -97,10 +102,12 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
         "depth texture",
     );
     release(device.destroy_sampler(resources.sampler), "atlas sampler");
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=swapchain");
     release(
         BackendSurface::destroy_swapchain(device, resources.swapchain),
         "swapchain",
     );
+    log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=surface");
     release(
         BackendSurface::destroy_surface(device, resources.surface),
         "surface",

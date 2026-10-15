@@ -517,13 +517,17 @@ mod tests {
         assert!(tick.needs_ui_commit());
         assert!(!tick.needs_ui_rebuild());
         assert!(!tick.is_presentation_only());
+        let tick_with_present = PlatformFrameRequest {
+            ui_commit: UiCommitRequest::AnimationTick,
+            presentation: PresentationRequest::Required,
+        };
         assert_eq!(
             tick.merge(PlatformFrameRequest::presentation()),
-            PlatformFrameRequest::ui_commit_and_presentation(),
+            tick_with_present,
         );
         assert_eq!(
             PlatformFrameRequest::presentation().merge(tick),
-            PlatformFrameRequest::ui_commit_and_presentation(),
+            tick_with_present,
         );
         let merged = tick.merge(PlatformFrameRequest::ui_commit());
         assert!(merged.needs_ui_rebuild());

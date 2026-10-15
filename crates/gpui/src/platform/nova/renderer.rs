@@ -1092,7 +1092,9 @@ impl NovaRenderer {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
         }
         let submission_wait = destroy_started_at.elapsed();
+        log::debug!(target: "gpui_gpu_shutdown", "renderer submissions drained backend={}", self.backend_info.label());
         self.destroy_renderer_extensions();
+        log::debug!(target: "gpui_gpu_shutdown", "renderer extensions destroyed backend={}", self.backend_info.label());
         self.destroy_window_resources();
         self.memory_profile.remove();
         let total = destroy_started_at.elapsed();

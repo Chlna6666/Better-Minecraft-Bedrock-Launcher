@@ -783,7 +783,7 @@ mod retained_root_tests {
             let mut scene = crate::Scene::default();
             for index in 0..100 {
                 let bounds = crate::bounds(
-                    crate::point(crate::ScaledPixels(index as f32), crate::ScaledPixels(0.0)),
+                    crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
                     crate::size(
                         crate::ScaledPixels(if index == 50 { static_width } else { 12.0 }),
                         crate::ScaledPixels(12.0),
@@ -796,7 +796,7 @@ mod retained_root_tests {
                 });
             }
             let animated_bounds = crate::bounds(
-                crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(20.0)),
+                crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
                 crate::size(crate::ScaledPixels(foreground_width), crate::ScaledPixels(12.0)),
             );
             scene.insert_primitive(crate::Quad {
@@ -829,7 +829,7 @@ mod retained_root_tests {
                 &scene,
                 viewport,
                 crate::ContentMask::new(viewport),
-                scene.quads.last().unwrap().order,
+                scene.quads.iter().find(|quad| quad.animation_id.is_some()).unwrap().order,
                 size,
                 &mut summary,
             ));
@@ -1036,7 +1036,7 @@ mod retained_root_tests {
             &scene,
             blur.bounds,
             blur.content_mask,
-            scene.quads.last().unwrap().order,
+            scene.quads.last().unwrap().order + 1,
             size,
             &mut summary,
         ));
@@ -1149,6 +1149,10 @@ mod retained_root_tests {
     fn retained_quad_batches_receive_independent_bounds_after_single_packing_pass() {
         let mut scene = crate::Scene::default();
         let paint_quads = |scene: &mut crate::Scene, x: f32, count: usize| {
+            scene.push_layer(crate::bounds(
+                crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+                crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+            ));
             let start = scene.len();
             for _ in 0..count {
                 let bounds = crate::bounds(
@@ -1161,7 +1165,9 @@ mod retained_root_tests {
                     ..Default::default()
                 });
             }
-            start..scene.len()
+            let end = scene.len();
+            scene.pop_layer();
+            start..end
         };
         let left = paint_quads(&mut scene, 10.0, 32);
         let gap = paint_quads(&mut scene, 150.0, 1);
