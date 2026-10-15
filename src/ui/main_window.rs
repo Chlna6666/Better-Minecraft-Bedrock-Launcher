@@ -158,6 +158,7 @@ struct UpdateRenderState {
     suppress_background_animation_frames: bool,
 }
 
+#[derive(Clone)]
 struct AgreementRenderState {
     visible: bool,
     document: std::sync::Arc<crate::ui::components::markdown_renderer::MarkdownDocument>,
@@ -178,12 +179,12 @@ struct MainWindowRenderModel {
     window_width_px: f32,
     window_height: Pixels,
     update_render_state: UpdateRenderState,
-    agreement_render_state: AgreementRenderState,
+    agreement_render_state: Arc<AgreementRenderState>,
     show_update_modal: bool,
     update_modal_visible: bool,
     update_modal_animating: bool,
     diagnostics_visible: bool,
-    launcher_snapshot: crate::ui::hooks::use_launcher::LauncherSnapshot,
+    launcher_snapshot: Arc<crate::ui::hooks::use_launcher::LauncherSnapshot>,
     #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
     toast_visible: bool,
@@ -219,6 +220,7 @@ pub struct MainWindowView {
     download_controls_initialized: bool,
     download_controls_subscriptions: Vec<Subscription>,
     download_overlay_active: bool,
+    settings_overlay_active: bool,
     download_prefs_last_save: Option<Instant>,
     download_prefs_load_started: bool,
     download_prefs_loaded: bool,
@@ -235,6 +237,7 @@ pub struct MainWindowView {
     _reactor_subscriptions: Vec<Subscription>,
     _window_subscriptions: Vec<Subscription>,
     update_download_listener_running: bool,
+    launcher_snapshot: Arc<crate::ui::hooks::use_launcher::LauncherSnapshot>,
     update_markdown_view: Option<Entity<crate::ui::overlays::update::UpdateMarkdownView>>,
     settings_load_started: bool,
     background_animation_suppressed: bool,
@@ -248,7 +251,8 @@ pub struct MainWindowView {
     was_window_minimized: bool,
     theme_color_cache: Option<ThemeColorCache>,
     last_diagnostics_render_signature: (Option<String>, bool, bool),
-    last_toast_had_content: bool,
+    diagnostics_visible: bool,
+    agreement_render_state: Arc<AgreementRenderState>,
     last_minecraft_termination_dialog:
         crate::ui::views::tools::state::MinecraftTerminationDialogState,
     easter_egg: easter_egg::EasterEggState,
@@ -375,7 +379,7 @@ impl MainWindowView {
         let window_bounds = window.bounds();
         let window_width = window_bounds.size.width;
         let window_height = window_bounds.size.height;
-        let agreement_render_state = self.read_agreement_render_state(cx);
+        let agreement_render_state = self.agreement_render_state.clone();
         let (show_update_modal, update_modal_visible, update_modal_animating) = {
             let update_state: &UpdateState = cx.global::<UpdateState>();
             (
@@ -384,11 +388,8 @@ impl MainWindowView {
                 update_state.is_modal_render_animating(now),
             )
         };
-        let diagnostics_visible = cx
-            .global::<crate::ui::state::diagnostics::DiagnosticsState>()
-            .pending_report
-            .is_some();
-        let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(cx);
+        let diagnostics_visible = self.diagnostics_visible;
+        let launcher_snapshot = self.launcher_snapshot.clone();
         #[cfg(target_os = "windows")]
         let launch_prereq_visible =
             cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>().visible;
@@ -520,9 +521,7 @@ impl MainWindowView {
         }
 
         if model.builtin_route == AppRoute::Download {
-            auth_blocked |= page_overlay::download_visible(
-                cx.global::<crate::ui::views::download::state::DownloadPageState>(),
-            );
+            auth_blocked |= self.download_overlay_active;
             root = root.child(
                 self.download_overlay_view
                     .clone()
@@ -531,9 +530,7 @@ impl MainWindowView {
         }
 
         if model.builtin_route == AppRoute::Settings {
-            auth_blocked |= page_overlay::settings_visible(
-                cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
-            );
+            auth_blocked |= self.settings_overlay_active;
             root = root.child(
                 self.settings_overlay_view
                     .clone()
@@ -1546,18 +1543,13 @@ impl MainWindowView {
         let overlay_sub = cx
             .observe_global::<crate::ui::views::download::state::DownloadPageState>(|this, cx| {
                 let route = crate::ui::navigation::current_route(cx);
-                if route != AppRoute::Download {
-                    this.download_overlay_active = false;
-                    return;
-                }
-
                 let active = page_overlay::download_visible(
                     cx.global::<crate::ui::views::download::state::DownloadPageState>(),
                 );
                 let should_notify = this.download_overlay_active != active;
                 this.download_overlay_active = active;
 
-                if should_notify {
+                if should_notify && route == AppRoute::Download {
                     cx.notify();
                 }
             });

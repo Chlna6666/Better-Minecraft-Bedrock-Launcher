@@ -100,12 +100,7 @@ where
         *subscription.borrow_mut() = Some(observer);
     }
 
-    let current = read_launcher_snapshot(cx);
-    if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
-        snapshot.set(current.clone());
-    }
-
-    current
+    snapshot.with(Clone::clone)
 }
 
 pub fn start_launcher(version: LaunchVersionDescriptor, cx: &mut App) -> Option<Arc<str>> {
@@ -1359,7 +1354,10 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     .detach();
 }
 
-fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
+pub(crate) fn launcher_snapshot_changed(
+    previous: &LauncherSnapshot,
+    current: &LauncherSnapshot,
+) -> bool {
     previous.show_modal != current.show_modal
         || previous.modal_visible != current.modal_visible
         || previous.task_id != current.task_id

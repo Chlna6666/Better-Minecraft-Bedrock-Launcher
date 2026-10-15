@@ -216,10 +216,22 @@ impl MainWindowView {
                 cx.notify();
             }));
         self._reactor_subscriptions
-            .push(cx.observe_global::<LauncherState>(|_this, cx| {
+            .push(cx.observe_global::<LauncherState>(|this, cx| {
                 let now = Instant::now();
                 let state = cx.global::<LauncherState>();
-                if state.show_modal || state.modal_visible || state.is_modal_animating(now) {
+                let previous = this.launcher_snapshot.clone();
+                let current = crate::ui::hooks::use_launcher::read_launcher_snapshot(cx);
+                let changed = crate::ui::hooks::use_launcher::launcher_snapshot_changed(
+                    &previous,
+                    &current,
+                );
+                if changed {
+                    this.launcher_snapshot = Arc::new(current);
+                }
+                if (changed && (previous.show_modal || previous.modal_visible
+                    || state.show_modal || state.modal_visible))
+                    || state.is_modal_animating(now)
+                {
                     cx.notify();
                 }
             }));
@@ -251,20 +263,24 @@ impl MainWindowView {
                 );
                 if this.last_diagnostics_render_signature != signature {
                     this.last_diagnostics_render_signature = signature;
+                    this.diagnostics_visible = state.pending_report.is_some();
                     cx.notify();
                 }
             }),
         );
+        let toast_window_id = gpui::WindowId::from(self.window_id);
+        let mut toast_revision = crate::ui::components::toast::window_content_revision(
+            toast_window_id,
+            cx.global::<crate::ui::components::toast::ToastState>(),
+        );
         self._reactor_subscriptions.push(
-            cx.observe_global::<crate::ui::components::toast::ToastState>(|this, cx| {
-                let now = Instant::now();
-                let window_id = gpui::WindowId::from(this.window_id);
-                let state = cx.global::<crate::ui::components::toast::ToastState>();
-                let has_content = crate::ui::components::toast::has_visible_toasts(
-                    window_id, now, state,
-                ) || crate::ui::components::toast::has_visible_breadcrumb(window_id, now, state);
-                if has_content || this.last_toast_had_content {
-                    this.last_toast_had_content = has_content;
+            cx.observe_global::<crate::ui::components::toast::ToastState>(move |_this, cx| {
+                let next_revision = crate::ui::components::toast::window_content_revision(
+                    toast_window_id,
+                    cx.global::<crate::ui::components::toast::ToastState>(),
+                );
+                if toast_revision != next_revision {
+                    toast_revision = next_revision;
                     cx.notify();
                 }
             }),
@@ -278,39 +294,45 @@ impl MainWindowView {
                 }
             }),
         );
-        let mut settings_overlay_visible = page_overlay::settings_visible(
-            cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
-        );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
-                move |_this, cx| {
+                move |this, cx| {
                     let visible = page_overlay::settings_visible(
                         cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
                     );
-                    let changed = settings_overlay_visible != visible;
-                    settings_overlay_visible = visible;
+                    let changed = this.settings_overlay_active != visible;
+                    this.settings_overlay_active = visible;
                     if changed && crate::ui::navigation::current_route(cx) == AppRoute::Settings {
                         cx.notify();
                     }
                 },
             ),
         );
-        let mut agreement_visible = cx.global::<AgreementState>().is_visible();
+        let mut agreement_visible = this.agreement_render_state.visible;
         self._reactor_subscriptions
-            .push(cx.observe_global::<AgreementState>(move |_this, cx| {
-                let visible = cx.global::<AgreementState>().is_visible();
-                if visible || agreement_visible {
+            .push(cx.observe_global::<AgreementState>(move |this, cx| {
+                let next = this.read_agreement_render_state(cx);
+                let visible = next.visible;
+                let changed = this.agreement_render_state.visible != visible
+                    || this.agreement_render_state.accept_unlocked != next.accept_unlocked
+                    || !Arc::ptr_eq(
+                        &this.agreement_render_state.document,
+                        &next.document,
+                    );
+                this.agreement_render_state = Arc::new(next);
+                if changed && (visible || agreement_visible) {
                     cx.notify();
                 }
                 agreement_visible = visible;
             }));
         self._reactor_subscriptions
-            .push(cx.observe_global::<I18n>(|_this, cx| {
+            .push(cx.observe_global::<I18n>(|this, cx| {
                 let locale_code = cx.global::<I18n>().locale().code().to_string();
                 let agreement_visible = cx.update_global(|agreement: &mut AgreementState, _cx| {
                     let _ = agreement.get_or_cache_document(&locale_code);
                     agreement.is_visible()
                 });
+                this.agreement_render_state = Arc::new(this.read_agreement_render_state(cx));
                 if agreement_visible {
                     cx.notify();
                 }
@@ -355,7 +377,9 @@ impl MainWindowView {
         clear_optional_page_view(&mut self.download_page_view);
         self.download_controls_initialized = false;
         self.download_controls_subscriptions.clear();
-        self.download_overlay_active = false;
+        self.download_overlay_active = page_overlay::download_visible(
+            cx.global::<crate::ui::views::download::state::DownloadPageState>(),
+        );
         self.download_prefs_last_save = None;
         if !has_route_state {
             return;
@@ -674,6 +698,32 @@ impl MainWindowView {
             )
         });
 
+        let launcher_snapshot = Arc::new(crate::ui::hooks::use_launcher::read_launcher_snapshot(cx));
+        let diagnostics_state = cx.global::<crate::ui::state::diagnostics::DiagnosticsState>();
+        let diagnostics_visible = diagnostics_state.pending_report.is_some();
+        let diagnostics_signature = (
+            diagnostics_state
+                .pending_report
+                .as_ref()
+                .map(|report| report.id.clone()),
+            diagnostics_state.submitting_sentry,
+            diagnostics_state.auto_report_attempted,
+        );
+        let agreement_render_state = Arc::new({
+            let agreement = cx.global::<AgreementState>();
+            AgreementRenderState {
+                visible: agreement.is_visible(),
+                document: agreement.cached_document(),
+                scroll_handle: agreement.agreement_scroll_handle.clone(),
+                accept_unlocked: agreement.accept_unlocked,
+            }
+        });
+        let settings_overlay_active = page_overlay::settings_visible(
+            cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
+        );
+        let download_overlay_active = page_overlay::download_visible(
+            cx.global::<crate::ui::views::download::state::DownloadPageState>(),
+        );
         let mut this = Self {
             window_id: window.window_handle().window_id().as_u64(),
             background_view,
@@ -700,7 +750,8 @@ impl MainWindowView {
             recent_plugin_page_key: None,
             download_controls_initialized: false,
             download_controls_subscriptions: Vec::new(),
-            download_overlay_active: false,
+            download_overlay_active,
+            settings_overlay_active,
             download_prefs_last_save: None,
             download_prefs_load_started: false,
             download_prefs_loaded: false,
@@ -717,6 +768,7 @@ impl MainWindowView {
             _reactor_subscriptions: Vec::new(),
             _window_subscriptions: Vec::new(),
             update_download_listener_running: false,
+            launcher_snapshot,
             update_markdown_view: None,
             settings_load_started: false,
             background_animation_suppressed: false,
@@ -727,8 +779,9 @@ impl MainWindowView {
             startup_deferred_ready: false,
             was_window_minimized: false,
             theme_color_cache: None,
-            last_diagnostics_render_signature: (None, false, false),
-            last_toast_had_content: false,
+            last_diagnostics_render_signature: diagnostics_signature,
+            diagnostics_visible,
+            agreement_render_state,
             last_minecraft_termination_dialog: cx
                 .global::<crate::ui::views::tools::state::ToolsPageState>()
                 .minecraft_termination_dialog

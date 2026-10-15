@@ -15,10 +15,9 @@ impl RootView {
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         let subscriptions = {
             cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
-            let mut was_main_window = cx
+            let mut main_window_id = cx
                 .global::<crate::ui::window::debug::DebugState>()
-                .main_window_id
-                == Some(window_id);
+                .main_window_id;
             let mut subscriptions = vec![
                 cx.observe_global::<crate::ui::state::i18n::I18n>(|_this, cx| {
                     // One subscription per native window invalidates its root;
@@ -47,14 +46,16 @@ impl RootView {
                     }
                 }),
                 cx.observe_global::<crate::ui::window::debug::DebugState>(|this, cx| {
-                    let is_main_window = cx
+                    let next_main_window_id = cx
                         .global::<crate::ui::window::debug::DebugState>()
-                        .main_window_id
-                        == Some(this.window_id);
-                    if is_main_window || was_main_window {
+                        .main_window_id;
+                    if main_window_id != next_main_window_id
+                        && (main_window_id == Some(this.window_id)
+                            || next_main_window_id == Some(this.window_id))
+                    {
                         cx.notify();
                     }
-                    was_main_window = is_main_window;
+                    main_window_id = next_main_window_id;
                 }),
             ];
 
@@ -76,7 +77,14 @@ impl RootView {
                 );
                 subscriptions.push(cx.observe_global::<
                     crate::ui::views::download::state::DownloadPageState,
-                >(|_this, cx| {
+                >(|this, cx| {
+                    if cx
+                        .global::<crate::ui::window::debug::DebugState>()
+                        .main_window_id
+                        != Some(this.window_id)
+                    {
+                        return;
+                    }
                     let uwp_download = cx
                         .global::<crate::ui::views::download::state::DownloadPageState>()
                         .game_dialog
