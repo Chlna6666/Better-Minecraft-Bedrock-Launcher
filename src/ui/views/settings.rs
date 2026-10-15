@@ -43,6 +43,7 @@ pub struct SettingsPageView {
     _subscriptions: Vec<Subscription>,
     content_view: Entity<SettingsContentView>,
     last_tab: SettingsTab,
+    last_content_window_size: Option<(Pixels, Pixels)>,
     active: bool,
     background_prepare_scheduled: bool,
     prepared_tab: Option<SettingsTab>,
@@ -78,6 +79,7 @@ impl SettingsPageView {
             _subscriptions: subscriptions,
             content_view,
             last_tab,
+            last_content_window_size: None,
             active: false,
             background_prepare_scheduled: false,
             prepared_tab: None,
@@ -207,6 +209,11 @@ impl Render for SettingsPageView {
             theme.accent,
         );
         let window_size = window.bounds().size;
+        let content_size = (window_size.width, window_size.height);
+        if self.last_content_window_size != Some(content_size) {
+            self.last_content_window_size = Some(content_size);
+            self.content_view.update(cx, |_, cx| cx.notify());
+        }
         render_settings_page(
             colors,
             window_size.width,
