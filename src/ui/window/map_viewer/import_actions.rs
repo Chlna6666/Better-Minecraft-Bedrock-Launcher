@@ -68,7 +68,7 @@ impl MapViewerWindowView {
         div()
             .flex_none()
             .min_w(px(0.0))
-            .max_h(px(180.0))
+            .max_h(px(220.0))
             .overflow_y_scrollbar()
             .mx(px(8.0))
             .mt(px(6.0))
