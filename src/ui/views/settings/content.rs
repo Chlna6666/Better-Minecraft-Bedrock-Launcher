@@ -113,7 +113,10 @@ pub(super) fn render_settings_content(
         .flex()
         .flex_col()
         .child(
-            div().w_full().flex().justify_center().child(
+            // The scrolling column must measure its child at natural height.
+            // Allowing flex-shrink here collapses the scroll extent to the
+            // viewport, leaving overflowing settings rows unreachable.
+            div().w_full().flex_none().flex().justify_center().child(
                 div()
                     .w_full()
                     .max_w(layout.content_max_width)

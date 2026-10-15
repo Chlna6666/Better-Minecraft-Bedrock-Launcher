@@ -678,6 +678,8 @@ fn plugin_list(
                     "settings-plugin-item-{}",
                     status.id
                 )))
+                // Preserve each row's height inside the scrolling flex column.
+                .flex_shrink_0()
                 .rounded(px(crate::ui::theme::tokens::radius::MD))
                 .px(px(8.))
                 .py(px(7.))
