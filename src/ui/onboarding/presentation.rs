@@ -45,12 +45,12 @@ pub fn render_onboarding_tour(
         .inset_0()
         .child(overlay)
         .composite_layer()
-        .with_animation(
+        .with_visual_animation(
             scene_animation_id(scene),
             crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(190))
                 .with_property(AnimationProperty::opacity(0.55, 1.0)),
-            |this, _progress| this,
         )
+        .expect("animation declares presentation properties")
         .into_any_element();
 
     if let Some(pulse) = render_anchor_pulse(state, &colors) {
@@ -197,12 +197,12 @@ fn render_welcome(state: &OnboardingTourState, window: &mut Window, cx: &App) ->
         .p(px(18.0))
         .child(card)
         .composite_layer()
-        .with_animation(
+        .with_visual_animation(
             "onboarding-welcome-backdrop-enter",
             crate::ui::animation::ease_out_cubic_motion(Duration::from_millis(220))
                 .with_property(AnimationProperty::opacity(0.0, 1.0)),
-            |this, _progress| this,
         )
+        .expect("animation declares presentation properties")
         .into_any_element()
 }
 
@@ -482,14 +482,13 @@ fn render_anchor_pulse(state: &OnboardingTourState, colors: &ThemeColors) -> Opt
                 a: 0.72,
                 ..colors.accent
             })
-            .with_animation(
+            .with_visual_animation(
                 "onboarding-anchor-pulse",
-                crate::ui::animation::repeating_linear_motion(Duration::from_millis(1500)),
-                |this, progress| {
-                    let wave = (progress * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-                    this.opacity(0.45 + 0.45 * wave)
-                },
+                crate::ui::animation::repeating_linear_motion(Duration::from_millis(1500))
+                    .with_easing(|progress| (progress * std::f32::consts::TAU).sin() * 0.5 + 0.5)
+                    .with_property(AnimationProperty::opacity(0.45, 0.90)),
             )
+            .expect("opacity is a declared presentation property")
             .into_any_element(),
     )
 }

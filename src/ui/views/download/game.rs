@@ -340,13 +340,13 @@ fn render_game_loading_placeholder(colors: &ThemeColors, row_count: usize) -> Di
                 a: 0.24,
                 ..colors.surface
             })
-            .with_animation(
+            .with_visual_animation(
                 "game-skeleton-shimmer",
                 repeating_linear_motion(Duration::from_millis(1400)).with_property(
                     AnimationProperty::translation(Point::default(), point(px(420.0), px(0.0))),
                 ),
-                |this, _progress| this,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     };
 
@@ -446,13 +446,13 @@ fn render_game_loading_placeholder_aligned(colors: &ThemeColors, state: &Downloa
                 a: 0.24,
                 ..colors.surface
             })
-            .with_animation(
+            .with_visual_animation(
                 "game-skeleton-shimmer-aligned",
                 repeating_linear_motion(Duration::from_millis(1400)).with_property(
                     AnimationProperty::translation(Point::default(), point(px(420.0), px(0.0))),
                 ),
-                |this, _progress| this,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     };
 

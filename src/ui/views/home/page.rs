@@ -931,7 +931,7 @@ impl Render for HomePageView {
             );
         let launch_bar: AnyElement = if initial_versions_loading {
             launch_bar
-                .with_animation(
+                .with_visual_animation(
                     "home-launch-loading-pulse",
                     Animation::new(Duration::from_secs_f32(4.0 / 3.0))
                         .repeat()
@@ -939,8 +939,8 @@ impl Render for HomePageView {
                             (0.5 + 0.5 * (std::f32::consts::TAU * t).sin()).clamp(0.0, 1.0)
                         })
                         .with_property(AnimationProperty::opacity(0.6, 1.0)),
-                    |bar, _progress| bar,
                 )
+                .expect("animation declares presentation properties")
                 .into_any_element()
         } else {
             launch_bar.into_any_element()

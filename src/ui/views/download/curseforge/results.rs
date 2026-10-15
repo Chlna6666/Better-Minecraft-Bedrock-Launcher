@@ -294,7 +294,7 @@ fn curseforge_results_skeleton_block(
             a: highlight_alpha,
             ..colors.text_primary
         })
-        .with_animation(
+        .with_visual_animation(
             id,
             repeating_linear_motion(Duration::from_millis(1250)).with_property(
                 AnimationProperty::relative_translation(
@@ -302,8 +302,8 @@ fn curseforge_results_skeleton_block(
                     point((END - START) / BAND_WIDTH, 0.0),
                 ),
             ),
-            |this, _progress| this,
-        );
+        )
+        .expect("animation declares presentation properties");
 
     div()
         .w(width)
@@ -456,7 +456,7 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                 a: 0.24,
                 ..colors.surface
             })
-            .with_animation(
+            .with_visual_animation(
                 "curseforge-skeleton-shimmer",
                 repeating_linear_motion(Duration::from_millis(1400)).with_property(
                     AnimationProperty::relative_translation(
@@ -464,8 +464,8 @@ pub(crate) fn render_curseforge_loading_placeholder(colors: &ThemeColors) -> Div
                         point(440.0 / 140.0, 0.0),
                     ),
                 ),
-                |this, _progress| this,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     };
 

@@ -76,15 +76,16 @@ impl RenderOnce for AnimatedStatValue {
             ))
         };
 
-        value.with_animation(
-            SharedString::from(format!(
-                "{}-presentation-{}",
-                self.id.as_ref(),
-                self.sequence
-            )),
-            motion,
-            |value, _progress| value,
-        )
+        value
+            .with_visual_animation(
+                SharedString::from(format!(
+                    "{}-presentation-{}",
+                    self.id.as_ref(),
+                    self.sequence
+                )),
+                motion,
+            )
+            .expect("animation declares presentation properties")
     }
 }
 
@@ -319,7 +320,7 @@ fn chart_card(
                     .h(px(height))
                     .rounded_t(px(5.))
                     .bg(Hsla { a: 0.72, ..color })
-                    .with_animation(
+                    .with_visual_animation(
                         SharedString::from(format!(
                             "manage-stat-{animation_scope}-{animation_sequence}-{index}"
                         )),
@@ -332,8 +333,8 @@ fn chart_card(
                                 1.0,
                             ))
                         },
-                        |bar, _progress| bar,
                     )
+                    .expect("animation declares presentation properties")
                     .into_any_element();
 
                 div()

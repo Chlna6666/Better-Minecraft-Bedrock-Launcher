@@ -366,16 +366,17 @@ pub(super) fn render_connectivity_modal(
         .child(header)
         .child(render_connectivity_list(colors, i18n, state));
 
-    let animated_card = card.with_animation(
-        "launcher-connectivity-modal-card",
-        spring_motion(spring_smooth()),
-        |card, progress| {
-            card.opacity(progress.clamp(0.0, 1.0))
-                .relative()
-                .left(px(28.0 * (1.0 - progress)))
-                .top(px(6.0 * (1.0 - progress)))
-        },
-    );
+    let animated_card = card
+        .with_visual_animation(
+            "launcher-connectivity-modal-card",
+            spring_motion(spring_smooth()).with_property(AnimationProperty::translation_opacity(
+                point(px(28.0), px(6.0)),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
+        )
+        .expect("translation and opacity are declared presentation properties");
 
     Some(
         modal::modal_layer_dismissible_with_cleanup(
@@ -579,28 +580,32 @@ fn render_connectivity_list(
                             match item.map(|it| it.status) {
                                 Some(LauncherConnectivityStatus::Loading) => {
                                     connectivity_item_row(colors, i18n, service, item)
-                                        .with_animation(
+                                        .with_visual_animation(
                                             row_id,
-                                            spring_motion(spring_smooth()),
-                                            |row, progress| {
-                                                row.opacity(
-                                                    (0.72 + progress * 0.28).clamp(0.0, 1.0),
-                                                )
-                                                .relative()
-                                                .left(px(12.0 * (1.0 - progress)))
-                                            },
+                                            spring_motion(spring_smooth()).with_property(
+                                                AnimationProperty::translation_opacity(
+                                                    point(px(12.0), px(0.0)),
+                                                    Point::default(),
+                                                    0.72,
+                                                    1.0,
+                                                ),
+                                            ),
                                         )
+                                        .expect("translation and opacity are declared presentation properties")
                                 }
                                 _ => connectivity_item_row(colors, i18n, service, item)
-                                    .with_animation(
+                                    .with_visual_animation(
                                         row_id,
-                                        spring_motion(spring_smooth()),
-                                        |row, progress| {
-                                            row.opacity((0.58 + progress * 0.42).clamp(0.0, 1.0))
-                                                .relative()
-                                                .left(px(14.0 * (1.0 - progress)))
-                                        },
-                                    ),
+                                        spring_motion(spring_smooth()).with_property(
+                                            AnimationProperty::translation_opacity(
+                                                point(px(14.0), px(0.0)),
+                                                Point::default(),
+                                                0.58,
+                                                1.0,
+                                            ),
+                                        ),
+                                    )
+                                    .expect("translation and opacity are declared presentation properties"),
                             }
                         }),
                 ),
@@ -851,11 +856,11 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                             a: 0.85,
                             ..colors.accent
                         })
-                        .with_animation(
+                        .with_visual_animation(
                             "launcher-connectivity-loading-dot-1",
                             loading_dot_motion(Duration::from_millis(720)),
-                            |dot, _progress| dot,
-                        ),
+                        )
+                        .expect("animation declares presentation properties"),
                 )
                 .child(
                     div()
@@ -866,11 +871,11 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                             a: 0.85,
                             ..colors.accent
                         })
-                        .with_animation(
+                        .with_visual_animation(
                             "launcher-connectivity-loading-dot-2",
                             loading_dot_motion(Duration::from_millis(900)),
-                            |dot, _progress| dot,
-                        ),
+                        )
+                        .expect("animation declares presentation properties"),
                 )
                 .child(
                     div()
@@ -881,11 +886,11 @@ fn loading_badge(colors: &ThemeColors) -> AnyElement {
                             a: 0.85,
                             ..colors.accent
                         })
-                        .with_animation(
+                        .with_visual_animation(
                             "launcher-connectivity-loading-dot-3",
                             loading_dot_motion(Duration::from_millis(1080)),
-                            |dot, _progress| dot,
-                        ),
+                        )
+                        .expect("animation declares presentation properties"),
                 ),
         )
         .into_any_element()

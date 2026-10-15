@@ -85,7 +85,7 @@ fn game_shimmer_block(
         .inset_0()
         .child(band(first_left))
         .child(band(first_left - travel))
-        .with_animation(
+        .with_visual_animation(
             id,
             Animation::new(GAME_SHIMMER_DURATION)
                 .repeat()
@@ -93,8 +93,8 @@ fn game_shimmer_block(
                     Point::default(),
                     point(travel, px(0.0)),
                 )),
-            |this, _progress| this,
-        );
+        )
+        .expect("animation declares presentation properties");
 
     div()
         .w(width)
@@ -124,7 +124,7 @@ fn resource_sweep(id: SharedString, colors: &ThemeColors, row_width: Pixels) -> 
             a: 0.085,
             ..colors.text_primary
         })
-        .with_animation(
+        .with_visual_animation(
             id,
             Animation::new(RESOURCE_SWEEP_DURATION)
                 .repeat()
@@ -132,8 +132,8 @@ fn resource_sweep(id: SharedString, colors: &ThemeColors, row_width: Pixels) -> 
                     Point::default(),
                     point(travel, px(0.0)),
                 )),
-            |this, _progress| this,
         )
+        .expect("animation declares presentation properties")
         .into_any_element()
 }
 
@@ -161,7 +161,7 @@ fn mod_pulse_block(
             a: max_alpha,
             ..color
         })
-        .with_animation(
+        .with_visual_animation(
             id,
             Animation::new(MOD_PULSE_DURATION)
                 .repeat()
@@ -170,8 +170,8 @@ fn mod_pulse_block(
                     (0.5 - 0.5 * (TAU * p).cos()).clamp(0.0, 1.0)
                 })
                 .with_property(AnimationProperty::opacity(base_opacity, 1.0)),
-            |this, _progress| this,
         )
+        .expect("animation declares presentation properties")
         .into_any_element()
 }
 

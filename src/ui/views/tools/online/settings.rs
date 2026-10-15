@@ -37,7 +37,7 @@ pub(super) fn render_settings_overlay(
     });
     let card = render_settings_card(colors, i18n, width, state, dismiss.clone())
         .composite_layer()
-        .with_animation(
+        .with_visual_animation(
             "online-settings-card-enter",
             spring_motion(spring_smooth()).with_property(AnimationProperty::translation_opacity(
                 point(
@@ -48,8 +48,8 @@ pub(super) fn render_settings_overlay(
                 0.0,
                 1.0,
             )),
-            |card, _progress| card,
-        );
+        )
+        .expect("animation declares presentation properties");
 
     Some(modal::modal_layer_dismissible(card, colors.backdrop, dismiss).into_any_element())
 }

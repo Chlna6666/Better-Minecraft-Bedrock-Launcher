@@ -258,7 +258,7 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
         .bg(colors.surface);
     let indicator = if transition_seq != 0 && from != active {
         indicator
-            .with_animation(
+            .with_visual_animation(
                 SharedString::from(format!("download-tab-indicator-{transition_seq}")),
                 spring_motion(apple_spring(0.30, 0.82)).with_property(
                     AnimationProperty::translation(
@@ -266,8 +266,8 @@ fn render_tabs(colors: &ThemeColors, state: &DownloadPageState, _i18n: &I18n) ->
                         Point::default(),
                     ),
                 ),
-                |indicator, _progress| indicator,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     } else {
         indicator.into_any_element()

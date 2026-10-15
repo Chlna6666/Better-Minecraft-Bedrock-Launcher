@@ -884,21 +884,22 @@ impl ManagePageView {
 
         let animating = state.tab_animation_active(now) && !crate::core::ui_prefs::reduced_motion();
         let direction = tab_transition_direction(state.tab_anim_from.index(), state.tab.index());
-        let toolbar = toolbar.with_animation(
-            tab_content_animation_key("manage-tab-toolbar", state.tab_anim_seq),
-            if animating {
-                tab_toolbar_motion().with_property(AnimationProperty::clipped_translation(
-                    point(px(8.0 * direction), px(0.0)),
-                    Point::default(),
-                ))
-            } else {
-                settled_animation().with_property(AnimationProperty::translation(
-                    Point::default(),
-                    Point::default(),
-                ))
-            },
-            |toolbar, _progress| toolbar,
-        );
+        let toolbar = toolbar
+            .with_visual_animation(
+                tab_content_animation_key("manage-tab-toolbar", state.tab_anim_seq),
+                if animating {
+                    tab_toolbar_motion().with_property(AnimationProperty::clipped_translation(
+                        point(px(8.0 * direction), px(0.0)),
+                        Point::default(),
+                    ))
+                } else {
+                    settled_animation().with_property(AnimationProperty::translation(
+                        Point::default(),
+                        Point::default(),
+                    ))
+                },
+            )
+            .expect("animation declares presentation properties");
 
         let content = if state.version_config_loading {
             empty_state(
@@ -965,11 +966,11 @@ impl ManagePageView {
                 .min_h(px(0.))
                 .child(content)
                 .composite_layer()
-                .with_animation(
+                .with_visual_animation(
                     tab_content_animation_key("manage-tab-content", state.tab_anim_seq),
                     tab_content_motion(state.tab_anim_from.index(), state.tab.index()),
-                    |content, _progress| content,
                 )
+                .expect("animation declares presentation properties")
                 .into_any_element()
         } else {
             content

@@ -157,13 +157,13 @@ fn animated_settings_panel(
         .when(fill_height, |this| this.h_full().min_h(px(0.)))
         .child(panel)
         .composite_layer()
-        .with_animation(
+        .with_visual_animation(
             key,
             spring_motion(spring_smooth()).with_property(AnimationProperty::translation(
                 point(px(10.0), px(0.0)),
                 Point::default(),
             )),
-            |panel, _progress| panel,
         )
+        .expect("animation declares presentation properties")
         .into_any_element()
 }

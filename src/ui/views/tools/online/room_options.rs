@@ -69,7 +69,7 @@ fn render_advanced_panel(
             t!("Online.open_ports_placeholder"),
         ))
         .composite_layer()
-        .with_animation(
+        .with_visual_animation(
             "online-room-advanced-panel",
             spring_motion(spring_bouncy()).with_property(AnimationProperty::translation_opacity(
                 point(px(0.0), px(motion::ENTRANCE_OFFSET)),
@@ -77,8 +77,8 @@ fn render_advanced_panel(
                 0.0,
                 1.0,
             )),
-            |panel, _progress| panel,
         )
+        .expect("animation declares presentation properties")
 }
 
 fn render_inline_input(

@@ -172,7 +172,7 @@ pub fn render_update_modal(
     snapshot: Option<Arc<TaskSnapshot>>,
     download_error: Option<String>,
     theme_factor: f32,
-    modal_factor: f32,
+    modal_duration: std::time::Duration,
     accent_override: Option<Hsla>,
     i18n: &I18n,
 ) -> impl IntoElement + use<> {
@@ -261,15 +261,6 @@ pub fn render_update_modal(
                 .min(available_card_h / px(1.0))
                 .max(UPDATE_MODAL_MIN_HEIGHT_PX.min(available_card_h / px(1.0))),
         )
-    };
-    let motion_k = modal_factor.clamp(0.0, 1.06);
-    let k = motion_k.min(1.0);
-    let k = if k > 0.996 { 1.0 } else { k };
-    let smooth_k = (k * k * (3.0 - 2.0 * k)).clamp(0.0, 1.0);
-    let card_offset_y = if modal_visible {
-        px((1.0 - smooth_k) * 14.0 - (motion_k - 1.0).max(0.0) * 6.0)
-    } else {
-        px((1.0 - smooth_k) * 10.0)
     };
     let overlay_bg = hsla(0., 0., 0.08, 0.32);
     let asset_url = release.asset_url.clone();
@@ -526,7 +517,7 @@ pub fn render_update_modal(
                             .w(relative(0.36))
                             .rounded_full()
                             .bg(colors.accent)
-                            .with_animation(
+                            .with_visual_animation(
                                 "update-download-indeterminate",
                                 repeating_linear_motion(Duration::from_millis(1200)).with_property(
                                     AnimationProperty::relative_translation(
@@ -534,8 +525,8 @@ pub fn render_update_modal(
                                         point(1.42 / 0.36, 0.0),
                                     ),
                                 ),
-                                |this, _progress| this,
                             )
+                            .expect("animation declares presentation properties")
                             .into_any_element()
                     } else {
                         div()
@@ -824,5 +815,11 @@ pub fn render_update_modal(
         .justify_center()
         .child(card);
 
-    modal::animated_modal_layer_with_content_offset(card_shell, overlay_bg, smooth_k, card_offset_y)
+    modal::retained_modal_layer(
+        card_shell,
+        overlay_bg,
+        modal_visible,
+        "update-modal-motion",
+        modal_duration,
+    )
 }

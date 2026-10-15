@@ -371,7 +371,7 @@ pub(crate) fn render_task_card(
         return match motion_kind {
             TaskCardMotionKind::Enter => base_card
                 .composite_layer()
-                .with_animation(
+                .with_visual_animation(
                     ("task-card-motion-enter", stable_task_id(model.id.as_ref())),
                     spring_motion(spring_smooth()).with_property(
                         AnimationProperty::translation_opacity(
@@ -381,8 +381,8 @@ pub(crate) fn render_task_card(
                             1.0,
                         ),
                     ),
-                    |card, _progress| card,
                 )
+                .expect("animation declares presentation properties")
                 .into_any_element(),
             TaskCardMotionKind::Complete => base_card
                 .with_animation(

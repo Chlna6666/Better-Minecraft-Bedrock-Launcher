@@ -122,15 +122,16 @@ fn render_abandoned_nodes(
                     });
                 }),
         )
-        .with_animation(
+        .with_visual_animation(
             "online-abandoned-nodes-enter",
-            spring_motion(spring_smooth()),
-            |card, progress| {
-                card.opacity(progress.clamp(0.0, 1.0))
-                    .relative()
-                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-            },
+            spring_motion(spring_smooth()).with_property(AnimationProperty::translation_opacity(
+                point(px(0.0), px(motion::ENTRANCE_OFFSET)),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
         )
+        .expect("translation and opacity are declared presentation properties")
 }
 
 fn render_blocking_issue(
@@ -267,15 +268,16 @@ fn render_blocking_issue(
                 ),
             )
         })
-        .with_animation(
+        .with_visual_animation(
             "online-blocking-issue-enter",
-            spring_motion(spring_smooth()),
-            |card, progress| {
-                card.opacity(progress.clamp(0.0, 1.0))
-                    .relative()
-                    .top(px((1.0 - progress) * motion::ENTRANCE_OFFSET))
-            },
+            spring_motion(spring_smooth()).with_property(AnimationProperty::translation_opacity(
+                point(px(0.0), px(motion::ENTRANCE_OFFSET)),
+                Point::default(),
+                0.0,
+                1.0,
+            )),
         )
+        .expect("translation and opacity are declared presentation properties")
 }
 
 fn notice_close_button(id: &'static str, foreground: Hsla) -> Stateful<Div> {
@@ -489,15 +491,15 @@ fn render_connecting_state(colors: &ThemeColors, i18n: &I18n, state: &ToolsPageS
                 .path(lucide_gpui::icon!(loader_circle))
                 .size(px(20.))
                 .text_color(colors.accent)
-                .with_animation(
+                .with_visual_animation(
                     "online-room-connecting-spinner",
                     crate::ui::animation::repeating_linear_motion(Duration::from_millis(900))
                         .with_property(AnimationProperty::rotation(
                             radians(0.0),
                             radians(std::f32::consts::TAU),
                         )),
-                    |icon, _progress| icon,
-                ),
+                )
+                .expect("animation declares presentation properties"),
         )
         .child(
             div()

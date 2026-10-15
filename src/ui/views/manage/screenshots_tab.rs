@@ -225,7 +225,7 @@ pub(super) fn render_screenshot_list(
         let direction =
             crate::ui::animation::tab_transition_direction(animation_from, animation_to);
         let row = row
-            .with_animation(
+            .with_visual_animation(
                 SharedString::from(format!(
                     "manage-screenshot-row-enter-{}-{}",
                     state.tab_anim_seq,
@@ -244,8 +244,8 @@ pub(super) fn render_screenshot_list(
                         Point::default(),
                     ))
                 },
-                |row, _progress| row,
             )
+            .expect("animation declares presentation properties")
             .into_any_element();
         rows = rows.child(row);
     }

@@ -802,7 +802,7 @@ pub(super) fn render_asset_list(
         let direction =
             crate::ui::animation::tab_transition_direction(animation_from, animation_to);
         let row = row
-            .with_animation(
+            .with_visual_animation(
                 SharedString::from(format!(
                     "manage-asset-row-{}-{}-{}",
                     state.tab_anim_seq,
@@ -822,8 +822,8 @@ pub(super) fn render_asset_list(
                         Point::default(),
                     ))
                 },
-                |row, _progress| row,
             )
+            .expect("animation declares presentation properties")
             .into_any_element();
         rows = rows.child(row);
     }
@@ -873,7 +873,7 @@ pub(super) fn render_asset_list(
     if let Some((from_index, to_index, sequence, scope, animating)) = stale_transition {
         let direction = crate::ui::animation::tab_transition_direction(from_index, to_index);
         let stale = if animating {
-            list.with_animation(
+            list.with_visual_animation(
                 SharedString::from(format!("{scope}-{sequence}")),
                 tab_stale_content_motion(from_index, to_index).with_property(
                     AnimationProperty::clipped_translation(
@@ -881,8 +881,8 @@ pub(super) fn render_asset_list(
                         point(px(-4.0 * direction), px(0.0)),
                     ),
                 ),
-                |list, _progress| list,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
         } else {
             list.relative()
