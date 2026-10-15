@@ -209,6 +209,9 @@ pub struct ManagePageState {
     pub loading: bool,
     pub error: Option<SharedString>,
     pub versions: Arc<[ManagedVersionEntry]>,
+    // Shares the parsed source allocation, allowing projection reuse without
+    // copying the source catalog or storing process-global pointer caches.
+    pub(crate) versions_source: Arc<[crate::core::version::launch_versions::LaunchVersionEntry]>,
     pub selected_folder: Option<SharedString>,
     pub search_input: Option<Entity<InputState>>,
     pub search_query: SharedString,
@@ -361,6 +364,7 @@ impl Default for ManagePageState {
             loading: false,
             error: None,
             versions: Arc::<[ManagedVersionEntry]>::from(Vec::new()),
+            versions_source: Arc::default(),
             selected_folder: None,
             search_input: None,
             search_query: SharedString::from(""),

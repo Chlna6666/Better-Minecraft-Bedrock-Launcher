@@ -173,14 +173,16 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
         return;
     }
 
-    let versions = managed_versions_from_local_versions(&snapshot);
-
     cx.update_global(|state: &mut ManagePageState, _cx| {
         state.versions_revision = snapshot.revision;
         state.loaded = snapshot.loaded;
         state.loading = snapshot.loading;
         state.error = snapshot.error.clone();
-        state.versions = Arc::from(versions);
+        // Reuse the already-converted list for cache-prime/loading revisions.
+        if !Arc::ptr_eq(&state.versions_source, &snapshot.versions) {
+            state.versions = Arc::from(managed_versions_from_local_versions(&snapshot));
+            state.versions_source = snapshot.versions.clone();
+        }
 
         if let Some(selected) = state.selected_folder.clone() {
             let exists = state
@@ -198,8 +200,15 @@ fn sync_manage_page_state_from_local_versions(cx: &mut App) {
 }
 
 pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
-    let mut versions = versions.to_vec();
-    sort_launch_versions(&mut versions);
+    if cx.read_global(|state: &LocalVersionsState, _| {
+        state.loaded || state.loading || !state.versions.is_empty()
+    }) {
+        return;
+    }
+
+    let mut sorted = versions.to_vec();
+    sort_launch_versions(&mut sorted);
+    let versions: Arc<[LaunchVersionEntry]> = Arc::from(sorted);
     let catalog_generation = crate::core::version::catalog_events::local_version_generation();
 
     let versions_for_cache = versions.clone();
@@ -207,7 +216,7 @@ pub fn seed_local_versions(versions: &[LaunchVersionEntry], cx: &mut App) {
         if state.loaded || state.loading || !state.versions.is_empty() {
             return;
         }
-        state.versions = Arc::from(versions);
+        state.versions = versions;
         state.catalog_generation = catalog_generation;
         state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
         state.loaded = true;
@@ -320,6 +329,8 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
         let mut versions = crate::core::version::api::get_version_list().await?;
         sort_launch_versions(&mut versions);
 
+        // Share one immutable parsed catalog with cache priming and GPUI.
+        let versions: Arc<[LaunchVersionEntry]> = Arc::from(versions);
         let versions_for_cache = versions.clone();
         if let Err(error) = crate::tasks::runtime::run_io_blocking(move || {
             prime_version_isolation_cache(&versions_for_cache);
@@ -351,7 +362,7 @@ pub fn ensure_local_versions_loaded(force_refresh: bool, cx: &mut App) {
             Ok(versions) => {
                 let version_count = versions.len();
                 match cx.update_global(|state: &mut LocalVersionsState, _cx| {
-                    state.versions = Arc::from(versions);
+                    state.versions = versions;
                     state.catalog_generation = state.catalog_generation.max(catalog_generation);
                     state.snapshot_revision = state.snapshot_revision.wrapping_add(1);
                     state.loaded = true;
