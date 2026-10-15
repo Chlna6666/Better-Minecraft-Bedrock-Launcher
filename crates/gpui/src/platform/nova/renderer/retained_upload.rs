@@ -945,8 +945,10 @@ impl NovaRenderer {
             }
             log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI color retention result: scene_revision={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={}",
+                "GPUI color retention result: scene_revision={} static_prefix_candidate={} static_prefix_captured={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={}",
                 scene.revision,
+                auto_background.is_some(),
+                captured_static_prefix,
                 self.frame_upload.retained_root_blur.is_some(),
                 keep_retained_root,
                 scene.requires_full_redraw_fallback(),

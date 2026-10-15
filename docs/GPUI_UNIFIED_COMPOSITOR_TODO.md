@@ -513,7 +513,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【源码事实】**：`append_retained_root` 把整个页面（包括零滤镜 Dropdown Capture）包装到根颜色纹理中；`reconcile_gpu_layer_animation_damage` 正确地将菜单动效作为 Root 的局部脏像素，每帧只能局部重画 Root。现有 `auto_capture_static_background → capture_encoded_static_prefix` 可把静态 Quad/Shadow 前缀的 GPU 源单独驻留，动态前景直接以 Painter Order 合成，但原准入规则拒绝含任何 `StartBlur` 的 Scene。
 - **【实现】**：允许在完整静态 Quad/Shadow 前缀**之后**开始的具备稳定 `layer_id`、零半径、无子 Capture、无 BackdropBlur 的单级 Popup Capture。以其闭合后实际 `Primitive::Blur.order` 作为动态 DrawOrder 边界，要求两侧 `range_is_independently_replayable` 且全部静态 order 严格小于动态 order；复用唯一 packed FrameUpload 和 FilterRegistry 的 AutoStatic Cache，不创建第二套 Scene/Root Owner。对小页面把静态前缀准入从原至少 96 Quad/Shadow 扩为 **≥24 且静态裁剪栅格工作量≥2 倍视口像素**，原 ≥96 规则不变；阈值是保守启发式，不是 GPU 实测。
 - **【正确性保护】**：无法独立切分的结构化 Painter Layer、真正 Gaussian、嵌套 Element Capture、BackdropBlur、未标识 Capture、纹理/路径/Surface 等在 Capture 前出现仍退回原全量链路；Drawable Resize / Atlas 内容版本 / Filter invalidation 保留既有一致性逻辑。不会绕过 Fence 或吞掉必要 WSI Present。
-- **【单测源码，未执行】**：新增 24 个静态全屏 Quad + 独立 Popup 的准入及 FrameUpload 包装测试，验证 Root 不再包住菜单；新增 Gaussian/嵌套结构反例。当前容器未安装 Rust/rustfmt、没有 Windows 真实 GPU，尚无编译/四后端 Trace 结果。该优化只作用于可证明有序且足够重的静态前缀；不能声称所有 BMCBL 页面、所有 Dropdown 都自动适用。后续必须测量准入命中率与 `retained_root_draw_steps`、`filter_source_draw_steps`、`composite_passes`、GPU GPU busy、UI frame 延迟。
+- **【单测源码，未执行】**：新增 24 个静态全屏 Quad + 独立 Popup 的准入及 FrameUpload 包装测试，验证 Root 不再包住菜单；新增 Gaussian/嵌套结构反例。`GPUI color retention result` 现有 Trace 新增 `static_prefix_candidate` 与 `static_prefix_captured`（仅诊断字段，无新增配置/计时器）明确区分准入成功、编码拒绝、Root 回退。当前容器未安装 Rust/rustfmt、没有 Windows 真实 GPU，尚无编译/四后端 Trace 结果。该优化只作用于可证明有序且足够重的静态前缀；不能声称所有 BMCBL 页面、所有 Dropdown 都自动适用。后续必须测量准入命中率与 `retained_root_draw_steps`、`filter_source_draw_steps`、`composite_passes`、GPU busy、UI frame 延迟。
 
 ## 跨对话恢复协议（必须执行）
 
@@ -530,7 +530,8 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- **最新待验证起点（2026-10-15）**：本轮将 Nova Retained Quad 持久 packed 缓存唯一所有权迁到 `RetainedUpload.quad_chunks`，同时递归收集嵌套滤镜内 CachedView Chunk 存活；优先本地编译及 retained-quad 单测，修复任何类型/可见性/接口不一致后再扩大 P0 架构替换。
+- **当前最新待验证起点（2026-10-15）**：在 `9ac325ac60c1d6406541c93ad65a73f3cb6e4c05` 实现静态前缀 + 零半径 Dropdown Capture 的分离准入、在本轮补充 `static_prefix_candidate/static_prefix_captured` Trace 后，先进行 Rust fmt/check/针对性单测与四后端原生截图测试；对照 5 秒公共 Dropdown 40% / 首页版本下拉 20% 的旧基线，查看静态背景是否确实常驻、动态弹层是否不再触发 Root source passes。禁止因准入成功而跳过源一致性、窗口曝光、Resize、透明混合验证；无实测时 P0 仍未关闭。
+- **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
 - 严禁直接执行“删除 Scene”而不建立 GPU Owner 保留内容、资源退休和有序绘制的正确性方案。
