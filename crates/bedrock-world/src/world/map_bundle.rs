@@ -233,6 +233,68 @@ impl<S: StorageBackend> World<S> {
         })
     }
 
+    /// Read-only placement check for the exact frame grid and support blocks.
+    /// It shares the same per-position collision validator as the atomic import
+    /// plan; callers must revalidate during the eventual write because the
+    /// world may change between preview and commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a detailed coordinate and reason for any blocked frame/support,
+    /// missing terrain, conflicting BlockEntity or invalid grid configuration.
+    pub fn validate_upward_frame_grid(
+        &self,
+        chunk: ChunkPos,
+        position: BlockPos,
+        columns: u32,
+        rows: u32,
+        support: &BlockState,
+    ) -> Result<()> {
+        if position.to_chunk_pos(chunk.dimension) != chunk {
+            return Err(BedrockWorldError::Validation(
+                "展示框中心不属于所选区块".to_string(),
+            ));
+        }
+        if columns == 0 || rows == 0 || columns > 64 || rows > 64
+            || columns.checked_mul(rows).is_none_or(|count| count > 1024)
+        {
+            return Err(BedrockWorldError::Validation(
+                "展示框网格必须为单边 1–64 张且总计不超过 1024 张".to_string(),
+            ));
+        }
+        validate_upward_frame_support(support)?;
+        let positions = frame_grid_positions(position, columns, rows)?;
+        self.prepare_upward_frame_blocks(chunk.dimension, &positions, support)?;
+
+        let occupied_positions = positions
+            .iter()
+            .flat_map(|position| {
+                [
+                    [position.x, position.y, position.z],
+                    [position.x, position.y.saturating_sub(1), position.z],
+                ]
+            })
+            .collect::<BTreeSet<_>>();
+        for chunk in positions
+            .iter()
+            .map(|position| position.to_chunk_pos(chunk.dimension))
+            .collect::<BTreeSet<_>>()
+        {
+            let (records, _) = self.block_entities_snapshot(chunk)?;
+            if let Some(position) = records
+                .iter()
+                .filter_map(|record| record.entity.position)
+                .find(|position| occupied_positions.contains(position))
+            {
+                return Err(BedrockWorldError::Validation(format!(
+                    "放置区域中 X {} · Y {} · Z {} 已存在方块实体；请调整网格中心或高度",
+                    position[0], position[1], position[2]
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn prepare_upward_frame_blocks(
         &self,
         dimension: Dimension,
