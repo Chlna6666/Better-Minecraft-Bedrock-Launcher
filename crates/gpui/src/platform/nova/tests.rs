@@ -2705,8 +2705,14 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         retained_root_variant: Some(5),
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
+    let original_root_identity = targets.root_color_texture_identity()
+        .expect("valid, active native Root target");
     assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
     assert!(targets.can_preserve_root_color_capture());
+    let mut residency = FilterRegistry::new(None);
+    residency.record_root_color_present(Some(original_root_identity), true);
+    let root_version = residency.root_color_content_version().expect("submitted Root");
+    assert!(residency.root_color_resident_on(&targets));
     for (count, root) in [(4_u32, 3_u32), (5, 4), (6, 5), (4, 3)] {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
@@ -2715,6 +2721,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.retained_root_variant, Some(root as usize));
         assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
+        assert_eq!(targets.root_color_texture_identity(), Some(original_root_identity));
+        assert!(residency.root_color_resident_on(&targets));
+        residency.record_root_color_present(targets.root_color_texture_identity(), false);
+        assert_eq!(residency.root_color_content_version(), Some(root_version));
         assert!(
             targets.can_preserve_root_color_capture(),
             "zero-radius popup count churn must not discard root GPU identity"
@@ -2731,6 +2741,22 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
             None,
         ));
     }
+    // Replacing the underlying native allocation without a source pass
+    // cannot import the old Root Color version, even if a flattened capture
+    // index and the target's other descriptor metadata are unchanged.
+    let mut different_native = targets.clone();
+    different_native.variants[3].levels[0].texture = test_texture_id(777);
+    assert!(!residency.root_color_resident_on(&different_native));
+    residency.record_root_color_present(different_native.root_color_texture_identity(), false);
+    assert_eq!(residency.root_color_content_version(), None);
+    residency.record_root_color_present(different_native.root_color_texture_identity(), true);
+    assert!(residency.root_color_resident_on(&different_native));
+    assert_ne!(residency.root_color_content_version(), Some(root_version));
+    different_native.variants[3].levels[0].texture_view = test_texture_view_id(778);
+    assert!(!residency.root_color_resident_on(&different_native));
+    residency.record_root_color_present(None, false);
+    assert_eq!(residency.root_color_content_version(), None);
+
     // A closed Gaussian/isolated popup can leave scratch GPU textures warm.
     // They are independent from the Root Color physical view and must not
     // invalidate its resident content version simply by being allocated.

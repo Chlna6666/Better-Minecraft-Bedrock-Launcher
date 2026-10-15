@@ -538,10 +538,10 @@ impl NovaRenderer {
     /// rebind; none of the Gaussian/filter source pixels are inherited.
     fn root_color_reuse_eligible(&self) -> bool {
         self.filters.is_valid()
-            && self.filters.root_color_content_version().is_some()
-            && self.filters.targets.as_ref().is_some_and(
-                BackdropBlurTargets::can_preserve_root_color_capture,
-            )
+            && self.filters.targets.as_ref().is_some_and(|targets| {
+                targets.can_preserve_root_color_capture()
+                    && self.filters.root_color_resident_on(targets)
+            })
             && !present::has_root_backdrop_blurs(&self.frame_upload)
             && self.frame_upload.backdrop_blur_configs().iter()
                 .all(|config| config.radius() == 0.0)
@@ -604,8 +604,6 @@ impl NovaRenderer {
         // Preserve a *physical* full-window color target when the capture DAG
         // changes only its zero-radius children. This proof must be made on
         // native texture handles, not packed Blur member indices.
-        let prior_root_view = self.filters.targets.as_ref()
-            .and_then(BackdropBlurTargets::retained_root_texture_view);
         let root_eligible = self.root_color_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
         let auto_static_indices = auto_static_eligible.then(|| {
@@ -629,8 +627,9 @@ impl NovaRenderer {
             // its flattened member index changed. All OTHER capture versions
             // become untrusted and are individually rebuilt on first use.
             let preserve_root_color = root_eligible
-                && prior_root_view == self.filters.targets.as_ref()
-                    .and_then(BackdropBlurTargets::retained_root_texture_view);
+                && self.filters.targets.as_ref().is_some_and(|targets| {
+                    self.filters.root_color_resident_on(targets)
+                });
             if preserve_root_color || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
@@ -670,8 +669,9 @@ impl NovaRenderer {
             )
         }) {
             let preserve_root_color = root_eligible
-                && prior_root_view == self.filters.targets.as_ref()
-                    .and_then(BackdropBlurTargets::retained_root_texture_view);
+                && self.filters.targets.as_ref().is_some_and(|targets| {
+                    self.filters.root_color_resident_on(targets)
+                });
             if preserve_root_color || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
             } else {

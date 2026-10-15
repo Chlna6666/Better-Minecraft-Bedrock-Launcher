@@ -47,18 +47,35 @@ impl BackdropBlurTargets {
         self.variants.get(index)?.levels.last().map(|target| target.texture_view)
     }
 
+    /// Physical identity for the synthetic Root Color (not its flattened
+    /// Capture index). Only a one-level, unfiltered active native target is a
+    /// valid resident color surface. The view and underlying allocation must
+    /// both match the last successful GPU submission.
+    pub(super) fn root_color_texture_identity(&self) -> Option<(TextureId, TextureViewId)> {
+        let index = self.retained_root_variant?;
+        if index >= self.active_variant_count {
+            return None;
+        }
+        let variant = self.variants.get(index)?;
+        if variant.config.radius() != 0.0 {
+            return None;
+        }
+        let [level] = variant.levels.as_slice() else {
+            return None;
+        };
+        Some((level.texture, level.texture_view))
+    }
+
     /// The native Root Color owns its pixels independently of warmed, inactive
     /// filter scratch storage. Capacity retained after closing a Gaussian
     /// dropdown does not change the root's content or physical identity.
     /// Only LIVE filter variants participate in the unfiltered-root proof.
     pub(super) fn can_preserve_root_color_capture(&self) -> bool {
-        let Some(index) = self.retained_root_variant.filter(|&i| i < self.active_variant_count) else {
+        let Some(index) = self.retained_root_variant else { return false };
+        let Some((root_texture, root_view)) = self.root_color_texture_identity() else {
             return false;
         };
-        let Some(root) = self.variants.get(index) else { return false };
-        let [level] = root.levels.as_slice() else { return false };
-        if root.config.radius() != 0.0
-            || self.source.is_some()
+        if self.source.is_some()
             || self.variants.iter().take(self.active_variant_count)
                 .any(|variant| variant.config.radius() != 0.0)
         {
@@ -66,8 +83,6 @@ impl BackdropBlurTargets {
         }
         // An aliased texture cannot be treated as independent Root residency.
         // Compare all allocated (including spare) views, not only active slots.
-        let root_view = level.texture_view;
-        let root_texture = level.texture;
         !self.variants.iter().enumerate().any(|(other_index, variant)| {
             other_index != index
                 && variant.levels.iter().any(|target| {

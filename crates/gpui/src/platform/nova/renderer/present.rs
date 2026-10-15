@@ -1492,9 +1492,23 @@ impl NovaRenderer {
                 &self.frame_upload.sampled_animation_values,
                 element_blur_layers.iter().map(|layer| layer.index),
             );
+            let native_root = root_scene_color_cached
+                .then(|| self.filters.targets.as_ref()
+                    .and_then(BackdropBlurTargets::root_color_texture_identity))
+                .flatten();
             self.filters.record_root_color_present(
-                root_scene_color_cached,
+                native_root,
                 root_scene_color_refreshes != 0,
+            );
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} refreshed={} retained_root={}",
+                packet.window_id,
+                native_root.map(|(texture, _)| texture),
+                native_root.map(|(_, view)| view),
+                self.filters.root_color_content_version(),
+                root_scene_color_refreshes != 0,
+                root_scene_color_cached,
             );
             self.filters
                 .record_submission(backdrop_blur_quality, atlas_content_generation);
