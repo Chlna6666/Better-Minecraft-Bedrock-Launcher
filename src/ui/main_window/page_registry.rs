@@ -308,22 +308,23 @@ impl MainWindowView {
                 },
             ),
         );
-        let mut agreement_visible = this.agreement_render_state.visible;
         self._reactor_subscriptions
-            .push(cx.observe_global::<AgreementState>(move |this, cx| {
+            .push(cx.observe_global::<AgreementState>(|this, cx| {
                 let next = this.read_agreement_render_state(cx);
-                let visible = next.visible;
-                let changed = this.agreement_render_state.visible != visible
+                let was_visible = this.agreement_render_state.visible;
+                let changed = was_visible != next.visible
                     || this.agreement_render_state.accept_unlocked != next.accept_unlocked
                     || !Arc::ptr_eq(
                         &this.agreement_render_state.document,
                         &next.document,
                     );
-                this.agreement_render_state = Arc::new(next);
-                if changed && (visible || agreement_visible) {
-                    cx.notify();
+                if changed {
+                    let visible = next.visible;
+                    this.agreement_render_state = Arc::new(next);
+                    if was_visible || visible {
+                        cx.notify();
+                    }
                 }
-                agreement_visible = visible;
             }));
         self._reactor_subscriptions
             .push(cx.observe_global::<I18n>(|this, cx| {
@@ -332,8 +333,8 @@ impl MainWindowView {
                     let _ = agreement.get_or_cache_document(&locale_code);
                     agreement.is_visible()
                 });
-                this.agreement_render_state = Arc::new(this.read_agreement_render_state(cx));
                 if agreement_visible {
+                    this.agreement_render_state = Arc::new(this.read_agreement_render_state(cx));
                     cx.notify();
                 }
             }));
@@ -782,6 +783,7 @@ impl MainWindowView {
             last_diagnostics_render_signature: diagnostics_signature,
             diagnostics_visible,
             agreement_render_state,
+            last_auth_blocked: None,
             last_minecraft_termination_dialog: cx
                 .global::<crate::ui::views::tools::state::ToolsPageState>()
                 .minecraft_termination_dialog

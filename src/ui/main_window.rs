@@ -253,6 +253,7 @@ pub struct MainWindowView {
     last_diagnostics_render_signature: (Option<String>, bool, bool),
     diagnostics_visible: bool,
     agreement_render_state: Arc<AgreementRenderState>,
+    last_auth_blocked: Option<bool>,
     last_minecraft_termination_dialog:
         crate::ui::views::tools::state::MinecraftTerminationDialogState,
     easter_egg: easter_egg::EasterEggState,
@@ -1754,10 +1755,13 @@ impl Render for MainWindowView {
                 .cached_absolute_by(&"main-window-dropdown-overlay"),
         );
 
-        if let Some(chrome) = &self.chrome_view {
+        if let Some(chrome) = &self.chrome_view
+            && self.last_auth_blocked != Some(auth_blocked)
+        {
             chrome.update(cx, |chrome, cx| {
                 chrome.set_auth_blocked(auth_blocked, window, cx)
             });
+            self.last_auth_blocked = Some(auth_blocked);
         }
         let root = root.when(!auth_blocked, |root| {
             root.on_key_down(chrome_view::navigate_focus)
