@@ -1,7 +1,6 @@
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
-use crate::ui::views::settings::state::SettingsPageState;
 use crate::ui::views::tools::state::{OnlineOperation, ToolsPageState, ToolsTab};
 use gpui::*;
 use std::time::Duration;
@@ -121,11 +120,6 @@ impl ToolsPageView {
                 }
             }),
             cx.observe_global::<ThemeState>(|this: &mut Self, cx| {
-                if this.active {
-                    cx.notify();
-                }
-            }),
-            cx.observe_global::<SettingsPageState>(|this: &mut Self, cx| {
                 if this.active {
                     cx.notify();
                 }

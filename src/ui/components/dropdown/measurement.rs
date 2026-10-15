@@ -14,14 +14,7 @@ impl LabelMeasurement {
         window: &Window,
         options: &Rc<Vec<DropdownOption>>,
     ) -> Pixels {
-        let style = window.text_style();
-        let font = Font {
-            family: style.font_family,
-            features: style.font_features,
-            fallbacks: style.font_fallbacks,
-            weight: FontWeight::MEDIUM,
-            style: style.font_style,
-        };
+        let font = Self::measurement_font(window);
         if let Some(measurement) = cache {
             if measurement.matches(&font, options) {
                 return measurement.width;
@@ -36,6 +29,26 @@ impl LabelMeasurement {
             width,
         });
         width
+    }
+
+    pub(super) fn cached_width(
+        &self,
+        window: &Window,
+        options: &[DropdownOption],
+    ) -> Option<Pixels> {
+        self.matches(&Self::measurement_font(window), options)
+            .then_some(self.width)
+    }
+
+    fn measurement_font(window: &Window) -> Font {
+        let style = window.text_style();
+        Font {
+            family: style.font_family,
+            features: style.font_features,
+            fallbacks: style.font_fallbacks,
+            weight: FontWeight::MEDIUM,
+            style: style.font_style,
+        }
     }
 
     fn matches(&self, font: &Font, options: &[DropdownOption]) -> bool {

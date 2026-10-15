@@ -811,9 +811,12 @@ impl RenderOnce for Dropdown {
                     }
 
                     let now = Instant::now();
-                    state.update(cx, |s, _| {
+                    let changed = state.update(cx, |s, _| {
                         let previous_phase = s.phase;
                         let next_phase = toggle_dropdown_phase(previous_phase, now);
+                        if next_phase == previous_phase {
+                            return false;
+                        }
                         if !matches!(previous_phase, DropdownPhase::Opening { .. })
                             && matches!(next_phase, DropdownPhase::Opening { .. })
                         {
@@ -821,8 +824,11 @@ impl RenderOnce for Dropdown {
                             s.scroll_bound_generation = 0;
                         }
                         s.set_phase(next_phase, now);
+                        true
                     });
-                    cx.notify(parent_view_id);
+                    if matches!(changed, Ok(true)) {
+                        cx.notify(parent_view_id);
+                    }
                 }
             })
             .child(
@@ -831,6 +837,9 @@ impl RenderOnce for Dropdown {
                         let state = state.clone();
                         let parent_view_id = parent_view_id;
                         move |bounds, _, cx| {
+                            if state.read(cx).trigger_bounds == Some(bounds) {
+                                return;
+                            }
                             let should_notify = state.update(cx, |s, _| {
                                 if s.trigger_bounds == Some(bounds) {
                                     return false;
@@ -894,8 +903,15 @@ impl RenderOnce for Dropdown {
         // element_offset again here; doing so double-translates dropdowns rendered inside
         // deferred/modal subtrees and can move the popup outside the visible modal.
         let window_size = window.bounds().size;
-        let widest_label = state.update(cx, |state, _| {
-            measurement::LabelMeasurement::width(&mut state.label_measurement, window, &options)
+        let cached_width = state
+            .read(cx)
+            .label_measurement
+            .as_ref()
+            .and_then(|cache| cache.cached_width(window, &options));
+        let widest_label = cached_width.unwrap_or_else(|| {
+            state.update(cx, |state, _| {
+                measurement::LabelMeasurement::width(&mut state.label_measurement, window, &options)
+            })
         });
         let menu_width = desired_dropdown_menu_width(widest_label, width, window_size.width);
         let max_h = px(MENU_MAX_HEIGHT);

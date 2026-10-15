@@ -628,9 +628,14 @@ pub(crate) fn refresh_status(cx: &mut App) {
                 Err(error) => state.online_error = Some(SharedString::from(error)),
             }
             if let Ok(peers) = peers_result {
-                state.peers = peer_entries(peers);
+                let next_peers = peer_entries(peers);
+                if state.peers != next_peers {
+                    state.peers = next_peers;
+                }
             }
-            state.players = players;
+            if state.players != players {
+                state.players = players;
+            }
             apply_abandoned_connectors(state, &abandoned_connectors);
             true
         });
@@ -702,8 +707,13 @@ pub(super) fn refresh_peers(cx: &mut App) {
             state.peers_loading = false;
             match result {
                 Ok(peers) => {
-                    state.peers = peer_entries(peers);
-                    state.players = players;
+                    let next_peers = peer_entries(peers);
+                    if state.peers != next_peers {
+                        state.peers = next_peers;
+                    }
+                    if state.players != players {
+                        state.players = players;
+                    }
                     if state.online_blocking_issue.is_none() {
                         state.online_error = None;
                     }
