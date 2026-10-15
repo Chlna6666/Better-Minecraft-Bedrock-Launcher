@@ -63,16 +63,15 @@ impl MapViewerWindowView {
             _ => self.render_map_import_actions(colors, cx),
         };
         let task = self.import_task_snapshot();
-        // Keep the command surface inside the visible center workspace instead of
-        // placing it after a full-height canvas and clipping it below the viewport.
+        // A compact command inspector occupies actual layout space before the preview.
+        // The canvas retains the remaining flex height rather than being occluded.
         div()
-            .absolute()
-            .left(px(0.0))
-            .right(px(0.0))
-            .bottom(px(0.0))
-            .max_h(px(252.0))
+            .flex_none()
+            .min_w(px(0.0))
+            .max_h(px(180.0))
             .overflow_y_scrollbar()
-            .m(px(12.0))
+            .mx(px(8.0))
+            .mt(px(6.0))
             .occlude()
             .p(px(10.0))
             .rounded(px(8.0))
