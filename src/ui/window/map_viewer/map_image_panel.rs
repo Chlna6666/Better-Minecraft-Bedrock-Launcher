@@ -37,6 +37,7 @@ pub(super) struct MapImagePanelState {
     selected_block: Option<(ChunkPos, BlockPos)>,
     /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
     frame_anchor: Option<(i32, i32)>,
+    frame_anchor_dimension: Option<Dimension>,
     pub(super) picking_frame_center: bool,
     /// Completed read-only check is bound to one exact world/grid/preview generation.
     frame_check_key: Option<String>,
@@ -88,6 +89,7 @@ impl MapImagePanelState {
             selected_player: PlayerId::Local,
             selected_block: None,
             frame_anchor: None,
+            frame_anchor_dimension: None,
             picking_frame_center: false,
             frame_check_key: None,
             frame_check_task_id: None,
@@ -132,7 +134,7 @@ impl MapViewerWindowView {
     /// its pixels have been accepted into the active preview. An old or partial
     /// preview must not enable the placement action.
     pub(super) fn map_frame_preflight_key(&self) -> String {
-        let (x, z) = self.map_frame_anchor();
+        let (x, z) = self.map_frame_confirmed_center().unwrap_or_default();
         format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.dimension.id(),
@@ -145,7 +147,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn map_frame_preflight_snapshot(&self) -> Option<&TaskSnapshot> {
-        self.map_image.frame_anchor?;
+        self.map_frame_confirmed_center()?;
         let key = self.map_frame_preflight_key();
         if self.map_image.frame_check_key.as_deref() != Some(key.as_str()) {
             return None;
@@ -162,7 +164,7 @@ impl MapViewerWindowView {
 
     pub(super) fn map_image_can_place_world_grid(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
-            && self.map_image.frame_anchor.is_some()
+            && self.map_frame_confirmed_center().is_some()
             && !self.map_image.picking_frame_center
             && self.map_image.pending_bundle.is_none()
             && self.map_image.source.is_some()
@@ -218,10 +220,10 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-     fn map_frame_anchor(&self) -> (i32, i32) {
-        self.map_image
-            .frame_anchor
-            .unwrap_or_else(|| self.viewport.center_block(self.active_layout))
+     pub(super) fn map_frame_confirmed_center(&self) -> Option<(i32, i32)> {
+        (self.map_image.frame_anchor_dimension == Some(self.dimension))
+            .then_some(self.map_image.frame_anchor)
+            .flatten()
     }
 
     pub(super) fn begin_map_frame_center_pick(&mut self, cx: &mut Context<Self>) {
@@ -252,6 +254,7 @@ impl MapViewerWindowView {
             return;
         }
         self.map_image.frame_anchor = Some(position);
+        self.map_image.frame_anchor_dimension = Some(self.dimension);
         self.map_image.picking_frame_center = false;
         self.status = SharedString::from(format!(
             "已设置展示框放置中心 X {} · Z {}，尚未修改世界",
@@ -307,7 +310,7 @@ impl MapViewerWindowView {
                 if self.map_image.source.is_none() || self.map_image.pending_bundle.is_some() {
                     return None;
                 }
-                let (center_x, center_z) = self.map_image.frame_anchor?;
+                let (center_x, center_z) = self.map_frame_confirmed_center()?;
                 Some(super::model::MapFrameGridPreview {
                     min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
                     min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
