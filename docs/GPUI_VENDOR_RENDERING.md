@@ -185,9 +185,17 @@ device-local synchronous uploads, explicit trim and shutdown still contain safet
 
 Application invalidation remains scoped to observable state: Map Viewer coordinate/zoom/dimension
 editing notifies its root only when clearing visible validation or applying an edit; ordinary text
-changes notify InputState. Main-window dropdown observers compare their own window's overlay
-revision before notifying, including removal. RenderOnce trigger/overlay state transitions still
-require their owning view; this change does not establish fully independent dropdown rendering.
+changes notify InputState. The main-window dropdown overlay has its own cached absolute Entity;
+its observer compares the window's overlay revision, including removal, without notifying the
+main-window root. RenderOnce trigger state transitions still notify the trigger's owning view.
+Dropdown label widths are reused while the option labels and shaping font remain unchanged.
+Settings and Download modal content also lives in cached absolute Entities; their root observers
+track visibility rather than every content update. Download overlays no longer subscribe to all
+task updates: related task changes already propagate through DownloadPageState. Import show/clear
+uses owner-filtered state observation, and modal dismiss requests notify their mounted owner.
+Dismissible modal scale/opacity and backdrop tint use retained visual animations with stable child
+layout and blur geometry. Completion still runs the single cleanup/dismiss transition on the UI
+owner. These application changes have not been runtime-validated or profiled.
 
 Windows input and backpressure invariants:
 - An inert MouseDown/MouseUp on a listener-free, tooltip-free background must not

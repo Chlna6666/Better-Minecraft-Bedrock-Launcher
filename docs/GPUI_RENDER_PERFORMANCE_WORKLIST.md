@@ -25,15 +25,30 @@ or claimed constant-time layout cache was introduced.
 
 ## RAF And Refresh Evidence
 
+Application changes (2026-10-15; no tests, builds or profiling in this follow-up):
+
+- Settings/Download overlays now use independent cached Entities. Their root observers track
+  visibility; modal content updates remain local. The redundant all-task subscription was removed.
+- Import show/clear observes owner identity instead of refreshing every window; account-avatar
+  events rely on the existing auth Entity observer. Repeated quantized blur/accent values are
+  rejected before entering a global update.
+- Declared visual-property animations use the callback-free API across download, management,
+  settings, online, task entry, onboarding and update UI. Dismissible modal scale/opacity and tint
+  run on retained presentation tracks; cleanup remains a single UI-owner transition.
+- Main/chrome theme interpolation keeps CPU color sampling, but requests the owning layout-animation
+  lane instead of the broad window RAF path. No compositor color binding is claimed.
+
+These are implementation changes, not measured GPU savings or runtime acceptance evidence.
+
 These are code-level candidates, not measured causes of scrolling stalls:
 
 | Path | Finding / Required Follow-Up |
 | --- | --- |
 | [Main window](../src/ui/main_window.rs), [chrome views](../src/ui/main_window/chrome_view.rs), [map view](../src/ui/window/map_viewer/view.rs) | Theme color interpolation still uses render-time styles and RAF. A compositor migration needs scene color bindings; removing RAF alone would freeze the transition. |
-| [CurseForge detail wheel](../src/ui/views/download/curseforge.rs) | Scroll offset changes call whole-window `refresh()`. The viewport is a Div, not an Entity; first validate a targeted root notification and visible-content updates. |
-| [Import overlay](../src/ui/state/import.rs) | State already knows its owner but show/clear refresh all windows. Targeting must also repaint the previous owner when replacing an overlay across windows. |
+| [CurseForge detail wheel](../src/ui/views/download/curseforge.rs) | Scroll offset changes now notify the owning Download overlay Entity instead of whole-window `refresh()`. Visible-content behavior remains unverified. |
+| [Import overlay](../src/ui/state/import.rs) | Show/clear updates the global state; each owner observes its own entry identity, including removal/replacement. Runtime multiwindow behavior remains unverified. |
 | [Map lifecycle](../src/ui/window/map_viewer/lifecycle.rs) | Tile result events capture the owner handle from view construction and use AsyncApp `update_window` to refresh only that window. Entity notification and forced cache refresh remain; event frequency is unchanged. |
-| [Modal](../src/ui/components/modal.rs) | Visual closing work and completion cleanup are coupled. A migration must preserve the single completion/dismiss event and mixed-subtree behavior. |
+| [Modal](../src/ui/components/modal.rs) | Dismissible scale/opacity and tint now use visual tracks. Closing samples the event-time progress and notifies the mounted owner; completion keeps single cleanup/dismiss semantics. Runtime lifecycle and pixels remain unverified. |
 | [Scrollbar](../src/ui/components/scroll.rs) | Viewport changes also drive agreement completion state; not a pure GPU opacity/translation animation. |
 | [Skin preview](../src/ui/window/skin_pack/preview.rs) | Per-frame walk pose is 3D scene work. GPU time-driven skinning must exist before removing UI sampling. |
 
