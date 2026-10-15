@@ -36,6 +36,7 @@ pub struct ManagePageView {
     pub(super) last_screenshots_signature: Option<ScreenshotsLoadSignature>,
     pub(super) last_servers_signature: Option<ServersLoadSignature>,
     pub(super) last_global_render_signature: ManagePageRenderSignature,
+    last_prepared_frame: Option<Instant>,
 }
 
 impl ManagePageView {
@@ -125,6 +126,7 @@ impl ManagePageView {
             last_screenshots_signature: None,
             last_servers_signature: None,
             last_global_render_signature: initial_render_signature,
+            last_prepared_frame: None,
         }
     }
 
@@ -186,6 +188,13 @@ impl Render for ManagePageView {
 
 impl ManagePageView {
     pub(super) fn prepare_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let frame_time = window.animation_time();
+        // The parent and the retained tab body can both render in one platform frame.
+        // Both call prepare_render; perform the input/data preflight only once per frame.
+        if self.last_prepared_frame == Some(frame_time) {
+            return;
+        }
+        self.last_prepared_frame = Some(frame_time);
         self.ensure_asset_search_input(window, cx);
         self.ensure_screenshot_search_input(window, cx);
         self.ensure_server_search_input(window, cx);
