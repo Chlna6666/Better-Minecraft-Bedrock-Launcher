@@ -102,7 +102,7 @@ impl ToolsRenderSignature {
 
 pub struct ToolsPageView {
     _subscriptions: Vec<Subscription>,
-    _online_refresh_task: Task<()>,
+    _online_refresh_task: Option<Task<()>>,
     last_render_signature: Option<ToolsRenderSignature>,
     active: bool,
 }
@@ -125,24 +125,9 @@ impl ToolsPageView {
                 }
             }),
         ];
-        let online_refresh_task = cx.spawn(async move |_this, cx| {
-            loop {
-                Timer::after(Duration::from_secs(3)).await;
-                if let Err(error) = cx.update(|cx| {
-                    if crate::ui::navigation::current_route(cx)
-                        == crate::ui::navigation::AppRoute::Tools
-                    {
-                        actions::refresh_status(cx);
-                        actions::check_nat(cx);
-                    }
-                }) {
-                    tracing::warn!("online refresh task update failed: {error:?}");
-                }
-            }
-        });
         Self {
             _subscriptions: subscriptions,
-            _online_refresh_task: online_refresh_task,
+            _online_refresh_task: None,
             last_render_signature: Some(ToolsRenderSignature::from_state(
                 cx.global::<ToolsPageState>(),
             )),
@@ -156,7 +141,27 @@ impl ToolsPageView {
         }
         self.active = active;
         if active {
+            // The polling task belongs to the active Tools route, not to the
+            // lifetime of the resident page Entity.
+            self._online_refresh_task = Some(cx.spawn(async move |_this, cx| {
+                loop {
+                    Timer::after(Duration::from_secs(3)).await;
+                    if let Err(error) = cx.update(|cx| {
+                        if crate::ui::navigation::current_route(cx)
+                            == crate::ui::navigation::AppRoute::Tools
+                        {
+                            actions::refresh_status(cx);
+                            actions::check_nat(cx);
+                        }
+                    }) {
+                        tracing::warn!("online refresh task update failed: {error:?}");
+                    }
+                }
+            }));
             cx.notify();
+        } else {
+            // Dropping a GPUI Task cancels its pending timer and avoids idle wakeups.
+            self._online_refresh_task = None;
         }
     }
 }
