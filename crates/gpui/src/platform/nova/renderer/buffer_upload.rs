@@ -87,22 +87,34 @@ fn requires_buffer_upload_planning(
         || source.has_animated_backdrop_blurs()
 }
 
+/// Records an empty GPU upload without ever entering the shared backend mutex.
+/// Also used by the normal batch API so both paths report identical zero-work
+/// accounting; an empty batch has no backend ordering or submission effects.
+pub(super) fn record_empty_buffer_batch(batch: &BufferUploadBatch<'_>, started_at: Instant) {
+    debug_assert_eq!(batch.writes().len(), 0);
+    record_nova_buffer_upload_metrics(BufferUploadMetrics {
+        requested_writes: batch.requested_writes(),
+        requested_bytes: batch.requested_bytes(),
+        writes: 0,
+        bytes: 0,
+        backend_calls: 0,
+        backend_bytes: 0,
+    });
+    record_nova_buffer_upload_time(started_at.elapsed());
+}
+
 pub(super) fn upload_buffer_batch<D: BackendResources>(
     device: &mut D,
     batch: &BufferUploadBatch<'_>,
 ) -> Result<()> {
     let started_at = Instant::now(); // CPU upload profiling, not visual animation sampling.
+    if batch.writes().len() == 0 {
+        record_empty_buffer_batch(batch, started_at);
+        return Ok(());
+    }
     let writes = batch.writes().len() as u64;
-    // An empty batch is explicitly a no-op in the gfx-core contract.
-    // Avoid entering the native DX11/DX12/Vulkan/GL device layer only to
-    // learn that no writes are pending. Keep the existing zero-byte metrics.
-    let (bytes, stats) = if writes == 0 {
-        (0, gfx_core::BufferUploadStats::default())
-    } else {
-        let bytes = batch.writes().map(|write| write.data.len() as u64).sum();
-        let stats = gfx_core::ResourceDevice::write_buffer_batch(device, batch.writes())?;
-        (bytes, stats)
-    };
+    let bytes = batch.writes().map(|write| write.data.len() as u64).sum();
+    let stats = gfx_core::ResourceDevice::write_buffer_batch(device, batch.writes())?;
     record_nova_buffer_upload_metrics(BufferUploadMetrics {
         requested_writes: batch.requested_writes(),
         requested_bytes: batch.requested_bytes(),

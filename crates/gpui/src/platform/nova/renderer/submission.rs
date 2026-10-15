@@ -1,4 +1,4 @@
-use super::buffer_upload::upload_buffer_batch;
+use super::buffer_upload::{record_empty_buffer_batch, upload_buffer_batch};
 use super::*;
 use gfx_core::BufferUploadBatch;
 
@@ -11,10 +11,30 @@ fn presentation_clock_snapshot(frame_time: Instant) -> [u8; 24] {
     clock
 }
 
+/// Static built-in Nova shaders depend on viewport/alpha but not the
+/// presentation clock fields. Do not issue a native uniform-buffer update on
+/// an exposure/refresh frame whose committed content is wholly static.
+///
+/// Dynamic Scenes, including retained custom renderer extensions, retain the
+/// exact frame-owned clock sample even when they expose no CPU animation
+/// primitives. Never decide this from the dirty region alone.
+fn needs_presentation_clock_upload(upload: &FrameUpload) -> bool {
+    !upload.renderer_extensions.is_empty()
+        || !upload.sampled_animation_values.is_empty()
+        || !upload.gpu_indexed_animation_slots.is_empty()
+        || !upload.animated_primitives.is_empty()
+}
+
 fn submit_presentation_buffers(
     backend: &SharedBackend,
     batch: &BufferUploadBatch<'_>,
 ) -> Result<()> {
+    // A static frame has no presentation uniform or animation table updates.
+    // The shared GPU owner must not take the backend lock for an empty batch.
+    if batch.writes().len() == 0 {
+        record_empty_buffer_batch(batch, Instant::now());
+        return Ok(());
+    }
     match &mut *lock_backend(backend) {
         #[cfg(all(
             feature = "nova-gfx-opengl",
@@ -123,8 +143,11 @@ impl NovaRenderer {
     /// Writes dynamic presentation state only after activating a fence-safe resource slot.
     fn upload_presentation_buffers(&mut self, frame_time: Instant) -> Result<()> {
         let plan_started = Instant::now(); // CPU upload planning, separate from frame_time.
-        let clock = presentation_clock_snapshot(frame_time);
-        if self.frame_upload.globals.len() >= clock.len() {
+        let dynamic_clock = needs_presentation_clock_upload(&self.frame_upload);
+        let clock = dynamic_clock.then(|| presentation_clock_snapshot(frame_time));
+        if let Some(clock) = &clock
+            && self.frame_upload.globals.len() >= clock.len()
+        {
             self.frame_upload.globals[16..24].copy_from_slice(&clock[16..24]);
         }
         self.frame_upload.rebuild_indexed_animation_values();
@@ -133,7 +156,9 @@ impl NovaRenderer {
         self.ensure_stream_capacity()?;
         let values = &self.frame_upload.gpu_indexed_animation_values;
         let mut batch = BufferUploadBatch::default();
-        batch.push(self.global_buffer, &clock, 16..24)?;
+        if let Some(clock) = &clock {
+            batch.push(self.global_buffer, clock, 16..24)?;
+        }
         batch.push(self.animation_value_buffer, values, 0..values.len())?;
         crate::diagnostics::performance_metrics::record_nova_buffer_upload_time(
             plan_started.elapsed(),
@@ -304,5 +329,53 @@ impl NovaRenderer {
             }
         }
         anyhow::bail!("no available nova frame resource slot")
+    }
+}
+
+#[cfg(test)]
+mod presentation_clock_upload_tests {
+    use super::*;
+
+    #[test]
+    fn genuinely_static_present_has_no_gpu_clock_write() {
+        let upload = FrameUpload::default();
+        assert!(!needs_presentation_clock_upload(&upload));
+        assert!(upload.gpu_indexed_animation_values.is_empty());
+    }
+
+    #[test]
+    fn gpu_indexed_slots_keep_clock_updates_during_inactive_samples() {
+        let mut upload = FrameUpload::default();
+        upload
+            .gpu_indexed_animation_slots
+            .insert(crate::SceneAnimationId(11), 0);
+        assert!(
+            needs_presentation_clock_upload(&upload),
+            "retained GPU timelines must not freeze just because values are absent"
+        );
+    }
+
+    #[test]
+    fn cpu_animation_sample_keeps_frame_owned_clock() {
+        let upload = FrameUpload {
+            sampled_animation_values: vec![crate::SceneAnimationValue {
+                animation_id: crate::SceneAnimationId(12),
+                property: crate::TransitionProperty::Opacity,
+                progress: 0.5,
+                from: [0.0; 4],
+                to: [1.0; 4],
+            }],
+            ..Default::default()
+        };
+        assert!(needs_presentation_clock_upload(&upload));
+    }
+
+    #[test]
+    fn clock_timestamp_fields_use_the_provided_presentation_instant() {
+        let time = Instant::now();
+        assert_eq!(presentation_clock_snapshot(time), presentation_clock_snapshot(time));
+        let clock = presentation_clock_snapshot(time);
+        assert_eq!(clock.len(), 24);
+        assert!(clock[..16].iter().all(|value| *value == 0));
     }
 }

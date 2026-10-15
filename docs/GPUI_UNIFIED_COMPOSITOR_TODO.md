@@ -472,6 +472,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【正确性边界】**：当 `QuadUploadPlan` 不合法时上游应降级 Full，本辅助函数仅处理上游已验证的有序计划；其他 Shadow/Mono/Poly/BlurRecords 仍按原有静态 Full 与动画 patch 规则。所有非空 Backend Buffer Upload 仍遵守已有提交顺序，WSI Present 与 Render Graph 未改；本次主要是规避遗漏及重复写入，不承诺 GPU 使用率必降。
 - **【未验证与下一步】**：当前环境没有 cargo/rustc/rustfmt，尚无 gpui 单测、DX11/DX12/Vulkan/OpenGL 真实 Buffer/Fence 测试或显存/帧延迟证据。必须本地重点验证“CPU Quad 动画 + Retained Static Chunk + FrameSlot 轮换 + Scene Revision 变化 + GPU COW Resize”组合。之后继续收敛局部 Paint Chunk/DirtyRegion/DrawStep 的权威内容版本，并逐步替代全场景 Scene/FrameUpload staging。
 
+## 2026-10-15：停止完全静态 Present 的 Presentation Clock GPU 写入与空批次 GPU Owner 设备锁
+
+- 基线 master `2b5428b957acb33e185f9dabb6d4aeb3178011fa`。修改 `crates/gpui/src/platform/nova/renderer/submission.rs`、`renderer/buffer_upload.rs` 与本唯一 TODO。不增帧时钟/状态权威所有者，不引入新的 Upload/Scene/FrameGraph Cache，不更改 Native Present 或 FrameSlot/Fence 行为。
+- **【已确认的重复工作】**：此前 `upload_presentation_buffers()` 在每个已被请求的 Native Present 帧都对 `global_buffer[16..24]` 提交 8B Presentation Clock，即使静态 Scene 没有采样动画表、CPU 动画或 RendererExtension；随后空 GPU Indexed Table 的上传被跳过，但仍通过 SharedBackend Mutex 进入 Buffer 上传入口，静态画面「0 静态上传」不能代表整帧 0 GPU Buffer 写入。检索内置 Nova WGSL 显示 `globals.presentation_time_seconds`、`presentation_tick_60hz` 目前仅声明于 Core GlobalParams，没有被内置绘制 Shader 消费（自定义 RendererExtension 是独立边界，仍保留 Clock）。
+- **【代码实现；未 Rust 编译】**：以现有 `FrameUpload` 动态状态判断是否上传 Clock：`renderer_extensions`、`sampled_animation_values`、`gpu_indexed_animation_slots`、`animated_primitives` 中任一非空都必须保留由 `frame_time` 单一帧时刻采样的 Uniform Clock；仅全部为空的内置静态场景跳过更新 `globals[16..24]` 和 8B Native 时钟写入。保留 `rebuild_indexed_animation_values`、`prepare_static_buffers`、`ensure_stream_capacity` 的顺序与所有 GPU 资源变更逻辑。
+- **【原生锁/统计统一】**：`upload_buffer_batch` 与 `submit_presentation_buffers` 使用同一个 `record_empty_buffer_batch` 统计入口；完全空的借用批次在 SharedBackend Mutex **外**立即记录 requested/actual writes、backend calls/bytes 均为 0 与时间后返回。非空路径仍按原 DX11/DX12/Vulkan/OpenGL/Metal 调用、原顺序上传，不跳过 Native WSI Present、不忽略 FrameSlot 资源安全。
+- **【测试源码，未执行】**：新增内置静态场景零时钟上传、GPU indexed slot 存在但 timeline 空时仍保留 Clock、CPU 动画 sample 保留 Frame Clock、相同 frame_time 的 Timestamp 确定性测试；原 `BufferUploadBatch` 空写入契约测试保留。需要本地复核存在 RendererExtension 时的 clock、静态曝光/resize、动画末帧、slot 替换四后端结果。
+- **【未验证与下阶段】**：容器仍无 cargo/rustc/rustfmt；本次未完成 Rust 编译、单测、GPU Trace、DX11/DX12/Vulkan/OpenGL 实机。减少了静态帧逐帧 GPU Buffer 更新，但静态页面若仍不断 Present，DrawStep/RenderPass/Swapchain 仍消耗 GPU；必须基于 `gpui presentation gate` 对照实际 Native Submit 原因，再改 Frame Request 的真实来源。独立 GPU Compositor Lane、持久 Paint Chunk 与 SceneSlot/Replay/FrameUpload Staging 破坏性替换仍未完成。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
