@@ -8,7 +8,6 @@ use crate::ui::components::toast;
 use crate::ui::components::toggle_switch::ToggleSwitch;
 use crate::ui::state::i18n::I18n;
 use crate::ui::theme::colors::ThemeColors;
-use crate::ui::views::settings::SettingsPageView;
 use crate::ui::views::settings::common::{
     settings_action_button, settings_card, settings_control_box, settings_value_box,
 };
@@ -177,9 +176,9 @@ impl PluginSettingsModel {
     }
 }
 
-pub(super) fn ensure_plugin_resources(
+pub(super) fn ensure_plugin_resources<T: 'static>(
     window: &mut Window,
-    cx: &mut Context<SettingsPageView>,
+    cx: &mut Context<T>,
 ) -> Vec<PluginStatus> {
     if cx.global::<SettingsPageState>().tab != SettingsTab::Plugins {
         return Vec::new();
@@ -370,9 +369,9 @@ pub(super) fn ensure_plugin_resources(
     statuses
 }
 
-fn ensure_config_inputs_from_cache(
+fn ensure_config_inputs_from_cache<T: 'static>(
     window: &mut Window,
-    cx: &mut Context<SettingsPageView>,
+    cx: &mut Context<T>,
     statuses: &[PluginStatus],
 ) {
     let state = cx.global::<SettingsPageState>();

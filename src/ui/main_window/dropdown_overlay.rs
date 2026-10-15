@@ -27,6 +27,11 @@ impl DropdownOverlayView {
 
 impl Render for DropdownOverlayView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "dropdown-overlay",
+            "dropdown overlay render"
+        );
         div().absolute().inset_0().child(dropdown::render_overlay(
             window,
             cx.global::<DropdownOverlayState>(),

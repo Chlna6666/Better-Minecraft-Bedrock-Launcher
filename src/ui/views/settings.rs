@@ -177,6 +177,12 @@ impl Render for SettingsPageView {
         }
 
         let active_tab = cx.global::<SettingsPageState>().tab;
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "settings-shell",
+            ?active_tab,
+            "settings view render"
+        );
         if self.active && self.prepared_tab != Some(active_tab) {
             self.prepared_tab = Some(active_tab);
             window.on_next_frame(move |_window, cx| match active_tab {
@@ -224,6 +230,12 @@ impl Render for SettingsContentView {
         );
         let window_size = window.bounds().size;
         let active_tab = cx.global::<SettingsPageState>().tab;
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "settings-content",
+            ?active_tab,
+            "settings view render"
+        );
         let render_engine = if active_tab == SettingsTab::About {
             about::render_engine_label(window)
         } else {
