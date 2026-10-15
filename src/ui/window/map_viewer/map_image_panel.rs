@@ -37,6 +37,7 @@ pub(super) struct MapImagePanelState {
     selected_block: Option<(ChunkPos, BlockPos)>,
     /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
     frame_anchor: Option<(i32, i32)>,
+    pub(super) picking_frame_center: bool,
     /// Completed read-only check is bound to one exact world/grid/preview generation.
     frame_check_key: Option<String>,
     frame_check_task_id: Option<String>,
@@ -87,6 +88,7 @@ impl MapImagePanelState {
             selected_player: PlayerId::Local,
             selected_block: None,
             frame_anchor: None,
+            picking_frame_center: false,
             frame_check_key: None,
             frame_check_task_id: None,
             player_search,
@@ -143,6 +145,7 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn map_frame_preflight_snapshot(&self) -> Option<&TaskSnapshot> {
+        self.map_image.frame_anchor?;
         let key = self.map_frame_preflight_key();
         if self.map_image.frame_check_key.as_deref() != Some(key.as_str()) {
             return None;
@@ -159,6 +162,8 @@ impl MapViewerWindowView {
 
     pub(super) fn map_image_can_place_world_grid(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
+            && self.map_image.frame_anchor.is_some()
+            && !self.map_image.picking_frame_center
             && self.map_image.pending_bundle.is_none()
             && self.map_image.source.is_some()
             && self.map_image.placement_preview.is_some()
@@ -206,31 +211,33 @@ impl MapViewerWindowView {
         if self.map_image_operation_busy() {
             return;
         }
-        if destination == MapImageInstallDestination::NewUpFrame
-            && self.map_image.frame_anchor.is_none()
-        {
-            self.map_image.frame_anchor = Some(self.viewport.center_block(self.active_layout));
-        }
+        self.map_image.picking_frame_center = false;
         self.map_image.install_destination = destination;
         // Picking a destination always opens the matching review workspace.
         self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Placement, cx);
         cx.notify();
     }
 
-    /// The same anchor drives the on-map outline, UI label and actual NBT transaction.
-    pub(super) fn ensure_map_image_frame_anchor(&mut self) {
-        if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
-            && self.map_image.frame_anchor.is_none()
-        {
-            self.map_image.frame_anchor =
-                Some(self.viewport.center_block(self.active_layout));
-        }
-    }
-
-    fn map_frame_anchor(&self) -> (i32, i32) {
+     fn map_frame_anchor(&self) -> (i32, i32) {
         self.map_image
             .frame_anchor
             .unwrap_or_else(|| self.viewport.center_block(self.active_layout))
+    }
+
+    pub(super) fn begin_map_frame_center_pick(&mut self, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() {
+            return;
+        }
+        self.map_image.picking_frame_center = true;
+        self.status = SharedString::from(
+            "在中央世界地图上左键单击要放置的中心方块（也可右键选择）",
+        );
+        cx.notify();
+    }
+
+    pub(super) fn cancel_map_frame_center_pick(&mut self, cx: &mut Context<Self>) {
+        self.map_image.picking_frame_center = false;
+        cx.notify();
     }
 
     /// Explicit placement operation; moving or zooming the world viewport has no write side effect.
@@ -245,6 +252,7 @@ impl MapViewerWindowView {
             return;
         }
         self.map_image.frame_anchor = Some(position);
+        self.map_image.picking_frame_center = false;
         self.status = SharedString::from(format!(
             "已设置展示框放置中心 X {} · Z {}，尚未修改世界",
             position.0, position.1,
@@ -299,7 +307,7 @@ impl MapViewerWindowView {
                 if self.map_image.source.is_none() || self.map_image.pending_bundle.is_some() {
                     return None;
                 }
-                let (center_x, center_z) = self.map_frame_anchor();
+                let (center_x, center_z) = self.map_image.frame_anchor?;
                 Some(super::model::MapFrameGridPreview {
                     min_block_x: center_x.saturating_sub((self.map_image.options.columns / 2) as i32),
                     min_block_z: center_z.saturating_sub((self.map_image.options.rows / 2) as i32),
