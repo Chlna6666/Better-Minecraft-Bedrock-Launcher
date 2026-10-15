@@ -14,6 +14,7 @@ pub(crate) struct CurseForgeResultsListView {
     pub(crate) result_logo_reveal_task: Option<Task<anyhow::Result<()>>>,
     pub(crate) visible_revealed_logo_urls: HashSet<SharedString>,
     pub(crate) last_observed_tab: DownloadTab,
+    active: bool,
     pub(crate) last_observed_view_epoch: u64,
     pub(crate) last_observed_page_index: usize,
     pub(crate) last_observed_mod_count: usize,
@@ -105,6 +106,9 @@ impl CurseForgeResultsListView {
 
         let subscriptions = vec![
             cx.observe_global::<DownloadPageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
                 let (current_tab, current_view_epoch) =
                     cx.read_global(|state: &DownloadPageState, _cx| {
                         (state.tab, state.curseforge_view_epoch)
@@ -197,6 +201,7 @@ impl CurseForgeResultsListView {
             result_logo_reveal_task: None,
             visible_revealed_logo_urls: HashSet::new(),
             last_observed_tab,
+            active: false,
             last_observed_view_epoch,
             last_observed_page_index,
             last_observed_mod_count,
@@ -220,6 +225,37 @@ impl CurseForgeResultsListView {
         this.sync_result_images(cx);
         this.sync_visible_result_logo_reveal(cx);
         this
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            let (tab, epoch, page, count, loading) =
+                cx.read_global(|state: &DownloadPageState, _| {
+                    (
+                        state.tab,
+                        state.curseforge_view_epoch,
+                        state.curseforge_page_index,
+                        state.curseforge_mods.len(),
+                        state.curseforge_results_loading,
+                    )
+                });
+            if self.last_observed_view_epoch != epoch {
+                self.release_cached_result_cards();
+            }
+            self.last_observed_tab = tab;
+            self.last_observed_view_epoch = epoch;
+            self.last_observed_page_index = page;
+            self.last_observed_mod_count = count;
+            self.last_observed_results_loading = loading;
+            self.last_observed_visible_slice_start = 0;
+            self.last_observed_visible_slice_len = count;
+            self.sync_result_images(cx);
+            cx.notify();
+        }
     }
 }
 

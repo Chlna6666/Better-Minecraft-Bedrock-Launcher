@@ -400,6 +400,16 @@ impl DownloadPageView {
             let tab = cx.global::<DownloadPageState>().tab;
             let tab_changed = this.last_observed_tab != tab;
             this.last_observed_tab = tab;
+            if tab_changed {
+                this.curseforge_resource_panel.update(cx, |panel, cx| {
+                    panel.set_active(tab == DownloadTab::ResourcePack, cx);
+                });
+                if let Some(game_panel) = &this.game_panel_view {
+                    game_panel.update(cx, |panel, cx| {
+                        panel.set_active(tab == DownloadTab::Game, cx);
+                    });
+                }
+            }
 
             // Game owns a separate retained View. Do not clone Mod/CurseForge
             // signatures on every task-progress update for an unrelated tab.
@@ -540,7 +550,8 @@ impl DownloadPageView {
         }
 
         let view = cx.new(game::DownloadGamePanelView::new);
-        let active = self.active;
+        let active = self.active
+            && cx.global::<DownloadPageState>().tab == DownloadTab::Game;
         let _ = view.update(cx, |view, cx| {
             view.set_active(active, cx);
             Ok::<(), anyhow::Error>(())
@@ -555,14 +566,17 @@ impl DownloadPageView {
         }
 
         self.active = active;
+        let current_tab = cx.global::<DownloadPageState>().tab;
+        let curseforge_active = active && current_tab == DownloadTab::ResourcePack;
+        let game_active = active && current_tab == DownloadTab::Game;
         let curseforge_resource_panel = self.curseforge_resource_panel.clone();
         let _ = curseforge_resource_panel.update(cx, |view, cx| {
-            view.set_active(active, cx);
+            view.set_active(curseforge_active, cx);
             Ok::<(), anyhow::Error>(())
         });
         if let Some(game_panel_view) = &self.game_panel_view {
             let _ = game_panel_view.update(cx, |view, cx| {
-                view.set_active(active, cx);
+                view.set_active(game_active, cx);
                 Ok::<(), anyhow::Error>(())
             });
         }

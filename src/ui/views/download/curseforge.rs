@@ -167,6 +167,7 @@ pub(crate) struct CurseForgeResourcePanelView {
     detail_image_cache: Entity<BoundedImageCache>,
     initial_tab: crate::ui::views::download::state::DownloadTab,
     last_signature: CurseForgeResourcePanelSignature,
+    active: bool,
 }
 
 impl CurseForgeResourcePanelView {
@@ -180,6 +181,9 @@ impl CurseForgeResourcePanelView {
 
         let mut subscriptions = vec![
             cx.observe_global::<DownloadPageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
                 let (current_tab, current_signature) =
                     cx.read_global(|state: &DownloadPageState, _cx| {
                         (state.tab, curseforge_resource_panel_signature(state))
@@ -198,7 +202,10 @@ impl CurseForgeResourcePanelView {
                     cx.notify();
                 }
             }),
-            cx.observe_global::<crate::ui::views::manage::state::ManagePageState>(|_, cx| {
+            cx.observe_global::<crate::ui::views::manage::state::ManagePageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
                 let should_notify = cx.read_global(|state: &DownloadPageState, _cx| {
                     state.curseforge_install_open || state.curseforge_mod_page_open
                 });
@@ -216,13 +223,29 @@ impl CurseForgeResourcePanelView {
             detail_image_cache: cache,
             initial_tab,
             last_signature: initial_signature,
+            active: false,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
             __gpui_hook_count: Cell::new(0),
         }
     }
 
-    pub(crate) fn set_active(&mut self, _active: bool, _cx: &mut Context<Self>) {}
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        self.curseforge_sidebar.update(cx, |view, cx| view.set_active(active, cx));
+        self.curseforge_content.update(cx, |view, cx| view.set_active(active, cx));
+        if active {
+            let (tab, signature) = cx.read_global(|state: &DownloadPageState, _| {
+                (state.tab, curseforge_resource_panel_signature(state))
+            });
+            self.initial_tab = tab;
+            self.last_signature = signature;
+            cx.notify();
+        }
+    }
 }
 
 #[hook_render]
@@ -268,6 +291,7 @@ pub(crate) struct CurseForgeSidebarView {
     last_sub_id: Option<i32>,
     last_category_count: usize,
     last_loaded: bool,
+    active: bool,
 }
 
 impl CurseForgeSidebarView {
@@ -283,6 +307,7 @@ impl CurseForgeSidebarView {
                 last_sub_id: None,
                 last_category_count: 0,
                 last_loaded: false,
+                active: false,
             };
         }
 
@@ -296,6 +321,9 @@ impl CurseForgeSidebarView {
                 )
             });
         let subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
+            if !this.active {
+                return;
+            }
             let (root_id, sub_id, category_count, loaded) =
                 cx.read_global(|state: &DownloadPageState, _cx| {
                     (
@@ -329,6 +357,29 @@ impl CurseForgeSidebarView {
             last_sub_id,
             last_category_count,
             last_loaded,
+            active: false,
+        }
+    }
+
+    fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            let (root, sub, count, loaded) = cx.read_global(|state: &DownloadPageState, _| {
+                (
+                    state.curseforge_selected_root_id,
+                    state.curseforge_selected_sub_id,
+                    state.curseforge_categories.len(),
+                    state.curseforge_loaded,
+                )
+            });
+            self.last_root_id = root;
+            self.last_sub_id = sub;
+            self.last_category_count = count;
+            self.last_loaded = loaded;
+            cx.notify();
         }
     }
 }
@@ -353,6 +404,7 @@ pub(crate) struct CurseForgeContentView {
     _subscriptions: Vec<Subscription>,
     curseforge_results_list: Entity<CurseForgeResultsListView>,
     last_tab: crate::ui::views::download::state::DownloadTab,
+    active: bool,
 }
 
 impl CurseForgeContentView {
@@ -360,6 +412,9 @@ impl CurseForgeContentView {
         let initial_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
 
         let subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
+            if !this.active {
+                return;
+            }
             // 关键：只在标签页变化时刷新
             let current_tab = cx.read_global(|state: &DownloadPageState, _cx| state.tab);
 
@@ -372,6 +427,20 @@ impl CurseForgeContentView {
             _subscriptions: subscriptions,
             curseforge_results_list: cx.new(CurseForgeResultsListView::new),
             last_tab: initial_tab,
+            active: false,
+        }
+    }
+
+    fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        self.curseforge_results_list
+            .update(cx, |view, cx| view.set_active(active, cx));
+        if active {
+            self.last_tab = cx.global::<DownloadPageState>().tab;
+            cx.notify();
         }
     }
 }
