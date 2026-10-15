@@ -171,9 +171,14 @@ impl MapViewerWindowView {
                                 .min_h(px(0.0))
                                 .p(px(12.0))
                                 .overflow_hidden()
+                                .flex()
+                                .items_start()
+                                .justify_center()
                                 .child(
                                     img(source.clone())
-                                        .size_full()
+                                        .w_full()
+                                        .h_full()
+                                        .max_h(px(440.0))
                                         .object_fit(ObjectFit::Contain),
                                 ),
                         )
@@ -200,9 +205,14 @@ impl MapViewerWindowView {
                                 .min_h(px(0.0))
                                 .p(px(12.0))
                                 .overflow_hidden()
+                                .flex()
+                                .items_start()
+                                .justify_center()
                                 .child(
                                     img(preview.clone())
-                                        .size_full()
+                                        .w_full()
+                                        .h_full()
+                                        .max_h(px(440.0))
                                         .object_fit(ObjectFit::Contain),
                                 ),
                         )
