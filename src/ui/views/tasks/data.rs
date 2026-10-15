@@ -77,36 +77,40 @@ impl TasksPageView {
                     cx.notify();
                 }),
             );
+        this._subscriptions
+            .push(cx.observe_global::<I18n>(|_, cx| cx.notify()));
         let stream_task = cx.spawn_stream(task_events, |this, delivery, cx| {
+            let mut render_model_changed = false;
             match delivery {
                 task_manager::TaskEventDelivery::Event(task_manager::TaskEvent::Updated(
                     snapshot,
                 )) => {
-                    this.apply_task_snapshot(snapshot);
+                    render_model_changed = this.apply_task_snapshot(snapshot);
                 }
                 task_manager::TaskEventDelivery::Event(task_manager::TaskEvent::Removed(
                     task_id,
                 )) => {
-                    this.remove_task_snapshot(task_id.as_ref());
+                    render_model_changed = this.remove_task_snapshot(task_id.as_ref());
                 }
                 task_manager::TaskEventDelivery::Batch(events) => {
                     for event in events {
                         match event {
                             task_manager::TaskEvent::Updated(snapshot) => {
-                                this.apply_task_snapshot(snapshot);
+                                render_model_changed |= this.apply_task_snapshot(snapshot);
                             }
                             task_manager::TaskEvent::Removed(task_id) => {
-                                this.remove_task_snapshot(task_id.as_ref());
+                                render_model_changed |= this.remove_task_snapshot(task_id.as_ref());
                             }
                         }
                     }
                 }
                 task_manager::TaskEventDelivery::ResyncRequired => {
                     this.replace_task_snapshots_from_manager();
+                    render_model_changed = true;
                 }
             }
 
-            if this.active {
+            if this.active && render_model_changed {
                 this.apply_render_model(this.local_render_model(), cx);
             }
         });

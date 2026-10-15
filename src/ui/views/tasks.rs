@@ -126,7 +126,6 @@ pub(super) struct TaskCardViewModel {
     pub(super) total: Option<u64>,
     pub(super) percent: Option<f64>,
     pub(super) speed_bytes_per_sec: f64,
-    pub(super) sequence: u64,
     pub(super) downloaded_segments: Option<Vec<DownloadedRangeSegment>>,
     /// Per-worker-thread progress segments; empty when the task has no thread breakdown.
     pub(super) thread_segments: Vec<ThreadSegment>,
@@ -308,7 +307,6 @@ fn build_task_card_model(snapshot: &TaskSnapshot) -> TaskCardViewModel {
         total: snapshot.total,
         percent: snapshot.percent,
         speed_bytes_per_sec: snapshot.speed_bytes_per_sec,
-        sequence: snapshot.sequence,
         downloaded_segments,
         thread_segments,
     }
@@ -355,7 +353,6 @@ fn hash_task_card_model(hasher: &mut RenderFingerprint, model: &TaskCardViewMode
     model.total.hash(hasher);
     hash_optional_f64(hasher, model.percent);
     model.speed_bytes_per_sec.to_bits().hash(hasher);
-    model.sequence.hash(hasher);
     match &model.downloaded_segments {
         Some(segments) => {
             true.hash(hasher);
@@ -598,23 +595,37 @@ impl TasksPageView {
         self.task_snapshots = task_manager::snapshot_arcs_map();
     }
 
-    pub(super) fn apply_task_snapshot(&mut self, snapshot: Arc<TaskSnapshot>) {
+    pub(super) fn apply_task_snapshot(&mut self, snapshot: Arc<TaskSnapshot>) -> bool {
         if snapshot.visibility == task_manager::TaskVisibility::Hidden {
-            self.task_snapshots.remove(snapshot.id.as_ref());
-            return;
+            return self.remove_task_snapshot(snapshot.id.as_ref());
         }
 
-        let should_replace = self
-            .task_snapshots
-            .get(snapshot.id.as_ref())
-            .is_none_or(|current| current.sequence <= snapshot.sequence);
-        if should_replace {
-            self.task_snapshots.insert(snapshot.id.clone(), snapshot);
+        let current = self.task_snapshots.get(snapshot.id.as_ref());
+        if current.is_some_and(|current| current.sequence > snapshot.sequence) {
+            return false;
         }
+
+        let affects_render_model = current.is_none_or(|current| {
+            is_terminal_task_status(current.status.as_ref())
+                != is_terminal_task_status(snapshot.status.as_ref())
+                || self.render_model_contains_task(&snapshot.id)
+        });
+        self.task_snapshots.insert(snapshot.id.clone(), snapshot);
+        affects_render_model
     }
 
-    pub(super) fn remove_task_snapshot(&mut self, task_id: &str) {
-        self.task_snapshots.remove(task_id);
+    pub(super) fn remove_task_snapshot(&mut self, task_id: &str) -> bool {
+        let removed = self.task_snapshots.remove(task_id).is_some();
+        removed && self.render_model_contains_task(task_id)
+    }
+
+    fn render_model_contains_task(&self, task_id: &str) -> bool {
+        self.render_model
+            .active
+            .iter()
+            .chain(&self.render_model.finished)
+            .any(|task| task.id.as_ref() == task_id)
+            || self.transition_cards.contains_key(task_id)
     }
 
     pub(super) fn apply_render_model(
