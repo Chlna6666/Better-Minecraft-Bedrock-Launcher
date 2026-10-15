@@ -92,6 +92,13 @@ impl Scrollbar {
             return;
         }
         self.handle.set_offset(point(previous.x, offset));
+        // ScrollHandle::set_offset only changes the shared scroll offset; it does
+        // not schedule rendering. Request exactly one frame after an actual change.
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "scrollbar-frame-request",
+            "scroll offset changed"
+        );
         window.request_animation_frame();
         if let Some(on_scroll) = &self.on_scroll {
             on_scroll(window, cx);

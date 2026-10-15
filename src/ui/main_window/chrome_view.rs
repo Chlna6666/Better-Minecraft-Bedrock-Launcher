@@ -94,6 +94,12 @@ impl AppChromeView {
 impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, theme_animating) = colors(window, cx);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-shell",
+            theme_animating,
+            "chrome view render"
+        );
         if theme_animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
@@ -166,6 +172,12 @@ impl BrandChromeView {
 impl Render for BrandChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, animating) = colors(window, cx);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-brand",
+            animating,
+            "chrome view render"
+        );
         if animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
@@ -263,6 +275,12 @@ impl Render for NavChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = window.animation_time();
         let (colors, theme_animating) = colors(window, cx);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-nav",
+            theme_animating,
+            "chrome view render"
+        );
         if theme_animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
@@ -377,6 +395,12 @@ impl AuthChromeView {
 impl Render for AuthChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, theme_animating) = colors(window, cx);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-auth",
+            theme_animating,
+            "chrome view render"
+        );
         let state = chrome::auth::RenderState::new(
             cx.global::<BedrockAuthState>(),
             window.animation_time(),
@@ -428,6 +452,12 @@ impl WindowControlsView {
 impl Render for WindowControlsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, animating) = colors(window, cx);
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "chrome-controls",
+            animating,
+            "chrome view render"
+        );
         if animating {
             crate::ui::animation::request_layout_animation_frame_if(window, true);
         }

@@ -731,6 +731,12 @@ impl RenderOnce for Dropdown {
             rounded,
         } = self;
 
+        tracing::trace!(
+            target: "bmcbl::ui::render_trace",
+            component = "dropdown-trigger",
+            dropdown = ?id,
+            "dropdown trigger render"
+        );
         let options = Rc::new(options);
         let selected_index = normalize_selected_index(selected_index, options.len());
 
