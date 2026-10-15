@@ -400,27 +400,33 @@ impl Window {
             };
         }
 
-        if let Some(any_mouse_event) = event.mouse_event() {
+        let binding_handled = if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
+            false
         } else if let Some(any_key_event) = event.keyboard_event() {
-            self.dispatch_key_event(any_key_event, cx);
-        } else if let Some(touch_event) = event.touch_event() {
-            self.dispatch_touch_event(touch_event, cx);
-        }
+            self.dispatch_key_event(any_key_event, cx)
+        } else {
+            if let Some(touch_event) = event.touch_event() {
+                self.dispatch_touch_event(touch_event, cx);
+            }
+            false
+        };
 
         // The winit-based Windows backend reports committed text through KeyEvent::text,
         // which is stored in Keystroke::key_char. Key actions still run first, but text input
-        // must not depend on event propagation: unrelated key listeners may stop propagation
-        // after the focused input has been selected.
-        #[cfg(target_os = "windows")]
-        if let PlatformInput::KeyDown(key_down) = &event
-            && is_text_input_keystroke(&key_down.keystroke)
-            && let Some(input) = key_down.keystroke.key_char.as_deref()
-            && let Some(mut input_handler) = self.platform_window.take_input_handler()
-        {
-            input_handler.dispatch_input(input, self, cx);
-            self.platform_window.set_input_handler(input_handler);
-            cx.propagate_event = false;
+        // must not depend on ordinary listener propagation. A consumed binding
+        // or pending prefix must still suppress its corresponding text commit.
+        if !binding_handled {
+            #[cfg(target_os = "windows")]
+            if let PlatformInput::KeyDown(key_down) = &event
+                && is_text_input_keystroke(&key_down.keystroke)
+                && let Some(input) = key_down.keystroke.key_char.as_deref()
+                && let Some(mut input_handler) = self.platform_window.take_input_handler()
+            {
+                input_handler.dispatch_input(input, self, cx);
+                self.platform_window.set_input_handler(input_handler);
+                cx.propagate_event = false;
+            }
         }
 
         let event_elapsed = event_started_at.elapsed();

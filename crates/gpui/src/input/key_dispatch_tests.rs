@@ -133,6 +133,14 @@ fn test_input_handler_pending(cx: &mut TestAppContext) {
             key_context.add("Terminal");
             window.set_key_context(key_context);
             window.set_input_handler(&self.focus_handle, self.clone(), cx);
+            // Windows committed text must survive an unrelated listener stopping
+            // propagation, while a consumed key binding must not insert text.
+            #[cfg(target_os = "windows")]
+            window.on_key_event(|_: &crate::KeyDownEvent, phase, _, cx| {
+                if phase == DispatchPhase::Bubble {
+                    cx.stop_propagation();
+                }
+            });
             let action_count = self.action_count.clone();
             window.on_action(
                 std::any::TypeId::of::<TestAction>(),

@@ -116,9 +116,10 @@ pub(crate) enum PlatformInputDispatchClass {
 impl PlatformInputDispatchClass {
     pub(crate) fn extends_recent_input_present(self) -> bool {
         match self {
-            Self::PassivePointerMove => false,
+            // A button event alone does not prove that interactive content was
+            // hit. Real handlers schedule their own invalidation after hit testing.
+            Self::PassivePointerMove | Self::PointerButton => false,
             Self::InteractivePointerMove
-            | Self::PointerButton
             | Self::Scroll
             | Self::Keyboard
             | Self::DragDrop => true,

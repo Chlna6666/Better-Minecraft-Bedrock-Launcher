@@ -1,7 +1,9 @@
 use super::*;
 
 impl Window {
-    pub(super) fn dispatch_key_event(&mut self, event: &dyn Any, cx: &mut App) {
+    /// Returns whether a key binding consumed the key or retained it as a
+    /// pending prefix. Ordinary listener propagation is independent of this result.
+    pub(super) fn dispatch_key_event(&mut self, event: &dyn Any, cx: &mut App) -> bool {
         self.schedule_dirty_frame();
 
         let node_id = self.focus_node_id_in_rendered_frame(self.focus);
@@ -46,7 +48,7 @@ impl Window {
 
         let Some(keystroke) = keystroke else {
             self.finish_dispatch_key_event(event, None, dispatch_path, self.context_stack(), cx);
-            return;
+            return false;
         };
 
         cx.propagate_event = true;
@@ -59,7 +61,7 @@ impl Window {
                 self.context_stack(),
                 cx,
             );
-            return;
+            return false;
         }
 
         let mut currently_pending = self.pending_input.take().unwrap_or_default();
@@ -107,7 +109,7 @@ impl Window {
             self.pending_input = Some(currently_pending);
             self.pending_input_changed(cx);
             cx.propagate_event = false;
-            return;
+            return true;
         }
 
         for binding in key_match.bindings {
@@ -120,7 +122,7 @@ impl Window {
                     cx,
                 );
                 self.pending_input_changed(cx);
-                return;
+                return true;
             }
         }
 
@@ -132,6 +134,7 @@ impl Window {
             cx,
         );
         self.pending_input_changed(cx);
+        false
     }
 
     fn finish_dispatch_key_event(
