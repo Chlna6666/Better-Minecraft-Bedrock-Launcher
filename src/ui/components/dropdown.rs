@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+mod measurement;
+
 const OPEN_DURATION_SECS: f32 = 0.22;
 const CLOSE_DURATION_SECS: f32 = 0.16;
 
@@ -23,7 +25,7 @@ const MENU_CONTENT_PADDING_X: f32 = 44.0;
 const MENU_CHECK_ICON_ALLOWANCE: f32 = 28.0;
 const MENU_MIN_WIDTH: f32 = 120.0;
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct DropdownOption {
     pub label: SharedString,
 }
@@ -49,6 +51,7 @@ struct DropdownState {
     menu_scroll_handle: UniformListScrollHandle,
     open_generation: u64,
     scroll_bound_generation: u64,
+    label_measurement: Option<measurement::LabelMeasurement>,
 }
 
 type DropdownTriggerBuilder =
@@ -344,47 +347,11 @@ fn effective_dropdown_height(available_height: Pixels, desired_height: Pixels) -
     }
 }
 
-fn measure_dropdown_label_width(window: &Window, label: &SharedString) -> Pixels {
-    if label.is_empty() {
-        return px(0.0);
-    }
-
-    let text_style = window.text_style();
-    let font_size = px(13.0);
-    let line = window.text_system().shape_line(
-        label.clone(),
-        font_size,
-        &[TextRun {
-            len: label.len(),
-            font: Font {
-                family: text_style.font_family,
-                features: text_style.font_features,
-                fallbacks: text_style.font_fallbacks,
-                weight: FontWeight::MEDIUM,
-                style: text_style.font_style,
-            },
-            color: text_style.color,
-            background_color: None,
-            background_corner_radius: None,
-            background_padding: None,
-            underline: None,
-            strikethrough: None,
-        }],
-        None,
-    );
-
-    line.width
-}
-
 fn desired_dropdown_menu_width(
-    window: &Window,
+    widest_label: Pixels,
     trigger_width: Pixels,
-    options: &[DropdownOption],
     window_width: Pixels,
 ) -> Pixels {
-    let widest_label = options.iter().fold(px(0.0), |widest, option| {
-        widest.max(measure_dropdown_label_width(window, &option.label))
-    });
     let desired_width = widest_label + px(MENU_CONTENT_PADDING_X + MENU_CHECK_ICON_ALLOWANCE);
     let max_width = (window_width - px(MENU_WINDOW_EDGE_PADDING * 2.0)).max(px(MENU_MIN_WIDTH));
 
@@ -774,6 +741,7 @@ impl RenderOnce for Dropdown {
             menu_scroll_handle: UniformListScrollHandle::new(),
             open_generation: 0,
             scroll_bound_generation: 0,
+            label_measurement: None,
         });
 
         let parent_view_id = window.current_view();
@@ -926,8 +894,10 @@ impl RenderOnce for Dropdown {
         // element_offset again here; doing so double-translates dropdowns rendered inside
         // deferred/modal subtrees and can move the popup outside the visible modal.
         let window_size = window.bounds().size;
-        let menu_width =
-            desired_dropdown_menu_width(window, width, options.as_ref(), window_size.width);
+        let widest_label = state.update(cx, |state, _| {
+            measurement::LabelMeasurement::width(&mut state.label_measurement, window, &options)
+        });
+        let menu_width = desired_dropdown_menu_width(widest_label, width, window_size.width);
         let max_h = px(MENU_MAX_HEIGHT);
         let desired_h = desired_dropdown_height(options.len() as f32);
         let capped_h = desired_h.min(max_h);
@@ -1007,6 +977,8 @@ impl RenderOnce for Dropdown {
                         || active.menu_h != overlay_snapshot.menu_h
                         || active.width != overlay_snapshot.width
                         || active.selected_index != overlay_snapshot.selected_index
+                        || active.options != overlay_snapshot.options
+                        || active.trigger_bounds != overlay_snapshot.trigger_bounds
                 }
                 (true, None) => true,
             }
@@ -1103,6 +1075,7 @@ mod tests {
             menu_scroll_handle: UniformListScrollHandle::new(),
             open_generation: 1,
             scroll_bound_generation: 1,
+            label_measurement: None,
         };
         state.set_phase(toggle_dropdown_phase(opening, reverse_at), reverse_at);
         assert!(state.animation_duration > Duration::ZERO);
