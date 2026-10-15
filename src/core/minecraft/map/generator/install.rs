@@ -142,6 +142,58 @@ pub fn start_map_bundle_file_install(
     )
 }
 
+/// Schedule a non-mutating check of the currently selected map-frame area.
+/// The actual installation always checks the same world state again at commit.
+pub fn start_map_frame_grid_preflight(
+    world_path: PathBuf,
+    chunk: ChunkPos,
+    center: BlockPos,
+    columns: u32,
+    rows: u32,
+    support: BlockState,
+) -> Result<String, String> {
+    let task_id = task_manager::create_task_with_details(
+        None,
+        "检查展示框放置区域",
+        None,
+        "检查展示框放置区域",
+        Some(1),
+        false,
+    );
+    task_manager::register_task_cooperative_cancel(task_id.clone());
+    let cancel = CancelFlag::new();
+    task_manager::register_task_cancel_hook(task_id.clone(), {
+        let cancel = cancel.clone();
+        move || cancel.cancel()
+    });
+    let worker_id = task_id.clone();
+    if let Err(error) = runtime::spawn_io(async move {
+        let result = runtime::run_io_blocking(move || {
+            if cancel.is_cancelled() {
+                return Err("展示框位置检查已取消".to_owned());
+            }
+            let mut options = OpenOptions::default();
+            options.read_only = true;
+            let world = World::open(&world_path, options)
+                .map_err(|error| error.to_string())?;
+            world.validate_upward_frame_grid(chunk, center, columns, rows, &support)
+                .map_err(|error| error.to_string())
+        })
+        .await;
+        let (status, message) = match result {
+            Ok(Ok(())) => ("completed", "放置区域检查通过；正式写入前仍会再次校验".to_owned()),
+            Ok(Err(error)) if error.contains("已取消") => ("cancelled", error),
+            Ok(Err(error)) => ("error", error),
+            Err(error) => ("error", error.to_string()),
+        };
+        task_manager::finish_task(&worker_id, status, Some(message));
+    }) {
+        task_manager::finish_task(&task_id, "error", Some(error.clone()));
+        return Err(error);
+    }
+    Ok(task_id)
+}
+
 fn start_install_task(
     source: InstallSource,
     world_path: PathBuf,
