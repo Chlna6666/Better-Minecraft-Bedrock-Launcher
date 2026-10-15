@@ -99,20 +99,63 @@ impl SettingsPageView {
     }
 }
 
+// Only retain fields read by the corresponding tab's content tree. Other
+// tabs remain conservative until their nested dependencies have been audited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsContentProjection {
+    Game {
+        launcher_display_mode: state::LauncherDisplayMode,
+        fix_uwp_minimize: bool,
+        keep_downloaded_packages: bool,
+        modify_appx_manifest: bool,
+    },
+    About,
+    Conservative(SettingsTab),
+}
+
+impl SettingsContentProjection {
+    fn from_state(state: &SettingsPageState) -> Self {
+        match state.tab {
+            SettingsTab::Game => Self::Game {
+                launcher_display_mode: state.launcher_display_mode,
+                fix_uwp_minimize: state.fix_uwp_minimize,
+                keep_downloaded_packages: state.keep_downloaded_packages,
+                modify_appx_manifest: state.modify_appx_manifest,
+            },
+            // The About main content depends on UpdateState, ThemeState and I18n.
+            // Sponsors/dependencies/agreement dialogs have a separate overlay View.
+            SettingsTab::About => Self::About,
+            tab => Self::Conservative(tab),
+        }
+    }
+
+    fn should_notify(self, next: Self) -> bool {
+        self != next || matches!(next, Self::Conservative(_))
+    }
+}
+
 struct SettingsContentView {
     _subscriptions: Vec<Subscription>,
     last_update_checking: bool,
+    last_projection: SettingsContentProjection,
     active: bool,
 }
 
 impl SettingsContentView {
     fn new(cx: &mut Context<Self>) -> Self {
         let last_update_checking = cx.global::<UpdateState>().checking;
+        let last_projection =
+            SettingsContentProjection::from_state(cx.global::<SettingsPageState>());
         let subscriptions = vec![
             cx.observe_global::<SettingsPageState>(|this, cx| {
-                if this.active {
-                    let tab = cx.global::<SettingsPageState>().tab;
-                    tracing::trace!(?tab, "settings content notify source=SettingsPageState");
+                if !this.active {
+                    return;
+                }
+                let next = SettingsContentProjection::from_state(cx.global::<SettingsPageState>());
+                let changed = this.last_projection.should_notify(next);
+                this.last_projection = next;
+                if changed {
+                    tracing::trace!(?next, "settings content notify source=tab-projection");
                     cx.notify();
                 }
             }),
@@ -154,6 +197,7 @@ impl SettingsContentView {
         Self {
             _subscriptions: subscriptions,
             last_update_checking,
+            last_projection,
             active: false,
         }
     }
@@ -162,6 +206,8 @@ impl SettingsContentView {
         if self.active != active {
             self.active = active;
             if active {
+                self.last_projection =
+                    SettingsContentProjection::from_state(cx.global::<SettingsPageState>());
                 cx.notify();
             }
         }
@@ -523,4 +569,36 @@ fn render_font_restart_modal(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
         dismiss,
     )
     .into_any_element()
+}
+
+#[cfg(test)]
+mod content_projection_tests {
+    use super::*;
+
+    #[test]
+    fn game_tab_ignores_unrelated_settings() {
+        let mut settings = SettingsPageState::default();
+        settings.tab = SettingsTab::Game;
+        let previous = SettingsContentProjection::from_state(&settings);
+        settings.gpui_trace = !settings.gpui_trace;
+        assert!(!previous.should_notify(SettingsContentProjection::from_state(&settings)));
+        settings.fix_uwp_minimize = !settings.fix_uwp_minimize;
+        assert!(previous.should_notify(SettingsContentProjection::from_state(&settings)));
+    }
+
+    #[test]
+    fn tab_transition_and_about_overlay_updates() {
+        let mut settings = SettingsPageState::default();
+        settings.tab = SettingsTab::Game;
+        let before = SettingsContentProjection::from_state(&settings);
+        settings.tab = SettingsTab::About;
+        let about = SettingsContentProjection::from_state(&settings);
+        assert!(before.should_notify(about));
+        settings.about_sponsors_open = true;
+        assert!(!about.should_notify(SettingsContentProjection::from_state(&settings)));
+        settings.tab = SettingsTab::Launcher;
+        let launcher = SettingsContentProjection::from_state(&settings);
+        assert!(about.should_notify(launcher));
+        assert!(launcher.should_notify(launcher));
+    }
 }
