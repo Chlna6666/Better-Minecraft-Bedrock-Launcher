@@ -133,6 +133,7 @@ impl MapViewerWindowView {
             .rounded(px(8.0))
             .bg(colors.surface)
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(8.0))
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
