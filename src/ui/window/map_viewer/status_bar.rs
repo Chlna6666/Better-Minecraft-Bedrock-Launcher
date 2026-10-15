@@ -405,6 +405,7 @@ fn is_map_window_task_stage(stage: &str) -> bool {
             | "写入地图包"
             | "读取地图包"
             | "检查目标与地图 ID"
+            | "检查展示框放置区域"
             | "创建撤销快照"
             | "原子提交地图与物品"
             | "保存撤销历史"
@@ -431,6 +432,7 @@ mod task_filter_tests {
             "匹配方块",
             "体素化三角形",
             "保存预览结果",
+            "检查展示框放置区域",
             "map_paste",
             "map_refresh",
             "map_delete",
