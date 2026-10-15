@@ -95,7 +95,7 @@ pub use layout::{
 pub use platform::*;
 pub use refineable::*;
 pub use render_pipeline::*;
-pub use scene::*;
+pub(crate) use scene::*;
 pub use smol::Timer;
 pub use style::*;
 #[cfg(any(test, feature = "test-support"))]

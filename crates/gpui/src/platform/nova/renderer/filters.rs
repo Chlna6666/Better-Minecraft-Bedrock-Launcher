@@ -10,7 +10,7 @@ pub(super) struct TextureContentVersion(pub(super) u64);
 
 #[derive(Clone)]
 pub(super) struct RetainedFilterSource {
-    index: u32,
+    pub(super) index: u32,
     source: FilterSource,
     /// Last successful OFFSCREEN refresh for this particular filter.
     // All filters refreshed in the same Present share one immutable sample
@@ -78,8 +78,55 @@ impl FilterRegistry {
         self.last_gpu_animation_values.clear();
     }
 
-    /// Migrate resident snapshots only when a stable Capture ID and the actual
-    /// zero-filter output TextureView both survive a flattened-index reorder.
+    /// Only the packed content fingerprint establishes AutoStatic identity.
+    /// A matching target is additionally required before its pixels can be reused.
+    fn same_auto_static_source(current: &FilterSource, previous: &FilterSource) -> bool {
+        match (current, previous) {
+            (
+                FilterSource::AutoStatic { bounds, content_mask, content_hash, content_bytes },
+                FilterSource::AutoStatic {
+                    bounds: old_bounds,
+                    content_mask: old_mask,
+                    content_hash: old_hash,
+                    content_bytes: old_bytes,
+                },
+            ) => {
+                bounds == old_bounds
+                    && content_mask == old_mask
+                    && content_hash == old_hash
+                    && content_bytes == old_bytes
+            }
+            _ => false,
+        }
+    }
+
+    /// Offer the sole successfully presented AutoStatic source for physical
+    /// relocation across flattened filter indices. A new fingerprint must
+    /// rebuild its texture and is never eligible for this fast path.
+    pub(super) fn matching_auto_static_indices(
+        &self,
+        new_sources: &[(u32, FilterSource)],
+    ) -> Option<(u32, u32)> {
+        let mut old = self.element_blur_inputs.iter().filter(|entry| {
+            matches!(entry.source, FilterSource::AutoStatic { .. })
+        });
+        let previous = old.next()?;
+        if old.next().is_some() || previous.content_version.0 == 0 {
+            return None;
+        }
+        let mut next = new_sources.iter().filter(|(_, source)| {
+            matches!(source, FilterSource::AutoStatic { .. })
+        });
+        let (index, source) = next.next()?;
+        if next.next().is_some() || !Self::same_auto_static_source(source, &previous.source) {
+            return None;
+        }
+        Some((previous.index, *index))
+    }
+
+    /// Migrate resident snapshots only when original zero-radius TextureViews
+    /// survive an index reorder. Elements use their stable Capture ID; the
+    /// single AutoStatic source uses its packed fingerprint instead.
     /// Source content equivalence is still checked by source_unchanged().
     /// The per-rebind view lists are temporary, not another residency cache.
     pub(super) fn remap_identity_capture_sources(
@@ -89,22 +136,35 @@ impl FilterRegistry {
         new_sources: &[(u32, FilterSource)],
     ) -> usize {
         let previous = std::mem::take(&mut self.element_blur_inputs);
+        let unique_auto_static = new_sources
+            .iter()
+            .filter(|(_, source)| matches!(source, FilterSource::AutoStatic { .. }))
+            .count() == 1;
         for (index, incoming) in new_sources {
-            let FilterSource::Element(new_layer) = incoming else { continue };
-            let Some(ref layer_id) = new_layer.layer_id else { continue };
-            if new_layer.radius.0 != 0.0 { continue }
-            let Some((_, target_view)) = new_views.iter().find(|(next, _)| next == index)
-            else { continue };
-            let mut candidates = previous.iter().filter(|previous| {
-                let FilterSource::Element(old_layer) = &previous.source else { return false };
-                old_layer.layer_id.as_ref() == Some(layer_id)
-                    && old_layer.radius.0 == 0.0
-                    && old_views.iter().any(|(old_index, old_view)| {
-                        *old_index == previous.index && old_view == target_view
-                    })
+            let Some((_, target_view)) = new_views.iter().find(|(next, _)| next == index) else {
+                continue;
+            };
+            let mut candidates = previous.iter().filter(|old| {
+                if !old_views.iter().any(|(old_index, old_view)| {
+                    *old_index == old.index && old_view == target_view
+                }) {
+                    return false;
+                }
+                match (incoming, &old.source) {
+                    (FilterSource::AutoStatic { .. }, FilterSource::AutoStatic { .. }) => {
+                        unique_auto_static && Self::same_auto_static_source(incoming, &old.source)
+                    }
+                    (FilterSource::Element(new_layer), FilterSource::Element(old_layer)) => {
+                        new_layer.layer_id.is_some()
+                            && new_layer.layer_id == old_layer.layer_id
+                            && new_layer.radius.0 == 0.0
+                            && old_layer.radius.0 == 0.0
+                    }
+                    _ => false,
+                }
             });
             let Some(snapshot) = candidates.next() else { continue };
-            // Multiple old captures with the same claimed identity cannot alias a target.
+            // Multiple old matches cannot prove uniquely initialized texels.
             if candidates.next().is_some() { continue }
             let mut resident = snapshot.clone();
             resident.index = *index;
@@ -153,21 +213,8 @@ impl FilterRegistry {
             return false;
         };
         match (current, &previous.source) {
-            (
-                FilterSource::AutoStatic {
-                    bounds, content_mask, content_hash, content_bytes,
-                },
-                FilterSource::AutoStatic {
-                    bounds: old_bounds,
-                    content_mask: old_mask,
-                    content_hash: old_hash,
-                    content_bytes: old_bytes,
-                },
-            ) => {
-                bounds == old_bounds
-                    && content_mask == old_mask
-                    && content_hash == old_hash
-                    && content_bytes == old_bytes
+            (FilterSource::AutoStatic { .. }, FilterSource::AutoStatic { .. }) => {
+                Self::same_auto_static_source(current, &previous.source)
             }
             (FilterSource::Element(current), FilterSource::Element(old)) => {
                 let previous_values = previous.animation_values.as_deref().unwrap_or(&[]);
@@ -441,6 +488,82 @@ mod tests {
             &[(1, v)], &[(3, v)], &[(3, FilterSource::Element(blur.clone()))],
         ), 1);
         assert!(!registry.source_unchanged(3, &FilterSource::Element(blur), &[]));
+    }
+
+    #[test]
+    fn auto_static_rebind_preserves_only_submitted_identical_pixels_on_same_view() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 0xdead_beef,
+            content_bytes: 4096,
+        };
+        let view = TextureViewId::new(28);
+        assert_eq!(registry.matching_auto_static_indices(&[(5, source.clone())]), None);
+        registry.record_element_blur_inputs(&[(2, source.clone())], &[], [2]);
+        registry.record_submission(BackdropBlurQuality::Full, 1);
+        let resident = registry.layer_content_version(2);
+        assert_eq!(registry.matching_auto_static_indices(&[(5, source.clone())]), Some((2, 5)));
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(2, view)], &[(5, view)], &[(5, source.clone())],
+        ), 1);
+        assert_eq!(registry.layer_content_version(5), resident);
+        assert!(registry.source_unchanged(5, &source, &[]));
+
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(5, view)], &[(3, TextureViewId::new(29))],
+            &[(3, source.clone())],
+        ), 0);
+        assert!(registry.layer_content_version(3).is_none());
+    }
+
+    #[test]
+    fn auto_static_rebind_rejects_fingerprint_or_geometry_change() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(2.0), crate::ScaledPixels(3.0)),
+            crate::size(crate::ScaledPixels(128.0), crate::ScaledPixels(64.0)),
+        );
+        let old = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 12345,
+            content_bytes: 8192,
+        };
+        registry.record_element_blur_inputs(&[(1, old.clone())], &[], [1]);
+        let changed = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 12346,
+            content_bytes: 8192,
+        };
+        assert_eq!(registry.matching_auto_static_indices(&[(4, changed.clone())]), None);
+        let view = TextureViewId::new(37);
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(1, view)], &[(4, view)], &[(4, changed.clone())],
+        ), 0);
+        assert!(!registry.source_unchanged(4, &changed, &[]));
+
+        registry.record_element_blur_inputs(&[(1, old.clone())], &[], [1]);
+        let moved_bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(6.0), crate::ScaledPixels(3.0)),
+            crate::size(crate::ScaledPixels(128.0), crate::ScaledPixels(64.0)),
+        );
+        let moved = FilterSource::AutoStatic {
+            bounds: moved_bounds,
+            content_mask: crate::ContentMask::new(moved_bounds),
+            content_hash: 12345,
+            content_bytes: 8192,
+        };
+        assert_eq!(registry.matching_auto_static_indices(&[(5, moved.clone())]), None);
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(1, view)], &[(5, view)], &[(5, moved)],
+        ), 0);
     }
 
     #[test]

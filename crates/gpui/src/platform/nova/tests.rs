@@ -2188,6 +2188,43 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
 }
 
 #[test]
+fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: test_zero_radius_blur_config(index),
+        levels: vec![BackdropBlurLevelTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(index + 1),
+            texture_view: test_texture_view_id(index + 1),
+            pass_resource_sets: vec![test_resource_set_id(index + 1)],
+        }],
+        target_resource_sets: vec![test_resource_set_id(index + 11)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: Vec::new(),
+        variants: (0..5).map(make_variant).collect(),
+        active_variant_count: 5,
+        retained_root_variant: None,
+    };
+    let original_view = targets.exclusive_zero_radius_capture_view(3).unwrap();
+    let shorter = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(!targets.reuse_layout(&shorter, &[], false, None, Some((3, 1))),
+        "config-only remapping must not relabel a different physical texture");
+    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, Some((3, 1))));
+    assert_eq!(targets.exclusive_zero_radius_capture_view(1), Some(original_view));
+
+    let longer = (0..5).map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(targets.rebind_zero_radius_layout(&longer, false, None, Some((1, 3))));
+    assert_eq!(targets.exclusive_zero_radius_capture_view(3), Some(original_view));
+    let views = targets.variants.iter().map(|variant| variant.levels[0].texture_view)
+        .collect::<Vec<_>>();
+    assert!(!targets.rebind_zero_radius_layout(&shorter, false, None, Some((99, 1))));
+    assert_eq!(targets.variants.iter().map(|variant| variant.levels[0].texture_view)
+        .collect::<Vec<_>>(), views, "an invalid relocation cannot mutate resources");
+}
+
+#[test]
 fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_zero_radius_blur_config(index),
@@ -2214,7 +2251,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
             .collect::<Vec<_>>();
-        assert!(targets.rebind_zero_radius_layout(&configs, false, None));
+        assert!(targets.rebind_zero_radius_layout(&configs, false, None, None));
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.retained_root_variant, None);
         assert_eq!(
@@ -2228,6 +2265,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         &[test_backdrop_blur_config(2, 2)],
         false,
         None,
+        None,
     ));
     // Do not reuse an old child cache as a window root without a valid
     // root index in the new flattened stream.
@@ -2235,6 +2273,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         &[test_zero_radius_blur_config(0)],
         false,
         Some(100),
+        None,
     ));
 }
 
@@ -2272,7 +2311,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
             .map(|index| test_backdrop_blur_config(index, 2))
             .collect::<Vec<_>>();
         assert!(
-            targets.reuse_layout(&configs, &[], true, None),
+            targets.reuse_layout(&configs, &[], true, None, None),
             "a changing active prefix should not allocate new GPU textures",
         );
         assert_eq!(targets.active_variant_count, count as usize);
@@ -2291,11 +2330,13 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         &[],
         false,
         None,
+        None,
     ));
     assert!(!targets.reuse_layout(
         &[test_backdrop_blur_config(99, 2)],
         &[],
         true,
+        None,
         None,
     ));
     assert!(!targets.reuse_layout(
@@ -2303,6 +2344,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         &[],
         true,
         Some(99),
+        None,
     ));
 }
 
@@ -2341,7 +2383,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
     let requested = [2_u32, 0, 3, 1];
     let configs = requested
         .map(|index| test_backdrop_blur_config(index, 2));
-    assert!(targets.reuse_layout(&configs, &[], true, None));
+    assert!(targets.reuse_layout(&configs, &[], true, None, None));
     assert_eq!(targets.active_variant_count, 4);
     assert_eq!(
         targets.variants.as_ptr(),
@@ -2360,6 +2402,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         &[test_backdrop_blur_config(99, 2)],
         &[],
         true,
+        None,
         None,
     ));
     assert!(targets.variants.iter().zip(before).all(|(variant, (config, view))| {
@@ -2396,7 +2439,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
             .collect::<Vec<_>>();
-        assert!(targets.rebind_zero_radius_layout(&configs, false, Some(root)));
+        assert!(targets.rebind_zero_radius_layout(&configs, false, Some(root), None));
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.retained_root_variant, Some(root as usize));
         assert_eq!(targets.retained_root_texture_view(), Some(original_root_view));
@@ -2413,6 +2456,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
             &[test_backdrop_blur_config(2, 2)],
             false,
             Some(0),
+            None,
         ));
     }
 }

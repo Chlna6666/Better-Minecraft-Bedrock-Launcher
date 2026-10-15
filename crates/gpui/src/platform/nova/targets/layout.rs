@@ -14,6 +14,7 @@ impl BackdropBlurTargets {
         next: &[BackdropBlurConfig],
         needs_root_source: bool,
         root_index: Option<u32>,
+        auto_static_indices: Option<(u32, u32)>,
     ) -> bool {
         let old_root = self.retained_root_variant;
         let new_root = root_index.and_then(|index| {
@@ -35,14 +36,35 @@ impl BackdropBlurTargets {
             return false;
         }
 
-        // Every admitted target has exactly one native-resolution color texture.
-        // No per-slot source or Gaussian dimensions change with the flattened index.
-        // Preserve a warmed window-root allocation when both layouts contain it.
-        // Other layouts may rebind child-only slots; their source residency
-        // must be invalidated before the next draw. Root pixels may survive
-        // only under the renderer's explicit physical texture identity check.
+        // The synthetic root and the AutoStatic prefix are exclusive cache roles.
+        // When no synthetic root exists, move the fingerprint-validated prefix's
+        // native Texture/View/ResourceSets together before rebinding indices.
+        // Validate all indices BEFORE modifying live target ownership.
+        let auto_static_slots = if old_root.is_none() && new_root.is_none() {
+            if let Some((old_index, new_index)) = auto_static_indices {
+                let old = self.variants.iter().take(self.active_variant_count)
+                    .position(|variant| {
+                        variant.config.exclusively_contains_member_index(old_index)
+                            && variant.config.radius() == 0.0
+                    });
+                let new = next.iter().position(|config| {
+                    config.exclusively_contains_member_index(new_index)
+                        && config.radius() == 0.0
+                });
+                let (Some(old), Some(new)) = (old, new) else {
+                    return false;
+                };
+                Some((old, new))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if let (Some(old_root), Some(new_root)) = (old_root, new_root) {
             self.variants.swap(old_root, new_root);
+        } else if let Some((old, new)) = auto_static_slots {
+            self.variants.swap(old, new);
         }
         for (variant, config) in self.variants.iter_mut().zip(next) {
             variant.config = *config;
@@ -63,6 +85,7 @@ impl BackdropBlurTargets {
         isolated_indices: &[u32],
         needs_root_source: bool,
         root_index: Option<u32>,
+        auto_static_indices: Option<(u32, u32)>,
     ) -> bool {
         let new_root = root_index.and_then(|index| {
             next.iter()
@@ -102,7 +125,27 @@ impl BackdropBlurTargets {
             (Some(previous), Some(current)) => permutation.get(current) == Some(&previous),
             _ => true,
         };
-        if permutation.len() == next.len() && root_identity_preserved {
+        // A config-compatible allocation at the new AutoStatic slot is NOT
+        // proof that it still contains the old prefix pixels.
+        let auto_static_identity_preserved = auto_static_indices.is_none_or(
+            |(old_index, new_index)| {
+                let previous = self.variants.iter().take(self.active_variant_count)
+                    .position(|variant| {
+                        variant.config.exclusively_contains_member_index(old_index)
+                            && variant.config.radius() == 0.0
+                    });
+                let current = next.iter().position(|config| {
+                    config.exclusively_contains_member_index(new_index)
+                        && config.radius() == 0.0
+                });
+                matches!((previous, current), (Some(old), Some(new))
+                    if permutation.get(new) == Some(&old))
+            },
+        );
+        if permutation.len() == next.len()
+            && root_identity_preserved
+            && auto_static_identity_preserved
+        {
             // Reorder in place: preserve the Vec allocation and every native
             // texture/view/resource-set handle. The validated one-to-one
             // mapping ensures that each remaining capture still has a match
@@ -123,6 +166,11 @@ impl BackdropBlurTargets {
             return true;
         }
 
+        // AutoStatic relocation needs the zero-radius rebind above; this
+        // fallback can relocate only the synthetic window root.
+        if auto_static_indices.is_some() {
+            return false;
+        }
         // Keep the existing root-color relocation behavior when a zero-radius
         // capture changes its flattened member index. This cannot use the
         // stable-ID permutation, but can still preserve physical textures.

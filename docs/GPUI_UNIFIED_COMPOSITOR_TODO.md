@@ -515,6 +515,16 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【正确性保护】**：无法独立切分的结构化 Painter Layer、真正 Gaussian、嵌套 Element Capture、BackdropBlur、未标识 Capture、纹理/路径/Surface 等在 Capture 前出现仍退回原全量链路；Drawable Resize / Atlas 内容版本 / Filter invalidation 保留既有一致性逻辑。不会绕过 Fence 或吞掉必要 WSI Present。
 - **【单测源码，未执行】**：新增 24 个静态全屏 Quad + 独立 Popup 的准入及 FrameUpload 包装测试，验证 Root 不再包住菜单；新增 Gaussian/嵌套结构反例。`GPUI color retention result` 现有 Trace 新增 `static_prefix_candidate` 与 `static_prefix_captured`（仅诊断字段，无新增配置/计时器）明确区分准入成功、编码拒绝、Root 回退。当前容器未安装 Rust/rustfmt、没有 Windows 真实 GPU，尚无编译/四后端 Trace 结果。该优化只作用于可证明有序且足够重的静态前缀；不能声称所有 BMCBL 页面、所有 Dropdown 都自动适用。后续必须测量准入命中率与 `retained_root_draw_steps`、`filter_source_draw_steps`、`composite_passes`、GPU busy、UI frame 延迟。
 
+## 2026-10-15：AutoStatic 实体纹理跨 Popup 拓扑重排保留 + E0616/重导出告警修复（待编译）
+
+- **基线**：远程 master `f3c2c050db5d56c83713b9d2bd5039787ee91172`，已包含用户随后提交的多项 UI Entity/覆盖层/Toast/Task 局部刷新优化；本阶段不回滚或覆盖这些 UI 提交。代码改动范围：`crates/gpui/src/gpui.rs`、`platform/nova/renderer/{filters.rs}`、`platform/nova/{renderer.rs,targets/layout.rs,tests.rs}` 与唯一 TODO。
+- **【修复构建阻塞】**：`RetainedFilterSource.index` 对父 `renderer.rs` 不可见，触发 E0616；仅改为 `pub(super)`，不向 GPUI 公共 API 暴露私有纹理索引。`gpui.rs` 的 `pub use scene::*` 导出的是仅 `pub(crate)` 的内部 Scene 项，收窄为 `pub(crate) use scene::*`，保持内部消费者可用并消除公开重导出层级告警。
+- **【P0 根因】**：在没有合成窗口 Root 的静态背景前缀模式，旧 `root_color_reuse_eligible` 恒为 false；原 `remap_identity_capture_sources` 又只认 `FilterSource::Element`，所以 Popup 插入/收回即便复用了原生目标，也会错误清空 AutoStatic 的 GPU 内容版本。单迁移 packed index 也不够：布局重排可能把 AutoStatic 的索引绑定到**另一张**物理纹理。
+- **【本阶段代码】**：`FilterRegistry` 使用现有 `AutoStatic { bounds, content_mask, content_hash, content_bytes }` 四字段精确相等，并要求只存在一个已成功呈现且内容版本非零的旧/新 AutoStatic，才给出旧→新扁平索引。无 Root/无共享 source/无 isolated source/全部零半径的有效目标布局允许保留 Element/AutoStatic 快照；迁移时同一 `TextureViewId` 是必需条件。旧 target 布局 `reuse_layout` 须证明**原物理目标**映射到了新的 AutoStatic 索引，否则回退 `rebind_zero_radius_layout`：在所有检查成功后对整个 `BackdropBlurVariantTargets`（Texture、View、per-slot ResourceSet 同一 owner）执行稳定槽位交换，随后更新 packed config；不创建另一套缓存或抽象图层。
+- **【保守限制】**：只使用已有成功提交的版本；内容指纹、内容遮罩/几何、真实 TextureView 变化、非独占单成员、Gaussian/Backdrop、资源重建、旧缓存失效一律重绘。新目标数量超过已预热容量时仍走既有创建/销毁和 GPU Fence 等待，**未实现跨 GPU allocation 的零复制增长**；当前也未拆出独立 RootColorTarget 物理 owner、未引入 Fence-retired Target Pool。
+- **【测试源码，未执行】**：FilterRegistry 自动前缀真实版本跨索引复用、变更内容/位置/物理 View 拒绝；Targets 层两次相反的 Popup 重排、独占 TextureView/ResourceSet 维持、非法重排原子失败；原零滤镜/root/Gaussian 目标测试调用同步更新。不新增 CI 自动修复，不把静态审查算作 Rust 编译或原生四后端验证。
+- **【下一步验收】**：先在 Windows 执行 `cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、针对性 GPUI 单测，随后分别测试 DX11/DX12/Vulkan/OpenGL 的静态前缀 Capture + Popup 插入/删除/倒转动画/Resize/切页。Trace 需核对 `static_prefix_captured`、`auto_static_relocation`、`retained_sources`、`element_blur_refresh`、`retained_root_draw_steps`、`composite_passes` 与实际 GPU 占用，尤其警惕静态场景版本错误复用和未初始化目标。当前执行环境没有 cargo/rustc/rustfmt/Windows GPU，**源码尚未编译/运行**，不承诺 GPU 40% 已改善。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -530,7 +540,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- **当前最新待验证起点（2026-10-15）**：在 `9ac325ac60c1d6406541c93ad65a73f3cb6e4c05` 实现静态前缀 + 零半径 Dropdown Capture 的分离准入、在本轮补充 `static_prefix_candidate/static_prefix_captured` Trace 后，先进行 Rust fmt/check/针对性单测与四后端原生截图测试；对照 5 秒公共 Dropdown 40% / 首页版本下拉 20% 的旧基线，查看静态背景是否确实常驻、动态弹层是否不再触发 Root source passes。禁止因准入成功而跳过源一致性、窗口曝光、Resize、透明混合验证；无实测时 P0 仍未关闭。
+- **当前最新待验证起点（2026-10-15）**：完成 AutoStatic 跨 Popup 变体数量与扁平索引重排的真实 TextureView/ResourceSet 迁移、`RetainedFilterSource.index` 可见性修复及 GPUI `scene` 重导出收窄后，**立即先做 Windows Rust fmt/check 和单测**，再以 DX11/DX12/Vulkan/OpenGL 对比公共 Dropdown 40% 与首页版本下拉 20% 的历史负载。检查 `static_prefix_captured`、`auto_static_relocation`、`retained_sources`、GPU Root/Filter/Present Pass、静态纹理内容与高频 Popup 反转；验证之前不得把 P0 标记完成。
 - **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
