@@ -20,7 +20,7 @@
 | **P0-05** | P0 · **混合零半径/Root 物理复用代码已补，待 Cargo 与四后端验证** | **Filter Target 高水位复用**：Gaussian/Root/Element + AutoStatic 混合，预热 3→4→6 后连续 6→3→4→6；`active_isolated/allocated_isolated`、`layout reused/recreated`、物理 View、ResourceSet、Filter 输出内容版本一起核验；新 Slot、资源变化必须重绘而非采样旧像素 | P0-01～04；容量以内不应每次重新 create/destroy 全链；容量以外可重建；必须校验异步 Fence / GPU in-flight / 多窗口 / Blur on/off |
 | **P0-06** | P0 · **Root 下线/重上与 FrameSlot 四后端原生测试通过；独立 Window Owner/Fence 待迁移** | **Root Color 和 Filter Capture 真实资源所有权分离**：根颜色不再使用 `retained_root_blur`/零半径 Blur 充当永久语义所有者；把 RootColor 的尺寸、内容版本、物理 View、Fence 退休和 Filter DAG 依赖独立定义，迁移旧消费者并删除冗余旧所有者 | P0-04/05 的实机正确性基线；跨 Popup 不无故失效、Resize/透明/Clip/Mask/Texture 别名不出现旧帧；不要再增加第二套 Root 缓存 |
 | **P0-07** | P0 · **Resize/局部损伤修复源码已提交，最新 HEAD 像素与 GPU 性能均待验证** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
-| **P0-08** | P0 · **修复动画误触发整窗源失效，待 Cargo/四后端实测** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
+| **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
 | **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
 | **P1-02** | P1 · **部分实现** | **唯一持久 Paint Artifact + 局部失效**：用持久 Chunk/Order/Filter/Property 依赖代替逐帧全量 Scene replay 与 Scene Finish；完成 CachedView 嵌套、中断/重定向动画、重排 Painter Order、纯 Composite 属性更新时不重建内容 | P1-01；相同输入下画面像素等价、静态 Buffer upload=0、变化只上传受影响范围；一条局部纵切跑通后再扩展 |
@@ -30,6 +30,78 @@
 | **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
 | **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 2026-10-15 后续执行：动画与 Resize（基线 `14289e14`）
+
+**最新执行（用户授权全部相关动画修复，随后要求停止逐项反复测试，并明确全平台、无兼容层）：**
+
+- `element/animation.rs` 删除帧局部 `with_sampled_animation`、`SampledAnimationElement` 和配套 state，不保留 alias、转发或双入口；唯一 caller-sampled API 使用稳定 identity。平移/透明度端点变化不再更换 ID 或强制重画后代；Capture 语义变化仍会重新绑定以保证正确性。静止非 identity 的终值继续生效，但不调度下一帧；包装层每次执行写入样本、内部静态内容允许复用。
+- `scene/display_list.rs` 修复 retained replay 只复制 primitive 而遗漏 caller-sampled 值的问题。仅携带被 replay 范围实际引用的样本，去重且保留本帧已经写入的新值；不添加第二个 Scene/Root Owner，不复制无关目标样本。新增 retarget/settle 集成测试曾稳定复现旧行为的 `primitive 有绑定但 samples=[]`，修复后通过。
+- `animation/engine.rs` 的 scene-bound track 不再追加保守 declaration bounds（Translation 可为整窗），由现有 Scene 前后真实样本计算 swept damage；无 scene binding 的 UI track 保留原有 dirty bounds。正/负过冲用实际样本并集覆盖，不截断曲线或用限帧掩盖成本。
+- 跨平台 `PlatformWindow::owns_scene_animations` 删除依赖 `has_active_presentation_animations` 的默认实现，成为必须显式实现的所有权契约。Windows/Wayland/X11 的 Nova 独立呈现端始终拥有队列中、deferred 与等待 frame-ready 的 scene 动画；macOS 原生 Metal 明确仍由 UI 采样；TestWindow 同样显式声明。不是只给 DX12 特判，也没有令尚无独立呈现采样实现的 Metal 错误跳过 UI 时间推进。`animation_clock.md` 同步更新契约。
+- 首页箭头及所有虚拟列表可见行改用稳定 sampled 绑定。保留逐行 delay、ease-out-back、位移10px、透明度与容器原始高度/顶部/阴影弹性；行不再每帧改 text layout origin，使用 clipped subtree translation 保留图片局部 clip。行与箭头是被动 sample，由容器单一 layout target 驱动，不各自再请求下一帧。新增行 Capture 需要实机核对静态源复用及 GPU pass 成本，不能先声称 GPU 降低。
+- 认证弹层移除 `state.animating` 的额外 owning-view layout 帧请求及冗余聚合字段；由局部稳定 wrapper 驱动。Toast、认证内容/行、公共组件共享上述框架修复。导览三条 feature 的延迟260ms过渡改为 `.delay + FillMode::Both + translation_opacity`，删除原来的两段 CPU margin-left 回调，延迟30/80/130ms和10px轨迹不变。
+- 全应用检索覆盖 `with_animation`、`with_animations`、visual/group/stable sampled、布局帧请求；未机械改写已在 presentation lane 的 Tabs、公共 Dropdown、Modal、加载/进度指示器等。首页容器真实高度弹性、任务退出时的高度/padding/换行变化、欢迎卡 margin/自适应尺寸、主题与任务颜色过渡仍有 CPU 工作；这些不能通过删除颜色/错峰/布局效果或假装已有 GPU Color 支持来“清零”。**全部动画独立 presentation 迁移尚未完成，不能标为全部性能问题已解决。**
+- 已执行验证：no-default GPUI 测试产物 `gpui-1e4c381270e0dfcf.exe`，`animation::` **104 passed / 1 ignored**；ownership **3 passed**；referenced-sample replay **1 passed**；Translation sampled damage（含正/负过冲）**1 passed**。`cargo check -p bmcbl --lib --locked` 在首批公共修复后退出0。之后新增的首页行、导览 feature 与全平台 required ownership 声明只集中做最终编译，不逐项重复测试。
+- 扩大 `animation` 测试过滤器触发既有调度测试失败和 `0xc0000409`；旧产物 `gpui-1489a80fdee4689d.exe` 也复现 `active_image_animation_immediate_requests_are_coalesced` / `animation_engine_frame_requests_are_coalesced_and_merge_drivers` 的 `left=1/right=2`，旧 click-notify 测试同样异常退出。完整测试仍阻塞。`cargo test -p gpui --all-features --no-run --locked` 因既有 `benchmark.rs:66/70` 缺失 layout owner 参数 E0061 未通过，不为通过本轮动画验证擅改该模块。用户要求不继续扩大测试后，停止追加测试/benchmark。
+- 未完成：修改后 UI 快速反向、图像/文字像素等价、macOS/Linux 编译与 native 验证、四后端 GPU busy/Filter source/pass 对照及 Resize 黑块验收。未停止或替换用户正在运行的旧程序，不能把旧进程日志当本轮修复效果。此前“暂停首页迁移”由本次明确修复授权更新；本节是当前状态，其下审计记录保留历史事实。
+- 最终批量检查（2026-10-16）：完成首页所有可见行与箭头、导览 feature 和 required ownership 声明后，`cargo check -p bmcbl --lib --locked` **退出0，0 errors / 506 warnings（既有警告保留）**；受影响动画实现文件定向 rustfmt check 与 `git diff --check` 通过。按用户要求未再逐项重跑测试；上述104+3+1+1测试证据属于前一公共修复阶段，不能冒充最后平台声明修改后的整套复验。没有新增兼容 re-export、旧方法包装、运行时开关、第二套 Scene 或 Root 缓存。
+
+用户最新实测：设置页公共下拉目前正常、DX12 子窗口关闭正常；首页版本下拉由轻量对照提升为优化对象，标题栏 Tab 与其它应用动画需审查。窗口 Resize 跟随迟缓仍未解决。不能把关闭窗口修复或设置页改善推导为 Resize 已修复。
+
+用户补充硬约束：**必须保持现有视觉效果再优化**。首页原有弹性展开/回收、逐行错峰、位移、透明度、启动栏锚点与快速反向连续性均为验收内容；不得用删除效果或替换为不同 reveal 观感换取较低负载。尝试的单底边 reveal 会改变观感，已撤回该首页源码试改，未作为优化交付。优化必须给出原轨迹与新实现的逐时刻几何/透明度对照，再做实际画面验证。标题栏 presentation 迁移也需继续核对过冲边界等视觉细节，功能和编译通过不等于视觉等价已验收。
+
+用户进一步明确执行顺序：**先审查当前动画及 GPUI 公共链路是否存在重复 Capture、扩大整窗损伤、无效刷新 Filter 源，再确定视觉等价修复**；审查涵盖 GPUI 其它动画，不局限某个 Dropdown。暂停首页动效迁移与参数调整，不用缩减效果、禁用动画或限帧替代归因。当前截图 PID53812 显示首页开合 CPU6.3% / GPU15.6%，与历史公共 Dropdown GPU40%～50% 分开记录。该进程完整前段日志已解压到 `%TEMP%/bmcbl-53812-early.log`（49881行，0～4m58s）；后段 `%TEMP%/bmcbl-dropdown-current-53812.log` 混有 Resize，不直接作为固定尺寸 Dropdown A/B。运行产物 SHA256 `A2916B346BE24DF2A3077F2FAB0C8CC0D05377C29E9CA15891A870141F530EDE`。首页试改构建因运行程序文件锁失败，未替换该产物；首页源码已经恢复，不运行未验收的 reveal 方案。
+
+本轮启动时 HEAD `14289e14a7935048deff2e085cdc0a50d3978f52`，工作区干净；此前修复已由用户提交。边界为可见动画执行 lane、相关失效/调度与 Windows Resize；不扩展到无关业务。仅使用本文件维护结果。
+
+公共动画链路审查（同一基线；源码审查不等于逐组件实机验收）：
+
+| 路径 | 已核对的行为 | 判断与后续验收 |
+| --- | --- | --- |
+| 普通 opacity / translation 与 packed visual group | `element/animation.rs` 的直接 primitive binding 不必为每个 child Capture；clipped translation、transform/rotation、clip reveal 则有 subtree Capture 语义 | 不能把出现 Capture 直接判为重复；替换 API 必须保持共同 pivot、clip、文字和阴影几何 |
+| 嵌套动画 | `window/element_context.rs::with_scene_animation_impl` 在已有 parent animation 时将 parent 提升为 composite；当前 primitive 只能携带一个 animation id，直接移除提升会丢失父动画 | 确认存在额外离屏层的可达路径；尚未证明相同内容被无必要重复 Capture。优先关联嵌套层 id、source version、draw steps 后决定合并 |
+| caller-sampled 动画 | `with_sampled_animation` 每帧新 identity，框架明确要求后代重画；`with_stable_sampled_animation` 稳定 identity，但仍由调用方采样并定向 invalidation | 首页 chevron 使用前者，Toast/Auth 使用后者；前者是确定的局部复用障碍，后者不能标成独立 GPU timeline。都不能单凭 API 推导整窗刷新 |
+| 首页、标题栏及其它应用动画 | 首页容器与逐行动画仍有 layout target；标题栏 pill 已有本轮候选迁移。Tabs/Modal/公共 Dropdown 使用 retained 路径；Toast/Auth、欢迎卡片、任务完成/退出与 theme interpolation 仍有 CPU 采样或真实布局工作 | 这些是审查清单，不代表所有调用点已实机覆盖。任务 Enter 与 Complete/Exit 不能混为同一路径；3D viewport 持续帧须与 UI 动画分开 |
+| Filter source 失效 | `renderer/filters.rs` 先比较身份、几何、内容及 sample，再检查 `gpu_sample_damage` 是否命中可见源；`sampled_child_pixels_changed` 会要求父源刷新 | 动画子像素变化导致父源更新可能是必要工作；不能跳过版本校验或强制缓存命中。是否有过宽源范围/重复层仍需同帧层级证据 |
+| partial damage 与全绘制回退 | `renderer/present.rs:572–594` 中 native partial present 与 retained Root partial 是不同条件；两者均不可用时，即使 GPUI dirty 为 partial 也记录 full-redraw fallback | 已确认统计含义不同；后续必须同时记录 dirty、retained Root、native present 能力，不能把 fallback 计数当整窗损伤计数 |
+| Translation 初始 viewport dirty bounds | prepaint 对 Translation 使用 viewport，paint 仅对 spring 收紧；但 `engine.rs::insert_driver_index` 排除已有 scene binding 的 UI visual track，平台拥有 scene animation 时使用 `tick_driver_with_compositor` | 仅凭保守 bounds 不能认定当前 DX12 动画每帧整窗损伤；需继续验证平台 ownership 与 fallback 可达性，暂不改损伤算法 |
+
+当前 PID53812 日志的独立复核：`%TEMP%/bmcbl-53812-early.log` 的 **10–15s** 指标为 1192 draws / 1192 presents、prepaint 1544µs、backend draw 1919µs、706 次 renderer full-redraw fallback；1190 条活跃 damage gate 全部 `live_resize=false` 且无 full dirty。代表 scene162 为 5 GPU passes、11 filter source draw steps、218848 source pixels、27528 upload bytes、`retained_root=false` / `present_damage=None`。**15–20s** 指标为 782 draws / 734 presents、prepaint 1288µs、backend draw 13961µs、444 次 fallback；代表 scene5981 的 `full=true`、`forced=false`、`spatial_area=581256`，2 passes、19 filter source steps、582228 source pixels、47840 upload bytes；该段808条活跃 gate 也均非 live resize。这证实存在两类成本：局部 damage 的全绘制回退，以及实际 full damage；**没有 UI 开合事件/目标 id 或 GPU busy 百分比，不能将两段归因为 Dropdown，也不能重算历史40%～50%**。Trace 已开启，数值不能当低日志开销性能基准。
+
+下一可执行切片是 P0-03 的事件因果闭环：保留公共 Dropdown、首页、Tab、Toast/Modal 的不同目标身份，关联 Capture/source-version/损伤理由与 Draw/Present；之后只修复证据支持的公共路径。暂不缩减动效，不依据 Capture 数量单独宣称根因，不扩大 Root Owner 迁移。
+
+Translation ownership 补核：Wayland/X11 的 `owns_scene_animations` 恒为 true；Windows 使用 `pending_scene` 或 renderer 活跃呈现场景判定。`RenderOwner::has_active_presentation_animations` 在等待 frame-ready 时可能为 false，若此时没有 pending scene 且又触发 UI tick，才可能落入上述 viewport dirty 路径；目前没有该事件重叠的运行时证据。此项为**条件风险**，不能标为 DX12 持续整窗损伤的已确认根因。本轮公共链路审查未改 GPUI 源码、未重新构建或操作 UI；`git diff --check` 通过。
+
+- 有效性纠正：Debug 覆盖主窗口时的边缘拖拽没有证实命中正确 native 边框，用户已指出该问题；这些操作剔除出复现证据。后续分窗测试，按 window_id 和实际尺寸变化判定有效，禁止将工具操作间隔当程序卡顿。
+- Zed 参考：官方 [issue 10703](https://github.com/zed-industries/zed/issues/10703) / [PR 10758](https://github.com/zed-industries/zed/pull/10758) 的 modal-loop runnable pump 本仓已有对应机制（WM_MODAL_UI_TASKS / VSync / watchdog）。不把缺少任务泵当根因，也不照搬 Zed 同步 DX11 resize；继续关联 Client→Viewport→Scene→GPU→Present。
+- 当前有效主窗口日志已保存 `%TEMP%/bmcbl-resize-main-14289.log`。其中 00:01:56～57 有连续 native/viewport/scene/present 记录；1536×1024 是 live-resize 容量，必须与 target_px/布局尺寸区分。黑块持续时间和感知延迟尚未验收。
+- 标题栏审计确认 pill 使用两条 CPU spring + 每帧 left/width/layout target，而框架已有 `AnimationGroup::horizontal_edges`。本轮迁移到该 presentation API，保持原 spring 参数、稳定圆角/高度和快速反向 current-value retarget；NavState 删除另一份 CPU pill spring，只保留路由目标。响应式标签宽度是真实布局变化，仍使用局部布局动画。修改待定向测试与 UI 实测，不先宣称性能改善。
+- 首页独立下拉的容器 height/top 与行 text top/opacity 仍逐帧重排；通用 Dropdown 已采用 retained reveal。首页应保持启动栏锚点与中断行为，优先迁移稳定行布局、clip/reveal；本轮尚未改动首页，不将首页和公共组件混为同一实现。
+
+标题栏切片验证：`cargo test -p bmcbl --lib ui::state::navigation::tests --locked` **4 passed / 0 failed**，包含最新路由目标确认、快速重定向、标签断点滞回与中途反向；`cargo build -p bmcbl --locked` 退出 0（2m46s）。复用未改动的 GPUI 测试产物执行 `horizontal_edges_preserve_height_radius_and_crossing_order`，**1 passed**，验证高度/圆角/边缘交叉几何。真实 UI 测试先关闭 Debug，仅操作主窗口：首页→设置的采样段 **165 次成功 Present / chrome-nav Render 5 次**，最终 pill 对齐设置项；随后反向回首页可正常导航。原始段 `%TEMP%/bmcbl-nav-ui-settings.log`。这些数据证明连续 presentation 不再依赖逐帧 Nav Render，不是旧版同条件 GPU 利用率 A/B，也没有验证所有快速中断轨迹或多后端。
+
+调用方检查：`cargo test -p bmcbl --all-features --no-run --locked` 首次因运行中的验证程序锁定 `BMCBL.exe` 退出 1；正常退出后增量重试退出 0，lib/bin/integration tests 编译通过。`cargo bench -p bmcbl --all-features --no-run --profile dev --locked` 退出 0，plugin_runtime/resource_parsing 等 bench 调用方编译通过；复用 dev profile 只做 API 编译检查，未执行性能 benchmark。定向 rustfmt check 与 `git diff --check` 退出 0。完整测试仍未宣称通过，前轮记录的其它失败不因本切片关闭。UI 验证产物 SHA256 `5512EFE3DA14E2E344369E34BF15291EB9DFCD2AF81937E8B3874431C015C1FB`；all-features 编译随后重建了可执行产物，不能混淆两者。
+
+Resize 有效段统计（主窗口，00:01:56.272～57.666）：117 次成功 Present、116 个 Scene revision；native→首次对应 Present 116 对，p50/p95/max **6/9/46ms**；Scene→Present **3/4/43ms**。Present 间隔最大 210ms 的区间，约 203ms 没有新 native/Scene，随后输入到 Present 为 7ms，不能算作 GPU 卡了 210ms。三次真实 surface resize 耗时 **21.803/21.366/21.860ms**，submission_wait 均为 0，Swapchain 占 **15.052/16.930/15.392ms**。结束阶段有两轮同尺寸提交：57.551 queued 的 live 帧已在 57.553 Present；57.633 是新的 final settle queued，57.655 resize 完成、57.665 Present。final queued→resize 完成为 22ms，不能把上一轮 queued 混入而推导 104ms/82ms 未知队列等待。没有证据把普通连续 Resize 归为全面并发帧迟缓；黑块感知验收仍待独立窗口复现。
+
+动画分族 inventory（源码搜索 + 定点核对，**不是逐调用点全量通过**）：
+
+| 动画族 | 当前 lane / 已确认事实 | 剩余审查重点 |
+| --- | --- | --- |
+| 标题栏 pill | 本轮迁到双边缘 presentation，删除 CPU 副本 | 快速反转、标签断点变化与其它后端 |
+| 首页版本菜单 | caller-sampled height/top 与行文字位移 | 固定最终行布局、retained reveal，保留锚点/stagger/中断 |
+| 公共 Dropdown / Tabs / Toggle | 声明式 presentation | 多实例 ID、开合反向与最终移除 |
+| Modal / 路由页面 | 主要采用 retained composite/presentation | 多层 modal ID、关闭中重开与退出清理 |
+| Toast / Auth | 稳定几何 + caller-sampled retained property；不等于完全独立 GPU 动画 | CPU 采样/帧请求、堆叠与账号变化时 retarget |
+| Loading / Linux runtime 进度条 | 多数声明式 presentation；Linux 条纹已声明 relative_translation，callback 只设常量 left，不判为逐帧布局 bug | 重复动画隐藏/停止时停帧；逐调用点核验 |
+| Onboarding 卡片 | welcome-card-enter callback 动态 mt/scale/opacity | 纯视觉入口转 retained，保持文本几何 |
+| 任务卡片 | Enter 为 presentation；Complete/Warn callback 改颜色/透明度，Exit 还改变 top/max_h/padding | 区分纯视觉脉冲与真实移除布局，避免文字重复排版 |
+| 主题颜色 | frame clock 正确，多个视图仍请求 Layout 帧 | 颜色动画覆盖范围与 retained 色彩能力，不能机械取消主题渐变 |
+| Map Viewer / Skin Pack 等独立窗口 | 3D motion/自动平移/行走有显式帧请求 | 失焦、隐藏、停止输入的停帧；不是 UI 2D Scene 删除对象 |
+| 插件 DSL / 下载/管理/在线工具页面族 | 已做 API 搜索并抽查；多处声明式视觉动画 | 尚未逐一核对所有 ID、属性、时钟和中断，不能标记全仓完成 |
+
+下一切片按用户最新要求先完成 GPUI 通用动画 Capture/损伤/Filter 刷新归因矩阵，再据证据选择视觉等价修复；独立窗口 Resize 感知与其它原任务保留。不得基于无新输入的 Present 空档修改 cadence，不用新增缓存掩盖 Scene 计算债。
 
 ### 2026-10-15 本机执行记录（HEAD `e47f7ff0d419df4e4715a231bb1f84ad084f5c27` + 未提交修复）
 
