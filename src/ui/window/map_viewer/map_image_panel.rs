@@ -37,6 +37,9 @@ pub(super) struct MapImagePanelState {
     selected_block: Option<(ChunkPos, BlockPos)>,
     /// Explicit, stationary anchor for a new frame grid; never silently follows viewport panning.
     frame_anchor: Option<(i32, i32)>,
+    /// Completed read-only check is bound to one exact world/grid/preview generation.
+    frame_check_key: Option<String>,
+    frame_check_task_id: Option<String>,
     pub(super) player_search: Entity<InputState>,
     /// Filter for loaded block-entity positions in the current visible overlay.
     pub(super) container_search: Entity<InputState>,
@@ -84,6 +87,8 @@ impl MapImagePanelState {
             selected_player: PlayerId::Local,
             selected_block: None,
             frame_anchor: None,
+            frame_check_key: None,
+            frame_check_task_id: None,
             player_search,
             container_search,
             player_scroll: UniformListScrollHandle::new(),
@@ -124,6 +129,33 @@ impl MapViewerWindowView {
     /// World write is possible only after the conversion Task has completed and
     /// its pixels have been accepted into the active preview. An old or partial
     /// preview must not enable the placement action.
+    pub(super) fn map_frame_preflight_key(&self) -> String {
+        let (x, z) = self.map_frame_anchor();
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            self.dimension.id(),
+            x, self.y_layer, z,
+            self.map_image.options.columns, self.map_image.options.rows,
+            self.map_image.frame_support,
+            self.map_image.task_id.as_deref().unwrap_or_default(),
+        )
+    }
+
+    pub(super) fn map_frame_preflight_snapshot(&self) -> Option<&TaskSnapshot> {
+        let key = self.map_frame_preflight_key();
+        if self.map_image.frame_check_key.as_deref() != Some(key.as_str()) {
+            return None;
+        }
+        let task_id = self.map_image.frame_check_task_id.as_deref()?;
+        self.task_snapshots.get(task_id).map(|snapshot| snapshot.as_ref())
+    }
+
+    pub(super) fn map_frame_preflight_passed(&self) -> bool {
+        self.map_frame_preflight_snapshot().is_some_and(|snapshot| {
+            snapshot.status.as_ref() == "completed"
+        })
+    }
+
     pub(super) fn map_image_can_place_world_grid(&self) -> bool {
         self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
             && self.map_image.pending_bundle.is_none()
@@ -131,6 +163,7 @@ impl MapViewerWindowView {
             && self.map_image.placement_preview.is_some()
             && !self.map_image_operation_busy()
             && !self.map_write_busy()
+            && self.map_frame_preflight_passed()
             && self.map_image.task_id.as_deref().is_some_and(|id| {
                 self.task_snapshots.get(id).is_some_and(|task| {
                     task.status.as_ref() == "completed"
