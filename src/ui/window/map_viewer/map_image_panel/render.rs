@@ -164,20 +164,53 @@ impl MapViewerWindowView {
                             .child(
                                 div()
                                     .text_size(px(12.0))
-                                    .text_color(colors.text_primary)
-                                    .child({
-                                        let (x, z) = self.map_frame_anchor();
-                                        format!("已锁定放置中心：X {x} · Z {z}")
-                                    }),
+                                    .text_color(if self.map_image.frame_anchor.is_some() {
+                                        colors.text_primary
+                                    } else {
+                                        colors.danger
+                                    })
+                                    .child(self.map_image.frame_anchor.map_or_else(
+                                        || "未选择放置位置：请点击下方按钮，然后在中央地图上点选".to_owned(),
+                                        |(x, z)| format!("已选择中心：X {x} · Z {z}"),
+                                    )),
                             )
-                            .child(generator_choice(
-                                colors, "将当前位置设为放置中心", false,
-                            ).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.set_map_frame_anchor_to_viewport(cx)
-                                }),
-                            )),
+                            .child(
+                                crate::ui::components::button::primary_button(
+                                    colors,
+                                    "map-frame-pick-world-center",
+                                    if self.map_image.picking_frame_center {
+                                        "正在选点 · 点击地图选择位置"
+                                    } else if self.map_image.frame_anchor.is_some() {
+                                        "重新在地图上选择中心"
+                                    } else {
+                                        "在地图上选择放置位置"
+                                    },
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.begin_map_frame_center_pick(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                crate::ui::components::button::secondary_button(
+                                    colors, "map-frame-use-viewport-center",
+                                    "使用当前视图中心（主动确认）",
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.set_map_frame_anchor_to_viewport(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child("选点仅确定 X/Z，展示框使用下方 Y 层。已选位置会在世界地图上显示分片占地，移动视口不会改变坐标。"),
+                            ),
                     )
                     .child(
                         div()
