@@ -166,45 +166,90 @@ impl BackdropBlurTargets {
             None
         };
 
-        // Preflight a one-to-one mapping for ALL requested targets, including
-        // inactive spare targets. No CPU/native resource metadata changes before
-        // the entire permutation has been proven.
+        // Plan ALL physical owners before mutating a live GPU descriptor. Reserve
+        // the stable native Root/AutoStatic view, then prefer every exact target
+        // identity. A later exact match must never be consumed by a preceding
+        // zero-radius fallback (otherwise a safe permutation can spuriously fail).
         let mut permutation = smallvec::SmallVec::<[usize; 8]>::new();
-        for (new_index, config) in next.iter().copied().enumerate() {
-            let source = if let Some((old, at)) = pinned.filter(|(_, at)| *at == new_index) {
-                self.variants.get(old).and_then(|variant| {
-                    (config.radius() == 0.0
-                        && variant.config.radius() == 0.0
-                        && variant.levels.len() == 1)
-                        .then_some(old)
-                })
-            } else {
-                self.variants.iter().enumerate().find_map(|(old, variant)| {
-                    (!permutation.contains(&old)
-                        && pinned.is_none_or(|(reserved, _)| reserved != old)
-                        && variant.config.same_target_slot(config)
-                        && variant.levels.len() == blur_variant_level_count(config))
-                        .then_some(old)
-                })
-            };
-            let Some(source) = source else {
+        permutation.resize(next.len(), usize::MAX);
+        if let Some((old, at)) = pinned {
+            let valid = self.variants.get(old).is_some_and(|variant| {
+                next[at].radius() == 0.0
+                    && variant.config.radius() == 0.0
+                    && variant.levels.len() == 1
+            });
+            if !valid {
                 log::trace!(
                     target: "gpui::diagnostics",
-                    "GPUI filter layout reuse rejected: reason=target_slot_mismatch new_slot={} radius={} levels={} old_active={} old_allocated={} pinned={:?}",
-                    new_index, config.radius(), blur_variant_level_count(config),
-                    self.active_variant_count, self.variants.len(), pinned,
-                );
-                return false;
-            };
-            if permutation.contains(&source) {
-                log::trace!(
-                    target: "gpui::diagnostics",
-                    "GPUI filter layout reuse rejected: reason=duplicate_physical_slot new_slot={} old_slot={}",
-                    new_index, source,
+                    "GPUI filter layout reuse rejected: reason=pinned_target_incompatible old_slot={} new_slot={}",
+                    old, at,
                 );
                 return false;
             }
-            permutation.push(source);
+            permutation[at] = old;
+        }
+        for (new_index, config) in next.iter().copied().enumerate() {
+            if permutation[new_index] != usize::MAX {
+                continue;
+            }
+            if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
+                (!permutation.contains(&old)
+                    && variant.config.same_target_slot(config)
+                    && variant.levels.len() == blur_variant_level_count(config))
+                    .then_some(old)
+            }) {
+                permutation[new_index] = source;
+            }
+        }
+
+        // A zero-radius Capture always uses a native-size one-level target.
+        // Its flattened filter member index is NOT the physical texture's
+        // format, extent or descriptor layout. When an already resident Root
+        // is pinned, spare one-level targets of the same native size can serve
+        // changed popup indices. This does not apply to Gaussian (two-pass)
+        // targets or AutoStatic-only identity relocation. The caller will
+        // invalidate unproven captured pixels before any later sampling.
+        let root_physical = self.retained_root_variant
+            .filter(|_| new_root.is_some())
+            .and_then(|index| self.variants.get(index));
+        let mut rebound_zero_radius = 0usize;
+        for (new_index, config) in next.iter().copied().enumerate() {
+            if permutation[new_index] != usize::MAX {
+                continue;
+            }
+            if config.radius() == 0.0 {
+                if let Some(root) = root_physical {
+                    if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
+                        (!permutation.contains(&old)
+                            && variant.config.radius() == 0.0
+                            && variant.levels.len() == 1
+                            && variant.levels[0].byte_size == root.levels[0].byte_size
+                            && variant.levels[0].pass_resource_sets.len()
+                                == root.levels[0].pass_resource_sets.len()
+                            && variant.target_resource_sets.len() == root.target_resource_sets.len())
+                            .then_some(old)
+                    }) {
+                        permutation[new_index] = source;
+                        rebound_zero_radius += 1;
+                        continue;
+                    }
+                }
+            }
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI filter layout reuse rejected: reason=target_slot_mismatch new_slot={} radius={} levels={} old_active={} old_allocated={} pinned={:?}",
+                new_index, config.radius(), blur_variant_level_count(config),
+                self.active_variant_count, self.variants.len(), pinned,
+            );
+            return false;
+        }
+        if rebound_zero_radius != 0 {
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI zero-radius mixed layout permutation: rebound={} active={} allocated={} root_old={:?} root_new={:?}",
+                rebound_zero_radius, next.len(), self.variants.len(),
+                self.retained_root_variant, new_root,
+            );
         }
 
         // Update the in-place physical target order using ORIGINAL positions.

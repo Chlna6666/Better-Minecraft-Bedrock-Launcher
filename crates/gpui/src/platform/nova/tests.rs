@@ -2366,6 +2366,151 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
 }
 
 #[test]
+fn mixed_gaussian_and_zero_radius_popup_reindex_preserves_root_and_scratch() {
+    // A real popup can transition Gaussian0/Gaussian1/Capture2/Root3
+    // to Gaussian0/Capture1/Root2 and back, without exceeding the
+    // already allocated native texture or isolated-source capacity.
+    let make_variant = |index: u32| {
+        let zero = index >= 2;
+        let config = if zero {
+            test_zero_radius_blur_config(index)
+        } else {
+            test_backdrop_blur_config(index, 2)
+        };
+        BackdropBlurVariantTargets {
+            config,
+            levels: (0..if zero { 1 } else { 2 })
+                .map(|axis| BackdropBlurLevelTarget {
+                    byte_size: 64 * 32 * 4,
+                    texture: test_texture_id(100 + index * 2 + axis),
+                    texture_view: test_texture_view_id(100 + index * 2 + axis),
+                    pass_resource_sets: vec![test_resource_set_id(100 + index * 2 + axis)],
+                })
+                .collect(),
+            target_resource_sets: vec![test_resource_set_id(40 + index)],
+        }
+    };
+    let make_source = |index: u32| IsolatedBlurSource {
+        index,
+        target: RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(200 + index),
+            texture_view: test_texture_view_id(200 + index),
+        },
+        pass_resource_sets: vec![test_resource_set_id(200 + index)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: (0..2).map(make_source).collect(),
+        active_isolated_source_count: 2,
+        variants: (0..4).map(make_variant).collect(),
+        active_variant_count: 4,
+        retained_root_variant: Some(3),
+    };
+    let physical_root = targets.retained_root_texture_view();
+    let physical_spare_zero = targets.variants[2].levels[0].texture_view;
+    let physical_gaussian = targets.variants[1].levels[0].texture_view;
+    let source_views = targets.isolated_sources.iter()
+        .map(|source| source.target.texture_view).collect::<Vec<_>>();
+    let output_views = targets.variants.iter()
+        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+        .collect::<std::collections::HashSet<_>>();
+    let backing = targets.variants.as_ptr();
+
+    let compact = [
+        test_backdrop_blur_config(0, 2),
+        test_zero_radius_blur_config(1),
+        test_zero_radius_blur_config(2),
+    ];
+    assert!(targets.reuse_layout(&compact, &[0], false, Some(2), None),
+        "a spare native-size zero-radius output can take the popup's new index");
+    assert_eq!(targets.retained_root_texture_view(), physical_root);
+    assert_eq!(targets.variants[1].levels[0].texture_view, physical_spare_zero);
+    assert_eq!(targets.active_variant_count, 3);
+    assert_eq!(targets.active_isolated_source_count, 1);
+    assert!(targets.isolated_source_texture_view(1).is_none());
+    assert!(targets.is_layout_compatible(&compact, &[0], false));
+
+    let expanded = [
+        test_backdrop_blur_config(0, 2),
+        test_backdrop_blur_config(1, 2),
+        test_zero_radius_blur_config(2),
+        test_zero_radius_blur_config(3),
+    ];
+    assert!(targets.reuse_layout(&expanded, &[0, 1], false, Some(3), None),
+        "the former Gaussian and zero-radius native views must survive regrowth");
+    assert_eq!(targets.retained_root_texture_view(), physical_root);
+    assert_eq!(targets.variants[1].levels[0].texture_view, physical_gaussian);
+    assert_eq!(targets.variants[2].levels[0].texture_view, physical_spare_zero);
+    assert_eq!(targets.variants.as_ptr(), backing);
+    assert_eq!(targets.isolated_sources.iter()
+        .map(|source| source.target.texture_view).collect::<Vec<_>>(), source_views);
+    assert_eq!(targets.variants.iter()
+        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+        .collect::<std::collections::HashSet<_>>(), output_views);
+    assert!(targets.is_layout_compatible(&expanded, &[0, 1], false));
+}
+
+#[test]
+fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: if index == 2 {
+            test_zero_radius_blur_config(index)
+        } else {
+            test_backdrop_blur_config(index, 2)
+        },
+        levels: (0..if index == 2 { 1 } else { 2 })
+            .map(|axis| BackdropBlurLevelTarget {
+                byte_size: 64 * 32 * 4,
+                texture: test_texture_id(40 + index * 2 + axis),
+                texture_view: test_texture_view_id(40 + index * 2 + axis),
+                pass_resource_sets: vec![test_resource_set_id(40 + index * 2 + axis)],
+            })
+            .collect(),
+        target_resource_sets: vec![test_resource_set_id(70 + index)],
+    };
+    let make_source = |index: u32| IsolatedBlurSource {
+        index,
+        target: RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(90 + index),
+            texture_view: test_texture_view_id(90 + index),
+        },
+        pass_resource_sets: vec![test_resource_set_id(90 + index)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: (0..2).map(make_source).collect(),
+        active_isolated_source_count: 2,
+        variants: (0..3).map(make_variant).collect(),
+        active_variant_count: 3,
+        retained_root_variant: Some(2),
+    };
+    let before_views = targets.variants.iter()
+        .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let before_configs = targets.variants.iter().map(|v| v.config).collect::<Vec<_>>();
+    let requested = [
+        test_backdrop_blur_config(0, 2),
+        test_zero_radius_blur_config(1),
+        test_zero_radius_blur_config(2),
+    ];
+    assert!(!targets.reuse_layout(&requested, &[0], false, Some(2), None),
+        "a two-level Gaussian output cannot serve an unrelated one-level popup");
+    assert_eq!(targets.active_variant_count, 3);
+    assert_eq!(targets.active_isolated_source_count, 2);
+    assert_eq!(targets.retained_root_variant, Some(2));
+    assert!(targets.variants.iter().zip(before_configs).all(|(v, c)| v.config.same_target_slot(c)));
+    assert_eq!(targets.variants.iter()
+        .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
+        .collect::<Vec<_>>(), before_views);
+    assert!(!targets.reuse_layout(&requested, &[0], false, None, None),
+        "zero-radius capacity fallback requires a pinned native Root");
+}
+
+#[test]
 fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
     let config = test_backdrop_blur_config(0, 2);
     let mut targets = BackdropBlurTargets {
