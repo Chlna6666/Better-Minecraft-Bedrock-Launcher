@@ -13,6 +13,8 @@ impl MapViewerWindowView {
     pub(super) fn check_map_frame_grid(&mut self, cx: &mut Context<Self>) {
         if self.map_image_operation_busy() || self.map_image.source.is_none()
             || self.map_image.placement_preview.is_none()
+            || self.map_image.frame_anchor.is_none()
+            || self.map_image.picking_frame_center
         {
             return;
         }
@@ -27,7 +29,9 @@ impl MapViewerWindowView {
         if let Some(previous) = self.map_image.frame_check_task_id.take() {
             task_manager::cancel_task(&previous);
         }
-        let (x, z) = self.map_frame_anchor();
+        let Some((x, z)) = self.map_image.frame_anchor else {
+            return;
+        };
         let center = BlockPos { x, y: self.y_layer, z };
         let support = BlockState {
             name: self.map_image.frame_support.to_owned(),
@@ -108,6 +112,12 @@ impl MapViewerWindowView {
         if self.map_image_operation_busy() {
             return;
         }
+        if destination == MapImageInstallDestination::NewUpFrame
+            && (self.map_image.frame_anchor.is_none() || self.map_image.picking_frame_center)
+        {
+            toast::error(cx, "请先在世界地图上选择展示框网格的实际放置中心".into());
+            return;
+        }
         let world_path = self.world_path.clone();
         let refresh_chunks = Arc::new(Mutex::new(BTreeSet::new()));
         let (target, refresh, kind, player_key) = match destination {
@@ -145,7 +155,9 @@ impl MapViewerWindowView {
                 )
             }
             MapImageInstallDestination::NewUpFrame => {
-                let (x, z) = self.map_frame_anchor();
+                let Some((x, z)) = self.map_image.frame_anchor else {
+                    return;
+                };
                 let position = BlockPos {
                     x,
                     y: self.y_layer,
