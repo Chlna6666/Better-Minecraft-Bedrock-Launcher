@@ -1933,7 +1933,13 @@ impl MapViewerWindowView {
     pub(super) fn handle_canvas_action(&mut self, action: MapCanvasAction, cx: &mut Context<Self>) {
         match action {
             MapCanvasAction::BeginDrag(position) => {
-                if !self.begin_paste_preview_move_at(position, cx) {
+                if self.map_image.picking_frame_center
+                    && self.map_image_positioning_frames()
+                {
+                    let local = self.stage_local_position(position);
+                    let (x, z) = self.viewport.screen_to_block(local, self.active_layout);
+                    self.set_map_frame_anchor((x, z), cx);
+                } else if !self.begin_paste_preview_move_at(position, cx) {
                     self.begin_drag(self.stage_local_position(position), cx);
                 }
             }
