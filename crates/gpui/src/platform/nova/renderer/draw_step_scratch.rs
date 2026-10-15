@@ -19,7 +19,8 @@ pub(super) struct DrawStepScratch {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct DrawStepCacheKey {
     pub(super) scene_revision: u64,
-    pub(super) dynamic_frame_id: Option<u64>,
+    /// Version of the packed draw stream, not the producer Scene revision.
+    pub(super) encode_generation: u64,
     pub(super) size: DrawableSize,
     pub(super) frame_resource_index: usize,
     pub(super) atlas_texture_generation: Option<u64>,
@@ -36,6 +37,7 @@ struct DrawStepCacheEntry {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) struct PathMaskCacheKey {
     pub(super) scene_revision: u64,
+    pub(super) encode_generation: u64,
     pub(super) path_rasterization_resource_set: ResourceSetId,
 }
 
@@ -257,7 +259,7 @@ mod tests {
     fn draw_step_key(slot: usize) -> DrawStepCacheKey {
         DrawStepCacheKey {
             scene_revision: 1,
-            dynamic_frame_id: None,
+            encode_generation: 1,
             size: DrawableSize {
                 width: 800,
                 height: 600,
@@ -329,6 +331,47 @@ mod tests {
     }
 
     #[test]
+    fn draw_step_cache_rebuilds_same_revision_after_new_scene_encode() {
+        let mut scratch = DrawStepScratch::default();
+        let original = draw_step_key(0);
+        scratch.prepare_steps(original, 2, |steps| steps.push(draw_step(1)));
+        scratch.prepare_steps(original, 2, |_| panic!("unchanged encode rebuilt"));
+        assert!(scratch.draw_step_cache_hit);
+
+        let mut reencoded = original;
+        reencoded.encode_generation += 1;
+        scratch.prepare_steps(reencoded, 2, |steps| {
+            steps.clear();
+            steps.push(draw_step(2));
+        });
+        assert!(!scratch.draw_step_cache_hit);
+        assert_eq!(scratch.steps(), &[draw_step(2)]);
+        // A GPU-only animation sample leaves the packed version unchanged.
+        scratch.prepare_steps(reencoded, 2, |_| panic!("sample-only rebuilt"));
+        assert!(scratch.draw_step_cache_hit);
+    }
+
+    #[test]
+    fn path_mask_cache_rebuilds_same_revision_after_new_scene_encode() {
+        let mut scratch = DrawStepScratch::default();
+        let original = path_key(0, 1);
+        scratch.prepare_path_steps(original, 0, 2, |steps| steps.push(path_step(1)));
+        scratch.prepare_path_steps(original, 0, 2, |_| panic!("unchanged path rebuilt"));
+        assert!(scratch.path_mask_cache_hit);
+
+        let mut reencoded = original;
+        reencoded.encode_generation += 1;
+        scratch.prepare_path_steps(reencoded, 0, 2, |steps| {
+            steps.clear();
+            steps.push(path_step(2));
+        });
+        assert!(!scratch.path_mask_cache_hit);
+        assert_eq!(scratch.path_steps()[0].instance_count, 2);
+        scratch.prepare_path_steps(reencoded, 0, 2, |_| panic!("sample-only path rebuilt"));
+        assert!(scratch.path_mask_cache_hit);
+    }
+
+    #[test]
     fn draw_step_cache_rebuilds_after_trim_and_slot_count_change() {
         let mut scratch = DrawStepScratch::default();
         scratch.prepare_steps(draw_step_key(1), 2, |steps| {
@@ -362,6 +405,7 @@ mod tests {
     fn path_key(slot: usize, revision: u64) -> PathMaskCacheKey {
         PathMaskCacheKey {
             scene_revision: revision,
+            encode_generation: 1,
             path_rasterization_resource_set: ResourceSetId::new(slot as u64 + 1),
         }
     }

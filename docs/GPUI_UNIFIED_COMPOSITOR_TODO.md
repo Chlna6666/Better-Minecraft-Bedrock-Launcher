@@ -414,6 +414,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未执行】**：增加零写入帧判定、静态 dirty Full、Quad Full/局部 Ranges 均须规划，以及空 Batch 统计契约的单测；代码审查确认 GPU-indexed animation tables 的更新并不经此 Native BufferUpload 路径，保留其独立原有更新流程。没有模拟 BackendResources 或运行测试。
 - **【风险与验收】**：当前环境未提供 rustc/cargo/rustfmt，也没有 Windows GPU；尚未执行任何原生后端/单测和性能记录。此改动只会减少无写入帧 CPU 规划与无效 Native API 进入次数，并不能减少实际的 RenderPass/Draw/Present 或证明 GPU 20%+ 占用问题解决。后续应给静止页面、纯 GPU 动画与小 Dropdown 创建独立 profiling 基准，验证每帧写数/绘制数/Present 数，并持续推进 SceneSlot/Replay → 唯一 Paint Chunk 和独立 Compositor Lane。
 
+## 2026-10-15：按唯一 Scene 编码代次失效 DrawStep 与 Path Mask 保留描述符
+
+- 起点 master `11acc281b828b0227be9ac0e7461a5f76f84e0c6`。代码修改 `crates/gpui/src/platform/nova/frame_upload/{frame.rs,encode.rs}`、`renderer/{draw_steps.rs,draw_step_scratch.rs}` 和唯一 TODO；原生 DX11/DX12/VK/GL 的 Buffer ABI、Fence、Target/Present 提交顺序均不改。不新增第二套完整 Scene 或跨帧 Chunk 缓存。
+- **【确认的源码风险】**：`NovaRenderer::pack_scene` 的 `UploadKey` 除 Scene revision 还考虑 Atlas placement generation、drawable size、blur quality、输出 Alpha，且动画结束时可强制重编码。之前 `DrawStepCacheKey` 仅在 RendererExtension 非空时带 `dynamic_frame_id`，否则相同 scene revision/size/Atlas Texture generation 可能重用旧 `FrameUpload.batches` 对应的 RenderStep；即使完整重编码后批次拓扑、root filter capture、资源绑定已经变化。PathMask 描述符缓存同样只由 scene revision 与 raster resource set 决定，无法显式区分一次完整重编码。
+- **【代码实现，未编译】**：将现有 `FrameUpload.renderer_extension_frame_id`（实际上每次 root `encode_scene(reset=true)` 都递增）统一重命名为 `FrameUpload.encode_generation`，避免给 renderer extension 单独维护错误概念。该唯一代次直接进入 `DrawStepCacheKey` 和 `PathMaskCacheKey`；重新编码即使 producer Scene revision 不变，也失效两个描述符缓存。递归子 Blur 的 `reset=false` 不增加代次；普通 `refresh_retained_animation_values` 只刷新动画值，不会递增代次，继续保留 per-slot DrawStep cache hits。现有 frame slot/size/atlas/alpha/resource-set 判据和主动失效逻辑都保留，避免跨 Slot 缓存指向错误 ResourceSet。
+- **【测试源码，未执行】**：新增 same Scene revision + new encode generation 时的主 DrawStep 与 PathMask rebuild，重复相同代次时应命中；FrameUpload 根 `encode` 两次代次 1→2，动画值 refresh 不增加代次。已全局核对旧字段的其他具体调用点仅在上述文件中。该修改属于缓存正确性修复，可能增加过去错误命中情况下必要的 DrawStep 重建，并非承诺所有页面 CPU 下降。
+- **【验证门槛】**：环境无 cargo/rustc/rustfmt、没有原生 Windows GPU；未编译、未跑 Rust 单测或四后端。需本地 `cargo fmt --all -- --check`、`cargo check -p gpui`、`cargo test -p gpui --lib draw_step_cache` 和 `path_mask_cache`，通过后用动画完成、Atlas repack、Element Blur Root Capture、resize 场景截图与 GPU trace 验证无陈旧 RenderStep。
+- **【未完成】**：该代次是当前 FrameUpload 的**同一个根编码序列**，并非长期统一 Paint Chunk version；SceneSlot、Scene Replay、全场景 FrameUpload Staging、DrawStep/DirtyRegion 跨类型持久增量和独立 GPU Compositor Lane 仍待破坏性重构。下一步基于真实 Present / DrawStep 请求计数确认静态页面的重复提交来源。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

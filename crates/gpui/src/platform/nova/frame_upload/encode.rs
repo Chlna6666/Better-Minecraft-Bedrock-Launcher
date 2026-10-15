@@ -438,7 +438,7 @@ impl FrameUpload {
         reset: bool,
     ) -> FrameUploadSummary {
         if reset {
-            self.renderer_extension_frame_id = self.renderer_extension_frame_id.wrapping_add(1);
+            self.encode_generation = self.encode_generation.wrapping_add(1);
             self.globals.clear();
             self.text_raster_params.clear();
             self.quads.clear();
@@ -742,6 +742,40 @@ fn write_scene_animation_value(
 #[cfg(test)]
 mod retained_root_tests {
     use super::*;
+
+    #[test]
+    fn scene_encode_generation_advances_only_when_repacking_the_scene() {
+        let scene = crate::Scene::default();
+        let mut upload = FrameUpload::default();
+        let mut cache = RetainedQuadChunkCache::default();
+        let drawable = DrawableSize {
+            width: 320,
+            height: 240,
+        };
+        let mut summary = upload.encode(
+            &mut cache,
+            &scene,
+            &[],
+            drawable,
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
+        );
+        assert_eq!(upload.encode_generation, 1);
+        // Animation-only refresh must not invalidate the DrawStep descriptors.
+        upload.refresh_retained_animation_values(&scene, &[], &mut summary);
+        assert_eq!(upload.encode_generation, 1);
+        upload.encode(
+            &mut cache,
+            &scene,
+            &[],
+            drawable,
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
+        );
+        assert_eq!(upload.encode_generation, 2);
+    }
 
     #[test]
     fn auto_static_fingerprint_tracks_source_pixels_not_foreground_animation() {

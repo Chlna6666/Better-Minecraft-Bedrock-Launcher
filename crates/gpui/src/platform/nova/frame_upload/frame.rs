@@ -192,7 +192,9 @@ pub(in crate::platform::nova) struct FrameUpload {
         Vec<crate::Bounds<crate::ScaledPixels>>,
     pub(in crate::platform::nova) renderer_extensions: Vec<PaintRendererExtension>,
     pub(in crate::platform::nova) renderer_extension_steps: Vec<Vec<RenderStepDescriptor>>,
-    pub(in crate::platform::nova) renderer_extension_frame_id: u64,
+    /// Incremented only when the flattened Scene is fully re-encoded. GPU-only
+    /// animation sampling leaves this stable so its DrawSteps remain reusable.
+    pub(in crate::platform::nova) encode_generation: u64,
     pub(in crate::platform::nova) batches: Vec<UploadedBatch>,
     /// Conservative device-pixel bounds of static uploaded quad batches.
     /// None means animated or unknown: these MUST NOT be culled.

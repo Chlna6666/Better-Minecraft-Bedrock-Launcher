@@ -34,8 +34,11 @@ impl NovaRenderer {
         let frame_resource_index = self.current_frame_resource_index;
         let cache_key = DrawStepCacheKey {
             scene_revision,
-            dynamic_frame_id: (!self.frame_upload.renderer_extensions.is_empty())
-                .then_some(self.frame_upload.renderer_extension_frame_id),
+            // Scene revision alone does not identify this compiled batch topology:
+            // atlas placement, blur quality and retained-root admission can
+            // rebuild the FrameUpload without changing the producer Scene.
+            // Pure animation sampling does not advance this encode generation.
+            encode_generation: self.frame_upload.encode_generation,
             size: self.current_size,
             frame_resource_index,
             atlas_texture_generation: self.synced_atlas_texture_generation,
@@ -706,6 +709,7 @@ impl NovaRenderer {
     pub(super) fn prepare_path_mask_draw_steps(&mut self, scene_revision: u64) {
         let cache_key = PathMaskCacheKey {
             scene_revision,
+            encode_generation: self.frame_upload.encode_generation,
             path_rasterization_resource_set: self.path_rasterization_resource_set,
         };
         self.draw_step_scratch.prepare_path_steps(
