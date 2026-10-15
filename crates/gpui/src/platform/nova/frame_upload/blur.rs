@@ -153,6 +153,11 @@ impl BackdropBlurConfig {
         index >= self.member_first && index <= self.member_last
     }
 
+    /// Merged outputs never provide an independently reusable captured source.
+    pub(in crate::platform::nova) fn exclusively_contains_member_index(self, index: u32) -> bool {
+        self.member_first == index && self.member_last == index
+    }
+
     fn ignores_animation_damage(self) -> bool {
         self.order == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER
             && self.order_last == BLUR_IGNORE_ANIMATION_DAMAGE_ORDER

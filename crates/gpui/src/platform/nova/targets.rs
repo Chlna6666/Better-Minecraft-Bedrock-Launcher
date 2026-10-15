@@ -53,6 +53,21 @@ impl BackdropBlurTargets {
             && self.variants.iter().all(|variant| variant.config.radius() == 0.0)
     }
 
+    /// Only a single-member zero-filter output has an independently initialized texture.
+    pub(super) fn exclusive_zero_radius_capture_view(&self, index: u32) -> Option<TextureViewId> {
+        let mut candidates = self.variants.iter().take(self.active_variant_count)
+            .filter(|variant| variant.config.contains_member_index(index));
+        let variant = candidates.next()?;
+        if candidates.next().is_some()
+            || !variant.config.exclusively_contains_member_index(index)
+            || variant.config.radius() != 0.0
+            || variant.levels.len() != 1
+        {
+            return None;
+        }
+        Some(variant.levels[0].texture_view)
+    }
+
     pub(super) fn byte_size(&self) -> u64 {
         let mut textures = FxHashSet::default();
         self.isolated_sources

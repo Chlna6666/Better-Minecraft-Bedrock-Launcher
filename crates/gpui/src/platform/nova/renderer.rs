@@ -534,6 +534,32 @@ impl NovaRenderer {
                 .all(|config| config.radius() == 0.0)
     }
 
+    /// Capture GPU view identities only on layout changes; these are not persistent caches.
+    fn identity_capture_views(&self, previous: bool) -> Vec<(u32, TextureViewId)> {
+        let Some(targets) = self.filters.targets.as_ref() else { return Vec::new() };
+        if previous {
+            self.filters.element_blur_inputs.iter().filter_map(|source| {
+                targets.exclusive_zero_radius_capture_view(source.index)
+                    .map(|view| (source.index, view))
+            }).collect()
+        } else {
+            self.frame_upload.element_blur_inputs.iter().filter_map(|(index, _)| {
+                targets.exclusive_zero_radius_capture_view(*index)
+                    .map(|view| (*index, view))
+            }).collect()
+        }
+    }
+
+    fn preserve_rebound_element_sources(&mut self, previous: &[(u32, TextureViewId)]) {
+        let current = self.identity_capture_views(false);
+        let retained = self.filters.remap_identity_capture_sources(
+            previous, &current, &self.frame_upload.element_blur_inputs,
+        );
+        log::trace!(target: "gpui::diagnostics",
+            "GPUI identity Capture target rebind: retained_sources={} prior_views={} current_views={}",
+            retained, previous.len(), current.len());
+    }
+
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
         if self.filters.targets.as_ref().is_some_and(|targets| {
             targets.is_layout_compatible(
@@ -550,6 +576,11 @@ impl NovaRenderer {
         let prior_root_view = self.filters.targets.as_ref()
             .and_then(BackdropBlurTargets::retained_root_texture_view);
         let root_eligible = self.root_color_reuse_eligible();
+        let previous_capture_views = if root_eligible {
+            self.identity_capture_views(true)
+        } else {
+            Vec::new()
+        };
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -565,7 +596,7 @@ impl NovaRenderer {
                 && prior_root_view == self.filters.targets.as_ref()
                     .and_then(BackdropBlurTargets::retained_root_texture_view);
             if preserve_root_color {
-                self.filters.invalidate_element_sources_preserving_root_color();
+                self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
                 self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
                 self.invalidate_backdrop_blur_cache();
@@ -590,9 +621,6 @@ impl NovaRenderer {
         // Old Filter captures lose their flattened index identity. The root
         // color may keep its pixels only if its native view still matches;
         // every other capture must be rebuilt before it can be sampled.
-        let prior_root_view = self.filters.targets.as_ref()
-            .and_then(BackdropBlurTargets::retained_root_texture_view);
-        let root_eligible = self.root_color_reuse_eligible();
         if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.rebind_zero_radius_layout(
                 self.frame_upload.backdrop_blur_configs(),
@@ -604,7 +632,7 @@ impl NovaRenderer {
                 && prior_root_view == self.filters.targets.as_ref()
                     .and_then(BackdropBlurTargets::retained_root_texture_view);
             if preserve_root_color {
-                self.filters.invalidate_element_sources_preserving_root_color();
+                self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
                 self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
                 self.invalidate_backdrop_blur_cache();

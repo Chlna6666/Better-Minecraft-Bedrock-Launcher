@@ -78,15 +78,40 @@ impl FilterRegistry {
         self.last_gpu_animation_values.clear();
     }
 
-    /// A target-layout-only reorder can preserve the full-window color
-    /// texture when its native handle is unchanged. All indexed Element
-    /// snapshots are conservatively retired: their index can now describe a
-    /// different GPU target, and first refresh must initialize its pixels.
-    /// Unlike invalidate(), this leaves the independent root color version
-    /// and the shared atlas/quality validity intact.
-    pub(super) fn invalidate_element_sources_preserving_root_color(&mut self) {
-        self.element_blur_inputs.clear();
-        self.last_gpu_animation_values.clear();
+    /// Migrate resident snapshots only when a stable Capture ID and the actual
+    /// zero-filter output TextureView both survive a flattened-index reorder.
+    /// Source content equivalence is still checked by source_unchanged().
+    /// The per-rebind view lists are temporary, not another residency cache.
+    pub(super) fn remap_identity_capture_sources(
+        &mut self,
+        old_views: &[(u32, TextureViewId)],
+        new_views: &[(u32, TextureViewId)],
+        new_sources: &[(u32, FilterSource)],
+    ) -> usize {
+        let previous = std::mem::take(&mut self.element_blur_inputs);
+        for (index, incoming) in new_sources {
+            let FilterSource::Element(new_layer) = incoming else { continue };
+            let Some(ref layer_id) = new_layer.layer_id else { continue };
+            if new_layer.radius.0 != 0.0 { continue }
+            let Some((_, target_view)) = new_views.iter().find(|(next, _)| next == index)
+            else { continue };
+            let mut candidates = previous.iter().filter(|previous| {
+                let FilterSource::Element(old_layer) = &previous.source else { return false };
+                old_layer.layer_id.as_ref() == Some(layer_id)
+                    && old_layer.radius.0 == 0.0
+                    && old_views.iter().any(|(old_index, old_view)| {
+                        *old_index == previous.index && old_view == target_view
+                    })
+            });
+            let Some(snapshot) = candidates.next() else { continue };
+            // Multiple old captures with the same claimed identity cannot alias a target.
+            if candidates.next().is_some() { continue }
+            let mut resident = snapshot.clone();
+            resident.index = *index;
+            self.element_blur_inputs.push(resident);
+        }
+        self.element_blur_inputs.sort_unstable_by_key(|source| source.index);
+        self.element_blur_inputs.len()
     }
 
     pub(super) fn root_color_content_version(&self) -> Option<TextureContentVersion> {
@@ -321,7 +346,7 @@ mod tests {
         registry.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
         assert!(registry.source_unchanged(3, &source, &[]));
 
-        registry.invalidate_element_sources_preserving_root_color();
+        registry.remap_identity_capture_sources(&[], &[], &[(3, source.clone())]);
         assert!(
             !registry.source_unchanged(3, &source, &[]),
             "a remapped popup must rebuild even when an old index had valid pixels"
@@ -341,6 +366,81 @@ mod tests {
         registry.invalidate();
         assert!(registry.root_color_content_version().is_none());
         assert!(registry.refresh_required(BackdropBlurQuality::Full, false));
+    }
+
+    #[test]
+    fn zero_filter_target_reorder_preserves_only_same_layer_and_texture() {
+        let mut registry = FilterRegistry::new(None);
+        let make = |name: &str| FilterSource::Element(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: Some(crate::GlobalElementId::from_path(&[name.into()])),
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        });
+        let first = make("first");
+        let second = make("second");
+        registry.record_element_blur_inputs(&[(2, first.clone()), (4, second.clone())], &[], [2, 4]);
+        let version1 = registry.layer_content_version(2);
+        let version2 = registry.layer_content_version(4);
+        let v1 = TextureViewId::new(101);
+        let v2 = TextureViewId::new(102);
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(2, v1), (4, v2)],
+            &[(5, v1), (7, v2)],
+            &[(5, first.clone()), (7, second.clone())],
+        ), 2);
+        assert_eq!(registry.layer_content_version(5), version1);
+        assert_eq!(registry.layer_content_version(7), version2);
+        assert!(registry.source_unchanged(5, &first, &[]));
+        assert!(registry.source_unchanged(7, &second, &[]));
+
+        let replacement = make("replacement");
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(5, v1), (7, v2)],
+            &[(5, v1), (7, TextureViewId::new(103))],
+            &[(5, replacement.clone()), (7, second.clone())],
+        ), 0);
+        assert!(registry.layer_content_version(5).is_none());
+        assert!(registry.layer_content_version(7).is_none());
+        assert!(!registry.source_unchanged(5, &replacement, &[]));
+
+        // A Gaussian filter cannot inherit a direct-compositor target.
+        registry.record_element_blur_inputs(&[(5, first.clone())], &[], [5]);
+        let mut gaussian = match first { FilterSource::Element(layer) => layer, _ => unreachable!() };
+        gaussian.radius = crate::ScaledPixels(3.0);
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(5, v1)], &[(9, v1)],
+            &[(9, FilterSource::Element(gaussian))],
+        ), 0);
+    }
+
+    #[test]
+    fn remapped_filter_source_still_rejects_changed_content_geometry() {
+        let mut registry = FilterRegistry::new(None);
+        let mut blur = crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: Some(crate::GlobalElementId::from_path(&["stable".into()])),
+            bounds: crate::Bounds::default(),
+            content_mask: crate::ContentMask::default(),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content: std::sync::Arc::new(crate::Scene::default()),
+        };
+        registry.record_element_blur_inputs(&[(1, FilterSource::Element(blur.clone()))], &[], [1]);
+        blur.bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
+            crate::size(crate::ScaledPixels(16.0), crate::ScaledPixels(16.0)),
+        );
+        let v = TextureViewId::new(303);
+        assert_eq!(registry.remap_identity_capture_sources(
+            &[(1, v)], &[(3, v)], &[(3, FilterSource::Element(blur.clone()))],
+        ), 1);
+        assert!(!registry.source_unchanged(3, &FilterSource::Element(blur), &[]));
     }
 
     #[test]

@@ -499,6 +499,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【实例隔离审查】**：`DropdownState` 使用 `window.use_keyed_state(id)`，每个触发器持有独立选项/滚动/phase；全局 `DropdownOverlayState.active_by_window` 当前每个窗口最多一个活动菜单，其他实例的内容不会自动进入此菜单。切换 phase 仍会通知拥有该 Dropdown 的父 View，全窗口 Root/Paint 及 Root Color GPU Target 是否在动画每帧重绘仍需由现有 Trace 验证，不能仅凭源代码宣称已彻底局部合成。
 - **【验收阻塞】**：当前环境无 cargo/rustc/rustfmt/Windows 原生 GPU，未执行编译、单测及 DX11/DX12/Vulkan/OpenGL 实机。必须对比相同窗口/刷新率、Blur on/off、单/多个 Dropdown 连续快速点击：`gpui frame work`、`gpui presentation gate`、Capture 数量/Pass 次数、Root target version、retained_copy_pixels、GPU Draw/Present/实际占用与动画完整性。期望单个公共菜单 Capture 从嵌套目标收敛至一个，**GPU 40%→多少尚未知**；RootColorTarget 物理所有权分离、Fence 退休和异步 GPU Timestamp 仍未完成。
 
+## 2026-10-15：稳定 Element Capture 跨索引保留真实纹理版本（未编译）
+
+- 起点 master `3e1324b6084a2e45530d06f206c23129b3a7031b`；改动 `frame_upload/blur.rs`、`targets.rs`、`renderer/filters.rs`、`renderer.rs`，并更新本唯一 TODO。公共 Dropdown 仍使用上一提交的单 ClipReveal Capture，首页独立版本下拉框不变。
+- **【已定位】**：`ensure_backdrop_blur_targets` 在 `reuse_layout` / `rebind_zero_radius_layout` 复用 GPU TextureView 成功时，原先仍清除全部 `FilterRegistry.element_blur_inputs`，可能导致与弹层无关的保留图层在后续 Present 被重新离屏刷新。
+- **【实现；未验证】**：仅当 Root Color 的原生 TextureView 和已成功提交的内容版本保留时，从现有 GPU Target 提取临时 `(packed index, TextureViewId)` 列表；在唯一 `FilterRegistry` 中按非空稳定 `PaintBlur.layer_id`、前后完全相同的 ViewId、零滤镜/单成员独立目标三重验证后迁移 Snapshot 的 flattened index。其他目标释放旧快照，依旧走强制初始化；不增加持久缓存、额外 RenderTree/Scene/兼容层，不改变目标分配、Fence 等待、Shader 和 Native Present。
+- **【边界】**：新内容仍经过现有 `FilterRegistry::source_unchanged` 的 Source/BBox/Mask/Animation 验证；物理 View 变更、无稳定身份、重复旧身份、正半径 Gaussian、合并目标不复用旧像素。旧 Root 失效继续全失效；未实现 RootColorTarget 物理资源独立化。
+- **【测试源码未执行】**：添加 FilterRegistry 层身份变化、纹理变化、扁平索引重排、Gaussian 与源 bounds 变化测试。环境没有 Rust 工具链，也没有四后端原生 GPU：需 `cargo fmt --all -- --check` / `cargo check --workspace --no-default-features`，以及 DX11/DX12/VK/GL 单/多个 Dropdown、弹层重排、尺寸变化、切页的实际像素和 Trace 校验。GPU 40% 的变化未知；下一步聚焦 Root 源 DirtyRegion 与独立 Property Composite 的实际重复 Pass。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
