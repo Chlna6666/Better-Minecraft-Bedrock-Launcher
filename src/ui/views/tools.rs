@@ -52,6 +52,45 @@ struct ToolsRenderSignature {
 }
 
 impl ToolsRenderSignature {
+    fn matches_state(&self, state: &ToolsPageState) -> bool {
+        self.tab == state.tab
+            && self.nat_checking == state.nat_checking
+            && self.nat_udp_type == state.nat_udp_type
+            && self.nat_tcp_type == state.nat_tcp_type
+            && self.nat_error == state.nat_error
+            && self.has_room_code_input == state.room_code_input.is_some()
+            && self.room_code == state.room_code
+            && self.has_bootstrap_peers_input == state.bootstrap_peers_input.is_some()
+            && self.bootstrap_peers == state.bootstrap_peers
+            && self.has_player_name_input == state.player_name_input.is_some()
+            && self.player_name == state.player_name
+            && self.has_game_ports_input == state.game_ports_input.is_some()
+            && self.game_ports == state.game_ports
+            && self.room_advanced_open == state.room_advanced_open
+            && self.easytier_settings_open == state.easytier_settings_open
+            && self.disable_p2p == state.disable_p2p
+            && self.online_operation == state.online_operation
+            && self.online_blocking_issue == state.online_blocking_issue
+            && self.online_blocking_issue_visible == state.is_online_blocking_issue_visible()
+            && self.discovery_retrying == state.discovery_retrying
+            && self.online_error == state.online_error
+            && self.online_log == state.online_log
+            && self.abandoned_nodes == state.abandoned_nodes
+            && self.abandoned_nodes_visible == state.are_abandoned_nodes_visible()
+            && self.easytier_running == state.easytier_running
+            && self.easytier_hostname == state.easytier_hostname
+            && self.easytier_ipv4 == state.easytier_ipv4
+            && self.easytier_game_host == state.easytier_game_host
+            && self.easytier_game_port == state.easytier_game_port
+            && self.active_room_code == state.active_room_code
+            && self.active_network_name == state.active_network_name
+            && self.host_room_code == state.host_room_code
+            && self.peers_loading == state.peers_loading
+            && self.network_nodes_expanded == state.network_nodes_expanded
+            && self.players == state.players
+            && self.peers == state.peers
+    }
+
     fn from_state(state: &ToolsPageState) -> Self {
         Self {
             tab: state.tab,
@@ -105,12 +144,13 @@ impl ToolsPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
             cx.observe_global::<ToolsPageState>(|this: &mut Self, cx| {
-                let signature = ToolsRenderSignature::from_state(cx.global::<ToolsPageState>());
-                if this.last_render_signature.as_ref() != Some(&signature) {
-                    this.last_render_signature = Some(signature);
-                    if this.active {
-                        cx.notify();
-                    }
+                let state = cx.global::<ToolsPageState>();
+                if this.last_render_signature.as_ref().is_some_and(|signature| signature.matches_state(state)) {
+                    return;
+                }
+                this.last_render_signature = Some(ToolsRenderSignature::from_state(state));
+                if this.active {
+                    cx.notify();
                 }
             }),
             cx.observe_global::<ThemeState>(|this: &mut Self, cx| {

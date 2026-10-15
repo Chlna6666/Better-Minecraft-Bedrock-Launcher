@@ -394,10 +394,30 @@ impl DownloadPageView {
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_global::<DownloadPageState>(|this, cx| {
-            let (tab, curseforge_toolbar_signature, mod_panel_signature) =
-                cx.read_global(|state: &DownloadPageState, _cx| {
-                    (
-                        state.tab,
+            let tab = cx.global::<DownloadPageState>().tab;
+            let tab_changed = this.last_observed_tab != tab;
+            this.last_observed_tab = tab;
+
+            // Game owns a separate retained View. Do not clone Mod/CurseForge
+            // signatures on every task-progress update for an unrelated tab.
+            match tab {
+                DownloadTab::Game => {
+                    if tab_changed && this.active {
+                        cx.notify();
+                    }
+                }
+                DownloadTab::Mod => {
+                    let signature = cx.read_global(|state: &DownloadPageState, _cx| {
+                        build_mod_panel_observe_signature(state)
+                    });
+                    let changed = this.last_observed_mod_panel_signature != signature;
+                    this.last_observed_mod_panel_signature = signature;
+                    if this.active && (tab_changed || changed) {
+                        cx.notify();
+                    }
+                }
+                DownloadTab::ResourcePack => {
+                    let signature = cx.read_global(|state: &DownloadPageState, _cx| {
                         (
                             state.curseforge_loaded,
                             state.curseforge_loading,
@@ -409,37 +429,14 @@ impl DownloadPageView {
                             state.curseforge_results_loading,
                             state.curseforge_page_commit_task.is_some(),
                             state.curseforge_pending_page_index.is_some(),
-                        ),
-                        build_mod_panel_observe_signature(state),
-                    )
-                });
-
-            let tab_changed = this.last_observed_tab != tab;
-            let curseforge_toolbar_changed =
-                this.last_observed_curseforge_toolbar_signature != curseforge_toolbar_signature;
-            let mod_panel_changed = this.last_observed_mod_panel_signature != mod_panel_signature;
-
-            this.last_observed_tab = tab;
-            this.last_observed_curseforge_toolbar_signature = curseforge_toolbar_signature;
-            this.last_observed_mod_panel_signature = mod_panel_signature;
-
-            if tab_changed {
-                // Keep signatures current while resident but hidden, without waking the window.
-                if this.active {
-                    cx.notify();
+                        )
+                    });
+                    let changed = this.last_observed_curseforge_toolbar_signature != signature;
+                    this.last_observed_curseforge_toolbar_signature = signature;
+                    if this.active && (tab_changed || changed) {
+                        cx.notify();
+                    }
                 }
-                return;
-            }
-
-            if tab == DownloadTab::Mod {
-                if this.active && mod_panel_changed {
-                    cx.notify();
-                }
-                return;
-            }
-
-            if this.active && tab == DownloadTab::ResourcePack && curseforge_toolbar_changed {
-                cx.notify();
             }
         }));
         subscriptions.push(cx.observe_global::<ThemeState>(|this, cx| {
