@@ -19,13 +19,16 @@ impl MapViewerWindowView {
             });
         let selected = self.map_image.install_destination;
         let pending = self.map_image.pending_bundle.as_ref();
-        let action_enabled = (ready || pending.is_some()) && !busy;
-        // The frame-grid placement workspace owns the visible top primary action.
-        // Do not display an identical second primary button in the bottom inspector.
-        let top_places_frame = self.ui_state.import_workspace_mode
-            == super::super::state::ImportWorkspaceMode::Placement
-            && selected == MapImageInstallDestination::NewUpFrame
+        let frame_preview = selected == MapImageInstallDestination::NewUpFrame
             && pending.is_none();
+        let check = if frame_preview {
+            self.map_frame_preflight_snapshot()
+        } else {
+            None
+        };
+        let check_running = check.is_some_and(|task| !task.is_terminal());
+        let check_passed = self.map_frame_preflight_passed();
+        let action_enabled = (ready || pending.is_some()) && !busy && !check_running;
         let (primary, target, tip, target_ready) = match selected {
             MapImageInstallDestination::Player => (
                 "写入玩家背包",
@@ -69,7 +72,7 @@ impl MapViewerWindowView {
                             self.y_layer, self.map_image.options.columns, self.map_image.options.rows
                         )
                     },
-                    "点击上方或此处的「直接放置」，BMCBL 会在当前存档中创建支撑方块、展示框和地图记录，无需进入游戏手动摆放。右键地图可调整中心。",
+                    "先检查展示框格位是否为空、支撑是否匹配；通过后可在此直接写入存档，无需进入游戏摆放。右键地图可调整中心。",
                     true,
                 )
             }
@@ -86,6 +89,12 @@ impl MapViewerWindowView {
             "地图像素未准备好，请先完成转换或刷新预览"
         } else if !target_ready {
             "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
+        } else if frame_preview && check_running {
+            "正在后台检查展示框网格；不会修改存档"
+        } else if frame_preview && !check_passed {
+            "先点击「检查放置区域」；有冲突时会显示准确的方块坐标与解决方法"
+        } else if frame_preview {
+            "已通过只读检查，可直接放置；正式写入前还会再次校验"
         } else {
             "地图像素已就绪。检查目标后再确认写入，不会在预览时修改存档"
         };
@@ -154,6 +163,19 @@ impl MapViewerWindowView {
                             .child(tip),
                     ),
             )
+            .when_some(
+                check.filter(|task| task.status.as_ref() == "error")
+                    .and_then(|task| task.message.as_deref()),
+                |bar, error| {
+                    bar.child(
+                        div()
+                            .w_full()
+                            .text_size(px(12.0))
+                            .text_color(colors.danger)
+                            .child(format!("放置位置检查未通过：{error}")),
+                    )
+                },
+            )
             .when_some(pending, |bar, path| {
                 bar.child(
                     div()
@@ -168,32 +190,37 @@ impl MapViewerWindowView {
                     .flex_wrap()
                     .items_center()
                     .gap(px(8.0))
-                    .when(!top_places_frame, |bar| {
-                        bar.child(
-                            primary_button(
-                                colors,
-                                "map-import-primary-action",
-                                if pending.is_some() {
-                                    "确认 NBT 导入并写入"
-                                } else {
-                                    primary
-                                },
-                            )
-                            .opacity(if action_enabled && target_ready { 1.0 } else { 0.45 })
-                            .when(action_enabled && target_ready, |button| {
-                                button.on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        if this.map_image.pending_bundle.is_some() {
-                                            this.confirm_pending_map_bundle(cx);
-                                        } else {
-                                            this.install_map_bundle_selected(cx);
-                                        }
-                                    }),
-                                )
-                            }),
+                    .child(
+                        primary_button(
+                            colors,
+                            "map-import-primary-action",
+                            if pending.is_some() {
+                                "确认 NBT 导入并写入"
+                            } else if frame_preview && !check_passed {
+                                if check_running { "检查中…" } else { "检查放置区域" }
+                            } else {
+                                primary
+                            },
                         )
-                    })
+                        .opacity(if action_enabled && target_ready { 1.0 } else { 0.45 })
+                        .when(action_enabled && target_ready, |button| {
+                            button.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    if this.map_image.pending_bundle.is_some() {
+                                        this.confirm_pending_map_bundle(cx);
+                                    } else if this.map_image.install_destination
+                                        == MapImageInstallDestination::NewUpFrame
+                                        && !this.map_frame_preflight_passed()
+                                    {
+                                        this.check_map_frame_grid(cx);
+                                    } else {
+                                        this.install_map_bundle_selected(cx);
+                                    }
+                                }),
+                            )
+                        }),
+                    )
                     .when(ready && pending.is_none() && !busy, |bar| {
                         bar.child(
                             secondary_button(colors, "map-import-export-bundle", "导出地图包…")
