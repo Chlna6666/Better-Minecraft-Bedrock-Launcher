@@ -32,7 +32,7 @@ impl MapViewerWindowView {
                                 .min_h(px(0.0))
                                 .p(px(12.0))
                                 .flex()
-                                .items_center()
+                                .items_start()
                                 .justify_center()
                                 .overflow_hidden()
                                 .child(
