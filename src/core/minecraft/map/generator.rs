@@ -21,7 +21,7 @@ pub use image::{
 };
 pub use install::{
     MapBundleInstallTarget, MapInstallHistory, start_map_bundle_file_install,
-    start_map_bundle_install,
+    start_map_bundle_install, start_map_frame_grid_preflight,
 };
 pub use map_bundle::start_map_bundle_export;
 pub use map_image::{
