@@ -6,6 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod motion;
+
 const MODAL_BACKDROP_MIN_ALPHA: f32 = 0.56;
 const MODAL_BACKDROP_MAX_ALPHA: f32 = 0.72;
 const MODAL_MIN_SCALE: f32 = 0.94;
@@ -160,6 +162,101 @@ pub fn animated_modal_layer_with_content_offset(
         )
 }
 
+/// Places a modal on a stable layout and gives its backdrop and content retained visual tracks.
+pub fn retained_modal_layer(
+    content: impl IntoElement,
+    background: Hsla,
+    visible: bool,
+    animation_key: &'static str,
+    duration: Duration,
+) -> AnyElement {
+    let (from, to, from_y, to_y, from_scale, to_scale, easing) = if visible {
+        (0.0, 1.0, 14.0, 0.0, MODAL_MIN_SCALE, 1.0, Easing::OutCubic)
+    } else {
+        (1.0, 0.0, 0.0, 10.0, 1.0, MODAL_MIN_SCALE, Easing::InCubic)
+    };
+    let duration = duration.max(Duration::from_millis(1));
+    let overlay_alpha = background
+        .a
+        .clamp(MODAL_BACKDROP_MIN_ALPHA, MODAL_BACKDROP_MAX_ALPHA);
+    let base_animation = || {
+        Animation::from_spec(
+            AnimationSpec::new(duration)
+                .ease(easing)
+                .fill_mode(FillMode::Forwards),
+        )
+    };
+    let animated_backdrop = div()
+        .absolute()
+        .inset_0()
+        .bg(Hsla {
+            a: overlay_alpha,
+            ..black()
+        })
+        .with_visual_animation(
+            format!("{animation_key}-backdrop"),
+            base_animation().with_property(AnimationProperty::opacity(
+                overlay_alpha * from,
+                overlay_alpha * to,
+            )),
+        )
+        .expect("animation declares backdrop opacity");
+    let content = div()
+        .absolute()
+        .inset_0()
+        .p(px(16.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .occlude()
+        .child(
+            div()
+                .percentage_passthrough()
+                .w_full()
+                .h_full()
+                .max_w(relative(1.0))
+                .max_h(relative(1.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(content)
+                .with_visual_animation(
+                    animation_key,
+                    base_animation()
+                        .with_property(AnimationProperty::translation_opacity(
+                            point(px(0.0), px(from_y)),
+                            point(px(0.0), px(to_y)),
+                            from,
+                            to,
+                        ))
+                        .with_property(AnimationProperty::scale_opacity(
+                            from_scale,
+                            to_scale,
+                            from,
+                            to,
+                            TransformOrigin::new(0.5, 0.5),
+                        )),
+                )
+                .expect("animation declares modal translation, scale, and opacity"),
+        );
+
+    let backdrop = intercepting_backdrop(
+        div()
+            .absolute()
+            .inset_0()
+            .child(div().absolute().inset_0().background_blur(
+                crate::ui::theme::glass_backdrop_blur_style().saturation(1.05),
+            ))
+            .child(animated_backdrop),
+    );
+    div()
+        .absolute()
+        .inset_0()
+        .child(backdrop)
+        .child(content)
+        .into_any_element()
+}
+
 pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
     let animated_inner = div()
         .absolute()
@@ -181,7 +278,7 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
                 .justify_center()
                 .child(content),
         )
-        .with_animation(
+        .with_visual_animation(
             "modal-layer-content-zoom",
             crate::ui::animation::ease_out_cubic_motion(std::time::Duration::from_millis(240))
                 .with_property(AnimationProperty::scale_opacity(
@@ -191,8 +288,8 @@ pub fn modal_layer(content: impl IntoElement, background: Hsla) -> AnyElement {
                     1.0,
                     TransformOrigin::new(0.5, 0.5),
                 )),
-            |inner, _progress| inner,
-        );
+        )
+        .expect("animation declares presentation properties");
 
     // The backdrop remains structurally stable while only the modal content animates. This keeps
     // the cached backdrop-filter result reusable instead of changing the blur primitive each tick.
@@ -244,11 +341,18 @@ impl ModalDismissHandle {
         }
     }
 
+    /// Starts the closing transition and invalidates only the mounted modal's owning Entity.
+    /// Repeated requests retain the original closing deadline and do not schedule another frame.
     pub fn dismiss(&self, cx: &mut App) {
         let mut control = self.control.get();
+        if control.closing_started_at.is_some() {
+            return;
+        }
         control.begin_close(Instant::now());
         self.control.set(control);
-        cx.refresh_windows();
+        if let Some(owner) = control.owner {
+            cx.notify(owner);
+        }
     }
 
     fn control(&self) -> Rc<Cell<ModalAnimationControl>> {
@@ -324,6 +428,8 @@ pub fn modal_layer_dismissible_with_handle_and_cleanup(
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ModalAnimationControl {
+    owner: Option<EntityId>,
+    opened_at: Option<Instant>,
     progress: f32,
     closing_started_at: Option<Instant>,
     closing_from: f32,
@@ -332,6 +438,9 @@ struct ModalAnimationControl {
 impl ModalAnimationControl {
     fn begin_close(&mut self, now: Instant) {
         if self.closing_started_at.is_none() {
+            if let Some(opened_at) = self.opened_at {
+                self.sample(now, opened_at);
+            }
             self.closing_started_at = Some(now);
             self.closing_from = self.progress;
         }
@@ -350,7 +459,9 @@ impl ModalAnimationControl {
         };
         self.progress = progress.clamp(0.0, 1.0);
         ModalAnimationSample {
+            #[cfg(test)]
             progress: self.progress,
+            #[cfg(test)]
             animating,
             close_completed: self.closing_started_at.is_some() && !animating,
         }
@@ -359,7 +470,9 @@ impl ModalAnimationControl {
 
 #[derive(Clone, Copy, Debug)]
 struct ModalAnimationSample {
+    #[cfg(test)]
     progress: f32,
+    #[cfg(test)]
     animating: bool,
     close_completed: bool,
 }
@@ -438,17 +551,16 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
             }
 
             let mut control = state.control.get();
+            control.owner = Some(window.current_view());
+            control.opened_at = Some(state.opened_at);
             let sample = control.sample(now, state.opened_at);
             current_control.set(control);
             state.control = current_control.clone();
 
-            // Keep the caller-sampled modal on CPU layout because scale/opacity currently span a
-            // mixed subtree. The targeted wrapper narrows continuous invalidation to this modal
-            // instead of notifying the entire owning view every platform frame.
-            let mut element =
-                dismissible_modal_layer(content, self.background, sample.progress, current_control)
-                    .with_local_layout_animation_target(sample.animating)
-                    .into_any_element();
+            // The presentation lane owns the frames between state changes. Its completion
+            // invalidates the owner once so close cleanup can remove the modal.
+            let mut element = dismissible_modal_layer(content, self.background, current_control)
+                .into_any_element();
             let layout_id = element.request_layout(window, cx);
 
             if state.take_close_completion(sample.close_completed) {
@@ -489,20 +601,24 @@ impl<E: IntoElement + 'static> Element for DismissibleModal<E> {
 fn dismissible_modal_layer(
     content: impl IntoElement,
     background: Hsla,
-    progress: f32,
     control: Rc<Cell<ModalAnimationControl>>,
 ) -> Div {
     let dismiss_control = control.clone();
+    let (from, to, animation) = motion::transition(control.get());
     div()
         .absolute()
         .inset_0()
         .child(
-            frosted_backdrop_base_with_overlay(background, progress)
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            motion::backdrop(background, from, to, animation.clone())
+                .on_mouse_down(MouseButton::Left, move |_, _window, cx| {
                     let mut control = dismiss_control.get();
-                    control.begin_close(Instant::now());
-                    dismiss_control.set(control);
-                    window.request_animation_frame();
+                    if control.closing_started_at.is_none() {
+                        control.begin_close(Instant::now());
+                        dismiss_control.set(control);
+                        if let Some(owner) = control.owner {
+                            cx.notify(owner);
+                        }
+                    }
                     cx.stop_propagation();
                 })
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
@@ -530,9 +646,18 @@ fn dismissible_modal_layer(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .scale(modal_content_scale(progress))
-                        .opacity(progress)
-                        .child(content),
+                        .child(content)
+                        .with_visual_animation(
+                            "dismissible-modal-content",
+                            animation.with_property(AnimationProperty::scale_opacity(
+                                modal_content_scale(from),
+                                modal_content_scale(to),
+                                from,
+                                to,
+                                TransformOrigin::new(0.5, 0.5),
+                            )),
+                        )
+                        .expect("scale and opacity are declared presentation properties"),
                 ),
         )
 }
