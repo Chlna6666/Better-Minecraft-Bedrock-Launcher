@@ -4,12 +4,67 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::minecraft::map::generator::{
     MapBundleInstallTarget, MapInstallHistory, start_map_bundle_export,
-    start_map_bundle_file_install, start_map_bundle_install,
+    start_map_bundle_file_install, start_map_bundle_install, start_map_frame_grid_preflight,
 };
 use ::bedrock_world::block::BlockState;
 
 impl MapViewerWindowView {
+    /// Explicit read-only check: the write path rechecks world state atomically.
+    pub(super) fn check_map_frame_grid(&mut self, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() || self.map_image.source.is_none()
+            || self.map_image.placement_preview.is_none()
+        {
+            return;
+        }
+        let key = self.map_frame_preflight_key();
+        if self.map_image.frame_check_key.as_deref() == Some(key.as_str())
+            && self.map_frame_preflight_snapshot().is_some_and(|task| {
+                matches!(task.status.as_ref(), "running" | "completed")
+            })
+        {
+            return;
+        }
+        if let Some(previous) = self.map_image.frame_check_task_id.take() {
+            task_manager::cancel_task(&previous);
+        }
+        let (x, z) = self.map_frame_anchor();
+        let center = BlockPos { x, y: self.y_layer, z };
+        let support = BlockState {
+            name: self.map_image.frame_support.to_owned(),
+            states: BTreeMap::new(),
+            version: Some(18_168_865),
+        };
+        match start_map_frame_grid_preflight(
+            self.world_path.clone(),
+            center.to_chunk_pos(self.dimension),
+            center,
+            self.map_image.options.columns,
+            self.map_image.options.rows,
+            support,
+        ) {
+            Ok(task_id) => {
+                self.map_image.frame_check_key = Some(key);
+                self.map_image.frame_check_task_id = Some(task_id.clone());
+                if let Some(snapshot) = task_manager::get_snapshot(&task_id) {
+                    self.task_snapshots.insert(snapshot.id.clone(), Arc::new(snapshot));
+                }
+                self.status = SharedString::from("正在后台检查展示框与支撑位置，不修改世界");
+            }
+            Err(error) => {
+                self.status = SharedString::from(error.clone());
+                toast::error(cx, SharedString::from(error));
+            }
+        }
+        cx.notify();
+    }
+
     pub(in super::super) fn install_map_bundle_selected(&mut self, cx: &mut Context<Self>) {
+        if self.map_image.install_destination == MapImageInstallDestination::NewUpFrame
+            && !self.map_image_can_place_world_grid()
+        {
+            self.check_map_frame_grid(cx);
+            return;
+        }
         self.install_map_bundle(self.map_image.install_destination, None, cx);
     }
 
