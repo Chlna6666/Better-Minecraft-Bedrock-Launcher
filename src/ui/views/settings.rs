@@ -41,7 +41,8 @@ pub(crate) fn preload_static_assets(cx: &mut App) -> usize {
 
 pub struct SettingsPageView {
     _subscriptions: Vec<Subscription>,
-    last_update_checking: bool,
+    content_view: Entity<SettingsContentView>,
+    last_tab: SettingsTab,
     active: bool,
     background_prepare_scheduled: bool,
     prepared_tab: Option<SettingsTab>,
@@ -49,24 +50,77 @@ pub struct SettingsPageView {
 
 impl SettingsPageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let last_update_checking = cx.global::<UpdateState>().checking;
+        let last_tab = cx.global::<SettingsPageState>().tab;
+        let content_view = cx.new(SettingsContentView::new);
         let subscriptions = vec![
             cx.observe_global::<SettingsPageState>(|this, cx| {
-                if this.active {
-                    let tab = cx.global::<SettingsPageState>().tab;
-                    tracing::trace!(?tab, "settings view notify source=SettingsPageState");
-                    cx.notify();
+                let tab = cx.global::<SettingsPageState>().tab;
+                if this.last_tab != tab {
+                    this.last_tab = tab;
+                    if this.active {
+                        tracing::trace!(?tab, "settings shell notify source=tab");
+                        cx.notify();
+                    }
                 }
             }),
             cx.observe_global::<ThemeState>(|this, cx| {
                 if this.active {
-                    tracing::trace!("settings view notify source=ThemeState");
                     cx.notify();
                 }
             }),
             cx.observe_global::<I18n>(|this, cx| {
                 if this.active {
-                    tracing::trace!("settings view notify source=I18n");
+                    cx.notify();
+                }
+            }),
+        ];
+        Self {
+            _subscriptions: subscriptions,
+            content_view,
+            last_tab,
+            active: false,
+            background_prepare_scheduled: false,
+            prepared_tab: None,
+        }
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        self.content_view
+            .update(cx, |content, cx| content.set_active(active, cx));
+        if active {
+            cx.notify();
+        }
+    }
+}
+
+struct SettingsContentView {
+    _subscriptions: Vec<Subscription>,
+    last_update_checking: bool,
+    active: bool,
+}
+
+impl SettingsContentView {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let last_update_checking = cx.global::<UpdateState>().checking;
+        let subscriptions = vec![
+            cx.observe_global::<SettingsPageState>(|this, cx| {
+                if this.active {
+                    let tab = cx.global::<SettingsPageState>().tab;
+                    tracing::trace!(?tab, "settings content notify source=SettingsPageState");
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
                     cx.notify();
                 }
             }),
@@ -81,10 +135,6 @@ impl SettingsPageView {
                     && settings_state.tab == SettingsTab::About
                     && checking_changed
                 {
-                    tracing::trace!(
-                        checking = update_state.checking,
-                        "settings view notify source=UpdateState"
-                    );
                     cx.notify();
                 }
             }),
@@ -95,7 +145,6 @@ impl SettingsPageView {
                     && route == crate::ui::navigation::AppRoute::Settings
                     && tab == SettingsTab::Plugins
                 {
-                    tracing::trace!(?tab, "settings view notify source=PluginRegistry");
                     cx.notify();
                 }
             }),
@@ -104,31 +153,25 @@ impl SettingsPageView {
             _subscriptions: subscriptions,
             last_update_checking,
             active: false,
-            background_prepare_scheduled: false,
-            prepared_tab: None,
         }
     }
 
-    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
-        if self.active == active {
-            return;
-        }
-        self.active = active;
-        if active {
-            cx.notify();
+    fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active != active {
+            self.active = active;
+            if active {
+                cx.notify();
+            }
         }
     }
 }
 
 impl Render for SettingsPageView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = window.animation_time();
-
         if self.active && !self.background_prepare_scheduled {
             self.background_prepare_scheduled = true;
             window.on_next_frame(|_window, cx| {
-                // Prepare plugin metadata after Settings has presented once. The actual directory
-                // scan/manifest preparation remains on the blocking-I/O executor.
+                // Prepare plugin metadata after Settings has presented once.
                 crate::plugins::runtime::ensure_manifest_index(cx);
             });
         }
@@ -141,9 +184,6 @@ impl Render for SettingsPageView {
                     tabs::refresh_gpu_adapters_if_needed(cx);
                     launcher::logs::refresh_log_stats(cx);
                 }
-                // Plugin manifests are already opportunistically prepared by the one-shot
-                // Settings background preparation above. Do not enqueue a second reload when the
-                // first visible tab is Plugins.
                 SettingsTab::Plugins => {}
                 #[cfg(target_os = "linux")]
                 SettingsTab::ProtonGdk => {
@@ -157,10 +197,33 @@ impl Render for SettingsPageView {
         let colors = lerp_theme_colors(
             &LightColors::colors(),
             &DarkColors::colors(),
+            theme.factor(window.animation_time()),
+            theme.accent,
+        );
+        let window_size = window.bounds().size;
+        render_settings_page(
+            colors,
+            window_size.width,
+            window_size.height,
+            cx.global::<I18n>(),
+            active_tab,
+            self.content_view.clone(),
+        )
+    }
+}
+
+impl Render for SettingsContentView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = window.animation_time();
+        let theme = cx.global::<ThemeState>();
+        let colors = lerp_theme_colors(
+            &LightColors::colors(),
+            &DarkColors::colors(),
             theme.factor(now),
             theme.accent,
         );
         let window_size = window.bounds().size;
+        let active_tab = cx.global::<SettingsPageState>().tab;
         let render_engine = if active_tab == SettingsTab::About {
             about::render_engine_label(window)
         } else {
@@ -182,33 +245,30 @@ impl Render for SettingsPageView {
             plugin_statuses,
             colors.bg.l < 0.5,
         );
-        render_settings_page(
-            colors,
+        let settings_layout = layout::SettingsLayout::new(window_size.width, window_size.height);
+        content::render_settings_content(
+            &colors,
             window_size.width,
-            window_size.height,
             render_engine,
             cx.global::<I18n>(),
             cx.global::<SettingsPageState>(),
-            plugin_model,
+            &plugin_model,
             cx.global::<UpdateState>(),
             system_font_names.as_ref(),
+            &settings_layout,
         )
     }
 }
 
-pub(super) fn render_settings_page(
+fn render_settings_page(
     colors: ThemeColors,
     window_width: Pixels,
     window_height: Pixels,
-    render_engine: SharedString,
     i18n: &I18n,
-    state: &SettingsPageState,
-    plugin_model: plugins::PluginSettingsModel,
-    update: &UpdateState,
-    system_font_names: &[String],
+    active_tab: SettingsTab,
+    content_view: Entity<SettingsContentView>,
 ) -> impl IntoElement + use<> {
     let settings_layout = layout::SettingsLayout::new(window_width, window_height);
-
     surface::page_shell(
         div()
             .size_full()
@@ -220,20 +280,16 @@ pub(super) fn render_settings_page(
             .child(navigation::render_tabs(
                 &colors,
                 i18n,
-                state.tab,
+                active_tab,
                 &settings_layout,
             ))
-            .child(content::render_settings_content(
-                &colors,
-                window_width,
-                render_engine,
-                i18n,
-                state,
-                &plugin_model,
-                update,
-                system_font_names,
-                &settings_layout,
-            )),
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .child(content_view),
+            ),
         &colors,
         &settings_layout,
     )
