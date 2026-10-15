@@ -133,9 +133,9 @@ impl MapViewerWindowView {
     /// World write is possible only after the conversion Task has completed and
     /// its pixels have been accepted into the active preview. An old or partial
     /// preview must not enable the placement action.
-    pub(super) fn map_frame_preflight_key(&self) -> String {
-        let (x, z) = self.map_frame_confirmed_center().unwrap_or_default();
-        format!(
+    pub(super) fn map_frame_preflight_key(&self) -> Option<String> {
+        let (x, z) = self.map_frame_confirmed_center()?;
+        Some(format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.dimension.id(),
             x, self.y_layer, z,
@@ -143,12 +143,11 @@ impl MapViewerWindowView {
             self.map_image.frame_support,
             self.map_image.task_id.as_deref().unwrap_or_default(),
             self.professional.map_info_invalidation_generation,
-        )
+        ))
     }
 
     pub(super) fn map_frame_preflight_snapshot(&self) -> Option<&TaskSnapshot> {
-        self.map_frame_confirmed_center()?;
-        let key = self.map_frame_preflight_key();
+        let key = self.map_frame_preflight_key()?;
         if self.map_image.frame_check_key.as_deref() != Some(key.as_str()) {
             return None;
         }
@@ -220,7 +219,7 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
-     pub(super) fn map_frame_confirmed_center(&self) -> Option<(i32, i32)> {
+    pub(super) fn map_frame_confirmed_center(&self) -> Option<(i32, i32)> {
         (self.map_image.frame_anchor_dimension == Some(self.dimension))
             .then_some(self.map_image.frame_anchor)
             .flatten()
