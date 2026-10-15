@@ -182,7 +182,7 @@ pub fn retained_modal_layer(
     let base_animation = || {
         Animation::from_spec(
             AnimationSpec::new(duration)
-                .ease(easing)
+                .ease(easing.clone())
                 .fill_mode(FillMode::Forwards),
         )
     };

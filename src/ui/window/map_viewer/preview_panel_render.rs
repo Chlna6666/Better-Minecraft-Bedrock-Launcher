@@ -162,7 +162,7 @@ impl MapViewerWindowView {
         mesh: Option<Arc<Preview3dMesh>>,
         camera: Preview3dCamera,
         model_rotation: Preview3dModelRotation,
-        view: Entity<Self>,
+        _view: Entity<Self>,
         cx: &mut Context<Self>,
     ) -> Div {
         let mut panel = div()
