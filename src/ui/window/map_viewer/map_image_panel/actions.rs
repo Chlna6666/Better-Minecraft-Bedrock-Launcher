@@ -234,7 +234,7 @@ impl MapViewerWindowView {
                         .when(action_enabled && target_ready, |button| {
                             button.on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
+                                cx.listener(move |this, _, _, cx| {
                                     if needs_target_review {
                                         this.set_import_workspace_mode(
                                             super::super::state::ImportWorkspaceMode::Placement, cx
