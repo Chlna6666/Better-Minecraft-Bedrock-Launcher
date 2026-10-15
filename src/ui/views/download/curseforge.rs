@@ -214,6 +214,16 @@ impl CurseForgeResourcePanelView {
                 }
             }),
         ];
+        subscriptions.push(cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
+        }));
+        subscriptions.push(cx.observe_global::<I18n>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
+        }));
         subscriptions.shrink_to_fit();
         Self {
             _subscriptions: subscriptions,
@@ -345,7 +355,18 @@ impl CurseForgeSidebarView {
                 this.last_loaded = loaded;
                 cx.notify();
             }
-        })];
+        }),
+            cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+        ];
 
         Self {
             _subscriptions: subscriptions,
@@ -422,7 +443,18 @@ impl CurseForgeContentView {
                 this.last_tab = current_tab;
                 cx.notify();
             }
-        })];
+        }),
+            cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+        ];
         Self {
             _subscriptions: subscriptions,
             curseforge_results_list: cx.new(CurseForgeResultsListView::new),

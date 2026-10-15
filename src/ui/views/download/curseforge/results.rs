@@ -190,6 +190,16 @@ impl CurseForgeResultsListView {
                     this.sync_visible_result_logo_reveal(cx);
                 }
             }),
+            cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
+            cx.observe_global::<I18n>(|this, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
         ];
 
         let mut this = Self {

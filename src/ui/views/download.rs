@@ -457,6 +457,11 @@ impl DownloadPageView {
                 cx.notify();
             }
         }));
+        subscriptions.push(cx.observe_global::<I18n>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
+        }));
 
         let page_jump_input =
             cx.read_global(|state: &DownloadPageState, _cx| state.page_jump_input.clone());

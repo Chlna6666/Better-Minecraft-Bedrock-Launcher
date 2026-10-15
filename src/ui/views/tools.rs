@@ -158,6 +158,11 @@ impl ToolsPageView {
                     cx.notify();
                 }
             }),
+            cx.observe_global::<I18n>(|this: &mut Self, cx| {
+                if this.active {
+                    cx.notify();
+                }
+            }),
         ];
         Self {
             _subscriptions: subscriptions,

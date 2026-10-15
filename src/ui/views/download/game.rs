@@ -104,6 +104,9 @@ impl DownloadGamePanelView {
         });
 
         let mut subscriptions = vec![cx.observe_global::<DownloadPageState>(|this, cx| {
+            if !this.active {
+                return;
+            }
             let (game_signature, dialog_signature) =
                 cx.read_global(|state: &DownloadPageState, _cx| {
                     (
@@ -127,7 +130,16 @@ impl DownloadGamePanelView {
                 }
             }
         })];
-
+        subscriptions.push(cx.observe_global::<crate::ui::state::theme::ThemeState>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
+        }));
+        subscriptions.push(cx.observe_global::<I18n>(|this, cx| {
+            if this.active {
+                cx.notify();
+            }
+        }));
         subscriptions.shrink_to_fit();
         let icon_cache = BoundedImageCache::new(
             BoundedImageCacheConfig {
@@ -153,6 +165,15 @@ impl DownloadGamePanelView {
         }
         self.active = active;
         if active {
+            let (game_signature, dialog_signature) =
+                cx.read_global(|state: &DownloadPageState, _| {
+                    (
+                        build_game_panel_observe_signature(state),
+                        build_game_dialog_observe_signature(state),
+                    )
+                });
+            self.last_observed_signature = game_signature;
+            self.last_observed_dialog_signature = dialog_signature;
             cx.notify();
         }
     }
