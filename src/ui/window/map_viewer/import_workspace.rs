@@ -308,8 +308,8 @@ impl MapViewerWindowView {
         }
     }
 
-    /// Deliberately empty preview area: actionable, centered, and keyboard-focusable through
-    /// the same reusable choice control used by the configuration panel.
+    /// Empty source is an actionable editor state, not a centered splash screen.
+    /// Keep the import call-to-action near the workflow controls at the top.
     fn render_import_source_empty_state(
         &self,
         colors: &ThemeColors,
@@ -338,17 +338,18 @@ impl MapViewerWindowView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .pt(px(68.0))
+            .pt(px(16.0))
             .pb(px(12.0))
             .flex()
+            .flex_col()
             .items_center()
-            .justify_center()
+            .justify_start()
             .child(
                 div()
                     .max_w(px(480.0))
                     .w_full()
                     .mx(px(20.0))
-                    .p(px(24.0))
+                    .p(px(20.0))
                     .rounded(px(12.0))
                     .border_1()
                     .border_color(colors.border)
