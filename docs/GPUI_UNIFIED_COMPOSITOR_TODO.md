@@ -1,7 +1,7 @@
 # GPUI 统一构帧与合成链路：持续执行 TODO
 
 > 状态：进行中。此文件是独立维护 GPUI/Nova-GFX 渲染重构的唯一进度入口；不是 BMCBL 业务 UI TODO。
-> 看板核对：2026-10-15，基线 master `678d02079f895186b5dc33d88a08592d753fdc87`；2026-10-14 的 DX11 与 2026-10-15 的 DX12 日志均为**历史基线**，不是当前代码的验收记录。原始文档初始基线 `405a7133eec7e093ad93681ed725de6a69a89cfb`。
+> 看板历史建档基线：2026-10-15 `678d02079f895186b5dc33d88a08592d753fdc87`（**不是当前 HEAD**）；2026-10-14 DX11 与 2026-10-15 DX12 日志均为历史基线，不是最新提交的验收证据。原始文档基线 `405a7133eec7e093ad93681ed725de6a69a89cfb`。
 > **所有后续对话/代理在编辑前必须重新读取 master HEAD、本文和相关源码，不得使用本文件的历史 HEAD 直接写入。**
 > 本文是唯一执行状态源；[GPUI P0 历史依赖审计](GPUI_P0_RENDER_DEPENDENCY_AUDIT.md)仅作已发生事实与当时源码快照参考，其旧 RenderTree/RenderCommit 方案不再是目标。
 
@@ -13,13 +13,13 @@
 
 | ID | 优先级 / 现状 | 下一可执行切片（完成时必须有的产物） | 前置与验收出口 |
 | --- | --- | --- | --- |
-| **P0-01** | P0 · **已提交·待验证** | **构建与单测阻塞清零**：检查 GPUI/Nova 当前 master 的 Rust fmt/check、`AutoStatic`、`gaussian_capture`、`retained_filters`、`chunk_upload`、设置 Trace/TOML 兼容性；出现 E0308/E0616/visibility/borrow 错误按实际源码修复并提交，**不以 CI 代替本地测试** | 无前置；记录命令、后端 Feature、错误/通过输出、测试数与对应 commit；未提供证据前其余 P0 全是“待验证” |
+| **P0-01** | P0 · **编译验收阻塞：当前 HEAD 未获得 Cargo fmt/check/test 成功证据** | **构建与单测阻塞清零**：检查 GPUI/Nova 当前 master 的 Rust fmt/check、`AutoStatic`、`gaussian_capture`、`retained_filters`、`chunk_upload`、设置 Trace/TOML 兼容性；出现 E0308/E0616/visibility/borrow 错误按实际源码修复并提交，**不以 CI 代替本地测试** | 无前置；记录命令、后端 Feature、错误/通过输出、测试数与对应 commit；未提供证据前其余 P0 全是“待验证” |
 | **P0-02** | P0 · **DX12 已确认开启；关闭/重启待验收** | **Trace 实际启停验收**：设置 → 启动器 → `GPUI / Nova 详细 Trace` 独立开关；持久化→完整重启→开启/关闭分别确认 `frame_metrics`、`gpui::diagnostics=trace`、`latest.log`；旧配置缺少键时默认 false；验证日志滚动限制 | P0-01；`src/config/*`、`src/ui/views/settings/*`、`src/app.rs`、`src/startup.rs`、`src/utils/logger.rs`；不触发 Debug 子窗口、不以环境变量绕过 |
 | **P0-03** | P0 · **DX12 UI Trace 已采到；事件因果链未闭环** | **同一次实验的时间线闭环**：将 UI Dropdown 打开/收起、Re-target、页面切换、Frame Request 的原因、`static_prefix_captured`、`auto_static_relocation`、`GPUI AutoStatic submitted`、Draw/Present 按 `window_id` / scene revision / 事件顺序关联；确认 `src/ui/components/dropdown.rs` 与 `dropdown_overlay.rs` 现存 `tracing::trace!` **不会仅凭 `gpui::diagnostics=trace` 自动进入日志**，补安全的 UI 侧定向 Trace 或关联字段，不全局开启所有库 trace | P0-01/02；一份可复现完整 Trace + 帧事件对照，保留低开销默认关闭语义 |
 | **P0-04** | P0 · **实测准入拒绝原因已确认，真正资源路径待设计** | **AutoStatic 静态前缀真缓存命中**：公共 Dropdown 连续展开/回收与首页版本下拉 A/B；记录 `static_prefix_captured=true`、成功 Present 后 `source_index=Some`、稳定动画帧 `refreshed_layers=0`、`source_draw_steps=0`，且 `native_view/content_version` 无故不变更；失效/Resize 首帧允许必要重绘 | P0-01～03；逐帧结果及截图，不能把 “Capture candidate” 误报为真实 GPU 缓存命中；涉及 `renderer/{retained_upload,present,filters}.rs` |
 | **P0-05** | P0 · **混合零半径/Root 物理复用代码已补，待 Cargo 与四后端验证** | **Filter Target 高水位复用**：Gaussian/Root/Element + AutoStatic 混合，预热 3→4→6 后连续 6→3→4→6；`active_isolated/allocated_isolated`、`layout reused/recreated`、物理 View、ResourceSet、Filter 输出内容版本一起核验；新 Slot、资源变化必须重绘而非采样旧像素 | P0-01～04；容量以内不应每次重新 create/destroy 全链；容量以外可重建；必须校验异步 Fence / GPU in-flight / 多窗口 / Blur on/off |
-| **P0-06** | P0 · **Root/Filter 构建失败回滚与 Fence 退休门已补强；Window 独立 GPU Owner / Root Graph 旧语义迁移仍待办、待验证** | **Root Color 和 Filter Capture 真实资源所有权分离**：根颜色不再使用 `retained_root_blur`/零半径 Blur 充当永久语义所有者；把 RootColor 的尺寸、内容版本、物理 View、Fence 退休和 Filter DAG 依赖独立定义，迁移旧消费者并删除冗余旧所有者 | P0-04/05 的实机正确性基线；跨 Popup 不无故失效、Resize/透明/Clip/Mask/Texture 别名不出现旧帧；不要再增加第二套 Root 缓存 |
-| **P0-07** | P0 · **Resize 整窗失效已修；Filter per-layer 动画版本与局部损伤补强，性能待验证** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
+| **P0-06** | P0 · **Native 资源创建/退休源码已提交；Root 下线物理槽隔离补强；Window 独立所有权/旧 Root 语义待迁移，编译待验** | **Root Color 和 Filter Capture 真实资源所有权分离**：根颜色不再使用 `retained_root_blur`/零半径 Blur 充当永久语义所有者；把 RootColor 的尺寸、内容版本、物理 View、Fence 退休和 Filter DAG 依赖独立定义，迁移旧消费者并删除冗余旧所有者 | P0-04/05 的实机正确性基线；跨 Popup 不无故失效、Resize/透明/Clip/Mask/Texture 别名不出现旧帧；不要再增加第二套 Root 缓存 |
+| **P0-07** | P0 · **Resize/局部损伤修复源码已提交，最新 HEAD 像素与 GPU 性能均待验证** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
 | **P0-08** | P0 · **修复动画误触发整窗源失效，待 Cargo/四后端实测** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **部分实现** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
 | **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
@@ -30,6 +30,21 @@
 | **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
 | **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 2026-10-15 本轮源码审计与偏移防护（父 HEAD `259fa1747c12ea24cc1f6745352992b8c3d85adb`）
+
+**结论：重构目标未偏移，之前的状态描述却过度容易被误读为“Root 所有权/Render Graph 已完成”。** 此表覆盖历史小节的状态口径；历史章节记录当时源码，旧符号和过期行为不应作为本次或后续的实现依据。
+
+| 核对对象 | 当前可证实事实 | 保持的任务边界 |
+| --- | --- | --- |
+| P0-01 编译闸门 | 本对话环境无 cargo/rustc/rustfmt，未得到当前 HEAD 的本地 fmt/check/test 成功输出 | **必须优先恢复编译与单测；此前“已提交”不等于编译通过** |
+| P0-06 Native Root | `RootColorTarget` 负责 Texture/View 及 Pass/Composite ResourceSet 原生分配/释放，但仍嵌套在 `BackdropBlurTargets` 中，Root 零半径逻辑 Variant 仍借用 Texture/View | Window GPU Owner 独立、Fence 退休与 Root 逻辑 Capture 删除 **未完成** |
+| P0-05/06 Root 关闭 | 无活动 Root 时，旧 Native Root 物理纹理不能被无 ResourceSet 的 Filter Variant 占用。本轮源码调整 `reuse_layout` 的选择以及 `rebind_zero_radius_layout` 的 spare 停放、再启用 | correctness 子切片，**新增测试源码但未运行**；容量不足可安全拒绝并重建 |
+| Render Graph 名词 | `resource_set_for_config` 和 `direct_composite_target` 已读 Root Native IDs；仓库仍保留 `FrameUpload.retained_root_blur`、`SceneSlot`、`pack_scene`、`PresentationPacket.scene`。本处“Render Graph”指未来统一资源 DAG，不等于已经迁移了所有 DrawStep/Pass 消费者 | P0-06 仅部分消费者迁移；P1/P3 未完成，禁止提前删除现有绘制 ABI |
+| Fence / Resize | Filter Target 拓扑变更有原有 submission preflight / wait，Resize、Window Destroy 仍从 Filter Chain 释放资源 | 没有独立 Window Root Fence 退休；需 GPU in-flight/多窗口/四后端实测，禁止把同步等待描述为独立异步退休 |
+| 性能基线 | 公共 Dropdown 的任务管理器 GPU 40%～50% 与 GPU Owner busy≈20% 是不同统计。没有当前 HEAD 同操作、同后端、同尺寸、同模糊设置的 A/B | P0-03/04/07 归因未闭环；不得声明占用已降低 |
+
+**不偏移执行顺序**：P0-01 编译正确性 → P0-02/03 Trace 因果链 → P0-04/05 真 Capture/物理复用 → P0-06/09 Native/Fence/Resize 正确性 → P0-07/08 端到端性能 → P1～P3 唯一持久 Paint/消除旧 Scene。为了避免实际 GPU 错误，允许提交有限 P0 正确性补丁，但**不得凭静态审查继续扩大未经编译的大规模所有权迁移**。BMCBL 业务 UI 缺陷不改变本 GPU 任务范围。
 
 ### 关键依赖 / 严格执行顺序
 
@@ -718,6 +733,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **风险与下一步**：当前 `RootColorTarget` 仍在 `BackdropBlurTargets` 内；`FrameUpload.retained_root_blur` 与零半径逻辑 Capture、Render Graph Root Pass 路由没有删除，Window 独立所有权及 per-submission 资源退休尚未实现。下阶段需要先获取本地编译和四后端真实资源泄漏/双释放/Fence 证据，再拆分 Window Root Owner，迁移 Resize、trim、destroy 与 native Render Graph，禁止仅做字段搬迁却引入第二套同步状态。
 - **验证未执行**：当前容器无 Rust 工具链，也未执行 DX11/DX12/Vulkan/OpenGL GPU 压测。需运行 `cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib warmed_zero_radius_popup_targets_rebind_without_reallocating_textures`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib root_color_version_survives_only_texture_preserving_topology_rebind`；另需注入各 Texture/View/ResourceSet 创建阶段失败并比较资源 allocation/free、连续快速弹出/关闭、GPU in-flight + Moderate/Aggressive Trim、窗口销毁/DComp Resize。提交是源码正确性改动，不表示 native failure injection / 性能测试通过，不能声称 GPU 40%～50% 已降低。
 
+## 2026-10-15：P0-06 Root 下线物理槽保留 + 当前 TODO 一致性审计（代码待编译）
+
+- 基线父 HEAD `259fa1747c12ea24cc1f6745352992b8c3d85adb`。核对 `targets.rs`、`targets/layout.rs`、`composite_target.rs`、`renderer.rs`、`renderer/submission.rs` 及 P0-06 旧测试。Root Native Texture/View 的逻辑 Variant 已无 Pass/Composite ResourceSet，不能像普通 Filter Scratch 一样重绑。
+- `root_capture_is_compatible` 在 Root 下线后要求原生 Texture/View 不位于活动 Filter 前缀；`reuse_layout` 将其排除出普通 zero-radius 精确/回退匹配；`rebind_zero_radius_layout` 在有 spare slot 时将 Root 纹理停放于闲置后缀、再次有 Root 时从 Native ID 找回，没 spare 时拒绝并交现有 Fence 保护的目标链重建。AutoStatic 身份/独立重排路径保留。
+- 新增 `root_color_removed_reserves_native_target_until_reintroduced` 单测源码：满容量无 spare 的拒绝应原地不变、缩容后 Native Root 停放、活跃 Filter 均有真实 ResourceSet、AutoStatic 改绑、Root 再次进入 Filter DAG 时从 Native Owner 查询两类 Set。已有 warmed 6→4→5→6→4 测试保留。
+- TODO 校验：`P0-01` 阻塞不能标成已通过；`P0-06` Window 独立 GPU Owner、异步 Fence 退休、`retained_root_blur` 移除**全部仍未实现**；GPU 原生时长和公共 Dropdown 性能不能从 CPU busy 推导。历史提交说明与当前源码矛盾时，以最新状态表、源码及测试结果为准。
+- **未进行验证**：容器无 Rust/Cargo，`cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、`cargo test --manifest-path crates/gpui/Cargo.toml --lib root_color_removed_reserves_native_target_until_reintroduced` 尚未执行，四后端 Root on/off、Popup 高频、Resize/Alpha、GPU Fence/ResourceSet 生命周期、性能 A/B 尚无本轮结果。下一步先完成 P0-01 后再扩大 Root Window GPU Owner 的破坏性迁移。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -734,6 +757,6 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 ## 下一次对话的直接起点（动态恢复入口）
 
 1. **先重新读取远程 master HEAD、本文顶部 `最新执行看板`、`docs/AI.md` 与最近提交差异**，不要复用本文历史 commit 当最新基线。
-2. **按 ID 选择最小切片**：P0-06 已将 Root Native Texture/View **及 Pass/Composite ResourceSet 的退休职责**迁到同一个 RootColorTarget；逻辑 Variant 仍仅借用相同 GPU IDs，`rebind_slot` 成功后回写新的资源集 ID。**Root 原生 ResourceSet 唯一所有、Filter 逻辑镜像删除；本轮补齐新目标构建失败时的临时 GPU 资源回滚、Filter 拓扑重排前 Fence 安全门及 GPU Trim 成功退休门。独立 Window Root Owner、Render Graph Root 语义迁移与真实 Fence 退休仍未完成，本地 Rust/四后端验证仍缺失**。下次先 Windows `cargo fmt/check`、`warmed_zero_radius_popup_targets` 以及所有 Root/Blur 单测，再在 DX12/11/VK/GL 复测 6→4→6、Root View、Fence/Resize/关闭子窗口。如果正确性达标，沿 `renderer/draw_steps` / Render Graph Producer / Window GPU Owner 清除借用 Variant 的 Root 身份，并真正独立按 GPU Fence 退休；完成剩余消费者迁移后才能删除 `FrameUpload.retained_root_blur`，绝不添加第二份缓冲链。P0-09 窗口正确性优先。
+2. **按 ID 选择最小切片**：P0-06 已将 Root Native Texture/View 与 Pass/Composite ResourceSet 的生产／退休职责归到 `RootColorTarget`；逻辑 Variant 仅借用 Texture/View，**不再有 ResourceSet 镜像及重绑回写**。当前补强了 Root 关闭后的物理槽停放与误用拒绝。**Root 原生 ResourceSet 唯一所有、Filter 逻辑镜像删除；本轮补齐新目标构建失败时的临时 GPU 资源回滚、Filter 拓扑重排前 Fence 安全门及 GPU Trim 成功退休门。独立 Window Root Owner、Render Graph Root 语义迁移与真实 Fence 退休仍未完成，本地 Rust/四后端验证仍缺失**。下次先 Windows `cargo fmt/check`、`warmed_zero_radius_popup_targets` 以及所有 Root/Blur 单测，再在 DX12/11/VK/GL 复测 6→4→6、Root View、Fence/Resize/关闭子窗口。**先完成 P0-01 编译及新 Root 下线测试**，验证 DX11/DX12/Vulkan/OpenGL 的 Root 开关、6→4→6/AutoStatic、Fence/Resize；然后再迁移 Window GPU Owner、DrawSteps/Filter Pass 的 Root 输入与独立 GPU 退休，最后删除 `FrameUpload.retained_root_blur` 旧语义，绝不增加第二个 Root Cache。P0-09 窗口正确性优先。
 3. **每次更新需要写在顶部任务表**：状态、源码位置/commit、对应测试命令、日志/截图或未提供原因、是否通过实际 GPU 后端验证；历史小节仅追加事实，不重新建并行 TODO。
 4. **提交规范**：下一次实现任务须按非强制快进 GitHub blob→tree→commit→compare→expected_sha 提交流程，并同步更新本文件；禁止在未重读 HEAD 时覆盖用户并发提交的 UI 变更。

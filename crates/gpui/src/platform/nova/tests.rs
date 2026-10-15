@@ -2692,6 +2692,91 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
 }
 
 #[test]
+fn root_color_removed_reserves_native_target_until_reintroduced() {
+    let make_variant = |index: u32| BackdropBlurVariantTargets {
+        config: test_zero_radius_blur_config(index),
+        levels: vec![BackdropBlurLevelTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(index + 1),
+            texture_view: test_texture_view_id(index + 1),
+            pass_resource_sets: vec![test_resource_set_id(index + 1)],
+        }],
+        target_resource_sets: vec![test_resource_set_id(index + 11)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
+        variants: (0..4).map(make_variant).collect(),
+        active_variant_count: 4,
+        retained_root_variant: Some(1),
+        root_color_target: None,
+    };
+    let root_level = &targets.variants[1].levels[0];
+    let root_texture = root_level.texture;
+    let root_view = root_level.texture_view;
+    targets.root_color_target = Some(RootColorTarget {
+        target: RenderTarget {
+            byte_size: root_level.byte_size,
+            texture: root_texture,
+            texture_view: root_view,
+        },
+        pass_resource_sets: vec![test_resource_set_id(101)],
+        composite_resource_sets: vec![test_resource_set_id(102)],
+    });
+    targets.variants[1].levels[0].pass_resource_sets.clear();
+    targets.variants[1].target_resource_sets.clear();
+
+    let without_root = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(!targets.root_capture_is_compatible(&without_root, None));
+    let mut invalid_fast_path = targets.clone();
+    invalid_fast_path.retained_root_variant = None;
+    assert!(!invalid_fast_path.root_capture_is_compatible(&without_root, None),
+        "a root-less logical DAG cannot activate the native Root Texture as Filter scratch");
+    // No spare physical slot: a Filter-only capture may not inherit the Root
+    // allocation and its intentionally empty descriptor mirrors.
+    let old_views = targets.variants.iter()
+        .map(|v| v.levels[0].texture_view).collect::<Vec<_>>();
+    assert!(!targets.rebind_zero_radius_layout(&without_root, false, None, None));
+    assert_eq!(targets.variants.iter()
+        .map(|v| v.levels[0].texture_view).collect::<Vec<_>>(), old_views);
+    assert_eq!(targets.retained_root_variant, Some(1));
+
+    let shorter = (0..3).map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(!targets.reuse_layout(&shorter, &[], false, None, None),
+        "exact config matching must never consume the parked Root texture");
+    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, None));
+    assert_eq!(targets.retained_root_variant, None);
+    assert!(targets.root_capture_is_compatible(&shorter, None));
+    assert_eq!(targets.variants[3].levels[0].texture, root_texture);
+    assert_eq!(targets.variants[3].levels[0].texture_view, root_view);
+    for variant in targets.variants.iter().take(targets.active_variant_count) {
+        assert_ne!(variant.levels[0].texture, root_texture);
+        assert!(!variant.levels[0].pass_resource_sets.is_empty());
+        assert!(!variant.target_resource_sets.is_empty());
+    }
+
+    // AutoStatic continues to relocate inside the Filter-only active prefix,
+    // without moving or sampling the parked Root Color native allocation.
+    let before_auto_static = targets.variants[0].levels[0].texture_view;
+    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, Some((0, 2))));
+    assert_eq!(targets.variants[2].levels[0].texture_view, before_auto_static);
+    assert_eq!(targets.variants[3].levels[0].texture_view, root_view);
+
+    let reintroduced = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
+    assert!(targets.rebind_zero_radius_layout(&reintroduced, false, Some(2), None));
+    assert_eq!(targets.retained_root_variant, Some(2));
+    assert_eq!(targets.root_color_texture_identity(), Some((root_texture, root_view)));
+    assert_eq!(targets.resource_set_for_config(reintroduced[2], 0),
+        Some(test_resource_set_id(102)));
+    assert_eq!(targets.direct_composite_target(reintroduced[2], 0)
+        .unwrap().source_resource_set, test_resource_set_id(101));
+    assert!(targets.variants[2].levels[0].pass_resource_sets.is_empty());
+    assert!(targets.variants[2].target_resource_sets.is_empty());
+}
+
+#[test]
 fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_zero_radius_blur_config(index),

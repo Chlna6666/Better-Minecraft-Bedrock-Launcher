@@ -72,7 +72,44 @@ impl BackdropBlurTargets {
                     && variant.levels[0].texture_view == native.texture_view
             })
         });
-        if let (Some(previous), Some(current)) = (previous_root_owner, new_root) {
+        if let Some(root) = self.root_color_target.as_ref() {
+            let Some(owner_slot) = previous_root_owner else {
+                // Never let a Filter-only descriptor impersonate an orphaned
+                // Root native allocation.
+                return false;
+            };
+            let Some(level) = self.variants.get(owner_slot)
+                .and_then(|variant| variant.levels.first())
+            else {
+                return false;
+            };
+            if level.texture != root.target.texture
+                || level.texture_view != root.target.texture_view
+            {
+                return false;
+            }
+            if new_root.is_none() && owner_slot < next.len() {
+                // Root was removed from the logical DAG. Park its borrowed
+                // Texture/View in a spare slot so no ordinary Capture can
+                // sample it with empty (Root-owned) descriptor mirrors.
+                let Some(spare) = (next.len()..self.variants.len())
+                    .find(|&slot| slot != owner_slot)
+                else {
+                    return false; // requires a fresh Filter chain
+                };
+                self.variants.swap(owner_slot, spare);
+            } else if let Some(current) = new_root {
+                self.variants.swap(owner_slot, current);
+            }
+            if new_root.is_none() {
+                // AutoStatic can still relocate independently while a former
+                // Root allocation is parked in an inactive physical slot.
+                if let Some((old, new)) = auto_static_slots {
+                    self.variants.swap(old, new);
+                }
+            }
+        } else if let (Some(previous), Some(current)) = (previous_root_owner, new_root) {
+            // Legacy unowned fixtures never have Root residency.
             self.variants.swap(previous, current);
         } else if let Some((old, new)) = auto_static_slots {
             self.variants.swap(old, new);
@@ -142,6 +179,19 @@ impl BackdropBlurTargets {
                     && variant.levels[0].texture_view == native.texture_view
             })
         });
+        // Physical Root storage must not be reassigned to a non-Root
+        // Capture while its logical role is absent. Its descriptor arrays
+        // intentionally remain empty: only RootColorTarget owns those sets.
+        let native_root_slot = self.root_color_target.as_ref().and_then(|root| {
+            self.variants.iter().position(|variant| {
+                variant.levels.len() == 1
+                    && variant.levels[0].texture == root.target.texture
+                    && variant.levels[0].texture_view == root.target.texture_view
+            })
+        });
+        if self.root_color_target.is_some() && native_root_slot.is_none() {
+            return false;
+        }
         let pinned = if let (Some(previous), Some(current)) =
             (previous_root_owner, new_root)
         {
@@ -213,6 +263,7 @@ impl BackdropBlurTargets {
             }
             if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
                 (!permutation.contains(&old)
+                    && (new_root.is_some() || native_root_slot != Some(old))
                     && variant.config.same_target_slot(config)
                     && variant.levels.len() == blur_variant_level_count(config))
                     .then_some(old)
@@ -240,6 +291,7 @@ impl BackdropBlurTargets {
                 if let Some(root) = root_physical {
                     if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
                         (!permutation.contains(&old)
+                            && (new_root.is_some() || native_root_slot != Some(old))
                             && variant.config.radius() == 0.0
                             && variant.levels.len() == 1
                             && variant.levels[0].byte_size == root.target.byte_size

@@ -101,10 +101,23 @@ impl BackdropBlurTargets {
         if root_capture_index.is_some() && next_root.is_none() {
             return false;
         }
-        self.retained_root_variant == next_root
-            && (next_root.is_none()
-                || (self.root_color_target.is_some()
-                    && self.root_color_texture_identity().is_some()))
+        if self.retained_root_variant != next_root {
+            return false;
+        }
+        if next_root.is_some() {
+            return self.root_color_texture_identity().is_some();
+        }
+        // Once Root leaves the DAG its native Texture must be in the
+        // inactive suffix; otherwise an active Filter may sample a target
+        // whose borrowed ResourceSet arrays are intentionally empty.
+        !self.root_color_target.as_ref().is_some_and(|root| {
+            self.variants.iter().take(self.active_variant_count).any(|variant| {
+                variant.levels.iter().any(|level| {
+                    level.texture == root.target.texture
+                        || level.texture_view == root.target.texture_view
+                })
+            })
+        })
     }
 
     /// The native Root Color owns its pixels independently of warmed, inactive
