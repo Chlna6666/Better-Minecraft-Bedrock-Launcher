@@ -463,6 +463,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【回归验证】**：新增顺序映射、全部 10 种 Stream 的 CPU Patch → 静态签名相同保持非共享 → invalidate/re-upload 恢复共享，以及 PolySprites 单流改变不污染 Quad 的测试源码。另独立 JavaScript 模型比较 100,000 组随机旧/新 Slot 签名与共享状态、2,048 组动画 Primitive 类型序列，结果完全一致。**这不是 Rust 编译/测试**。
 - **【未验证/下一步】**：当前容器仍无 `cargo`、`rustc`、`rustfmt`，没有 Windows/Linux 原生 GPU。需本地编译、运行 `gpui` 单测及四后端回归，确认 Scene revision 切换、CPU Patch 尾帧、Slot 轮换、Buffer Replace、live resize 均不发生错误共享。性能收益仅限减少元数据查询与 CPU 扫描；真正重复的 Frame Request → DrawStep → Native Present 和 Paint Chunk/SceneSlot 重构尚未解决。后续应针对重复的 `AnimatedPrimitive` 编码与 `FrameUpload` 全场景 staging 开始纵向迁移，不能把简单循环减少误认为统一 Compositor 已完成。
 
+## 2026-10-15：补齐 Retained Quad 局部上传时 CPU 动画字节的覆盖证明
+
+- **基线**：远程 master `c749d1c0726dbb6158ebd7c67cc6516f013494c7`。修改 `crates/gpui/src/platform/nova/renderer/buffer_upload.rs` 和本唯一 TODO；直接修复旧 `FrameUpload → QuadUploadPlan → BufferUploadBatch` 同一条规划路径，不引入旁路动画缓存、新 FrameUpload 所有者或兼容层。
+- **【已定位正确性风险】**：`FrameUpload::sample_primitive_records` 每帧就地修改 CPU-animated packed Quad 字节，而过去 `plan_animated_buffers` 使用 `if !dirty.quad` 决定是否对 Quad 动画进行 GPU patch。静态上传 `dirty.quad == true` 并**不**必然表示 Full 上传：QuadResidentLayout 可能生成局部 `Ranges`，甚至静态签名只因 animation topology 改动而产生 `None`；因此动画 Quad 可能落在其未覆盖的 Gap，产生陈旧 GPU 数据。
+- **【代码实现，未编译】**：新增纯范围算法 `for_each_uncovered_animated_quad_range`：`Full` 表示已覆盖无需动画额外写入，`None` 必须提交全部 CPU 动画字节，`Ranges` 则对每个动画 Quad 只规划未被静态脏区间覆盖的补集。静态范围保持有序/不相交，使用 `partition_point` 定位首个相交区间，避免从第一个 retained span 反复扫描；补传通过唯一 `plan_quad_range` 和 `PackedQuadStream::slices` 完成，不复制数据，不重写 Buffer/Fence 生命周期，不对已经覆盖的字节重复提交。
+- **【测试源码未运行】**：新增 Full/None/空范围、动画跨多个 retained islands、部分重叠与完全覆盖测试。独立随机模型比较 120,000 组不同顺序的有效静态范围与动画范围，逐字节判断计算出的补集准确（不是执行 Rust 单测）。
+- **【正确性边界】**：当 `QuadUploadPlan` 不合法时上游应降级 Full，本辅助函数仅处理上游已验证的有序计划；其他 Shadow/Mono/Poly/BlurRecords 仍按原有静态 Full 与动画 patch 规则。所有非空 Backend Buffer Upload 仍遵守已有提交顺序，WSI Present 与 Render Graph 未改；本次主要是规避遗漏及重复写入，不承诺 GPU 使用率必降。
+- **【未验证与下一步】**：当前环境没有 cargo/rustc/rustfmt，尚无 gpui 单测、DX11/DX12/Vulkan/OpenGL 真实 Buffer/Fence 测试或显存/帧延迟证据。必须本地重点验证“CPU Quad 动画 + Retained Static Chunk + FrameSlot 轮换 + Scene Revision 变化 + GPU COW Resize”组合。之后继续收敛局部 Paint Chunk/DirtyRegion/DrawStep 的权威内容版本，并逐步替代全场景 Scene/FrameUpload staging。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

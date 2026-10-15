@@ -210,6 +210,44 @@ fn plan_animated_buffer_kind<'a>(
     Ok(())
 }
 
+/// Emit only the animated Quad bytes not already covered by this slot's
+/// static upload plan. A change in static animation topology does not prove
+/// the retained Quad spans contain every sampled CPU-animated record.
+///
+/// Static dirty ranges are ordered, disjoint, and use half-open GPU offsets;
+/// partition_point avoids repeatedly scanning their unrelated prefix.
+/// Non-overlapping animation writes preserve byte-order within each primitive.
+fn for_each_uncovered_animated_quad_range(
+    static_plan: &QuadUploadPlan,
+    animated: std::ops::Range<usize>,
+    mut emit: impl FnMut(std::ops::Range<usize>) -> Result<()>,
+) -> Result<()> {
+    if animated.is_empty() || matches!(static_plan, QuadUploadPlan::Full) {
+        return Ok(());
+    }
+    let QuadUploadPlan::Ranges(static_ranges) = static_plan else {
+        return emit(animated);
+    };
+    let mut cursor = animated.start;
+    let from = static_ranges.partition_point(|range| range.end <= cursor);
+    for range in &static_ranges[from..] {
+        if range.start >= animated.end {
+            break;
+        }
+        if cursor < range.start {
+            emit(cursor..range.start.min(animated.end))?;
+        }
+        cursor = cursor.max(range.end.min(animated.end));
+        if cursor >= animated.end {
+            return Ok(());
+        }
+    }
+    if cursor < animated.end {
+        emit(cursor..animated.end)?;
+    }
+    Ok(())
+}
+
 fn plan_animated_buffers<'a>(
     batch: &mut BufferUploadBatch<'a>,
     upload: &FrameBufferUpload<'a>,
@@ -224,22 +262,23 @@ fn plan_animated_buffers<'a>(
             0..source.backdrop_blur_passes.len(),
         )?;
     }
-    // Full static writes already contain sampled bytes. Clean streams retain their static gaps;
-    // the common planner merges only touching animated ranges from the same immutable snapshot.
-    if !dirty.quad {
-        for primitive in source
-            .animated_primitives
-            .iter()
-            .filter(|primitive| primitive.kind == AnimatedPrimitiveKind::Quad)
-        {
-            let start = usize::try_from(primitive.offset())?;
-            plan_quad_range(
-                batch,
-                buffers.quad,
-                &source.quads,
-                start..start + primitive.bytes.len(),
-            )?;
-        }
+    // The static signature includes animation topology and may be dirty even
+    // when a retained-span partial upload omits some CPU-sampled Quad bytes.
+    // Union the two upload sets rather than assuming static "dirty" == Full.
+    for primitive in source
+        .animated_primitives
+        .iter()
+        .filter(|primitive| primitive.kind == AnimatedPrimitiveKind::Quad)
+    {
+        let start = usize::try_from(primitive.offset())?;
+        let end = start.checked_add(primitive.bytes.len()).ok_or_else(|| {
+            anyhow::anyhow!("nova animated quad range overflow at byte {start}")
+        })?;
+        for_each_uncovered_animated_quad_range(
+            upload.quad_upload_plan,
+            start..end,
+            |range| plan_quad_range(batch, buffers.quad, &source.quads, range),
+        )?;
     }
     for (buffer, bytes, kind, selected) in [
         (
@@ -277,6 +316,57 @@ fn plan_animated_buffers<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn uncovered_ranges(
+        static_plan: &QuadUploadPlan,
+        animated: std::ops::Range<usize>,
+    ) -> Vec<std::ops::Range<usize>> {
+        let mut result = Vec::new();
+        for_each_uncovered_animated_quad_range(static_plan, animated, |range| {
+            result.push(range);
+            Ok(())
+        }).unwrap();
+        result
+    }
+
+    #[test]
+    fn animated_quad_upload_fills_only_static_plan_gaps() {
+        let static_plan = QuadUploadPlan::Ranges(
+            smallvec::smallvec![0..32, 64..96, 128..160]
+        );
+        assert_eq!(uncovered_ranges(&static_plan, 40..88), vec![40..64]);
+        assert_eq!(uncovered_ranges(&static_plan, 16..80), vec![32..64]);
+        assert_eq!(uncovered_ranges(&static_plan, 32..64), vec![32..64]);
+        assert_eq!(
+            uncovered_ranges(&static_plan, 24..144),
+            vec![32..64, 96..128]
+        );
+        assert!(uncovered_ranges(&static_plan, 70..84).is_empty());
+        assert!(uncovered_ranges(&static_plan, 144..144).is_empty());
+    }
+
+    #[test]
+    fn quad_full_or_none_plans_do_not_duplicate_or_lose_animation_bytes() {
+        assert!(uncovered_ranges(&QuadUploadPlan::Full, 40..88).is_empty());
+        assert_eq!(
+            uncovered_ranges(&QuadUploadPlan::None, 40..88),
+            vec![40..88]
+        );
+        assert!(uncovered_ranges(&QuadUploadPlan::None, 0..0).is_empty());
+    }
+
+    #[test]
+    fn animated_quads_across_multiple_resident_islands_keep_byte_order() {
+        let static_plan = QuadUploadPlan::Ranges(
+            smallvec::smallvec![16..32, 48..64, 80..96, 112..128, 144..160]
+        );
+        assert_eq!(
+            uncovered_ranges(&static_plan, 8..168),
+            vec![8..16, 32..48, 64..80, 96..112, 128..144, 160..168]
+        );
+        assert_eq!(uncovered_ranges(&static_plan, 160..176), vec![160..176]);
+        assert_eq!(uncovered_ranges(&static_plan, 0..8), vec![0..8]);
+    }
 
     #[test]
     fn clean_static_and_gpu_only_animation_frames_skip_buffer_planning() {
