@@ -611,6 +611,14 @@ impl NovaRenderer {
         // Root allocation. It must be recreated when a Root first appears:
         // reinterpreting a scratch target as root would violate both the
         // ownership and content-version proofs.
+        // A Filter topology change may reassign the same Texture/View to
+        // another Capture. Finish any native readers before touching the live
+        // descriptor mapping, not just before the full recreation fallback.
+        // In async mode frame_submission_is_ready defers this path rather than
+        // blocking the UI thread; this fence is a synchronous safety fallback.
+        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
+            self.wait_for_pending_submissions()?;
+        }
         let root_needs_allocation = self.frame_upload.retained_root_blur.is_some()
             && self.filters.targets.as_ref().is_some_and(|targets| {
                 targets.root_color_target.is_none()
@@ -659,11 +667,6 @@ impl NovaRenderer {
                 self.filters.targets.as_ref().expect("reused targets exist").active_isolated_source_count,
                 self.filters.targets.as_ref().expect("reused targets exist").isolated_sources.len());
             return Ok(());
-        }
-        // Rebinding will overwrite recycled offscreen textures on the next draw.
-        // Retire any in-flight reads before changing their ownership.
-        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
-            self.wait_for_pending_submissions()?;
         }
         // For zero-radius capture-only layouts, a popup can change the number
         // and flattened order of captures without changing texture dimensions.
@@ -1025,10 +1028,15 @@ impl NovaRenderer {
         self.frame_upload.trim_retained_capacity(level);
         self.retained_upload.quad_chunks.trim(level);
         self.draw_step_scratch.trim_retained_capacity(level);
-        if matches!(
-            level,
-            GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
-        ) && self.frame_upload.backdrop_blurs.is_empty()
+        // Filter and Root views are still referenced by pending GPU command buffers.
+        // A failed fence drain must NEVER convert a memory-pressure hint into
+        // early native destruction of textures or descriptor sets.
+        if submissions_drained
+            && matches!(
+                level,
+                GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive
+            )
+            && self.frame_upload.backdrop_blurs.is_empty()
         {
             self.destroy_backdrop_blur_targets();
         }

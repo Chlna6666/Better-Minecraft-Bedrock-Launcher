@@ -378,204 +378,233 @@ fn create_backdrop_blur_target_chain_with_configs<D>(
 where
     D: BackendResources + BackendPipelines,
 {
-    // Element captures (including their nested backdrop barriers) have their own source.
-    // Allocate the shared full-window source only for a backdrop outside those captures.
-    let source = if descriptor.needs_root_source {
-        Some(create_render_texture_target(
-            device,
-            &format!("{label} backdrop scene color"),
-            descriptor.size,
-            descriptor.format,
-        )?)
-    } else {
-        None
-    };
-    let mut source_pass_resource_sets = Vec::new();
-    if let Some(source) = source {
-        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            source_pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!(
-                    "{label} backdrop scene color frame {index} resource set"
-                )),
-                layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
-                    &buffers,
-                    source.texture_view,
-                    descriptor.sampler,
-                ),
-            })?);
+    // This journal is invocation-local: on failure, no partially constructed
+    // Filter/Root GPU allocation may escape without a retirement path.
+    let mut created_textures = Vec::new();
+    let mut created_resource_sets = Vec::new();
+    let result = (|| -> Result<BackdropBlurTargets> {
+        let mut allocate_texture = |device: &mut D, name: &str, size: Extent2d, format: Format| {
+            let target = create_render_texture_target(device, name, size, format)?;
+            created_textures.push(target);
+            Ok::<RenderTarget, anyhow::Error>(target)
+        };
+        let mut allocate_set = |device: &mut D, descriptor: &ResourceSetDescriptor| {
+            let set = device.create_resource_set(descriptor)?;
+            created_resource_sets.push(set);
+            Ok::<ResourceSetId, anyhow::Error>(set)
+        };
+        // Element captures (including their nested backdrop barriers) have their own source.
+        // Allocate the shared full-window source only for a backdrop outside those captures.
+        let source = if descriptor.needs_root_source {
+            Some(allocate_texture(
+                device,
+                &format!("{label} backdrop scene color"),
+                descriptor.size,
+                descriptor.format,
+            )?)
+        } else {
+            None
+        };
+        let mut source_pass_resource_sets = Vec::new();
+        if let Some(source) = source {
+            for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                source_pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    label: Some(format!(
+                        "{label} backdrop scene color frame {index} resource set"
+                    )),
+                    layout: descriptor.pass_resource_set_layout,
+                    bindings: backdrop_blur_pass_resource_bindings(
+                        &buffers,
+                        source.texture_view,
+                        descriptor.sampler,
+                    ),
+                })?);
+            }
         }
-    }
 
-    let mut isolated_source_indices = descriptor.isolated_source_indices;
-    isolated_source_indices.sort_unstable();
-    isolated_source_indices.dedup();
-    isolated_source_indices.retain(|index| blur_requires_isolated_source(configs, *index));
-    let mut isolated_sources = Vec::with_capacity(isolated_source_indices.len());
-    for index in isolated_source_indices {
-        let target = create_render_texture_target(
-            device,
-            &format!("{label} element blur {index} scene color"),
-            descriptor.size,
-            descriptor.format,
-        )?;
-        let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!(
-                    "{label} element blur {index} scene color frame {frame_index} resource set"
-                )),
-                layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
-            })?);
+        let mut isolated_source_indices = descriptor.isolated_source_indices;
+        isolated_source_indices.sort_unstable();
+        isolated_source_indices.dedup();
+        isolated_source_indices.retain(|index| blur_requires_isolated_source(configs, *index));
+        let mut isolated_sources = Vec::with_capacity(isolated_source_indices.len());
+        for index in isolated_source_indices {
+            let target = allocate_texture(
+                device,
+                &format!("{label} element blur {index} scene color"),
+                descriptor.size,
+                descriptor.format,
+            )?;
+            let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    label: Some(format!(
+                        "{label} element blur {index} scene color frame {frame_index} resource set"
+                    )),
+                    layout: descriptor.pass_resource_set_layout,
+                    bindings: backdrop_blur_pass_resource_bindings(&buffers, target.texture_view, descriptor.sampler),
+                })?);
+            }
+            isolated_sources.push(IsolatedBlurSource {
+                index,
+                target,
+                pass_resource_sets,
+            });
         }
-        isolated_sources.push(IsolatedBlurSource {
-            index,
-            target,
-            pass_resource_sets,
+
+        // Resolve the Root role before creating any filter scratch. Allocate its
+        // native texture ONCE, separately from the Gaussian/zero-radius variants,
+        // and lend the view to the matching logical compositor slot.
+        let root_variant = descriptor.root_color_capture_index.and_then(|root| {
+            configs.iter().position(|config| config.contains_member_index(root)
+                && config.radius() == 0.0)
         });
-    }
-
-    // Resolve the Root role before creating any filter scratch. Allocate its
-    // native texture ONCE, separately from the Gaussian/zero-radius variants,
-    // and lend the view to the matching logical compositor slot.
-    let root_variant = descriptor.root_color_capture_index.and_then(|root| {
-        configs.iter().position(|config| config.contains_member_index(root)
-            && config.radius() == 0.0)
-    });
-    let root_color_target = if root_variant.is_some() {
-        let target = create_render_texture_target(
-            device,
-            &format!("{label} independent root color"),
-            descriptor.size,
-            descriptor.format,
-        )?;
-        let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        let mut composite_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
-        for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-            pass_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!("{label} root color pass frame {index} resource set")),
-                layout: descriptor.pass_resource_set_layout,
-                bindings: backdrop_blur_pass_resource_bindings(
-                    &buffers, target.texture_view, descriptor.sampler,
-                ),
-            })?);
-            composite_resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                label: Some(format!("{label} root color composite frame {index} resource set")),
-                layout: descriptor.blur_resource_set_layout,
-                bindings: backdrop_blur_resource_bindings(
-                    &buffers, target.texture_view, descriptor.sampler,
-                ),
-            })?);
-        }
-        Some(RootColorTarget { target, pass_resource_sets, composite_resource_sets })
-    } else {
-        None
-    };
-    let mut variants = Vec::with_capacity(configs.len());
-    for (variant_index, config) in configs.iter().copied().enumerate() {
-        let downsample = u32::from(config.downsample().max(1));
-        let horizontal_size = Extent2d::new(
-            descriptor.size.width().div_ceil(downsample).max(1),
-            descriptor.size.height(),
-        )?;
-        let final_size = if config.radius() > 0.0 {
-            Extent2d::new(
+        let root_color_target = if root_variant.is_some() {
+            let target = allocate_texture(
+                device,
+                &format!("{label} independent root color"),
+                descriptor.size,
+                descriptor.format,
+            )?;
+            let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            let mut composite_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    label: Some(format!("{label} root color pass frame {index} resource set")),
+                    layout: descriptor.pass_resource_set_layout,
+                    bindings: backdrop_blur_pass_resource_bindings(
+                        &buffers, target.texture_view, descriptor.sampler,
+                    ),
+                })?);
+                composite_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    label: Some(format!("{label} root color composite frame {index} resource set")),
+                    layout: descriptor.blur_resource_set_layout,
+                    bindings: backdrop_blur_resource_bindings(
+                        &buffers, target.texture_view, descriptor.sampler,
+                    ),
+                })?);
+            }
+            Some(RootColorTarget { target, pass_resource_sets, composite_resource_sets })
+        } else {
+            None
+        };
+        let mut variants = Vec::with_capacity(configs.len());
+        for (variant_index, config) in configs.iter().copied().enumerate() {
+            let downsample = u32::from(config.downsample().max(1));
+            let horizontal_size = Extent2d::new(
                 descriptor.size.width().div_ceil(downsample).max(1),
-                descriptor.size.height().div_ceil(downsample).max(1),
-            )?
-        } else {
-            // A direct compositor is a pixel cache, not a low-pass filter. Keep it at native
-            // resolution even if stale quality metadata happens to carry a downsample factor.
-            descriptor.size
-        };
-        let pass_sizes = if config.radius() > 0.0 {
-            [horizontal_size, final_size]
-        } else {
-            [final_size, final_size]
-        };
-        let pass_count = blur_variant_level_count(config);
-        let mut levels = Vec::with_capacity(pass_count);
-        for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
-            let target = if root_variant == Some(variant_index) {
-                // This slot describes (but does not own) the Root texture.
-                // The only permitted root is a full-resolution, single-pass,
-                // zero-radius capture.
-                debug_assert_eq!(pass_count, 1);
-                root_color_target.as_ref().expect("root texture was allocated").target
-            } else {
-                create_render_texture_target(
-                    device,
-                    &format!("{label} backdrop variant {variant_index} target {pass_index}"),
-                    target_size,
-                    descriptor.format,
+                descriptor.size.height(),
+            )?;
+            let final_size = if config.radius() > 0.0 {
+                Extent2d::new(
+                    descriptor.size.width().div_ceil(downsample).max(1),
+                    descriptor.size.height().div_ceil(downsample).max(1),
                 )?
+            } else {
+                // A direct compositor is a pixel cache, not a low-pass filter. Keep it at native
+                // resolution even if stale quality metadata happens to carry a downsample factor.
+                descriptor.size
             };
-            // A Root logical variant has no descriptor ownership or mirror.
-            // The native RootColorTarget is consulted by every Graph consumer.
-            let pass_resource_sets = if root_variant == Some(variant_index) {
+            let pass_sizes = if config.radius() > 0.0 {
+                [horizontal_size, final_size]
+            } else {
+                [final_size, final_size]
+            };
+            let pass_count = blur_variant_level_count(config);
+            let mut levels = Vec::with_capacity(pass_count);
+            for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
+                let target = if root_variant == Some(variant_index) {
+                    // This slot describes (but does not own) the Root texture.
+                    // The only permitted root is a full-resolution, single-pass,
+                    // zero-radius capture.
+                    debug_assert_eq!(pass_count, 1);
+                    root_color_target.as_ref().expect("root texture was allocated").target
+                } else {
+                    allocate_texture(
+                        device,
+                        &format!("{label} backdrop variant {variant_index} target {pass_index}"),
+                        target_size,
+                        descriptor.format,
+                    )?
+                };
+                // A Root logical variant has no descriptor ownership or mirror.
+                // The native RootColorTarget is consulted by every Graph consumer.
+                let pass_resource_sets = if root_variant == Some(variant_index) {
+                    Vec::new()
+                } else {
+                    let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
+                    for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                        sets.push(allocate_set(device, &ResourceSetDescriptor {
+                            label: Some(format!(
+                                "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
+                            )),
+                            layout: descriptor.pass_resource_set_layout,
+                            bindings: backdrop_blur_pass_resource_bindings(
+                                &buffers, target.texture_view, descriptor.sampler,
+                            ),
+                        })?);
+                    }
+                    sets
+                };
+                levels.push(BackdropBlurLevelTarget {
+                    byte_size: target.byte_size,
+                    texture: target.texture,
+                    texture_view: target.texture_view,
+                    pass_resource_sets,
+                });
+            }
+
+            let target_resource_sets = if root_variant == Some(variant_index) {
                 Vec::new()
             } else {
                 let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
                 for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                    sets.push(device.create_resource_set(&ResourceSetDescriptor {
+                    let source_texture_view = levels
+                        .last()
+                        .expect("every blur variant owns at least one target")
+                        .texture_view;
+                    sets.push(allocate_set(device, &ResourceSetDescriptor {
                         label: Some(format!(
-                            "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
+                            "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
                         )),
-                        layout: descriptor.pass_resource_set_layout,
-                        bindings: backdrop_blur_pass_resource_bindings(
-                            &buffers, target.texture_view, descriptor.sampler,
+                        layout: descriptor.blur_resource_set_layout,
+                        bindings: backdrop_blur_resource_bindings(
+                            &buffers, source_texture_view, descriptor.sampler,
                         ),
                     })?);
                 }
                 sets
             };
-            levels.push(BackdropBlurLevelTarget {
-                byte_size: target.byte_size,
-                texture: target.texture,
-                texture_view: target.texture_view,
-                pass_resource_sets,
+            variants.push(BackdropBlurVariantTargets {
+                config,
+                levels,
+                target_resource_sets,
             });
         }
 
-        let target_resource_sets = if root_variant == Some(variant_index) {
-            Vec::new()
-        } else {
-            let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
-            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                let source_texture_view = levels
-                    .last()
-                    .expect("every blur variant owns at least one target")
-                    .texture_view;
-                sets.push(device.create_resource_set(&ResourceSetDescriptor {
-                    label: Some(format!(
-                        "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
-                    )),
-                    layout: descriptor.blur_resource_set_layout,
-                    bindings: backdrop_blur_resource_bindings(
-                        &buffers, source_texture_view, descriptor.sampler,
-                    ),
-                })?);
+        Ok(BackdropBlurTargets {
+            source,
+            source_pass_resource_sets,
+            active_isolated_source_count: isolated_sources.len(),
+            isolated_sources,
+            variants,
+            active_variant_count: configs.len(),
+            retained_root_variant: root_variant,
+            root_color_target,
+        })
+    })();
+    if result.is_err() {
+        // ResourceSets must be retired before any TextureView they sample.
+        // Roll back in reverse creation order, never touching the live chain.
+        for set in created_resource_sets.into_iter().rev() {
+            if let Err(error) = device.destroy_resource_set(set) {
+                log::debug!("failed to roll back {label} filter resource set: {error}");
             }
-            sets
-        };
-        variants.push(BackdropBlurVariantTargets {
-            config,
-            levels,
-            target_resource_sets,
-        });
+        }
+        for target in created_textures.into_iter().rev() {
+            destroy_render_texture_target(device, target, "filter allocation rollback");
+        }
     }
-
-    Ok(BackdropBlurTargets {
-        source,
-        source_pass_resource_sets,
-        active_isolated_source_count: isolated_sources.len(),
-        isolated_sources,
-        variants,
-        active_variant_count: configs.len(),
-        retained_root_variant: root_variant,
-        root_color_target,
-    })
+    result
 }
 
 pub(super) fn destroy_backdrop_blur_target_chain<D>(
@@ -722,13 +751,22 @@ where
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
     })?;
-    let texture_view = device.create_texture_view(&TextureViewDescriptor {
+    let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} texture view")),
         texture,
         base_mip_level: 0,
         mip_level_count: 1,
         format,
-    })?;
+    }) {
+        Ok(view) => view,
+        Err(error) => {
+            // A failed View allocation still leaves the Texture alive.
+            if let Err(rollback_error) = device.destroy_texture(texture) {
+                log::debug!("failed to roll back {label} texture after view failure: {rollback_error}");
+            }
+            return Err(error.into());
+        }
+    };
     Ok(RenderTarget {
         byte_size: u64::from(size.width())
             * u64::from(size.height())
