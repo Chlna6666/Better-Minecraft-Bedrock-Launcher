@@ -431,6 +431,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码未运行】**：新增真实 `DrawStepScratch` 的扩展帧不命中、扩展移除后恢复稳定缓存测试；以及扩展命令在被遮挡前清空、Vec capacity 复用和数量缩减的纯函数测试。当前环境检查仍无 `cargo/rustc/rustfmt`，没有 GPU，四后端未验证；提交只证明源码层面规避旧描述符，并未实测 DrawStep 耗时或 GPU 20% 占用下降。应先在 Windows/Linux 用动态 RendererExtension 与窗口遮挡/移动对照源缓冲和 GPU Trace，核查空命令不造成意外空帧。
 - **【继续任务】**：向源代码中对齐 `Render Graph → Present` 的帧请求源与静态场景跳过策略，不能仅因 Buffer Upload/DrawStep Cache 正常就认为 Present 不再被唤醒。统一 Paint Chunk → GPU Compositor Lane、SceneSlot/Scene Replay/FrameUpload 老路径的安全迁移仍未完成。
 
+## 2026-10-15：合并 Element Blur Source 查找入口，移除每层重复线性扫描
+
+- 起点 master `3120dbc3f91f5d3e5a21851f4d30f0ce4536f95f`。源文件 `crates/gpui/src/platform/nova/frame_upload/layers.rs`、`renderer/present.rs`、`renderer/draw_steps.rs` 和本唯一 TODO。GPU Filter Registry、Quad Buffer、DrawStep 顺序、Render Graph/Present API 均无改动；不新增 Source HashMap 或长期第二缓存。
+- **【审计确认】**：`FrameUpload.element_blur_inputs` 按 packed GPU Blur Index 严格递增写入（ElementBlur 先分配 index、记录源，再递归 child；AutoStatic 只在编码后追加最新索引），而 `blur_content_ranges_cache` 按 depth 倒序、content_start 正序供滤镜父子依赖绘制。两种排序不能混用，原 Present `dirty_element_blur_indices` 每层 `iter().find`、DrawStep `prepare_element_blur_layers` 每层 `find` 和 `any`，嵌套多层时造成重复 O(L×S) source 扫描。
+- **【代码实现，未 Rust 编译】**：`FrameUpload::element_blur_source_for_index(u32)` 作为唯一查找入口，利用**既有**按 packed index 排序的源 Vec 做 `binary_search_by_key`；Present 和 DrawStep 三处查找全部迁移。不复制 Source，不制造新索引或新生命周期。源拓扑在 `refresh_blur_content_ranges`（仅重新编码时执行）增加递增顺序的 `debug_assert!`，捕获未来编码插入顺序错误；每帧 Presenter 不再遍历 Source 前缀。理想静态过滤器集合查找复杂度由每层 O(S) 降为 O(log S)，整体常见帧成本需真实测量。
+- **【测试源码，未运行】**：增加稀疏 packed Blur Index [1,4,7,13,21] 与反向/乱序查询、缺失值/空表的回归测试。该 Lookup 不改变 Deepest-First GPU pass 排序，避免嵌套滤镜父子顺序倒置。
+- **【验证及风险】**：没有在容器执行 cargo/rustc/rustfmt、DX11/DX12/Vulkan/OpenGL 本地编译与原生绘制；静态审查仍不足以证明 GPU 占用或静态 Present 问题得到解决。本轮保留原有 Frame Scheduling 空动画 tick 跳过语义，没有引入旁路静态 Present skip（其 WSI、GPU 动画和待提交 Scene 关系尚需实机追踪）。后续聚焦 View/Window Frame Request → GPU Render Graph/Present 的实际 5 秒计数和 DirtyRegion 证据，再考虑独立 Compositor Lane。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。

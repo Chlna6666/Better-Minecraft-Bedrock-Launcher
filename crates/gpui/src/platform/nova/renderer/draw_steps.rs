@@ -429,9 +429,9 @@ impl NovaRenderer {
             let local_source_damage = if direct_composite && !is_retained_root && !force_full
                 && self.frame_upload.retained_root_clear_quad.is_some()
             {
-                self.frame_upload.element_blur_inputs.iter()
-                    .find(|(index, _)| *index == range.index)
-                    .and_then(|(_, source)| self.filters.local_source_damage(
+                self.frame_upload
+                    .element_blur_source_for_index(range.index)
+                    .and_then(|source| self.filters.local_source_damage(
                         range.index, source, &self.frame_upload.sampled_animation_values,
                     ))
             } else {
@@ -445,9 +445,9 @@ impl NovaRenderer {
             // update. When its packed source fingerprint changes, recapture
             // the whole retained target even if window damage is a tiny rect
             // or empty (the old texture version belongs to different bytes).
-            let auto_static_rebuild = self.frame_upload.element_blur_inputs.iter().any(
-                |(index, source)| *index == range.index
-                    && matches!(source, FilterSource::AutoStatic { .. }),
+            let auto_static_rebuild = matches!(
+                self.frame_upload.element_blur_source_for_index(range.index),
+                Some(FilterSource::AutoStatic { .. })
             );
             let layer_force_full = requires_full_isolated_layer_refresh(
                 is_retained_root,

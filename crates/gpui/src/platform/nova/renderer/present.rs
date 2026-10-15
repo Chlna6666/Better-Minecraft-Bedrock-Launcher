@@ -319,11 +319,7 @@ fn dirty_element_blur_indices(
         // different stable identity, content revision, clip, radius or animated
         // pixel values even when the outer window reports no spatial damage.
         // A composite-only transform leaves the captured source unchanged.
-        if let Some((_, source)) = frame_upload
-            .element_blur_inputs
-            .iter()
-            .find(|(index, _)| *index == range.index)
-        {
+        if let Some(source) = frame_upload.element_blur_source_for_index(range.index) {
             if !filters.source_unchanged(range.index, source, animation_values) {
                 dirty.push(range.index);
             }
