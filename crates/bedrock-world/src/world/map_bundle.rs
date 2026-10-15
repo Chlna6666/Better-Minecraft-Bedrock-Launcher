@@ -272,12 +272,16 @@ impl<S: StorageBackend> World<S> {
         };
         let frame_before = self.frame_target_state(dimension, frame_position)?;
         let support_before = self.frame_target_state(dimension, below)?;
-        if frame_before.name != "minecraft:air"
-            || (support_before.name != "minecraft:air" && !support_before.semantic_eq(support))
-        {
+        if frame_before.name != "minecraft:air" {
             return Err(BedrockWorldError::Validation(format!(
-                "frame grid collides at {}, {}, {} or its support differs",
-                frame_position.x, frame_position.y, frame_position.z
+                "展示框网格冲突：X {} · Y {} · Z {} 已被 {} 占用。请移动放置中心，或调整展示框 Y 到空白层；不会覆盖已有方块",
+                frame_position.x, frame_position.y, frame_position.z, frame_before.name
+            )));
+        }
+        if support_before.name != "minecraft:air" && !support_before.semantic_eq(support) {
+            return Err(BedrockWorldError::Validation(format!(
+                "展示框支撑冲突：X {} · Y {} · Z {} 是 {}，与所选支撑 {} 不一致。请选择匹配的支撑方块，或调整放置高度/位置",
+                below.x, below.y, below.z, support_before.name, support.name
             )));
         }
         let support_edit = (support_before.name == "minecraft:air")
@@ -304,7 +308,7 @@ impl<S: StorageBackend> World<S> {
                 .is_some()
         {
             return Err(BedrockWorldError::Validation(format!(
-                "frame target at {}, {}, {} has missing or unsupported terrain",
+                "位置 X {} · Y {} · Z {} 的区块数据缺失或地形格式不受支持；无法安全放置展示框",
                 position.x, position.y, position.z
             )));
         }
