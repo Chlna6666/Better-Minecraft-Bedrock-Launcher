@@ -45,7 +45,9 @@ impl PageOverlayView {
             ),
             _subscriptions: vec![
                 cx.observe_global::<SettingsPageState>(|this, cx| {
-                    if this.route == AppRoute::Settings {
+                    if this.route == AppRoute::Settings
+                        && (this.was_visible || this.visible(cx))
+                    {
                         let next = settings_projection(
                             cx.global::<SettingsPageState>(),
                             cx.global::<AgreementState>(),
@@ -74,7 +76,9 @@ impl PageOverlayView {
                     }
                 }),
                 cx.observe_global::<AgreementState>(|this, cx| {
-                    if this.route == AppRoute::Settings {
+                    if this.route == AppRoute::Settings
+                        && (this.was_visible || this.visible(cx))
+                    {
                         let next = settings_projection(
                             cx.global::<SettingsPageState>(),
                             cx.global::<AgreementState>(),
@@ -110,6 +114,11 @@ impl PageOverlayView {
     }
 
     fn notify_download_if_changed(&mut self, cx: &mut Context<Self>) {
+        // Hidden overlays have no visible output. Open/close transitions still
+        // pass this guard and invalidate their retained subtree.
+        if !self.was_visible && !self.visible(cx) {
+            return;
+        }
         let next = download_projection(
             cx.global::<DownloadPageState>(),
             cx.global::<crate::ui::views::manage::state::ManagePageState>(),
