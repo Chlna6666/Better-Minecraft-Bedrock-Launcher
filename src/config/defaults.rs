@@ -114,6 +114,7 @@ pub fn get_default_config() -> Config {
         },
         launcher: Launcher {
             debug: false,
+            gpui_trace: false,
             debug_port: 0,
             language: "auto".to_string(),
             renderer_backend: default_renderer_backend(),

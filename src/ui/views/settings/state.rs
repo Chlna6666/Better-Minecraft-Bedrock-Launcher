@@ -86,6 +86,7 @@ pub struct SettingsPageState {
     pub gpu_adapter_name: SharedString,
     pub gpu_adapter_options: Vec<SharedString>,
     pub debug: bool,
+    pub gpui_trace: bool,
     pub stats_upload: bool,
     pub error_report_sentry_enabled: bool,
     pub error_report_sentry_auto: bool,
@@ -234,6 +235,7 @@ impl SettingsPageState {
             gpu_adapter_name: SharedString::from(""),
             gpu_adapter_options: Vec::new(),
             debug: false,
+            gpui_trace: false,
             stats_upload: false,
             error_report_sentry_enabled: false,
             error_report_sentry_auto: false,
@@ -360,6 +362,7 @@ impl SettingsPageState {
 
     fn apply_config_values(&mut self, config: &crate::config::config::Config) {
         self.debug = config.launcher.debug;
+        self.gpui_trace = config.launcher.gpui_trace;
         self.stats_upload = config.launcher.stats_upload;
         self.error_report_sentry_enabled = config.launcher.error_report_sentry_enabled;
         self.error_report_sentry_auto = config.launcher.error_report_sentry_auto;

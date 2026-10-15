@@ -46,6 +46,15 @@ pub(super) fn render_launcher_tab(
         .child(setting_toggle_row(
             colors,
             section.clone(),
+            t!("LauncherSettings.gpui_trace"),
+            t!("LauncherSettings.gpui_trace_desc"),
+            state.gpui_trace,
+            "settings-launcher-gpui-trace",
+            |settings| settings.gpui_trace = !settings.gpui_trace,
+        ))
+        .child(setting_toggle_row(
+            colors,
+            section.clone(),
             t!("LauncherSettings.stats_upload"),
             t!("LauncherSettings.stats_upload_desc"),
             state.stats_upload,

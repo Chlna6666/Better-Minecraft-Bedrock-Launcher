@@ -16,6 +16,7 @@ pub(super) struct SettingsSnapshot {
     pub(super) keep_downloaded_packages: bool,
     pub(super) modify_appx_manifest: bool,
     pub(super) debug: bool,
+    pub(super) gpui_trace: bool,
     pub(super) renderer_backend: String,
     pub(super) gpu_adapter_name: String,
     pub(super) stats_upload: bool,
@@ -52,6 +53,7 @@ pub(super) fn snapshot_from_state(state: &SettingsPageState) -> SettingsSnapshot
         keep_downloaded_packages: state.keep_downloaded_packages,
         modify_appx_manifest: state.modify_appx_manifest,
         debug: state.debug,
+        gpui_trace: state.gpui_trace,
         renderer_backend: state.renderer_backend.to_string(),
         gpu_adapter_name: state.gpu_adapter_name.to_string(),
         stats_upload: state.stats_upload,
@@ -113,6 +115,7 @@ pub(super) fn spawn_persist_settings_with_success(
                 cfg.game.keep_downloaded_game_package = snapshot.keep_downloaded_packages;
                 cfg.game.modify_appx_manifest = snapshot.modify_appx_manifest;
                 cfg.launcher.debug = snapshot.debug;
+                cfg.launcher.gpui_trace = snapshot.gpui_trace;
                 cfg.launcher.renderer_backend =
                     crate::config::config::normalize_renderer_backend(&snapshot.renderer_backend);
                 cfg.launcher.gpu_adapter_name =

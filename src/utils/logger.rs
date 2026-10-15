@@ -241,14 +241,21 @@ fn append_crash_line(message: &str) {
     }
 }
 
-fn default_log_filter(debug_enabled: bool) -> String {
+fn default_log_filter(debug_enabled: bool, gpui_trace_enabled: bool) -> String {
     let log_level = if debug_enabled {
         // Keep project diagnostics rich, but avoid frame-level network logs from dependencies.
         DEBUG_LOG_FILTER
     } else {
         "info"
     };
-    format!("{log_level},blade_graphics=warn,easytier=warn")
+    // Only the explicitly selected GPUI diagnostic target gets trace-level
+    // output. Network crates and the rest of GPUI keep their original levels.
+    let gpui_trace = if gpui_trace_enabled {
+        ",gpui=debug,gpui::diagnostics=trace"
+    } else {
+        ""
+    };
+    format!("{log_level}{gpui_trace},blade_graphics=warn,easytier=warn")
 }
 
 fn install_panic_hook() {
@@ -346,6 +353,7 @@ fn install_unhandled_exception_hook() {}
 // 初始化日志系统
 pub fn init_logging(
     debug_enabled: bool,
+    gpui_trace_enabled: bool,
     log_management: &crate::config::config::LogManagementConfig,
 ) {
     let logs_dir: PathBuf = file_ops::logs_dir();
@@ -382,7 +390,7 @@ pub fn init_logging(
         .with_target(true)
         .with_writer(log_writer);
 
-    let default_filter = default_log_filter(debug_enabled);
+    let default_filter = default_log_filter(debug_enabled, gpui_trace_enabled);
     let filter = EnvFilter::new(default_filter);
 
     let registry = tracing_subscriber::registry()
@@ -401,6 +409,7 @@ pub fn init_logging(
 
     info!("Logging initialized");
     info!("Debug logging enabled: {}", debug_enabled);
+    info!("GPUI/Nova Trace enabled: {} (restart required to change)", gpui_trace_enabled);
     info!(
         "Managed log files ready: latest={}, archive={}",
         latest_log_file.display(),
@@ -423,7 +432,7 @@ mod tests {
 
     #[test]
     fn default_debug_filter_enables_bmcbl_debug_logs() {
-        let filter = default_log_filter(true);
+        let filter = default_log_filter(true, false);
         assert!(filter.contains("bmcbl=debug"));
         assert!(filter.contains("gpui=debug"));
         assert!(filter.contains("blade_graphics=warn"));
@@ -433,14 +442,32 @@ mod tests {
     #[test]
     fn default_non_debug_filter_stays_at_info() {
         assert_eq!(
-            default_log_filter(false),
+            default_log_filter(false, false),
             "info,blade_graphics=warn,easytier=warn"
         );
     }
 
     #[test]
+    fn gpui_trace_filter_is_explicit_and_independent_of_debug() {
+        let trace_only = default_log_filter(false, true);
+        assert!(trace_only.contains("gpui::diagnostics=trace"));
+        assert!(trace_only.contains("gpui=debug"));
+        assert!(trace_only.starts_with("info,"));
+        assert!(!trace_only.contains("bmcbl=debug"));
+
+        let both = default_log_filter(true, true);
+        assert!(both.contains("bmcbl=debug"));
+        assert!(both.contains("gpui::diagnostics=trace"));
+
+        let normal = default_log_filter(false, false);
+        let debug_only = default_log_filter(true, false);
+        assert!(!normal.contains("gpui::diagnostics=trace"));
+        assert!(!debug_only.contains("gpui::diagnostics=trace"));
+    }
+
+    #[test]
     fn test_logging_init() {
-        init_logging(true, &crate::config::config::LogManagementConfig::default());
+        init_logging(true, false, &crate::config::config::LogManagementConfig::default());
         info!("这是 info 测试日志");
         debug!("这是 debug 测试日志");
         warn!("这是 warn 测试日志");

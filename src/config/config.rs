@@ -367,6 +367,10 @@ pub struct AppStateConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Launcher {
     pub debug: bool,
+    /// Opt-in detailed GPUI/Nova compositor tracing, independent of the debug window.
+    /// Applied at startup; older settings files default to disabled.
+    #[serde(default)]
+    pub gpui_trace: bool,
     /// When non-zero, enables "port debug" mode (opens a debug window and binds a local TCP port).
     #[serde(default)]
     pub debug_port: u16,

@@ -38,6 +38,7 @@ actions!(debug_window, [OpenDebugWindow]);
 
 pub(crate) struct AppBootstrap {
     debug_enabled: bool,
+    gpui_trace_enabled: bool,
     theme_color_hex: String,
     theme_mode: String,
     initial_locale: Locale,
@@ -96,6 +97,7 @@ impl AppBootstrap {
 
         Self {
             debug_enabled: config.launcher.debug,
+            gpui_trace_enabled: config.launcher.gpui_trace,
             theme_color_hex: config.custom_style.theme_color.clone(),
             theme_mode: config.custom_style.theme_mode.clone(),
             initial_locale: Locale::from_code(&locale_code).unwrap_or(Locale::EnUs),
@@ -265,6 +267,9 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         adapter_name: bootstrap.gpu_adapter_name.clone(),
         power_preference: gpu_power_preference_for_adapter(bootstrap.gpu_adapter_name.as_deref()),
         pipeline_cache_dir: Some(crate::utils::file_ops::cache_subdir("gpu/pipelines")),
+        // Detailed GPU compositor diagnostics are an explicit application
+        // setting, not the general debug-window flag.
+        frame_metrics: bootstrap.gpui_trace_enabled,
         ..gpui::RendererOptions::default()
     };
     let image_pipeline = image_pipeline_config();
@@ -281,7 +286,7 @@ pub(crate) fn run(bootstrap: AppBootstrap) -> Result<()> {
         build_app_state(cx, &bootstrap);
         let app_state_elapsed = app_state_started_at.elapsed();
 
-        if bootstrap.debug_enabled {
+        if bootstrap.debug_enabled || bootstrap.gpui_trace_enabled {
             crate::utils::gpui_debug_log::start(cx);
         }
         start_domain_event_bridges(cx);

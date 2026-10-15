@@ -541,6 +541,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【回归单测源码，未执行】**：增加 Gaussian × 5 + Root × 1 的 6→3→4→6→3→6 原位复用测试，断言 Root TextureView、全部 Gaussian Filter View、全部 Scratch View、当前活动数和 inactive Source 查找；增加容量溢出必须失败且不突变 ResourceSet/Texture 元数据的反例。所有现有 `BackdropBlurTargets` 测试字面量同步补齐活动 Source 数。编译/真实像素未验证，DX11/DX12/VK/OpenGL 的 live-reorder/Resize/Fence 状态仍需用户本地验收。
 - **【后续 P0】**：先拿最新构建 Trace 比较 `GPUI retained target layout reused` 的 `active_isolated/allocated_isolated` 与 `recreation required`，并确认 Gaussian 输出在重绑后完整初始化；如初次 3→4→6 仍有新分配属于超过高水位容量，不能把它当回归。再决定隔离纹理过度驻留的回收策略、Filter target dimension-preserving 重新分配、真正独立 RootColorTarget 与 Fence-retired GPU 资源池；未验收 GPU 40% 降幅。
 
+## 2026-10-15：BMCBL 启动器设置内置 GPUI / Nova 详细 Trace 开关
+
+- **起始基线与并发复核**：`733ad2e3cb1dfdfabbb2524b9e349d39d54e2a30`；提交前远程 master 有连续 UI 优化提交；每次提交前用 compare 校验其文件与本轮配置、Settings 子模块、日志及语言文件无交集，并以实际最新 HEAD 为父提交，保留这些 UI 改动。本切片仅增加 BMCBL 应用侧启动器诊断配置与 UI，不更改 GPUI/Nova 的渲染 ABI、提交/Present、物理 Target Owner，不引入环境变量或第二套 Trace 缓存。
+- **【代码实现；未编译】**：`src/config/{config.rs,defaults.rs,test.rs}` 在 `launcher` 下增加 `#[serde(default)] gpui_trace: bool`，默认 false；已有 TOML 不含字段时仍正常加载，序列化后开关状态可持久化。设置入口 `设置 → 启动器 → GPUI / Nova 详细 Trace`；`src/ui/views/settings/{state.rs,common.rs,launcher.rs}` 延续现有 ToggleSwitch→SettingsSnapshot→run_io_blocking(update_config) 保存路径。zh-CN/zh-TW/en-US/ja-JP/ko-KR 全量补充开关文案和“重启生效/高频日志有性能及磁盘开销”提示。
+- **【日志/Renderer 联动】**：`src/startup.rs` 向现有单一 `init_logging` 转交 `launcher.gpui_trace`；`src/utils/logger.rs` 仅当 Trace 显式为 true 时为 `gpui::diagnostics` 开启 trace 过滤，其余 GPUI 为 debug、网络和其它模块沿用旧级别。普通 Debug 与 Trace 独立；开启 Trace 不自动显示 Debug 窗口。`src/app.rs` 的 RendererOptions 使用 `frame_metrics: bootstrap.gpui_trace_enabled`，同时 Trace 模式也启用已有每 5 秒 GPU Owner/Frame 汇总；关闭后原有默认 frame_metrics=false、info/debug 级别保持不变，省去常态逐帧负担。
+- **【可观察日志】**：打开设置开关并完整重启后，`BMCBL/logs/latest.log` 可记录 `GPUI color retention result`、`GPUI retained target layout reused/recreated`、`nova-gfx frame diagnostics` 和 `GPUI AutoStatic submitted`。Trace 只能反映 CPU 侧构建与 GPU 提交规划，不等价于原生 GPU Timestamp。开启前已运行的 renderer 或日志 subscriber 无法动态改变，**必须重启**。
+- **【测试与风险】**：增补默认值/TOML 旧配置/启用后的存取与 Debug 开关互不影响测试；增补日志过滤器 4 种组合的 Trace 开关断言。由于当前容器未装 Rust/Cargo/Windows GPU，尚未执行 fmt/check/单测与四后端实时日志验收。发布前在 Windows 依次检查旧配置读取、设置点击自动保存、重启后 True→False 两方向、日志滚动及压缩限额；GPU40% 与 AutoStatic P0 问题仍需数据验证。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -556,7 +564,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- **当前最新待验证起点（2026-10-15）**：优先在 Windows 对本轮隔离 Source 高水位复用执行 Cargo fmt/check/测试与 DX11/DX12/VK/GL 快速连续 Dropdown Trace。比较初次 3→4→6（可能正常预热分配）与随后 6→3→4→6（应命中 `reused` 且 allocated_isolated 不下降）的真实 GPU 资源重建计数、`native_view/content_version`、FilterSource 失效重捕获、GPU 显存峰值与 source/composite Pass；原 2026-10-15 DX12 日志是旧版基线，不能宣称本轮已实机验证。
+- **当前最新待验证起点（2026-10-15）**：先使用 BMCBL 设置 → 启动器内新增的 `GPUI / Nova 详细 Trace` 开关（**需重启**）在 Windows 开启 `frame_metrics` 与 `gpui::diagnostics=trace`，收集公共 Dropdown 及首页下拉 3→4→6→3 Target 数量切换日志，再核对 `GPUI AutoStatic submitted` 的 `refreshed_layers/source_draw_steps/native_view/content_version`、`active_isolated/allocated_isolated` 和 GPU Owner/FPS、实际任务管理器 GPU 占用。执行本地 cargo fmt/check/测试并分 DX11/DX12/Vulkan/OpenGL 实机，未验证不得关闭 P0。
 - **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。

@@ -138,6 +138,7 @@ pub fn run() -> Result<()> {
         crate::utils::file_ops::create_initial_directories();
         crate::utils::logger::init_logging(
             false,
+            false,
             &crate::config::config::LogManagementConfig::default(),
         );
         return run_updater_mode(context);
@@ -157,10 +158,15 @@ pub fn run() -> Result<()> {
             process::exit(1);
         }
     };
-    crate::utils::logger::init_logging(config.launcher.debug, &config.launcher.log_management);
+    crate::utils::logger::init_logging(
+        config.launcher.debug,
+        config.launcher.gpui_trace,
+        &config.launcher.log_management,
+    );
     debug!(
         elapsed_ms = startup_started.elapsed().as_millis(),
         debug_enabled = config.launcher.debug,
+        gpui_trace_enabled = config.launcher.gpui_trace,
         language = %config.launcher.language,
         renderer_backend = %config.launcher.renderer_backend,
         "configuration loaded and debug logging state applied"

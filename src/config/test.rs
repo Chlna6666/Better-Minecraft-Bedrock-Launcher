@@ -86,6 +86,29 @@ fn default_online_player_name_is_six_alphanumeric_characters() {
 }
 
 #[test]
+fn gpui_trace_is_disabled_by_default_and_compatible_with_legacy_settings() {
+    let mut config = super::config::get_default_config();
+    assert!(!config.launcher.gpui_trace);
+    assert!(!config.launcher.debug);
+
+    // This setting is opt-in even when the old file lacks its key.
+    let serialized = toml::to_string(&config).expect("default settings must serialize");
+    let legacy = serialized.replace("gpui_trace = false\n", "");
+    let restored_legacy: super::config::Config =
+        toml::from_str(&legacy).expect("existing settings must still deserialize");
+    assert!(!restored_legacy.launcher.gpui_trace);
+
+    // Enabling rendering diagnostics does not turn on the debug window.
+    config.launcher.gpui_trace = true;
+    let saved = toml::to_string(&config).expect("trace setting must serialize");
+    assert!(saved.contains("gpui_trace = true"));
+    let restored: super::config::Config =
+        toml::from_str(&saved).expect("trace setting must deserialize");
+    assert!(restored.launcher.gpui_trace);
+    assert!(!restored.launcher.debug);
+}
+
+#[test]
 fn login_and_bedrock_auth_are_independent_config_sections() {
     let mut config = super::config::get_default_config();
     config.login.provider = super::config::LoginProvider::BedrockAuth;
