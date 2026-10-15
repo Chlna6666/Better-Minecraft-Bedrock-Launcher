@@ -386,12 +386,25 @@ impl NovaRenderer {
             backdrop_blur_quality,
         );
         self.reconcile_gpu_layer_animation_damage(packet);
+        // A native full Present is not a full Filter Source invalidation.
+        // Track both independently to catch regressions in ClipReveal/Root.
+        log::trace!(
+            target: "gpui::diagnostics",
+            "GPUI surface damage gate: source=active frame={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
+            self.submitted_frames,
+            self.live_resize_active,
+            self.swapchain_warmup_frames,
+            self.frame_upload.retained_root_blur.is_some(),
+            self.frame_upload.element_blur_inputs.len(),
+            packet.sampled_active_presentation_animation,
+            packet.presentation_animation_timelines.len(),
+            packet.dirty_region.is_full(),
+            packet.dirty_region.area(),
+            packet.force_full_backdrop_blur_refresh,
+        );
         if requires_full_drawable_damage(
-            packet,
             self.live_resize_active,
             self.swapchain_warmup_frames != 0,
-            self.frame_upload.retained_root_blur.is_some()
-                || !self.frame_upload.element_blur_inputs.is_empty(),
         ) {
             force_full_drawable_damage_after_resize(packet, self.current_size);
             self.observe_presentation_packet(packet);
@@ -839,12 +852,23 @@ impl NovaRenderer {
                 backdrop_blur_quality,
             );
             self.reconcile_gpu_layer_animation_damage(&mut packet);
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI surface damage gate: source=direct frame={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
+                self.submitted_frames,
+                self.live_resize_active,
+                self.swapchain_warmup_frames,
+                self.frame_upload.retained_root_blur.is_some(),
+                self.frame_upload.element_blur_inputs.len(),
+                packet.sampled_active_presentation_animation,
+                packet.presentation_animation_timelines.len(),
+                packet.dirty_region.is_full(),
+                packet.dirty_region.area(),
+                packet.force_full_backdrop_blur_refresh,
+            );
             if requires_full_drawable_damage(
-                &packet,
                 self.live_resize_active,
                 self.swapchain_warmup_frames != 0,
-                self.frame_upload.retained_root_blur.is_some()
-                    || !self.frame_upload.element_blur_inputs.is_empty(),
             ) {
                 force_full_drawable_damage_after_resize(&mut packet, self.current_size);
                 self.observe_presentation_packet(&packet);

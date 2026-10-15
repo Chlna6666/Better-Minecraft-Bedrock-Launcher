@@ -4180,21 +4180,91 @@ fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
 }
 
 #[test]
-fn live_resize_and_retained_layers_disable_partial_gpu_scissors() {
-    let packet = PresentationPacket::new(
-        Arc::new(crate::Scene::default()),
+fn only_real_resize_requires_full_drawable_damage() {
+    assert!(!requires_full_drawable_damage(false, false));
+    assert!(requires_full_drawable_damage(true, false));
+    assert!(requires_full_drawable_damage(false, true));
+    assert!(requires_full_drawable_damage(true, true));
+}
+
+#[test]
+fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_present() {
+    // Regression: a stable Popup with nested Capture and an active compositor
+    // animation previously satisfied requires_full_drawable_damage merely
+    // because Scene::blurs and retained targets existed. This promoted every
+    // animation frame to a full source recapture and discarded filtered pixels.
+    let viewport = crate::bounds(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(crate::ScaledPixels(972.0), crate::ScaledPixels(600.0)),
+    );
+    let outer = crate::bounds(
+        crate::point(crate::ScaledPixels(120.0), crate::ScaledPixels(40.0)),
+        crate::size(crate::ScaledPixels(240.0), crate::ScaledPixels(300.0)),
+    );
+    let inner = crate::bounds(
+        crate::point(crate::ScaledPixels(140.0), crate::ScaledPixels(50.0)),
+        crate::size(crate::ScaledPixels(180.0), crate::ScaledPixels(240.0)),
+    );
+    let mut scene = crate::Scene::default();
+    scene.begin_blur(crate::BlurCapture {
+        animation_id: Some(crate::SceneAnimationId(11)),
+        layer_id: None,
+        bounds: outer,
+        content_mask: crate::ContentMask::new(viewport),
+        radius: crate::ScaledPixels(0.0),
+        opacity: 1.0,
+    });
+    scene.begin_blur(crate::BlurCapture {
+        animation_id: None,
+        layer_id: None,
+        bounds: inner,
+        content_mask: crate::ContentMask::new(viewport),
+        radius: crate::ScaledPixels(0.0),
+        opacity: 1.0,
+    });
+    scene.insert_primitive(crate::Quad {
+        bounds: inner,
+        content_mask: crate::ContentMask::new(viewport),
+        ..Default::default()
+    });
+    scene.end_blur();
+    scene.end_blur();
+    scene.finish();
+    assert!(!scene.blurs.is_empty(), "the popup must actually contain a nested Capture");
+
+    let mut local = crate::DirtyRegion::empty();
+    local.push(crate::bounds(
+        crate::point(crate::ScaledPixels(140.0), crate::ScaledPixels(95.0)),
+        crate::size(crate::ScaledPixels(180.0), crate::ScaledPixels(12.0)),
+    ));
+    let source_area = local.area();
+    let mut packet = PresentationPacket::new(
+        Arc::new(scene),
         [],
         [],
         std::time::Instant::now(),
         1.0,
-        crate::DirtyRegion::empty(),
+        local,
         crate::BackdropBlurDamagePlan::default(),
         PartialPresentMode::Partial,
     );
-    assert!(!requires_full_drawable_damage(&packet, false, false, false));
-    assert!(requires_full_drawable_damage(&packet, true, false, false));
-    assert!(requires_full_drawable_damage(&packet, false, true, false));
-    // A static retained layer must not turn every ordinary frame into
-    // expensive full-drawable re-rasterization.
-    assert!(!requires_full_drawable_damage(&packet, false, false, true));
+    packet.sampled_active_presentation_animation = true;
+    assert!(!requires_full_drawable_damage(false, false),
+        "active compositing and nested capture are not a resize");
+    // Some backends can only present a full swapchain image. That restriction
+    // must not invalidate resident offscreen sources or their precise damage.
+    resolve_surface_packet(&mut packet, true);
+    assert_eq!(packet.partial_present_mode, PartialPresentMode::FullRedraw);
+    assert!(!packet.dirty_region.is_full());
+    assert_eq!(packet.dirty_region.area(), source_area);
+    assert!(!packet.force_full_backdrop_blur_refresh);
+
+    // A real drawable-size transition remains conservatively full.
+    assert!(requires_full_drawable_damage(false, true));
+    force_full_drawable_damage_after_resize(
+        &mut packet,
+        DrawableSize { width: 972, height: 600 },
+    );
+    assert!(packet.dirty_region.is_full());
+    assert!(packet.force_full_backdrop_blur_refresh);
 }

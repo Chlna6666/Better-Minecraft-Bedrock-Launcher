@@ -26,21 +26,18 @@ pub(super) fn resolve_surface_packet(
 /// avoiding repeated full-surface rerasterization on every active frame.
 /// Keep this independent from native partial-present capability.
 pub(super) fn requires_full_drawable_damage(
-    packet: &PresentationPacket,
     live_resize_active: bool,
     viewport_changed: bool,
-    has_retained_composite_layers: bool,
 ) -> bool {
-    // Only a geometry transition invalidates the whole drawable every frame.
-    // A stable retained root/filter is NOT evidence that all of its pixels are
-    // dirty: repeatedly marking it full negates GPU layer caching and stalls
-    // every backend during otherwise local UI/animation updates.
-    live_resize_active
-        || viewport_changed
-        || (has_retained_composite_layers
-            && !packet.scene.blurs.is_empty()
-            && (packet.sampled_active_presentation_animation
-                || !packet.presentation_animation_timelines.is_empty()))
+    // Only an actual drawable-extent transition destroys the correctness
+    // proof for existing offscreen texels and their scissors. A nested
+    // Capture + active compositor animation is NOT a resize: that old test
+    // forced full damage and full filter refresh on every Dropdown tick,
+    // overriding the precise GPU-sample damage computed before this call.
+    //
+    // WSI may still require a full swapchain Present (resolve_surface_packet),
+    // but that is independent of the dirty region and retained Filter inputs.
+    live_resize_active || viewport_changed
 }
 
 /// A newly recreated swapchain has no trustworthy old backbuffer pixels.
