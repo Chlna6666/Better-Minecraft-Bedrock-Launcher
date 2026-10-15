@@ -177,7 +177,11 @@ pub fn start_map_frame_grid_preflight(
             let world = World::open(&world_path, options)
                 .map_err(|error| error.to_string())?;
             world.validate_upward_frame_grid(chunk, center, columns, rows, &support)
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            if cancel.is_cancelled() {
+                return Err("展示框位置检查已取消".to_owned());
+            }
+            Ok::<(), String>(())
         })
         .await;
         let (status, message) = match result {
