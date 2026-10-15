@@ -84,19 +84,20 @@ impl MapViewerWindowView {
             .overflow_hidden()
             .flex()
             .flex_col()
-            .child(body)
+            // Commands are part of layout, above the preview; never overlay the world.
             .child(self.render_import_workspace_toolbar(colors, cx))
-            .when(
-                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
-                    && !inventory_target
-                    && self.map_image_placement_inspector_visible(),
-                |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
-            )
             .when(
                 preview
                     || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
                     || self.import_task_snapshot().is_some(),
                 |workspace| workspace.child(self.render_import_actions(colors, cx)),
+            )
+            .child(body)
+            .when(
+                !preview && self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+                    && !inventory_target
+                    && self.map_image_placement_inspector_visible(),
+                |workspace| workspace.child(self.render_map_image_placement_thumbnail(colors)),
             )
     }
 
@@ -114,10 +115,9 @@ impl MapViewerWindowView {
             _ => false,
         };
         div()
-            .absolute()
-            .top(px(8.0))
-            .left(px(8.0))
-            .right(px(8.0))
+            .flex_none()
+            .mx(px(8.0))
+            .mt(px(8.0))
             .occlude()
             .p(px(8.0))
             .rounded(px(8.0))
@@ -228,7 +228,7 @@ impl MapViewerWindowView {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .pt(px(66.0))
+            .p(px(8.0))
             .flex()
             .flex_col()
             .child(body)
