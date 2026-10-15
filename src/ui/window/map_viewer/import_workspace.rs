@@ -38,6 +38,9 @@ impl MapViewerWindowView {
                 self.set_paste_preview(anchor, PasteTransform::default(), 0.0, None, cx);
             }
         }
+        if mode != ImportWorkspaceMode::Placement {
+            self.map_image.picking_frame_center = false;
+        }
         self.ui_state.import_workspace_mode = mode;
         let colors = self.theme_colors(cx);
         self.sync_canvas_snapshot(colors, cx);
