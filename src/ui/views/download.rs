@@ -394,6 +394,9 @@ impl DownloadPageView {
 
         let mut subscriptions = Vec::new();
         subscriptions.push(cx.observe_global::<DownloadPageState>(|this, cx| {
+            if !this.active {
+                return;
+            }
             let tab = cx.global::<DownloadPageState>().tab;
             let tab_changed = this.last_observed_tab != tab;
             this.last_observed_tab = tab;
@@ -564,6 +567,32 @@ impl DownloadPageView {
             });
         }
         if active {
+            // Refresh only the selected tab's signature after inactive global
+            // updates. The activation notification paints the current state.
+            cx.read_global(|state: &DownloadPageState, _cx| {
+                self.last_observed_tab = state.tab;
+                match state.tab {
+                    DownloadTab::Game => {}
+                    DownloadTab::Mod => {
+                        self.last_observed_mod_panel_signature =
+                            build_mod_panel_observe_signature(state);
+                    }
+                    DownloadTab::ResourcePack => {
+                        self.last_observed_curseforge_toolbar_signature = (
+                            state.curseforge_loaded,
+                            state.curseforge_loading,
+                            state.curseforge_versions.len(),
+                            state.curseforge_selected_game_version.clone(),
+                            state.curseforge_sort_field,
+                            state.curseforge_invalidate_task.is_some(),
+                            state.curseforge_search_commit_task.is_some(),
+                            state.curseforge_results_loading,
+                            state.curseforge_page_commit_task.is_some(),
+                            state.curseforge_pending_page_index.is_some(),
+                        );
+                    }
+                }
+            });
             cx.notify();
         }
     }

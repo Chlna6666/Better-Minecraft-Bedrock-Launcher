@@ -51,13 +51,14 @@ impl ManagePageView {
         let tab_body_view = cx.new(|cx| ManageTabBodyView::new(parent, cx));
         let subscriptions = vec![
             cx.observe_global::<ManagePageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
                 let signature =
                     ManagePageRenderSignature::from_state(cx.global::<ManagePageState>());
                 if this.last_global_render_signature != signature {
                     this.last_global_render_signature = signature;
-                    if this.active {
-                        cx.notify();
-                    }
+                    cx.notify();
                 }
             }),
             cx.observe_global::<ThemeState>(|this, cx| {
@@ -138,6 +139,10 @@ impl ManagePageView {
         self.tab_body_view
             .update(cx, |view, cx| view.set_active(active, cx));
         if active {
+            // Inactive residents do not maintain expensive signatures. The first
+            // activation render already reads the latest ManagePageState.
+            self.last_global_render_signature =
+                ManagePageRenderSignature::from_state(cx.global::<ManagePageState>());
             // Inactive residents absorb state/signature updates without waking the window. One
             // notification on reactivation is enough to render the latest state.
             cx.notify();

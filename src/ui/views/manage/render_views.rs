@@ -13,13 +13,14 @@ impl ManageTabBodyView {
             ManageTabBodyRenderSignature::from_state(cx.global::<ManagePageState>());
         let subscriptions = vec![
             cx.observe_global::<ManagePageState>(|this, cx| {
+                if !this.active {
+                    return;
+                }
                 let signature =
                     ManageTabBodyRenderSignature::from_state(cx.global::<ManagePageState>());
                 if this.last_signature != signature {
                     this.last_signature = signature;
-                    if this.active {
-                        cx.notify();
-                    }
+                    cx.notify();
                 }
             }),
             cx.observe_global::<ThemeState>(|this, cx| {
@@ -48,6 +49,8 @@ impl ManageTabBodyView {
         }
         self.active = active;
         if active {
+            self.last_signature =
+                ManageTabBodyRenderSignature::from_state(cx.global::<ManagePageState>());
             cx.notify();
         }
     }
