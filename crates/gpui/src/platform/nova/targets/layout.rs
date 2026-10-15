@@ -98,11 +98,24 @@ impl BackdropBlurTargets {
             .copied()
             .filter(|index| blur_requires_isolated_source(next, *index))
             .collect();
-        if (root_index.is_some() && new_root.is_none())
-            || next.len() > self.variants.len()
-            || requested_isolated.len() > self.isolated_sources.len()
-            || self.source.is_some() != needs_root_source
-        {
+        let capacity_rejection = if root_index.is_some() && new_root.is_none() {
+            Some("root_capture_not_found")
+        } else if next.len() > self.variants.len() {
+            Some("variant_capacity")
+        } else if requested_isolated.len() > self.isolated_sources.len() {
+            Some("isolated_source_capacity")
+        } else if self.source.is_some() != needs_root_source {
+            Some("root_source_topology")
+        } else {
+            None
+        };
+        if let Some(reason) = capacity_rejection {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI filter layout reuse rejected: reason={} next_variants={} allocated_variants={} required_isolated={} allocated_isolated={} old_root={:?} new_root={:?}",
+                reason, next.len(), self.variants.len(), requested_isolated.len(),
+                self.isolated_sources.len(), self.retained_root_variant, new_root,
+            );
             return false;
         }
 
@@ -130,6 +143,11 @@ impl BackdropBlurTargets {
                         && config.radius() == 0.0
                 });
                 let (Some(previous), Some(current)) = (previous, current) else {
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "GPUI filter layout reuse rejected: reason=auto_static_identity_missing old_index={} new_index={}",
+                        old_index, new_index,
+                    );
                     return false;
                 };
                 Some((previous, current))
@@ -139,6 +157,10 @@ impl BackdropBlurTargets {
         } else {
             // AutoStatic has no physical root; do not combine two cache roles.
             if auto_static_indices.is_some() {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI filter layout reuse rejected: reason=conflicting_root_and_auto_static",
+                );
                 return false;
             }
             None
@@ -165,8 +187,21 @@ impl BackdropBlurTargets {
                         .then_some(old)
                 })
             };
-            let Some(source) = source else { return false };
+            let Some(source) = source else {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI filter layout reuse rejected: reason=target_slot_mismatch new_slot={} radius={} levels={} old_active={} old_allocated={} pinned={:?}",
+                    new_index, config.radius(), blur_variant_level_count(config),
+                    self.active_variant_count, self.variants.len(), pinned,
+                );
+                return false;
+            };
             if permutation.contains(&source) {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI filter layout reuse rejected: reason=duplicate_physical_slot new_slot={} old_slot={}",
+                    new_index, source,
+                );
                 return false;
             }
             permutation.push(source);

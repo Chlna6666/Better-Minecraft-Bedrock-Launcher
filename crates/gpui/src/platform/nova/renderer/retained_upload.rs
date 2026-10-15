@@ -82,28 +82,58 @@ struct AutoStaticBackground {
     content_mask: crate::ContentMask<crate::ScaledPixels>,
 }
 
+/// Emits the *first* failed admission guard for an unsafe static prefix.
+/// Do not turn an unknown/unsupported paint operation into an accepted cache:
+/// retaining an invalid source would reuse stale GPU pixels.
+fn reject_auto_static_capture(
+    scene: &crate::Scene,
+    reason: &'static str,
+) -> Option<AutoStaticBackground> {
+    log::trace!(
+        target: "gpui::diagnostics",
+        "GPUI AutoStatic admission rejected: scene_revision={} reason={} paint_operations={} blur_captures={} retained_quad_chunks={} full_redraw_fallback={}",
+        scene.revision,
+        reason,
+        scene.paint_operations.len(),
+        scene.blurs.len(),
+        scene.prepared_retained_quad_chunks().len(),
+        scene.requires_full_redraw_fallback(),
+    );
+    None
+}
+
 fn auto_capture_static_background(
     scene: &crate::Scene,
     drawable_size: DrawableSize,
 ) -> Option<AutoStaticBackground> {
     use crate::{Primitive, scene::PaintOperation};
 
-    if scene.revision == 0
-        || scene.has_backdrop_blurs()
-        || scene.requires_full_redraw_fallback()
-        || !scene.prepared_retained_quad_chunks().is_empty()
-        || scene.paint_operations.len() < 25
-        || drawable_size.width == 0
-        || drawable_size.height == 0
-        // Do not split an interleaved/multi-level capture DAG. The fast path
-        // applies only to an independently composited zero-filter popup.
-        || scene.blurs.iter().any(|blur| {
-            blur.radius.0 != 0.0
-                || blur.layer_id.is_none()
-                || !blur.content.blurs.is_empty()
-        })
-    {
-        return None;
+    // Keep the original conservative admission policy. Diagnose its first
+    // failing guard instead of widening it without a real pixel-correctness
+    // proof for nested captures, font atlas inputs, or background blur.
+    let rejection = if scene.revision == 0 {
+        Some("uncommitted_scene")
+    } else if scene.has_backdrop_blurs() {
+        Some("backdrop_blur_present")
+    } else if scene.requires_full_redraw_fallback() {
+        Some("scene_requires_full_redraw")
+    } else if !scene.prepared_retained_quad_chunks().is_empty() {
+        Some("retained_quad_chunk_present")
+    } else if scene.paint_operations.len() < 25 {
+        Some("insufficient_paint_operations")
+    } else if drawable_size.width == 0 || drawable_size.height == 0 {
+        Some("empty_drawable")
+    } else if scene.blurs.iter().any(|blur| blur.radius.0 != 0.0) {
+        Some("gaussian_element_capture_present")
+    } else if scene.blurs.iter().any(|blur| blur.layer_id.is_none()) {
+        Some("unstable_capture_identity")
+    } else if scene.blurs.iter().any(|blur| !blur.content.blurs.is_empty()) {
+        Some("nested_element_capture")
+    } else {
+        None
+    };
+    if let Some(reason) = rejection {
+        return reject_auto_static_capture(scene, reason);
     }
 
     let viewport = crate::bounds(
@@ -134,16 +164,26 @@ fn auto_capture_static_background(
                 }
                 continue;
             }
-            PaintOperation::StartBlur(_) => return None,
+            PaintOperation::StartBlur(_) => {
+                return reject_auto_static_capture(scene, "unsupported_capture_boundary");
+            },
             PaintOperation::EndBlur => continue,
         };
         match primitive {
             Primitive::Quad(_) | Primitive::Shadow(_) => {}
-            _ if !saw_dynamic => return None, // No atlas/path inputs in retained background.
+            _ if !saw_dynamic => {
+                // The first non-Quad/Shadow must not silently turn an atlas
+                // or renderer-owned texture into a retained static source.
+                return reject_auto_static_capture(scene, "non_quad_or_shadow_static_prefix");
+            },
             Primitive::Surface(_) | Primitive::RendererExtension(_)
-            | Primitive::BackdropBlur(_) => return None,
+            | Primitive::BackdropBlur(_) => {
+                return reject_auto_static_capture(scene, "unsupported_foreground_primitive");
+            },
             Primitive::Blur(blur) if blur.radius.0 == 0.0 && blur.layer_id.is_some() => {}
-            Primitive::Blur(_) => return None,
+            Primitive::Blur(_) => {
+                return reject_auto_static_capture(scene, "unsupported_blur_composite");
+            },
             _ => {}
         }
         if !saw_dynamic && primitive.animation_id().is_none() {
@@ -163,12 +203,17 @@ fn auto_capture_static_background(
     // pages, only pay for an extra retained target when measured static raster
     // coverage is substantial; 24 tiny controls are not enough by themselves.
     let viewport_area = f64::from(drawable_size.width) * f64::from(drawable_size.height);
-    if (static_prefix < 96 && (static_prefix < 24 || static_raster_area < viewport_area * 2.0))
-        || !saw_dynamic
-        || !scene.range_is_independently_replayable(0..prefix_end)
-        || !scene.range_is_independently_replayable(prefix_end..scene.paint_operations.len())
-    {
-        return None;
+    if static_prefix < 96 && (static_prefix < 24 || static_raster_area < viewport_area * 2.0) {
+        return reject_auto_static_capture(scene, "insufficient_static_prefix_coverage");
+    }
+    if !saw_dynamic {
+        return reject_auto_static_capture(scene, "no_dynamic_foreground");
+    }
+    if !scene.range_is_independently_replayable(0..prefix_end) {
+        return reject_auto_static_capture(scene, "prefix_not_independently_replayable");
+    }
+    if !scene.range_is_independently_replayable(prefix_end..scene.paint_operations.len()) {
+        return reject_auto_static_capture(scene, "foreground_not_independently_replayable");
     }
 
     // The static prefix is Quad/Shadow-only; a zero-filter popup contributes
@@ -179,7 +224,10 @@ fn auto_capture_static_background(
         .find_map(|operation| match operation {
             PaintOperation::Primitive(primitive) => Some(primitive.order()),
             _ => None,
-        })?;
+        });
+    let Some(first_dynamic_order) = first_dynamic_order else {
+        return reject_auto_static_capture(scene, "foreground_without_draw_order");
+    };
     if scene.paint_operations[..prefix_end].iter().any(|operation| {
         matches!(operation, PaintOperation::Primitive(primitive)
             if primitive.order() >= first_dynamic_order)
@@ -187,16 +235,17 @@ fn auto_capture_static_background(
         matches!(operation, PaintOperation::Primitive(primitive)
             if primitive.order() < first_dynamic_order)
     }) {
-        return None;
+        return reject_auto_static_capture(scene, "interleaved_painter_order");
     }
 
     // The tight background target covers only static pixels. Popup source
     // Capture and its changing ClipReveal composite stay in the main pass.
-    let bounds = scene
-        .bounds_for_range(0..prefix_end)?
-        .intersect(&viewport);
+    let Some(bounds) = scene.bounds_for_range(0..prefix_end) else {
+        return reject_auto_static_capture(scene, "prefix_without_bounds");
+    };
+    let bounds = bounds.intersect(&viewport);
     if bounds.is_empty() {
-        return None;
+        return reject_auto_static_capture(scene, "empty_static_bounds");
     }
 
     // One finalized Scene, one encoding. Capture only the boundary here:
