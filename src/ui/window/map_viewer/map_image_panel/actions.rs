@@ -28,7 +28,8 @@ impl MapViewerWindowView {
         };
         let check_running = check.is_some_and(|task| !task.is_terminal());
         let check_passed = self.map_frame_preflight_passed();
-        let action_enabled = (ready || pending.is_some()) && !busy && !check_running;
+        let action_enabled = (ready || pending.is_some()) && !busy && !check_running
+            && (!frame_preview || self.map_image.placement_preview.is_some());
         let (primary, target, tip, target_ready) = match selected {
             MapImageInstallDestination::Player => (
                 "写入玩家背包",
@@ -72,7 +73,7 @@ impl MapViewerWindowView {
                             self.y_layer, self.map_image.options.columns, self.map_image.options.rows
                         )
                     },
-                    "先检查展示框格位是否为空、支撑是否匹配；通过后可在此直接写入存档，无需进入游戏摆放。右键地图可调整中心。",
+                    "只读检查不会修改存档；检测通过后才能放置。若位置冲突，请在右侧调整中心或 Y 层。",
                     true,
                 )
             }
@@ -120,6 +121,20 @@ impl MapViewerWindowView {
                             .child(status),
                     ),
             )
+            .when_some(
+                check.filter(|task| task.status.as_ref() == "error")
+                    .and_then(|task| task.message.as_deref()),
+                |bar, error| {
+                    let reason = error.strip_prefix("validation failed: ").unwrap_or(error);
+                    bar.child(
+                        div()
+                            .w_full()
+                            .text_size(px(12.0))
+                            .text_color(colors.danger)
+                            .child(format!("无法在此放置：{reason}")),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
@@ -162,19 +177,6 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child(tip),
                     ),
-            )
-            .when_some(
-                check.filter(|task| task.status.as_ref() == "error")
-                    .and_then(|task| task.message.as_deref()),
-                |bar, error| {
-                    bar.child(
-                        div()
-                            .w_full()
-                            .text_size(px(12.0))
-                            .text_color(colors.danger)
-                            .child(format!("放置位置检查未通过：{error}")),
-                    )
-                },
             )
             .when_some(pending, |bar, path| {
                 bar.child(
