@@ -33,6 +33,8 @@
 
 ### 2026-10-15 后续执行：动画与 Resize（基线 `14289e14`）
 
+**2026-10-16 首页列表回退（当前 HEAD `600023a7`）**：用户反馈最新首页版本列表动画异常卡顿，撤回 `6d15651c` 引入的逐行 `clipped_translation_opacity` sampled Capture，恢复原来的 `top(10 * (1 - item_factor)) + opacity(item_factor)`。错峰、弹性、容器高度/阴影、虚拟列表与选择逻辑保持原实现；箭头稳定 identity 和公共 GPUI 修复保留。仅修改首页及本文，不恢复已删除的旧 API，不新增兼容层。不将行 Capture 推测为已证实根因，也不将源码恢复视为运行时卡顿已修复。按用户要求不重复构建/测试，仅检查定向差异及格式；运行效果待当前产物重新构建后确认。下文“首页所有行迁移”是已撤回的历史切片，不再代表当前状态。
+
 **最新执行（用户授权全部相关动画修复，随后要求停止逐项反复测试，并明确全平台、无兼容层）：**
 
 - `element/animation.rs` 删除帧局部 `with_sampled_animation`、`SampledAnimationElement` 和配套 state，不保留 alias、转发或双入口；唯一 caller-sampled API 使用稳定 identity。平移/透明度端点变化不再更换 ID 或强制重画后代；Capture 语义变化仍会重新绑定以保证正确性。静止非 identity 的终值继续生效，但不调度下一帧；包装层每次执行写入样本、内部静态内容允许复用。
