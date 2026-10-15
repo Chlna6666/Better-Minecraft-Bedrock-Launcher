@@ -503,16 +503,71 @@ impl Scene {
             })
             .count();
 
-        for operation in
-            &previous_operations[prefix_len..previous_operations.len().saturating_sub(suffix_len)]
-        {
-            if let Some(bounds) = operation.visual_bounds() {
-                visit(bounds);
+        let previous_changed =
+            &previous_operations[prefix_len..previous_operations.len().saturating_sub(suffix_len)];
+        let current_changed = &current[prefix_len..current.len().saturating_sub(suffix_len)];
+        // An unchanged zero-radius capture has identity source coordinates.
+        // Its child Scene may differ in one small quad while the enclosing
+        // PaintBlur still covers the entire page. Damaging that entire output
+        // on every UI commit defeats retained Root/Element raster caching for
+        // titlebar pills and dropdown animations on *all* GPU backends.
+        //
+        // This proof deliberately excludes changed capture geometry, animated
+        // transforms, Gaussian support, nested filters and backdrop sources.
+        // Only one aligned changed composite is refined; any structural
+        // uncertainty falls back to the full old/new output bounds below.
+        let refined_identity_capture = match (previous_changed, current_changed) {
+            (
+                [PaintOperation::Primitive(Primitive::Blur(old))],
+                [PaintOperation::Primitive(Primitive::Blur(new))],
+            ) if old.order == new.order
+                && old.layer_id == new.layer_id
+                && old.animation_id.is_none()
+                && new.animation_id.is_none()
+                && old.bounds == new.bounds
+                && old.content_mask == new.content_mask
+                && old.radius.0 == 0.0
+                && new.radius.0 == 0.0
+                && old.opacity == new.opacity
+                && old.content.blurs.is_empty()
+                && new.content.blurs.is_empty()
+                && !old.content.has_backdrop_blurs()
+                && !new.content.has_backdrop_blurs()
+                && !old.content.requires_full_redraw_fallback()
+                && !new.content.requires_full_redraw_fallback() =>
+            {
+                let output = new.bounds.intersect(&new.content_mask.bounds);
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI identity capture child-damage refinement: full_output_area={} child_operations={} retained_layer={:?}",
+                    output.size.width.0 * output.size.height.0,
+                    new.content.len(),
+                    new.layer_id,
+                );
+                new.content.for_each_changed_bounds(
+                    0..new.content.len(),
+                    &old.content,
+                    0..old.content.len(),
+                    |bounds| {
+                        let local = bounds.intersect(&output);
+                        if !local.is_empty() {
+                            visit(local);
+                        }
+                    },
+                )
             }
-        }
-        for operation in &current[prefix_len..current.len().saturating_sub(suffix_len)] {
-            if let Some(bounds) = operation.visual_bounds() {
-                visit(bounds);
+            _ => false,
+        };
+        if !refined_identity_capture {
+            for operation in previous_changed {
+                if let Some(bounds) = operation.visual_bounds() {
+                    visit(bounds);
+                }
+            }
+            for operation in current_changed {
+                if let Some(bounds) = operation.visual_bounds() {
+                    visit(bounds);
+                }
             }
         }
 

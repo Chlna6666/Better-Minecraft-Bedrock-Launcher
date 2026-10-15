@@ -918,6 +918,72 @@ fn element_blur_replay_keeps_one_isolated_content_scene() {
 }
 
 #[test]
+fn identity_capture_child_changes_do_not_dirty_full_capture_output() {
+    let output = Bounds::new(
+        point(ScaledPixels(10.0), ScaledPixels(10.0)),
+        size(ScaledPixels(100.0), ScaledPixels(70.0)),
+    );
+    let previous_quad = Bounds::new(
+        point(ScaledPixels(18.0), ScaledPixels(21.0)),
+        size(ScaledPixels(8.0), ScaledPixels(6.0)),
+    );
+    let current_quad = Bounds::new(
+        point(ScaledPixels(25.0), ScaledPixels(21.0)),
+        size(ScaledPixels(8.0), ScaledPixels(6.0)),
+    );
+    let make_scene = |quad_bounds, radius: f32, opacity: f32| {
+        let mut scene = Scene::default();
+        scene.begin_blur(BlurCapture {
+            animation_id: None,
+            layer_id: None,
+            bounds: output,
+            content_mask: ContentMask::new(output),
+            radius: ScaledPixels(radius),
+            opacity,
+        });
+        scene.insert_primitive(Quad {
+            bounds: quad_bounds,
+            content_mask: ContentMask::new(output),
+            ..Quad::default()
+        });
+        scene.end_blur();
+        scene.finish();
+        scene
+    };
+    let previous = make_scene(previous_quad, 0.0, 1.0);
+    let current = make_scene(current_quad, 0.0, 1.0);
+    let mut dirty = Vec::new();
+    assert!(current.for_each_changed_bounds(
+        0..current.len(), &previous, 0..previous.len(), |bounds| dirty.push(bounds),
+    ));
+    assert_eq!(dirty, vec![previous_quad, current_quad],
+        "a small changed child of an identity compositor must not damage the full capture");
+
+    // A changed capture opacity invalidates its entire output even though
+    // the child's primitive bytes and coordinates are otherwise identical.
+    let opacity_changed = make_scene(previous_quad, 0.0, 0.5);
+    let mut opacity_dirty = Vec::new();
+    assert!(opacity_changed.for_each_changed_bounds(
+        0..opacity_changed.len(), &previous, 0..previous.len(),
+        |bounds| opacity_dirty.push(bounds),
+    ));
+    assert!(opacity_dirty.contains(&output),
+        "capture topology or composite-style changes require full output damage");
+
+    // Nonzero Gaussian filters spread child pixels beyond their original
+    // geometry. They must retain the conservative affected-output fallback.
+    let gaussian_before = make_scene(previous_quad, 4.0, 1.0);
+    let gaussian_after = make_scene(current_quad, 4.0, 1.0);
+    let mut gaussian_dirty = Vec::new();
+    assert!(gaussian_after.for_each_changed_bounds(
+        0..gaussian_after.len(), &gaussian_before, 0..gaussian_before.len(),
+        |bounds| gaussian_dirty.push(bounds),
+    ));
+    assert!(gaussian_dirty.contains(&output),
+        "Gaussian source changes cannot use zero-radius local-damage proof");
+}
+
+#[test]
 fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
     let previous = element_blur_scene(Bounds::new(
         point(ScaledPixels(14.0), ScaledPixels(16.0)),
