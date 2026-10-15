@@ -90,38 +90,67 @@ fn auto_capture_static_background(
 
     if scene.revision == 0
         || scene.has_backdrop_blurs()
-        || !scene.blurs.is_empty()
         || scene.requires_full_redraw_fallback()
         || !scene.prepared_retained_quad_chunks().is_empty()
-        || scene.paint_operations.len() < 97
+        || scene.paint_operations.len() < 25
         || drawable_size.width == 0
         || drawable_size.height == 0
+        // Do not split an interleaved/multi-level capture DAG. The fast path
+        // applies only to an independently composited zero-filter popup.
+        || scene.blurs.iter().any(|blur| {
+            blur.radius.0 != 0.0
+                || blur.layer_id.is_none()
+                || !blur.content.blurs.is_empty()
+        })
     {
         return None;
     }
 
-    // Parent and child must be reconstructed in the same order, without
-    // intervening structural paint operations or unsupported resources.
+    let viewport = crate::bounds(
+        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        crate::size(
+            crate::ScaledPixels(drawable_size.width as f32),
+            crate::ScaledPixels(drawable_size.height as f32),
+        ),
+    );
+
+    // Split only at a complete painter-order boundary. StartBlur begins a
+    // dynamic capture, while the matching Primitive::Blur is emitted after
+    // EndBlur and supplies the first dynamic GPU DrawOrder.
     let mut static_prefix = 0usize;
+    let mut static_raster_area = 0.0_f64;
     let mut prefix_end = 0usize;
     let mut saw_dynamic = false;
     for (index, operation) in scene.paint_operations.iter().enumerate() {
         let primitive = match operation {
             PaintOperation::Primitive(primitive) => primitive,
             PaintOperation::StartLayer(_) | PaintOperation::EndLayer => continue,
-            PaintOperation::StartBlur(_) | PaintOperation::EndBlur => return None,
+            PaintOperation::StartBlur(capture)
+                if capture.radius.0 == 0.0 && capture.layer_id.is_some() =>
+            {
+                if !saw_dynamic {
+                    prefix_end = index;
+                    saw_dynamic = true;
+                }
+                continue;
+            }
+            PaintOperation::StartBlur(_) => return None,
+            PaintOperation::EndBlur => continue,
         };
         match primitive {
             Primitive::Quad(_) | Primitive::Shadow(_) => {}
             _ if !saw_dynamic => return None, // No atlas/path inputs in retained background.
-            Primitive::Surface(_)
-            | Primitive::RendererExtension(_)
-            | Primitive::BackdropBlur(_)
-            | Primitive::Blur(_) => return None,
+            Primitive::Surface(_) | Primitive::RendererExtension(_)
+            | Primitive::BackdropBlur(_) => return None,
+            Primitive::Blur(blur) if blur.radius.0 == 0.0 && blur.layer_id.is_some() => {}
+            Primitive::Blur(_) => return None,
             _ => {}
         }
         if !saw_dynamic && primitive.animation_id().is_none() {
             static_prefix += 1;
+            let bounds = primitive.visual_bounds().intersect(&viewport);
+            static_raster_area += f64::from(bounds.size.width.0.max(0.0))
+                * f64::from(bounds.size.height.0.max(0.0));
         } else {
             if !saw_dynamic {
                 prefix_end = index;
@@ -129,20 +158,28 @@ fn auto_capture_static_background(
             saw_dynamic = true;
         }
     }
-    if static_prefix < 96 || !saw_dynamic
+
+    // Preserve the existing 96-primitive flat-scene admission. For smaller
+    // pages, only pay for an extra retained target when measured static raster
+    // coverage is substantial; 24 tiny controls are not enough by themselves.
+    let viewport_area = f64::from(drawable_size.width) * f64::from(drawable_size.height);
+    if (static_prefix < 96 && (static_prefix < 24 || static_raster_area < viewport_area * 2.0))
+        || !saw_dynamic
         || !scene.range_is_independently_replayable(0..prefix_end)
         || !scene.range_is_independently_replayable(prefix_end..scene.paint_operations.len())
     {
         return None;
     }
 
-    // The GPU batch stream is sorted by DrawOrder. Reject ambiguous boundaries
-    // rather than allowing an equal or reordered primitive into the wrong
-    // render target. Structural PaintLayer markers carry no packed pixels.
-    let first_dynamic_order = match &scene.paint_operations[prefix_end] {
-        PaintOperation::Primitive(primitive) => primitive.order(),
-        _ => return None,
-    };
+    // The static prefix is Quad/Shadow-only; a zero-filter popup contributes
+    // its output as a later Primitive::Blur, never as a member of the prefix.
+    // Keep its draw-order barrier intact to avoid moving a popup behind chrome.
+    let first_dynamic_order = scene.paint_operations[prefix_end..]
+        .iter()
+        .find_map(|operation| match operation {
+            PaintOperation::Primitive(primitive) => Some(primitive.order()),
+            _ => None,
+        })?;
     if scene.paint_operations[..prefix_end].iter().any(|operation| {
         matches!(operation, PaintOperation::Primitive(primitive)
             if primitive.order() >= first_dynamic_order)
@@ -153,15 +190,8 @@ fn auto_capture_static_background(
         return None;
     }
 
-    // Do not synthesize another full-window root. The tight bounds limit
-    // the composite draw to the actual static background footprint.
-    let viewport = crate::bounds(
-        crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
-        crate::size(
-            crate::ScaledPixels(drawable_size.width as f32),
-            crate::ScaledPixels(drawable_size.height as f32),
-        ),
-    );
+    // The tight background target covers only static pixels. Popup source
+    // Capture and its changing ClipReveal composite stay in the main pass.
     let bounds = scene
         .bounds_for_range(0..prefix_end)?
         .intersect(&viewport);
@@ -1103,6 +1133,118 @@ mod tests {
         assert_eq!(changed.first_dynamic_order, captured.first_dynamic_order);
         // Pixel changes are compared using packed source fingerprints after
         // encoding, not by deep-comparing cloned child Scenes.
+    }
+
+    #[test]
+    fn static_prefix_keeps_zero_filter_popup_outside_root_capture() {
+        let size = DrawableSize { width: 640, height: 480 };
+        let viewport = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+        );
+        let id = crate::GlobalElementId::from_path(&["popup".into()]);
+        let mut scene = crate::Scene::default();
+        for _ in 0..24 {
+            scene.insert_primitive(crate::Quad {
+                bounds: viewport,
+                content_mask: crate::ContentMask::new(viewport),
+                ..Default::default()
+            });
+        }
+        let popup = crate::bounds(
+            crate::point(crate::ScaledPixels(40.0), crate::ScaledPixels(30.0)),
+            crate::size(crate::ScaledPixels(120.0), crate::ScaledPixels(160.0)),
+        );
+        scene.begin_blur(crate::BlurCapture {
+            animation_id: Some(crate::SceneAnimationId(9)),
+            layer_id: Some(id),
+            bounds: popup,
+            content_mask: crate::ContentMask::new(popup),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+        });
+        scene.insert_primitive(crate::Quad {
+            bounds: popup,
+            content_mask: crate::ContentMask::new(popup),
+            ..Default::default()
+        });
+        scene.end_blur();
+        scene.finish();
+        let captured = auto_capture_static_background(&scene, size)
+            .expect("static background can be retained below an isolated popup");
+        assert_eq!(captured.first_dynamic_order, scene.blurs[0].order);
+        let mut upload = FrameUpload::default();
+        let mut cache = RetainedQuadChunkCache::default();
+        let mut summary = upload.encode(
+            &mut cache, &scene, &[], size,
+            &RenderingParameters::system(), false, BackdropBlurQuality::Full,
+        );
+        assert!(upload.capture_encoded_static_prefix(
+            &scene, captured.bounds, captured.content_mask,
+            captured.first_dynamic_order, size, &mut summary,
+        ));
+        assert_eq!(upload.element_blur_inputs.len(), 2,
+            "the background and popup retain two independent sources");
+        assert!(upload.retained_root_blur.is_none(),
+            "the full-window root capture must not wrap the popup");
+        upload.refresh_blur_content_ranges();
+        assert_eq!(upload.blur_content_ranges().len(), 2);
+    }
+
+    #[test]
+    fn static_prefix_rejects_gaussian_and_interleaved_capture() {
+        let size = DrawableSize { width: 640, height: 480 };
+        let rect = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
+        );
+        let build = |radius| {
+            let mut scene = crate::Scene::default();
+            for _ in 0..24 {
+                scene.insert_primitive(crate::Quad {
+                    bounds: rect,
+                    content_mask: crate::ContentMask::new(rect),
+                    ..Default::default()
+                });
+            }
+            scene.begin_blur(crate::BlurCapture {
+                animation_id: Some(crate::SceneAnimationId(7)),
+                layer_id: Some(crate::GlobalElementId::from_path(&["popup".into()])),
+                bounds: rect,
+                content_mask: crate::ContentMask::new(rect),
+                radius: crate::ScaledPixels(radius),
+                opacity: 1.0,
+            });
+            scene.insert_primitive(crate::Quad {
+                bounds: rect,
+                content_mask: crate::ContentMask::new(rect),
+                ..Default::default()
+            });
+            scene.end_blur();
+            scene.finish();
+            scene
+        };
+        assert!(auto_capture_static_background(&build(8.0), size).is_none());
+        let mut interleaved = crate::Scene::default();
+        interleaved.begin_blur(crate::BlurCapture {
+            animation_id: None,
+            layer_id: Some(crate::GlobalElementId::from_path(&["panel".into()])),
+            bounds: rect,
+            content_mask: crate::ContentMask::new(rect),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+        });
+        for _ in 0..30 {
+            interleaved.insert_primitive(crate::Quad {
+                bounds: rect,
+                content_mask: crate::ContentMask::new(rect),
+                ..Default::default()
+            });
+        }
+        interleaved.end_blur();
+        interleaved.finish();
+        assert!(auto_capture_static_background(&interleaved, size).is_none(),
+            "a prefix inside an open Capture is never independently replayable");
     }
 
     #[test]

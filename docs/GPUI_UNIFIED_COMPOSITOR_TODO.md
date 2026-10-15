@@ -507,6 +507,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【边界】**：新内容仍经过现有 `FilterRegistry::source_unchanged` 的 Source/BBox/Mask/Animation 验证；物理 View 变更、无稳定身份、重复旧身份、正半径 Gaussian、合并目标不复用旧像素。旧 Root 失效继续全失效；未实现 RootColorTarget 物理资源独立化。
 - **【测试源码未执行】**：添加 FilterRegistry 层身份变化、纹理变化、扁平索引重排、Gaussian 与源 bounds 变化测试。环境没有 Rust 工具链，也没有四后端原生 GPU：需 `cargo fmt --all -- --check` / `cargo check --workspace --no-default-features`，以及 DX11/DX12/VK/GL 单/多个 Dropdown、弹层重排、尺寸变化、切页的实际像素和 Trace 校验。GPU 40% 的变化未知；下一步聚焦 Root 源 DirtyRegion 与独立 Property Composite 的实际重复 Pass。
 
+## 2026-10-15：复用现有静态前缀 GPU Capture，让零滤镜 Dropdown 在 Root 外独立合成（未编译）
+
+- **基线**：远程 `475e03cdd9ddef7bcc8264b984253d29d8acd4b1`。改动仅 `crates/gpui/src/platform/nova/renderer/retained_upload.rs` 和唯一 TODO。不改 `Scene` ABI、Nova Shader、Native Backend 或图层缓存所有权。
+- **【源码事实】**：`append_retained_root` 把整个页面（包括零滤镜 Dropdown Capture）包装到根颜色纹理中；`reconcile_gpu_layer_animation_damage` 正确地将菜单动效作为 Root 的局部脏像素，每帧只能局部重画 Root。现有 `auto_capture_static_background → capture_encoded_static_prefix` 可把静态 Quad/Shadow 前缀的 GPU 源单独驻留，动态前景直接以 Painter Order 合成，但原准入规则拒绝含任何 `StartBlur` 的 Scene。
+- **【实现】**：允许在完整静态 Quad/Shadow 前缀**之后**开始的具备稳定 `layer_id`、零半径、无子 Capture、无 BackdropBlur 的单级 Popup Capture。以其闭合后实际 `Primitive::Blur.order` 作为动态 DrawOrder 边界，要求两侧 `range_is_independently_replayable` 且全部静态 order 严格小于动态 order；复用唯一 packed FrameUpload 和 FilterRegistry 的 AutoStatic Cache，不创建第二套 Scene/Root Owner。对小页面把静态前缀准入从原至少 96 Quad/Shadow 扩为 **≥24 且静态裁剪栅格工作量≥2 倍视口像素**，原 ≥96 规则不变；阈值是保守启发式，不是 GPU 实测。
+- **【正确性保护】**：无法独立切分的结构化 Painter Layer、真正 Gaussian、嵌套 Element Capture、BackdropBlur、未标识 Capture、纹理/路径/Surface 等在 Capture 前出现仍退回原全量链路；Drawable Resize / Atlas 内容版本 / Filter invalidation 保留既有一致性逻辑。不会绕过 Fence 或吞掉必要 WSI Present。
+- **【单测源码，未执行】**：新增 24 个静态全屏 Quad + 独立 Popup 的准入及 FrameUpload 包装测试，验证 Root 不再包住菜单；新增 Gaussian/嵌套结构反例。当前容器未安装 Rust/rustfmt、没有 Windows 真实 GPU，尚无编译/四后端 Trace 结果。该优化只作用于可证明有序且足够重的静态前缀；不能声称所有 BMCBL 页面、所有 Dropdown 都自动适用。后续必须测量准入命中率与 `retained_root_draw_steps`、`filter_source_draw_steps`、`composite_passes`、GPU GPU busy、UI frame 延迟。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
