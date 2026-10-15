@@ -321,6 +321,19 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(target) = self.map_image.install_refresh.take() {
+            // A failed preflight/commit must not refresh chunks or history as though
+            // the world had been modified. Keep actionable diagnostics visible.
+            if snapshot.status.as_ref() != "completed" {
+                if snapshot.status.as_ref() == "error" {
+                    let reason = snapshot.message.as_deref().unwrap_or("未知写入错误");
+                    let reason = reason.strip_prefix("validation failed: ").unwrap_or(reason);
+                    self.status = SharedString::from(format!("地图写入未执行：{reason}"));
+                    toast::error(cx, SharedString::from(format!(
+                        "地图未写入：{reason}"
+                    )));
+                }
+                return;
+            }
             match target {
                 MapImageInstallRefresh::Player(player) => self.load_player_detail(player, cx),
                 MapImageInstallRefresh::Chunks(chunks) => match chunks.lock() {
