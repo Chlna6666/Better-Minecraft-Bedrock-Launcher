@@ -139,6 +139,23 @@ struct CurseForgeResourcePanelSignature {
     mod_page_description_len: usize,
 }
 
+impl CurseForgeResourcePanelSignature {
+    fn matches_state(&self, state: &DownloadPageState) -> bool {
+        self.install_open == state.curseforge_install_open
+            && self.install_stage == state.curseforge_install_stage
+            && self.install_error == state.curseforge_install_error
+            && self.install_file_count == state.curseforge_install_files.len()
+            && self.install_selected_file_id == state.curseforge_install_selected_file_id
+            && self.install_target_folder == state.curseforge_install_target_folder
+            && self.mod_page_open == state.curseforge_mod_page_open
+            && self.mod_page_loading == state.curseforge_mod_page_loading
+            && self.mod_page_error == state.curseforge_mod_page_error
+            && self.mod_page_mod_id == state.curseforge_mod_page_mod_id
+            && self.mod_page_mod == state.curseforge_mod_page_mod
+            && self.mod_page_description_len == state.curseforge_mod_page_description_len
+    }
+}
+
 fn curseforge_resource_panel_signature(
     state: &DownloadPageState,
 ) -> CurseForgeResourcePanelSignature {
@@ -167,6 +184,7 @@ pub(crate) struct CurseForgeResourcePanelView {
     detail_image_cache: Entity<BoundedImageCache>,
     initial_tab: crate::ui::views::download::state::DownloadTab,
     last_signature: CurseForgeResourcePanelSignature,
+    last_manage_selected_folder: Option<SharedString>,
     active: bool,
 }
 
@@ -184,21 +202,14 @@ impl CurseForgeResourcePanelView {
                 if !this.active {
                     return;
                 }
-                let (current_tab, current_signature) =
-                    cx.read_global(|state: &DownloadPageState, _cx| {
-                        (state.tab, curseforge_resource_panel_signature(state))
-                    });
-
-                let mut should_notify = false;
-                if current_tab != this.initial_tab {
+                let state = cx.global::<DownloadPageState>();
+                let current_tab = state.tab;
+                let signature_changed = !this.last_signature.matches_state(state);
+                if current_tab != this.initial_tab || signature_changed {
                     this.initial_tab = current_tab;
-                    should_notify = true;
-                }
-                if current_signature != this.last_signature {
-                    this.last_signature = current_signature;
-                    should_notify = true;
-                }
-                if should_notify {
+                    if signature_changed {
+                        this.last_signature = curseforge_resource_panel_signature(state);
+                    }
                     cx.notify();
                 }
             }),
@@ -206,10 +217,18 @@ impl CurseForgeResourcePanelView {
                 if !this.active {
                     return;
                 }
-                let should_notify = cx.read_global(|state: &DownloadPageState, _cx| {
+                let folder = cx
+                    .global::<crate::ui::views::manage::state::ManagePageState>()
+                    .selected_folder
+                    .clone();
+                if this.last_manage_selected_folder == folder {
+                    return;
+                }
+                this.last_manage_selected_folder = folder;
+                let modal_visible = cx.read_global(|state: &DownloadPageState, _| {
                     state.curseforge_install_open || state.curseforge_mod_page_open
                 });
-                if should_notify {
+                if modal_visible {
                     cx.notify();
                 }
             }),
@@ -233,6 +252,10 @@ impl CurseForgeResourcePanelView {
             detail_image_cache: cache,
             initial_tab,
             last_signature: initial_signature,
+            last_manage_selected_folder: cx
+                .global::<crate::ui::views::manage::state::ManagePageState>()
+                .selected_folder
+                .clone(),
             active: false,
             __gpui_hooks: RefCell::new(Vec::new()),
             __gpui_hook_index: Cell::new(0),
@@ -253,6 +276,10 @@ impl CurseForgeResourcePanelView {
             });
             self.initial_tab = tab;
             self.last_signature = signature;
+            self.last_manage_selected_folder = cx
+                .global::<crate::ui::views::manage::state::ManagePageState>()
+                .selected_folder
+                .clone();
             cx.notify();
         }
     }
