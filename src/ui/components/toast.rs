@@ -882,6 +882,45 @@ pub fn has_visible_breadcrumb(window_id: WindowId, now: Instant, state: &ToastSt
     })
 }
 
+pub(crate) fn window_content_revision(window_id: WindowId, state: &ToastState) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut has_window_content = false;
+    for item in state
+        .items
+        .iter()
+        .filter(|item| item.target_window == Some(window_id))
+    {
+        has_window_content = true;
+        item.id.hash(&mut hasher);
+        (item.kind as u8).hash(&mut hasher);
+        item.message.hash(&mut hasher);
+        item.dismissed_at.hash(&mut hasher);
+    }
+    if let Some(item) = state
+        .breadcrumb
+        .as_ref()
+        .filter(|item| item.target_window == Some(window_id))
+    {
+        has_window_content = true;
+        item.id.hash(&mut hasher);
+        (item.kind as u8).hash(&mut hasher);
+        item.message.hash(&mut hasher);
+        item.dismissed_at.hash(&mut hasher);
+    }
+    if has_window_content {
+        (state.placement as u8).hash(&mut hasher);
+        (state.stack_direction as u8).hash(&mut hasher);
+        (state.slide_direction as u8).hash(&mut hasher);
+        state.insets.top.0.to_bits().hash(&mut hasher);
+        state.insets.right.0.to_bits().hash(&mut hasher);
+        state.insets.bottom.0.to_bits().hash(&mut hasher);
+        state.insets.left.0.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
