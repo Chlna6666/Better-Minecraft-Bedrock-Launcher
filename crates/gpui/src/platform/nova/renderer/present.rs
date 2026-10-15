@@ -1501,6 +1501,46 @@ impl NovaRenderer {
         } else {
             self.invalidate_backdrop_blur_cache();
         }
+        // This event is emitted AFTER a successful native submission, not when
+        // a candidate static prefix was merely encoded. On compositor-only
+        // frames the same resident content version must survive unchanged.
+        // It is intentionally scoped to the existing opt-in frame diagnostics.
+        if self.diagnostics.enabled {
+            let auto_static_index = self.frame_upload.element_blur_inputs.iter().find_map(
+                |(index, source)| matches!(source, FilterSource::AutoStatic { .. }).then_some(*index),
+            );
+            let auto_static_dirty = auto_static_index
+                .is_some_and(|index| dirty_element_indices.contains(&index));
+            let auto_static_refreshes = element_blur_layers.iter()
+                .filter(|layer| Some(layer.index) == auto_static_index)
+                .count();
+            let auto_static_source_draw_steps = element_blur_layers.iter()
+                .filter(|layer| Some(layer.index) == auto_static_index)
+                .flat_map(|layer| &layer.source_groups)
+                .map(|group| group.source_steps.len())
+                .sum::<usize>();
+            let auto_static_view = auto_static_index.and_then(|index| {
+                self.filters.targets.as_ref().and_then(|targets| {
+                    targets.exclusive_zero_radius_capture_view(index)
+                })
+            });
+            let auto_static_content_version = auto_static_index
+                .and_then(|index| self.filters.layer_content_version(index));
+            log::debug!(
+                target: "gpui::diagnostics",
+                "GPUI AutoStatic submitted: window_id={} scene_revision={} source_index={:?} source_dirty={} refreshed_layers={} source_draw_steps={} native_view={:?} content_version={:?} retained_root={} frame_animation_values={}",
+                packet.window_id,
+                packet.scene.revision,
+                auto_static_index,
+                auto_static_dirty,
+                auto_static_refreshes,
+                auto_static_source_draw_steps,
+                auto_static_view,
+                auto_static_content_version,
+                root_scene_color_cached,
+                self.frame_upload.sampled_animation_values.len(),
+            );
+        }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
         if self.frame_upload.retained_root_blur.is_some() {
             let pixels = self.drawable_pixels();
@@ -1619,8 +1659,9 @@ impl NovaRenderer {
 #[cfg(test)]
 mod per_layer_damage_tests {
     use super::{
-        BlurContentRange, FilterRegistry, FrameUpload, UploadedBatch, dirty_element_blur_indices,
-        has_root_backdrop_blurs, source_pass_required,
+        BlurContentRange, FilterRegistry, FilterSource, FrameUpload, TextureViewId,
+        UploadedBatch, dirty_element_blur_indices, has_root_backdrop_blurs,
+        source_pass_required,
     };
 
     #[test]
@@ -1661,6 +1702,58 @@ mod per_layer_damage_tests {
             dirty_element_blur_indices(&frame, &empty, &filters, &[], false),
             vec![2],
             "content change must recapture even when the window has no dirty rect"
+        );
+    }
+
+    #[test]
+    fn auto_static_relocation_with_identical_native_view_skips_source_redraw() {
+        let mut frame = FrameUpload::default();
+        frame.blur_content_ranges_cache.push(BlurContentRange {
+            index: 5,
+            depth: 0,
+            content_start: 0,
+            content_end: 0,
+        });
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(256.0), crate::ScaledPixels(128.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 0x1234,
+            content_bytes: 8192,
+        };
+        frame.element_blur_inputs.push((5, source.clone()));
+        let view = TextureViewId::new(81);
+        let mut filters = FilterRegistry::new(None);
+        filters.record_element_blur_inputs(&[(2, source.clone())], &[], [2]);
+
+        assert_eq!(filters.remap_identity_capture_sources(
+            &[(2, view)], &[(5, view)], &frame.element_blur_inputs,
+        ), 1);
+        assert!(
+            dirty_element_blur_indices(&frame, &crate::DirtyRegion::empty(), &filters, &[], false)
+                .is_empty(),
+            "a successfully submitted AutoStatic texture must survive a popup index reorder",
+        );
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &crate::DirtyRegion::empty(), &filters, &[], true),
+            vec![5],
+            "explicit full invalidation must still recapture resident pixels",
+        );
+
+        // Same packed bytes alone cannot inherit a different GPU allocation.
+        assert_eq!(filters.remap_identity_capture_sources(
+            &[(5, view)],
+            &[(3, TextureViewId::new(82))],
+            &[(3, source)],
+        ), 0);
+        frame.blur_content_ranges_cache[0].index = 3;
+        frame.element_blur_inputs[0].0 = 3;
+        assert_eq!(
+            dirty_element_blur_indices(&frame, &crate::DirtyRegion::empty(), &filters, &[], false),
+            vec![3],
         );
     }
 

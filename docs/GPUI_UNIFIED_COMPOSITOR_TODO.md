@@ -525,6 +525,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未执行】**：FilterRegistry 自动前缀真实版本跨索引复用、变更内容/位置/物理 View 拒绝；Targets 层两次相反的 Popup 重排、独占 TextureView/ResourceSet 维持、非法重排原子失败；原零滤镜/root/Gaussian 目标测试调用同步更新。不新增 CI 自动修复，不把静态审查算作 Rust 编译或原生四后端验证。
 - **【下一步验收】**：先在 Windows 执行 `cargo fmt --all -- --check`、`cargo check --workspace --no-default-features`、针对性 GPUI 单测，随后分别测试 DX11/DX12/Vulkan/OpenGL 的静态前缀 Capture + Popup 插入/删除/倒转动画/Resize/切页。Trace 需核对 `static_prefix_captured`、`auto_static_relocation`、`retained_sources`、`element_blur_refresh`、`retained_root_draw_steps`、`composite_passes` 与实际 GPU 占用，尤其警惕静态场景版本错误复用和未初始化目标。当前执行环境没有 cargo/rustc/rustfmt/Windows GPU，**源码尚未编译/运行**，不承诺 GPU 40% 已改善。
 
+## 2026-10-15：公共 Dropdown / AutoStatic GPU 缓存 Trace 验收切片（P0 待实机）
+
+- **远程基线**：`f7035b0c26bb77aab986889c7a1109a3cccc7702`。新增仅在既有 `RendererOptions::frame_metrics` 打开时记录的 `GPUI AutoStatic submitted` 事件，发生在**成功 native 提交及 `record_element_blur_inputs/record_submission` 之后**，不是仅由 UI Paint/CPU Encode 推测 GPU 缓存命中。指标为 `window_id`、`scene_revision`、`source_index`、`source_dirty`、`refreshed_layers`、`source_draw_steps`、`native_view`、`content_version`、`retained_root`、`frame_animation_values`；未增加新的缓存、线程、环境开关或采样状态。修改 `crates/gpui/src/platform/nova/renderer/present.rs` 与本文；新增一个 Present 源失效测试。
+- **【发现旧版真实 DX12 基线】**：用户上传的 `粘贴的文本 (1)(20261015-012213).txt`（2026-10-15 01:22 UTC，**早于当前 P0 代码**）记录 24 次 `GPUI retained target layout recreated`、23 次 `recreation required`、0 次 `reused` / `rebound`，布局反复 3→4→6（11,664,000→18,662,400→27,993,600 字节）；972×600 主窗口单帧 `composite_passes=12`、`blur_source_pixels=1,489,240`、`blur_target_pixels=805,240`，GPU Owner busy≈20.6%–21.3%（不等于系统任务管理器 GPU40%）。旧日志 `old_isolated` 非零、`previous_root=Some(...)`，并且没有 `static_prefix_captured` / `auto_static_relocation` 字段：**只能作为预重构退化对照，不能证明当前 AutoStatic 正常/异常**。
+- **【正确性断言源码，未编译】**：`renderer/present.rs::per_layer_damage_tests` 新增「已成功呈现 + AutoStatic 内容指纹不变 + 真实 TextureView 不变 + packed index 从 2→5」必须从 Dirty 集中消失；强制刷新仍包含 index5；View 改变且 index5→3 时必须重新刷新。与 FilterRegistry/Target 前轮单测互补。
+- **【本机验收判据】**：打开应用已有 `RendererOptions::frame_metrics` 诊断（不新增任何环境变量），在最新 master 上分别抓取静止窗口、公共 Dropdown 连续打开/收起/快速反向、首页版本下拉、多个菜单互斥切换、Blur on/off、窗口 Resize/切页，并用相同尺寸/240Hz、同一后端对照。只有当某个场景`static_prefix_captured=true`、后续成功提交报告 `source_index=Some(...)`，稳定动画帧显示 `refreshed_layers=0`、`source_draw_steps=0` 且原 `native_view` 和 `content_version` 保持不变，才可宣称「该场景 AutoStatic 不再重复离屏绘制」。拓扑变化时可结合 `auto_static_relocation=Some((old,new))` 及 `GPUI identity Capture target rebind`；没有拓扑变化时该字段为 None 是正常。内容变化、Surface Resize 或纹理资源代次变更的第一帧**应重新刷新**，不可要求所有帧恒为 0。
+- **【尚未达到】**：尚未拿到基于 `f7035b0c26bb77aab986889c7a1109a3cccc7702` 之后版本的 Windows Trace；当前容器无 Rust/Cargo 与 DX11/DX12/Vulkan/OpenGL 实机，不能声称编译、单测或静态背景停止刷新已被证明。旧版多 isolated/source 参与的 Gaussian/Backdrop 目标拓扑不能简单套用 AutoStatic 零滤镜优化；若新 Trace 仍显示 `retained_root=true`、`source_index=None` 或不断 `recreation required`，应转向孤立 Source 物理身份与目标容量/预算/Fence，再考虑根颜色独立 owner，不要误把 AutoStatic 已复用当成全部 40% GPU 的解决方案。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -540,7 +548,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- **当前最新待验证起点（2026-10-15）**：完成 AutoStatic 跨 Popup 变体数量与扁平索引重排的真实 TextureView/ResourceSet 迁移、`RetainedFilterSource.index` 可见性修复及 GPUI `scene` 重导出收窄后，**立即先做 Windows Rust fmt/check 和单测**，再以 DX11/DX12/Vulkan/OpenGL 对比公共 Dropdown 40% 与首页版本下拉 20% 的历史负载。检查 `static_prefix_captured`、`auto_static_relocation`、`retained_sources`、GPU Root/Filter/Present Pass、静态纹理内容与高频 Popup 反转；验证之前不得把 P0 标记完成。
+- **当前最新待验证起点（2026-10-15）**：用现有 `RendererOptions::frame_metrics` 在 Windows 最新 master 抓取 `GPUI AutoStatic submitted` 和 `static_prefix_captured` / `auto_static_relocation` 及 `nova-gfx frame diagnostics`，优先执行 Rust fmt/check/单测。参照 2026-10-15 01:22 UTC 旧 DX12 Trace 中反复 3→4→6 Target 重建 / 12 合成 Pass 的基线，检查新 Trace 每帧成功呈现后静态 `native_view/content_version` 不变且 `refreshed_layers=0/source_draw_steps=0`。如根本无 AutoStatic 或有 isolated source，记录为**准入不成立**而非「缓存命中」；四后端无实测前不能关闭 P0。
 - **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。
