@@ -263,7 +263,7 @@ pub fn render_tools_overlay(
 
 #[cfg(test)]
 mod render_signature_tests {
-    use super::*;
+    use super::{SharedString, ToolsPageState, ToolsRenderSignature, state};
 
     #[test]
     fn detects_in_place_list_edits_without_pointer_or_length_changes() {

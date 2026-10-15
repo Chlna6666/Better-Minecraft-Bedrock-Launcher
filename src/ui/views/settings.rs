@@ -578,7 +578,7 @@ fn render_font_restart_modal(colors: &ThemeColors, _i18n: &I18n) -> AnyElement {
 
 #[cfg(test)]
 mod content_projection_tests {
-    use super::*;
+    use super::{SettingsContentProjection, SettingsPageState, SettingsTab};
 
     #[test]
     fn game_tab_ignores_unrelated_settings() {

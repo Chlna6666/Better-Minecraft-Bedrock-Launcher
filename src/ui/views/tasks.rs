@@ -959,7 +959,6 @@ mod tests {
             total: Some(2),
             percent: Some(50.0),
             speed_bytes_per_sec: 0.0,
-            sequence: 1,
             downloaded_segments: None,
             thread_segments: Vec::new(),
         }

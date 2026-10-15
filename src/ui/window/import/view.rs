@@ -3542,7 +3542,10 @@ mod batch_path_tests {
 
 #[cfg(test)]
 mod responsive_breakpoint_tests {
-    use super::*;
+    use super::{
+        IMPORT_WINDOW_COMPACT_WIDTH_PX, IMPORT_WINDOW_TWO_COLUMN_WIDTH_PX,
+        responsive_at_least, responsive_at_most,
+    };
 
     #[test]
     fn two_column_does_not_flip_on_one_pixel_resize_jitter() {
