@@ -750,7 +750,29 @@ impl Scene {
                         && current.iter().filter(|value| value.animation_id == animation_id)
                             .all(Self::animation_sample_is_identity))
                 {
-                    let bounds = match operation {
+                    // ClipReveal is applied to the final compositor output:
+                    // pixels visible at both samples do not change. Only the
+                    // strip crossing the moving clip edge must be damaged.
+                    // Incompatible clips, absent samples and other properties
+                    // deliberately retain the conservative swept-bounds path.
+                    let clip_delta = last.zip(now)
+                        .filter(|(before, after)| {
+                            before.property == TransitionProperty::ClipReveal
+                                && after.property == TransitionProperty::ClipReveal
+                        })
+                        .and_then(|(before, after)| {
+                            let base = match operation {
+                                PaintOperation::Primitive(primitive) => primitive.visual_bounds(),
+                                PaintOperation::StartBlur(capture) => blur_capture_visual_bounds(capture),
+                                _ => return None,
+                            };
+                            clip_reveal_changed_strip(
+                                sampled_animation_components(before),
+                                sampled_animation_components(after),
+                                base,
+                            )
+                        });
+                    let bounds = clip_delta.unwrap_or_else(|| match operation {
                         PaintOperation::Primitive(primitive) => {
                             animation_sampled_bounds(primitive, last)
                                 .union(&animation_sampled_bounds(primitive, now))
@@ -759,8 +781,8 @@ impl Scene {
                             animation_sampled_blur_capture_bounds(capture, last)
                                 .union(&animation_sampled_blur_capture_bounds(capture, now))
                         }
-                        _ => continue,
-                    };
+                        _ => unreachable!("only primitive and capture operations carry animation ids"),
+                    });
                     if !bounds.is_empty() {
                         damage.push(bounds);
                         changed_operations.push(index);
@@ -2412,6 +2434,49 @@ fn animation_sampled_bounds(
         }
         _ => bounds,
     }
+}
+
+/// Exact damage of an axis-aligned ClipReveal when both samples share a
+/// fixed edge. The native GPU clip is [left, right, top, bottom]. Revealed
+/// pixels and concealed pixels form only the band between the moving edges;
+/// unchanged interior texels do not need another Capture Source raster pass.
+///
+/// Return None for retargeted/disjoint/invalid rectangles so callers keep
+/// the full swept output. An empty strip means the sampled clip did not move.
+pub(super) fn clip_reveal_changed_strip(
+    before: [f32; 4],
+    after: [f32; 4],
+    output_bounds: Bounds<ScaledPixels>,
+) -> Option<Bounds<ScaledPixels>> {
+    if !before.into_iter().chain(after).all(f32::is_finite) {
+        return None;
+    }
+    let [bl, br, bt, bb] = before;
+    let [al, ar, at, ab] = after;
+    if bl > br || bt > bb || al > ar || at > ab {
+        return None;
+    }
+    let rect = if bl == al && br == ar && bb == ab {
+        // The top edge moves; the bottom and horizontal coverage stay fixed.
+        (bl, bt.min(at), br - bl, (bt - at).abs())
+    } else if bl == al && br == ar && bt == at {
+        // The bottom edge moves.
+        (bl, bb.min(ab), br - bl, (bb - ab).abs())
+    } else if bt == at && bb == ab && br == ar {
+        // The left edge moves.
+        (bl.min(al), bt, (bl - al).abs(), bb - bt)
+    } else if bt == at && bb == ab && bl == al {
+        // The right edge moves.
+        (br.min(ar), bt, (br - ar).abs(), bb - bt)
+    } else {
+        return None;
+    };
+    Some(
+        Bounds {
+            origin: crate::point(ScaledPixels(rect.0), ScaledPixels(rect.1)),
+            size: crate::size(ScaledPixels(rect.2), ScaledPixels(rect.3)),
+        }.intersect(&output_bounds)
+    )
 }
 
 fn sampled_animation_components(value: &SceneAnimationValue) -> [f32; 4] {

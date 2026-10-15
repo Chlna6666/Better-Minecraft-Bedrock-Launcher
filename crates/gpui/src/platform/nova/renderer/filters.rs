@@ -210,6 +210,11 @@ impl FilterRegistry {
             .source_at(index)
             .filter(|previous| previous.content_version.0 != 0)
         else {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "GPUI filter source invalidated: index={} reason=missing_presented_content_version",
+                index,
+            );
             return false;
         };
         match (current, &previous.source) {
@@ -223,6 +228,15 @@ impl FilterRegistry {
                     || current.content_mask != old.content_mask
                     || current.radius != old.radius
                 {
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "GPUI filter source invalidated: index={} reason=element_identity_or_geometry layer_changed={} bounds_changed={} mask_changed={} radius_changed={}",
+                        index,
+                        current.layer_id != old.layer_id,
+                        current.bounds != old.bounds,
+                        current.content_mask != old.content_mask,
+                        current.radius != old.radius,
+                    );
                     return false;
                 }
 
@@ -236,26 +250,45 @@ impl FilterRegistry {
 
                 // A changed GPU sample outside an identical identity-capture
                 // subtree does not invalidate its resident texture.
-                if !std::sync::Arc::ptr_eq(&current.content, &old.content)
-                    || !crate::Scene::capture_preserves_source_coordinates(
-                        current.radius, current.animation_id, previous_values.iter(),
-                    )
-                    || !crate::Scene::capture_preserves_source_coordinates(
-                        current.radius, current.animation_id, animation_values.iter(),
-                    )
-                {
+                let same_scene = std::sync::Arc::ptr_eq(&current.content, &old.content);
+                let old_coordinates_valid = crate::Scene::capture_preserves_source_coordinates(
+                    current.radius, current.animation_id, previous_values.iter(),
+                );
+                let new_coordinates_valid = crate::Scene::capture_preserves_source_coordinates(
+                    current.radius, current.animation_id, animation_values.iter(),
+                );
+                if !same_scene || !old_coordinates_valid || !new_coordinates_valid {
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "GPUI filter source invalidated: index={} reason=nested_paint_or_animation_changed same_scene={} old_coordinates_valid={} new_coordinates_valid={} animation_samples={} old_samples={}",
+                        index, same_scene, old_coordinates_valid, new_coordinates_valid,
+                        animation_values.len(), previous_values.len(),
+                    );
                     return false;
                 }
                 let visible_source = current.bounds.intersect(&current.content_mask.bounds);
-                current
-                    .content
-                    .gpu_sample_damage(previous_values, animation_values)
-                    .into_iter()
-                    .all(|damage| !damage.intersects(&visible_source))
+                let damage = current.content
+                    .gpu_sample_damage(previous_values, animation_values);
+                let affected = damage.iter().any(|area| area.intersects(&visible_source));
+                if affected {
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "GPUI filter source invalidated: index={} reason=sampled_child_pixels_changed regions={}",
+                        index, damage.len(),
+                    );
+                }
+                !affected
             }
             // A slot changing between root auto-cache and element blur can
             // never inherit an unrelated texture content version.
-            _ => false,
+            _ => {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "GPUI filter source invalidated: index={} reason=capture_source_kind_changed",
+                    index,
+                );
+                false
+            },
         }
     }
 

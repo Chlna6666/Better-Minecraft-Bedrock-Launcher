@@ -1243,3 +1243,113 @@ fn retained_quad_chunk_rejects_layer_and_effect_barriers() {
 
     assert!(scene.prepared_retained_quad_chunks().is_empty());
 }
+
+
+// ClipReveal sampling changes the composite mask, not the already rasterized
+// child source. Only newly revealed/hidden texels require damage.
+#[test]
+fn clip_reveal_damage_is_the_moving_edge_strip() {
+    let bounds = crate::Bounds {
+        origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        size: crate::size(crate::ScaledPixels(800.0), crate::ScaledPixels(600.0)),
+    };
+    let top = super::display_list::clip_reveal_changed_strip(
+        [40.0, 240.0, 100.0, 300.0],
+        [40.0, 240.0, 160.0, 300.0],
+        bounds,
+    ).unwrap();
+    assert_eq!(top.origin.y.0, 100.0);
+    assert_eq!(top.size.height.0, 60.0);
+    assert_eq!(top.size.width.0, 200.0);
+    let bottom = super::display_list::clip_reveal_changed_strip(
+        [40.0, 240.0, 100.0, 220.0],
+        [40.0, 240.0, 100.0, 270.0],
+        bounds,
+    ).unwrap();
+    assert_eq!(bottom.origin.y.0, 220.0);
+    assert_eq!(bottom.size.height.0, 50.0);
+
+    let left = super::display_list::clip_reveal_changed_strip(
+        [50.0, 250.0, 20.0, 120.0],
+        [90.0, 250.0, 20.0, 120.0],
+        bounds,
+    ).unwrap();
+    assert_eq!(left.origin.x.0, 50.0);
+    assert_eq!(left.size.width.0, 40.0);
+    let right = super::display_list::clip_reveal_changed_strip(
+        [50.0, 250.0, 20.0, 120.0],
+        [50.0, 180.0, 20.0, 120.0],
+        bounds,
+    ).unwrap();
+    assert_eq!(right.origin.x.0, 180.0);
+    assert_eq!(right.size.width.0, 70.0);
+
+    let unchanged = super::display_list::clip_reveal_changed_strip(
+        [50.0, 250.0, 20.0, 120.0],
+        [50.0, 250.0, 20.0, 120.0],
+        bounds,
+    ).unwrap();
+    assert!(unchanged.is_empty());
+}
+
+#[test]
+fn clip_reveal_retarged_and_invalid_masks_keep_conservative_damage() {
+    let bounds = crate::Bounds {
+        origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+        size: crate::size(crate::ScaledPixels(800.0), crate::ScaledPixels(600.0)),
+    };
+    assert!(super::display_list::clip_reveal_changed_strip(
+        [20.0, 100.0, 20.0, 200.0],
+        [30.0, 120.0, 40.0, 250.0],
+        bounds,
+    ).is_none());
+    assert!(super::display_list::clip_reveal_changed_strip(
+        [20.0, 100.0, 20.0, 200.0],
+        [20.0, f32::NAN, 20.0, 200.0],
+        bounds,
+    ).is_none());
+    assert!(super::display_list::clip_reveal_changed_strip(
+        [100.0, 20.0, 20.0, 200.0],
+        [20.0, 100.0, 20.0, 200.0],
+        bounds,
+    ).is_none());
+
+    let clipped = super::display_list::clip_reveal_changed_strip(
+        [20.0, 100.0, 10.0, 200.0],
+        [20.0, 100.0, 10.0, 250.0],
+        crate::Bounds {
+            origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            size: crate::size(crate::ScaledPixels(80.0), crate::ScaledPixels(220.0)),
+        },
+    ).unwrap();
+    assert_eq!(clipped.size.height.0, 20.0);
+    assert_eq!(clipped.size.width.0, 60.0);
+}
+
+
+#[test]
+fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
+    let area = bounds(
+        point(ScaledPixels(40.0), ScaledPixels(80.0)),
+        size(ScaledPixels(200.0), ScaledPixels(220.0)),
+    );
+    let animation_id = SceneAnimationId(701);
+    let mut scene = Scene::default();
+    scene.insert_animated_primitive(
+        Quad { bounds: area, content_mask: ContentMask::new(area), ..Default::default() },
+        animation_id,
+    );
+    let sample = |bottom: f32| SceneAnimationValue {
+        animation_id,
+        property: crate::TransitionProperty::ClipReveal,
+        progress: 1.0,
+        from: [40.0, 240.0, 80.0, bottom],
+        to: [40.0, 240.0, 80.0, bottom],
+    };
+    let pixels = scene.gpu_sample_damage(&[sample(220.0)], &[sample(260.0)]);
+    assert_eq!(pixels.len(), 1);
+    assert_eq!(pixels[0].origin.y.0, 220.0);
+    assert_eq!(pixels[0].size.height.0, 40.0);
+    assert_eq!(pixels[0].size.width.0, 200.0);
+    assert!(scene.gpu_sample_damage(&[sample(220.0)], &[sample(220.0)]).is_empty());
+}
