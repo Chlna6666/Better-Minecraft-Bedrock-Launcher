@@ -139,11 +139,19 @@ pub fn open_import_overlay_batch(
     crate::ui::state::import::show_import_overlay_batch(file_paths, target, window, cx);
 }
 
-pub fn render_import_overlay(colors: &ThemeColors, cx: &mut App) -> Option<AnyElement> {
+/// Renders the active import modal only in its owning window.
+/// Import content remains owned by its existing Entity while the shared shell handles dismissal.
+pub fn render_import_overlay(
+    colors: &ThemeColors,
+    window: &Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let entry = cx
         .try_global::<crate::ui::state::import::ImportOverlayState>()?
         .active
-        .clone()?;
+        .as_ref()
+        .filter(|entry| entry.owner_window_id == window.window_handle().window_id().as_u64())
+        .cloned()?;
     let dismiss = Rc::new(crate::ui::state::import::clear_import_overlay);
     let surface = modal::modal_surface(
         colors.settings_panel_bg,

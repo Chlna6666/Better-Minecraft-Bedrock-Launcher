@@ -165,6 +165,26 @@ impl MainWindowView {
     }
 
     pub(super) fn install_reactors(&mut self, cx: &mut Context<Self>) {
+        let mut import_view = cx
+            .global::<crate::ui::state::import::ImportOverlayState>()
+            .active
+            .as_ref()
+            .filter(|entry| entry.owner_window_id == self.window_id)
+            .map(|entry| entry.view.entity_id());
+        self._reactor_subscriptions.push(
+            cx.observe_global::<crate::ui::state::import::ImportOverlayState>(move |this, cx| {
+                let next = cx
+                    .global::<crate::ui::state::import::ImportOverlayState>()
+                    .active
+                    .as_ref()
+                    .filter(|entry| entry.owner_window_id == this.window_id)
+                    .map(|entry| entry.view.entity_id());
+                if import_view != next {
+                    import_view = next;
+                    cx.notify();
+                }
+            }),
+        );
         self._route_subscriptions
             .push(cx.observe_global::<gpui_router::RouterState>(|this, cx| {
                 let route = crate::ui::navigation::current_route_target(cx);
@@ -237,30 +257,17 @@ impl MainWindowView {
         );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::components::toast::ToastState>(|this, cx| {
-                let has_content = cx
-                    .global::<crate::ui::components::toast::ToastState>()
-                    .has_content();
+                let now = Instant::now();
+                let window_id = gpui::WindowId::from(this.window_id);
+                let state = cx.global::<crate::ui::components::toast::ToastState>();
+                let has_content = crate::ui::components::toast::has_visible_toasts(
+                    window_id, now, state,
+                ) || crate::ui::components::toast::has_visible_breadcrumb(window_id, now, state);
                 if has_content || this.last_toast_had_content {
                     this.last_toast_had_content = has_content;
                     cx.notify();
                 }
             }),
-        );
-        let mut dropdown_revision = cx
-            .global::<crate::ui::components::dropdown::DropdownOverlayState>()
-            .revision_for_window(self.window_id);
-        self._reactor_subscriptions.push(
-            cx.observe_global::<crate::ui::components::dropdown::DropdownOverlayState>(
-                move |this, cx| {
-                    let revision = cx
-                        .global::<crate::ui::components::dropdown::DropdownOverlayState>()
-                        .revision_for_window(this.window_id);
-                    if revision != dropdown_revision {
-                        dropdown_revision = revision;
-                        cx.notify();
-                    }
-                },
-            ),
         );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::plugins::runtime::PluginRegistry>(|_this, cx| {
@@ -271,22 +278,31 @@ impl MainWindowView {
                 }
             }),
         );
+        let mut settings_overlay_visible = page_overlay::settings_visible(
+            cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
+        );
         self._reactor_subscriptions.push(
             cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(
-                |_this, cx| {
-                    if crate::ui::navigation::current_route(cx) == AppRoute::Settings {
+                move |_this, cx| {
+                    let visible = page_overlay::settings_visible(
+                        cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
+                    );
+                    let changed = settings_overlay_visible != visible;
+                    settings_overlay_visible = visible;
+                    if changed && crate::ui::navigation::current_route(cx) == AppRoute::Settings {
                         cx.notify();
                     }
                 },
             ),
         );
+        let mut agreement_visible = cx.global::<AgreementState>().is_visible();
         self._reactor_subscriptions
-            .push(cx.observe_global::<AgreementState>(|_this, cx| {
-                if cx.global::<AgreementState>().is_visible()
-                    || crate::ui::navigation::current_route(cx) == AppRoute::Settings
-                {
+            .push(cx.observe_global::<AgreementState>(move |_this, cx| {
+                let visible = cx.global::<AgreementState>().is_visible();
+                if visible || agreement_visible {
                     cx.notify();
                 }
+                agreement_visible = visible;
             }));
         self._reactor_subscriptions
             .push(cx.observe_global::<I18n>(|_this, cx| {
@@ -295,9 +311,7 @@ impl MainWindowView {
                     let _ = agreement.get_or_cache_document(&locale_code);
                     agreement.is_visible()
                 });
-                if agreement_visible
-                    || crate::ui::navigation::current_route(cx) == AppRoute::Settings
-                {
+                if agreement_visible {
                     cx.notify();
                 }
             }));
@@ -342,7 +356,6 @@ impl MainWindowView {
         self.download_controls_initialized = false;
         self.download_controls_subscriptions.clear();
         self.download_overlay_active = false;
-        self.download_overlay_task_updates_task.take();
         self.download_prefs_last_save = None;
         if !has_route_state {
             return;
@@ -664,6 +677,16 @@ impl MainWindowView {
         let mut this = Self {
             window_id: window.window_handle().window_id().as_u64(),
             background_view,
+            dropdown_overlay_view: cx.new(|cx| {
+                dropdown_overlay::DropdownOverlayView::new(
+                    window.window_handle().window_id().as_u64(),
+                    cx,
+                )
+            }),
+            settings_overlay_view: cx
+                .new(|cx| page_overlay::PageOverlayView::new(AppRoute::Settings, cx)),
+            download_overlay_view: cx
+                .new(|cx| page_overlay::PageOverlayView::new(AppRoute::Download, cx)),
             chrome_view: None,
             home_page_view: None,
             download_page_view: None,
@@ -678,7 +701,6 @@ impl MainWindowView {
             download_controls_initialized: false,
             download_controls_subscriptions: Vec::new(),
             download_overlay_active: false,
-            download_overlay_task_updates_task: None,
             download_prefs_last_save: None,
             download_prefs_load_started: false,
             download_prefs_loaded: false,

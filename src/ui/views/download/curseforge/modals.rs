@@ -80,6 +80,7 @@ pub(super) fn render_curseforge_mod_page_modal(
     detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &crate::ui::hooks::use_local_versions::LocalVersionsSnapshot,
+    owner_view: EntityId,
 ) -> AnyElement {
     super::render_curseforge_mod_page_modal(
         colors,
@@ -88,6 +89,7 @@ pub(super) fn render_curseforge_mod_page_modal(
         detail_image_cache,
         selected_folder,
         local_versions,
+        owner_view,
     )
 }
 

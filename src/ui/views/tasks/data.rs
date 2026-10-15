@@ -77,12 +77,6 @@ impl TasksPageView {
                     cx.notify();
                 }),
             );
-        this._subscriptions.push(
-            cx.observe_global::<crate::ui::views::settings::state::SettingsPageState>(|_, cx| {
-                cx.notify();
-            }),
-        );
-
         let stream_task = cx.spawn_stream(task_events, |this, delivery, cx| {
             match delivery {
                 task_manager::TaskEventDelivery::Event(task_manager::TaskEvent::Updated(
@@ -113,7 +107,7 @@ impl TasksPageView {
             }
 
             if this.active {
-                this.apply_render_model(super::build_render_model(), cx);
+                this.apply_render_model(this.local_render_model(), cx);
             }
         });
         this._subscriptions.push(Subscription::new(move || {

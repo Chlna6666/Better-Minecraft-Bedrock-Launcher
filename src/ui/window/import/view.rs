@@ -179,17 +179,31 @@ impl ImportWindowView {
             cx.observe_global::<ThemeState>(|_, cx| {
                 cx.notify();
             }),
-            cx.observe_global::<LauncherState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<toast::ToastState>(|_, cx| {
-                cx.notify();
-            }),
-            cx.observe_global::<dropdown::DropdownOverlayState>(|_, cx| {
-                cx.notify();
+            cx.observe_global::<LauncherState>(|this, cx| {
+                if this.presentation == ImportPresentation::Window
+                    || this.close_after_launch_completion
+                {
+                    cx.notify();
+                }
             }),
         ];
         if presentation == ImportPresentation::Window {
+            let owner_window_id = window.window_handle().window_id().as_u64();
+            let mut dropdown_revision = cx
+                .global::<dropdown::DropdownOverlayState>()
+                .revision_for_window(owner_window_id);
+            subscriptions.push(cx.observe_global::<dropdown::DropdownOverlayState>(
+                move |_, cx| {
+                    let revision = cx
+                        .global::<dropdown::DropdownOverlayState>()
+                        .revision_for_window(owner_window_id);
+                    if dropdown_revision != revision {
+                        dropdown_revision = revision;
+                        cx.notify();
+                    }
+                },
+            ));
+            subscriptions.push(cx.observe_global::<toast::ToastState>(|_, cx| cx.notify()));
             subscriptions.push(cx.observe_global_in::<I18n>(window, |_this, window, cx| {
                 window.set_title(t!("Import.title").as_ref());
                 cx.notify();
@@ -200,9 +214,9 @@ impl ImportWindowView {
             }));
         }
         #[cfg(target_os = "windows")]
-        subscriptions.push(cx.observe_global::<LaunchPrereqState>(|_, cx| {
-            cx.notify();
-        }));
+        if presentation == ImportPresentation::Window {
+            subscriptions.push(cx.observe_global::<LaunchPrereqState>(|_, cx| cx.notify()));
+        }
 
         let initial_window_width = window.bounds().size.width / px(1.0);
         let initial_content_width = if presentation == ImportPresentation::Overlay {
@@ -902,8 +916,7 @@ impl Render for ImportWindowView {
         let column_gap = if is_overlay { 16.0 } else { 24.0 };
         let sidebar_dropdown_width = px((window_width_px - 40.0).clamp(240.0, 520.0));
         let versions = read_local_versions_snapshot(cx);
-        let launcher_snapshot = read_launcher_snapshot(frame_now, cx);
-        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(frame_now);
+        let launcher_snapshot = read_launcher_snapshot(cx);
         if self.close_after_launch_completion
             && !self.launch_completion_close_scheduled
             && launcher_snapshot
@@ -1061,8 +1074,7 @@ impl Render for ImportWindowView {
                     &launcher_snapshot,
                     window,
                     cx,
-                )
-                .with_layout_animation_target(launcher_modal_animating),
+                ),
             );
         }
 

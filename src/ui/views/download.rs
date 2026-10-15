@@ -720,11 +720,11 @@ pub(super) fn render_download_page(
             .min_h(px(0.))
             .child(body)
             .composite_layer()
-            .with_animation(
+            .with_visual_animation(
                 tab_content_animation_key("download-tab-content", tab_anim_seq),
                 tab_content_motion(tab_anim_from.index(), active_tab.index()),
-                |content, _progress| content,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     } else {
         body
@@ -766,7 +766,13 @@ pub fn dismiss_game_dialog(cx: &mut App) {
     });
 }
 
-pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElement> {
+/// Projects the active download dialog into the supplied window's overlay Entity.
+/// Detail scrolling invalidates that Entity rather than refreshing the whole window.
+pub fn render_download_overlay(
+    colors: &ThemeColors,
+    window: &Window,
+    cx: &App,
+) -> Option<AnyElement> {
     let (has_game_dialog, levilauncher_modal_open, native_mod_modal_open) =
         cx.read_global(|state: &DownloadPageState, _cx| {
             (
@@ -877,7 +883,7 @@ pub fn render_download_overlay(colors: &ThemeColors, cx: &App) -> Option<AnyElem
         );
     }
 
-    curseforge::render_curseforge_install_overlay(colors, cx)
+    curseforge::render_curseforge_install_overlay(colors, window, cx)
 }
 
 fn merge_support_loader_versions(state: &mut DownloadPageState) {

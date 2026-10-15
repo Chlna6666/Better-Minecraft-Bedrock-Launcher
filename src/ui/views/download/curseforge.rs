@@ -909,6 +909,7 @@ pub(super) fn render_resource_panel(
 
 pub(super) fn render_curseforge_install_overlay(
     colors: &ThemeColors,
+    window: &Window,
     cx: &App,
 ) -> Option<AnyElement> {
     let state = cx.global::<DownloadPageState>();
@@ -951,6 +952,7 @@ pub(super) fn render_curseforge_install_overlay(
                     &cache_ref.0,
                     selected_folder,
                     &local_versions,
+                    window.current_view(),
                 )
                 .into_any_element(),
             );
@@ -1374,13 +1376,13 @@ fn render_curseforge_content(
                 a: 0.24,
                 ..colors.surface
             })
-            .with_animation(
+            .with_visual_animation(
                 "curseforge-skeleton-shimmer",
                 repeating_linear_motion(Duration::from_millis(1400)).with_property(
                     AnimationProperty::translation(Point::default(), point(px(440.0), px(0.0))),
                 ),
-                |this, _progress| this,
             )
+            .expect("animation declares presentation properties")
             .into_any_element()
     };
 
@@ -3651,6 +3653,7 @@ fn render_curseforge_mod_page_modal(
     detail_image_cache: &Entity<BoundedImageCache>,
     selected_folder: Option<SharedString>,
     local_versions: &LocalVersionsSnapshot,
+    owner_view: EntityId,
 ) -> AnyElement {
     let toolbar_button = |label: SharedString, icon_path: &'static str, primary: bool| {
         div()
@@ -4058,7 +4061,7 @@ fn render_curseforge_mod_page_modal(
                                 (offset.y + extra_delta_y).clamp(-max_offset.height, px(0.));
                             if next_y != offset.y {
                                 scroll_handle.set_offset(point(offset.x, next_y));
-                                window.refresh();
+                                cx.notify(owner_view);
                                 window.prevent_default();
                                 cx.stop_propagation();
                             }

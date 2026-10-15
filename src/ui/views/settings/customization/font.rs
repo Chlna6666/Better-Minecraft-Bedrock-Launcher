@@ -227,8 +227,6 @@ fn system_font_row(
                         });
                         if has_local_font {
                             persist_font_settings_and_apply(snapshot, cx);
-                        } else {
-                            cx.refresh_windows();
                         }
                         return;
                     }

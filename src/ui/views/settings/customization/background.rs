@@ -194,22 +194,27 @@ fn background_blur_row(
                     value,
                     move |next_value, cx| {
                         let blur = snap_background_blur(next_value);
+                        let state = cx.global::<SettingsPageState>();
+                        if !state.loaded
+                            || (state.background_blur_preview - blur).abs() <= f32::EPSILON
+                        {
+                            return;
+                        }
                         cx.update_global(|state: &mut SettingsPageState, _cx| {
-                            if !state.loaded
-                                || (state.background_blur_preview - blur).abs() <= f32::EPSILON
-                            {
-                                return;
-                            }
                             state.background_blur_preview = blur;
                         });
                     },
                 )
                 .on_commit(move |next_value, cx| {
                     let blur = snap_background_blur(next_value);
+                    let state = cx.global::<SettingsPageState>();
+                    if !state.loaded
+                        || ((state.background_blur_preview - blur).abs() <= f32::EPSILON
+                            && (state.background_blur - blur).abs() <= f32::EPSILON)
+                    {
+                        return;
+                    }
                     let should_persist = cx.update_global(|state: &mut SettingsPageState, _cx| {
-                        if !state.loaded {
-                            return false;
-                        }
                         state.background_blur_preview = blur;
                         state.commit_background_blur_preview()
                     });

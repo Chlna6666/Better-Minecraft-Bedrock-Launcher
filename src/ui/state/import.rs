@@ -83,9 +83,8 @@ pub fn show_import_overlay_batch(
         dismiss: ModalDismissHandle::new(),
         owner_window_id,
     };
-    cx.update_global(|state: &mut ImportOverlayState, cx| {
+    cx.update_global(|state: &mut ImportOverlayState, _cx| {
         state.active = Some(entry);
-        cx.refresh_windows();
     });
 }
 
@@ -109,8 +108,7 @@ pub fn clear_import_overlay(cx: &mut App) {
             },
         );
     }
-    cx.update_global(|state: &mut ImportOverlayState, cx| {
+    cx.update_global(|state: &mut ImportOverlayState, _cx| {
         state.active = None;
-        cx.refresh_windows();
     });
 }

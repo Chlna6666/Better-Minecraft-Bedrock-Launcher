@@ -223,11 +223,9 @@ pub fn retained_modal_layer(
                 .with_visual_animation(
                     animation_key,
                     base_animation()
-                        .with_property(AnimationProperty::translation_opacity(
+                        .with_property(AnimationProperty::translation(
                             point(px(0.0), px(from_y)),
                             point(px(0.0), px(to_y)),
-                            from,
-                            to,
                         ))
                         .with_property(AnimationProperty::scale_opacity(
                             from_scale,

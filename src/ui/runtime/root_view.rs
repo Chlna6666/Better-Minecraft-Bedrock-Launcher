@@ -4,15 +4,21 @@ use gpui::{
 };
 
 pub struct RootView {
+    window_id: u64,
     view: AnyView,
     _subscriptions: Vec<Subscription>,
 }
 
 impl RootView {
-    pub fn new(view: impl Into<AnyView>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let window_id = window.window_handle().window_id().as_u64();
         #[cfg(any(target_os = "windows", target_os = "linux"))]
         let subscriptions = {
             cx.default_global::<crate::ui::onboarding::state::OnboardingTourState>();
+            let mut was_main_window = cx
+                .global::<crate::ui::window::debug::DebugState>()
+                .main_window_id
+                == Some(window_id);
             let mut subscriptions = vec![
                 cx.observe_global::<crate::ui::state::i18n::I18n>(|_this, cx| {
                     // One subscription per native window invalidates its root;
@@ -21,13 +27,34 @@ impl RootView {
                     cx.notify();
                 }),
                 cx.observe_global::<crate::ui::onboarding::state::OnboardingTourState>(
-                    |_this, cx| cx.notify(),
+                    |this, cx| {
+                        if cx
+                            .global::<crate::ui::window::debug::DebugState>()
+                            .main_window_id
+                            == Some(this.window_id)
+                        {
+                            cx.notify();
+                        }
+                    },
                 ),
-                cx.observe_global::<crate::ui::state::agreement::AgreementState>(|_this, cx| {
-                    cx.notify();
+                cx.observe_global::<crate::ui::state::agreement::AgreementState>(|this, cx| {
+                    if cx
+                        .global::<crate::ui::window::debug::DebugState>()
+                        .main_window_id
+                        == Some(this.window_id)
+                    {
+                        cx.notify();
+                    }
                 }),
-                cx.observe_global::<crate::ui::window::debug::DebugState>(|_this, cx| {
-                    cx.notify();
+                cx.observe_global::<crate::ui::window::debug::DebugState>(|this, cx| {
+                    let is_main_window = cx
+                        .global::<crate::ui::window::debug::DebugState>()
+                        .main_window_id
+                        == Some(this.window_id);
+                    if is_main_window || was_main_window {
+                        cx.notify();
+                    }
+                    was_main_window = is_main_window;
                 }),
             ];
 
@@ -36,7 +63,15 @@ impl RootView {
                 cx.default_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>();
                 subscriptions.push(
                     cx.observe_global::<crate::ui::onboarding::uwp_safety::UwpSafetyGuideState>(
-                        |_this, cx| cx.notify(),
+                        |this, cx| {
+                            if cx
+                                .global::<crate::ui::window::debug::DebugState>()
+                                .main_window_id
+                                == Some(this.window_id)
+                            {
+                                cx.notify();
+                            }
+                        },
                     ),
                 );
                 subscriptions.push(cx.observe_global::<
@@ -88,7 +123,14 @@ impl RootView {
 
                 subscriptions.push(
                     cx.observe_global::<crate::ui::state::linux_runtime::LinuxRuntimeState>(
-                        |_this, cx| {
+                        |this, cx| {
+                            if cx
+                                .global::<crate::ui::window::debug::DebugState>()
+                                .main_window_id
+                                != Some(this.window_id)
+                            {
+                                return;
+                            }
                             let tour_visible = cx
                                 .global::<crate::ui::onboarding::state::OnboardingTourState>()
                                 .visible;
@@ -119,6 +161,7 @@ impl RootView {
         let subscriptions = Vec::new();
 
         Self {
+            window_id,
             view: view.into(),
             _subscriptions: subscriptions,
         }

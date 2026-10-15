@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::state::bedrock_auth::BedrockAuthState;
-use crate::ui::state::navigation::{NavState, NAV_LABEL_BREAKPOINT, nav_labels_visible_for_width};
+use crate::ui::state::navigation::{NAV_LABEL_BREAKPOINT, NavState, nav_labels_visible_for_width};
 use crate::ui::theme::{ThemeColors, dark_colors, lerp_theme_colors, light_colors};
 
 // Bubble-only fallback: inputs and editors keep their own Tab actions.
@@ -95,7 +95,7 @@ impl Render for AppChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, theme_animating) = colors(window, cx);
         if theme_animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         chrome::render_shell(
             &colors,
@@ -167,7 +167,7 @@ impl Render for BrandChromeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, animating) = colors(window, cx);
         if animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         div()
             .size_full()
@@ -264,7 +264,7 @@ impl Render for NavChromeView {
         let now = window.animation_time();
         let (colors, theme_animating) = colors(window, cx);
         if theme_animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         let nav = cx.global::<NavState>();
         let ((pill_left_steps, pill_right_steps), nav_animating) = nav.pill_render_state(now);
@@ -386,7 +386,7 @@ impl Render for AuthChromeView {
         )
         .blocked(self.blocked);
         if theme_animating || state.animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         div()
             .absolute()
@@ -429,7 +429,7 @@ impl Render for WindowControlsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (colors, animating) = colors(window, cx);
         if animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
         div()
             .size_full()

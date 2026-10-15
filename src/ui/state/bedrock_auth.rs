@@ -164,7 +164,6 @@ pub(crate) fn start_event_bridge(cx: &mut App) {
                 apply_profile_avatar_path(&mut row.profile);
             }
         });
-        cx.refresh_windows();
     })
     .detach();
 

@@ -49,6 +49,10 @@ impl ThemeState {
 
     pub fn set_accent_hex(hex: &str, cx: &mut App) {
         let accent = crate::ui::theme::parse_hex_color_to_hsla(hex);
+        let theme = cx.global::<ThemeState>();
+        if theme.accent_hex.as_ref() == hex && theme.accent == accent {
+            return;
+        }
         cx.update_global(|theme: &mut ThemeState, _cx| {
             theme.accent_hex = SharedString::from(hex.to_string());
             theme.accent = accent;

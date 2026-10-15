@@ -16,8 +16,6 @@ use tracing::{debug, info, warn};
 pub struct LauncherSnapshot {
     pub show_modal: bool,
     pub modal_visible: bool,
-    pub modal_animating: bool,
-    pub modal_factor: f32,
     pub task_id: Option<Arc<str>>,
     pub version_folder: SharedString,
     pub version_name: SharedString,
@@ -40,15 +38,13 @@ pub struct LaunchVersionDescriptor {
     pub launch_args: Option<SharedString>,
 }
 
-pub fn read_launcher_snapshot(now: std::time::Instant, cx: &App) -> LauncherSnapshot {
+pub fn read_launcher_snapshot(cx: &App) -> LauncherSnapshot {
     cx.read_global(|state: &LauncherState, _cx| {
         let logs = state.task_logs.clone();
         let log_version = state.task_log_version;
         LauncherSnapshot {
             show_modal: state.show_modal,
             modal_visible: state.modal_visible,
-            modal_animating: state.is_modal_animating(now),
-            modal_factor: state.modal_animation_factor(now),
             task_id: state.task_id.clone(),
             version_folder: state.version_folder.clone(),
             version_name: state.version_name.clone(),
@@ -68,14 +64,13 @@ where
     Hooks: UseStateHook + UseRefHook,
     View: 'static,
 {
-    let now = std::time::Instant::now();
-    let snapshot = hooks.use_state(|| read_launcher_snapshot(now, cx));
+    let snapshot = hooks.use_state(|| read_launcher_snapshot(cx));
     let subscription = hooks.use_ref(|| None::<Subscription>);
 
     if subscription.borrow().is_none() {
         let snapshot = snapshot.clone();
         let observer = cx.observe_global::<LauncherState>(move |_, cx| {
-            let current = read_launcher_snapshot(std::time::Instant::now(), cx);
+            let current = read_launcher_snapshot(cx);
             if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
                 snapshot.set(current);
                 cx.notify();
@@ -84,7 +79,7 @@ where
         *subscription.borrow_mut() = Some(observer);
     }
 
-    let current = read_launcher_snapshot(now, cx);
+    let current = read_launcher_snapshot(cx);
     if snapshot.with(|value| launcher_snapshot_changed(value, &current)) {
         snapshot.set(current.clone());
     }
@@ -370,8 +365,6 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
 fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
     previous.show_modal != current.show_modal
         || previous.modal_visible != current.modal_visible
-        || previous.modal_animating != current.modal_animating
-        || (previous.modal_factor - current.modal_factor).abs() > 0.001
         || previous.task_id != current.task_id
         || previous.version_folder != current.version_folder
         || previous.version_name != current.version_name

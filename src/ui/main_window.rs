@@ -27,8 +27,10 @@ mod background_support;
 mod chrome;
 mod chrome_view;
 mod controls;
+mod dropdown_overlay;
 mod easter_egg;
 mod page_loading;
+mod page_overlay;
 mod page_registry;
 mod route_effects;
 mod support;
@@ -182,12 +184,10 @@ struct MainWindowRenderModel {
     update_modal_animating: bool,
     diagnostics_visible: bool,
     launcher_snapshot: crate::ui::hooks::use_launcher::LauncherSnapshot,
-    launcher_modal_animating: bool,
     #[cfg(target_os = "windows")]
     launch_prereq_visible: bool,
     toast_visible: bool,
     toast_breadcrumb_visible: bool,
-    dropdown_visible: bool,
     route_transition_direction: f32,
 }
 
@@ -201,6 +201,9 @@ struct ThemeColorCache {
 pub struct MainWindowView {
     window_id: u64,
     background_view: Entity<background::AppBackgroundView>,
+    dropdown_overlay_view: Entity<dropdown_overlay::DropdownOverlayView>,
+    settings_overlay_view: Entity<page_overlay::PageOverlayView>,
+    download_overlay_view: Entity<page_overlay::PageOverlayView>,
     chrome_view: Option<Entity<chrome_view::AppChromeView>>,
     // 页面视图懒加载：首次进入路由时才创建，离开时可按需释放
     home_page_view: Option<Entity<crate::ui::views::home::HomePageView>>,
@@ -216,7 +219,6 @@ pub struct MainWindowView {
     download_controls_initialized: bool,
     download_controls_subscriptions: Vec<Subscription>,
     download_overlay_active: bool,
-    download_overlay_task_updates_task: Option<Task<()>>,
     download_prefs_last_save: Option<Instant>,
     download_prefs_load_started: bool,
     download_prefs_loaded: bool,
@@ -386,8 +388,7 @@ impl MainWindowView {
             .global::<crate::ui::state::diagnostics::DiagnosticsState>()
             .pending_report
             .is_some();
-        let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(now, cx);
-        let launcher_modal_animating = cx.global::<LauncherState>().is_modal_animating(now);
+        let launcher_snapshot = crate::ui::hooks::use_launcher::read_launcher_snapshot(cx);
         #[cfg(target_os = "windows")]
         let launch_prereq_visible =
             cx.global::<crate::ui::state::launch_prereq::LaunchPrereqState>().visible;
@@ -398,11 +399,6 @@ impl MainWindowView {
                 crate::ui::components::toast::has_visible_toasts(window_id, now, toast_state),
                 crate::ui::components::toast::has_visible_breadcrumb(window_id, now, toast_state),
             )
-        };
-        let dropdown_visible = {
-            let dropdown_state =
-                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-            crate::ui::components::dropdown::has_visible_overlay(window, dropdown_state)
         };
         let route_transition_direction = route_transition_direction(
             self.recent_page_target
@@ -429,12 +425,10 @@ impl MainWindowView {
             update_modal_animating,
             diagnostics_visible,
             launcher_snapshot,
-            launcher_modal_animating,
             #[cfg(target_os = "windows")]
             launch_prereq_visible,
             toast_visible,
             toast_breadcrumb_visible,
-            dropdown_visible,
             route_transition_direction,
         }
     }
@@ -525,28 +519,26 @@ impl MainWindowView {
             root = root.child(chrome_view.clone().into_any_element());
         }
 
-        if model.builtin_route == AppRoute::Download
-            && let Some(download_overlay) =
-                crate::ui::views::download::render_download_overlay(&model.theme_colors, cx)
-        {
-            auth_blocked = true;
-            root = root.child(download_overlay);
+        if model.builtin_route == AppRoute::Download {
+            auth_blocked |= page_overlay::download_visible(
+                cx.global::<crate::ui::views::download::state::DownloadPageState>(),
+            );
+            root = root.child(
+                self.download_overlay_view
+                    .clone()
+                    .cached_absolute_by(&"main-window-download-overlay"),
+            );
         }
 
-        if model.builtin_route == AppRoute::Settings
-            && let Some(settings_overlay) = crate::ui::views::settings::render_settings_overlay(
-                &model.theme_colors,
-                model.window_width,
-                model.window_height,
-                model.theme_k,
-                model.theme_accent,
-                cx.global::<I18n>(),
+        if model.builtin_route == AppRoute::Settings {
+            auth_blocked |= page_overlay::settings_visible(
                 cx.global::<crate::ui::views::settings::state::SettingsPageState>(),
-                model.agreement_render_state.document.clone(),
-            )
-        {
-            auth_blocked = true;
-            root = root.child(settings_overlay);
+            );
+            root = root.child(
+                self.settings_overlay_view
+                    .clone()
+                    .cached_absolute_by(&"main-window-settings-overlay"),
+            );
         }
 
         if model.builtin_route == AppRoute::Tools
@@ -655,8 +647,16 @@ impl MainWindowView {
 
             if let Some(release) = release {
                 auth_blocked = true;
-                let update_modal_factor =
-                    cx.global::<UpdateState>().modal_animation_factor(model.now);
+                let modal_duration = cx.global::<UpdateState>().modal_animation_duration;
+                if !model.update_modal_visible
+                    && let Some(started_at) =
+                        cx.global::<UpdateState>().modal_animation_started_at
+                {
+                    window.request_invalidation_at(
+                        started_at + modal_duration + Duration::from_millis(1),
+                        cx,
+                    );
+                }
                 let markdown_view = if downloading {
                     None
                 } else {
@@ -685,11 +685,10 @@ impl MainWindowView {
                         snap,
                         download_error,
                         model.theme_k,
-                        update_modal_factor,
+                        modal_duration,
                         model.theme_accent,
                         cx.global::<I18n>(),
-                    )
-                    .with_layout_animation_target(model.update_modal_animating),
+                    ),
                 );
             } else {
                 self.pause_update_markdown_view(cx);
@@ -721,8 +720,7 @@ impl MainWindowView {
                         &model.launcher_snapshot,
                         window,
                         cx,
-                    )
-                    .with_layout_animation_target(model.launcher_modal_animating),
+                    ),
                 );
             }
 
@@ -1553,18 +1551,10 @@ impl MainWindowView {
                     return;
                 }
 
-                let active = cx.read_global(
-                    |s: &crate::ui::views::download::state::DownloadPageState, _cx| {
-                        s.game_dialog.is_some()
-                            || s.levilauncher_modal_open
-                            || s.native_mod_modal_open
-                            || (matches!(
-                                s.tab,
-                                crate::ui::views::download::state::DownloadTab::ResourcePack
-                            ) && s.curseforge_install_open)
-                    },
+                let active = page_overlay::download_visible(
+                    cx.global::<crate::ui::views::download::state::DownloadPageState>(),
                 );
-                let should_notify = this.download_overlay_active || active;
+                let should_notify = this.download_overlay_active != active;
                 this.download_overlay_active = active;
 
                 if should_notify {
@@ -1572,28 +1562,6 @@ impl MainWindowView {
                 }
             });
         self.download_controls_subscriptions.push(overlay_sub);
-
-        let mut task_updates = crate::tasks::task_manager::subscribe_task_updates();
-        self.download_overlay_task_updates_task = Some(cx.spawn(async move |handle, cx| {
-            loop {
-                match task_updates.recv().await {
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-
-                if handle
-                    .update(cx, |this, cx| {
-                        if this.download_overlay_active {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        }));
 
         if let Some(input) = search_input {
             let sub = cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
@@ -1777,7 +1745,7 @@ impl Render for MainWindowView {
         auth_blocked |= self.easter_egg.is_active();
 
         let root = if let Some(import_overlay) =
-            crate::ui::window::import::render_import_overlay(&model.theme_colors, cx)
+            crate::ui::window::import::render_import_overlay(&model.theme_colors, window, cx)
         {
             auth_blocked = true;
             root.child(import_overlay)
@@ -1788,16 +1756,11 @@ impl Render for MainWindowView {
         // Dropdown menus are a window-level overlay surface. Render them after every modal,
         // including the Import overlay, so a trigger inside a modal cannot paint its menu below
         // the modal backdrop/card or be clipped by the modal's scrolling content.
-        let root = if model.dropdown_visible {
-            let dropdown_state =
-                cx.global::<crate::ui::components::dropdown::DropdownOverlayState>();
-            root.child(crate::ui::components::dropdown::render_overlay(
-                window,
-                dropdown_state,
-            ))
-        } else {
-            root
-        };
+        let root = root.child(
+            self.dropdown_overlay_view
+                .clone()
+                .cached_absolute_by(&"main-window-dropdown-overlay"),
+        );
 
         if let Some(chrome) = &self.chrome_view {
             chrome.update(cx, |chrome, cx| {
@@ -1838,7 +1801,7 @@ impl Render for MainWindowView {
         }
 
         if model.theme_animating {
-            window.request_animation_frame();
+            crate::ui::animation::request_layout_animation_frame_if(window, true);
         }
 
         root

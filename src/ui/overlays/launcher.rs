@@ -8,6 +8,7 @@ use crate::ui::state::theme::ThemeState;
 use crate::ui::theme::colors::{DarkColors, LightColors, ThemeColors, lerp_theme_colors};
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
+use std::time::Duration;
 
 fn launch_icon_path(name: &str) -> &'static str {
     if name.contains("EducationPreview") {
@@ -30,8 +31,13 @@ pub fn render_launcher_overlay(
         return div().into_any_element();
     }
 
-    let factor = snapshot.modal_factor.clamp(0.0, 1.0);
-    let smooth = (factor * factor * (3.0 - 2.0 * factor)).clamp(0.0, 1.0);
+    let modal_state = cx.global::<crate::ui::state::launcher::LauncherState>();
+    let duration = modal_state.modal_animation_duration;
+    if !snapshot.modal_visible
+        && let Some(started_at) = modal_state.modal_animation_started_at
+    {
+        window.request_invalidation_at(started_at + duration + Duration::from_millis(1), cx);
+    }
     let now = window.animation_time();
     let theme_state = cx.global::<ThemeState>();
     let _i18n = cx.global::<I18n>().clone();
@@ -132,7 +138,7 @@ pub fn render_launcher_overlay(
         .max_h(relative(1.0))
         .rounded(card_radius)
         .shadow(vec![BoxShadow {
-            color: hsla(0., 0., 0., 0.14 * smooth),
+            color: hsla(0., 0., 0., 0.14),
             blur_radius: px(24.),
             spread_radius: px(0.),
             offset: point(px(0.), px(12.)),
@@ -440,13 +446,13 @@ pub fn render_launcher_overlay(
                 ),
         );
 
-    modal::animated_modal_layer(
+    modal::retained_modal_layer(
         card,
         hsla(0.0, 0.0, 0.0, 0.30),
-        smooth,
         snapshot.modal_visible,
+        "launcher-modal-motion",
+        duration,
     )
-    .into_any_element()
 }
 
 fn is_error_line(line: &str) -> bool {
