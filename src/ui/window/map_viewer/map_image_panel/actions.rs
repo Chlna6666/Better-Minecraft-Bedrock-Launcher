@@ -21,6 +21,9 @@ impl MapViewerWindowView {
         let pending = self.map_image.pending_bundle.as_ref();
         let frame_preview = selected == MapImageInstallDestination::NewUpFrame
             && pending.is_none();
+        let needs_target_review = frame_preview
+            && self.ui_state.import_workspace_mode
+                == super::super::state::ImportWorkspaceMode::Preview;
         let check = if frame_preview {
             self.map_frame_preflight_snapshot()
         } else {
@@ -90,6 +93,8 @@ impl MapViewerWindowView {
             "地图像素未准备好，请先完成转换或刷新预览"
         } else if !target_ready {
             "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
+        } else if needs_target_review {
+            "先进入目标预览，锁定放置中心后再检查冲突和写入存档"
         } else if frame_preview && check_running {
             "正在后台检查展示框网格；不会修改存档"
         } else if frame_preview && !check_passed {
@@ -217,6 +222,8 @@ impl MapViewerWindowView {
                             "map-import-primary-action",
                             if pending.is_some() {
                                 "确认 NBT 导入并写入"
+                            } else if needs_target_review {
+                                "下一步 · 目标预览"
                             } else if frame_preview && !check_passed {
                                 if check_running { "检查中…" } else { "检查放置区域" }
                             } else {
@@ -228,7 +235,11 @@ impl MapViewerWindowView {
                             button.on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
-                                    if this.map_image.pending_bundle.is_some() {
+                                    if needs_target_review {
+                                        this.set_import_workspace_mode(
+                                            super::super::state::ImportWorkspaceMode::Placement, cx
+                                        );
+                                    } else if this.map_image.pending_bundle.is_some() {
                                         this.confirm_pending_map_bundle(cx);
                                     } else if this.map_image.install_destination
                                         == MapImageInstallDestination::NewUpFrame
