@@ -913,10 +913,10 @@ pub(crate) fn window_content_revision(window_id: WindowId, state: &ToastState) -
         (state.placement as u8).hash(&mut hasher);
         (state.stack_direction as u8).hash(&mut hasher);
         (state.slide_direction as u8).hash(&mut hasher);
-        state.insets.top.0.to_bits().hash(&mut hasher);
-        state.insets.right.0.to_bits().hash(&mut hasher);
-        state.insets.bottom.0.to_bits().hash(&mut hasher);
-        state.insets.left.0.to_bits().hash(&mut hasher);
+        state.insets.top.hash(&mut hasher);
+        state.insets.right.hash(&mut hasher);
+        state.insets.bottom.hash(&mut hasher);
+        state.insets.left.hash(&mut hasher);
     }
     hasher.finish()
 }

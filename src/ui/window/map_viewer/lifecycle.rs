@@ -379,7 +379,7 @@ impl MapViewerWindowView {
         ));
         subscriptions.push(cx.subscribe(
             &map_image.container_search,
-            |this, _input, event: &InputEvent, cx| {
+            |_this, _input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     cx.notify();
                 }

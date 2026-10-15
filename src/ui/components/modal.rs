@@ -194,7 +194,7 @@ pub fn retained_modal_layer(
             ..black()
         })
         .with_visual_animation(
-            format!("{animation_key}-backdrop"),
+            SharedString::from(format!("{animation_key}-backdrop")),
             base_animation().with_property(AnimationProperty::opacity(
                 overlay_alpha * from,
                 overlay_alpha * to,

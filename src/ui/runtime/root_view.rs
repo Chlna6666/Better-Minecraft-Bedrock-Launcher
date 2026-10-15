@@ -45,7 +45,7 @@ impl RootView {
                         cx.notify();
                     }
                 }),
-                cx.observe_global::<crate::ui::window::debug::DebugState>(|this, cx| {
+                cx.observe_global::<crate::ui::window::debug::DebugState>(move |this, cx| {
                     let next_main_window_id = cx
                         .global::<crate::ui::window::debug::DebugState>()
                         .main_window_id;

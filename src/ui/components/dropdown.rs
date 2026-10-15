@@ -832,7 +832,7 @@ impl RenderOnce for Dropdown {
                         s.set_phase(next_phase, now);
                         true
                     });
-                    if matches!(changed, Ok(true)) {
+                    if changed {
                         cx.notify(parent_view_id);
                     }
                 }
