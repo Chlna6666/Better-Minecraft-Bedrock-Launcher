@@ -1,4 +1,3 @@
-use crate::ui::animation::{spring_motion, spring_smooth};
 use crate::ui::state::i18n::I18n;
 use crate::ui::state::update::UpdateState;
 use crate::ui::theme::colors::ThemeColors;
@@ -31,9 +30,8 @@ pub(super) fn render_settings_content(
     let compact_plugins = false;
 
     if state.tab == SettingsTab::Plugins {
-        let panel = animated_settings_panel(
+        let panel = settings_panel(
             plugins::render_plugins_tab(colors, i18n, state, plugin_model, compact_plugins),
-            state.tab,
             true,
         );
         return div()
@@ -122,7 +120,7 @@ pub(super) fn render_settings_content(
                     .max_w(layout.content_max_width)
                     .pt(px(4.))
                     .pb(px(18.))
-                    .child(animated_settings_panel(panel, state.tab, false)),
+                    .child(settings_panel(panel, false)),
             ),
         );
 
@@ -137,36 +135,16 @@ pub(super) fn render_settings_content(
         .into_any_element()
 }
 
-fn animated_settings_panel(
-    panel: impl IntoElement,
-    tab: SettingsTab,
-    fill_height: bool,
-) -> AnyElement {
-    let key = match tab {
-        SettingsTab::Game => "settings-content-game",
-        SettingsTab::Launcher => "settings-content-launcher",
-        #[cfg(target_os = "linux")]
-        SettingsTab::ProtonGdk => "settings-content-proton-gdk",
-        SettingsTab::Customization => "settings-content-customization",
-        SettingsTab::Plugins => "settings-content-plugins",
-        SettingsTab::About => "settings-content-about",
-    };
-
-    // Keep final layout geometry stable, capture the mixed text/image/SVG subtree once, and let
-    // Nova animate the resulting compositor layer instead of transforming primitive types unevenly.
+// Keep the content in normal scene/layout space: the scroll viewport owns
+// vertical displacement and clipping. A permanent zero-radius Capture plus
+// translation animation can retain the previous scroll contents even after a
+// scroll offset changes; it also allocates an unnecessary full-panel GPU layer.
+// Tabs remain independently retained through SettingsContentView.
+fn settings_panel(panel: impl IntoElement, fill_height: bool) -> AnyElement {
     div()
         .w_full()
         .min_w(px(0.))
         .when(fill_height, |this| this.h_full().min_h(px(0.)))
         .child(panel)
-        .composite_layer()
-        .with_visual_animation(
-            key,
-            spring_motion(spring_smooth()).with_property(AnimationProperty::translation(
-                point(px(10.0), px(0.0)),
-                Point::default(),
-            )),
-        )
-        .expect("animation declares presentation properties")
         .into_any_element()
 }

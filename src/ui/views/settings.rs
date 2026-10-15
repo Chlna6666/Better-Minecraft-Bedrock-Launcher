@@ -350,10 +350,15 @@ fn render_settings_page(
                 &settings_layout,
             ))
             .child(
+                // A retained child View still needs a definite flex viewport.
+                // Without a flex parent its own flex_1 expands with the rows,
+                // so the outer clipped page hides content instead of scrolling it.
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .min_h(px(0.))
+                    .flex()
+                    .flex_col()
                     .child(content_view),
             ),
         &colors,
