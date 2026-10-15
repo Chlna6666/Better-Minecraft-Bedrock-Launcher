@@ -14,17 +14,6 @@ pub(super) enum Pass {
     MainPresent,
 }
 
-impl Pass {
-    const fn bit(self) -> u8 {
-        match self {
-            Self::PathMask => 1 << 0,
-            Self::ElementLayers => 1 << 1,
-            Self::BackdropBlur => 1 << 2,
-            Self::MainPresent => 1 << 3,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum Resource {
     PathMask,
@@ -70,12 +59,6 @@ pub(super) enum Residency {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ResourceUse {
-    pub(super) resource: Resource,
-    pub(super) access: Access,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BarrierIntent {
     pub(super) resource: Resource,
     pub(super) producer: Pass,
@@ -105,37 +88,6 @@ impl ResourceLifetime {
     }
 }
 
-#[derive(Clone)]
-struct Node {
-    kind: Pass,
-    dependencies: u8,
-    accesses: SmallVec<[ResourceUse; 4]>,
-}
-
-impl Node {
-    fn new(kind: Pass, accesses: impl IntoIterator<Item = ResourceUse>) -> Self {
-        Self {
-            kind,
-            dependencies: 0,
-            accesses: accesses.into_iter().collect(),
-        }
-    }
-}
-
-fn read(resource: Resource) -> ResourceUse {
-    ResourceUse {
-        resource,
-        access: Access::Read,
-    }
-}
-
-fn write(resource: Resource) -> ResourceUse {
-    ResourceUse {
-        resource,
-        access: Access::Write,
-    }
-}
-
 /// Topological order and dataflow metadata for a single presentation
 /// submission. Native API barriers are still inserted by the gfx backend's
 /// texture-pass transitions; these intents validate their required ordering.
@@ -151,116 +103,108 @@ impl FrameGraphPlan {
         element_layer_count: usize,
         backdrop_group_count: usize,
     ) -> Self {
-        let mut nodes = SmallVec::<[Node; 4]>::new();
-        if render_path_mask {
-            nodes.push(Node::new(Pass::PathMask, [write(Resource::PathMask)]));
-        }
-        if element_layer_count > 0 {
-            let mut accesses = SmallVec::<[ResourceUse; 4]>::new();
-            if render_path_mask {
-                accesses.push(read(Resource::PathMask));
-            }
-            accesses.push(write(Resource::ElementColor));
-            nodes.push(Node::new(Pass::ElementLayers, accesses));
-        }
-        if backdrop_group_count > 0 {
-            let mut accesses = SmallVec::<[ResourceUse; 4]>::new();
-            if render_path_mask {
-                accesses.push(read(Resource::PathMask));
-            }
-            if element_layer_count > 0 {
-                accesses.push(read(Resource::ElementColor));
-            }
-            accesses.push(write(Resource::BackdropColor));
-            nodes.push(Node::new(Pass::BackdropBlur, accesses));
-        }
-        let mut main_accesses = SmallVec::<[ResourceUse; 4]>::new();
-        if render_path_mask {
-            main_accesses.push(read(Resource::PathMask));
-        }
-        if element_layer_count > 0 {
-            main_accesses.push(read(Resource::ElementColor));
-        }
-        if backdrop_group_count > 0 {
-            main_accesses.push(read(Resource::BackdropColor));
-        }
-        main_accesses.push(write(Resource::Swapchain));
-        nodes.push(Node::new(Pass::MainPresent, main_accesses));
-
-        // Track the most recent writer, plus reader dependencies before any
-        // subsequent write. Read/Read never emits a GPU barrier intent.
-        let mut last_access: [Option<(Pass, Access)>; 4] = [None; 4];
-        let mut last_writer: [Option<Pass>; 4] = [None; 4];
-        let mut readers: [u8; 4] = [0; 4];
-        let mut hazards = SmallVec::<[BarrierIntent; 8]>::new();
-        for node in &mut nodes {
-            for usage in &node.accesses {
-                let index = usage.resource.index();
-                if let Some((producer, previous_access)) = last_access[index] {
-                    if previous_access == Access::Write || usage.access == Access::Write {
-                        hazards.push(BarrierIntent {
-                            resource: usage.resource,
-                            producer,
-                            consumer: node.kind,
-                            from: previous_access,
-                            to: usage.access,
-                        });
-                    }
-                }
-                match usage.access {
-                    Access::Read => {
-                        if let Some(writer) = last_writer[index] {
-                            node.dependencies |= writer.bit();
-                        }
-                        readers[index] |= node.kind.bit();
-                    }
-                    Access::Write => {
-                        if let Some(writer) = last_writer[index] {
-                            node.dependencies |= writer.bit();
-                        }
-                        node.dependencies |= readers[index];
-                        readers[index] = 0;
-                        last_writer[index] = Some(node.kind);
-                    }
-                }
-                last_access[index] = Some((node.kind, usage.access));
-            }
-        }
-
-        let active = nodes.iter().fold(0_u8, |bits, node| bits | node.kind.bit());
-        let mut completed = 0_u8;
+        // This is a bounded four-pass DAG, not an extensible runtime graph:
+        // PathMask -> ElementLayers -> BackdropBlur -> MainPresent. Dependencies
+        // only go forward in this order. Construct the definitive execution
+        // order directly instead of allocating Nodes, building adjacency bits,
+        // searching for runnable nodes, and sorting the same fixed topology.
+        let has_elements = element_layer_count != 0;
+        let has_backdrop = backdrop_group_count != 0;
         let mut ordered = SmallVec::<[Pass; 4]>::new();
-        while ordered.len() < nodes.len() {
-            let next = nodes
-                .iter()
-                .find(|node| {
-                    completed & node.kind.bit() == 0
-                        && (node.dependencies & active) & !completed == 0
-                })
-                .expect("Nova frame graph contains a resource dependency cycle");
-            ordered.push(next.kind);
-            completed |= next.kind.bit();
+        if render_path_mask {
+            ordered.push(Pass::PathMask);
+        }
+        if has_elements {
+            ordered.push(Pass::ElementLayers);
+        }
+        if has_backdrop {
+            ordered.push(Pass::BackdropBlur);
+        }
+        ordered.push(Pass::MainPresent);
+
+        // Most static/retained frames need only the swapchain sink. Keep this
+        // on the same graph representation, without per-frame dependency
+        // construction or a second cached copy of graph state.
+        if ordered.len() == 1 {
+            let mut lifetimes = SmallVec::new();
+            lifetimes.push(ResourceLifetime {
+                resource: Resource::Swapchain,
+                first: 0,
+                last: 0,
+                residency: Residency::ExternallyOwned,
+            });
+            return Self {
+                ordered,
+                hazards: SmallVec::new(),
+                lifetimes,
+            };
         }
 
-        let mut lifetimes = SmallVec::<[ResourceLifetime; 4]>::new();
+        // Resolve the fixed read/write declarations in painter order. Native
+        // graphics backends still own barriers; these are graph-level hazard
+        // intents and persistent residency lifetimes, not GPU allocations.
+        let mut last_access: [Option<(Pass, Access)>; 4] = [None; 4];
+        let mut resources: [Option<ResourceLifetime>; 4] = [None; 4];
+        let mut hazards = SmallVec::<[BarrierIntent; 8]>::new();
         for (position, pass) in ordered.iter().copied().enumerate() {
-            let node = nodes.iter().find(|node| node.kind == pass).expect("graph node");
-            for usage in &node.accesses {
-                if let Some(previous) = lifetimes
-                    .iter_mut()
-                    .find(|life| life.resource == usage.resource)
+            let mut access = |resource: Resource, current: Access| {
+                let index = resource.index();
+                if let Some((producer, previous)) = last_access[index]
+                    && (previous == Access::Write || current == Access::Write)
                 {
-                    previous.last = position;
-                } else {
-                    lifetimes.push(ResourceLifetime {
-                        resource: usage.resource,
-                        first: position,
-                        last: position,
-                        residency: usage.resource.lifetime(),
+                    hazards.push(BarrierIntent {
+                        resource,
+                        producer,
+                        consumer: pass,
+                        from: previous,
+                        to: current,
                     });
                 }
+                last_access[index] = Some((pass, current));
+                if let Some(lifetime) = &mut resources[index] {
+                    lifetime.last = position;
+                } else {
+                    resources[index] = Some(ResourceLifetime {
+                        resource,
+                        first: position,
+                        last: position,
+                        residency: resource.lifetime(),
+                    });
+                }
+            };
+
+            match pass {
+                Pass::PathMask => access(Resource::PathMask, Access::Write),
+                Pass::ElementLayers => {
+                    if render_path_mask {
+                        access(Resource::PathMask, Access::Read);
+                    }
+                    access(Resource::ElementColor, Access::Write);
+                }
+                Pass::BackdropBlur => {
+                    if render_path_mask {
+                        access(Resource::PathMask, Access::Read);
+                    }
+                    if has_elements {
+                        access(Resource::ElementColor, Access::Read);
+                    }
+                    access(Resource::BackdropColor, Access::Write);
+                }
+                Pass::MainPresent => {
+                    if render_path_mask {
+                        access(Resource::PathMask, Access::Read);
+                    }
+                    if has_elements {
+                        access(Resource::ElementColor, Access::Read);
+                    }
+                    if has_backdrop {
+                        access(Resource::BackdropColor, Access::Read);
+                    }
+                    access(Resource::Swapchain, Access::Write);
+                }
             }
         }
+        let lifetimes = resources.into_iter().flatten().collect();
         Self {
             ordered,
             hazards,
@@ -307,6 +251,74 @@ mod tests {
         assert_eq!(graph.ordered.as_slice(), &[Pass::MainPresent]);
         assert_eq!(graph.hazard_count(), 0);
         assert_eq!(graph.resource_count(), 1);
+    }
+
+    #[test]
+    fn every_offscreen_topology_preserves_order_and_resource_lifetimes() {
+        for path in [false, true] {
+            for elements in [false, true] {
+                for backdrop in [false, true] {
+                    let graph = FrameGraphPlan::compile(
+                        path,
+                        usize::from(elements),
+                        usize::from(backdrop),
+                    );
+                    let mut expected = Vec::new();
+                    if path {
+                        expected.push(Pass::PathMask);
+                    }
+                    if elements {
+                        expected.push(Pass::ElementLayers);
+                    }
+                    if backdrop {
+                        expected.push(Pass::BackdropBlur);
+                    }
+                    expected.push(Pass::MainPresent);
+                    assert_eq!(graph.ordered.as_slice(), expected.as_slice());
+                    let last = expected.len() - 1;
+                    let offscreen_count =
+                        usize::from(path) + usize::from(elements) + usize::from(backdrop);
+                    assert_eq!(graph.hazard_count(), offscreen_count);
+                    assert_eq!(graph.resource_count(), offscreen_count + 1);
+                    let swapchain = graph.lifetime(Resource::Swapchain).expect("swapchain");
+                    assert_eq!((swapchain.first, swapchain.last), (last, last));
+                    assert_eq!(swapchain.residency, Residency::ExternallyOwned);
+                    for (enabled, resource, first) in [
+                        (path, Resource::PathMask, 0),
+                        (elements, Resource::ElementColor, usize::from(path)),
+                        (
+                            backdrop,
+                            Resource::BackdropColor,
+                            usize::from(path) + usize::from(elements),
+                        ),
+                    ] {
+                        assert_eq!(graph.lifetime(resource).is_some(), enabled);
+                        if enabled {
+                            let lifetime = graph.lifetime(resource).expect("resident target");
+                            assert_eq!((lifetime.first, lifetime.last), (first, last));
+                            assert_eq!(lifetime.residency, Residency::Persistent);
+                        }
+                    }
+                    assert!(graph.hazards.iter().all(|intent| {
+                        expected.iter().position(|pass| *pass == intent.producer)
+                            < expected.iter().position(|pass| *pass == intent.consumer)
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_after_read_does_not_add_extra_mask_barriers() {
+        let graph = FrameGraphPlan::compile(true, 1, 1);
+        let mask_hazards: Vec<_> = graph.hazards.iter()
+            .filter(|intent| intent.resource == Resource::PathMask)
+            .collect();
+        assert_eq!(mask_hazards.len(), 1);
+        assert_eq!(mask_hazards[0].producer, Pass::PathMask);
+        assert_eq!(mask_hazards[0].consumer, Pass::ElementLayers);
+        assert_eq!(mask_hazards[0].from, Access::Write);
+        assert_eq!(mask_hazards[0].to, Access::Read);
     }
 
     #[test]

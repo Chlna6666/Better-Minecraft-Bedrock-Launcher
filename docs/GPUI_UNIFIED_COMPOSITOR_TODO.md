@@ -447,6 +447,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【测试源码，未运行】**：新增 `PlatformFrameRequest` 三组调度契约测试：无视觉变化的动画 Tick 取消 Present 但保留 UI Tick；与 WSI/Required 合并后的 Present 不可吞掉；有损伤动画保留 Present。行为生产代码未改，避免未验证的帧跳过造成 DX11 拖拽、Vulkan live resize、最小化恢复黑屏回归。
 - **【验收与下一步】**：当前容器缺少 cargo/rustc/rustfmt，Windows/Linux 四后端实机、GPU trace 与耗电/吞吐尚未验证。需本地运行 FrameRequest/Window 测试并用 `RUST_LOG=gpui=trace` 对静态 5 秒、Dropdown 展开/收起、Blur on/off、动画结束 5 秒分别收集 `gpui presentation gate`、`gpui frame work` 和 Nova draw_step_cache_hit / upload_bytes / actual_present，对比帧请求源；若发生纯 Presentation 多余提交，再修改**真实发起者**，而非添加第三套节流或缓存。统一 Paint Chunk/Compositor Lane、SceneSlot/Replay 删除仍未完成。
 
+## 2026-10-15：简化四阶段 Nova Render Graph，删除每帧动态拓扑搜索
+
+- 基线 master `328f513332b7fb214f22ce821fdda5ec0cbd5258`；本阶段修改 `crates/gpui/src/platform/nova/renderer/frame_graph.rs` 和本唯一 TODO。未改动 GPU API、RenderPass 实际提交、跨 Slot 纹理缓存、Fence、外部 WSI Request/Present 判据。所有四类 Pass 仍用同一 `FrameGraphPlan` 传给现有 Present 执行入口。
+- **【已实现，未 Rust 编译】**：之前 `FrameGraphPlan::compile` 每次创建 `SmallVec<Node>`、节点 `dependencies` bitset、顺序查找可执行节点并生成已固定的拓扑序，还在执行图生成时再次按 Pass 逐项查找 Node。当前硬编码的四节点资源依赖始终单向、顺序固定（PathMask → ElementLayers → BackdropBlur → MainPresent），不是用户插件可扩展 DAG。删除 `Node`、`ResourceUse`、`Pass::bit`、运行时 topo-sort 和所有临时 Node Access Vec；根据本帧确有的 Mask/Layer/Blur 直接产生执行序列，再按该序列生成现有 `BarrierIntent` 和 `ResourceLifetime`。Native Barrier 仍由 Backend 执行，不开启跨帧/跨纹理别名复用。
+- **【静态帧快路】**：当本帧三个离屏阶段都不需要刷新时，`FrameGraphPlan::compile(false,0,0)` 直接返回唯一 `MainPresent`、空 Hazard 和 Swapchain ExternallyOwned 的 `first=last=0` 生命周期，不做通用依赖扫描。Render Graph 仍保留 MainPresent 的真实 WSI 提交，**没有**错误取消窗口暴露/恢复/显式 Present。
+- **【测试源码，未运行】**：新增 8 种三阶段有效/无效组合全排列的固定顺序、Barrier 数、资源 Count、纹理 first/last/Residency 验证；另验证多个只读消费者不产生 Read→Read Hazard。使用独立 JS 逻辑参照逐个比较旧/新 8 种拓扑的 Pass、Hazard 顺序/访问类型及生命周期数组，结果一致；**不能替代 Rust 测试、native GPU Barrier Test 或本地性能测量**。
+- **【后续风险与目标】**：本改动减少即使静态 DrawStep 缓存命中时仍执行的 CPU Graph Planning；并非证明实际静态窗口不会重复 Present，也不能证明 20–30% GPU 占用下降。下一步应拿刚加入的 `gpui presentation gate` / `gpui frame work` 与 Nova Pass/Present 实机 5 秒 Trace 确认帧请求源和 Graph 次数。依然未完成跨类型持久 Paint Chunk、GPU Resident Buffer/DrawStep/DirtyRegion 内容版本统一、SceneSlot/Replay/FrameUpload 淘汰、独立 Compositor Lane；不得仅凭固定 Graph 声称全链路统一。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
