@@ -29,7 +29,8 @@ impl MapViewerWindowView {
         } else {
             None
         };
-        let needs_position = frame_preview && !needs_target_review
+        let needs_position = selected == MapImageInstallDestination::NewUpFrame
+            && !needs_target_review
             && (self.map_frame_confirmed_center().is_none() || self.map_image.picking_frame_center);
         let check_running = check.is_some_and(|task| !task.is_terminal());
         let check_passed = self.map_frame_preflight_passed();
@@ -85,6 +86,12 @@ impl MapViewerWindowView {
         };
         let status = if busy {
             "写入／导出中，暂时锁定目标与参数"
+        } else if needs_position {
+            if self.map_image.picking_frame_center {
+                "选点模式：请左键点击中央世界地图；不会写入存档"
+            } else {
+                "第二步：在地图上选择展示框中心；没有选点时不允许预检和写入"
+            }
         } else if pending.is_some() {
             "已暂存 NBT 文件：请检查目标后确认导入。外部文件尚无地图像素预览"
         } else if self.map_image.source.is_none() {
@@ -97,12 +104,6 @@ impl MapViewerWindowView {
             "目标尚不可写入：请选择可写入的玩家，或在当前维度指定容器"
         } else if needs_target_review {
             "先进入目标预览，再在世界地图上主动选取放置中心"
-        } else if needs_position {
-            if self.map_image.picking_frame_center {
-                "选点模式：请左键点击中央世界地图；不会写入存档"
-            } else {
-                "第二步：在地图上选择展示框中心；没有选点时不允许预检和写入"
-            }
         } else if frame_preview && check_running {
             "正在后台检查展示框网格；不会修改存档"
         } else if frame_preview && !check_passed {
@@ -228,16 +229,16 @@ impl MapViewerWindowView {
                         primary_button(
                             colors,
                             "map-import-primary-action",
-                            if pending.is_some() {
-                                "确认 NBT 导入并写入"
-                            } else if needs_target_review {
-                                "下一步 · 目标预览"
-                            } else if needs_position {
+                            if needs_position {
                                 if self.map_image.picking_frame_center {
                                     "取消选点模式"
                                 } else {
                                     "在地图上选择放置中心"
                                 }
+                            } else if pending.is_some() {
+                                "确认 NBT 导入并写入"
+                            } else if needs_target_review {
+                                "下一步 · 目标预览"
                             } else if frame_preview && !check_passed {
                                 if check_running { "检查中…" } else { "检查放置区域" }
                             } else {
