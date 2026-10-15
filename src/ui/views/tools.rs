@@ -145,7 +145,11 @@ impl ToolsPageView {
         let subscriptions = vec![
             cx.observe_global::<ToolsPageState>(|this: &mut Self, cx| {
                 let state = cx.global::<ToolsPageState>();
-                if this.last_render_signature.as_ref().is_some_and(|signature| signature.matches_state(state)) {
+                if this
+                    .last_render_signature
+                    .as_ref()
+                    .is_some_and(|signature| signature.matches_state(state))
+                {
                     return;
                 }
                 this.last_render_signature = Some(ToolsRenderSignature::from_state(state));

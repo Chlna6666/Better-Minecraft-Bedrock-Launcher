@@ -268,8 +268,12 @@ impl CurseForgeResourcePanelView {
             return;
         }
         self.active = active;
-        self.curseforge_sidebar.update(cx, |view, cx| view.set_active(active, cx));
-        self.curseforge_content.update(cx, |view, cx| view.set_active(active, cx));
+        let _ = self
+            .curseforge_sidebar
+            .update(cx, |view, cx| view.set_active(active, cx));
+        let _ = self
+            .curseforge_content
+            .update(cx, |view, cx| view.set_active(active, cx));
         if active {
             let (tab, signature) = cx.read_global(|state: &DownloadPageState, _| {
                 (state.tab, curseforge_resource_panel_signature(state))
@@ -495,7 +499,8 @@ impl CurseForgeContentView {
             return;
         }
         self.active = active;
-        self.curseforge_results_list
+        let _ = self
+            .curseforge_results_list
             .update(cx, |view, cx| view.set_active(active, cx));
         if active {
             self.last_tab = cx.global::<DownloadPageState>().tab;

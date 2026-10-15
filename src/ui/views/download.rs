@@ -401,11 +401,11 @@ impl DownloadPageView {
             let tab_changed = this.last_observed_tab != tab;
             this.last_observed_tab = tab;
             if tab_changed {
-                this.curseforge_resource_panel.update(cx, |panel, cx| {
+                let _ = this.curseforge_resource_panel.update(cx, |panel, cx| {
                     panel.set_active(tab == DownloadTab::ResourcePack, cx);
                 });
                 if let Some(game_panel) = &this.game_panel_view {
-                    game_panel.update(cx, |panel, cx| {
+                    let _ = game_panel.update(cx, |panel, cx| {
                         panel.set_active(tab == DownloadTab::Game, cx);
                     });
                 }
