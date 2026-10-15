@@ -18,7 +18,9 @@ impl MapViewerWindowView {
         {
             return;
         }
-        let key = self.map_frame_preflight_key();
+        let Some(key) = self.map_frame_preflight_key() else {
+            return;
+        };
         if self.map_image.frame_check_key.as_deref() == Some(key.as_str())
             && self.map_frame_preflight_snapshot().is_some_and(|task| {
                 matches!(task.status.as_ref(), "running" | "completed")
