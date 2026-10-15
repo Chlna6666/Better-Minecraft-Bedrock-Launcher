@@ -533,6 +533,14 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **【本机验收判据】**：打开应用已有 `RendererOptions::frame_metrics` 诊断（不新增任何环境变量），在最新 master 上分别抓取静止窗口、公共 Dropdown 连续打开/收起/快速反向、首页版本下拉、多个菜单互斥切换、Blur on/off、窗口 Resize/切页，并用相同尺寸/240Hz、同一后端对照。只有当某个场景`static_prefix_captured=true`、后续成功提交报告 `source_index=Some(...)`，稳定动画帧显示 `refreshed_layers=0`、`source_draw_steps=0` 且原 `native_view` 和 `content_version` 保持不变，才可宣称「该场景 AutoStatic 不再重复离屏绘制」。拓扑变化时可结合 `auto_static_relocation=Some((old,new))` 及 `GPUI identity Capture target rebind`；没有拓扑变化时该字段为 None 是正常。内容变化、Surface Resize 或纹理资源代次变更的第一帧**应重新刷新**，不可要求所有帧恒为 0。
 - **【尚未达到】**：尚未拿到基于 `f7035b0c26bb77aab986889c7a1109a3cccc7702` 之后版本的 Windows Trace；当前容器无 Rust/Cargo 与 DX11/DX12/Vulkan/OpenGL 实机，不能声称编译、单测或静态背景停止刷新已被证明。旧版多 isolated/source 参与的 Gaussian/Backdrop 目标拓扑不能简单套用 AutoStatic 零滤镜优化；若新 Trace 仍显示 `retained_root=true`、`source_index=None` 或不断 `recreation required`，应转向孤立 Source 物理身份与目标容量/预算/Fence，再考虑根颜色独立 owner，不要误把 AutoStatic 已复用当成全部 40% GPU 的解决方案。
 
+## 2026-10-15：隔离滤镜 Source 已预热目标容量复用（P0 子阶段，待编译）
+
+- **起点及并发校验**：本轮初始远程 master `4735619f1850d3c135327378d7ee172ee5036e4b`；提交前 HEAD 变为 `b73ddb9188e06117242b3cd8e5f51f17dcf90fac`（新增 3 个 UI-only 提交，触及 `src/ui/main_window*`、任务页，和本次 5 个 GPUI/TODO 文件无交集），据此重新确认远程 Tree 并以新 HEAD 为父提交。不覆盖用户的 UI 优化。旧 2026-10-15 早期 DX12 Trace 记录 3→4→6 Variants 重建循环与约 11.66→18.66→27.99 MB 的 Target Pool 瞬时分配，且 `old_isolated` 非零；此日志早于当前代码，**不能证明本阶段 GPU 收益**。
+- **【根因与实现】**：旧 `BackdropBlurTargets::reuse_layout` 要求全部 `isolated_sources` 长度及扁平索引与当前过滤后的需求一致；即使 GPU 已预热 6 组 Scratch，Popup 缩减到 3 组后也会判失败并销毁/重建全链。现在 `BackdropBlurTargets` 直接持有唯一 `active_isolated_source_count`，将全部已分配 Scratch 存于原 `isolated_sources` Vec、其前缀作为当帧活动索引；非活动 Scratch 从 `isolated_source_texture_view/resource_set` 查找中排除，`is_layout_compatible` 比较活动前缀而非全部已分配容量。仅在 GPU resident 目标和源容量均足够、root-source 类型一致、Variant 经过逐个独立成员/Downsample/Pass 数验证后执行一次原位变体排列，物理 Texture/View/ResourceSet 整体移动，Root/AutoStatic 仍固定原生 View。隔离 Scratch 不作为内容版本持有者，允许按当帧新 flattened index 绑定已有物理 Texture；FilterRegistry 的真实源版本由成功提交管理。
+- **【顺序与安全】**：已有 `frame_submission_is_ready` 在 Filter layout 变动且尚有 in-flight GPU 提交时会延后变体重排；同步模式 `prepare_for_frame_submission` 继续等待 Fence。两阶段先完整验证再交换，失败绝不修改 Target 布局，内容身份无法证明的变化仍由 `invalidate_backdrop_blur_cache` 全量初始化；超过历史预热容量、格式或尺寸变化仍走原来的 GPU Target 创建/销毁与生命周期。活动数与分配数在复用、重建日志中分别打印，避免把备用容量误判为活动 Pass。资源池总显存按**全部分配纹理**计费，换取高频弹层下减少 native create/destroy；未设计异步显存压力下的 Trim。
+- **【回归单测源码，未执行】**：增加 Gaussian × 5 + Root × 1 的 6→3→4→6→3→6 原位复用测试，断言 Root TextureView、全部 Gaussian Filter View、全部 Scratch View、当前活动数和 inactive Source 查找；增加容量溢出必须失败且不突变 ResourceSet/Texture 元数据的反例。所有现有 `BackdropBlurTargets` 测试字面量同步补齐活动 Source 数。编译/真实像素未验证，DX11/DX12/VK/OpenGL 的 live-reorder/Resize/Fence 状态仍需用户本地验收。
+- **【后续 P0】**：先拿最新构建 Trace 比较 `GPUI retained target layout reused` 的 `active_isolated/allocated_isolated` 与 `recreation required`，并确认 Gaussian 输出在重绑后完整初始化；如初次 3→4→6 仍有新分配属于超过高水位容量，不能把它当回归。再决定隔离纹理过度驻留的回收策略、Filter target dimension-preserving 重新分配、真正独立 RootColorTarget 与 Fence-retired GPU 资源池；未验收 GPU 40% 降幅。
+
 ## 跨对话恢复协议（必须执行）
 
 1. 读取本文件和 `docs/AI.md`，再读取**最新远程 master SHA、Tree SHA**。检查最近 Git 历史是否已改动相关模块。
@@ -548,7 +556,7 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 ## 下一次对话的直接起点
 
-- **当前最新待验证起点（2026-10-15）**：用现有 `RendererOptions::frame_metrics` 在 Windows 最新 master 抓取 `GPUI AutoStatic submitted` 和 `static_prefix_captured` / `auto_static_relocation` 及 `nova-gfx frame diagnostics`，优先执行 Rust fmt/check/单测。参照 2026-10-15 01:22 UTC 旧 DX12 Trace 中反复 3→4→6 Target 重建 / 12 合成 Pass 的基线，检查新 Trace 每帧成功呈现后静态 `native_view/content_version` 不变且 `refreshed_layers=0/source_draw_steps=0`。如根本无 AutoStatic 或有 isolated source，记录为**准入不成立**而非「缓存命中」；四后端无实测前不能关闭 P0。
+- **当前最新待验证起点（2026-10-15）**：优先在 Windows 对本轮隔离 Source 高水位复用执行 Cargo fmt/check/测试与 DX11/DX12/VK/GL 快速连续 Dropdown Trace。比较初次 3→4→6（可能正常预热分配）与随后 6→3→4→6（应命中 `reused` 且 allocated_isolated 不下降）的真实 GPU 资源重建计数、`native_view/content_version`、FilterSource 失效重捕获、GPU 显存峰值与 source/composite Pass；原 2026-10-15 DX12 日志是旧版基线，不能宣称本轮已实机验证。
 - **此前待验证项**：Nova Retained Quad 持久 packed 缓存已迁到 `RetainedUpload.quad_chunks`，嵌套滤镜内 CachedView Chunk 的生命周期仍需本地编译及 retained-quad 单测；不应在缺少真实运行验证时扩大 P0 架构替换。
 - 查看 `docs/GPUI_UNIFIED_COMPOSITOR_TODO.md`，从 **P0-A 的单一目标复用入口的编译/测试与 Windows 实机重建日志** 和 **P0-B 的同步 WM_SIZE Prepaint 时长** 开始。
 - 确认下一步先处理 Root Color Cache 与 Blur Capture 的身份耦合，还是 Frame Scheduler 的统一调度；结论必须用同一份 GPUI 压力测试证明。

@@ -74,11 +74,13 @@ impl BackdropBlurTargets {
         true
     }
 
-    /// Reuse existing GPU target allocations using one identity-based mapping.
+    /// Rebind a warmed filter chain without allocating/destroying native targets.
     ///
-    /// Stable capture IDs may be reordered or their active count may shrink
-    /// without recreating textures or resource sets. The caller invalidates
-    /// old filtered pixels and draw steps after every topology change.
+    /// Source scratch targets and filtered final targets are separate GPU owners.
+    /// After popup shrink, inactive physical sources remain in the spare suffix,
+    /// so later growth up to the high-water mark can be rebound at no allocation.
+    /// The caller invalidates changed source snapshots and waits for any
+    /// pending GPU readers through the existing submission preflight.
     pub(in crate::platform::nova) fn reuse_layout(
         &mut self,
         next: &[BackdropBlurConfig],
@@ -91,115 +93,110 @@ impl BackdropBlurTargets {
             next.iter()
                 .position(|config| config.contains_member_index(index))
         });
+        let requested_isolated: smallvec::SmallVec<[u32; 8]> = isolated_indices
+            .iter()
+            .copied()
+            .filter(|index| blur_requires_isolated_source(next, *index))
+            .collect();
         if (root_index.is_some() && new_root.is_none())
             || next.len() > self.variants.len()
+            || requested_isolated.len() > self.isolated_sources.len()
             || self.source.is_some() != needs_root_source
-            || !self
-                .isolated_sources
-                .iter()
-                .map(|source| source.index)
-                .eq(isolated_indices
-                    .iter()
-                    .copied()
-                    .filter(|index| blur_requires_isolated_source(next, *index)))
         {
             return false;
         }
 
-        // Validate a one-to-one mapping BEFORE touching live native resource
-        // metadata. This covers stable prefixes and arbitrary capture reorder.
-        let mut permutation = smallvec::SmallVec::<[usize; 8]>::new();
-        for config in next {
-            let Some((old_index, _)) = self.variants.iter().enumerate().find(
-                |(index, variant)| {
-                    !permutation.contains(index)
-                        && variant.config.same_target_slot(*config)
-                        && variant.levels.len() == blur_variant_level_count(*config)
-                },
-            ) else {
-                break;
-            };
-            permutation.push(old_index);
-        }
-        let root_identity_preserved = match (self.retained_root_variant, new_root) {
-            (Some(previous), Some(current)) => permutation.get(current) == Some(&previous),
-            _ => true,
-        };
-        // A config-compatible allocation at the new AutoStatic slot is NOT
-        // proof that it still contains the old prefix pixels.
-        let auto_static_identity_preserved = auto_static_indices.is_none_or(
-            |(old_index, new_index)| {
-                let previous = self.variants.iter().take(self.active_variant_count)
+        // A synthetic Root Color and a fingerprint-proven AutoStatic prefix must
+        // retain the SAME physical output texture across flattened index moves.
+        // The source fingerprint check happens in FilterRegistry before this
+        // method is called, not by guessing from a matching filter config.
+        let pinned = if let (Some(previous), Some(current)) =
+            (self.retained_root_variant, new_root)
+        {
+            Some((previous, current))
+        } else if self.retained_root_variant.is_none() && new_root.is_none() {
+            if let Some((old_index, new_index)) = auto_static_indices {
+                let previous = self
+                    .variants
+                    .iter()
+                    .take(self.active_variant_count)
                     .position(|variant| {
                         variant.config.exclusively_contains_member_index(old_index)
                             && variant.config.radius() == 0.0
+                            && variant.levels.len() == 1
                     });
                 let current = next.iter().position(|config| {
                     config.exclusively_contains_member_index(new_index)
                         && config.radius() == 0.0
                 });
-                matches!((previous, current), (Some(old), Some(new))
-                    if permutation.get(new) == Some(&old))
-            },
-        );
-        if permutation.len() == next.len()
-            && root_identity_preserved
-            && auto_static_identity_preserved
-        {
-            // Reorder in place: preserve the Vec allocation and every native
-            // texture/view/resource-set handle. The validated one-to-one
-            // mapping ensures that each remaining capture still has a match
-            // in the unplaced suffix after earlier swaps.
-            for (target_index, config) in next.iter().enumerate() {
-                let source_index = (target_index..self.variants.len())
-                    .find(|&index| {
-                        let variant = &self.variants[index];
-                        variant.config.same_target_slot(*config)
-                            && variant.levels.len() == blur_variant_level_count(*config)
-                    })
-                    .expect("validated target permutation");
-                self.variants.swap(target_index, source_index);
-                self.variants[target_index].config = *config;
-            }
-            self.active_variant_count = next.len();
-            self.retained_root_variant = new_root;
-            return true;
-        }
-
-        // AutoStatic relocation needs the zero-radius rebind above; this
-        // fallback can relocate only the synthetic window root.
-        if auto_static_indices.is_some() {
-            return false;
-        }
-        // Keep the existing root-color relocation behavior when a zero-radius
-        // capture changes its flattened member index. This cannot use the
-        // stable-ID permutation, but can still preserve physical textures.
-        let (Some(old_root), Some(new_root)) = (self.retained_root_variant, new_root)
-        else {
-            return false;
-        };
-        for (index, config) in next.iter().enumerate() {
-            let previous = if index == new_root {
-                old_root
-            } else if index == old_root {
-                new_root
+                let (Some(previous), Some(current)) = (previous, current) else {
+                    return false;
+                };
+                Some((previous, current))
             } else {
-                index
-            };
-            let variant = &self.variants[previous];
-            if variant.levels.len() != blur_variant_level_count(*config)
-                || (index == new_root && config.radius() != 0.)
-                || (index != new_root && !variant.config.same_target_slot(*config))
-            {
+                None
+            }
+        } else {
+            // AutoStatic has no physical root; do not combine two cache roles.
+            if auto_static_indices.is_some() {
                 return false;
             }
+            None
+        };
+
+        // Preflight a one-to-one mapping for ALL requested targets, including
+        // inactive spare targets. No CPU/native resource metadata changes before
+        // the entire permutation has been proven.
+        let mut permutation = smallvec::SmallVec::<[usize; 8]>::new();
+        for (new_index, config) in next.iter().copied().enumerate() {
+            let source = if let Some((old, at)) = pinned.filter(|(_, at)| *at == new_index) {
+                self.variants.get(old).and_then(|variant| {
+                    (config.radius() == 0.0
+                        && variant.config.radius() == 0.0
+                        && variant.levels.len() == 1)
+                        .then_some(old)
+                })
+            } else {
+                self.variants.iter().enumerate().find_map(|(old, variant)| {
+                    (!permutation.contains(&old)
+                        && pinned.is_none_or(|(reserved, _)| reserved != old)
+                        && variant.config.same_target_slot(config)
+                        && variant.levels.len() == blur_variant_level_count(config))
+                        .then_some(old)
+                })
+            };
+            let Some(source) = source else { return false };
+            if permutation.contains(&source) {
+                return false;
+            }
+            permutation.push(source);
         }
-        self.variants.swap(old_root, new_root);
-        for (variant, config) in self.variants.iter_mut().zip(next) {
-            variant.config = *config;
+
+        // Update the in-place physical target order using ORIGINAL positions.
+        // Each swap moves the complete Texture/TextureView/ResourceSet owner;
+        // the slot map is temporary and has no residency or version authority.
+        let mut original_at_position: Vec<usize> = (0..self.variants.len()).collect();
+        for (destination, (config, &original)) in
+            next.iter().copied().zip(permutation.iter()).enumerate()
+        {
+            let source = original_at_position
+                .iter()
+                .position(|position| *position == original)
+                .expect("preflight mapped an existing target");
+            self.variants.swap(destination, source);
+            original_at_position.swap(destination, source);
+            self.variants[destination].config = config;
         }
+
+        // Scratch is not a retained filter output: only the final variants
+        // carry stable per-layer content epochs. Reusing its native allocation
+        // under another packed index is safe after the preflight invalidation.
+        for (source, index) in self.isolated_sources.iter_mut().zip(requested_isolated.iter()) {
+            source.index = *index;
+        }
+        self.active_isolated_source_count = requested_isolated.len();
         self.active_variant_count = next.len();
-        self.retained_root_variant = Some(new_root);
+        self.retained_root_variant = new_root;
         true
     }
 

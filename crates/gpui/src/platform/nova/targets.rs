@@ -25,6 +25,9 @@ pub(super) struct BackdropBlurTargets {
     /// Per-element sources. Each CSS blur group starts from a clean attachment so one group's
     /// content can never become the backdrop source of a sibling group.
     pub(super) isolated_sources: Vec<IsolatedBlurSource>,
+    /// Only the active prefix participates in the current filter graph. Spare
+    /// scratch targets remain GPU-resident across popup insertion/removal.
+    pub(super) active_isolated_source_count: usize,
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
     /// Live prefix; spare popup targets remain allocated until the chain is replaced or trimmed.
     pub(super) active_variant_count: usize,
@@ -168,6 +171,7 @@ impl BackdropBlurTargets {
     pub(super) fn isolated_source_texture_view(&self, index: u32) -> Option<TextureViewId> {
         self.isolated_sources
             .iter()
+            .take(self.active_isolated_source_count)
             .find(|source| source.index == index)
             .map(|source| source.target.texture_view)
     }
@@ -179,6 +183,7 @@ impl BackdropBlurTargets {
     ) -> Option<ResourceSetId> {
         self.isolated_sources
             .iter()
+            .take(self.active_isolated_source_count)
             .find(|source| source.index == index)?
             .pass_resource_sets
             .get(frame_resource_index)
@@ -193,13 +198,15 @@ impl BackdropBlurTargets {
     ) -> bool {
         self.source.is_some() == needs_root_source
             && self.active_variant_count == next.len()
-            && self.isolated_sources.iter().map(|source| source.index).eq(
-                next_isolated_source_indices
-                    .iter()
-                    .copied()
-                    .filter(|index| blur_requires_isolated_source(next, *index)),
-            )
-            && self.variants.iter().zip(next).all(|(variant, config)| {
+            && self.isolated_sources
+                .get(..self.active_isolated_source_count)
+                .is_some_and(|active| active.iter().map(|source| source.index).eq(
+                    next_isolated_source_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| blur_requires_isolated_source(next, *index)),
+                ))
+            && self.variants.iter().take(self.active_variant_count).zip(next).all(|(variant, config)| {
                 variant.config.same_target_slot(*config)
                     && variant.levels.len() == blur_variant_level_count(*config)
             })
@@ -418,6 +425,7 @@ where
     Ok(BackdropBlurTargets {
         source,
         source_pass_resource_sets,
+        active_isolated_source_count: isolated_sources.len(),
         isolated_sources,
         variants,
         active_variant_count: configs.len(),

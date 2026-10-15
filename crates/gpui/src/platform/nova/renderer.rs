@@ -626,13 +626,15 @@ impl NovaRenderer {
             }
             self.invalidate_draw_step_cache();
             log::debug!(target: "gpui::diagnostics",
-                "GPUI retained target layout reused: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={} allocated_variants={}",
+                "GPUI retained target layout reused: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={} allocated_variants={} active_isolated={} allocated_isolated={}",
                 preserve_root_color,
                 auto_static_eligible,
                 auto_static_indices,
                 self.filters.root_color_content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
-                self.filters.targets.as_ref().expect("reused targets exist").variants.len());
+                self.filters.targets.as_ref().expect("reused targets exist").variants.len(),
+                self.filters.targets.as_ref().expect("reused targets exist").active_isolated_source_count,
+                self.filters.targets.as_ref().expect("reused targets exist").isolated_sources.len());
             return Ok(());
         }
         // Rebinding will overwrite recycled offscreen textures on the next draw.
@@ -666,18 +668,20 @@ impl NovaRenderer {
             self.invalidate_draw_step_cache();
             log::debug!(
                 target: "gpui::diagnostics",
-                "GPUI zero-radius retained target layout rebound: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={}",
+                "GPUI zero-radius retained target layout rebound: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={} active_isolated={} allocated_isolated={}",
                 preserve_root_color,
                 auto_static_eligible,
                 auto_static_indices,
                 self.filters.root_color_content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
+                self.filters.targets.as_ref().map_or(0, |targets| targets.active_isolated_source_count),
+                self.filters.targets.as_ref().map_or(0, |targets| targets.isolated_sources.len()),
             );
             return Ok(());
         }
         log::debug!(
             target: "gpui::diagnostics",
-            "GPUI retained target recreation required: requested_variants={} previous_allocated={} previous_active={} previous_root={:?} requested_root={:?} old_root_source={} requested_root_source={} old_isolated={} requested_isolated={} in_flight={}",
+            "GPUI retained target recreation required: requested_variants={} previous_allocated={} previous_active={} previous_root={:?} requested_root={:?} old_root_source={} requested_root_source={} old_isolated={} allocated_isolated={} requested_isolated={} in_flight={}",
             self.frame_upload.backdrop_blur_configs().len(),
             self.filters.targets.as_ref().map_or(0, |targets| targets.variants.len()),
             self.filters.targets.as_ref().map_or(0, |targets| targets.active_variant_count),
@@ -685,6 +689,7 @@ impl NovaRenderer {
             self.frame_upload.retained_root_blur,
             self.filters.targets.as_ref().is_some_and(|targets| targets.source.is_some()),
             present::has_root_backdrop_blurs(&self.frame_upload),
+            self.filters.targets.as_ref().map_or(0, |targets| targets.active_isolated_source_count),
             self.filters.targets.as_ref().map_or(0, |targets| targets.isolated_sources.len()),
             self.frame_upload.isolated_blur_source_indices().len(),
             self.pending_submissions.len(),
@@ -792,8 +797,10 @@ impl NovaRenderer {
             .and_then(|index| next_backdrop_blur_targets.variants.iter()
                 .position(|variant| variant.config.contains_member_index(index)));
         log::debug!(target: "gpui::diagnostics",
-            "GPUI retained target layout recreated: active_variants={} target_bytes={}",
-            next_backdrop_blur_targets.active_variant_count, next_backdrop_blur_targets.byte_size());
+            "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={}",
+            next_backdrop_blur_targets.active_variant_count,
+            next_backdrop_blur_targets.active_isolated_source_count,
+            next_backdrop_blur_targets.byte_size());
         self.filters.targets = Some(next_backdrop_blur_targets);
         // Cached steps borrow target resource-set handles. Fence retirement
         // protects submitted work, but these CPU copies also outlive a slot.

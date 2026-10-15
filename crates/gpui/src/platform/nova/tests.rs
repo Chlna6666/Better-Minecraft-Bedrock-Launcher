@@ -2203,6 +2203,7 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
         source: None,
         source_pass_resource_sets: Vec::new(),
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
@@ -2240,6 +2241,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         source: None,
         source_pass_resource_sets: Vec::new(),
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
@@ -2278,6 +2280,128 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
 }
 
 #[test]
+fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
+    // Six allocations are already resident. Shrinking and expanding must
+    // change only CPU bindings and the active prefix, not native textures.
+    let make_variant = |index: u32| {
+        let config = if index == 5 {
+            test_zero_radius_blur_config(index)
+        } else {
+            test_backdrop_blur_config(index, 2)
+        };
+        BackdropBlurVariantTargets {
+            config,
+            levels: (0..(if index == 5 { 1 } else { 2 }))
+                .map(|axis| BackdropBlurLevelTarget {
+                    byte_size: 64 * 32 * 4,
+                    texture: test_texture_id(100 + index * 2 + axis),
+                    texture_view: test_texture_view_id(100 + index * 2 + axis),
+                    pass_resource_sets: vec![test_resource_set_id(100 + index * 2 + axis)],
+                })
+                .collect(),
+            target_resource_sets: vec![test_resource_set_id(index + 40)],
+        }
+    };
+    let source = |index: u32| IsolatedBlurSource {
+        index,
+        target: RenderTarget {
+            byte_size: 64 * 32 * 4,
+            texture: test_texture_id(index + 200),
+            texture_view: test_texture_view_id(index + 200),
+        },
+        pass_resource_sets: vec![test_resource_set_id(index + 200)],
+    };
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: (0..5).map(source).collect(),
+        active_isolated_source_count: 5,
+        variants: (0..6).map(make_variant).collect(),
+        active_variant_count: 6,
+        retained_root_variant: Some(5),
+    };
+    let root_view = targets.retained_root_texture_view();
+    let original_source_views = targets.isolated_sources.iter()
+        .map(|source| source.target.texture_view)
+        .collect::<Vec<_>>();
+    let original_output_views = targets.variants.iter()
+        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+        .collect::<std::collections::HashSet<_>>();
+    let build = |count: u32| {
+        (0..count).map(|index| {
+            if index + 1 == count {
+                test_zero_radius_blur_config(index)
+            } else {
+                test_backdrop_blur_config(index, 2)
+            }
+        }).collect::<Vec<_>>()
+    };
+    for count in [3_u32, 4, 6, 3, 6] {
+        let next = build(count);
+        let required = (0..count-1).collect::<Vec<_>>();
+        assert!(targets.reuse_layout(
+            &next, &required, false, Some(count - 1), None,
+        ), "warmed isolated sources and root output can rebind without allocating");
+        assert_eq!(targets.active_variant_count, count as usize);
+        assert_eq!(targets.active_isolated_source_count, (count - 1) as usize);
+        assert_eq!(targets.retained_root_texture_view(), root_view);
+        assert_eq!(
+            targets.isolated_sources.iter().map(|source| source.target.texture_view)
+                .collect::<Vec<_>>(),
+            original_source_views,
+            "spare scratch textures and their bindings remain owned",
+        );
+        assert_eq!(
+            targets.variants.iter()
+                .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
+                .collect::<std::collections::HashSet<_>>(),
+            original_output_views,
+        );
+        assert!(targets.is_layout_compatible(&next, &required, false));
+        if count == 3 {
+            assert!(targets.isolated_source_texture_view(2).is_none(),
+                "inactive spare sources must not be addressable by old packed indices");
+        }
+    }
+}
+
+#[test]
+fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
+    let config = test_backdrop_blur_config(0, 2);
+    let mut targets = BackdropBlurTargets {
+        source: None,
+        source_pass_resource_sets: Vec::new(),
+        isolated_sources: vec![IsolatedBlurSource {
+            index: 0,
+            target: RenderTarget {
+                byte_size: 256,
+                texture: test_texture_id(80),
+                texture_view: test_texture_view_id(80),
+            },
+            pass_resource_sets: vec![test_resource_set_id(80)],
+        }],
+        active_isolated_source_count: 1,
+        variants: vec![BackdropBlurVariantTargets {
+            config,
+            levels: (0..2).map(|axis| BackdropBlurLevelTarget {
+                byte_size: 256,
+                texture: test_texture_id(90 + axis),
+                texture_view: test_texture_view_id(90 + axis),
+                pass_resource_sets: vec![test_resource_set_id(90 + axis)],
+            }).collect(),
+            target_resource_sets: vec![test_resource_set_id(91)],
+        }],
+        active_variant_count: 1,
+        retained_root_variant: None,
+    };
+    let before = targets.isolated_sources[0].target.texture_view;
+    assert!(!targets.reuse_layout(&[config, config], &[0, 1], false, None, None));
+    assert_eq!(targets.active_variant_count, 1);
+    assert_eq!(targets.active_isolated_source_count, 1);
+    assert_eq!(targets.isolated_sources[0].target.texture_view, before);
+}
+
+#[test]
 fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
     let make_variant = |index: u32| BackdropBlurVariantTargets {
         config: test_backdrop_blur_config(index, 2),
@@ -2299,6 +2423,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(30)],
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
@@ -2370,6 +2495,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(30)],
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
@@ -2428,6 +2554,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         source: None,
         source_pass_resource_sets: Vec::new(),
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
@@ -2475,6 +2602,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: vec![BackdropBlurVariantTargets {
             config,
             levels: vec![
@@ -2541,6 +2669,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
         }),
         source_pass_resource_sets: vec![test_resource_set_id(11)],
         isolated_sources: Vec::new(),
+        active_isolated_source_count: 0,
         variants: Vec::new(),
     };
 
