@@ -35,9 +35,11 @@
 
 - 用唯一的分段 `Operations` 直接替换 `Scene.paint_operations: Vec`，不建立影子快照或新缓存。已证明静态 Quad 范围同时共享操作数据和 typed Quad 数据，不再逐项克隆这段 PaintOperation；底层 allocation 独立持有，不持有旧 Scene。相邻同 allocation 的连续范围合并，仅在合计有效范围稀疏时压缩。
 - Damage、Filter Source/Backdrop、Retention、Nova AutoStatic admission、Scene bounds/replay 和嵌套 PaintBlur 比较全部迁移为逻辑范围视图/迭代；删除依赖连续操作数组的正式接口。Capture 完成时通过局部 edit 收紧边界，修改共享范围只分离真正编辑的部分；没有 flatten 兼容数组、旧名称转发或双入口。
-- 风险验证覆盖跨段正反向范围、源 Scene 清除后的 payload 生命周期、共享编辑隔离、共享段和 pending 之间的编辑顺序、稀疏回收、同 DrawOrder 顺序及重排回退。四后端 native buffer 用例增加 PaintOperation 指针相同断言；具体运行结果待本轮完成后更新。
+- 风险验证覆盖跨段正反向范围、源 Scene 清除后的 payload 生命周期、共享编辑隔离、共享段和 pending 之间的编辑顺序、稀疏回收、同 DrawOrder 顺序及重排回退。447 个定向测试通过；6 类原生用例 × DX11/DX12/Vulkan/OpenGL 共 24 项通过，native buffer 日志均确认 `cpu_paint_shared_operations=64`，原有局部 GPU 上传与 COW 像素保持正确。此为内容共享和正确性证据，不是 GPU 时间或系统占用收益。
+- 本地通过 workspace no-default-features、bmcbl lib locked、GPUI windows-manifest/mimalloc-collect check，以及 GPUI all-features test no-run。workspace fmt 仍被已有 `bedrock-block-model/src/obj.rs:4825` 等差异阻塞；本轮 Operations、Damage/Filter/Retention 算法与 Capture 模块局部 rustfmt check、git diff check 通过。`cargo bench -p gpui --all-features --no-run --profile dev` 首次因原生测试占用同名 exe 导致 LNK1104，待测试退出后单独重跑通过；这只验证 benchmark 调用方编译，不是 release 性能测量。
 - 未完成仍包括其它 typed Primitive 持久化、BoundsTree/顺序比较消除重复遍历、SceneSlot/快照主通路和全量 FrameUpload。尚未建立替代这些消费者的完整增量协议，因此不以改名/Wrapper 删除冒充完成；后续直接迁移并删除旧实现，不兼容旧版本。尚无真实应用 GPU Timestamp/占用 A/B 收益结论。
 - 已核实正式链路：`Frame::finish → publish_pending → presentation_packet → RenderOwner → Nova draw/pack_scene`。`pack_scene` 在非零 revision、UploadKey（revision/atlas/尺寸/alpha/blur quality）匹配且无需 reconsider_color 时，已有动画值刷新路径，跳过完整 encode。本轮不将已有能力误报为新增收益。SceneSlot、active/pending snapshot 和排队 Packet 共享同一 Arc Paint；目前不是多份数组，但消费者仍要求整 Scene 输入，替换协议需同时承接 immutable lifetime、latest-wins 未提交 Damage 和 Surface epoch。
+- 后续端到端验收纳入生成延迟与复制账本：分别测量 UI Paint 构建、发布、排队、编码、上传到成功提交的延迟，记录旧 payload 复用/复制、增量元数据及必要的新内容上传字节。目标是稳定 payload 跨帧和跨线程直接共享；不能以 Arc 包装整 Scene、改名接口或隐藏必要 GPU 上传来宣称完整零拷贝。
 
 ### 2026-10-16 持久 CPU Quad 绘制数据纵切（基线 `18fa3364`）
 
