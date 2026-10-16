@@ -31,6 +31,17 @@
 | **P3-01** | P3 · **部分删除：构建/发布状态已分离；全量实例编码仍保留** | **破坏性删除与消费者迁移**：已删除 SceneSlot、PresentationSnapshot、Frame.scene 字段和 Packet 分散静态字段；Scene 不再拥有构建栈/排序树。保留必要的基础 Replay、唯一 FrameUpload 实例编码与真实 Shader/Native 资源功能，待其增量消费者迁移后删除对应旧遍历 | 不保留 alias、旧名转发或双入口；本轮 all-feature tests/benches 编译及四后端像素结果见下节，不能删 gpui-3d::Scene、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
 
+### 2026-10-16 最终 DrawStep 边界与重复编码遍历审查（基线 `92ff7562`）
+
+- 已复现四后端共用的错误：Prepared Monochrome 的 Glyph/Linear 采样段可被编码器合成同纹理 DrawStep，但原边界只覆盖第一段。两个新增测试在旧实现上均失败：后一段静态几何遗漏，后一段动画/变换未取消静态裁剪。局部 Source scissor 因而可能错误跳过整个合并 DrawStep。
+- 删除 Glyph、Image、Underline 编码前的边界预扫描；打包可见实例时计算最终 draw coverage，Atlas relocation 拆出的批次分别维护，合并时 union；未知、动画、变换或非有限几何使整个 draw 保持不可裁剪。检查原始 bounds/mask，避免 NaN 被几何求交归一化为有限边界。没有增加 Scene 状态、兼容入口或第二套 FrameUpload；同时移除不再消费的纹理参数。
+- 原生夹具通过正式 Painter→FrameUpload→局部 Source DrawStep→GPU→像素回读验证：两段采样合并为一个 DrawStep，右侧损伤仍生成该 DrawStep，回读为白色。该夹具验证 culling 决策与实际像素，未把整个渲染 pass 设置成局部 scissor，不用于推算 GPU 时间或填充率。
+- Scene 当前保留绘制容器、基础 bounds/遍历、静态 batch、Atlas/动画引用查询及绘制统计；可变顺序树、Layer/Capture 栈和复用容量策略在 Painter，跨帧缓存判定在 Window Retained Owner，GPU 驻留在 Nova。未发现仍在 Scene 中执行 GPU 资源分配、Filter 更新或 Present 的正式路径。`pack_scene` 对新 revision 仍接受完整只读 Paint 并组装非驻留数据：**全类型持久 Chunk、增量内容摘要与完整增量提交仍未完成**，不能因 SceneSlot 已删除而标记端到端零拷贝完成。
+- UI 只读复核：标题栏胶囊走 `AnimationGroup::horizontal_edges` presentation，标签宽度变化另走局部 layout；公共 Dropdown 的 vertical reveal/chevron 走 presentation。首页启动下拉仍采样 SpringValue 并改变容器 height/top、行 top/opacity 与阴影，使用 layout animation 请求帧。其弹簧、1.08 过冲、错峰和逐行轨迹尚未由 compositor 等价接替，保持未完成，不直接换动画 API。当前三条链的 `Instant::now()` 为事件起始锚点，未确认为 fresh visual sample。
+- 计时能力审查：Vulkan 已有 Main/Offscreen command-buffer GPU timestamp，DX12 仅有纹理上传 query，DX11/OpenGL 无同等渲染计时。现有 GPUI 详细 Trace 原先未启用 `gfx_vulkan::gpu`；现在接入同一默认关闭、重启生效的开关，无新环境变量。四后端统一 GPU Pass timestamp、真实启动器交互性能与端到端生成延迟对照仍待完成。
+- 本轮最终通过 325 项 Nova 定向测试、4 类 × 四后端共 16 项原生像素回归，以及应用 Trace 开关单测。通过 workspace no-default-features、bmcbl lib locked、GPUI no-default-features + windows-manifest/mimalloc-collect、all-features tests/benches check、test no-run 和 bench no-run（dev profile）。全仓 fmt 仍从既有 `bedrock-block-model/src/obj.rs:4825` 等差异失败；本轮新增模块/修改区域格式与 git diff check 通过。未重复执行已知有基线失败的完整 GPUI 库测试。
+- 证据位于 `%TEMP%/bmcbl-merged-bounds-before.log`（旧实现 2 项复现失败）、`bmcbl-merged-bounds-final-unit.log`、`bmcbl-merged-bounds-final-*.log`、`bmcbl-merged-bounds-check-*.log` 和 `bmcbl-merged-bounds-fmt.log`。最终 executable SHA256 `5C69FD0A45B315C9331067142C5259A70EEE0C9AE4988420C9A317B240844702`。上一批 400→0 Source 面积和 384→192 B staging 仍仅适用于其夹具，不是本轮字形修复的新增收益；本轮不声称 CPU/GPU 时长或端到端延迟已经改善。
+
 ### 2026-10-16 Retained Chunk 与静态 Source 增量合成接通（基线 `791efe4a`）
 
 - 确认的阻断：Nova 的 AutoStatic 准入曾因任意 Retained Quad Chunk 存在而拒绝整帧。CPU/GPU Chunk 复用与静态 Source 像素复用因此不能同时生效。现在只拒绝真正穿越捕获边界的 Chunk，保留 Layer/DrawOrder、Atlas、Backdrop、Gaussian 和嵌套 Capture 的依赖保护；没有扩大为任意自动图层缓存。

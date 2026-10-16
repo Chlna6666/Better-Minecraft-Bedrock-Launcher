@@ -8,33 +8,22 @@ mod retained;
 mod static_prefix;
 pub(in crate::platform::nova) use static_prefix::StaticPrefix;
 
-/// Primitives clipped to a zero-area mask are invisible on screen but can produce
-/// undefined shader coverage (white garbage) in the rasterizer, so they are culled
-/// before packing instead of being handed to the GPU.
+/// Reference union for tests of the per-instance bounds emitted while packing.
+#[cfg(test)]
 fn static_raster_run_visual_bounds(
-    primitives: impl IntoIterator<Item = (
-        crate::Bounds<crate::ScaledPixels>,
-        crate::Bounds<crate::ScaledPixels>,
-        Option<crate::SceneAnimationId>,
-        bool,
-    )>,
+    primitives: impl IntoIterator<
+        Item = (
+            crate::Bounds<crate::ScaledPixels>,
+            crate::Bounds<crate::ScaledPixels>,
+            Option<crate::SceneAnimationId>,
+            bool,
+        ),
+    >,
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
     let mut union: Option<crate::Bounds<crate::ScaledPixels>> = None;
     for (bounds, mask, animation_id, has_unbounded_transform) in primitives {
-        // GPU transitions and nontrivial glyph transforms can move sampling
-        // outside the original AABB. Neither may produce a cullable batch.
-        if animation_id.is_some() || has_unbounded_transform {
-            return None;
-        }
-        // The guard band accounts for SDF and sprite sampling at the edges.
-        let visual = bounds.intersect(&mask).dilate(crate::ScaledPixels(2.0));
-        let values = [
-            visual.origin.x.0, visual.origin.y.0,
-            visual.size.width.0, visual.size.height.0,
-        ];
-        if !values.into_iter().all(f32::is_finite) {
-            return None;
-        }
+        let visual =
+            static_raster_visual_bounds(bounds, mask, animation_id, has_unbounded_transform)?;
         union = Some(match union {
             Some(previous) => previous.union(&visual),
             None => visual,
@@ -43,38 +32,82 @@ fn static_raster_run_visual_bounds(
     union
 }
 
+/// Coverage is attached to the actual encoded draw, after clipping and atlas
+/// relocation. Animated/non-finite geometry and transformed glyphs stay uncullable.
+fn static_raster_visual_bounds(
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    mask: crate::Bounds<crate::ScaledPixels>,
+    animation_id: Option<crate::SceneAnimationId>,
+    has_unbounded_transform: bool,
+) -> Option<crate::Bounds<crate::ScaledPixels>> {
+    if animation_id.is_some() || has_unbounded_transform {
+        return None;
+    }
+    // Intersection's min/max comparisons can replace NaN coordinates with
+    // finite mask edges. Reject invalid input before that normalization.
+    if ![
+        bounds.origin.x.0,
+        bounds.origin.y.0,
+        bounds.size.width.0,
+        bounds.size.height.0,
+        mask.origin.x.0,
+        mask.origin.y.0,
+        mask.size.width.0,
+        mask.size.height.0,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    {
+        return None;
+    }
+    // Account for SDF and sprite sampling at the edges.
+    let visual = bounds.intersect(&mask).dilate(crate::ScaledPixels(2.0));
+    [
+        visual.origin.x.0,
+        visual.origin.y.0,
+        visual.size.width.0,
+        visual.size.height.0,
+    ]
+    .into_iter()
+    .all(f32::is_finite)
+    .then_some(visual)
+}
+
+/// Once a nonempty draw contains unknown coverage, later static instances must
+/// not restore a finite bound and incorrectly cull the animated instances.
+fn merge_batch_bounds(
+    bounds: &mut Option<crate::Bounds<crate::ScaledPixels>>,
+    next: Option<crate::Bounds<crate::ScaledPixels>>,
+) {
+    *bounds = bounds
+        .zip(next)
+        .map(|(previous, next)| previous.union(&next));
+}
+
 #[cfg(test)]
 fn static_quad_run_visual_bounds(
     quads: &[crate::Quad],
 ) -> Option<crate::Bounds<crate::ScaledPixels>> {
-    static_raster_run_visual_bounds(
-        quads.iter().map(|quad| (
+    static_raster_run_visual_bounds(quads.iter().map(|quad| {
+        (
             quad.bounds,
             quad.content_mask.bounds,
             quad.animation_id,
             false,
-        )),
-    )
+        )
+    }))
 }
 
 /// A Quad's conservative visible bounds, computed as the primitive is packed.
 /// Never cull GPU-motion or non-finite geometry based on its static AABB.
 #[inline]
 fn static_quad_visual_bounds(quad: &crate::Quad) -> Option<crate::Bounds<crate::ScaledPixels>> {
-    if quad.animation_id.is_some() {
-        return None;
-    }
-    let visual = quad
-        .bounds
-        .intersect(&quad.content_mask.bounds)
-        .dilate(crate::ScaledPixels(2.0));
-    let values = [
-        visual.origin.x.0,
-        visual.origin.y.0,
-        visual.size.width.0,
-        visual.size.height.0,
-    ];
-    values.into_iter().all(f32::is_finite).then_some(visual)
+    static_raster_visual_bounds(
+        quad.bounds,
+        quad.content_mask.bounds,
+        quad.animation_id,
+        false,
+    )
 }
 
 /// Extends one batch's bounds while packing. False forces the entire batch
@@ -307,48 +340,6 @@ impl FrameUpload {
         }
 
         for batch in scene.prepared_batches() {
-            let first_batch = self.batches.len();
-            // Quad batches publish bounds during packing, including shared
-            // resident chunks; no second traversal of the Scene is required.
-            let static_quad_bounds = match batch {
-                PreparedSceneBatch::Quads(_) => None,
-                PreparedSceneBatch::MonochromeSprites { range, .. } => {
-                    let sprites = &scene.monochrome_sprites[range.clone()];
-                    // A transformed glyph may rotate outside its rectangle.
-                    // Check the transform while unioning each glyph once,
-                    // rather than scanning the whole glyph batch twice.
-                    static_raster_run_visual_bounds(sprites.iter().map(|sprite| (
-                        sprite.bounds,
-                        sprite.content_mask.bounds,
-                        sprite.animation_id,
-                        sprite.transformation != crate::TransformationMatrix::unit(),
-                    )))
-                }
-                PreparedSceneBatch::PolychromeSprites { range, .. } => {
-                    static_raster_run_visual_bounds(
-                        scene.polychrome_sprites[range.clone()].iter().map(|sprite| (
-                            sprite.bounds,
-                            sprite.content_mask.bounds,
-                            sprite.animation_id,
-                            false,
-                        )),
-                    )
-                }
-                PreparedSceneBatch::Underlines(range) => {
-                    static_raster_run_visual_bounds(
-                        scene.underlines[range.clone()].iter().map(|line| (
-                            line.bounds,
-                            line.content_mask.bounds,
-                            line.animation_id,
-                            false,
-                        )),
-                    )
-                }
-                // Shadows have kernel support extending beyond their logical
-                // bounds. Paths may have geometry/clip expansion. Until both
-                // provide conservative visibility regions, do not cull them.
-                _ => None,
-            };
             match batch {
                 PreparedSceneBatch::Quads(quad_run) => {
                     self.encode_retained_quads(
@@ -363,19 +354,15 @@ impl FrameUpload {
                 PreparedSceneBatch::Shadows(range) => {
                     self.encode_shadows(&scene.shadows[range.clone()], &mut summary);
                 }
-                PreparedSceneBatch::MonochromeSprites {
-                    texture_id, range, ..
-                } => {
+                PreparedSceneBatch::MonochromeSprites { range, .. } => {
                     self.encode_monochrome_sprites(
                         &scene.monochrome_sprites[range.clone()],
-                        *texture_id,
                         &mut summary,
                     );
                 }
-                PreparedSceneBatch::PolychromeSprites { texture_id, range } => {
+                PreparedSceneBatch::PolychromeSprites { range, .. } => {
                     self.encode_polychrome_sprites(
                         &scene.polychrome_sprites[range.clone()],
-                        *texture_id,
                         &mut summary,
                     );
                 }
@@ -445,16 +432,11 @@ impl FrameUpload {
                     });
                 }
             }
-            // Preserve bounds emitted by the Quad writer, including child
-            // blur batches. Other primitive kinds only populate conservative
-            // bounds when their encoding rules prove those bounds safe.
+            // Writers maintain bounds for the final draws, including atlas
+            // splits/merges and child captures, without a second Scene scan.
+            // Unknown geometry and structural/filter slots remain uncullable.
             let last_batch = self.batches.len();
             self.batch_visual_bounds.resize(last_batch, None);
-            if let Some(bounds) = static_quad_bounds {
-                for slot in &mut self.batch_visual_bounds[first_batch..last_batch] {
-                    *slot = Some(bounds);
-                }
-            }
             debug_assert_eq!(
                 self.batch_visual_bounds.len(),
                 self.batches.len(),

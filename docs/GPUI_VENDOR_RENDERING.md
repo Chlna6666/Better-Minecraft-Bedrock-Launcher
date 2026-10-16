@@ -1185,7 +1185,10 @@ not weaken rendering correctness to hit an arbitrary memory or CPU number.
 
 ### Vulkan GPU timestamps for main/offscreen scene work (P0)
 
-Enable the static `gfx_vulkan::gpu` Trace log filter before device creation.
+The existing BMCBL `GPUI / Nova detailed Trace` setting enables the
+`gfx_vulkan::gpu` Trace target before device creation; restart after changing it.
+The setting defaults off, leaving GPU queries unallocated. Framework embedders
+must enable this log target before creating the Vulkan device.
 The backend creates two Vulkan TIMESTAMP queries per native render command
 buffer, writing one pair around its entire GPU command stream (including
 attachment layout transitions). Query results are read only after the owning
@@ -1214,6 +1217,9 @@ toggle one dropdown with no blur, animated navigation with no blur, and blur
 enabled. GPU p95 and finer per-filter pass timings still require a dedicated
 capture (RenderDoc/Radeon GPU Profiler) or Render Graph instrumentation.
 Do not infer GPU rasterization reuse from retained CPU buffers/DrawStep caches.
+This renderer timing is currently Vulkan-specific: DX12 exposes texture-transfer
+queries, while DX11/OpenGL have no equivalent render-command timing here. CPU
+owner busy time and Pass counters cannot fill that measurement gap.
 
 ### Buffer upload batches (P0-C)
 

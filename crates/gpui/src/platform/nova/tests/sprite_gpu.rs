@@ -161,6 +161,7 @@ where
         }
         if kind == AtlasTextureKind::Monochrome {
             verify_mono_tint(device, &resources, &atlas, target, view);
+            bounds::verify(device, &resources, &atlas, target, view);
         }
     }
 }
@@ -474,6 +475,7 @@ fn bounds_device_pixels() -> Bounds<DevicePixels> {
     )
 }
 
+mod bounds;
 mod filters;
 mod paths;
 mod primitives;

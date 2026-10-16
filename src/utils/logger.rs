@@ -248,10 +248,10 @@ fn default_log_filter(debug_enabled: bool, gpui_trace_enabled: bool) -> String {
     } else {
         "info"
     };
-    // Only the explicitly selected GPUI diagnostic target gets trace-level
-    // output. Network crates and the rest of GPUI keep their original levels.
+    // Enable only rendering diagnostics, including native Vulkan GPU queries.
+    // Network crates and the rest of GPUI keep their original levels.
     let gpui_trace = if gpui_trace_enabled {
-        ",gpui=debug,gpui::diagnostics=trace,bmcbl::ui::render_trace=trace,nova_dx12_surface=debug"
+        ",gpui=debug,gpui::diagnostics=trace,bmcbl::ui::render_trace=trace,nova_dx12_surface=debug,gfx_vulkan::gpu=trace"
     } else {
         ""
     };
@@ -452,6 +452,7 @@ mod tests {
         let trace_only = default_log_filter(false, true);
         assert!(trace_only.contains("gpui::diagnostics=trace"));
         assert!(trace_only.contains("bmcbl::ui::render_trace=trace"));
+        assert!(trace_only.contains("gfx_vulkan::gpu=trace"));
         assert!(trace_only.contains("gpui=debug"));
         assert!(trace_only.starts_with("info,"));
         assert!(!trace_only.contains("bmcbl=debug"));
@@ -459,12 +460,15 @@ mod tests {
         let both = default_log_filter(true, true);
         assert!(both.contains("bmcbl=debug"));
         assert!(both.contains("gpui::diagnostics=trace"));
+        assert!(both.contains("gfx_vulkan::gpu=trace"));
 
         let normal = default_log_filter(false, false);
         let debug_only = default_log_filter(true, false);
         assert!(!normal.contains("gpui::diagnostics=trace"));
         assert!(!debug_only.contains("gpui::diagnostics=trace"));
         assert!(!debug_only.contains("bmcbl::ui::render_trace=trace"));
+        assert!(!normal.contains("gfx_vulkan::gpu=trace"));
+        assert!(!debug_only.contains("gfx_vulkan::gpu=trace"));
     }
 
     #[test]
