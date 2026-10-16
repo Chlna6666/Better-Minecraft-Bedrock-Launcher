@@ -769,10 +769,7 @@ impl NovaRenderer {
             // Scene, second Painter::finish, or second primitive encoding pass.
             let captured_static_prefix = auto_background.as_ref().is_some_and(|candidate| {
                 self.frame_upload.capture_encoded_static_prefix(
-                    scene,
-                    candidate.bounds,
-                    candidate.content_mask,
-                    candidate.first_dynamic_order,
+                    candidate,
                     self.current_size,
                     &mut summary,
                 )
@@ -925,10 +922,16 @@ mod tests {
         )
         .expect("flat page has independent static prefix");
         assert!(!captured.bounds.is_empty());
-        assert_eq!(captured.content_mask.bounds.size.width, crate::ScaledPixels(640.0));
-        assert_eq!(captured.first_dynamic_order, original.quads[100].order);
+        assert_eq!(
+            captured.content_mask.bounds.size.width,
+            crate::ScaledPixels(640.0)
+        );
+        assert_eq!(captured.quads, 100);
         assert_eq!(original.quads.len(), 101);
-        assert_eq!(original.quads[100].animation_id, Some(crate::SceneAnimationId(42)));
+        assert_eq!(
+            original.quads[100].animation_id,
+            Some(crate::SceneAnimationId(42))
+        );
         let viewport = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
@@ -946,10 +949,7 @@ mod tests {
         };
         let nested_capture = auto_capture_static_background(&nested, &[], size)
             .expect("a closed nested prefix retains its layer ordering");
-        assert_eq!(
-            nested_capture.first_dynamic_order,
-            nested.quads.last().unwrap().order
-        );
+        assert_eq!(nested_capture.quads, 100);
         assert_eq!(nested_capture.content_mask.bounds, viewport);
         let mut split = crate::scene::Painter::default();
         split.push_layer(viewport);
@@ -1003,7 +1003,7 @@ mod tests {
         )
         .expect("changed background still eligible");
         assert!(!changed.bounds.is_empty());
-        assert_eq!(changed.first_dynamic_order, captured.first_dynamic_order);
+        assert_eq!(changed.quads, captured.quads);
         // Pixel changes are compared using packed source fingerprints after
         // encoding, not by deep-comparing cloned child Scenes.
     }
@@ -1046,28 +1046,39 @@ mod tests {
         scene.revision = 1;
         let captured = auto_capture_static_background(&scene, &[], size)
             .expect("static background can be retained below an isolated popup");
-        assert_eq!(captured.first_dynamic_order, scene.blurs[0].order);
+        assert_eq!(captured.quads, 24);
         let mut upload = FrameUpload::default();
         let mut cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
-            &mut cache, &scene, &crate::window::retained::RetainedPaint::default(), &[], size,
-            &RenderingParameters::system(), false, BackdropBlurQuality::Full,
+            &mut cache,
+            &scene,
+            &crate::window::retained::RetainedPaint::default(),
+            &[],
+            size,
+            &RenderingParameters::system(),
+            false,
+            BackdropBlurQuality::Full,
         );
-        assert!(upload.capture_encoded_static_prefix(
-            &scene, captured.bounds, captured.content_mask,
-            captured.first_dynamic_order, size, &mut summary,
-        ));
-        assert_eq!(upload.element_blur_inputs.len(), 2,
-            "the background and popup retain two independent sources");
-        assert!(upload.root_color.is_none(),
-            "the full-window root capture must not wrap the popup");
+        assert!(upload.capture_encoded_static_prefix(&captured, size, &mut summary));
+        assert_eq!(
+            upload.element_blur_inputs.len(),
+            2,
+            "the background and popup retain two independent sources"
+        );
+        assert!(
+            upload.root_color.is_none(),
+            "the full-window root capture must not wrap the popup"
+        );
         upload.refresh_blur_content_ranges();
         assert_eq!(upload.blur_content_ranges().len(), 2);
     }
 
     #[test]
     fn static_prefix_rejects_gaussian_and_interleaved_capture() {
-        let size = DrawableSize { width: 640, height: 480 };
+        let size = DrawableSize {
+            width: 640,
+            height: 480,
+        };
         let rect = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),

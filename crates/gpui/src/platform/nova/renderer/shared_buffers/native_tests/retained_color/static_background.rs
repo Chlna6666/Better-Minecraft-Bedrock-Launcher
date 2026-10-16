@@ -1,5 +1,6 @@
 //! Verify automatic page capture through native pixels and actual source-pass work.
 use super::*;
+mod retained;
 
 pub(super) fn page(
     size: DrawableSize,
@@ -125,6 +126,7 @@ fn verify(backend: RendererBackend) {
         local, full,
         "changed source must refresh outside foreground damage"
     );
+    retained::verify(&mut renderer, target);
     renderer
         .wait_for_pending_submissions()
         .expect("complete readback");

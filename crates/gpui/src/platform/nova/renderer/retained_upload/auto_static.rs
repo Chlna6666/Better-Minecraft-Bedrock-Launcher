@@ -1,31 +1,9 @@
 use super::*;
 
-/// Auto-capture an ordinary page's stable painter-order prefix into the
-/// existing zero-radius compositor target. All filtering, atlas and renderer
-/// extensions are rejected: the cached prefix only contains solid CPU-owned
-/// quads/shadows and does not depend on external texture residency.
-///
-/// The encoded prefix owns an independent GPU target in the existing filter
-/// pipeline. Its packed Quad/Shadow bytes become the content identity stored
-/// by FilterRegistry only after a successful submission.
-///
-/// The boundary must close every PaintLayer. An open layer or retained chunk
-/// cannot be split safely; keep the ordinary Scene encoding in that case.
-pub(super) struct AutoStaticBackground {
-    /// First foreground DrawOrder; GPU batch splitting uses this boundary.
-    pub(super) first_dynamic_order: crate::DrawOrder,
-    /// The source geometry is encoded directly into the retained target.
-    pub(super) bounds: crate::Bounds<crate::ScaledPixels>,
-    pub(super) content_mask: crate::ContentMask<crate::ScaledPixels>,
-}
-
 /// Emits the *first* failed admission guard for an unsafe static prefix.
 /// Do not turn an unknown/unsupported paint operation into an accepted cache:
 /// retaining an invalid source would reuse stale GPU pixels.
-fn reject_auto_static_capture(
-    scene: &crate::Scene,
-    reason: &'static str,
-) -> Option<AutoStaticBackground> {
+fn reject_auto_static_capture(scene: &crate::Scene, reason: &'static str) -> Option<StaticPrefix> {
     log::trace!(
         target: "gpui::diagnostics",
         "GPUI AutoStatic admission rejected: scene_revision={} reason={} paint_operations={} blur_captures={} full_redraw_fallback={}",
@@ -38,24 +16,67 @@ fn reject_auto_static_capture(
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_chunks_allow_capture_only_outside_the_split() {
+        let mut source = crate::window::retained::PaintFixture::default();
+        let viewport = crate::bounds(
+            crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(0.)),
+            crate::size(crate::ScaledPixels(64.), crate::ScaledPixels(64.)),
+        );
+        for _ in 0..128 {
+            source.insert_primitive(crate::Quad {
+                bounds: viewport,
+                content_mask: crate::ContentMask::new(viewport),
+                ..Default::default()
+            });
+        }
+        source.record(
+            crate::GlobalElementId::from_path(&["static".into()]),
+            1,
+            0..128,
+        );
+        source.insert_animated_primitive(
+            crate::Quad {
+                bounds: viewport,
+                content_mask: crate::ContentMask::new(viewport),
+                ..Default::default()
+            },
+            crate::SceneAnimationId(1),
+        );
+        source.finish();
+        let chunks = source.chunks();
+        assert_eq!(chunks.len(), 1);
+        let size = DrawableSize {
+            width: 64,
+            height: 64,
+        };
+        assert!(auto_capture_static_background(&source, chunks, size).is_some());
+        let mut crossing = chunks.to_vec();
+        crossing[0].paint_range.end = source.len();
+        assert!(auto_capture_static_background(&source, &crossing, size).is_none());
+    }
+}
+
 pub(super) fn auto_capture_static_background(
     scene: &crate::Scene,
     retained_chunks: &[crate::PreparedRetainedQuadChunk],
     drawable_size: DrawableSize,
-) -> Option<AutoStaticBackground> {
+) -> Option<StaticPrefix> {
     use crate::{Primitive, scene::PaintOperation};
 
-    // Keep the original conservative admission policy. Diagnose its first
-    // failing guard instead of widening it without a real pixel-correctness
-    // proof for nested captures, font atlas inputs, or background blur.
+    // Preserve resource/capture guards. Chunk residency does not change source
+    // pixels; its boundary is checked separately below. Atlas inputs, nested
+    // filters and background blur still require their own dependency proofs.
     let rejection = if scene.revision == 0 {
         Some("uncommitted_scene")
     } else if scene.has_backdrop_blurs() {
         Some("backdrop_blur_present")
     } else if crate::paint::requires_full_redraw_fallback(scene) {
         Some("scene_requires_full_redraw")
-    } else if !retained_chunks.is_empty() {
-        Some("retained_quad_chunk_present")
     } else if scene.paint_operations.len() < 25 {
         Some("insufficient_paint_operations")
     } else if drawable_size.width == 0 || drawable_size.height == 0 {
@@ -89,6 +110,8 @@ pub(super) fn auto_capture_static_background(
     // dynamic capture; its composite order lives in Scene::blurs rather than
     // the child primitives recorded between StartBlur and EndBlur.
     let mut static_prefix = 0usize;
+    let mut static_quads = 0usize;
+    let mut static_shadows = 0usize;
     let mut static_raster_area = 0.0_f64;
     let mut prefix_end = 0usize;
     let mut saw_dynamic = false;
@@ -146,6 +169,14 @@ pub(super) fn auto_capture_static_background(
         }
         if !saw_dynamic && primitive.animation_id().is_none() {
             static_prefix += 1;
+            let (mask, count) = match primitive {
+                Primitive::Quad(quad) => (&quad.content_mask, &mut static_quads),
+                Primitive::Shadow(shadow) => (&shadow.content_mask, &mut static_shadows),
+                _ => unreachable!("the static prefix contains only Quads and Shadows"),
+            };
+            if !(mask.bounds.size.width.0 <= 0.0 || mask.bounds.size.height.0 <= 0.0) {
+                *count += 1;
+            }
             let bounds = primitive.visual_bounds().intersect(&viewport);
             static_raster_area +=
                 f64::from(bounds.size.width.0.max(0.0)) * f64::from(bounds.size.height.0.max(0.0));
@@ -166,6 +197,12 @@ pub(super) fn auto_capture_static_background(
     }
     if !saw_dynamic {
         return reject_auto_static_capture(scene, "no_dynamic_foreground");
+    }
+    if retained_chunks
+        .iter()
+        .any(|chunk| chunk.paint_range.start < prefix_end && prefix_end < chunk.paint_range.end)
+    {
+        return reject_auto_static_capture(scene, "prefix_splits_retained_chunk");
     }
     let structure = crate::window::retained::ReplayStructureIndex::new(scene);
     if !structure.range_is_replayable(scene, 0..prefix_end) {
@@ -205,8 +242,9 @@ pub(super) fn auto_capture_static_background(
 
     // One finalized Scene, one encoding. Capture only the boundary here:
     // the GPU encoder fingerprints the static packed source without Replay.
-    Some(AutoStaticBackground {
-        first_dynamic_order,
+    Some(StaticPrefix {
+        quads: static_quads,
+        shadows: static_shadows,
         bounds,
         content_mask: crate::ContentMask::new(viewport),
     })

@@ -1,10 +1,12 @@
 use super::*;
-use std::{hash::Hasher, ops::Range};
+use std::ops::Range;
 
 mod backdrop;
 mod paths;
 mod primitives;
 mod retained;
+mod static_prefix;
+pub(in crate::platform::nova) use static_prefix::StaticPrefix;
 
 /// Primitives clipped to a zero-area mask are invisible on screen but can produce
 /// undefined shader coverage (white garbage) in the rasterizer, so they are culled
@@ -205,221 +207,6 @@ impl FrameUpload {
         summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
         // The original encode already built the filter configs. Add this
         // new compositor without re-encoding scene primitives.
-        self.refresh_backdrop_blur_configs();
-        self.rebuild_backdrop_blur_passes();
-        true
-    }
-
-    /// Wrap the existing packed static prefix in a zero-radius GPU color
-    /// target, without replaying or re-encoding an independent foreground Scene.
-    ///
-    /// The original Scene is finalized: Quad/Shadow streams are authoritative.
-    /// FilterRegistry compares this source's packed content fingerprint; no
-    /// Background or Foreground Scene is retained for automatic capture.
-    /// Reject any unsorted or unsupported batch topology before mutation.
-    pub(in crate::platform::nova) fn capture_encoded_static_prefix(
-        &mut self,
-        scene: &crate::Scene,
-        bounds: crate::Bounds<crate::ScaledPixels>,
-        content_mask: crate::ContentMask<crate::ScaledPixels>,
-        first_dynamic_order: crate::DrawOrder,
-        drawable_size: DrawableSize,
-        summary: &mut FrameUploadSummary,
-    ) -> bool {
-        if self.root_color.is_some()
-            || self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES >= MAX_BACKDROP_BLURS
-            || self.batches.is_empty()
-        {
-            return false;
-        }
-
-        // Encoder drops zero-area clips, so source array positions are NOT
-        // packed instance indices. Boundaries count only visible primitives.
-        // The auto-capture admission proof excludes retained chunk reuse,
-        // paths, textures, and nested filters before the cut.
-        let static_quads = scene
-            .quads
-            .iter()
-            .take_while(|quad| quad.order < first_dynamic_order)
-            .filter(|quad| !clip_is_degenerate(&quad.content_mask))
-            .count();
-        let static_shadows = scene
-            .shadows
-            .iter()
-            .take_while(|shadow| shadow.order < first_dynamic_order)
-            .filter(|shadow| !clip_is_degenerate(&shadow.content_mask))
-            .count();
-        if static_quads + static_shadows == 0 {
-            return false;
-        }
-
-        // Find the first dynamic packed instance; a mixed Quad/Shadow batch
-        // may need ONE split. All later batches must contain no static part.
-        let mut boundary = None::<(usize, usize)>;
-        let mut saw_static = false;
-        let mut saw_dynamic = false;
-        for (index, batch) in self.batches.iter().enumerate() {
-            let (first, count, limit) = match *batch {
-                UploadedBatch::Quads { first, count }
-                | UploadedBatch::SolidQuads { first, count } => {
-                    (first as usize, count as usize, static_quads)
-                }
-                UploadedBatch::Shadows { first, count } => {
-                    (first as usize, count as usize, static_shadows)
-                }
-                _ => (0, 1, 0),
-            };
-            let static_count = limit.saturating_sub(first).min(count);
-            if static_count != 0 && saw_dynamic {
-                return false;
-            }
-            saw_static |= static_count != 0;
-            if static_count < count {
-                saw_dynamic = true;
-                if boundary.is_none() {
-                    boundary = Some((index, static_count));
-                }
-            }
-        }
-        if !saw_static || !saw_dynamic {
-            return false;
-        }
-        let Some((mut end_index, retained_count)) = boundary else {
-            return false;
-        };
-        // Fingerprint the actual ordered packed source, not just raw Scene
-        // revision or unordered Quad/Shadow arrays. Clip-degenerate instances
-        // have already been removed and no temporary flattened buffer is made.
-        // Preflight all ranges before mutating batches so rejection is atomic.
-        let mut fingerprint = collections::FxHasher::default();
-        let mut content_bytes = 0usize;
-        for (position, batch) in self.batches.iter().enumerate().take(end_index + 1) {
-            let take = if position == end_index {
-                retained_count
-            } else {
-                match *batch {
-                    UploadedBatch::Quads { count, .. }
-                    | UploadedBatch::SolidQuads { count, .. }
-                    | UploadedBatch::Shadows { count, .. } => count as usize,
-                    _ => return false,
-                }
-            };
-            if take == 0 {
-                continue;
-            }
-            match *batch {
-                UploadedBatch::Quads { first, .. }
-                | UploadedBatch::SolidQuads { first, .. } => {
-                    fingerprint.write_u8(u8::from(matches!(
-                        *batch,
-                        UploadedBatch::SolidQuads { .. }
-                    )));
-                    fingerprint.write_usize(take);
-                    let start = (first as usize).saturating_mul(PACKED_QUAD_BYTES);
-                    let size = take.saturating_mul(PACKED_QUAD_BYTES);
-                    let end = start.saturating_add(size);
-                    if end > self.quads.len() || end - start != size {
-                        return false;
-                    }
-                    for (_, bytes) in self.quads.slices(start..end) {
-                        fingerprint.write(bytes);
-                    }
-                    content_bytes = content_bytes.saturating_add(size);
-                }
-                UploadedBatch::Shadows { first, .. } => {
-                    fingerprint.write_u8(2);
-                    fingerprint.write_usize(take);
-                    let start = (first as usize).saturating_mul(PACKED_SHADOW_BYTES);
-                    let size = take.saturating_mul(PACKED_SHADOW_BYTES);
-                    let end = start.saturating_add(size);
-                    let Some(bytes) = self.shadows.get(start..end) else {
-                        return false;
-                    };
-                    fingerprint.write(bytes);
-                    content_bytes = content_bytes.saturating_add(size);
-                }
-                _ => return false,
-            }
-        }
-        if content_bytes == 0 {
-            return false;
-        }
-
-        if retained_count != 0 {
-            // A single prepared run may straddle the static/dynamic boundary.
-            // Preserve its original instance order and exact buffer offsets.
-            let old = self.batches[end_index];
-            let retained_count = retained_count as u32;
-            let (prefix, suffix) = match old {
-                UploadedBatch::Quads { first, count } => (
-                    UploadedBatch::Quads {
-                        first,
-                        count: retained_count,
-                    },
-                    UploadedBatch::Quads {
-                        first: first + retained_count,
-                        count: count - retained_count,
-                    },
-                ),
-                UploadedBatch::SolidQuads { first, count } => (
-                    UploadedBatch::SolidQuads {
-                        first,
-                        count: retained_count,
-                    },
-                    UploadedBatch::SolidQuads {
-                        first: first + retained_count,
-                        count: count - retained_count,
-                    },
-                ),
-                UploadedBatch::Shadows { first, count } => (
-                    UploadedBatch::Shadows {
-                        first,
-                        count: retained_count,
-                    },
-                    UploadedBatch::Shadows {
-                        first: first + retained_count,
-                        count: count - retained_count,
-                    },
-                ),
-                _ => unreachable!("only Quad/Shadow batches can straddle the capture boundary"),
-            };
-            self.batches[end_index] = prefix;
-            self.batches.insert(end_index + 1, suffix);
-            // Bounds from a combined animated run are not independently
-            // cullable. Keep the split conservative until each component has
-            // a proven isolated visibility region.
-            self.batch_visual_bounds[end_index] = None;
-            self.batch_visual_bounds.insert(end_index + 1, None);
-            end_index += 1;
-        }
-
-        let index = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-        write_paint_blur_fields(
-            &mut self.backdrop_blurs,
-            0,
-            bounds,
-            content_mask,
-            crate::ScaledPixels(0.0),
-            1.0,
-            drawable_size,
-        );
-        self.element_blur_inputs.push((
-            index,
-            FilterSource::AutoStatic {
-                bounds,
-                content_mask,
-                content_hash: fingerprint.finish(),
-                content_bytes,
-            },
-        ));
-        self.batches.insert(0, UploadedBatch::BeginBlur { index });
-        self.batch_visual_bounds.insert(0, None);
-        // The leading BeginBlur shifts the first foreground batch by one.
-        self.batches.insert(end_index + 1, UploadedBatch::EndBlur { index });
-        self.batches.insert(end_index + 2, UploadedBatch::CompositeBlur { index });
-        self.batch_visual_bounds.insert(end_index + 1, None);
-        self.batch_visual_bounds.insert(end_index + 2, None);
-        summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
         self.refresh_backdrop_blur_configs();
         self.rebuild_backdrop_blur_passes();
         true
@@ -818,7 +605,8 @@ mod retained_root_tests {
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
                 &mut chunk_cache,
-                &scene, &crate::window::retained::RetainedPaint::default(),
+                &scene,
+                &crate::window::retained::RetainedPaint::default(),
                 &[],
                 size,
                 &RenderingParameters::system(),
@@ -826,15 +614,20 @@ mod retained_root_tests {
                 BackdropBlurQuality::Full,
             );
             assert!(upload.capture_encoded_static_prefix(
-                &scene,
-                viewport,
-                crate::ContentMask::new(viewport),
-                scene.quads.iter().find(|quad| quad.animation_id.is_some()).unwrap().order,
+                &StaticPrefix {
+                    bounds: viewport,
+                    content_mask: crate::ContentMask::new(viewport),
+                    quads: 100,
+                    shadows: 0
+                },
                 size,
-                &mut summary,
+                &mut summary
             ));
-            let FilterSource::AutoStatic { content_hash, content_bytes, .. } =
-                &upload.element_blur_inputs[0].1
+            let FilterSource::AutoStatic {
+                content_hash,
+                content_bytes,
+                ..
+            } = &upload.element_blur_inputs[0].1
             else {
                 panic!("automatic capture must not allocate an Element Scene");
             };
@@ -895,25 +688,40 @@ mod retained_root_tests {
         );
         let old_quad_len = upload.quads.len();
         assert!(upload.capture_encoded_static_prefix(
-            &scene,
-            capture.bounds,
-            capture.content_mask,
-            scene.quads.last().unwrap().order,
+            &StaticPrefix {
+                bounds: capture.bounds,
+                content_mask: capture.content_mask,
+                quads: 100,
+                shadows: 0
+            },
             size,
-            &mut summary,
+            &mut summary
         ));
         assert_eq!(upload.quads.len(), old_quad_len);
         assert_eq!(summary.quad_count, 101);
         assert_eq!(summary.backdrop_blur_count, 1);
         assert_eq!(upload.element_blur_inputs.len(), 1);
         assert_eq!(upload.batches.len(), 5);
-        assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { index: 0 }));
-        assert!(matches!(upload.batches[1], UploadedBatch::Quads { count: 100, .. }
-            | UploadedBatch::SolidQuads { count: 100, .. }));
-        assert!(matches!(upload.batches[2], UploadedBatch::EndBlur { index: 0 }));
-        assert!(matches!(upload.batches[3], UploadedBatch::CompositeBlur { index: 0 }));
-        assert!(matches!(upload.batches[4], UploadedBatch::Quads { count: 1, .. }
-            | UploadedBatch::SolidQuads { count: 1, .. }));
+        assert!(matches!(
+            upload.batches[0],
+            UploadedBatch::BeginBlur { index: 0 }
+        ));
+        assert!(matches!(
+            upload.batches[1],
+            UploadedBatch::Quads { count: 100, .. } | UploadedBatch::SolidQuads { count: 100, .. }
+        ));
+        assert!(matches!(
+            upload.batches[2],
+            UploadedBatch::EndBlur { index: 0 }
+        ));
+        assert!(matches!(
+            upload.batches[3],
+            UploadedBatch::CompositeBlur { index: 0 }
+        ));
+        assert!(matches!(
+            upload.batches[4],
+            UploadedBatch::Quads { count: 1, .. } | UploadedBatch::SolidQuads { count: 1, .. }
+        ));
         assert_eq!(upload.batches.len(), upload.batch_visual_bounds.len());
         upload.refresh_blur_content_ranges();
         assert_eq!(upload.blur_content_ranges().len(), 1);
@@ -970,17 +778,25 @@ mod retained_root_tests {
         );
         let original_bytes = upload.shadows.clone();
         assert!(upload.capture_encoded_static_prefix(
-            &scene,
-            blur.bounds,
-            blur.content_mask,
-            scene.shadows.last().unwrap().order,
+            &StaticPrefix {
+                bounds: blur.bounds,
+                content_mask: blur.content_mask,
+                quads: 0,
+                shadows: 100
+            },
             size,
-            &mut summary,
+            &mut summary
         ));
         assert_eq!(upload.shadows, original_bytes);
         assert_eq!(summary.shadow_count, 101);
-        assert!(matches!(upload.batches[1], UploadedBatch::Shadows { count: 100, .. }));
-        assert!(matches!(upload.batches[4], UploadedBatch::Shadows { count: 1, .. }));
+        assert!(matches!(
+            upload.batches[1],
+            UploadedBatch::Shadows { count: 100, .. }
+        ));
+        assert!(matches!(
+            upload.batches[4],
+            UploadedBatch::Shadows { count: 1, .. }
+        ));
     }
 
     #[test]
@@ -1033,12 +849,14 @@ mod retained_root_tests {
         );
         let previous_len = upload.batches.len();
         assert!(!upload.capture_encoded_static_prefix(
-            &scene,
-            blur.bounds,
-            blur.content_mask,
-            scene.quads.last().unwrap().order + 1,
+            &StaticPrefix {
+                bounds: blur.bounds,
+                content_mask: blur.content_mask,
+                quads: 100,
+                shadows: 0
+            },
             size,
-            &mut summary,
+            &mut summary
         ));
         assert_eq!(upload.batches.len(), previous_len);
         assert!(upload.element_blur_inputs.is_empty());

@@ -955,27 +955,33 @@ continue to work as before. Admission is determined by this policy.
 ### Conservative automatic static-background texture
 
 Nova automatically considers the existing independent offscreen GPU cache for
-strictly flat, painter-ordered Quad/Shadow prefixes. This is a narrow default,
-not general automatic layerization; cross-backend GPU-busy and pixel validation
-of this new default are still required.
+ordered Quad/Shadow prefixes. It requires at least 96 static primitives, or
+at least 24 with combined visible bounds covering twice the viewport area.
+This remains a narrow policy, not general automatic layerization.
 
-Nova rewrites a qualified flat, painter-ordered Scene at the retained
-upload boundary into:
-1. a zero-radius `PaintBlur` whose child Scene contains only the first
-   96 or more static Quads/Shadows, rendered into an independent persistent
-   GPU target; and
-2. the unchanged dynamic foreground primitives, which continue rendering
-   directly into the main Pass.
+Admission proves a closed ordering boundary and returns a `StaticPrefix`
+descriptor with bounds, mask and visible Quad/Shadow counts. The encoder consumes
+that descriptor without receiving Scene or rescanning its typed arrays. It inserts
+source/composite markers around the already packed prefix in the sole FrameUpload;
+the foreground stays in the main Pass. No child Scene, PaintBlur or replay is
+manufactured for this source.
 
-Only completely flat painter-operation streams are accepted. Element filters,
-native surfaces, renderer extensions, retained-chunk spans, static glyph
-Atlas sources, paths, and other nontrivial effects in the candidate
-background deliberately fall back to the original Scene without modification.
-The captured source has a structural Layer ID and exact child Scene content
-comparison. Foreground animation can reuse that Layer without re-rendering
-its background; actual background changes invalidate its target. Recursive
-retained animation values remain in the root scene as before. The generated
-Layer and synthetic full-window retained root are mutually exclusive.
+Qualified retained Chunks participate in the same packed stream and keep their
+existing Nova residency owner. Admission rejects a boundary crossing a Chunk;
+the existence of unrelated or contained Chunks no longer rejects the frame.
+Atlas-dependent static content, background blur, Gaussian/nested captures and
+unsupported native resources still need separate dependency proofs. Supported
+zero-radius foreground captures remain outside the static source.
+
+FilterRegistry validates the actual ordered packed-source fingerprint and
+geometry, and advances validity only after successful submission. Fingerprints
+normalize adjacent contiguous batches with identical draw state and hash Quads
+at fixed record boundaries, so CPU allocation/Chunk segmentation does not change
+the source version. Hashing still reads source bytes on a new encode; a complete
+incremental content-digest protocol remains outstanding. Foreground Paint or
+animation changes can retain this source even with Full Native Present. Actual
+source changes refresh it. AutoStatic and the full-window Root pass are mutually
+exclusive in the active draw stream.
 This mechanism still samples the cached color texture in the main Pass:
 benchmark overdraw reduction against that composite cost using native pixel
 and GPU workload checks.
@@ -988,7 +994,9 @@ partial-refresh history instead of sharing mutable scratch across variants.
 native DX11/DX12/Vulkan/OpenGL texture readback. It compares foreground reversal
 samples against complete redraws, checks zero static-source raster pixels during
 foreground-only animation, and checks source refresh after a content change even
-when window damage is local. This is evidence for the qualified prefix path;
+when window damage is local. Its retained-Chunk case also checks new foreground
+Paint, shared CPU payloads, packed Chunk hits, stable source validity after Chunk
+repartitioning, and direct-raster pixel equivalence. This is evidence for the qualified prefix path;
 it does not establish automatic layerization of every ordinary Element subtree.
 
 ### Retained compositor layer identity and Render Graph baseline

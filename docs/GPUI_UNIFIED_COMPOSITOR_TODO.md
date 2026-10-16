@@ -31,6 +31,25 @@
 | **P3-01** | P3 · **部分删除：构建/发布状态已分离；全量实例编码仍保留** | **破坏性删除与消费者迁移**：已删除 SceneSlot、PresentationSnapshot、Frame.scene 字段和 Packet 分散静态字段；Scene 不再拥有构建栈/排序树。保留必要的基础 Replay、唯一 FrameUpload 实例编码与真实 Shader/Native 资源功能，待其增量消费者迁移后删除对应旧遍历 | 不保留 alias、旧名转发或双入口；本轮 all-feature tests/benches 编译及四后端像素结果见下节，不能删 gpui-3d::Scene、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
 
+### 2026-10-16 Retained Chunk 与静态 Source 增量合成接通（基线 `791efe4a`）
+
+- 确认的阻断：Nova 的 AutoStatic 准入曾因任意 Retained Quad Chunk 存在而拒绝整帧。CPU/GPU Chunk 复用与静态 Source 像素复用因此不能同时生效。现在只拒绝真正穿越捕获边界的 Chunk，保留 Layer/DrawOrder、Atlas、Backdrop、Gaussian 和嵌套 Capture 的依赖保护；没有扩大为任意自动图层缓存。
+- 已删除 `AutoStaticBackground` 和捕获阶段的完整 Scene 输入。准入遍历直接生成 `StaticPrefix` 的可见 Quad/Shadow 数量与几何，唯一 FrameUpload 仅消费该描述并围绕原有 packed batches 记录 Source/Composite。删除重复的 typed-array 计数扫描；不生成子 Scene、不 replay 前景、不增加缓存 Owner 或兼容 API。相关完整实现集中在 `frame_upload/encode/static_prefix.rs`，GPU 资源与 Fence 生命周期沿用原 Owner。
+- Source 指纹按相邻、连续、同 draw state 的逻辑 run 归一化，并固定 Quad record 的 hash write 边界。新增测试实际发现并排除了 FxHasher 对 write 切分敏感的问题；同内容不同 Chunk/Batch 分段不再失效 Source，内容、顺序、draw state 或可见数量变化仍失效。指纹仍需读取新编码 Source 的 bytes，**尚未**完成全部 Primitive 的持久增量摘要/编码协议。
+- 新增原生夹具：128 个静态 Quad、4 个 32-Quad Chunk、1 个前景 Quad；新 Paint 代次改变前景颜色并把 opacity 从 0 推进至 0.8，窗口为 64×64、Full Native Present。与旧提交的同一夹具进行四后端实际提交/像素回读对照；旧工作树仅增加测试夹具，未修改生产实现。
+
+| 后端 | Source 更新面积计数（旧→新） | 本帧自有 Quad staging（旧→新） | Chunk 命中 / 共享 payload | 像素对照 |
+| --- | --- | --- | --- | --- |
+| DX11 | 400→0 | 384→192 B | 4 / 24576 B | 两版均匹配直接重绘 |
+| DX12 | 400→0 | 384→192 B | 4 / 24576 B | 两版均匹配直接重绘 |
+| Vulkan | 400→0 | 384→192 B | 4 / 24576 B | 两版均匹配直接重绘 |
+| OpenGL | 400→0 | 384→192 B | 4 / 24576 B | 两版均匹配直接重绘 |
+
+- 修复后还验证了 CPU Quad backing 共享、Chunk 从 4×32 重新切为 2×64 时 Source 更新面积仍为 0，以及真实背景变化在局部窗口 Damage 下正确刷新。Source 面积是提交路径的工作计数，staging 是 CPU 自有编码字节，**均不是 GPU Timestamp、GPU Copy Bytes、系统 GPU 占用率或端到端延迟测量**；不能将其外推为整个启动器的性能收益。
+- 本轮 486 项定向测试、6 类 × 四后端共 24 项原生像素回归通过。最终通过 workspace no-default-features、bmcbl lib locked、GPUI no-default-features + windows-manifest/mimalloc-collect、全 feature tests/benches check、test no-run 与 bench no-run（dev profile）。workspace fmt 仍被已有无关差异阻塞，新编码/原生测试模块 rustfmt check 与 git diff check 通过。未重复运行上一节已确认有 10 项基线失败的完整库测试。
+- 诊断记录：`%TEMP%/bmcbl-chunk-auto-unit-*.log`、`bmcbl-chunk-auto-native-*.log`、`bmcbl-chunk-auto-baseline-native.log`、`bmcbl-chunk-auto-final-*.log`。after binary SHA256 `F76D360BE4F4EDE26F9D091D79BFA37E953DC5948398E9C7656DE071323A5753`，baseline binary SHA256 `CCC11F213B8FEB56046ADFD07A291CD73B42F459983974CBBCE9303924A1D75B`；baseline 夹具保存在已归档的 `chunk-auto-baseline` 工作树。
+- P1-02/P1-03 继续保持部分完成：新 Paint 代次仍组装批次/驻留范围并编码非驻留内容，其它 Primitive 的持久 Chunk、完整增量提交及真实启动器 Tab/首页/公共 Dropdown 的 GPU 时间与生成延迟矩阵仍需推进。
+
 ### 2026-10-16 构建状态与单一 Paint 发布迁移（基线 `92ec5442`）
 
 - `scene::Painter` 负责 UI 构建、排序树、Layer/Capture 栈、基础 Replay/Finish 与构建容量回收；`Scene` 只保留完成的绘制描述、批次和只读查询。真实方法已移到 Painter，全部生产/测试/benchmark 调用方同步迁移，没有保留 `impl Scene` 转发。

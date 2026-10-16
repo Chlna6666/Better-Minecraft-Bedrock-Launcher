@@ -9,6 +9,7 @@ mod blur;
 mod capacity;
 mod element_blur_animation;
 mod encode;
+pub(super) use encode::StaticPrefix;
 mod frame;
 mod gpu_indexed_animation;
 mod layers;
