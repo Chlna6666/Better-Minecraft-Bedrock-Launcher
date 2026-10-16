@@ -30,6 +30,8 @@ impl TaffyLayoutEngine {
         })
     }
 
+    // Restoring impure cached nodes invokes the same StackSafe measure callbacks as layout.
+    #[cfg_attr(feature = "stacker", stacksafe::stacksafe)]
     pub(crate) fn restore_view_layout(
         &mut self,
         id: LayoutId,
