@@ -23,13 +23,21 @@
 | **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
 | **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
-| **P1-02** | P1 · **部分实现：静态 Quad CPU 共享纵切已通过四后端像素回归** | **唯一持久 Paint Artifact + 局部失效**：Window 资格判定 → Scene 只读 Quad payload → Batch → Nova 增量上传已接通；继续迁移 PaintOperation 与其它 Primitive，消除全量 replay/编码；完成嵌套 Capture 与重排依赖 | P1-01；本轮 443 个定向测试、24 项四后端原生回归通过；CPU payload 共享有指针证据，GPU 既有增量上传保持不变；尚无应用 GPU 时间收益结论 |
+| **P1-02** | P1 · **部分实现：静态 Quad/操作流共享；操作流消费者已迁移，最新验证见下节** | **唯一持久 Paint Artifact + 局部失效**：Window 资格判定 → Scene 只读 Quad/Operation payload → Batch → Nova 增量上传已接通；继续迁移其它 Primitive，消除全量 replay/编码；完成嵌套 Capture 与重排依赖 | P1-01；已提交 Quad 切片 443 个定向测试、24 项四后端原生回归通过；本轮 Operation 结果逐项记录；GPU 既有增量上传保持不变，尚无应用 GPU 时间收益结论 |
 | **P1-03** | P1 · **待处理** | **唯一 GPU 消费协议**：替换 `PresentationPacket.scene` 全量快照与 `SceneSlot` 主链路，GPU Owner 的 Create/Update/Remove/Animation/Damage/Surface epoch 有顺序的增量提交；队列 latest-wins 不丢删除/资源操作 | P1-02 + P0-09；断帧、动画中断、跨窗口、Resize、队列拥塞与 GPU Fence 下正确；不额外建立 RenderTree/RenderCommit 等价影子结构 |
 | **P2-01** | P2 · **待处理** | **显存预算与资源退休**：Filter/Root/Path/Atlas/Buffer 的 alloc/reuse/retire/budget/fragmentation/idle-trim 指标；统一资源所有者、Fence 退休，避免已预热 Spare Target 无限驻留 | P0-05/06、P1-03；高频弹层结束、关闭子窗口及 Resize 后 residency/peak/retire 可回落；DX11/DX12/VK/GL 资源生命周期等价 |
 | **P2-02** | P2 · **部分实现** | **原生 GPU 时间与 Render Graph 同步**：查询各后端 GPU pass timestamp、Copy/Upload、Filter、Composite、Present 的可比较时长；图资源版号和 Alias RD/WR/WAW barrier、Load/Clear/Scissor 与多 FrameSlot 保护 | P0-07、P2-01；不能用 Owner CPU busy 替代 GPU 时间；跨页面、跨帧物理 alias、首帧、Resize 后输出像素正确 |
 | **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
 | **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 2026-10-16 持久 PaintOperation 消费者迁移（基线 `4a151ea6`）
+
+- 用唯一的分段 `Operations` 直接替换 `Scene.paint_operations: Vec`，不建立影子快照或新缓存。已证明静态 Quad 范围同时共享操作数据和 typed Quad 数据，不再逐项克隆这段 PaintOperation；底层 allocation 独立持有，不持有旧 Scene。相邻同 allocation 的连续范围合并，仅在合计有效范围稀疏时压缩。
+- Damage、Filter Source/Backdrop、Retention、Nova AutoStatic admission、Scene bounds/replay 和嵌套 PaintBlur 比较全部迁移为逻辑范围视图/迭代；删除依赖连续操作数组的正式接口。Capture 完成时通过局部 edit 收紧边界，修改共享范围只分离真正编辑的部分；没有 flatten 兼容数组、旧名称转发或双入口。
+- 风险验证覆盖跨段正反向范围、源 Scene 清除后的 payload 生命周期、共享编辑隔离、共享段和 pending 之间的编辑顺序、稀疏回收、同 DrawOrder 顺序及重排回退。四后端 native buffer 用例增加 PaintOperation 指针相同断言；具体运行结果待本轮完成后更新。
+- 未完成仍包括其它 typed Primitive 持久化、BoundsTree/顺序比较消除重复遍历、SceneSlot/快照主通路和全量 FrameUpload。尚未建立替代这些消费者的完整增量协议，因此不以改名/Wrapper 删除冒充完成；后续直接迁移并删除旧实现，不兼容旧版本。尚无真实应用 GPU Timestamp/占用 A/B 收益结论。
+- 已核实正式链路：`Frame::finish → publish_pending → presentation_packet → RenderOwner → Nova draw/pack_scene`。`pack_scene` 在非零 revision、UploadKey（revision/atlas/尺寸/alpha/blur quality）匹配且无需 reconsider_color 时，已有动画值刷新路径，跳过完整 encode。本轮不将已有能力误报为新增收益。SceneSlot、active/pending snapshot 和排队 Packet 共享同一 Arc Paint；目前不是多份数组，但消费者仍要求整 Scene 输入，替换协议需同时承接 immutable lifetime、latest-wins 未提交 Damage 和 Surface epoch。
 
 ### 2026-10-16 持久 CPU Quad 绘制数据纵切（基线 `18fa3364`）
 

@@ -586,9 +586,21 @@ New Quad payload moves into immutable backing without a second boundary-copy.
 Only sparse retained views are compacted to release unrelated old-page memory;
 all views of an allocation count toward that decision. Window owns qualification,
 the sparse replay index and its lifecycle; Scene holds drawing data, and Nova
-remains the sole owner of packed-byte/GPU caches. PaintOperation replay and the
-remaining primitive arrays are still full CPU work. This Quad vertical slice
-does not replace SceneSlot, presentation snapshots or full FrameUpload encoding.
+remains the sole owner of packed-byte/GPU caches.
+
+The ordered PaintOperation stream is also the primary segmented storage, rather
+than a separately materialized flat snapshot. Qualified Quad replay shares both
+its operation range and typed Quad range. Damage, Filter validation, retention
+and Nova admission consume logical range views across allocation boundaries;
+there is no flattening compatibility path. Capture finalization edits only its
+requested operations, detaching shared edited subranges while leaving neighbouring
+payloads shared. Sparse operations use the same combined-owner coverage rule to
+release unrelated old-page memory. Sharing retains payload allocations, never an
+old Scene or an accumulating chain of Scene snapshots.
+
+Other primitives still rebuild on replay, and BoundsTree/prefix validation still
+visits operations. This partial incremental path does not yet replace SceneSlot,
+presentation snapshots or full FrameUpload encoding.
 
 Nova's window-owned `renderer/root_color.rs` owns the Root allocation, per-slot
 source/composite bindings and its successful-content version. Filter target
