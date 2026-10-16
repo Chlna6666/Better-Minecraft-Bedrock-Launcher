@@ -76,11 +76,11 @@ fn scene(renderer: &NovaRenderer, color: u32) -> crate::Scene {
     scene
 }
 
-fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene) -> usize {
+fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retention: &crate::window::retained::RetainedPaint) -> usize {
     renderer
         .activate_frame_resources(slot)
         .expect("activate slot");
-    renderer.pack_scene(scene, &[], BackdropBlurQuality::Full);
+    renderer.pack_scene(scene, retention, &[], BackdropBlurQuality::Full);
     renderer
         .prepare_static_buffers()
         .expect("select static versions");
@@ -212,8 +212,8 @@ fn verify(backend: RendererBackend) {
     assert_eq!(initial_bytes, 1_445_456);
     let red = scene(&renderer, 0xff0000);
     let green = scene(&renderer, 0x00ff00);
-    let first_bytes = upload(&mut renderer, 0, &red);
-    let second_bytes = upload(&mut renderer, 1, &red);
+    let first_bytes = upload(&mut renderer, 0, &red, &crate::window::retained::RetainedPaint::default());
+    let second_bytes = upload(&mut renderer, 1, &red, &crate::window::retained::RetainedPaint::default());
     assert_eq!(second_bytes, GLOBAL_UPLOAD_BYTES);
     assert!(first_bytes > second_bytes);
     for stream in BufferStream::ALL {
@@ -262,7 +262,7 @@ fn verify(backend: RendererBackend) {
         "cannot mutate the pending slot"
     );
     renderer.activate_frame_resources(0).expect("free slot");
-    renderer.pack_scene(&green, &[], BackdropBlurQuality::Full);
+    renderer.pack_scene(&green, &crate::window::retained::RetainedPaint::default(), &[], BackdropBlurQuality::Full);
     let old_ids = renderer.frame_resources[0].buffers.ids();
     let count = device!(renderer, device, { device.resource_stats().buffers });
     let layout = renderer.quad_resource_set_layout;
@@ -278,7 +278,7 @@ fn verify(backend: RendererBackend) {
         count,
         "failed transaction retires all new buffers"
     );
-    let changed_bytes = upload(&mut renderer, 0, &green);
+    let changed_bytes = upload(&mut renderer, 0, &green, &crate::window::retained::RetainedPaint::default());
     assert_eq!(changed_bytes, PACKED_QUAD_BYTES);
     assert_ne!(renderer.quad_buffer, old);
     assert_eq!(renderer.frame_resources[1].buffers.quad_buffer, old);
@@ -298,7 +298,7 @@ fn verify(backend: RendererBackend) {
         .expect("coalesce idle version without another frame");
     assert_eq!(renderer.current_frame_resource_index, 0);
     assert_eq!(
-        upload(&mut renderer, 1, &green),
+        upload(&mut renderer, 1, &green, &crate::window::retained::RetainedPaint::default()),
         0,
         "converged content inherits without uploads"
     );
@@ -319,7 +319,7 @@ fn verify(backend: RendererBackend) {
         initial_bytes
     );
     let shared = renderer.quad_buffer;
-    assert_eq!(upload(&mut renderer, 0, &red), PACKED_QUAD_BYTES);
+    assert_eq!(upload(&mut renderer, 0, &red, &crate::window::retained::RetainedPaint::default()), PACKED_QUAD_BYTES);
     assert_eq!(renderer.quad_buffer, shared, "idle aliases update in place");
     assert_eq!(renderer.frame_resources[1].buffers.quad_buffer, shared);
     assert!(
@@ -329,7 +329,7 @@ fn verify(backend: RendererBackend) {
             .2
     );
     // Returning to the other slot's old scene must upload again, never inherit its stale token.
-    assert_eq!(upload(&mut renderer, 1, &green), PACKED_QUAD_BYTES);
+    assert_eq!(upload(&mut renderer, 1, &green, &crate::window::retained::RetainedPaint::default()), PACKED_QUAD_BYTES);
     assert_eq!(renderer.quad_buffer, shared);
     draw(&renderer, new_target.1, 1);
     pixels(&renderer, new_target.0, [0, 255, 0, 255]);

@@ -47,7 +47,8 @@ fn for_each_changed_fragment_count_bounds(
             return false;
         }
         let mut changed = false;
-        current_scene.for_each_changed_bounds(
+        crate::paint::for_each_changed_bounds(
+            current_scene,
             current.scene_range.clone(),
             previous_scene,
             previous.scene_range.clone(),
@@ -253,7 +254,8 @@ impl Window {
             .borrow()
             .scene_values(self.animation_time());
         let accumulate_unpresented_damage = self.needs_present.get();
-        let mut backdrop_blur_damage_plan = self.next_frame.scene.backdrop_blur_damage_plan(
+        let mut backdrop_blur_damage_plan = crate::paint::backdrop_blur_damage_plan(
+            &self.next_frame.scene,
             &self.rendered_frame.scene,
             &scene_animation_values,
             self.presentation_state
@@ -274,6 +276,7 @@ impl Window {
         );
         self.presentation_state.publish_pending(
             self.next_frame.scene.snapshot(),
+            Arc::clone(&self.next_frame.retained_paint),
             scene_animation_values,
             Some(committed_layout_extent),
             self.next_frame_epoch,
@@ -499,7 +502,8 @@ impl Window {
         };
         let accumulated_full = dirty_region.is_full();
 
-        let scene_requires_full_redraw = self.next_frame.scene.requires_full_redraw_fallback();
+        let scene_requires_full_redraw =
+            crate::paint::requires_full_redraw_fallback(&self.next_frame.scene);
         // Backdrop-filter output depends on pixels rendered before it. When a blur primitive is
         // added or removed (modal open/close is the common case), there is no current primitive on
         // one side of the transition whose spatial damage can represent all stale filtered pixels
@@ -568,10 +572,7 @@ impl Window {
                 dirty_region.push(rect.bounds);
             }
 
-            for bounds in self
-                .next_frame
-                .scene
-                .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
+            for bounds in crate::paint::backdrop_blur_output_damage(&self.next_frame.scene, &self.backdrop_blur_damage_plan)
             {
                 dirty_region.push(bounds);
             }
@@ -646,7 +647,8 @@ impl Window {
                     .segments(&self.rendered_frame.retained_scene_segments)
                     .zip(current.segments(&self.next_frame.retained_scene_segments))
                     .all(|(previous_segment, current_segment)| {
-                        self.next_frame.scene.for_each_changed_bounds(
+                        crate::paint::for_each_changed_bounds(
+                            &self.next_frame.scene,
                             current_segment.scene_range.clone(),
                             &self.rendered_frame.scene,
                             previous_segment.scene_range.clone(),
@@ -739,6 +741,8 @@ impl Window {
         drop(animation_engine);
         let mut packet = PresentationPacket::new(
             scene,
+            self.presentation_state.active_retained_paint()
+                .unwrap_or_else(|| Arc::clone(&self.rendered_frame.retained_paint)),
             self.presentation_state
                 .active_engine_animation_values()
                 .iter()

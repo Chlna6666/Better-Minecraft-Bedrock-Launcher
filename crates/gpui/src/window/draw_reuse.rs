@@ -626,9 +626,7 @@ impl Window {
             range.end.scene_index,
             self.rendered_frame.scene.len(),
         ) && self
-            .rendered_frame
-            .scene
-            .range_is_independently_replayable(range.start.scene_index..range.end.scene_index)
+            .rendered_frame.range_is_replayable(range.start.scene_index..range.end.scene_index)
             && {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -735,9 +733,11 @@ impl Window {
         self.text_system
             .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
         let old_scene_range = range.start.scene_index..range.end.scene_index;
-        self.next_frame
-            .scene
-            .replay(old_scene_range, &self.rendered_frame.scene);
+        let replay_start = self.next_frame.scene.len();
+        if self.next_frame.scene.replay(old_scene_range.clone(), &self.rendered_frame.scene) {
+            Arc::get_mut(&mut self.next_frame.retained_paint).expect("unpublished paint retention")
+                .replay(old_scene_range, &self.rendered_frame.retained_paint, replay_start);
+        }
         true
     }
 
@@ -1010,7 +1010,7 @@ impl Window {
             && subtree_stable
             && let Some(generation) = semantic_generation
         {
-            self.next_frame.scene.record_retained_chunk(
+            Arc::get_mut(&mut self.next_frame.retained_paint).expect("unpublished paint retention").record(
                 retained_id.clone(),
                 generation,
                 paint_range.start.scene_index..paint_range.end.scene_index,

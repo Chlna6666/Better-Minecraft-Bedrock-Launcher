@@ -28,19 +28,19 @@ fn reject_auto_static_capture(
 ) -> Option<AutoStaticBackground> {
     log::trace!(
         target: "gpui::diagnostics",
-        "GPUI AutoStatic admission rejected: scene_revision={} reason={} paint_operations={} blur_captures={} retained_quad_chunks={} full_redraw_fallback={}",
+        "GPUI AutoStatic admission rejected: scene_revision={} reason={} paint_operations={} blur_captures={} full_redraw_fallback={}",
         scene.revision,
         reason,
         scene.paint_operations.len(),
         scene.blurs.len(),
-        scene.prepared_retained_quad_chunks().len(),
-        scene.requires_full_redraw_fallback(),
+        crate::paint::requires_full_redraw_fallback(scene),
     );
     None
 }
 
 pub(super) fn auto_capture_static_background(
     scene: &crate::Scene,
+    retained_chunks: &[crate::PreparedRetainedQuadChunk],
     drawable_size: DrawableSize,
 ) -> Option<AutoStaticBackground> {
     use crate::{Primitive, scene::PaintOperation};
@@ -52,9 +52,9 @@ pub(super) fn auto_capture_static_background(
         Some("uncommitted_scene")
     } else if scene.has_backdrop_blurs() {
         Some("backdrop_blur_present")
-    } else if scene.requires_full_redraw_fallback() {
+    } else if crate::paint::requires_full_redraw_fallback(scene) {
         Some("scene_requires_full_redraw")
-    } else if !scene.prepared_retained_quad_chunks().is_empty() {
+    } else if !retained_chunks.is_empty() {
         Some("retained_quad_chunk_present")
     } else if scene.paint_operations.len() < 25 {
         Some("insufficient_paint_operations")
@@ -167,10 +167,11 @@ pub(super) fn auto_capture_static_background(
     if !saw_dynamic {
         return reject_auto_static_capture(scene, "no_dynamic_foreground");
     }
-    if !scene.range_is_independently_replayable(0..prefix_end) {
+    let structure = crate::window::retained::ReplayStructureIndex::new(scene);
+    if !structure.range_is_replayable(scene, 0..prefix_end) {
         return reject_auto_static_capture(scene, "prefix_not_independently_replayable");
     }
-    if !scene.range_is_independently_replayable(prefix_end..scene.paint_operations.len()) {
+    if !structure.range_is_replayable(scene, prefix_end..scene.paint_operations.len()) {
         return reject_auto_static_capture(scene, "foreground_not_independently_replayable");
     }
 

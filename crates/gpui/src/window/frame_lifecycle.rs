@@ -1063,10 +1063,8 @@ impl Window {
                 .active_scene()
                 .unwrap_or(&self.rendered_frame.scene);
             let previous_values = self.presentation_state.active_engine_animation_values();
-            let pixel_damage = presentation_scene
-                .presentation_animation_damage(previous_values, &tick.scene_values);
-            let mut tick_blur_damage = presentation_scene
-                .backdrop_blur_animation_damage_plan(previous_values, &tick.scene_values);
+            let pixel_damage = crate::paint::gpu_sample_damage(&presentation_scene, previous_values, &tick.scene_values);
+            let mut tick_blur_damage = crate::paint::backdrop_blur_animation_damage_plan(&presentation_scene, previous_values, &tick.scene_values);
             if preserve_unpresented_damage {
                 tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
             }
@@ -1097,11 +1095,12 @@ impl Window {
                 self.render_dirty_region.push(clipped);
             }
         }
-        let backdrop_output_damage = self
-            .presentation_state
-            .active_scene()
-            .unwrap_or(&self.rendered_frame.scene)
-            .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
+        let backdrop_output_damage = crate::paint::backdrop_blur_output_damage(
+            self.presentation_state
+                .active_scene()
+                .unwrap_or(&self.rendered_frame.scene),
+            &self.backdrop_blur_damage_plan,
+        )
             .collect::<SmallVec<[_; 4]>>();
         for bounds in backdrop_output_damage {
             self.render_dirty_region.push(bounds);

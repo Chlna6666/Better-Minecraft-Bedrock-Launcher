@@ -673,6 +673,7 @@ impl NovaRenderer {
     pub(super) fn pack_scene(
         &mut self,
         scene: &crate::Scene,
+        retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
         blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
@@ -731,7 +732,7 @@ impl NovaRenderer {
         // prefixes and unstable resources. Its proven quad/shadow prefix can be
         // retained by default without changing ordinary/complex Scene handling.
         let auto_background = (!reusable)
-            .then(|| auto_capture_static_background(scene, self.current_size))
+            .then(|| auto_capture_static_background(scene, retained_paint.chunks_for(scene), self.current_size))
             .flatten();
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
@@ -753,6 +754,7 @@ impl NovaRenderer {
             summary = self.frame_upload.encode(
                 &mut self.retained_upload.quad_chunks,
                 scene,
+                retained_paint,
                 presentation_animation_values,
                 self.current_size,
                 &self.rendering_parameters,
@@ -780,7 +782,7 @@ impl NovaRenderer {
             // a retained root target. Native surfaces/extensions use the old
             // full-redraw path until they expose their own damage semantics.
             if !captured_static_prefix
-                && !scene.requires_full_redraw_fallback()
+                && !crate::paint::requires_full_redraw_fallback(scene)
                 && self.frame_upload.renderer_extensions.is_empty()
                 && summary.unsupported_batches.total() == 0
                 // Never add the extra full-surface texture for every window.
@@ -807,7 +809,7 @@ impl NovaRenderer {
                 captured_static_prefix,
                 self.frame_upload.retained_root_blur.is_some(),
                 keep_retained_root,
-                scene.requires_full_redraw_fallback(),
+                crate::paint::requires_full_redraw_fallback(scene),
                 self.frame_upload.renderer_extensions.len(),
                 summary.unsupported_batches.total(),
             );
@@ -915,7 +917,7 @@ mod tests {
         original.finish();
         original.revision = 1;
         let captured = auto_capture_static_background(
-            &original,
+            &original, &[],
             DrawableSize {
                 width: 640,
                 height: 480,
@@ -939,7 +941,7 @@ mod tests {
         nested.finish();
         nested.revision = 2;
         let size = DrawableSize { width: 640, height: 480 };
-        let nested_capture = auto_capture_static_background(&nested, size)
+        let nested_capture = auto_capture_static_background(&nested, &[], size)
             .expect("a closed nested prefix retains its layer ordering");
         assert_eq!(nested_capture.first_dynamic_order, nested.quads.last().unwrap().order);
         assert_eq!(nested_capture.content_mask.bounds, viewport);
@@ -949,11 +951,11 @@ mod tests {
         split.pop_layer();
         split.finish();
         split.revision = 3;
-        assert!(auto_capture_static_background(&split, size).is_none(),
+        assert!(auto_capture_static_background(&split, &[], size).is_none(),
             "capture cannot cut through an open layer");
         assert!(
             auto_capture_static_background(
-                &crate::Scene::default(),
+                &crate::Scene::default(), &[],
                 DrawableSize {
                     width: 640,
                     height: 480
@@ -984,7 +986,7 @@ mod tests {
         next.finish();
         next.revision = 4;
         let changed = auto_capture_static_background(
-            &next,
+            &next, &[],
             DrawableSize {
                 width: 640,
                 height: 480,
@@ -1033,13 +1035,13 @@ mod tests {
         scene.end_blur();
         scene.finish();
         scene.revision = 1;
-        let captured = auto_capture_static_background(&scene, size)
+        let captured = auto_capture_static_background(&scene, &[], size)
             .expect("static background can be retained below an isolated popup");
         assert_eq!(captured.first_dynamic_order, scene.blurs[0].order);
         let mut upload = FrameUpload::default();
         let mut cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
-            &mut cache, &scene, &[], size,
+            &mut cache, &scene, &crate::window::retained::RetainedPaint::default(), &[], size,
             &RenderingParameters::system(), false, BackdropBlurQuality::Full,
         );
         assert!(upload.capture_encoded_static_prefix(
@@ -1087,7 +1089,7 @@ mod tests {
             scene.finish();
             scene
         };
-        assert!(auto_capture_static_background(&build(8.0), size).is_none());
+        assert!(auto_capture_static_background(&build(8.0), &[], size).is_none());
         let mut interleaved = crate::Scene::default();
         interleaved.begin_blur(crate::BlurCapture {
             animation_id: None,
@@ -1106,7 +1108,7 @@ mod tests {
         }
         interleaved.end_blur();
         interleaved.finish();
-        assert!(auto_capture_static_background(&interleaved, size).is_none(),
+        assert!(auto_capture_static_background(&interleaved, &[], size).is_none(),
             "a prefix inside an open Capture is never independently replayable");
     }
 

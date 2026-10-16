@@ -53,7 +53,7 @@ fn packet(renderer: &NovaRenderer, blur: bool) -> crate::PresentationPacket {
     let mut damage = crate::DirtyRegion::empty();
     damage.mark_full(viewport);
     crate::PresentationPacket::new(
-        Arc::new(scene),
+        Arc::new(scene), std::sync::Arc::default(),
         [],
         [],
         Instant::now(),
@@ -129,7 +129,7 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
     }
     scene.finish();
     crate::PresentationPacket::new(
-        Arc::new(scene),
+        Arc::new(scene), std::sync::Arc::default(),
         [],
         [],
         Instant::now(),

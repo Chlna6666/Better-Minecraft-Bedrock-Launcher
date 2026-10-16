@@ -552,11 +552,37 @@ Scene ownership lives under `crates/gpui/src/scene`:
 Scene data is generic. BMCBL-specific panels, pages, Minecraft concepts, or
 asset names must not appear in this layer.
 
+Paint planning and Window retention are separate from Scene storage:
+
+- `src/paint/damage.rs`, `animation_damage.rs` and `filter_damage.rs` derive
+  pixel damage from borrowed Paint data and explicit animation samples.
+- `src/paint/retention.rs` contains structural replay, static Quad eligibility
+  and Filter Source content proofs. These algorithms own no persistent cache.
+- `src/window/retained` owns Chunk identities, candidate lifecycle, prepared
+  ranges and sparse replay indices. `Frame` owns its retention object and
+  publishes it alongside the matching immutable Scene. Reuse must validate
+  the Paint revision before consuming prepared indices.
+- Nova `RetainedUpload` remains the packed-byte/GPU-residency owner;
+  `FilterRegistry` remains the owner of successfully submitted Filter content.
+
+`Scene::finish()` sorts and prepares Paint batches. Window retention separately
+preserves unchanged Paint revisions and plans reusable Chunks. Basic
+`Scene::replay()` reports whether draw-order mapping survived; it does not
+propagate Chunk candidates. Zero-radius captures with no coordinate animation
+preserve local child damage, while enclosing Gaussian/transformed captures
+still propagate their own affected output.
+
+Root Color still participates in Nova's synthetic zero-radius Filter scheduling.
+The separate physical `RootColorTarget` does not yet remove that logical Root
+Filter dependency; removing it requires migrating its draw-step, target and
+submission consumers together.
+
 ## PresentationPacket
 
 After a successful draw, GPUI snapshots one lifetime-free presentation packet containing:
 
 - an `Arc<Scene>` to the immutable retained scene;
+- an immutable Window retention snapshot paired with that Paint generation;
 - renderer-owned animation samples;
 - the accumulated dirty region;
 - backdrop-blur source damage;

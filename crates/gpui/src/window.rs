@@ -104,7 +104,7 @@ mod platform_actions;
 mod platform_events;
 mod prompts;
 mod properties;
-mod retained_identity;
+pub(crate) mod retained;
 mod state;
 mod tab_stop;
 #[cfg(test)]

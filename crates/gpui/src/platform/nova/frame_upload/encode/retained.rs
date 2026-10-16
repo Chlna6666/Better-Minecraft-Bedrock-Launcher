@@ -36,13 +36,14 @@ impl FrameUpload {
         &mut self,
         cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
+        retained_chunks: &[crate::PreparedRetainedQuadChunk],
         range: Range<usize>,
         is_solid: bool,
         summary: &mut FrameUploadSummary,
     ) {
         let mut cursor = range.start;
         for chunk in retained_chunks_overlapping(
-            scene.prepared_retained_quad_chunks(),
+            retained_chunks,
             range.clone(),
         ) {
             if chunk.quad_range.start < cursor

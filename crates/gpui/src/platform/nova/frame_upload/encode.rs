@@ -129,6 +129,7 @@ impl FrameUpload {
         &mut self,
         cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
+        retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
         rendering_parameters: &RenderingParameters,
@@ -139,6 +140,7 @@ impl FrameUpload {
         self.encode_scene(
             cache,
             scene,
+            retained_paint,
             presentation_animation_values,
             drawable_size,
             rendering_parameters,
@@ -430,6 +432,7 @@ impl FrameUpload {
         &mut self,
         cache: &mut RetainedQuadChunkCache,
         scene: &crate::Scene,
+        retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
         rendering_parameters: &RenderingParameters,
@@ -568,6 +571,7 @@ impl FrameUpload {
                     self.encode_retained_quads(
                         cache,
                         scene,
+                        retained_paint.chunks_for(scene),
                         quad_run.range.clone(),
                         quad_run.is_solid,
                         &mut summary,
@@ -632,7 +636,7 @@ impl FrameUpload {
                         self.batch_visual_bounds.resize(self.batches.len(), None);
                         let child_summary = self.encode_scene(
                             cache,
-                            &blur.content,
+                            &blur.content, retained_paint,
                             &[],
                             drawable_size,
                             rendering_parameters,
@@ -754,7 +758,7 @@ mod retained_root_tests {
         };
         let mut summary = upload.encode(
             &mut cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             drawable,
             &RenderingParameters::system(),
@@ -767,7 +771,7 @@ mod retained_root_tests {
         assert_eq!(upload.encode_generation, 1);
         upload.encode(
             &mut cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             drawable,
             &RenderingParameters::system(),
@@ -818,7 +822,7 @@ mod retained_root_tests {
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
                 &mut chunk_cache,
-                &scene,
+                &scene, &crate::window::retained::RetainedPaint::default(),
                 &[],
                 size,
                 &RenderingParameters::system(),
@@ -886,7 +890,7 @@ mod retained_root_tests {
         let mut upload = FrameUpload::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -961,7 +965,7 @@ mod retained_root_tests {
         let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -1024,7 +1028,7 @@ mod retained_root_tests {
         let mut chunk_cache = RetainedQuadChunkCache::default();
         let mut summary = upload.encode(
             &mut chunk_cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             size,
             &RenderingParameters::system(),
@@ -1147,7 +1151,7 @@ mod retained_root_tests {
 
     #[test]
     fn retained_quad_batches_receive_independent_bounds_after_single_packing_pass() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::window::retained::PaintFixture::default();
         let paint_quads = |scene: &mut crate::Scene, x: f32, count: usize| {
             scene.push_layer(crate::bounds(
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -1173,24 +1177,24 @@ mod retained_root_tests {
         let gap = paint_quads(&mut scene, 150.0, 1);
         let right = paint_quads(&mut scene, 280.0, 32);
         assert_eq!(gap.len(), 1);
-        scene.record_retained_chunk(
+        scene.record(
             crate::GlobalElementId::from_path(&["left-quad-batch".into()]),
             1,
             left,
         );
-        scene.record_retained_chunk(
+        scene.record(
             crate::GlobalElementId::from_path(&["right-quad-batch".into()]),
             1,
             right,
         );
         scene.finish();
-        assert_eq!(scene.prepared_retained_quad_chunks().len(), 2);
+        assert_eq!(scene.chunks().len(), 2);
 
         let mut cache = RetainedQuadChunkCache::default();
         let mut upload = FrameUpload::default();
         upload.encode(
             &mut cache,
-            &scene,
+            &scene, &scene.retention,
             &[],
             DrawableSize {
                 width: 640,
@@ -1237,7 +1241,7 @@ mod retained_root_tests {
         let mut cache = RetainedQuadChunkCache::default();
         upload.encode(
             &mut cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 640,

@@ -445,6 +445,7 @@ pub(crate) struct CachedViewTraversalContext {
 /// One immutable scene snapshot owned by the presentation domain.
 struct PresentationSnapshot {
     scene: Arc<Scene>,
+    retained_paint: Arc<crate::window::retained::RetainedPaint>,
     // This extent belongs to the immutable Scene, not to the mutable HWND or
     // the window's latest viewport. It survives a newer WM_SIZE until the
     // matching UI generation has actually committed.
@@ -462,6 +463,7 @@ struct PresentationSnapshot {
 impl PresentationSnapshot {
     fn new(
         scene: Arc<Scene>,
+        retained_paint: Arc<crate::window::retained::RetainedPaint>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
         layout_epoch: u64,
@@ -469,6 +471,7 @@ impl PresentationSnapshot {
     ) -> Self {
         Self {
             scene,
+            retained_paint,
             layout_extent,
             layout_epoch,
             layout_scale_factor,
@@ -500,6 +503,7 @@ impl PresentationState {
     pub(crate) fn publish_pending(
         &mut self,
         scene: Arc<Scene>,
+        retained_paint: Arc<crate::window::retained::RetainedPaint>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
         layout_extent: Option<(u32, u32)>,
         layout_epoch: u64,
@@ -508,6 +512,7 @@ impl PresentationState {
         match self.pending.as_mut() {
             Some(pending) => {
                 pending.scene = scene;
+                pending.retained_paint = retained_paint;
                 pending.layout_extent = layout_extent;
                 pending.layout_epoch = layout_epoch;
                 pending.layout_scale_factor = layout_scale_factor;
@@ -516,6 +521,7 @@ impl PresentationState {
             None => {
                 self.pending = Some(PresentationSnapshot::new(
                     scene,
+                    retained_paint,
                     values,
                     layout_extent,
                     layout_epoch,
@@ -558,6 +564,10 @@ impl PresentationState {
         self.active
             .as_ref()
             .map(|snapshot| Arc::clone(&snapshot.scene))
+    }
+
+    pub(crate) fn active_retained_paint(&self) -> Option<Arc<crate::window::retained::RetainedPaint>> {
+        self.active.as_ref().map(|snapshot| Arc::clone(&snapshot.retained_paint))
     }
 
     pub(crate) fn active_engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
@@ -919,10 +929,36 @@ mod presentation_extent_tests {
     use std::sync::Arc;
 
     #[test]
+    fn latest_pending_paint_keeps_its_retention_owner() {
+        let mut presentation = PresentationState::default();
+        let active_retention = Arc::default();
+        presentation.publish_pending(
+            Arc::new(Scene::default()), Arc::clone(&active_retention),
+            [], None, 1, 1.,
+        );
+        assert!(presentation.activate_pending());
+        let skipped_retention = Arc::default();
+        let latest_retention = Arc::default();
+        presentation.publish_pending(
+            Arc::new(Scene::default()), Arc::clone(&skipped_retention),
+            [], None, 2, 1.,
+        );
+        presentation.publish_pending(
+            Arc::new(Scene::default()), Arc::clone(&latest_retention),
+            [], None, 3, 1.,
+        );
+        assert!(Arc::ptr_eq(&presentation.active_retained_paint().unwrap(), &active_retention));
+        assert_eq!(Arc::strong_count(&skipped_retention), 1);
+        assert!(presentation.activate_pending());
+        assert!(Arc::ptr_eq(&presentation.active_retained_paint().unwrap(), &latest_retention));
+        assert_eq!(Arc::strong_count(&active_retention), 1);
+    }
+
+    #[test]
     fn pending_resize_does_not_relabel_active_scene() {
         let mut presentation = PresentationState::default();
         presentation.publish_pending(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             Some((1200, 800)),
             1,
@@ -935,14 +971,14 @@ mod presentation_extent_tests {
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
 
         presentation.publish_pending(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             Some((1300, 850)),
             2,
             1.25,
         );
         presentation.publish_pending(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             Some((1400, 900)),
             3,

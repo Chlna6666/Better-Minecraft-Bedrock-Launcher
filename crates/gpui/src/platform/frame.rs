@@ -446,7 +446,7 @@ mod tests {
         let mut latest_damage = DirtyRegion::empty();
         latest_damage.push(rect(20.0, 10.0));
         let previous = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             [],
             frame_time,
@@ -456,7 +456,7 @@ mod tests {
             PartialPresentMode::FullRedraw,
         );
         let mut latest = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             [],
             frame_time,
@@ -476,7 +476,7 @@ mod tests {
         let now = Instant::now();
         let interval = Duration::from_millis(20);
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             [],
             now,
@@ -591,7 +591,7 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             engine.presentation_timelines(),
             started_at,
@@ -646,7 +646,7 @@ mod tests {
                 bounds: local, content_mask: crate::ContentMask::new(local), ..Default::default()
             }, animation_id);
             let mut packet = PresentationPacket::new(
-                Arc::new(scene), [], engine.presentation_timelines(), started_at, 1.,
+                Arc::new(scene), std::sync::Arc::default(), [], engine.presentation_timelines(), started_at, 1.,
                 DirtyRegion::empty(), BackdropBlurDamagePlan::default(), PartialPresentMode::FullRedraw,
             );
             for elapsed in [250, 750] {
@@ -706,7 +706,7 @@ mod tests {
             tint: None,
         });
         let mut packet = PresentationPacket::new(
-            Arc::new(scene),
+            Arc::new(scene), std::sync::Arc::default(),
             [],
             engine.presentation_timelines(),
             started_at,
@@ -773,7 +773,7 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             engine.presentation_timelines(),
             started_at,
@@ -837,7 +837,7 @@ mod tests {
             ));
         }
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             engine.scene_values(now),
             engine.presentation_timelines(),
             now,
@@ -903,7 +903,7 @@ mod tests {
         }
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             engine.scene_values(started_at),
             engine.presentation_timelines(),
             started_at,
@@ -981,7 +981,7 @@ mod tests {
         }
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             engine.presentation_timelines(),
             started_at,
@@ -1003,7 +1003,7 @@ mod tests {
         }
 
         let completed_packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             engine.scene_values(started_at + Duration::from_millis(150)),
             engine.presentation_timelines(),
             started_at + Duration::from_millis(150),
@@ -1045,7 +1045,7 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()),
+            Arc::new(Scene::default()), std::sync::Arc::default(),
             [],
             engine.presentation_timelines(),
             started_at,
@@ -1098,6 +1098,7 @@ pub(crate) struct PresentationPacket {
     /// while its layout, DPI and content belong to a newer generation.
     pub(crate) layout_epoch: u64,
     pub(crate) scene: Arc<Scene>,
+    pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     pub(crate) sampled_active_presentation_animation: bool,
     previous_presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
@@ -1149,6 +1150,7 @@ impl PresentationPacket {
 
     pub(crate) fn new(
         scene: Arc<Scene>,
+        retained_paint: Arc<crate::window::retained::RetainedPaint>,
         presentation_animation_values: impl IntoIterator<Item = SceneAnimationValue>,
         presentation_animation_timelines: impl IntoIterator<Item = SceneAnimationTimeline>,
         frame_time: Instant,
@@ -1196,6 +1198,7 @@ impl PresentationPacket {
             layout_extent: None,
             layout_epoch: 0,
             scene,
+            retained_paint,
             presentation_animation_values,
             sampled_active_presentation_animation: false,
             previous_presentation_animation_values: SmallVec::new(),
@@ -1300,20 +1303,20 @@ impl PresentationPacket {
         // Registered timeline bounds can cover a viewport for translation.
         // Scene-bound tracks instead damage the actual old/new pixels, including
         // nested composites and geometry entering a fixed ancestor clip.
-        for bounds in self.scene.gpu_sample_damage(
+        for bounds in crate::paint::gpu_sample_damage(
+            &self.scene,
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,
         ) {
             self.dirty_region.push(bounds);
         }
-        let animation_damage = self.scene.backdrop_blur_animation_damage_plan(
+        let animation_damage = crate::paint::backdrop_blur_animation_damage_plan(
+            &self.scene,
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,
         );
         self.backdrop_blur_damage_plan.merge_from(&animation_damage);
-        for bounds in self
-            .scene
-            .backdrop_blur_output_damage(&self.backdrop_blur_damage_plan)
+        for bounds in crate::paint::backdrop_blur_output_damage(&self.scene, &self.backdrop_blur_damage_plan)
         {
             self.dirty_region.push(bounds);
         }

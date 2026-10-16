@@ -223,6 +223,7 @@ pub(crate) struct Frame {
     pub(crate) has_continuous_mouse_move_listener: bool,
     pub(crate) dispatch_tree: DispatchTree,
     pub(crate) scene: SceneSlot,
+    pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
     pub(crate) deferred_draws: Vec<DeferredDraw>,
@@ -394,6 +395,7 @@ impl Frame {
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
             scene: SceneSlot::default(),
+            retained_paint: Arc::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
             deferred_draws: Vec::new(),
@@ -438,6 +440,11 @@ impl Frame {
         self.has_continuous_mouse_move_listener = false;
         self.dispatch_tree.clear();
         self.scene.clear();
+        if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {
+            retained.clear();
+        } else {
+            self.retained_paint = Arc::default();
+        }
         self.input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
@@ -526,6 +533,12 @@ impl Frame {
             .unwrap_or_default()
     }
 
+    /// Validates retained Fragment structure against this frame's immutable Paint generation.
+    /// Scratch/mutable data never reuses the completed-generation sparse index.
+    pub(crate) fn range_is_replayable(&self, range: Range<usize>) -> bool {
+        self.retained_paint.range_is_replayable(&self.scene, range)
+    }
+
     pub(crate) fn finish(&mut self, prev_frame: &mut Self) {
         debug_assert!(
             self.retained_scene_index
@@ -546,11 +559,16 @@ impl Frame {
             .mouse_listeners
             .iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
-        self.scene.finish_retaining_revision(&prev_frame.scene);
+        self.scene.finish();
+        crate::window::retained::retain_revision(&mut self.scene, &prev_frame.scene);
+        Arc::get_mut(&mut self.retained_paint)
+            .expect("unpublished paint retention")
+            .finish(&self.scene);
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
         self.element_states.capacity()
+            + self.retained_paint.retained_capacity()
             + self.accessed_element_states.capacity()
             + self.dispatch_tree.retained_capacity()
             + self.mouse_listeners.capacity()
@@ -671,6 +689,9 @@ impl Frame {
     pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
         self.clear();
         self.scene.trim_for_reuse_against(&current.scene);
+        if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {
+            retained.trim_for_reuse_against(&current.retained_paint);
+        }
 
         macro_rules! trim_vec_against {
             ($field:ident) => {{

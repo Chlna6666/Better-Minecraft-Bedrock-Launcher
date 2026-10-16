@@ -70,7 +70,7 @@ fn raster_work(
             .animation_id()
             .is_some_and(|id| !animation_is_settled(id, scene, presentation_values));
         let bounds = if moves {
-            crate::Scene::sampled_primitive_bounds(
+            crate::paint::sampled_primitive_bounds(
                 primitive,
                 scene.animation_values.iter().chain(presentation_values),
             )
@@ -103,7 +103,7 @@ fn raster_work(
         } else {
             let (_, child_area, child_moves) =
                 raster_work(&blur.content, bounds, presentation_values);
-            let local = crate::Scene::capture_preserves_source_coordinates(
+            let local = crate::paint::capture_preserves_source_coordinates(
                 blur.radius,
                 blur.animation_id,
                 scene.animation_values.iter().chain(presentation_values),

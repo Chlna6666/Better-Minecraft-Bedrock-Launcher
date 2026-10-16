@@ -6,7 +6,7 @@ mod batch;
 mod bounds_tree;
 mod composite;
 mod display_list;
-mod geometry;
+pub(crate) mod geometry;
 mod prepared;
 mod primitive;
 #[cfg(test)]

@@ -284,7 +284,8 @@ impl FilterRegistry {
                     return false;
                 }
 
-                if current.content.retained_filter_source_matches(
+                if crate::paint::retention::filter_source_matches(
+                    &current.content,
                     &old.content,
                     animation_values,
                     previous_values,
@@ -295,10 +296,10 @@ impl FilterRegistry {
                 // A changed GPU sample outside an identical identity-capture
                 // subtree does not invalidate its resident texture.
                 let same_scene = std::sync::Arc::ptr_eq(&current.content, &old.content);
-                let old_coordinates_valid = crate::Scene::capture_preserves_source_coordinates(
+                let old_coordinates_valid = crate::paint::capture_preserves_source_coordinates(
                     current.radius, current.animation_id, previous_values.iter(),
                 );
-                let new_coordinates_valid = crate::Scene::capture_preserves_source_coordinates(
+                let new_coordinates_valid = crate::paint::capture_preserves_source_coordinates(
                     current.radius, current.animation_id, animation_values.iter(),
                 );
                 if !same_scene || !old_coordinates_valid || !new_coordinates_valid {
@@ -311,8 +312,7 @@ impl FilterRegistry {
                     return false;
                 }
                 let visible_source = current.bounds.intersect(&current.content_mask.bounds);
-                let damage = current.content
-                    .gpu_sample_damage(previous_values, animation_values);
+                let damage = crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values);
                 let affected = damage.iter().any(|area| area.intersects(&visible_source));
                 if affected {
                     log::trace!(
@@ -361,10 +361,10 @@ impl FilterRegistry {
             || current.bounds != old.bounds
             || current.content_mask != old.content_mask
             || current.radius != old.radius
-            || !crate::Scene::capture_preserves_source_coordinates(
+            || !crate::paint::capture_preserves_source_coordinates(
                 current.radius, current.animation_id, previous_values.iter(),
             )
-            || !crate::Scene::capture_preserves_source_coordinates(
+            || !crate::paint::capture_preserves_source_coordinates(
                 current.radius, current.animation_id, animation_values.iter(),
             )
         {
@@ -376,13 +376,13 @@ impl FilterRegistry {
         // intentionally checks structural paint, then gpu_sample_damage below
         // accounts for every actual animation sample difference.
         let same_paint = std::sync::Arc::ptr_eq(&current.content, &old.content)
-            || current.content.retained_filter_source_matches(&old.content, &[], &[]);
+            || crate::paint::retention::filter_source_matches(&current.content, &old.content, &[], &[]);
         if !same_paint {
             return None;
         }
         let bounds = current.bounds.intersect(&current.content_mask.bounds);
         let mut damage = crate::DirtyRegion::empty();
-        for region in current.content.gpu_sample_damage(previous_values, animation_values) {
+        for region in crate::paint::gpu_sample_damage(&current.content, previous_values, animation_values) {
             damage.push(region.intersect(&bounds));
         }
         let result = (!damage.is_empty()).then_some(damage);

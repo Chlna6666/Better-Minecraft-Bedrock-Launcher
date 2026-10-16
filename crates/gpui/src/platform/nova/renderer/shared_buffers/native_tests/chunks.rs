@@ -23,8 +23,8 @@ fn quad(renderer: &NovaRenderer, right: bool, color: u32) -> Quad {
     }
 }
 
-fn base_scene(renderer: &NovaRenderer) -> crate::Scene {
-    let mut scene = crate::Scene::default();
+fn base_scene(renderer: &NovaRenderer) -> crate::window::retained::PaintFixture {
+    let mut scene = crate::window::retained::PaintFixture::default();
     let viewport = crate::bounds(
         crate::point(crate::px(0.0), crate::px(0.0)),
         crate::size(
@@ -39,7 +39,7 @@ fn base_scene(renderer: &NovaRenderer) -> crate::Scene {
         for _ in 0..32 {
             scene.insert_primitive(quad(renderer, right, color));
         }
-        scene.record_retained_chunk(
+        scene.record(
             crate::GlobalElementId::from_path(&[name.into()]),
             1,
             start..scene.len(),
@@ -50,8 +50,8 @@ fn base_scene(renderer: &NovaRenderer) -> crate::Scene {
     scene
 }
 
-fn replay_with_gap(renderer: &NovaRenderer, base: &crate::Scene, color: u32) -> crate::Scene {
-    let mut scene = crate::Scene::default();
+fn replay_with_gap(renderer: &NovaRenderer, base: &crate::window::retained::PaintFixture, color: u32) -> crate::window::retained::PaintFixture {
+    let mut scene = crate::window::retained::PaintFixture::default();
     scene.replay(0..base.len(), base);
     scene.insert_primitive(quad(renderer, false, color));
     scene.finish();
@@ -121,8 +121,8 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
     });
 }
 
-fn verify_replay(renderer: &mut NovaRenderer, base: &crate::Scene) -> (usize, usize) {
-    let first = upload(renderer, 0, base);
+fn verify_replay(renderer: &mut NovaRenderer, base: &crate::window::retained::PaintFixture) -> (usize, usize) {
+    let first = upload(renderer, 0, base, &base.retention);
     assert_eq!(renderer.frame_upload.resident_quad_spans.len(), 2);
     assert_eq!(renderer.frame_upload.quads.owned_len(), 0);
     assert_eq!(first, 64 * PACKED_QUAD_BYTES);
@@ -133,7 +133,7 @@ fn verify_replay(renderer: &mut NovaRenderer, base: &crate::Scene) -> (usize, us
         .map(Arc::clone)
         .collect();
     let green = replay_with_gap(renderer, base, 0x00ff00);
-    let delta = upload(renderer, 0, &green);
+    let delta = upload(renderer, 0, &green, &green.retention);
     assert_eq!(delta, PACKED_QUAD_BYTES, "only the new gap uploads");
     assert_eq!(renderer.frame_upload.quads.owned_len(), PACKED_QUAD_BYTES);
     assert_eq!(
@@ -151,14 +151,14 @@ fn verify_replay(renderer: &mut NovaRenderer, base: &crate::Scene) -> (usize, us
         (64 * PACKED_QUAD_BYTES) as u64
     );
     assert_eq!(
-        upload(renderer, 1, &green),
+        upload(renderer, 1, &green, &green.retention),
         0,
         "second slot adopts identical segments"
     );
     (first, delta)
 }
 
-fn verify_cow(renderer: &mut NovaRenderer, base: &crate::Scene) -> usize {
+fn verify_cow(renderer: &mut NovaRenderer, base: &crate::window::retained::PaintFixture) -> usize {
     renderer
         .activate_frame_resources(0)
         .expect("old chunk slot");
@@ -169,7 +169,7 @@ fn verify_cow(renderer: &mut NovaRenderer, base: &crate::Scene) -> usize {
     assert_halves(renderer, old_target.0, [0, 255, 0, 255]);
     submit_old_slot(renderer);
     let yellow = replay_with_gap(renderer, base, 0xffff00);
-    let fresh = upload(renderer, 1, &yellow);
+    let fresh = upload(renderer, 1, &yellow, &yellow.retention);
     assert_ne!(renderer.quad_buffer, old);
     assert_eq!(
         fresh,

@@ -15,7 +15,7 @@ fn packet(scene: Arc<Scene>, x: f32) -> PresentationPacket {
         size(ScaledPixels(10.0), ScaledPixels(10.0)),
     ));
     PresentationPacket::new(
-        scene,
+        scene, std::sync::Arc::default(),
         [],
         [],
         Instant::now(),
@@ -385,8 +385,8 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
     let intermediate = scene(40.0);
     let latest = scene(80.0);
     let blur_order = latest.backdrop_blurs[0].order;
-    let intermediate_plan = intermediate.backdrop_blur_damage_plan(&previous, &[], &[]);
-    let latest_plan = latest.backdrop_blur_damage_plan(&intermediate, &[], &[]);
+    let intermediate_plan = crate::paint::backdrop_blur_damage_plan(&intermediate, &previous, &[], &[]);
+    let latest_plan = crate::paint::backdrop_blur_damage_plan(&latest, &intermediate, &[], &[]);
     assert!(intermediate_plan.refresh_required());
     assert!(latest_plan.refresh_required());
     let mut intermediate = packet(Arc::new(intermediate), 40.0);

@@ -141,7 +141,7 @@ fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::
 
 fn present(renderer: &mut NovaRenderer, scene: &Arc<crate::Scene>, window_id: u64) {
     let mut packet = PresentationPacket::new(
-        Arc::clone(scene),
+        Arc::clone(scene), std::sync::Arc::default(),
         [],
         [],
         Instant::now(),

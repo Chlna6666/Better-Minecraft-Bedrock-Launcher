@@ -381,7 +381,7 @@ impl NovaRenderer {
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
-            packet.scene.as_ref(),
+            packet.scene.as_ref(), &packet.retained_paint,
             packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
@@ -869,7 +869,7 @@ impl NovaRenderer {
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
-                packet.scene.as_ref(),
+                packet.scene.as_ref(), &packet.retained_paint,
                 packet.presentation_animation_values.as_slice(),
                 backdrop_blur_quality,
             );
@@ -1113,7 +1113,8 @@ impl NovaRenderer {
         if self.frame_upload.retained_root_blur.is_none() || !self.filters.is_valid() {
             return;
         }
-        let damage = packet.scene.gpu_sample_damage(
+        let damage = crate::paint::gpu_sample_damage(
+            &packet.scene,
             &self.filters.last_gpu_animation_values,
             &self.frame_upload.sampled_animation_values,
         );

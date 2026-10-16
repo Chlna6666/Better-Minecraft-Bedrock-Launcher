@@ -176,7 +176,7 @@ fn pixels<const N: usize>(
             renderer.current_size.height as f32,
         ));
     } else {
-        for region in scene.presentation_animation_damage(&previous_values, &values) {
+        for region in crate::paint::gpu_sample_damage(&scene, &previous_values, &values) {
             damage.push(region);
         }
         if !scene.animation_ids().contains(&crate::SceneAnimationId(1)) {
@@ -185,9 +185,9 @@ fn pixels<const N: usize>(
         }
         assert!(!damage.is_full());
     }
-    let blur_damage = scene.backdrop_blur_animation_damage_plan(&previous_values, &values);
+    let blur_damage = crate::paint::backdrop_blur_animation_damage_plan(&scene, &previous_values, &values);
     let mut packet = crate::PresentationPacket::new(
-        scene.clone(),
+        scene.clone(), std::sync::Arc::default(),
         values,
         [],
         Instant::now(),
@@ -250,13 +250,13 @@ fn verify(backend: RendererBackend) {
             let target = super::target(&renderer);
             let scene = page(backdrop, renderer.current_size, placement);
             renderer.pack_scene(
-                &scene,
+                &scene, &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(0.5)],
                 BackdropBlurQuality::default(),
             );
             assert!(renderer.frame_upload.retained_root_blur.is_none());
             renderer.pack_scene(
-                &scene,
+                &scene, &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(1.)],
                 BackdropBlurQuality::default(),
             );

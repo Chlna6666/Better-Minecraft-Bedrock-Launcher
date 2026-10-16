@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use crate::element::RetainedDivSelfSceneStyle;
 use std::ops::Range;
 
@@ -118,14 +118,8 @@ impl Window {
 
         let prefix = parent_start..child_start;
         let suffix = child_end..parent_end;
-        if !self
-            .rendered_frame
-            .scene
-            .range_is_independently_replayable(prefix.clone())
-            || !self
-                .rendered_frame
-                .scene
-                .range_is_independently_replayable(suffix.clone())
+        if !self.rendered_frame.range_is_replayable(prefix.clone())
+            || !self.rendered_frame.range_is_replayable(suffix.clone())
         {
             return None;
         }
@@ -141,9 +135,16 @@ impl Window {
         if range.is_empty() {
             return;
         }
-        self.next_frame
+        let replay_start = self.next_frame.scene.len();
+        if self
+            .next_frame
             .scene
-            .replay(range, &self.rendered_frame.scene);
+            .replay(range.clone(), &self.rendered_frame.scene)
+        {
+            Arc::get_mut(&mut self.next_frame.retained_paint)
+                .expect("unpublished paint retention")
+                .replay(range, &self.rendered_frame.retained_paint, replay_start);
+        }
     }
 
     /// Bound the persistent focus-target lookup when applications create and discard many unique

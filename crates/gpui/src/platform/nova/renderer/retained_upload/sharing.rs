@@ -275,7 +275,7 @@ mod tests {
                 corner_bounds: bounds,
                 ..Default::default()
             };
-            let mut scene = crate::Scene::default();
+            let mut scene = crate::window::retained::PaintFixture::default();
             let start = scene.len();
             for _ in 0..32 {
                 scene.insert_primitive(Quad {
@@ -285,7 +285,7 @@ mod tests {
                     ..Default::default()
                 });
             }
-            scene.record_retained_chunk(
+            scene.record(
                 crate::GlobalElementId::from_path(&["static-chunk".into()]),
                 1,
                 start..scene.len(),
@@ -312,7 +312,7 @@ mod tests {
             let mut upload = FrameUpload::default();
             let mut summary = upload.encode(
                 &mut chunk_cache,
-                &scene,
+                &scene, &scene.retention,
                 &[],
                 DrawableSize {
                     width: 16,

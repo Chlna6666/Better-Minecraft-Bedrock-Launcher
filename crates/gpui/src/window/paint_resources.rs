@@ -143,10 +143,7 @@ impl Window {
         // retained/layout animations, and include any previous-frame backdrop output that samples
         // the changed pixels. Blur topology/config changes are handled separately by the normal
         // scene damage plan.
-        let backdrop_damage = self
-            .rendered_frame
-            .scene
-            .backdrop_blur_damage(damage)
+        let backdrop_damage = crate::paint::backdrop_blur_damage(&self.rendered_frame.scene, damage)
             .collect::<SmallVec<[_; 4]>>();
         self.animation_dirty_region.push(damage);
         for bounds in backdrop_damage {

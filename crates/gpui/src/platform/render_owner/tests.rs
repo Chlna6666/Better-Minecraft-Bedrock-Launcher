@@ -72,7 +72,7 @@ fn first_windows_frame_enqueues_without_waiting_for_gpu_completion() {
     let (owner, receiver) = owner(false);
     owner.status.submitted.store(false, Ordering::Release);
     let packet = PresentationPacket::new(
-        Arc::new(Scene::default()),
+        Arc::new(Scene::default()), std::sync::Arc::default(),
         [],
         [],
         Instant::now(),

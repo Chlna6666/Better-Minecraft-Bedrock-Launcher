@@ -1085,7 +1085,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
             self.property
                 .resolved_values(bounds, window.scale_factor(), window.visual_scale());
         let bound = self.animating
-            || !crate::Scene::animation_sample_is_identity(&crate::SceneAnimationValue {
+            || !crate::paint::animation_sample_is_identity(&crate::SceneAnimationValue {
                 animation_id: SceneAnimationId(0),
                 property: self.property.property,
                 progress: self.progress,

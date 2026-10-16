@@ -29,9 +29,9 @@ fn force_atlas_full(atlas: &NovaAtlas) {
     }
 }
 
-fn retained_quad_scene(generation: u64) -> crate::Scene {
+fn retained_quad_scene(generation: u64) -> crate::window::retained::PaintFixture {
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::window::retained::PaintFixture::default();
     let start = scene.len();
     for _ in 0..32 {
         scene.insert_primitive(Quad {
@@ -44,7 +44,7 @@ fn retained_quad_scene(generation: u64) -> crate::Scene {
         });
     }
     let end = scene.len();
-    scene.record_retained_chunk(
+    scene.record(
         GlobalElementId::from_path(&["nova-retained-quad".into()]),
         generation,
         start..end,
@@ -885,7 +885,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &rendering_parameters,
@@ -896,7 +896,7 @@ fn frame_upload_globals_follow_surface_alpha_mode() {
 
     upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &rendering_parameters,
@@ -918,7 +918,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     };
     let first_summary = upload.encode(
         &mut chunk_cache,
-        &previous,
+        &previous, &previous.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -963,7 +963,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let same_generation = retained_quad_scene(1);
     let same_generation_summary = upload.encode(
         &mut chunk_cache,
-        &same_generation,
+        &same_generation, &same_generation.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -987,7 +987,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
         .values()
         .all(|chunk| chunk.last_used_epoch == chunk_cache.frame_epoch));
 
-    let mut partially_dirty = crate::Scene::default();
+    let mut partially_dirty = crate::window::retained::PaintFixture::default();
     partially_dirty.replay(0..previous.len(), &previous);
     partially_dirty.insert_primitive(Quad {
         bounds: bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0),
@@ -1000,7 +1000,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     partially_dirty.finish();
     let replay_summary = upload.encode(
         &mut chunk_cache,
-        &partially_dirty,
+        &partially_dirty, &partially_dirty.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -1042,7 +1042,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
     let changed_generation = retained_quad_scene(2);
     let changed_summary = upload.encode(
         &mut chunk_cache,
-        &changed_generation,
+        &changed_generation, &changed_generation.retention,
         &[],
         drawable_size,
         &rendering_parameters,
@@ -1062,7 +1062,7 @@ fn frame_upload_reuses_only_replayed_quad_chunk_generation() {
 fn mismatched_quad_count_never_reuses_old_resident_payload() {
     let previous = retained_quad_scene(1);
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
-    let mut changed_source = crate::Scene::default();
+    let mut changed_source = crate::window::retained::PaintFixture::default();
     let start = changed_source.len();
     for _ in 0..64 {
         changed_source.insert_primitive(Quad {
@@ -1071,17 +1071,17 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
             ..Quad::default()
         });
     }
-    changed_source.record_retained_chunk(
+    changed_source.record(
         GlobalElementId::from_path(&["nova-retained-quad".into()]),
         1,
         start..changed_source.len(),
     );
     changed_source.finish();
-    let mut replayed = crate::Scene::default();
+    let mut replayed = crate::window::retained::PaintFixture::default();
     replayed.replay(0..changed_source.len(), &changed_source);
     replayed.finish();
-    assert_eq!(replayed.prepared_retained_quad_chunks().len(), 1);
-    assert!(replayed.prepared_retained_quad_chunks()[0].replayed);
+    assert_eq!(replayed.chunks().len(), 1);
+    assert!(replayed.chunks()[0].replayed);
 
     let mut cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
@@ -1092,7 +1092,7 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     let params = RenderingParameters::system();
     let initial = upload.encode(
         &mut cache,
-        &previous,
+        &previous, &previous.retention,
         &[],
         size,
         &params,
@@ -1102,7 +1102,7 @@ fn mismatched_quad_count_never_reuses_old_resident_payload() {
     assert_eq!(initial.quad_count, 32);
     let current = upload.encode(
         &mut cache,
-        &replayed,
+        &replayed, &replayed.retention,
         &[],
         size,
         &params,
@@ -1131,7 +1131,7 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
     let params = RenderingParameters::system();
     upload.encode(
         &mut chunk_cache,
-        &previous,
+        &previous, &previous.retention,
         &[],
         size,
         &params,
@@ -1146,13 +1146,13 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
         .bytes
         .as_ptr();
     drop(upload);
-    let mut replayed = crate::Scene::default();
+    let mut replayed = crate::window::retained::PaintFixture::default();
     replayed.replay(0..previous.len(), &previous);
     replayed.finish();
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &replayed,
+        &replayed, &replayed.retention,
         &[],
         size,
         &params,
@@ -1170,12 +1170,13 @@ fn retained_quad_payload_outlives_per_frame_packing_scratch() {
 #[test]
 fn nested_element_retained_chunks_survive_root_pruning() {
     let child = retained_quad_scene(1);
-    let mut replayed_child = crate::Scene::default();
+    let mut replayed_child = crate::window::retained::PaintFixture::default();
     replayed_child.replay(0..child.len(), &child);
     replayed_child.finish();
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(640.0), px(480.0))).scale(1.0);
-    let root = |content: crate::Scene| {
-        let mut scene = crate::Scene::default();
+    let root = |content: crate::window::retained::PaintFixture| {
+        let mut scene = crate::window::retained::PaintFixture::default();
+        scene.retention.include(content.retention);
         scene.insert_primitive(crate::PaintBlur {
             order: 0,
             animation_id: None,
@@ -1184,7 +1185,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
             opacity: 1.0,
-            content: Arc::new(content),
+            content: Arc::new(content.paint),
         });
         scene.finish();
         scene
@@ -1200,7 +1201,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     };
     let initial = upload.encode(
         &mut cache,
-        &first,
+        &first, &first.retention,
         &[],
         size,
         &params,
@@ -1216,7 +1217,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
     assert!(upload.batch_visual_bounds[2..].iter().all(Option::is_none));
     let reused = upload.encode(
         &mut cache,
-        &second,
+        &second, &second.retention,
         &[],
         size,
         &params,
@@ -1237,8 +1238,10 @@ fn nested_element_retained_chunks_survive_root_pruning() {
 #[test]
 fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
     let bounds = bounds(point(px(0.0), px(0.0)), size(px(640.0), px(480.0))).scale(1.0);
-    let mut root = crate::Scene::default();
+    let mut root = crate::window::retained::PaintFixture::default();
     for generation in 1..=2 {
+        let child = retained_quad_scene(generation);
+        root.retention.include(child.retention);
         root.insert_primitive(crate::PaintBlur {
             order: 0,
             animation_id: None,
@@ -1247,7 +1250,7 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
             opacity: 1.0,
-            content: Arc::new(retained_quad_scene(generation)),
+            content: Arc::new(child.paint),
         });
     }
     root.finish();
@@ -1255,7 +1258,7 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
     let mut upload = FrameUpload::default();
     upload.encode(
         &mut cache,
-        &root,
+        &root, &root.retention,
         &[],
         DrawableSize {
             width: 640,
@@ -1310,7 +1313,7 @@ fn frame_upload_records_scene_animation_bindings() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 64,
@@ -1351,7 +1354,7 @@ fn frame_upload_records_scene_animation_values() {
     let mut upload = FrameUpload::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 64,
@@ -1388,7 +1391,7 @@ fn frame_upload_accepts_presentation_animation_values_outside_scene() {
     let mut chunk_cache = RetainedQuadChunkCache::default();
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[presentation_value],
         DrawableSize {
             width: 64,
@@ -1458,7 +1461,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let first = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &RenderingParameters::system(),
@@ -1477,7 +1480,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
 
     let second = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         drawable_size,
         &RenderingParameters::system(),
@@ -1611,7 +1614,7 @@ fn backdrop_blur_encodes_real_batch_without_tint_fallback() {
 
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 640,
@@ -1662,7 +1665,7 @@ fn disabled_backdrop_blur_quality_uses_tint_quad_fallback() {
 
     let summary = upload.encode(
         &mut chunk_cache,
-        &scene,
+        &scene, &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 640,
@@ -2129,7 +2132,7 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
     let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
     let partial_packet = || {
         PresentationPacket::new(
-            Arc::clone(&scene),
+            Arc::clone(&scene), std::sync::Arc::default(),
             [],
             [],
             std::time::Instant::now(),
@@ -4273,7 +4276,7 @@ fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
         crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(12.0)),
     ));
     let mut packet = PresentationPacket::new(
-        scene,
+        scene, std::sync::Arc::default(),
         [],
         [],
         std::time::Instant::now(),
@@ -4358,7 +4361,7 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
     ));
     let source_area = local.area();
     let mut packet = PresentationPacket::new(
-        Arc::new(scene),
+        Arc::new(scene), std::sync::Arc::default(),
         [],
         [],
         std::time::Instant::now(),

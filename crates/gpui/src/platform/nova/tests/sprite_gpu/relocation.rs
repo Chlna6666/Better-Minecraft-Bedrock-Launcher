@@ -141,7 +141,7 @@ pub(super) fn verify_atlas_compaction<D>(
         }
         upload.encode(
             &mut chunk_cache,
-            &scene,
+            &scene, &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 16,

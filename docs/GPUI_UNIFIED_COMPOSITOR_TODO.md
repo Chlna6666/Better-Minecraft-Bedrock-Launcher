@@ -31,6 +31,15 @@
 | **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
 
+### 2026-10-16 Scene 职责迁移（基线 `39caea45`）
+
+- 已迁移：Paint / Animation / Backdrop Damage、Filter Source 纯判定进入 `paint/`；全部仓库消费者直接调用新算法，删除 Scene 旧方法。零半径 identity Capture 的局部子元素变化保留旧、新像素损伤，不扩大到整个 Capture。
+- 已迁移：Chunk identity、候选、规划、稀疏 Replay 结构索引及 clear/finish/trim 生命周期进入 `window/retained/`。Frame 与 Presentation Snapshot 成对持有 Paint 和 Retained Owner；Nova `retained_upload` / `chunk_upload` 仍是 GPU 驻留的唯一所有者，没有新增 GPU Cache。
+- 本地验证：workspace no-default-features check、bmcbl lib locked check、GPUI 四后端 features test-target check 通过；435 个定向测试通过。四后端各执行 6 项原生像素回归，共 24 项通过，覆盖 popup 反向、静态背景复用、buffer in-flight、字体图像、resize 与 chunk splice。
+- 格式基线：workspace `cargo fmt --all -- --check` 仍因修改前已存在的无关格式差异失败；新 `paint/`、`window/retained/` 模块的 rustfmt check 与 `git diff --check` 通过。未用 CI 代替本地验证。
+- 未完成：P0-06 Root Color 独立 GPU 生命周期与 Render Graph、P1-03 SceneSlot / 快照主通路替换、四后端实际应用交互性能矩阵。上述像素测试不等于 GPU 时间或任务管理器占用改善；尚无可报告的性能收益。
+- UI 调查：Tab pill 与公共 Dropdown 中间帧使用 presentation；响应式导航标签和首页启动下拉仍有真实 Layout / caller-sampled 路径。后续保持现有弹性、错峰、裁剪与阴影轨迹，不能用 API 替换推定视觉等价。
+
 ### 2026-10-15 后续执行：动画与 Resize（基线 `14289e14`）
 
 **2026-10-16 首页列表回退（当前 HEAD `600023a7`）**：用户反馈最新首页版本列表动画异常卡顿，撤回 `6d15651c` 引入的逐行 `clipped_translation_opacity` sampled Capture，恢复原来的 `top(10 * (1 - item_factor)) + opacity(item_factor)`。错峰、弹性、容器高度/阴影、虚拟列表与选择逻辑保持原实现；箭头稳定 identity 和公共 GPUI 修复保留。仅修改首页及本文，不恢复已删除的旧 API，不新增兼容层。不将行 Capture 推测为已证实根因，也不将源码恢复视为运行时卡顿已修复。按用户要求不重复构建/测试，仅检查定向差异及格式；运行效果待当前产物重新构建后确认。下文“首页所有行迁移”是已撤回的历史切片，不再代表当前状态。

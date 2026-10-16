@@ -3,11 +3,7 @@ use crate::{
     AtlasTextureId, AtlasTile, Bounds, ContentMask, DevicePixels, Edges, GlobalElementId, Hsla,
     ScaledPixels, bounds, point, px, size,
 };
-use std::{
-    ops::Range,
-    sync::Arc,
-};
-
+use std::{ops::Range, sync::Arc};
 
 #[test]
 fn retained_scene_bounds_ignore_fullscreen_paint_layer_metadata() {
@@ -111,7 +107,8 @@ fn equivalent_static_scene_retains_revision_across_sampled_animation_frames() {
         from: [0.97, 0.0, 0.0, 0.0],
         to: [1.0, 1.0, 0.0, 0.0],
     });
-    current.finish_retaining_revision(&previous);
+    current.finish();
+    crate::window::retained::retain_revision(&mut current, &previous);
 
     assert_eq!(current.revision, previous.revision);
     assert_eq!(current.animation_values[0].progress, 0.5);
@@ -160,11 +157,15 @@ fn sampled_animation_value_changes_report_primitive_damage() {
     });
 
     let mut damage = Vec::new();
-    assert!(
-        current.for_each_changed_bounds(0..1, &previous, 0..1, |bounds| {
+    assert!(crate::paint::for_each_changed_bounds(
+        &current,
+        0..1,
+        &previous,
+        0..1,
+        |bounds| {
             damage.push(bounds);
-        })
-    );
+        }
+    ));
     assert_eq!(damage, vec![primitive_bounds, primitive_bounds]);
 }
 
@@ -230,20 +231,19 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
         to: [120.0, 0.0, 0.0, 0.0],
     };
     assert!(
-        !scene
-            .backdrop_blur_animation_damage_plan(&[value], &[value])
+        !crate::paint::backdrop_blur_animation_damage_plan(&scene, &[value], &[value])
             .refresh_required()
     );
     assert!(
-        scene
-            .backdrop_blur_animation_damage_plan(
-                &[value],
-                &[SceneAnimationValue {
-                    progress: 1.0,
-                    ..value
-                }]
-            )
-            .refresh_required()
+        crate::paint::backdrop_blur_animation_damage_plan(
+            &scene,
+            &[value],
+            &[SceneAnimationValue {
+                progress: 1.0,
+                ..value
+            }]
+        )
+        .refresh_required()
     );
 }
 
@@ -277,7 +277,8 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+        &scene,
         &[value],
         &[SceneAnimationValue {
             progress: 1.0,
@@ -308,7 +309,8 @@ fn transform_after_blur_never_invalidates_that_blur() {
         to: [20.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+        &scene,
         &[value],
         &[SceneAnimationValue {
             progress: 1.0,
@@ -349,7 +351,8 @@ fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
         to: [100.0, 0.0, 0.0, 0.0],
     };
 
-    let plan = scene.backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+        &scene,
         &[value],
         &[SceneAnimationValue {
             progress: 0.92,
@@ -460,10 +463,16 @@ fn retained_range_rejects_nested_blur_fragments_without_outer_capture() {
     // Retained splice/replay requires the stronger proof: the range must not inherit an outer
     // StartBlur/StartLayer context. Replaying 1..2 by itself would detach the quad from the nested
     // blur/compositor scene even though the range is locally balanced.
-    assert!(scene.range_is_independently_replayable(0..scene.len()));
-    assert!(!scene.range_is_independently_replayable(0..1));
-    assert!(!scene.range_is_independently_replayable(1..2));
-    assert!(!scene.range_is_independently_replayable(scene.len() - 1..scene.len()));
+    assert!(crate::paint::retention::range_is_replayable(
+        &scene,
+        0..scene.len()
+    ));
+    assert!(!crate::paint::retention::range_is_replayable(&scene, 0..1));
+    assert!(!crate::paint::retention::range_is_replayable(&scene, 1..2));
+    assert!(!crate::paint::retention::range_is_replayable(
+        &scene,
+        scene.len() - 1..scene.len()
+    ));
 }
 
 #[test]
@@ -508,7 +517,12 @@ fn retained_element_filter_source_ignores_unrelated_output_damage() {
     });
     // A modal or foreground overlay can dirty the entire output rectangle
     // without changing any of these source operations.
-    assert!(unchanged.retained_filter_source_matches(&previous, &[], &[]));
+    assert!(crate::paint::retention::filter_source_matches(
+        &unchanged,
+        &previous,
+        &[],
+        &[]
+    ));
 
     let mut changed = Scene::default();
     let mut quad = Quad {
@@ -518,7 +532,12 @@ fn retained_element_filter_source_ignores_unrelated_output_damage() {
     };
     quad.bounds.origin.x = ScaledPixels(3.0);
     changed.insert_primitive(quad);
-    assert!(!changed.retained_filter_source_matches(&previous, &[], &[]));
+    assert!(!crate::paint::retention::filter_source_matches(
+        &changed,
+        &previous,
+        &[],
+        &[]
+    ));
 }
 
 #[test]
@@ -549,12 +568,32 @@ fn retained_element_filter_source_tracks_sampled_animations() {
         from: [0.0; 4],
         to: [1.0, 0.0, 0.0, 0.0],
     };
-    assert!(new.retained_filter_source_matches(&old, &[sample(0.5)], &[sample(0.5)]));
-    assert!(!new.retained_filter_source_matches(&old, &[sample(0.75)], &[sample(0.5)]));
+    assert!(crate::paint::retention::filter_source_matches(
+        &new,
+        &old,
+        &[sample(0.5)],
+        &[sample(0.5)]
+    ));
+    assert!(!crate::paint::retention::filter_source_matches(
+        &new,
+        &old,
+        &[sample(0.75)],
+        &[sample(0.5)]
+    ));
     // An absent GPU sample executes the retained primitive at identity.
-    assert!(new.retained_filter_source_matches(&old, &[], &[]));
-    assert!(!new.retained_filter_source_matches(&old, &[], &[sample(0.5)]));
-    assert!(new.retained_filter_source_matches(&old, &[], &[sample(1.0)]));
+    assert!(crate::paint::retention::filter_source_matches(&new, &old, &[], &[]));
+    assert!(!crate::paint::retention::filter_source_matches(
+        &new,
+        &old,
+        &[],
+        &[sample(0.5)]
+    ));
+    assert!(crate::paint::retention::filter_source_matches(
+        &new,
+        &old,
+        &[],
+        &[sample(1.0)]
+    ));
 }
 
 #[test]
@@ -585,15 +624,27 @@ fn retained_filter_source_compares_all_resolved_child_tracks() {
         from: [0.0; 4],
         to: [1.0, 0.0, 0.0, 0.0],
     };
-    assert!(scene.retained_filter_source_matches(
-        &scene, &[opacity, clip(0.5)], &[opacity, clip(0.5)]
+    assert!(crate::paint::retention::filter_source_matches(
+        &scene,
+        &scene,
+        &[opacity, clip(0.5)],
+        &[opacity, clip(0.5)]
     ));
-    assert!(!scene.retained_filter_source_matches(
-        &scene, &[opacity, clip(0.75)], &[opacity, clip(0.5)]
+    assert!(!crate::paint::retention::filter_source_matches(
+        &scene,
+        &scene,
+        &[opacity, clip(0.75)],
+        &[opacity, clip(0.5)]
     ));
-    let changed_opacity = SceneAnimationValue { progress: 0.75, ..opacity };
-    assert!(!scene.retained_filter_source_matches(
-        &scene, &[changed_opacity], &[opacity]
+    let changed_opacity = SceneAnimationValue {
+        progress: 0.75,
+        ..opacity
+    };
+    assert!(!crate::paint::retention::filter_source_matches(
+        &scene,
+        &scene,
+        &[changed_opacity],
+        &[opacity]
     ));
 }
 
@@ -638,12 +689,18 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
     let mut current = build();
     previous.push_animation_value(sample(0.5));
     current.push_animation_value(sample(0.5));
-    assert!(current.retained_filter_source_matches(
-        &previous, &current.animation_values, &previous.animation_values
+    assert!(crate::paint::retention::filter_source_matches(
+        &current,
+        &previous,
+        &current.animation_values,
+        &previous.animation_values
     ));
     current.animation_values[0] = sample(0.75);
-    assert!(!current.retained_filter_source_matches(
-        &previous, &current.animation_values, &previous.animation_values
+    assert!(!crate::paint::retention::filter_source_matches(
+        &current,
+        &previous,
+        &current.animation_values,
+        &previous.animation_values
     ));
 }
 
@@ -663,16 +720,15 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
         from: [0.0; 4],
         to: [1.0, 0.0, 0.0, 0.0],
     };
-    let plan = scene.backdrop_blur_animation_damage_plan(
+    let plan = crate::paint::backdrop_blur_animation_damage_plan(
+        &scene,
         &[opacity(0.25)],
         &[opacity(0.75)],
     );
     let first_order = scene.backdrop_blurs[0].order;
     let next_order = scene.backdrop_blurs[1].order;
-    let (first_full, first_damage) =
-        plan.source_damage_for_orders(first_order, first_order);
-    let (next_full, next_damage) =
-        plan.source_damage_for_orders(next_order, next_order);
+    let (first_full, first_damage) = plan.source_damage_for_orders(first_order, first_order);
+    let (next_full, next_damage) = plan.source_damage_for_orders(next_order, next_order);
     assert!(!first_full);
     assert_eq!(first_damage.count(), 0);
     assert!(!next_full);
@@ -682,9 +738,14 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     let mut blur = backdrop_blur(1);
     blur.animation_id = Some(animation_id);
     only_self.insert_primitive(blur);
-    assert!(!only_self
-        .backdrop_blur_animation_damage_plan(&[opacity(0.25)], &[opacity(0.75)])
-        .refresh_required());
+    assert!(
+        !crate::paint::backdrop_blur_animation_damage_plan(
+            &only_self,
+            &[opacity(0.25)],
+            &[opacity(0.75)]
+        )
+        .refresh_required()
+    );
 }
 
 #[test]
@@ -704,8 +765,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     ));
 
     assert!(
-        !top_layer_changed
-            .backdrop_blur_damage_plan(&previous, &[], &[])
+        !crate::paint::backdrop_blur_damage_plan(&top_layer_changed, &previous, &[], &[])
             .refresh_required()
     );
 
@@ -718,8 +778,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
     source_changed.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
 
     assert!(
-        source_changed
-            .backdrop_blur_damage_plan(&previous, &[], &[])
+        crate::paint::backdrop_blur_damage_plan(&source_changed, &previous, &[], &[])
             .refresh_required()
     );
 }
@@ -755,7 +814,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
     ));
     current.insert_primitive(titlebar_blur);
 
-    let plan = current.backdrop_blur_damage_plan(&previous, &[], &[]);
+    let plan = crate::paint::backdrop_blur_damage_plan(&current, &previous, &[], &[]);
     let background_order = current.backdrop_blurs[0].order;
     let titlebar_order = current.backdrop_blurs[1].order;
     let (background_full, mut background_damage) =
@@ -796,14 +855,14 @@ fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
         size(ScaledPixels(10.0), ScaledPixels(10.0)),
     );
     assert_eq!(
-        scene.backdrop_blur_damage(damage).collect::<Vec<_>>(),
+        crate::paint::backdrop_blur_damage(&scene, damage).collect::<Vec<_>>(),
         vec![Bounds::new(
             // Three sigma (24px) plus one source texel for 2x downsampling.
             point(ScaledPixels(375.0), ScaledPixels(375.0)),
             size(ScaledPixels(60.0), ScaledPixels(60.0)),
         )]
     );
-    assert!(!scene.requires_full_redraw_fallback());
+    assert!(!crate::paint::requires_full_redraw_fallback(&scene,));
 }
 
 #[test]
@@ -823,11 +882,15 @@ fn scene_diff_reports_only_changed_primitive_bounds() {
     current.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
 
     let mut changed_bounds = Vec::new();
-    assert!(
-        current.for_each_changed_bounds(0..3, &previous, 0..3, |bounds| {
+    assert!(crate::paint::for_each_changed_bounds(
+        &current,
+        0..3,
+        &previous,
+        0..3,
+        |bounds| {
             changed_bounds.push(bounds);
-        })
-    );
+        }
+    ));
     assert_eq!(
         changed_bounds,
         vec![
@@ -871,11 +934,15 @@ fn scene_diff_includes_shadow_shader_margin() {
     current.insert_primitive(current_shadow);
 
     let mut changed_bounds = Vec::new();
-    assert!(
-        current.for_each_changed_bounds(0..1, &previous, 0..1, |bounds| {
+    assert!(crate::paint::for_each_changed_bounds(
+        &current,
+        0..1,
+        &previous,
+        0..1,
+        |bounds| {
             changed_bounds.push(bounds);
-        })
-    );
+        }
+    ));
     assert_eq!(
         changed_bounds,
         vec![
@@ -953,34 +1020,51 @@ fn identity_capture_child_changes_do_not_dirty_full_capture_output() {
     let previous = make_scene(previous_quad, 0.0, 1.0);
     let current = make_scene(current_quad, 0.0, 1.0);
     let mut dirty = Vec::new();
-    assert!(current.for_each_changed_bounds(
-        0..current.len(), &previous, 0..previous.len(), |bounds| dirty.push(bounds),
+    assert!(crate::paint::for_each_changed_bounds(
+        &current,
+        0..current.len(),
+        &previous,
+        0..previous.len(),
+        |bounds| dirty.push(bounds),
     ));
-    assert_eq!(dirty, vec![previous_quad, current_quad],
-        "a small changed child of an identity compositor must not damage the full capture");
+    assert_eq!(
+        dirty,
+        vec![previous_quad, current_quad],
+        "a small changed child of an identity compositor must not damage the full capture"
+    );
 
     // A changed capture opacity invalidates its entire output even though
     // the child's primitive bytes and coordinates are otherwise identical.
     let opacity_changed = make_scene(previous_quad, 0.0, 0.5);
     let mut opacity_dirty = Vec::new();
-    assert!(opacity_changed.for_each_changed_bounds(
-        0..opacity_changed.len(), &previous, 0..previous.len(),
+    assert!(crate::paint::for_each_changed_bounds(
+        &opacity_changed,
+        0..opacity_changed.len(),
+        &previous,
+        0..previous.len(),
         |bounds| opacity_dirty.push(bounds),
     ));
-    assert!(opacity_dirty.contains(&output),
-        "capture topology or composite-style changes require full output damage");
+    assert!(
+        opacity_dirty.contains(&output),
+        "capture topology or composite-style changes require full output damage"
+    );
 
     // Nonzero Gaussian filters spread child pixels beyond their original
     // geometry. They must retain the conservative affected-output fallback.
     let gaussian_before = make_scene(previous_quad, 4.0, 1.0);
     let gaussian_after = make_scene(current_quad, 4.0, 1.0);
     let mut gaussian_dirty = Vec::new();
-    assert!(gaussian_after.for_each_changed_bounds(
-        0..gaussian_after.len(), &gaussian_before, 0..gaussian_before.len(),
+    assert!(crate::paint::for_each_changed_bounds(
+        &gaussian_after,
+        0..gaussian_after.len(),
+        &gaussian_before,
+        0..gaussian_before.len(),
         |bounds| gaussian_dirty.push(bounds),
     ));
-    assert!(gaussian_dirty.contains(&output),
-        "Gaussian source changes cannot use zero-radius local-damage proof");
+    assert!(
+        gaussian_dirty.contains(&output),
+        "Gaussian source changes cannot use zero-radius local-damage proof"
+    );
 }
 
 #[test]
@@ -999,7 +1083,8 @@ fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
     ));
 
     let mut child_damage = Vec::new();
-    assert!(current.for_each_changed_bounds(
+    assert!(crate::paint::for_each_changed_bounds(
+        &current,
         0..current.len(),
         &previous,
         0..previous.len(),
@@ -1009,7 +1094,8 @@ fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
 
     let mut unmount_damage = Vec::new();
     let empty = Scene::default();
-    assert!(empty.for_each_changed_bounds(
+    assert!(crate::paint::for_each_changed_bounds(
+        &empty,
         0..empty.len(),
         &previous,
         0..previous.len(),
@@ -1249,20 +1335,20 @@ fn append_retained_test_quads(scene: &mut Scene, count: usize) -> Range<usize> {
 #[test]
 fn retained_quad_chunk_keeps_exact_identity_and_generation_on_replay() {
     let identity = GlobalElementId::from_path(&["retained-chunk".into()]);
-    let mut previous = Scene::default();
+    let mut previous = crate::window::retained::PaintFixture::default();
     let range = append_retained_test_quads(&mut previous, 32);
-    previous.record_retained_chunk(identity, 7, range.clone());
+    previous.record(identity, 7, range.clone());
     previous.finish();
 
-    let first = previous.prepared_retained_quad_chunks();
+    let first = previous.chunks();
     assert_eq!(first.len(), 1);
     assert!(!first[0].replayed);
 
-    let mut replayed = Scene::default();
+    let mut replayed = crate::window::retained::PaintFixture::default();
     replayed.replay(range, &previous);
     replayed.finish();
 
-    let second = replayed.prepared_retained_quad_chunks();
+    let second = replayed.chunks();
     assert_eq!(second.len(), 1);
     assert!(second[0].replayed);
     assert_eq!(second[0].id, first[0].id);
@@ -1296,18 +1382,18 @@ fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
 
 #[test]
 fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
-    let mut left = Scene::default();
+    let mut left = crate::window::retained::PaintFixture::default();
     let left_range = append_retained_test_quads(&mut left, 32);
-    left.record_retained_chunk(
+    left.record(
         GlobalElementId::from_path(&["left-chunk".into()]),
         3,
         left_range,
     );
     left.finish();
 
-    let mut right = Scene::default();
+    let mut right = crate::window::retained::PaintFixture::default();
     let right_range = append_retained_test_quads(&mut right, 32);
-    right.record_retained_chunk(
+    right.record(
         GlobalElementId::from_path(&["right-chunk".into()]),
         3,
         right_range,
@@ -1315,8 +1401,8 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
     right.finish();
 
     assert_ne!(
-        left.prepared_retained_quad_chunks()[0].id,
-        right.prepared_retained_quad_chunks()[0].id
+        left.chunks()[0].id,
+        right.chunks()[0].id
     );
 }
 
@@ -1324,18 +1410,17 @@ fn retained_quad_chunk_identity_does_not_alias_equal_generations() {
 fn retained_quad_chunk_rejects_layer_and_effect_barriers() {
     let identity = GlobalElementId::from_path(&["barrier-chunk".into()]);
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
-    let mut scene = Scene::default();
+    let mut scene = crate::window::retained::PaintFixture::default();
     let start = scene.len();
     scene.push_layer(bounds);
     append_retained_test_quads(&mut scene, 32);
     scene.pop_layer();
     let end = scene.len();
-    scene.record_retained_chunk(identity, 1, start..end);
+    scene.record(identity, 1, start..end);
     scene.finish();
 
-    assert!(scene.prepared_retained_quad_chunks().is_empty());
+    assert!(scene.chunks().is_empty());
 }
-
 
 // ClipReveal sampling changes the composite mask, not the already rasterized
 // child source. Only newly revealed/hidden texels require damage.
@@ -1345,42 +1430,47 @@ fn clip_reveal_damage_is_the_moving_edge_strip() {
         origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
         size: crate::size(crate::ScaledPixels(800.0), crate::ScaledPixels(600.0)),
     };
-    let top = super::display_list::clip_reveal_changed_strip(
+    let top = crate::paint::clip_reveal_changed_strip(
         [40.0, 240.0, 100.0, 300.0],
         [40.0, 240.0, 160.0, 300.0],
         bounds,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(top.origin.y.0, 100.0);
     assert_eq!(top.size.height.0, 60.0);
     assert_eq!(top.size.width.0, 200.0);
-    let bottom = super::display_list::clip_reveal_changed_strip(
+    let bottom = crate::paint::clip_reveal_changed_strip(
         [40.0, 240.0, 100.0, 220.0],
         [40.0, 240.0, 100.0, 270.0],
         bounds,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(bottom.origin.y.0, 220.0);
     assert_eq!(bottom.size.height.0, 50.0);
 
-    let left = super::display_list::clip_reveal_changed_strip(
+    let left = crate::paint::clip_reveal_changed_strip(
         [50.0, 250.0, 20.0, 120.0],
         [90.0, 250.0, 20.0, 120.0],
         bounds,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(left.origin.x.0, 50.0);
     assert_eq!(left.size.width.0, 40.0);
-    let right = super::display_list::clip_reveal_changed_strip(
+    let right = crate::paint::clip_reveal_changed_strip(
         [50.0, 250.0, 20.0, 120.0],
         [50.0, 180.0, 20.0, 120.0],
         bounds,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(right.origin.x.0, 180.0);
     assert_eq!(right.size.width.0, 70.0);
 
-    let unchanged = super::display_list::clip_reveal_changed_strip(
+    let unchanged = crate::paint::clip_reveal_changed_strip(
         [50.0, 250.0, 20.0, 120.0],
         [50.0, 250.0, 20.0, 120.0],
         bounds,
-    ).unwrap();
+    )
+    .unwrap();
     assert!(unchanged.is_empty());
 }
 
@@ -1390,34 +1480,43 @@ fn clip_reveal_retarged_and_invalid_masks_keep_conservative_damage() {
         origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
         size: crate::size(crate::ScaledPixels(800.0), crate::ScaledPixels(600.0)),
     };
-    assert!(super::display_list::clip_reveal_changed_strip(
-        [20.0, 100.0, 20.0, 200.0],
-        [30.0, 120.0, 40.0, 250.0],
-        bounds,
-    ).is_none());
-    assert!(super::display_list::clip_reveal_changed_strip(
-        [20.0, 100.0, 20.0, 200.0],
-        [20.0, f32::NAN, 20.0, 200.0],
-        bounds,
-    ).is_none());
-    assert!(super::display_list::clip_reveal_changed_strip(
-        [100.0, 20.0, 20.0, 200.0],
-        [20.0, 100.0, 20.0, 200.0],
-        bounds,
-    ).is_none());
+    assert!(
+        crate::paint::clip_reveal_changed_strip(
+            [20.0, 100.0, 20.0, 200.0],
+            [30.0, 120.0, 40.0, 250.0],
+            bounds,
+        )
+        .is_none()
+    );
+    assert!(
+        crate::paint::clip_reveal_changed_strip(
+            [20.0, 100.0, 20.0, 200.0],
+            [20.0, f32::NAN, 20.0, 200.0],
+            bounds,
+        )
+        .is_none()
+    );
+    assert!(
+        crate::paint::clip_reveal_changed_strip(
+            [100.0, 20.0, 20.0, 200.0],
+            [20.0, 100.0, 20.0, 200.0],
+            bounds,
+        )
+        .is_none()
+    );
 
-    let clipped = super::display_list::clip_reveal_changed_strip(
+    let clipped = crate::paint::clip_reveal_changed_strip(
         [20.0, 100.0, 10.0, 200.0],
         [20.0, 100.0, 10.0, 250.0],
         crate::Bounds {
             origin: crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             size: crate::size(crate::ScaledPixels(80.0), crate::ScaledPixels(220.0)),
         },
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(clipped.size.height.0, 20.0);
     assert_eq!(clipped.size.width.0, 60.0);
 }
-
 
 #[test]
 fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
@@ -1438,10 +1537,13 @@ fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
         from: [40.0, 240.0, 80.0, bottom],
         to: [40.0, 240.0, 80.0, bottom],
     };
-    let pixels = scene.gpu_sample_damage(&[sample(220.0)], &[sample(260.0)]);
+    let pixels = crate::paint::gpu_sample_damage(&scene, &[sample(220.0)], &[sample(260.0)]);
     assert_eq!(pixels.len(), 1);
     assert_eq!(pixels[0].origin.y.0, 220.0);
     assert_eq!(pixels[0].size.height.0, 40.0);
     assert_eq!(pixels[0].size.width.0, 200.0);
-    assert!(scene.gpu_sample_damage(&[sample(220.0)], &[sample(220.0)]).is_empty());
+    assert!(
+        crate::paint::gpu_sample_damage(&scene, &[sample(220.0)], &[sample(220.0)])
+            .is_empty()
+    );
 }
