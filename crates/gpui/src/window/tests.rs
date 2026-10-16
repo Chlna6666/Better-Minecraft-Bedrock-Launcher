@@ -62,9 +62,12 @@ fn live_resize_commits_new_geometry_after_draw_budget_expires(cx: &mut TestAppCo
         window.draw(cx);
         assert!(!window.draw_was_degraded());
         assert!(
-            window.rendered_frame.scene.quads.iter().any(|quad| {
-                quad.bounds.size.width == px(80.0).scale(window.scale_factor)
-            })
+            window
+                .rendered_frame
+                .scene()
+                .quads
+                .iter()
+                .any(|quad| { quad.bounds.size.width == px(80.0).scale(window.scale_factor) })
         );
     });
 }
@@ -124,7 +127,7 @@ impl Render for HorizontalSpringDecorationView {
 fn horizontal_spring_decoration_binds_painted_quad(cx: &mut TestAppContext) {
     let (_view, cx) = cx.add_window_view(|_, _| HorizontalSpringDecorationView { left: px(200.0) });
     cx.update(|window, _| {
-        let quads = &window.rendered_frame.scene.quads;
+        let quads = &window.rendered_frame.scene().quads;
         assert_eq!(quads.len(), 1);
         assert!(quads[0].animation_id.is_some());
     });
@@ -140,7 +143,7 @@ fn horizontal_spring_same_distance_retarget_preserves_position(cx: &mut TestAppC
         window.animation_time.set(retarget_at);
         (
             window.animation_engine.borrow().scene_values(retarget_at),
-            window.rendered_frame.scene.quads[0].bounds.origin.x.0,
+            window.rendered_frame.scene().quads[0].bounds.origin.x.0,
         )
     });
     view.update(visual, |view, cx| {
@@ -154,7 +157,7 @@ fn horizontal_spring_same_distance_retarget_preserves_position(cx: &mut TestAppC
     let (after, new_base) = visual.update(|window, _| {
         (
             window.animation_engine.borrow().scene_values(retarget_at),
-            window.rendered_frame.scene.quads[0].bounds.origin.x.0,
+            window.rendered_frame.scene().quads[0].bounds.origin.x.0,
         )
     });
     assert_ne!(old_base, new_base);
@@ -196,7 +199,11 @@ fn horizontal_spring_same_distance_restarts_after_settling(cx: &mut TestAppConte
             assert_eq!(value.from[0], -200.0 * window.scale_factor());
             assert_eq!(value.to[0], 0.0);
         }
-        assert!(window.rendered_frame.scene.quads[0].animation_id.is_some());
+        assert!(
+            window.rendered_frame.scene().quads[0]
+                .animation_id
+                .is_some()
+        );
     });
 }
 
@@ -557,8 +564,8 @@ fn paint_image_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
 
             // Once neither committed generation references the sprite, the ordinary liveness prune
             // owns retirement and removes the stale static-image lookup.
-            window.next_frame.scene.clear();
-            window.rendered_frame.scene.clear();
+            window.next_frame.painter.clear();
+            window.rendered_frame.clear();
             window.prune_static_image_atlas_residency();
             assert!(window.image_paint_tile_cache.is_empty());
             window.invalidator.set_phase(DrawPhase::None);
@@ -667,8 +674,8 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                     ImagePaintRequest::new(second_bounds, image.as_ref()),
                 ])
                 .unwrap();
-            assert_eq!(window.next_frame.scene.polychrome_sprites[0].sampling, 1);
-            assert_eq!(window.next_frame.scene.polychrome_sprites[1].sampling, 0);
+            assert_eq!(window.next_frame.painter.polychrome_sprites[0].sampling, 1);
+            assert_eq!(window.next_frame.painter.polychrome_sprites[1].sampling, 0);
             assert_eq!(window.image_paint_tile_cache.len(), 1);
 
             window.drop_image(image).unwrap();
@@ -677,8 +684,8 @@ fn paint_images_reuses_static_atlas_tile_cache(cx: &mut TestAppContext) {
                 1,
                 "scene-live static image residency must survive owner drop until scene replacement"
             );
-            window.next_frame.scene.clear();
-            window.rendered_frame.scene.clear();
+            window.next_frame.painter.clear();
+            window.rendered_frame.clear();
             window.prune_static_image_atlas_residency();
             assert!(window.image_paint_tile_cache.is_empty());
             window.invalidator.set_phase(DrawPhase::None);
@@ -1505,7 +1512,7 @@ fn minimized_initial_frame_is_deferred(cx: &mut TestAppContext) {
         assert!(window.invalidator.is_dirty());
         assert!(!window.refreshing);
         assert!(!window.test_has_completed_rendered_frame());
-        assert_eq!(window.rendered_frame.scene.len(), 0);
+        assert_eq!(window.rendered_frame.scene().len(), 0);
     });
 }
 
@@ -2260,8 +2267,8 @@ fn scene_animation_metadata_changes_require_commit(cx: &mut TestAppContext) {
             [1.0; 4],
         );
         let mut engine = window.animation_engine.borrow_mut();
-        assert!(engine.retain_scene_animations_for_scene(&Scene::default()));
-        assert!(!engine.retain_scene_animations_for_scene(&Scene::default()));
+        assert!(engine.retain_scene_animations_for_scene(&crate::scene::Painter::default()));
+        assert!(!engine.retain_scene_animations_for_scene(&crate::scene::Painter::default()));
     });
 }
 
@@ -2530,7 +2537,7 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
                     .presentation_state
                     .active_scene()
                     .expect("completed window frame must publish an active presentation scene"),
-                &*window.rendered_frame.scene,
+                &*window.rendered_frame.scene(),
             ),
             "presentation must sample the exact immutable scene commit exposed by the UI frame"
         );
@@ -2539,7 +2546,7 @@ fn gpu_scene_animation_updates_values_without_notifying_view(cx: &mut TestAppCon
             "synchronous presentation currently activates the latest pending commit before reuse"
         );
         assert!(
-            window.rendered_frame.scene.animation_values.is_empty(),
+            window.rendered_frame.scene().animation_values.is_empty(),
             "engine presentation ticks must not mutate the committed Scene"
         );
         assert_eq!(
@@ -2614,7 +2621,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
                     .presentation_state
                     .active_scene()
                     .expect("completed window frame must publish an active presentation scene"),
-                &*window.rendered_frame.scene,
+                &*window.rendered_frame.scene(),
             ),
             "presentation must sample the exact immutable scene commit exposed by the UI frame"
         );
@@ -2623,7 +2630,7 @@ fn blur_auto_driver_advances_scene_values_without_notifying_view(cx: &mut TestAp
             "synchronous presentation currently activates the latest pending commit before reuse"
         );
         assert!(
-            window.rendered_frame.scene.animation_values.is_empty(),
+            window.rendered_frame.scene().animation_values.is_empty(),
             "engine presentation ticks must not mutate the committed Scene"
         );
         assert_eq!(
@@ -3129,13 +3136,21 @@ fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(cx: &mut T
         let test_window = window.platform_window.as_test().unwrap().clone();
         test_window.set_frame_result(PlatformFrameResult::Deferred);
 
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(Quad::default());
         scene.finish();
-        let pending_scene = Arc::new(scene);
+        let pending_scene = std::sync::Arc::new(crate::window::Paint::new(
+            scene.into_scene(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                layout_extent: Some((1200, 700)),
+                layout_epoch: 1,
+                scale_factor: 1.0,
+            },
+        ));
         window
             .presentation_state
-            .publish_pending(Arc::clone(&pending_scene), std::sync::Arc::default(), [], Some((1200, 700)), 1, 1.0);
+            .publish_pending(Arc::clone(&pending_scene), []);
         assert!(window.presentation_state.has_pending_scene());
         window.needs_present.set(true);
         window.scene_animation_needs_commit.set(true);
@@ -3146,12 +3161,12 @@ fn deferred_platform_draw_preserves_needs_present_and_active_snapshot(cx: &mut T
         assert!(window.needs_present.get());
         assert!(window.scene_animation_needs_commit.get());
         assert!(!window.presentation_state.has_pending_scene());
-        assert!(std::ptr::eq(
-            window
+        assert!(Arc::ptr_eq(
+            &window
                 .presentation_state
-                .active_scene()
-                .expect("deferred submission must retain the activated snapshot"),
-            pending_scene.as_ref(),
+                .active_paint()
+                .expect("deferred submission must retain the publication"),
+            &pending_scene,
         ));
         assert_eq!(test_window.draw_count(), 1);
     });
@@ -3570,7 +3585,7 @@ fn backdrop_blur_scene_preserves_opacity_scale_and_order(cx: &mut TestAppContext
         background_order,
         window_scale,
     ) = cx.update(|window, _cx| {
-        let scene = &window.rendered_frame.scene;
+        let scene = &window.rendered_frame.scene();
         assert_eq!(scene.backdrop_blurs.len(), 1);
         let blur = scene
             .backdrop_blurs
@@ -3635,7 +3650,7 @@ fn backdrop_blur_scene_preserves_opacity_scale_and_order(cx: &mut TestAppContext
 fn backdrop_blur_unmount_clears_next_frame(cx: &mut TestAppContext) {
     let (view, cx) = cx.add_window_view(|_, _| BackdropBlurTestView { show_blur: true });
     cx.update(|window, _cx| {
-        assert_eq!(window.rendered_frame.scene.backdrop_blurs.len(), 1);
+        assert_eq!(window.rendered_frame.scene().backdrop_blurs.len(), 1);
     });
 
     view.update(cx, |view, cx| {
@@ -3644,7 +3659,7 @@ fn backdrop_blur_unmount_clears_next_frame(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| {
         window.draw(cx).clear();
-        assert!(window.rendered_frame.scene.backdrop_blurs.is_empty());
+        assert!(window.rendered_frame.scene().backdrop_blurs.is_empty());
     });
 }
 
@@ -3652,7 +3667,7 @@ fn backdrop_blur_unmount_clears_next_frame(cx: &mut TestAppContext) {
 fn element_blur_isolates_nested_content_and_group_opacity(cx: &mut TestAppContext) {
     let (_view, cx) = cx.add_window_view(|_, _| ElementBlurTestView { show_blur: true });
     cx.update(|window, _| {
-        let scene = &window.rendered_frame.scene;
+        let scene = &window.rendered_frame.scene();
         assert_eq!(scene.blurs.len(), 1);
         // The outside sibling stays in the main scene; neither filtered fill leaks into it.
         assert_eq!(scene.quads.len(), 1);
@@ -3678,7 +3693,7 @@ fn element_blur_unmount_clears_nested_filters(cx: &mut TestAppContext) {
     });
     cx.update(|window, cx| {
         window.draw(cx).clear();
-        assert!(window.rendered_frame.scene.blurs.is_empty());
-        assert_eq!(window.rendered_frame.scene.quads.len(), 1);
+        assert!(window.rendered_frame.scene().blurs.is_empty());
+        assert_eq!(window.rendered_frame.scene().quads.len(), 1);
     });
 }

@@ -53,11 +53,17 @@ fn packet(renderer: &NovaRenderer, blur: bool) -> crate::PresentationPacket {
     let mut damage = crate::DirtyRegion::empty();
     damage.mark_full(viewport);
     crate::PresentationPacket::new(
-        Arc::new(scene), std::sync::Arc::default(),
+        std::sync::Arc::new(crate::window::Paint::new(
+            scene.into_scene(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                scale_factor: 1.,
+                ..Default::default()
+            },
+        )),
         [],
         [],
         Instant::now(),
-        1.,
         damage,
         crate::BackdropBlurDamagePlan::default(),
         crate::PartialPresentMode::FullRedraw,
@@ -118,7 +124,7 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
         ),
         crate::size(crate::ScaledPixels(8.), crate::ScaledPixels(8.)),
     );
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     for (bounds, color) in [(viewport, 0x00ff00), (marker, 0xff0000)] {
         scene.insert_primitive(crate::Quad {
             bounds,
@@ -129,11 +135,17 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
     }
     scene.finish();
     crate::PresentationPacket::new(
-        Arc::new(scene), std::sync::Arc::default(),
+        std::sync::Arc::new(crate::window::Paint::new(
+            scene.into_scene(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                scale_factor: 1.,
+                ..Default::default()
+            },
+        )),
         [],
         [],
         Instant::now(),
-        1.,
         crate::DirtyRegion::full(viewport),
         crate::BackdropBlurDamagePlan::default(),
         crate::PartialPresentMode::FullRedraw,

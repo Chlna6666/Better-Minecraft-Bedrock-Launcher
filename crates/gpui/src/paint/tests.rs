@@ -8,7 +8,7 @@ fn identity_capture_inside_gaussian_keeps_parent_output_damage() {
         crate::size(ScaledPixels(200.), ScaledPixels(120.)),
     );
     let build = |x| {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for radius in [4., 0.] {
             scene.begin_blur(BlurCapture {
                 animation_id: None,
@@ -50,7 +50,7 @@ fn gpu_resident_source_uses_submitted_animation_samples_not_ui_dirty_views() {
         crate::point(ScaledPixels(10.0), ScaledPixels(20.0)),
         crate::size(ScaledPixels(30.0), ScaledPixels(40.0)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(7);
     scene.insert_animated_primitive(
         Quad {
@@ -80,7 +80,7 @@ fn translated_geometry_entering_a_fixed_clip_marks_visible_pixels() {
         crate::point(ScaledPixels(0.), ScaledPixels(0.)),
         crate::size(ScaledPixels(100.), ScaledPixels(100.)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     scene.insert_animated_primitive(
         Quad {
@@ -104,7 +104,7 @@ fn translated_geometry_entering_a_fixed_clip_marks_visible_pixels() {
         crate::point(ScaledPixels(20.), ScaledPixels(20.)),
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     );
-    let mut replayed = Scene::default();
+    let mut replayed = crate::scene::Painter::default();
     replayed.replay(0..scene.len(), &scene, &[]);
     for retained in [&scene, &replayed] {
         for property in [
@@ -148,7 +148,7 @@ fn zero_radius_nested_child_keeps_parent_damage_local() {
     );
     let child_id = SceneAnimationId(1 << 31);
     let parent_id = SceneAnimationId((1 << 31) + 1);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(BlurCapture {
         animation_id: Some(parent_id),
         layer_id: None,
@@ -206,7 +206,7 @@ fn retired_identity_parent_sample_does_not_damage_static_capture() {
         crate::point(ScaledPixels(20.), ScaledPixels(20.)),
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(BlurCapture {
         animation_id: Some(SceneAnimationId(2)),
         layer_id: None,
@@ -259,7 +259,7 @@ fn gpu_resident_nested_blur_child_invalidates_parent_color_output() {
         crate::point(ScaledPixels(10.0), ScaledPixels(20.0)),
         crate::size(ScaledPixels(40.0), ScaledPixels(20.0)),
     );
-    let mut child = Scene::default();
+    let mut child = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     child.insert_animated_primitive(
         Quad {
@@ -269,7 +269,7 @@ fn gpu_resident_nested_blur_child_invalidates_parent_color_output() {
         },
         animation_id,
     );
-    let mut parent = Scene::default();
+    let mut parent = crate::scene::Painter::default();
     parent.insert_primitive(PaintBlur {
         order: 0,
         animation_id: None,
@@ -278,7 +278,7 @@ fn gpu_resident_nested_blur_child_invalidates_parent_color_output() {
         content_mask: crate::ContentMask::new(bounds),
         radius: ScaledPixels(8.0),
         opacity: 1.0,
-        content: std::sync::Arc::new(child),
+        content: std::sync::Arc::new(child.into_scene()),
     });
     let sample = |progress| SceneAnimationValue {
         animation_id,
@@ -297,7 +297,7 @@ fn renderer_owned_opacity_tick_marks_pixels_without_ui_relayout() {
         crate::point(ScaledPixels(50.0), ScaledPixels(40.0)),
         crate::size(ScaledPixels(25.0), ScaledPixels(10.0)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     scene.insert_animated_primitive(
         Quad {
@@ -325,7 +325,7 @@ fn renderer_owned_translation_marks_union_of_old_and_new_pixel_bounds() {
         crate::point(ScaledPixels(20.0), ScaledPixels(30.0)),
         crate::size(ScaledPixels(40.0), ScaledPixels(20.0)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     scene.insert_animated_primitive(
         Quad {

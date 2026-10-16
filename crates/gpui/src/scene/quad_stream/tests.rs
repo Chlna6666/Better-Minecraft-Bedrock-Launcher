@@ -1,8 +1,6 @@
 use super::*;
 use crate::window::retained::PaintFixture;
-use crate::{
-    ContentMask, GlobalElementId, PrimitiveBatch, ScaledPixels, Scene, bounds, point, size,
-};
+use crate::{ContentMask, GlobalElementId, PrimitiveBatch, ScaledPixels, bounds, point, size};
 
 fn quad(order: u32) -> Quad {
     let area = bounds(
@@ -171,7 +169,7 @@ fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     assert_eq!(&current.paint_operations[0] as *const _, operation);
     assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
     assert!(current.chunks()[0].replayed);
-    let mut reference = Scene::default();
+    let mut reference = crate::scene::Painter::default();
     reference.replay(0..previous.len(), &previous, &[]);
     reference.finish();
     assert_ne!(
@@ -203,7 +201,7 @@ fn changed_ordering_prefix_rebinds_payload_instead_of_sharing_stale_orders() {
         &current.quads[1] as *const Quad,
         &previous.quads[0] as *const Quad
     );
-    let mut reference = Scene::default();
+    let mut reference = crate::scene::Painter::default();
     reference.insert_primitive(quad(0));
     reference.replay(0..previous.len(), &previous, &[]);
     reference.finish();

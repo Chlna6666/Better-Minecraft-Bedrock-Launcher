@@ -755,7 +755,7 @@ mod tests {
             crate::point(crate::ScaledPixels(10.), crate::ScaledPixels(20.)),
             crate::size(crate::ScaledPixels(16.), crate::ScaledPixels(16.)),
         );
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_animated_primitive(
             crate::Quad {
                 bounds,
@@ -779,10 +779,14 @@ mod tests {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.),
             opacity: 1.,
-            content: std::sync::Arc::new(scene),
+            content: std::sync::Arc::new(scene.into_scene()),
         };
         let mut registry = FilterRegistry::new(None);
-        registry.record_element_blur_inputs(&[(1, FilterSource::Element(source.clone()))], &[sample(0.2)], [1]);
+        registry.record_element_blur_inputs(
+            &[(1, FilterSource::Element(source.clone()))],
+            &[sample(0.2)],
+            [1],
+        );
         registry.record_submission(BackdropBlurQuality::Full, 0);
         registry.begin_refresh();
         assert_eq!(
@@ -804,9 +808,9 @@ mod tests {
                 .is_none()
         );
         source.radius = crate::ScaledPixels(0.);
-        let mut replacement = crate::Scene::default();
+        let mut replacement = crate::scene::Painter::default();
         replacement.replay(0..source.content.len(), &source.content, &[]);
-        source.content = std::sync::Arc::new(replacement);
+        source.content = std::sync::Arc::new(replacement.into_scene());
         assert_eq!(
             registry
                 .local_source_damage(1, &FilterSource::Element(source.clone()), &[sample(0.8)])
@@ -822,7 +826,7 @@ mod tests {
             crate::point(crate::ScaledPixels(12.), crate::ScaledPixels(14.)),
             crate::size(crate::ScaledPixels(100.), crate::ScaledPixels(80.)),
         );
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_animated_primitive(
             crate::Quad {
                 bounds: area,
@@ -831,7 +835,7 @@ mod tests {
             },
             crate::SceneAnimationId(21),
         );
-        let old_scene = std::sync::Arc::new(scene);
+        let old_scene = std::sync::Arc::new(scene.into_scene());
         let sample = |progress| crate::SceneAnimationValue {
             animation_id: crate::SceneAnimationId(21),
             property: crate::TransitionProperty::Opacity,
@@ -840,33 +844,41 @@ mod tests {
             to: [1., 0., 0., 0.],
         };
         let old_source = crate::PaintBlur {
-            order: 0, animation_id: None, layer_id: None,
-            bounds: area, content_mask: crate::ContentMask::new(area),
-            radius: crate::ScaledPixels(0.0), opacity: 1.0,
+            order: 0,
+            animation_id: None,
+            layer_id: None,
+            bounds: area,
+            content_mask: crate::ContentMask::new(area),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
             content: old_scene.clone(),
         };
         let mut registry = FilterRegistry::new(None);
         registry.record_element_blur_inputs(
             &[(1, FilterSource::Element(old_source.clone()))],
-            &[sample(0.2)], [1],
+            &[sample(0.2)],
+            [1],
         );
         // A newer frame can be submitted without refreshing this texture.
         // Its resident pixels must still be compared against sample(0.2).
         registry.record_element_blur_inputs(
-            &[(1, FilterSource::Element(old_source.clone()))], &[sample(0.7)], [],
+            &[(1, FilterSource::Element(old_source.clone()))],
+            &[sample(0.7)],
+            [],
         );
-        let mut equivalent = crate::Scene::default();
+        let mut equivalent = crate::scene::Painter::default();
         equivalent.replay(0..old_scene.len(), &old_scene, &[]);
         let mut rebuilt = old_source;
-        rebuilt.content = std::sync::Arc::new(equivalent);
+        rebuilt.content = std::sync::Arc::new(equivalent.into_scene());
         assert_eq!(
-            registry.local_source_damage(
-                1, &FilterSource::Element(rebuilt.clone()), &[sample(0.7)],
-            ).expect("old resident sample must cause damage").union_bounds(),
+            registry
+                .local_source_damage(1, &FilterSource::Element(rebuilt.clone()), &[sample(0.7)],)
+                .expect("old resident sample must cause damage")
+                .union_bounds(),
             Some(area),
         );
         // A genuinely changed static child may not inherit old source texels.
-        let mut changed = crate::Scene::default();
+        let mut changed = crate::scene::Painter::default();
         changed.insert_animated_primitive(
             crate::Quad {
                 bounds: crate::bounds(
@@ -878,10 +890,13 @@ mod tests {
             },
             crate::SceneAnimationId(21),
         );
-        rebuilt.content = std::sync::Arc::new(changed);
-        assert!(registry.local_source_damage(
-            1, &FilterSource::Element(rebuilt), &[sample(0.7)],
-        ).is_none(), "changing static painter geometry must force full capture");
+        rebuilt.content = std::sync::Arc::new(changed.into_scene());
+        assert!(
+            registry
+                .local_source_damage(1, &FilterSource::Element(rebuilt), &[sample(0.7)],)
+                .is_none(),
+            "changing static painter geometry must force full capture"
+        );
     }
 
     #[test]
@@ -894,7 +909,7 @@ mod tests {
             crate::point(crate::ScaledPixels(100.), crate::ScaledPixels(100.)),
             crate::size(crate::ScaledPixels(8.), crate::ScaledPixels(8.)),
         );
-        let mut child = crate::Scene::default();
+        let mut child = crate::scene::Painter::default();
         child.insert_animated_primitive(
             crate::Quad {
                 bounds: far_bounds,
@@ -918,18 +933,34 @@ mod tests {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.),
             opacity: 1.,
-            content: std::sync::Arc::new(child),
+            content: std::sync::Arc::new(child.into_scene()),
         };
         let mut registry = FilterRegistry::new(None);
-        registry.record_element_blur_inputs(&[(2, FilterSource::Element(source.clone()))], &[sample(0.1)], [2]);
-        assert!(registry.source_unchanged(2, &FilterSource::Element(source.clone()), &[sample(0.9)]));
+        registry.record_element_blur_inputs(
+            &[(2, FilterSource::Element(source.clone()))],
+            &[sample(0.1)],
+            [2],
+        );
+        assert!(registry.source_unchanged(
+            2,
+            &FilterSource::Element(source.clone()),
+            &[sample(0.9)]
+        ));
         let mut filtered = source.clone();
         filtered.radius = crate::ScaledPixels(8.);
-        assert!(!registry.source_unchanged(2, &FilterSource::Element(filtered.clone()), &[sample(0.9)]));
+        assert!(!registry.source_unchanged(
+            2,
+            &FilterSource::Element(filtered.clone()),
+            &[sample(0.9)]
+        ));
         let mut shifted = source.clone();
         shifted.bounds = far_bounds;
         shifted.content_mask = crate::ContentMask::new(far_bounds);
-        assert!(!registry.source_unchanged(2, &FilterSource::Element(shifted.clone()), &[sample(0.9)]));
+        assert!(!registry.source_unchanged(
+            2,
+            &FilterSource::Element(shifted.clone()),
+            &[sample(0.9)]
+        ));
     }
 
     #[test]

@@ -874,7 +874,7 @@ fn unsupported_batch_summary_counts_each_advanced_batch_kind() {
 
 #[test]
 fn frame_upload_globals_follow_surface_alpha_mode() {
-    let scene = crate::Scene::default();
+    let scene = crate::scene::Painter::default();
     let mut chunk_cache = RetainedQuadChunkCache::default();
     let mut upload = FrameUpload::default();
     let rendering_parameters = RenderingParameters::system();
@@ -1185,7 +1185,7 @@ fn nested_element_retained_chunks_survive_root_pruning() {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
             opacity: 1.0,
-            content: Arc::new(content.paint),
+            content: Arc::new(content.paint.into_scene()),
         });
         scene.finish();
         scene
@@ -1250,7 +1250,7 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
             opacity: 1.0,
-            content: Arc::new(child.paint),
+            content: Arc::new(child.paint.into_scene()),
         });
     }
     root.finish();
@@ -1284,7 +1284,7 @@ fn sibling_element_blurs_keep_recursive_quad_batch_bounds_aligned() {
 
 #[test]
 fn frame_upload_records_scene_animation_bindings() {
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let bounds = Bounds {
         origin: Point {
             x: crate::ScaledPixels(0.0),
@@ -1340,7 +1340,7 @@ fn frame_upload_records_scene_animation_bindings() {
 
 #[test]
 fn frame_upload_records_scene_animation_values() {
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = scene.allocate_animation_id();
     scene.push_animation_value(crate::SceneAnimationValue {
         animation_id,
@@ -1374,7 +1374,7 @@ fn frame_upload_records_scene_animation_values() {
 
 #[test]
 fn frame_upload_accepts_presentation_animation_values_outside_scene() {
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = crate::SceneAnimationId(1 << 31);
     scene.insert_animated_primitive(Quad::default(), animation_id);
     scene.finish();
@@ -1438,7 +1438,7 @@ fn frame_upload_reuses_static_path_rasterization_bytes() {
         ..Default::default()
     };
 
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.push_layer(Bounds {
         origin: Point {
             x: crate::ScaledPixels(0.0),
@@ -2120,7 +2120,7 @@ fn present_draw_steps_continue_after_backdrop_blur_batch() {
 
 #[test]
 fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
-    let scene = Arc::new(crate::Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     let mut dirty_region = crate::DirtyRegion::empty();
     dirty_region.push(crate::bounds(
         Point {
@@ -2132,11 +2132,10 @@ fn nova_surface_preserves_partial_plan_only_for_native_damage_path() {
     let backdrop_blur_damage_plan = crate::BackdropBlurDamagePlan::default();
     let partial_packet = || {
         PresentationPacket::new(
-            Arc::clone(&scene), std::sync::Arc::default(),
+            Arc::clone(&scene),
             [],
             [],
             std::time::Instant::now(),
-            1.0,
             dirty_region.clone(),
             backdrop_blur_damage_plan.clone(),
             PartialPresentMode::Partial,
@@ -3918,8 +3917,8 @@ fn test_texture_view_id(index: u32) -> TextureViewId {
     TextureViewId::from_parts(index, 1)
 }
 
-fn backdrop_blur_scene(tint: Option<crate::Hsla>, opacity: f32) -> crate::Scene {
-    let mut scene = crate::Scene::default();
+fn backdrop_blur_scene(tint: Option<crate::Hsla>, opacity: f32) -> crate::scene::Painter {
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(test_backdrop_blur(tint, opacity));
     scene.finish();
     scene
@@ -3979,31 +3978,36 @@ fn read_f32_at(bytes: &[u8], offset: usize) -> f32 {
 
 #[test]
 fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
-    let scene = Arc::new(crate::Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     let mut dirty = crate::DirtyRegion::empty();
     dirty.push(crate::bounds(
         crate::point(crate::ScaledPixels(1.0), crate::ScaledPixels(1.0)),
         crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(12.0)),
     ));
     let mut packet = PresentationPacket::new(
-        scene, std::sync::Arc::default(),
+        scene,
         [],
         [],
         std::time::Instant::now(),
-        1.0,
         dirty,
         crate::BackdropBlurDamagePlan::default(),
         PartialPresentMode::Partial,
     );
     force_full_drawable_damage_after_resize(
         &mut packet,
-        crate::platform::nova::renderer::DrawableSize { width: 1280, height: 720 },
+        crate::platform::nova::renderer::DrawableSize {
+            width: 1280,
+            height: 720,
+        },
     );
     assert!(packet.dirty_region.is_full());
     assert_eq!(packet.partial_present_mode, PartialPresentMode::FullRedraw);
     assert!(packet.force_full_backdrop_blur_refresh);
     assert_eq!(
-        packet.dirty_region.union_bounds().expect("full dirty bounds"),
+        packet
+            .dirty_region
+            .union_bounds()
+            .expect("full dirty bounds"),
         crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(1280.0), crate::ScaledPixels(720.0)),
@@ -4037,7 +4041,7 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
         crate::point(crate::ScaledPixels(140.0), crate::ScaledPixels(50.0)),
         crate::size(crate::ScaledPixels(180.0), crate::ScaledPixels(240.0)),
     );
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(crate::BlurCapture {
         animation_id: Some(crate::SceneAnimationId(11)),
         layer_id: None,
@@ -4071,18 +4075,26 @@ fn nested_element_capture_animation_keeps_local_damage_even_with_full_swapchain_
     ));
     let source_area = local.area();
     let mut packet = PresentationPacket::new(
-        Arc::new(scene), std::sync::Arc::default(),
+        std::sync::Arc::new(crate::window::Paint::new(
+            scene.into_scene(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                scale_factor: 1.0,
+                ..Default::default()
+            },
+        )),
         [],
         [],
         std::time::Instant::now(),
-        1.0,
         local,
         crate::BackdropBlurDamagePlan::default(),
         PartialPresentMode::Partial,
     );
     packet.sampled_active_presentation_animation = true;
-    assert!(!requires_full_drawable_damage(false, false),
-        "active compositing and nested capture are not a resize");
+    assert!(
+        !requires_full_drawable_damage(false, false),
+        "active compositing and nested capture are not a resize"
+    );
     // Some backends can only present a full swapchain image. That restriction
     // must not invalidate resident offscreen sources or their precise damage.
     resolve_surface_packet(&mut packet, true);

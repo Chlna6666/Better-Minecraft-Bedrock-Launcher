@@ -257,7 +257,8 @@ fn upload_globals<D: BackendResources>(device: &mut D, buffers: resources::Frame
     let mut upload = FrameUpload::default();
     upload.encode(
         &mut chunk_cache,
-        &crate::Scene::default(), &crate::window::retained::RetainedPaint::default(),
+        &crate::scene::Painter::default(),
+        &crate::window::retained::RetainedPaint::default(),
         &[],
         DrawableSize {
             width: 16,

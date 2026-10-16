@@ -106,7 +106,10 @@ fn collect_element_blurs<'a>(scene: &'a crate::Scene, output: &mut Vec<&'a crate
 mod tests {
     use super::*;
 
-    fn test_blur(animation_id: crate::SceneAnimationId, content: crate::Scene) -> crate::PaintBlur {
+    fn test_blur(
+        animation_id: crate::SceneAnimationId,
+        content: crate::scene::Painter,
+    ) -> crate::PaintBlur {
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(10.0), crate::ScaledPixels(20.0)),
             crate::size(crate::ScaledPixels(120.0), crate::ScaledPixels(80.0)),
@@ -119,7 +122,7 @@ mod tests {
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(12.0),
             opacity: 1.0,
-            content: std::sync::Arc::new(content),
+            content: std::sync::Arc::new(content.into_scene()),
         }
     }
 
@@ -158,7 +161,7 @@ mod tests {
     #[test]
     fn retained_static_element_blur_with_only_composite_animation_skips_filter_work() {
         let animation_id = crate::SceneAnimationId(7);
-        let blur = test_blur(animation_id, crate::Scene::default());
+        let blur = test_blur(animation_id, crate::scene::Painter::default());
         let upload = FrameUpload {
             retained_static_reused: true,
             sampled_animation_values: vec![active_value(animation_id)],
@@ -181,7 +184,7 @@ mod tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(20.0)),
         );
-        let mut child = crate::Scene::default();
+        let mut child = crate::scene::Painter::default();
         child.insert_animated_primitive(
             crate::Quad {
                 bounds: child_bounds,
@@ -214,7 +217,7 @@ mod tests {
             crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(16.0)),
         );
         let content_mask = crate::ContentMask::new(child_bounds);
-        let mut child = crate::Scene::default();
+        let mut child = crate::scene::Painter::default();
 
         child.insert_animated_primitive(
             crate::Quad {
@@ -253,7 +256,7 @@ mod tests {
         );
         child.push_animation_value(opacity_value(child_animation_id));
 
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(test_blur(parent_animation_id, child));
         scene.push_animation_value(active_value(parent_animation_id));
 

@@ -111,7 +111,7 @@ impl Window {
         if parent_start > child_start
             || child_start > child_end
             || child_end > parent_end
-            || parent_end > self.rendered_frame.scene.len()
+            || parent_end > self.rendered_frame.scene().len()
         {
             return None;
         }
@@ -131,19 +131,19 @@ impl Window {
     /// hitboxes/listeners or any other lifecycle side effects.
     pub(crate) fn replay_retained_scene_range(&mut self, range: Range<usize>) {
         debug_assert!(range.start <= range.end);
-        debug_assert!(range.end <= self.rendered_frame.scene.len());
+        debug_assert!(range.end <= self.rendered_frame.scene().len());
         if range.is_empty() {
             return;
         }
-        let replay_start = self.next_frame.scene.len();
+        let replay_start = self.next_frame.painter.len();
         let spans = self
             .rendered_frame
             .retained_paint
-            .replay_quads(&self.rendered_frame.scene, range.clone());
+            .replay_quads(self.rendered_frame.scene(), range.clone());
         if self
             .next_frame
-            .scene
-            .replay(range.clone(), &self.rendered_frame.scene, &spans)
+            .painter
+            .replay(range.clone(), self.rendered_frame.scene(), &spans)
         {
             Arc::get_mut(&mut self.next_frame.retained_paint)
                 .expect("unpublished paint retention")

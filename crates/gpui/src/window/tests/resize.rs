@@ -92,7 +92,7 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.bounds.size == new_size.scale(window.scale_factor) }),
@@ -113,7 +113,7 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.bounds.size == new_size.scale(window.scale_factor) }),
@@ -122,7 +122,7 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
             window.viewport_size,
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .map(|quad| quad.bounds.size)
@@ -141,7 +141,7 @@ fn click_painted_fixed_child(window: &mut Window, cx: &mut App) {
     let physical_size = size(px(80.), px(40.)).scale(window.scale_factor);
     let physical_position = window
         .rendered_frame
-        .scene
+        .scene()
         .quads
         .iter()
         .find(|quad| quad.bounds.size == physical_size)

@@ -15,7 +15,7 @@ fn retained_scene_bounds_ignore_fullscreen_paint_layer_metadata() {
         point(ScaledPixels(160.0), ScaledPixels(90.0)),
         size(ScaledPixels(120.0), ScaledPixels(64.0)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.push_layer(viewport);
     scene.insert_primitive(Quad {
         bounds: popup,
@@ -41,7 +41,7 @@ fn isolated_blur_capture_ignores_fullscreen_nested_paint_layer() {
         point(ScaledPixels(170.0), ScaledPixels(100.0)),
         size(ScaledPixels(40.0), ScaledPixels(20.0)),
     );
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(BlurCapture {
         animation_id: None,
         layer_id: None,
@@ -66,8 +66,8 @@ fn isolated_blur_capture_ignores_fullscreen_nested_paint_layer() {
 
 #[test]
 fn scene_revision_tracks_static_commits_not_animation_samples() {
-    let mut scene = Scene::default();
-    let mut other = Scene::default();
+    let mut scene = crate::scene::Painter::default();
+    let mut other = crate::scene::Painter::default();
     scene.finish();
     other.finish();
     let revision = scene.revision;
@@ -85,7 +85,7 @@ fn scene_revision_tracks_static_commits_not_animation_samples() {
 
 #[test]
 fn equivalent_static_scene_retains_revision_across_sampled_animation_frames() {
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     let previous_id = previous.allocate_animation_id();
     previous.insert_animated_primitive(Quad::default(), previous_id);
     previous.push_animation_value(SceneAnimationValue {
@@ -97,7 +97,7 @@ fn equivalent_static_scene_retains_revision_across_sampled_animation_frames() {
     });
     previous.finish();
 
-    let mut current = Scene::default();
+    let mut current = crate::scene::Painter::default();
     let current_id = current.allocate_animation_id();
     current.insert_animated_primitive(Quad::default(), current_id);
     current.push_animation_value(SceneAnimationValue {
@@ -120,7 +120,7 @@ fn sampled_animation_value_changes_report_primitive_damage() {
         point(ScaledPixels(10.0), ScaledPixels(20.0)),
         size(ScaledPixels(30.0), ScaledPixels(40.0)),
     );
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     let previous_id = previous.allocate_animation_id();
     previous.insert_animated_primitive(
         Quad {
@@ -138,7 +138,7 @@ fn sampled_animation_value_changes_report_primitive_damage() {
         to: [1.0, 0.0, 0.0, 0.0],
     });
 
-    let mut current = Scene::default();
+    let mut current = crate::scene::Painter::default();
     let current_id = current.allocate_animation_id();
     current.insert_animated_primitive(
         Quad {
@@ -176,7 +176,7 @@ fn element_blur_capture_reserves_full_three_sigma_footprint() {
         size(ScaledPixels(120.0), ScaledPixels(60.0)),
     );
     let radius = ScaledPixels(24.0);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(BlurCapture {
         animation_id: Some(SceneAnimationId(17)),
         layer_id: None,
@@ -203,7 +203,7 @@ fn element_blur_capture_reserves_full_three_sigma_footprint() {
 
 #[test]
 fn backdrop_blur_animation_refreshes_when_source_enters_region() {
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
@@ -249,7 +249,7 @@ fn backdrop_blur_animation_refreshes_when_source_enters_region() {
 
 #[test]
 fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
@@ -291,7 +291,7 @@ fn backdrop_blur_animation_ignores_disjoint_translation_sweep() {
 
 #[test]
 fn transform_after_blur_never_invalidates_that_blur() {
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(backdrop_blur(0));
     let animation_id = SceneAnimationId(1 << 31);
     let mut animated = monochrome_sprite(1, MonochromeSpriteSampling::Glyph as u32);
@@ -323,7 +323,7 @@ fn transform_after_blur_never_invalidates_that_blur() {
 
 #[test]
 fn spring_translation_sweep_uses_consecutive_overshoot_samples() {
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let animation_id = SceneAnimationId(1 << 31);
     let mut source = monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32);
     source.animation_id = Some(animation_id);
@@ -420,7 +420,7 @@ fn backdrop_blur(order: DrawOrder) -> PaintBackdropBlur {
     }
 }
 
-fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
+fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> crate::scene::Painter {
     let bounds = Bounds::new(
         point(ScaledPixels(10.0), ScaledPixels(10.0)),
         size(ScaledPixels(20.0), ScaledPixels(20.0)),
@@ -432,7 +432,7 @@ fn element_blur_scene(child_bounds: Bounds<ScaledPixels>) -> Scene {
         ),
         ..Default::default()
     };
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.begin_blur(BlurCapture {
         animation_id: None,
         layer_id: None,
@@ -485,7 +485,7 @@ fn blur_capture_state_tracks_nested_captures() {
         radius: ScaledPixels(1.0),
         opacity: 1.0,
     };
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
 
     assert!(!scene.is_capturing_blur());
     scene.begin_blur(capture.clone());
@@ -503,13 +503,13 @@ fn retained_element_filter_source_ignores_unrelated_output_damage() {
         point(ScaledPixels(0.0), ScaledPixels(0.0)),
         size(ScaledPixels(200.0), ScaledPixels(200.0)),
     );
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(Quad {
         bounds: viewport,
         content_mask: ContentMask::new(viewport),
         ..Default::default()
     });
-    let mut unchanged = Scene::default();
+    let mut unchanged = crate::scene::Painter::default();
     unchanged.insert_primitive(Quad {
         bounds: viewport,
         content_mask: ContentMask::new(viewport),
@@ -524,7 +524,7 @@ fn retained_element_filter_source_ignores_unrelated_output_damage() {
         &[]
     ));
 
-    let mut changed = Scene::default();
+    let mut changed = crate::scene::Painter::default();
     let mut quad = Quad {
         bounds: viewport,
         content_mask: ContentMask::new(viewport),
@@ -548,7 +548,7 @@ fn retained_element_filter_source_tracks_sampled_animations() {
     );
     let animation_id = SceneAnimationId(1 << 31);
     let make_scene = || {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_animated_primitive(
             Quad {
                 bounds: area,
@@ -601,7 +601,7 @@ fn retained_filter_source_compares_all_resolved_child_tracks() {
     // Caller-sampled ids may be registered in an ancestor Scene. The child
     // source must compare the flattened values actually consumed by the GPU.
     let animation_id = SceneAnimationId(7);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let area = bounds(
         point(ScaledPixels(0.), ScaledPixels(0.)),
         size(ScaledPixels(16.), ScaledPixels(16.)),
@@ -656,7 +656,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
     );
     let animation_id = SceneAnimationId(7);
     let build = || {
-        let mut child = Scene::default();
+        let mut child = crate::scene::Painter::default();
         child.insert_animated_primitive(
             Quad {
                 bounds: rect,
@@ -665,7 +665,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
             },
             animation_id,
         );
-        let mut outer = Scene::default();
+        let mut outer = crate::scene::Painter::default();
         outer.insert_primitive(PaintBlur {
             order: 0,
             animation_id: None,
@@ -674,7 +674,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
             content_mask: ContentMask::new(rect),
             radius: ScaledPixels(2.0),
             opacity: 1.0,
-            content: Arc::new(child),
+            content: Arc::new(child.into_scene()),
         });
         outer
     };
@@ -707,7 +707,7 @@ fn nested_filter_dynamic_child_invalidates_parent_source() {
 #[test]
 fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     let animation_id = SceneAnimationId(1 << 31);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     let mut first_blur = backdrop_blur(1);
     first_blur.animation_id = Some(animation_id);
     scene.insert_primitive(first_blur);
@@ -734,7 +734,7 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
     assert!(!next_full);
     assert!(next_damage.count() > 0);
 
-    let mut only_self = Scene::default();
+    let mut only_self = crate::scene::Painter::default();
     let mut blur = backdrop_blur(1);
     blur.animation_id = Some(animation_id);
     only_self.insert_primitive(blur);
@@ -750,12 +750,12 @@ fn backdrop_opacity_animation_reuses_gaussian_but_dirties_later_filter_input() {
 
 #[test]
 fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     previous.insert_primitive(backdrop_blur(1));
     previous.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
 
-    let mut top_layer_changed = Scene::default();
+    let mut top_layer_changed = crate::scene::Painter::default();
     top_layer_changed
         .insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     top_layer_changed.insert_primitive(backdrop_blur(1));
@@ -769,7 +769,7 @@ fn backdrop_blur_cache_refresh_ignores_primitives_above_blur() {
             .refresh_required()
     );
 
-    let mut source_changed = Scene::default();
+    let mut source_changed = crate::scene::Painter::default();
     source_changed.insert_primitive(monochrome_sprite(
         0,
         MonochromeSpriteSampling::Linear as u32,
@@ -793,7 +793,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
         point(ScaledPixels(0.0), ScaledPixels(0.0)),
         size(ScaledPixels(1200.0), ScaledPixels(60.0)),
     );
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     let mut background_blur = backdrop_blur(1);
     background_blur.bounds = viewport;
     background_blur.content_mask.bounds = viewport;
@@ -805,7 +805,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
     titlebar_blur.content_mask.bounds = titlebar;
     previous.insert_primitive(titlebar_blur.clone());
 
-    let mut current = Scene::default();
+    let mut current = crate::scene::Painter::default();
     current.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     current.insert_primitive(background_blur);
     current.insert_primitive(monochrome_sprite(
@@ -829,7 +829,7 @@ fn later_blur_damage_does_not_dirty_earlier_full_window_blur() {
 #[test]
 fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(1000.0), px(1000.0))).scale(1.0);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
 
     scene.insert_primitive(PaintBackdropBlur {
         order: 0,
@@ -867,14 +867,14 @@ fn backdrop_blur_damage_uses_gaussian_support_without_full_redraw() {
 
 #[test]
 fn scene_diff_reports_only_changed_primitive_bounds() {
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     let mut previous_animated = monochrome_sprite(1, MonochromeSpriteSampling::Glyph as u32);
     previous_animated.bounds.origin.x = ScaledPixels(2.0);
     previous.insert_primitive(previous_animated.clone());
     previous.insert_primitive(monochrome_sprite(2, MonochromeSpriteSampling::Glyph as u32));
 
-    let mut current = Scene::default();
+    let mut current = crate::scene::Painter::default();
     current.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     let mut current_animated = previous_animated.clone();
     current_animated.bounds.origin.x = ScaledPixels(4.0);
@@ -928,9 +928,9 @@ fn scene_diff_includes_shadow_shader_margin() {
     let mut current_shadow = previous_shadow.clone();
     current_shadow.bounds.origin.x = ScaledPixels(110.0);
 
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(previous_shadow);
-    let mut current = Scene::default();
+    let mut current = crate::scene::Painter::default();
     current.insert_primitive(current_shadow);
 
     let mut changed_bounds = Vec::new();
@@ -965,10 +965,10 @@ fn element_blur_replay_keeps_one_isolated_content_scene() {
         size(ScaledPixels(8.0), ScaledPixels(6.0)),
     );
     let first = element_blur_scene(child_bounds);
-    let mut second = Scene::default();
+    let mut second = crate::scene::Painter::default();
     second.replay(0..first.len(), &first, &[]);
     second.finish();
-    let mut third = Scene::default();
+    let mut third = crate::scene::Painter::default();
     third.replay(0..second.len(), &second, &[]);
     third.finish();
 
@@ -999,7 +999,7 @@ fn identity_capture_child_changes_do_not_dirty_full_capture_output() {
         size(ScaledPixels(8.0), ScaledPixels(6.0)),
     );
     let make_scene = |quad_bounds, radius: f32, opacity: f32| {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.begin_blur(BlurCapture {
             animation_id: None,
             layer_id: None,
@@ -1093,7 +1093,7 @@ fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
     assert!(child_damage.contains(&gaussian_edge));
 
     let mut unmount_damage = Vec::new();
-    let empty = Scene::default();
+    let empty = crate::scene::Painter::default();
     assert!(crate::paint::for_each_changed_bounds(
         &empty,
         0..empty.len(),
@@ -1106,7 +1106,7 @@ fn element_blur_child_damage_and_unmount_include_gaussian_edge() {
 
 #[test]
 fn monochrome_sprite_batches_split_by_sampling() {
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(monochrome_sprite(0, MonochromeSpriteSampling::Glyph as u32));
     scene.insert_primitive(monochrome_sprite(
         0,
@@ -1131,7 +1131,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
     let following_bounds =
         Bounds::new(point(px(10.0), px(10.0)), size(px(12.0), px(12.0))).scale(1.0);
 
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(Quad {
         bounds: first_bounds,
         content_mask: ContentMask {
@@ -1164,7 +1164,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         })
         .collect::<Vec<_>>();
 
-    let mut replayed = Scene::default();
+    let mut replayed = crate::scene::Painter::default();
     replayed.replay(0..replay_end, &previous, &[]);
     let actual_replayed_orders = replayed
         .paint_operations
@@ -1216,11 +1216,11 @@ fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
         ..Quad::default()
     };
 
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(first.clone());
     previous.insert_primitive(second);
 
-    let mut replayed = Scene::default();
+    let mut replayed = crate::scene::Painter::default();
     replayed.insert_primitive(first);
     replayed.replay(1..previous.len(), &previous, &[]);
 
@@ -1264,11 +1264,11 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
         ..Quad::default()
     };
 
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     previous.insert_primitive(first);
     previous.insert_primitive(second);
 
-    let mut replayed = Scene::default();
+    let mut replayed = crate::scene::Painter::default();
     replayed.insert_primitive(changed_first);
     replayed.replay(1..previous.len(), &previous, &[]);
 
@@ -1282,7 +1282,7 @@ fn prepared_quad_runs_split_solid_and_bordered_quads() {
         bounds,
         ..Default::default()
     };
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(Quad {
         bounds,
         content_mask: content_mask.clone(),
@@ -1316,7 +1316,7 @@ fn prepared_quad_runs_split_solid_and_bordered_quads() {
     assert_eq!(quad_runs[1].range, 1..2);
 }
 
-fn append_retained_test_quads(scene: &mut Scene, count: usize) -> Range<usize> {
+fn append_retained_test_quads(scene: &mut crate::scene::Painter, count: usize) -> Range<usize> {
     let start = scene.len();
     let bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(20.0), px(20.0))).scale(1.0);
     for _ in 0..count {
@@ -1356,7 +1356,7 @@ fn retained_quad_chunk_keeps_exact_identity_and_generation_on_replay() {
 
 #[test]
 fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
-    let mut previous = Scene::default();
+    let mut previous = crate::scene::Painter::default();
     let range = append_retained_test_quads(&mut previous, 1);
     let id = SceneAnimationId(1 << 30);
     // Use the insertion API to give both the operation and packed primitive the binding.
@@ -1369,12 +1369,12 @@ fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
     };
     previous.push_animation_value(sample(id, 0.25));
     previous.push_animation_value(sample(SceneAnimationId(id.0 + 1), 0.5));
-    let mut replayed = Scene::default();
+    let mut replayed = crate::scene::Painter::default();
     replayed.replay(range.clone(), &previous, &[]);
     assert_eq!(replayed.animation_values, vec![sample(id, 0.25)]);
     replayed.replay(range.clone(), &previous, &[]);
     assert_eq!(replayed.animation_values.len(), 1);
-    let mut updated = Scene::default();
+    let mut updated = crate::scene::Painter::default();
     updated.push_animation_value(sample(id, 0.75));
     updated.replay(range, &previous, &[]);
     assert_eq!(updated.animation_values, vec![sample(id, 0.75)]);
@@ -1525,9 +1525,13 @@ fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
         size(ScaledPixels(200.0), ScaledPixels(220.0)),
     );
     let animation_id = SceneAnimationId(701);
-    let mut scene = Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.insert_animated_primitive(
-        Quad { bounds: area, content_mask: ContentMask::new(area), ..Default::default() },
+        Quad {
+            bounds: area,
+            content_mask: ContentMask::new(area),
+            ..Default::default()
+        },
         animation_id,
     );
     let sample = |bottom: f32| SceneAnimationValue {

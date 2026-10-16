@@ -14,7 +14,7 @@ fn retained_root_view(renderer: &NovaRenderer) -> TextureViewId {
 
 pub(super) fn verify(
     renderer: &mut NovaRenderer,
-    open: &Arc<crate::Scene>,
+    open: &Arc<crate::window::Paint>,
     target: (TextureId, TextureViewId),
 ) {
     pixels(
@@ -29,7 +29,8 @@ pub(super) fn verify(
     verify_filter_retirement_keeps_root(renderer, open, target);
     let mut closed = page(false, renderer.current_size, PopupPlacement::Closed);
     Arc::get_mut(&mut closed)
-        .expect("new closed scene is uniquely owned")
+        .expect("new closed Paint is uniquely owned")
+        .scene
         .revision = 2;
     for _ in 0..3 {
         let local = pixels(renderer, &closed, target, 0., [], false);
@@ -86,41 +87,70 @@ pub(super) fn verify(
 }
 
 fn verify_root_without_filters(renderer: &mut NovaRenderer, target: (TextureId, TextureViewId)) {
-    renderer.wait_for_pending_submissions().expect("retire Filter readers");
+    renderer
+        .wait_for_pending_submissions()
+        .expect("retire Filter readers");
     renderer.destroy_backdrop_blur_targets();
-    let viewport = bounds(0., 0., renderer.current_size.width as f32, renderer.current_size.height as f32);
-    let mut scene = crate::Scene::default();
+    let viewport = bounds(
+        0.,
+        0.,
+        renderer.current_size.width as f32,
+        renderer.current_size.height as f32,
+    );
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(quad(viewport, crate::rgb(0x204060)));
     scene.insert_primitive(quad(viewport, crate::rgb(0x6080a0)));
     scene.insert_animated_primitive(
-        quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)), crate::SceneAnimationId(1),
+        quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
+        crate::SceneAnimationId(1),
     );
     scene.insert_primitive(quad(bounds(22., 22., 4., 4.), crate::rgb(0x00ffff)));
     scene.finish();
-    let scene = Arc::new(scene);
+    let scene = Arc::new(crate::window::Paint::new(
+        scene.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ));
     let expected = pixels(renderer, &scene, target, 0.8, [sample(0.8)], true);
     assert!(renderer.frame_upload.root_color.is_some());
     assert!(renderer.frame_upload.backdrop_blur_configs().is_empty());
-    assert!(renderer.filters.targets.is_none(), "Root-only needs no Filter target chain");
-    let version = renderer.root_color.content_version().expect("initialized Root");
+    assert!(
+        renderer.filters.targets.is_none(),
+        "Root-only needs no Filter target chain"
+    );
+    let version = renderer
+        .root_color
+        .content_version()
+        .expect("initialized Root");
     renderer.filters.invalidate();
     let actual = pixels(renderer, &scene, target, 0.8, [sample(0.8)], false);
     assert_eq!(actual, expected);
-    assert_eq!(renderer.root_color.content_version(), Some(version), "Filter invalidation must not rasterize unchanged Root");
     assert_eq!(
-        crate::diagnostics::performance_metrics::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        renderer.root_color.content_version(),
+        Some(version),
+        "Filter invalidation must not rasterize unchanged Root"
+    );
+    assert_eq!(
+        crate::diagnostics::performance_metrics::performance_metrics_snapshot()
+            .backdrop_blur_source_pixels,
         0,
     );
     assert_eq!(renderer.draw_step_scratch.steps().len(), 1);
     let local = pixels(renderer, &scene, target, 0.8, [sample(0.2)], false);
     let complete = pixels(renderer, &scene, target, 0.2, [sample(0.2)], true);
-    assert_eq!(local, complete, "Root-owned samples must repair animation damage without Filters");
-    eprintln!("root-only gate backend={} filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true", renderer.backend_info.label());
+    assert_eq!(
+        local, complete,
+        "Root-owned samples must repair animation damage without Filters"
+    );
+    eprintln!(
+        "root-only gate backend={} filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true",
+        renderer.backend_info.label()
+    );
 }
 
 fn verify_filter_retirement_keeps_root(
     renderer: &mut NovaRenderer,
-    scene: &Arc<crate::Scene>,
+    scene: &Arc<crate::window::Paint>,
     target: (TextureId, TextureViewId),
 ) {
     let identity = renderer.root_color.identity();
@@ -146,7 +176,7 @@ fn verify_filter_retirement_keeps_root(
 
 fn verify_root_reactivation(
     renderer: &mut NovaRenderer,
-    scene: &Arc<crate::Scene>,
+    scene: &Arc<crate::window::Paint>,
     target: (TextureId, TextureViewId),
 ) {
     present_auto_static(renderer, target);

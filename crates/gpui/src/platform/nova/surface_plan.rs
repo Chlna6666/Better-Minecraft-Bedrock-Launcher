@@ -15,7 +15,7 @@ pub(super) fn resolve_surface_packet(
     packet: &mut PresentationPacket,
     surface_requires_full_redraw: bool,
 ) {
-    if surface_requires_full_redraw || packet.scene.has_backdrop_blurs() {
+    if surface_requires_full_redraw || packet.paint.scene.has_backdrop_blurs() {
         packet.partial_present_mode = PartialPresentMode::FullRedraw;
     }
 }

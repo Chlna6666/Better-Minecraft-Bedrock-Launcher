@@ -442,167 +442,93 @@ pub(crate) struct CachedViewTraversalContext {
     image_cache_stack: Vec<AnyImageCache>,
 }
 
-/// One immutable scene snapshot owned by the presentation domain.
-struct PresentationSnapshot {
-    scene: Arc<Scene>,
-    retained_paint: Arc<crate::window::retained::RetainedPaint>,
-    // This extent belongs to the immutable Scene, not to the mutable HWND or
-    // the window's latest viewport. It survives a newer WM_SIZE until the
-    // matching UI generation has actually committed.
-    layout_extent: Option<(u32, u32)>,
-    /// Native client-geometry generation that produced this Scene.
-    ///
-    /// Presentation must not relabel an older Scene as a newer generation, and
-    /// the GPU owner must not bind it to a newer drawable extent.
-    layout_epoch: u64,
-    /// DPI scale used by the Scene's geometry and text rasterization.
-    layout_scale_factor: f32,
-    engine_animation_values: SmallVec<[crate::SceneAnimationValue; 4]>,
-}
-
-impl PresentationSnapshot {
-    fn new(
-        scene: Arc<Scene>,
-        retained_paint: Arc<crate::window::retained::RetainedPaint>,
-        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
-        layout_extent: Option<(u32, u32)>,
-        layout_epoch: u64,
-        layout_scale_factor: f32,
-    ) -> Self {
-        Self {
-            scene,
-            retained_paint,
-            layout_extent,
-            layout_epoch,
-            layout_scale_factor,
-            engine_animation_values: values.into_iter().collect(),
-        }
-    }
-
-    fn replace_engine_animation_values(
-        &mut self,
-        values: impl IntoIterator<Item = crate::SceneAnimationValue>,
-    ) {
-        self.engine_animation_values.clear();
-        self.engine_animation_values.extend(values);
-    }
-}
-
-/// Presentation-owned active/pending snapshots.
-///
-/// UI generation publishes immutable snapshots with latest-wins semantics. Presentation activates
-/// pending work independently of mutable UI scratch storage, while animation ticks only update the
-/// active snapshot's compact dynamic values.
+/// Active/pending references to the same immutable publication consumed by the renderer.
+/// Dynamic UI animation values remain presentation-owned and never mutate Paint.
 #[derive(Default)]
 pub(crate) struct PresentationState {
-    active: Option<PresentationSnapshot>,
-    pending: Option<PresentationSnapshot>,
+    active: Option<Arc<crate::window::Paint>>,
+    pending: Option<Arc<crate::window::Paint>>,
+    active_values: SmallVec<[crate::SceneAnimationValue; 4]>,
+    pending_values: SmallVec<[crate::SceneAnimationValue; 4]>,
 }
-
 impl PresentationState {
     pub(crate) fn publish_pending(
         &mut self,
-        scene: Arc<Scene>,
-        retained_paint: Arc<crate::window::retained::RetainedPaint>,
+        paint: Arc<crate::window::Paint>,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
-        layout_extent: Option<(u32, u32)>,
-        layout_epoch: u64,
-        layout_scale_factor: f32,
     ) {
-        match self.pending.as_mut() {
-            Some(pending) => {
-                pending.scene = scene;
-                pending.retained_paint = retained_paint;
-                pending.layout_extent = layout_extent;
-                pending.layout_epoch = layout_epoch;
-                pending.layout_scale_factor = layout_scale_factor;
-                pending.replace_engine_animation_values(values);
-            }
-            None => {
-                self.pending = Some(PresentationSnapshot::new(
-                    scene,
-                    retained_paint,
-                    values,
-                    layout_extent,
-                    layout_epoch,
-                    layout_scale_factor,
-                ));
-            }
-        }
+        self.pending = Some(paint);
+        self.pending_values.clear();
+        self.pending_values.extend(values);
     }
-
-    /// The size recorded when the active immutable scene was committed.
-    /// An in-flight Windows resize must not relabel the old scene as new-size.
     pub(crate) fn active_layout_extent(&self) -> Option<(u32, u32)> {
-        self.active.as_ref().and_then(|snapshot| snapshot.layout_extent)
+        self.active
+            .as_ref()
+            .and_then(|paint| paint.geometry.layout_extent)
     }
-
-    /// Native geometry generation of the active immutable Scene. A Scene whose
-    /// generation no longer matches the window must be replaced before it can be
-    /// presented at the new drawable extent.
     pub(crate) fn active_layout_epoch(&self) -> u64 {
-        self.active.as_ref().map_or(0, |snapshot| snapshot.layout_epoch)
+        self.active
+            .as_ref()
+            .map_or(0, |paint| paint.geometry.layout_epoch)
     }
-
     pub(crate) fn active_layout_scale_factor(&self) -> Option<f32> {
-        self.active.as_ref().map(|snapshot| snapshot.layout_scale_factor)
+        self.active
+            .as_ref()
+            .map(|paint| paint.geometry.scale_factor)
     }
-
     pub(crate) fn activate_pending(&mut self) -> bool {
         let Some(pending) = self.pending.take() else {
             return false;
         };
         self.active = Some(pending);
+        std::mem::swap(&mut self.active_values, &mut self.pending_values);
+        self.pending_values.clear();
         true
     }
-
     pub(crate) fn active_scene(&self) -> Option<&Scene> {
-        self.active.as_ref().map(|snapshot| snapshot.scene.as_ref())
+        self.active.as_ref().map(|paint| &paint.scene)
     }
-
-    pub(crate) fn active_scene_snapshot(&self) -> Option<Arc<Scene>> {
-        self.active
-            .as_ref()
-            .map(|snapshot| Arc::clone(&snapshot.scene))
+    pub(crate) fn active_paint(&self) -> Option<Arc<crate::window::Paint>> {
+        self.active.as_ref().map(Arc::clone)
     }
-
-    pub(crate) fn active_retained_paint(&self) -> Option<Arc<crate::window::retained::RetainedPaint>> {
-        self.active.as_ref().map(|snapshot| Arc::clone(&snapshot.retained_paint))
-    }
-
     pub(crate) fn active_engine_animation_values(&self) -> &[crate::SceneAnimationValue] {
-        self.active
-            .as_ref()
-            .map_or(&[], |snapshot| snapshot.engine_animation_values.as_slice())
+        &self.active_values
     }
-
     pub(crate) fn animation_values_for_scene(
         &self,
         scene: &Scene,
     ) -> &[crate::SceneAnimationValue] {
-        self.pending
-            .iter()
-            .chain(self.active.iter())
-            .find(|snapshot| std::ptr::eq(snapshot.scene.as_ref(), scene))
-            .map_or(&[], |snapshot| snapshot.engine_animation_values.as_slice())
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|paint| std::ptr::eq(&paint.scene, scene))
+        {
+            return &self.pending_values;
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|paint| std::ptr::eq(&paint.scene, scene))
+        {
+            return &self.active_values;
+        }
+        &[]
     }
-
     pub(crate) fn replace_active_engine_animation_values(
         &mut self,
         values: impl IntoIterator<Item = crate::SceneAnimationValue>,
     ) {
-        if let Some(active) = self.active.as_mut() {
-            active.replace_engine_animation_values(values);
+        if self.active.is_some() {
+            self.active_values.clear();
+            self.active_values.extend(values);
         }
     }
-
     pub(crate) fn committed_scenes(&self) -> impl Iterator<Item = &Scene> {
         self.active
             .iter()
             .chain(self.pending.iter())
-            .map(|snapshot| snapshot.scene.as_ref())
+            .map(|paint| &paint.scene)
     }
-
     pub(crate) fn has_pending_scene(&self) -> bool {
         self.pending.is_some()
     }
@@ -925,7 +851,7 @@ impl Window {
 
 #[cfg(test)]
 mod presentation_extent_tests {
-    use super::{PresentationState, Scene};
+    use super::PresentationState;
     use std::sync::Arc;
 
     #[test]
@@ -933,24 +859,54 @@ mod presentation_extent_tests {
         let mut presentation = PresentationState::default();
         let active_retention = Arc::default();
         presentation.publish_pending(
-            Arc::new(Scene::default()), Arc::clone(&active_retention),
-            [], None, 1, 1.,
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                Arc::clone(&active_retention),
+                crate::window::PaintGeometry {
+                    layout_extent: None,
+                    layout_epoch: 1,
+                    scale_factor: 1.,
+                },
+            )),
+            [],
         );
         assert!(presentation.activate_pending());
         let skipped_retention = Arc::default();
         let latest_retention = Arc::default();
         presentation.publish_pending(
-            Arc::new(Scene::default()), Arc::clone(&skipped_retention),
-            [], None, 2, 1.,
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                Arc::clone(&skipped_retention),
+                crate::window::PaintGeometry {
+                    layout_extent: None,
+                    layout_epoch: 2,
+                    scale_factor: 1.,
+                },
+            )),
+            [],
         );
         presentation.publish_pending(
-            Arc::new(Scene::default()), Arc::clone(&latest_retention),
-            [], None, 3, 1.,
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                Arc::clone(&latest_retention),
+                crate::window::PaintGeometry {
+                    layout_extent: None,
+                    layout_epoch: 3,
+                    scale_factor: 1.,
+                },
+            )),
+            [],
         );
-        assert!(Arc::ptr_eq(&presentation.active_retained_paint().unwrap(), &active_retention));
+        assert!(Arc::ptr_eq(
+            &presentation.active_paint().unwrap().retained_paint,
+            &active_retention
+        ));
         assert_eq!(Arc::strong_count(&skipped_retention), 1);
         assert!(presentation.activate_pending());
-        assert!(Arc::ptr_eq(&presentation.active_retained_paint().unwrap(), &latest_retention));
+        assert!(Arc::ptr_eq(
+            &presentation.active_paint().unwrap().retained_paint,
+            &latest_retention
+        ));
         assert_eq!(Arc::strong_count(&active_retention), 1);
     }
 
@@ -958,11 +914,16 @@ mod presentation_extent_tests {
     fn pending_resize_does_not_relabel_active_scene() {
         let mut presentation = PresentationState::default();
         presentation.publish_pending(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    layout_extent: Some((1200, 800)),
+                    layout_epoch: 1,
+                    scale_factor: 1.0,
+                },
+            )),
             [],
-            Some((1200, 800)),
-            1,
-            1.0,
         );
         assert_eq!(presentation.active_layout_extent(), None);
         assert!(presentation.activate_pending());
@@ -971,18 +932,28 @@ mod presentation_extent_tests {
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.0));
 
         presentation.publish_pending(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    layout_extent: Some((1300, 850)),
+                    layout_epoch: 2,
+                    scale_factor: 1.25,
+                },
+            )),
             [],
-            Some((1300, 850)),
-            2,
-            1.25,
         );
         presentation.publish_pending(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    layout_extent: Some((1400, 900)),
+                    layout_epoch: 3,
+                    scale_factor: 1.5,
+                },
+            )),
             [],
-            Some((1400, 900)),
-            3,
-            1.5,
         );
         // Before activation, the active GPU scene still belongs to 1200x800.
         assert_eq!(presentation.active_layout_extent(), Some((1200, 800)));

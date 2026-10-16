@@ -488,11 +488,11 @@ impl Element for Div {
                         return;
                     }
 
-                    let child_scene_start = window.next_frame.scene.len();
+                    let child_scene_start = window.next_frame.scene().len();
                     for child in &mut self.children {
                         child.paint(window, cx);
                     }
-                    let child_scene_end = window.next_frame.scene.len();
+                    let child_scene_end = window.next_frame.scene().len();
                     child_scene_range = Some(child_scene_start..child_scene_end);
                 },
             )

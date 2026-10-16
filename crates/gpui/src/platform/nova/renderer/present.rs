@@ -506,6 +506,7 @@ impl NovaRenderer {
             // deallocate a tile that the Scene about to be encoded still samples.
             let mut live_scene_tiles = FxHashSet::default();
             packet
+                .paint
                 .scene
                 .collect_atlas_tile_ids_into(&mut live_scene_tiles);
             if self.atlas.has_retirable_pending_removals(&live_scene_tiles) {
@@ -604,8 +605,8 @@ impl NovaRenderer {
             crate::diagnostics::performance_metrics::record_full_redraw_fallback();
         }
 
-        self.prepare_draw_steps(packet.scene.revision);
-        self.prepare_path_mask_draw_steps(packet.scene.revision);
+        self.prepare_draw_steps(packet.paint.scene.revision);
+        self.prepare_path_mask_draw_steps(packet.paint.scene.revision);
         self.prepare_backdrop_blur_passes(has_filters);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
@@ -1500,8 +1501,8 @@ impl NovaRenderer {
                 packet.window_id,
                 self.current_size.width,
                 self.current_size.height,
-                packet.scene.revision,
-                packet.scene.len(),
+                packet.paint.scene.revision,
+                packet.paint.scene.len(),
                 packet.dirty_region.is_full(),
             );
         }
@@ -1567,7 +1568,7 @@ impl NovaRenderer {
                 target: "gpui::diagnostics",
                 "GPUI AutoStatic submitted: window_id={} scene_revision={} source_index={:?} source_dirty={} refreshed_layers={} source_draw_steps={} native_view={:?} content_version={:?} retained_root={} frame_animation_values={}",
                 packet.window_id,
-                packet.scene.revision,
+                packet.paint.scene.revision,
                 auto_static_index,
                 auto_static_dirty,
                 auto_static_refreshes,

@@ -178,11 +178,11 @@ impl PathTransformBenchmark {
 impl PathPackingBenchmark {
     /// Creates a path scene whose packed vertices are regenerated on every benchmark iteration.
     pub fn new(requested_vertex_count: usize) -> Self {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(benchmark_path(requested_vertex_count).scale(1.0));
         scene.finish();
         Self {
-            core: PathPackingBenchmarkCore::new(scene),
+            core: PathPackingBenchmarkCore::new(scene.into_scene()),
         }
     }
 
@@ -254,7 +254,7 @@ impl AtlasUploadBenchmark {
 impl FrameUploadBenchmark {
     /// Creates a scene containing a flat run of quads.
     pub fn quads(primitive_count: usize) -> Self {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for index in 0..primitive_count {
             let x = (index % 128) as f32 * 12.0;
             let y = (index / 128) as f32 * 12.0;
@@ -273,12 +273,12 @@ impl FrameUploadBenchmark {
             });
         }
         scene.finish();
-        Self::new(scene)
+        Self::new(scene.into_scene())
     }
 
     /// Creates overlapping blur groups to measure config merging and upload reuse.
     pub fn backdrop_blurs(primitive_count: usize) -> Self {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for index in 0..primitive_count {
             let x = (index % 16) as f32 * 48.0;
             let y = (index / 16) as f32 * 32.0;
@@ -305,7 +305,7 @@ impl FrameUploadBenchmark {
             });
         }
         scene.finish();
-        Self::new(scene)
+        Self::new(scene.into_scene())
     }
 
     fn new(scene: Scene) -> Self {

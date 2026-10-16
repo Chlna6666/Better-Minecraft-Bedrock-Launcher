@@ -1,11 +1,10 @@
 use super::*;
 use crate::{
-    BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode, Point, ScaledPixels, Scene, bounds,
-    size,
+    BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode, Point, ScaledPixels, bounds, size,
 };
 use std::sync::Arc;
 
-fn packet(scene: Arc<Scene>, x: f32) -> PresentationPacket {
+fn packet(scene: Arc<crate::window::Paint>, x: f32) -> PresentationPacket {
     let mut dirty = DirtyRegion::empty();
     dirty.push(bounds(
         Point {
@@ -15,11 +14,10 @@ fn packet(scene: Arc<Scene>, x: f32) -> PresentationPacket {
         size(ScaledPixels(10.0), ScaledPixels(10.0)),
     ));
     PresentationPacket::new(
-        scene, std::sync::Arc::default(),
+        scene,
         [],
         [],
         Instant::now(),
-        1.0,
         dirty,
         BackdropBlurDamagePlan::default(),
         PartialPresentMode::FullRedraw,
@@ -39,18 +37,34 @@ fn resize(size: Size<DevicePixels>) -> Command {
     Command::resize(size)
 }
 
-
 #[test]
 fn pending_draw_subsumes_ready_tick_without_crossing_controls() {
     let queue = Queue::default();
-    queue.enqueue(Command::Continue(Instant::now()), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
+    queue
+        .enqueue(Command::Continue(Instant::now()), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(
+            draw(packet(Arc::new(crate::window::Paint::default()), 0.)),
+            || Ok(()),
+        )
+        .unwrap();
     assert!(queue.has_pending_draw());
     assert!(matches!(queue.take(), Some(Command::Draw { .. })));
     assert!(!queue.has_pending_draw());
-    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
-    assert!(!queue.has_pending_draw(), "a tick must not look beyond resource controls");
+    queue
+        .enqueue(Command::Call(Box::new(|_| {})), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(
+            draw(packet(Arc::new(crate::window::Paint::default()), 0.)),
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(
+        !queue.has_pending_draw(),
+        "a tick must not look beyond resource controls"
+    );
 }
 
 #[test]
@@ -58,8 +72,16 @@ fn pending_resize_draw_subsumes_old_tick() {
     let queue = Queue::default();
     let extent = size(DevicePixels(640), DevicePixels(480));
     queue.enqueue(resize(extent), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.)), || Ok(())).unwrap();
-    assert!(queue.has_pending_draw(), "the matching new-size draw subsumes an old tick");
+    queue
+        .enqueue(
+            draw(packet(Arc::new(crate::window::Paint::default()), 0.)),
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(
+        queue.has_pending_draw(),
+        "the matching new-size draw subsumes an old tick"
+    );
     assert!(matches!(queue.take(), Some(Command::Resize { .. })));
     assert!(matches!(queue.take(), Some(Command::Draw { .. })));
     assert!(!queue.has_pending_draw());
@@ -90,10 +112,19 @@ fn scene_replacement_and_control_barrier_keep_separate_wait_origins() {
     let queue = Queue::default();
     let first = Instant::now();
     for (offset, command) in [
-        (0, draw(packet(Arc::new(Scene::default()), 0.0))),
-        (5, draw(packet(Arc::new(Scene::default()), 10.0))),
+        (
+            0,
+            draw(packet(Arc::new(crate::window::Paint::default()), 0.0)),
+        ),
+        (
+            5,
+            draw(packet(Arc::new(crate::window::Paint::default()), 10.0)),
+        ),
         (10, Command::Call(Box::new(|_| {}))),
-        (15, draw(packet(Arc::new(Scene::default()), 20.0))),
+        (
+            15,
+            draw(packet(Arc::new(crate::window::Paint::default()), 20.0)),
+        ),
     ] {
         queue
             .enqueue_at(command, || Ok(()), first + Duration::from_millis(offset))
@@ -133,8 +164,8 @@ fn another_windows_service_is_visible_in_queue_wait() {
 #[test]
 fn latest_scene_keeps_unsubmitted_damage_and_one_wake() {
     let queue = Queue::default();
-    let first = Arc::new(Scene::default());
-    let latest = Arc::new(Scene::default());
+    let first = Arc::new(crate::window::Paint::default());
+    let latest = Arc::new(crate::window::Paint::default());
     queue.enqueue(draw(packet(first, 0.0)), || Ok(())).unwrap();
     queue
         .enqueue(draw(packet(latest.clone(), 40.0)), || {
@@ -144,7 +175,7 @@ fn latest_scene_keeps_unsubmitted_damage_and_one_wake() {
     let Some(Command::Draw { packet, .. }) = queue.take() else {
         panic!("expected scene");
     };
-    assert!(Arc::ptr_eq(&packet.scene, &latest));
+    assert!(Arc::ptr_eq(&packet.paint, &latest));
     assert_eq!(
         packet.dirty_region.union_bounds().unwrap().size.width,
         ScaledPixels(50.0)
@@ -155,7 +186,7 @@ fn latest_scene_keeps_unsubmitted_damage_and_one_wake() {
 #[test]
 fn presentation_replacement_does_not_cross_control_barrier() {
     let queue = Queue::default();
-    let scene = Arc::new(Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     for command in [
         draw(packet(scene.clone(), 0.0)),
         Command::Call(Box::new(|_| {})),
@@ -189,10 +220,9 @@ fn ticks_coalesce_but_first_frame_is_a_barrier() {
     for command in [
         Command::Tick(now, None),
         Command::Draw {
-            packet: packet(Arc::new(Scene::default()), 0.0),
+            packet: packet(Arc::new(crate::window::Paint::default()), 0.0),
             framebuffer_only: false,
             reply: Some(reply),
-
         },
         Command::Tick(now, None),
         Command::Tick(later, None),
@@ -212,7 +242,7 @@ fn ticks_coalesce_but_first_frame_is_a_barrier() {
 fn newest_scene_absorbs_obsolete_compositor_ticks_and_retains_damage() {
     let queue = Queue::default();
     let started = Instant::now();
-    let scene = Arc::new(Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     for (millis, command) in [
         (0, Command::Tick(started, None)),
         (3, draw(packet(scene.clone(), 0.0))),
@@ -241,9 +271,13 @@ fn newest_scene_absorbs_obsolete_compositor_ticks_and_retains_damage() {
 #[test]
 fn compositor_tick_coalescing_must_not_cross_control_barrier() {
     let queue = Queue::default();
-    let scene = Arc::new(Scene::default());
-    queue.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
-    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
+    let scene = Arc::new(crate::window::Paint::default());
+    queue
+        .enqueue(Command::Tick(Instant::now(), None), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(Command::Call(Box::new(|_| {})), || Ok(()))
+        .unwrap();
     queue.enqueue(draw(packet(scene, 12.0)), || Ok(())).unwrap();
     assert!(matches!(queue.take(), Some(Command::Tick(..))));
     assert!(matches!(queue.take(), Some(Command::Call(_))));
@@ -325,10 +359,9 @@ fn closing_releases_a_waiting_first_frame_handshake() {
     queue
         .enqueue(
             Command::Draw {
-                packet: packet(Arc::new(Scene::default()), 0.0),
+                packet: packet(Arc::new(crate::window::Paint::default()), 0.0),
                 framebuffer_only: false,
                 reply: Some(reply),
-
             },
             || Ok(()),
         )
@@ -350,7 +383,7 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
         size(ScaledPixels(200.0), ScaledPixels(100.0)),
     );
     let scene = |x| {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         let source = bounds(
             Point {
                 x: ScaledPixels(x),
@@ -385,13 +418,28 @@ fn replaced_scene_keeps_earlier_backdrop_source_damage() {
     let intermediate = scene(40.0);
     let latest = scene(80.0);
     let blur_order = latest.backdrop_blurs[0].order;
-    let intermediate_plan = crate::paint::backdrop_blur_damage_plan(&intermediate, &previous, &[], &[]);
+    let intermediate_plan =
+        crate::paint::backdrop_blur_damage_plan(&intermediate, &previous, &[], &[]);
     let latest_plan = crate::paint::backdrop_blur_damage_plan(&latest, &intermediate, &[], &[]);
     assert!(intermediate_plan.refresh_required());
     assert!(latest_plan.refresh_required());
-    let mut intermediate = packet(Arc::new(intermediate), 40.0);
+    let mut intermediate = packet(
+        Arc::new(crate::window::Paint::new(
+            intermediate.into_scene(),
+            Arc::default(),
+            Default::default(),
+        )),
+        40.0,
+    );
     intermediate.backdrop_blur_damage_plan = intermediate_plan;
-    let mut latest = packet(Arc::new(latest), 80.0);
+    let mut latest = packet(
+        Arc::new(crate::window::Paint::new(
+            latest.into_scene(),
+            Arc::default(),
+            Default::default(),
+        )),
+        80.0,
+    );
     latest.backdrop_blur_damage_plan = latest_plan;
     let queue = Queue::default();
     queue.enqueue(draw(intermediate), || Ok(())).unwrap();
@@ -425,27 +473,48 @@ fn adjacent_resize_commands_coalesce_without_crossing_draw_barriers() {
     let started = Instant::now();
     let extent = |side| size(DevicePixels(side), DevicePixels(side));
 
-    queue.enqueue_at(resize(extent(900)), || Ok(()), started).unwrap();
-    queue.enqueue_at(
-        resize(extent(1000)),
-        || panic!("adjacent resize should reuse the pending wake"),
-        started + Duration::from_millis(1),
-    ).unwrap();
+    queue
+        .enqueue_at(resize(extent(900)), || Ok(()), started)
+        .unwrap();
+    queue
+        .enqueue_at(
+            resize(extent(1000)),
+            || panic!("adjacent resize should reuse the pending wake"),
+            started + Duration::from_millis(1),
+        )
+        .unwrap();
     let first = queue.take_timed().expect("coalesced resize");
     assert_eq!(first.coalesced_count, 1);
     assert_eq!(first.first_enqueued_at, started);
-    let Command::Resize { size, epoch } = first.command else { panic!("expected resize") };
+    let Command::Resize { size, epoch } = first.command else {
+        panic!("expected resize")
+    };
     assert_eq!(epoch, None);
     assert_eq!(size, extent(1000));
     assert!(queue.take_timed().is_none());
 
     queue.enqueue(resize(extent(1200)), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(Arc::new(Scene::default()), 0.0)), || Ok(())).unwrap();
+    queue
+        .enqueue(
+            draw(packet(Arc::new(crate::window::Paint::default()), 0.0)),
+            || Ok(()),
+        )
+        .unwrap();
     queue.enqueue(resize(extent(1300)), || Ok(())).unwrap();
-    let Some(Command::Resize { size: before_draw, .. }) = queue.take() else { panic!("first resize lost") };
+    let Some(Command::Resize {
+        size: before_draw, ..
+    }) = queue.take()
+    else {
+        panic!("first resize lost")
+    };
     assert_eq!(before_draw, extent(1200));
     assert!(matches!(queue.take(), Some(Command::Draw { .. })));
-    let Some(Command::Resize { size: after_draw, .. }) = queue.take() else { panic!("last resize lost") };
+    let Some(Command::Resize {
+        size: after_draw, ..
+    }) = queue.take()
+    else {
+        panic!("last resize lost")
+    };
     assert_eq!(after_draw, extent(1300));
 }
 
@@ -455,7 +524,7 @@ fn live_resize_queue_keeps_only_latest_unexecuted_extent_and_scene() {
 
     let queue = Queue::default();
     let extent = |side| size(DevicePixels(side), DevicePixels(side));
-    let scene = Arc::new(Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     let start = Instant::now();
     for (offset, command) in [
         (0, resize(extent(800))),
@@ -490,24 +559,37 @@ fn live_resize_compaction_stops_at_control_and_first_frame_barriers() {
     use crate::{DevicePixels, size};
     let queue = Queue::default();
     let extent = |side| size(DevicePixels(side), DevicePixels(side));
-    let scene = Arc::new(Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
 
     queue.enqueue(resize(extent(800)), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(scene.clone(), 0.0)), || Ok(())).unwrap();
-    queue.enqueue(Command::Call(Box::new(|_| {})), || Ok(())).unwrap();
+    queue
+        .enqueue(draw(packet(scene.clone(), 0.0)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(Command::Call(Box::new(|_| {})), || Ok(()))
+        .unwrap();
     queue.enqueue(resize(extent(900)), || Ok(())).unwrap();
-    queue.enqueue(draw(packet(scene.clone(), 20.0)), || Ok(())).unwrap();
+    queue
+        .enqueue(draw(packet(scene.clone(), 20.0)), || Ok(()))
+        .unwrap();
     queue.enqueue(resize(extent(1000)), || Ok(())).unwrap();
     queue.enqueue(draw(packet(scene, 40.0)), || Ok(())).unwrap();
 
-    assert!(matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(800)));
+    assert!(
+        matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(800))
+    );
     assert!(matches!(queue.take(), Some(Command::Draw { .. })));
     assert!(matches!(queue.take(), Some(Command::Call(_))));
-    assert!(matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(1000)));
+    assert!(
+        matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(1000))
+    );
     let Some(Command::Draw { packet, .. }) = queue.take() else {
         panic!("latest scene must remain behind the control barrier");
     };
-    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(30.0));
+    assert_eq!(
+        packet.dirty_region.union_bounds().unwrap().size.width,
+        ScaledPixels(30.0)
+    );
     assert!(queue.take().is_none());
 }
 
@@ -516,27 +598,42 @@ fn live_resize_compaction_preserves_synchronous_first_frame_handshake() {
     use crate::{DevicePixels, size};
     let queue = Queue::default();
     let extent = |side| size(DevicePixels(side), DevicePixels(side));
-    let scene = Arc::new(Scene::default());
+    let scene = Arc::new(crate::window::Paint::default());
     let (reply, receiver) = std::sync::mpsc::sync_channel(1);
-    queue.enqueue(Command::Draw {
-        packet: packet(scene.clone(), 0.0),
-        framebuffer_only: false,
-        reply: Some(reply),
-
-    }, || Ok(())).unwrap();
+    queue
+        .enqueue(
+            Command::Draw {
+                packet: packet(scene.clone(), 0.0),
+                framebuffer_only: false,
+                reply: Some(reply),
+            },
+            || Ok(()),
+        )
+        .unwrap();
     for (side, x) in [(900, 20.0), (1000, 40.0)] {
         queue.enqueue(resize(extent(side)), || Ok(())).unwrap();
-        queue.enqueue(draw(packet(scene.clone(), x)), || Ok(())).unwrap();
+        queue
+            .enqueue(draw(packet(scene.clone(), x)), || Ok(()))
+            .unwrap();
     }
-    let Some(Command::Draw { reply: Some(sender), .. }) = queue.take() else {
+    let Some(Command::Draw {
+        reply: Some(sender),
+        ..
+    }) = queue.take()
+    else {
         panic!("synchronous first-frame handshake cannot be removed");
     };
     sender.send(Ok(true)).unwrap();
     assert!(receiver.recv().unwrap().unwrap());
-    assert!(matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(1000)));
+    assert!(
+        matches!(queue.take(), Some(Command::Resize { size, epoch: None }) if size == extent(1000))
+    );
     let Some(Command::Draw { packet, .. }) = queue.take() else {
         panic!("latest scene after handshake is required");
     };
-    assert_eq!(packet.dirty_region.union_bounds().unwrap().size.width, ScaledPixels(30.0));
+    assert_eq!(
+        packet.dirty_region.union_bounds().unwrap().size.width,
+        ScaledPixels(30.0)
+    );
     assert!(queue.take().is_none());
 }

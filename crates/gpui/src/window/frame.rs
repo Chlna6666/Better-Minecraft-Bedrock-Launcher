@@ -3,7 +3,9 @@ use super::*;
 use crate::element::{RetainedDivSelfScene, RetainedDivSemanticKey, RetainedPlainTextKey};
 use std::borrow::Borrow;
 
+mod paint;
 mod retained_scene_index;
+pub(crate) use paint::{Paint, PaintGeometry};
 use retained_scene_index::Entry;
 
 pub(crate) struct DeferredDraw {
@@ -172,45 +174,6 @@ pub(crate) struct RetainedReplayRanges {
     pub(crate) metadata_range: Range<usize>,
 }
 
-/// Reusable scene storage for one UI frame.
-///
-/// A committed scene may be shared with the presentation domain through an `Arc`. UI generation
-/// only mutates a unique scratch slot. Clearing a slot that is still shared never clones the
-/// committed display list; it detaches to a fresh empty Scene instead.
-#[derive(Default)]
-pub(crate) struct SceneSlot {
-    scene: Arc<Scene>,
-}
-
-impl SceneSlot {
-    pub(crate) fn snapshot(&self) -> Arc<Scene> {
-        Arc::clone(&self.scene)
-    }
-
-    pub(crate) fn clear(&mut self) {
-        if let Some(scene) = Arc::get_mut(&mut self.scene) {
-            scene.clear();
-        } else {
-            self.scene = Arc::new(Scene::default());
-        }
-    }
-}
-
-impl std::ops::Deref for SceneSlot {
-    type Target = Scene;
-
-    fn deref(&self) -> &Self::Target {
-        self.scene.as_ref()
-    }
-}
-
-impl std::ops::DerefMut for SceneSlot {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::get_mut(&mut self.scene)
-            .expect("attempted to mutate a Scene after it was committed to presentation")
-    }
-}
-
 pub(crate) struct Frame {
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -222,7 +185,8 @@ pub(crate) struct Frame {
     /// so high-report-rate mice do not scan the full listener array for every hardware event.
     pub(crate) has_continuous_mouse_move_listener: bool,
     pub(crate) dispatch_tree: DispatchTree,
-    pub(crate) scene: SceneSlot,
+    pub(crate) painter: crate::scene::Painter,
+    paint: Option<Arc<Paint>>,
     pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) window_control_hitboxes: Vec<(WindowControlArea, Hitbox)>,
@@ -379,6 +343,43 @@ fn rebase_index(value: usize, source: usize, target: usize) -> Option<usize> {
 }
 
 impl Frame {
+    /// Borrows the sole Paint payload for this frame's current lifecycle phase.
+    pub(crate) fn scene(&self) -> &Scene {
+        self.paint
+            .as_ref()
+            .map_or(&self.painter.scene, |paint| &paint.scene)
+    }
+
+    /// Shares only a completed payload; mutable construction state never crosses this boundary.
+    pub(crate) fn published_paint(&self) -> Arc<Paint> {
+        match &self.paint {
+            Some(paint) => Arc::clone(paint),
+            None => {
+                assert!(
+                    self.painter.len() == 0,
+                    "cannot publish an unfinished drawing"
+                );
+                Arc::new(Paint::new(
+                    Scene::default(),
+                    Arc::clone(&self.retained_paint),
+                    PaintGeometry::default(),
+                ))
+            }
+        }
+    }
+
+    /// Move finalized drawing storage into its sole publication, then share that publication.
+    pub(crate) fn publish(&mut self, geometry: PaintGeometry) -> Arc<Paint> {
+        assert!(self.paint.is_none(), "Paint may only be published once");
+        let paint = Arc::new(Paint::new(
+            self.painter.take_scene(),
+            Arc::clone(&self.retained_paint),
+            geometry,
+        ));
+        self.paint = Some(Arc::clone(&paint));
+        paint
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn record_debug_bounds(&mut self, selector: String, bounds: Bounds<Pixels>) {
         self.debug_bounds.insert(selector.clone(), bounds);
@@ -394,7 +395,8 @@ impl Frame {
             mouse_listeners: Vec::new(),
             has_continuous_mouse_move_listener: false,
             dispatch_tree,
-            scene: SceneSlot::default(),
+            painter: crate::scene::Painter::default(),
+            paint: None,
             retained_paint: Arc::default(),
             hitboxes: Vec::new(),
             window_control_hitboxes: Vec::new(),
@@ -439,7 +441,13 @@ impl Frame {
         self.mouse_listeners.clear();
         self.has_continuous_mouse_move_listener = false;
         self.dispatch_tree.clear();
-        self.scene.clear();
+        if let Some(paint) = self.paint.take() {
+            self.painter.scene = Arc::try_unwrap(paint)
+                .ok()
+                .map(|paint| paint.scene)
+                .unwrap_or_default();
+        }
+        self.painter.clear();
         if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {
             retained.clear();
         } else {
@@ -536,7 +544,7 @@ impl Frame {
     /// Validates retained Fragment structure against this frame's immutable Paint generation.
     /// Scratch/mutable data never reuses the completed-generation sparse index.
     pub(crate) fn range_is_replayable(&self, range: Range<usize>) -> bool {
-        self.retained_paint.range_is_replayable(&self.scene, range)
+        self.retained_paint.range_is_replayable(self.scene(), range)
     }
 
     pub(crate) fn finish(&mut self, prev_frame: &mut Self) {
@@ -559,15 +567,16 @@ impl Frame {
             .mouse_listeners
             .iter()
             .any(|listener| listener.handles(TypeId::of::<MouseMoveEvent>(), true));
-        self.scene.finish();
-        crate::window::retained::retain_revision(&mut self.scene, &prev_frame.scene);
+        self.painter.finish();
+        crate::window::retained::retain_revision(&mut self.painter.scene, prev_frame.scene());
         Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention")
-            .finish(&mut self.scene);
+            .finish(&mut self.painter.scene);
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
         self.element_states.capacity()
+            + self.painter.construction_capacity()
             + self.retained_paint.retained_capacity()
             + self.accessed_element_states.capacity()
             + self.dispatch_tree.retained_capacity()
@@ -688,7 +697,8 @@ impl Frame {
     /// returns only capacity that is far above the new working set.
     pub(crate) fn clear_for_reuse(&mut self, current: &Self) {
         self.clear();
-        self.scene.trim_for_reuse_against(&current.scene);
+        self.painter
+            .trim_for_reuse_against(&current.painter, current.scene());
         if let Some(retained) = Arc::get_mut(&mut self.retained_paint) {
             retained.trim_for_reuse_against(&current.retained_paint);
         }
@@ -835,25 +845,50 @@ fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize)
 }
 
 #[cfg(test)]
-mod scene_slot_tests {
+mod publication_tests {
     use super::*;
-
     #[test]
-    fn shared_committed_scene_detaches_scratch_without_mutating_snapshot() {
-        let mut slot = SceneSlot::default();
-        slot.insert_primitive(Quad::default());
-        slot.finish();
-
-        let snapshot = slot.snapshot();
-        let snapshot_revision = snapshot.revision;
-        let snapshot_len = snapshot.len();
-        assert_eq!(Arc::strong_count(&snapshot), 2);
-
-        slot.clear();
-
-        assert_eq!(snapshot.revision, snapshot_revision);
-        assert_eq!(snapshot.len(), snapshot_len);
-        assert_eq!(slot.len(), 0);
-        assert_eq!(Arc::strong_count(&snapshot), 1);
+    fn published_paint_moves_without_copying_and_next_build_is_independent() {
+        let mut frame = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        let mut previous = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        let bounds = crate::bounds(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(16.), ScaledPixels(16.)),
+        );
+        let quad = Quad {
+            bounds,
+            content_mask: ContentMask::new(bounds),
+            ..Default::default()
+        };
+        frame.painter.insert_primitive(quad);
+        let original = &frame.painter.paint_operations[0] as *const _;
+        frame.finish(&mut previous);
+        let paint = frame.publish(PaintGeometry::default());
+        let operation = &paint.scene.paint_operations[0] as *const _;
+        assert_eq!(original, operation, "publication moves existing payload");
+        {
+            let mut presentation = crate::window::state::PresentationState::default();
+            presentation.publish_pending(Arc::clone(&paint), []);
+            assert!(presentation.activate_pending());
+            let packet = PresentationPacket::new(
+                presentation.active_paint().expect("active Paint"),
+                [],
+                [],
+                Instant::now(),
+                DirtyRegion::empty(),
+                crate::BackdropBlurDamagePlan::default(),
+                PartialPresentMode::FullRedraw,
+            );
+            assert!(
+                Arc::ptr_eq(&paint, &packet.paint),
+                "queue and renderer consume the original publication"
+            );
+        }
+        assert!(frame.painter.paint_operations.iter().next().is_none());
+        frame.clear();
+        frame.painter.insert_primitive(quad);
+        assert_eq!(paint.scene.len(), 1);
+        assert_eq!(&paint.scene.paint_operations[0] as *const _, operation);
+        assert_eq!(Arc::strong_count(&paint), 1);
     }
 }

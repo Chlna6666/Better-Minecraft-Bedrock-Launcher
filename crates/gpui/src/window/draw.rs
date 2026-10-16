@@ -106,7 +106,7 @@ impl Window {
         // The geometry this frame is laid out with is fixed for its whole
         // lifetime; a native resize arriving later is a new generation.
         self.next_frame_epoch = self.viewport_epoch;
-        let previous_scene_was_empty = self.rendered_frame.scene.len() == 0;
+        let previous_scene_was_empty = self.rendered_frame.scene().len() == 0;
         let debug_force_full_redraw = self.begin_debug_visualization_frame(cx);
         let force_full_redraw = self.force_full_redraw.get() || debug_force_full_redraw;
         let (restored_input_handler_index, directly_dirty_views) = self.begin_draw_cycle(cx);
@@ -211,12 +211,13 @@ impl Window {
         // An aborted frame never replaces the committed retained tree.
         // Drop only newly allocated/unmounted Taffy nodes, not cached views.
         if let Some(layout_engine) = self.layout_engine.as_mut() {
-            layout_engine.retain_committed_elements(|id| {
-                self.rendered_frame.retained_element_ranges.contains_key(id)
-            }, false);
+            layout_engine.retain_committed_elements(
+                |id| self.rendered_frame.retained_element_ranges.contains_key(id),
+                false,
+            );
         }
         let frame_retained_capacity = self.next_frame.retained_capacity();
-        let scene_metrics = self.next_frame.scene.frame_metrics();
+        let scene_metrics = self.next_frame.scene().frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
         self.last_generation_stats.frame_retained_capacity = frame_retained_capacity;
         self.last_generation_stats.list_measured_items = self.pending_list_measured_items;
@@ -255,11 +256,11 @@ impl Window {
             .scene_values(self.animation_time());
         let accumulate_unpresented_damage = self.needs_present.get();
         let mut backdrop_blur_damage_plan = crate::paint::backdrop_blur_damage_plan(
-            &self.next_frame.scene,
-            &self.rendered_frame.scene,
+            self.next_frame.scene(),
+            self.rendered_frame.scene(),
             &scene_animation_values,
             self.presentation_state
-                .animation_values_for_scene(&self.rendered_frame.scene),
+                .animation_values_for_scene(self.rendered_frame.scene()),
         );
         if accumulate_unpresented_damage {
             backdrop_blur_damage_plan.merge_from(&self.backdrop_blur_damage_plan);
@@ -271,19 +272,22 @@ impl Window {
             accumulate_unpresented_damage,
         );
         let committed_layout_extent = (
-            (self.viewport_size.width.0 * self.scale_factor).round().max(0.0) as u32,
-            (self.viewport_size.height.0 * self.scale_factor).round().max(0.0) as u32,
+            (self.viewport_size.width.0 * self.scale_factor)
+                .round()
+                .max(0.0) as u32,
+            (self.viewport_size.height.0 * self.scale_factor)
+                .round()
+                .max(0.0) as u32,
         );
-        self.presentation_state.publish_pending(
-            self.next_frame.scene.snapshot(),
-            Arc::clone(&self.next_frame.retained_paint),
-            scene_animation_values,
-            Some(committed_layout_extent),
-            self.next_frame_epoch,
-            self.scale_factor,
-        );
+        let paint = self.next_frame.publish(PaintGeometry {
+            layout_extent: Some(committed_layout_extent),
+            layout_epoch: self.next_frame_epoch,
+            scale_factor: self.scale_factor,
+        });
+        self.presentation_state
+            .publish_pending(paint, scene_animation_values);
         let frame_retained_capacity = self.next_frame.retained_capacity();
-        let scene_metrics = self.next_frame.scene.frame_metrics();
+        let scene_metrics = self.next_frame.scene().frame_metrics();
         self.last_generation_stats.scene = scene_metrics;
         self.last_generation_stats.frame_retained_capacity = frame_retained_capacity;
         self.last_generation_stats.list_measured_items = self.pending_list_measured_items;
@@ -311,25 +315,23 @@ impl Window {
             // A missing root cache invalidation can replay quads clipped to the old
             // viewport. Record the committed CPU Scene bounds, without a GPU readback.
             // Quads are only a coverage heuristic: sprites/paths are separate draws.
-            let (quad_right, quad_bottom) = self
-                .rendered_frame
-                .scene
-                .quads
-                .iter()
-                .fold((0.0_f32, 0.0_f32), |(right, bottom), quad| {
+            let (quad_right, quad_bottom) = self.rendered_frame.scene().quads.iter().fold(
+                (0.0_f32, 0.0_f32),
+                |(right, bottom), quad| {
                     (
                         right.max(quad.bounds.right().0),
                         bottom.max(quad.bounds.bottom().0),
                     )
-                });
+                },
+            );
             log::info!(
                 target: "gpui_resize_trace",
                 "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} force_full_redraw=true",
                 self.handle.window_id().as_u64(),
                 (self.viewport_size.width.0 * self.scale_factor).round() as u32,
                 (self.viewport_size.height.0 * self.scale_factor).round() as u32,
-                self.rendered_frame.scene.len(),
-                self.rendered_frame.scene.quads.len(),
+                self.rendered_frame.scene().len(),
+                self.rendered_frame.scene().quads.len(),
                 quad_right,
                 quad_bottom
             );
@@ -353,7 +355,7 @@ impl Window {
         self.invalidator
             .rebuild_cached_view_fallback_boundaries(&self.rendered_frame.dispatch_tree);
         // Keep UI generations plus active/pending presentation snapshots live before the previous
-        // frame becomes scratch. A still-active older scene may force SceneSlot to detach here.
+        // frame becomes scratch. A still-active older publication keeps its payload while this frame starts a new builder.
         self.prune_static_image_atlas_residency();
         self.next_frame.clear_for_reuse(&self.rendered_frame);
         self.viewport_dependent_views
@@ -369,7 +371,7 @@ impl Window {
         if self
             .animation_engine
             .borrow_mut()
-            .retain_scene_animations_for_scene(&self.rendered_frame.scene)
+            .retain_scene_animations_for_scene(self.rendered_frame.scene())
         {
             self.scene_animation_needs_commit.set(true);
         }
@@ -503,16 +505,16 @@ impl Window {
         let accumulated_full = dirty_region.is_full();
 
         let scene_requires_full_redraw =
-            crate::paint::requires_full_redraw_fallback(&self.next_frame.scene);
+            crate::paint::requires_full_redraw_fallback(self.next_frame.scene());
         // Backdrop-filter output depends on pixels rendered before it. When a blur primitive is
         // added or removed (modal open/close is the common case), there is no current primitive on
         // one side of the transition whose spatial damage can represent all stale filtered pixels
         // from the other side. Pay for one full surface redraw on this low-frequency topology
         // transition; once the blur set is stable, ordinary source/hover damage remains spatial.
-        let backdrop_blur_topology_changed = self.next_frame.scene.backdrop_blurs.len()
-            != self.rendered_frame.scene.backdrop_blurs.len()
-            || self.next_frame.scene.has_backdrop_blurs()
-                != self.rendered_frame.scene.has_backdrop_blurs();
+        let backdrop_blur_topology_changed = self.next_frame.scene().backdrop_blurs.len()
+            != self.rendered_frame.scene().backdrop_blurs.len()
+            || self.next_frame.scene().has_backdrop_blurs()
+                != self.rendered_frame.scene().has_backdrop_blurs();
         // Root backdrop blurs (for example titlebar glass) have a well-defined
         // output clip in both scenes. A newly added/removed one only changes
         // pixels inside those clips. Nested element-blur captures can change
@@ -521,14 +523,14 @@ impl Window {
             // Keep the full redraw fallback when the final backdrop disappears:
             // a transition to a blur-free scene may enable native partial present
             // before every rotating swapchain image contains initialized pixels.
-            && self.next_frame.scene.has_backdrop_blurs()
-            && self.next_frame.scene.blurs.is_empty()
-            && self.rendered_frame.scene.blurs.is_empty();
+            && self.next_frame.scene().has_backdrop_blurs()
+            && self.next_frame.scene().blurs.is_empty()
+            && self.rendered_frame.scene().blurs.is_empty();
         let recovery_scene_uncovered = self.recovering_degraded_draw
             && [&self.rendered_frame, &self.next_frame]
                 .iter()
                 .any(|frame| {
-                    let scene_len = frame.scene.len();
+                    let scene_len = frame.scene().len();
                     scene_len != 0
                         && !frame.retained_scene_segments.iter().any(|segment| {
                             segment.scene_range.start == 0 && segment.scene_range.end == scene_len
@@ -554,10 +556,10 @@ impl Window {
                 // responsibility via backdrop_blur_damage_plan.
                 for blur in self
                     .rendered_frame
-                    .scene
+                    .scene()
                     .backdrop_blurs
                     .iter()
-                    .chain(&self.next_frame.scene.backdrop_blurs)
+                    .chain(&self.next_frame.scene().backdrop_blurs)
                 {
                     dirty_region.push(blur.bounds.intersect(&blur.content_mask.bounds));
                 }
@@ -572,8 +574,10 @@ impl Window {
                 dirty_region.push(rect.bounds);
             }
 
-            for bounds in crate::paint::backdrop_blur_output_damage(&self.next_frame.scene, &self.backdrop_blur_damage_plan)
-            {
+            for bounds in crate::paint::backdrop_blur_output_damage(
+                self.next_frame.scene(),
+                &self.backdrop_blur_damage_plan,
+            ) {
                 dirty_region.push(bounds);
             }
 
@@ -588,7 +592,7 @@ impl Window {
 
         log::trace!(target: "gpui::diagnostics",
             "GPUI damage decision: window_id={} scene_revision={} full={} forced={} scene_fallback={} blur_topology={} local_blur_topology={} recovery={} accumulated_full={} empty_fallback={} spatial_area={} direct_views={:?}",
-            self.handle.window_id().as_u64(), self.next_frame.scene.revision,
+            self.handle.window_id().as_u64(), self.next_frame.scene().revision,
             dirty_region.is_full(), force_full_redraw, scene_requires_full_redraw,
             backdrop_blur_topology_changed, local_root_blur_topology,
             recovery_scene_uncovered, accumulated_full, empty_damage_fallback,
@@ -648,9 +652,9 @@ impl Window {
                     .zip(current.segments(&self.next_frame.retained_scene_segments))
                     .all(|(previous_segment, current_segment)| {
                         crate::paint::for_each_changed_bounds(
-                            &self.next_frame.scene,
+                            self.next_frame.scene(),
                             current_segment.scene_range.clone(),
-                            &self.rendered_frame.scene,
+                            self.rendered_frame.scene(),
                             previous_segment.scene_range.clone(),
                             |bounds| dirty_region.push(bounds),
                         )
@@ -695,9 +699,9 @@ impl Window {
                         .segments(&self.next_frame.retained_scene_segments)
                         .collect::<SmallVec<[_; 4]>>();
                     for_each_changed_fragment_count_bounds(
-                        &self.rendered_frame.scene,
+                        self.rendered_frame.scene(),
                         &old,
-                        &self.next_frame.scene,
+                        self.next_frame.scene(),
                         &new,
                         |bounds| dirty_region.push(bounds),
                     );
@@ -732,36 +736,26 @@ impl Window {
     }
 
     fn presentation_packet(&self) -> PresentationPacket {
-        let scene = self
+        let paint = self
             .presentation_state
-            .active_scene_snapshot()
-            .unwrap_or_else(|| self.rendered_frame.scene.snapshot());
+            .active_paint()
+            .unwrap_or_else(|| self.rendered_frame.published_paint());
         let animation_engine = self.animation_engine.borrow();
-        let presentation_animation_timelines = animation_engine.presentation_timelines();
+        let timelines = animation_engine.presentation_timelines();
         drop(animation_engine);
         let mut packet = PresentationPacket::new(
-            scene,
-            self.presentation_state.active_retained_paint()
-                .unwrap_or_else(|| Arc::clone(&self.rendered_frame.retained_paint)),
+            paint,
             self.presentation_state
                 .active_engine_animation_values()
                 .iter()
                 .copied(),
-            presentation_animation_timelines,
+            timelines,
             self.animation_time(),
-            self.presentation_state.active_layout_scale_factor().unwrap_or(self.scale_factor),
             self.render_dirty_region.clone(),
             self.backdrop_blur_damage_plan.clone(),
             self.render_present_mode,
         );
         packet.window_id = self.handle.window_id().as_u64();
-        // Presentation can replay the previous Scene before the UI finishes
-        // its next WM_SIZE layout. Record the extent belonging to that Scene,
-        // not the newer viewport currently exposed by the native window.
-        packet.layout_extent = self.presentation_state.active_layout_extent();
-        // The Scene's own generation, never the newest native one: the GPU owner
-        // pairs a drawable resize with the Scene built for that generation.
-        packet.layout_epoch = self.presentation_state.active_layout_epoch();
         packet.set_frame_interval(self.frame_clock.interval());
         packet
     }
@@ -1056,7 +1050,7 @@ impl Window {
 mod fragment_count_damage_tests {
     use super::*;
 
-    fn append_quad(scene: &mut Scene, x: f32, width: f32) -> RetainedSceneSegment {
+    fn append_quad(scene: &mut crate::scene::Painter, x: f32, width: f32) -> RetainedSceneSegment {
         let bounds = Bounds::new(
             point(ScaledPixels(x), ScaledPixels(0.0)),
             size(ScaledPixels(width), ScaledPixels(10.0)),
@@ -1078,11 +1072,11 @@ mod fragment_count_damage_tests {
 
     #[test]
     fn inserting_popup_fragment_preserves_large_static_background() {
-        let mut previous = Scene::default();
+        let mut previous = crate::scene::Painter::default();
         let old_background = append_quad(&mut previous, 0.0, 900.0);
         let old_control = append_quad(&mut previous, 700.0, 20.0);
 
-        let mut current = Scene::default();
+        let mut current = crate::scene::Painter::default();
         let new_background = append_quad(&mut current, 0.0, 900.0);
         let popup = append_quad(&mut current, 150.0, 90.0);
         let new_control = append_quad(&mut current, 700.0, 20.0);
@@ -1102,12 +1096,12 @@ mod fragment_count_damage_tests {
 
     #[test]
     fn removing_popup_fragment_preserves_large_static_background() {
-        let mut previous = Scene::default();
+        let mut previous = crate::scene::Painter::default();
         let old_background = append_quad(&mut previous, 0.0, 900.0);
         let popup = append_quad(&mut previous, 150.0, 90.0);
         let old_control = append_quad(&mut previous, 700.0, 20.0);
 
-        let mut current = Scene::default();
+        let mut current = crate::scene::Painter::default();
         let new_background = append_quad(&mut current, 0.0, 900.0);
         let new_control = append_quad(&mut current, 700.0, 20.0);
 

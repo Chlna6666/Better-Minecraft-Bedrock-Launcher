@@ -90,7 +90,7 @@ fn opengl_plain_leaf_splice_matches_full_rebuild(cx: &mut TestAppContext) {
 
 fn pixels(
     renderer: &mut NovaRenderer,
-    scene: Arc<crate::Scene>,
+    scene: Arc<crate::window::Paint>,
     target: (TextureId, TextureViewId),
     local_damage: Option<crate::Bounds<crate::ScaledPixels>>,
     blur_damage: crate::BackdropBlurDamagePlan,
@@ -105,11 +105,10 @@ fn pixels(
         ));
     }
     let mut packet = crate::PresentationPacket::new(
-        scene, std::sync::Arc::default(),
+        scene,
         [],
         [],
         std::time::Instant::now(),
-        1.,
         damage,
         blur_damage,
         crate::PartialPresentMode::FullRedraw,
@@ -160,7 +159,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
     visual.simulate_resize(crate::size(crate::px(32.), crate::px(32.)));
     let before = visual.update(|window, cx| {
         window.draw(cx).clear();
-        window.rendered_frame.scene.snapshot()
+        window.rendered_frame.published_paint()
     });
     let baseline = renders.get();
     leaf.update(visual, |leaf, cx| {
@@ -169,7 +168,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
     });
     let after = visual.update(|window, cx| {
         window.draw(cx).clear();
-        window.rendered_frame.scene.snapshot()
+        window.rendered_frame.published_paint()
     });
     assert_eq!(
         renders.get(),
@@ -179,7 +178,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
     let reference = visual.update(|window, cx| {
         window.refresh();
         window.draw(cx).clear();
-        window.rendered_frame.scene.snapshot()
+        window.rendered_frame.published_paint()
     });
     assert_ne!(before.revision, after.revision);
     let leaf_bounds = after

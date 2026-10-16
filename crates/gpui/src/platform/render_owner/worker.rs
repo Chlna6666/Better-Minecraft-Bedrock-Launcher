@@ -282,7 +282,7 @@ impl Entry {
                     if let Some((width, height)) = self.requested_swapchain_extent
                         && !resize_matches_scene(
                             self.requested_swapchain_epoch,
-                            packet.layout_epoch,
+                            packet.paint.geometry.layout_epoch,
                             framebuffer_only,
                         )
                         && gpu_owner::resize_trace_enabled()
@@ -292,7 +292,7 @@ impl Entry {
                             "gpui_resize stage=scene_generation_lag window_id={} owner_id={} scene_epoch={} requested_px={}x{}",
                             packet.window_id,
                             self.id,
-                            packet.layout_epoch,
+                            packet.paint.geometry.layout_epoch,
                             width,
                             height
                         );
@@ -455,7 +455,10 @@ impl Entry {
     }
 
     fn present_scene(&mut self) -> Result<bool> {
-        let scene_epoch = self.scene.as_ref().map(|(packet, _)| packet.layout_epoch);
+        let scene_epoch = self
+            .scene
+            .as_ref()
+            .map(|(packet, _)| packet.paint.geometry.layout_epoch);
         if !self.ready(scene_epoch)? {
             return Ok(false);
         }

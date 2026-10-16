@@ -69,7 +69,7 @@ pub(super) fn verify_atlas_compaction<D>(
             corner_bounds: bounds,
             ..Default::default()
         };
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         if kind == AtlasTextureKind::Monochrome {
             scene.insert_primitive(MonochromeSprite {
                 order: 0,

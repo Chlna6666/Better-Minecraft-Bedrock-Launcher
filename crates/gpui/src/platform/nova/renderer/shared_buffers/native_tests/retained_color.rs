@@ -64,7 +64,7 @@ fn panel_sample(progress: f32) -> crate::SceneAnimationValue {
     }
 }
 
-fn popup(scene: &mut crate::Scene, viewport: crate::Bounds<crate::ScaledPixels>) {
+fn popup(scene: &mut crate::scene::Painter, viewport: crate::Bounds<crate::ScaledPixels>) {
     let popup_bounds = bounds(20., 20., 16., 16.);
     scene.begin_blur(crate::BlurCapture {
         animation_id: Some(crate::SceneAnimationId(1)),
@@ -78,9 +78,13 @@ fn popup(scene: &mut crate::Scene, viewport: crate::Bounds<crate::ScaledPixels>)
     scene.end_blur();
 }
 
-fn page(backdrop: bool, size: DrawableSize, placement: PopupPlacement) -> Arc<crate::Scene> {
+fn page(
+    backdrop: bool,
+    size: DrawableSize,
+    placement: PopupPlacement,
+) -> Arc<crate::window::Paint> {
     let viewport = bounds(0., 0., size.width as f32, size.height as f32);
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     // One background plus the settled panel is below two viewport areas,
     // matching the runtime page that the original admission cutoff rejected.
     scene.insert_primitive(quad(viewport, crate::rgb(0x204060)));
@@ -143,12 +147,16 @@ fn page(backdrop: bool, size: DrawableSize, placement: PopupPlacement) -> Arc<cr
     // scene value with the same ID would take precedence over the packet.
     scene.finish();
     scene.revision = 1;
-    Arc::new(scene)
+    Arc::new(crate::window::Paint::new(
+        scene.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ))
 }
 
 fn pixels<const N: usize>(
     renderer: &mut NovaRenderer,
-    scene: &Arc<crate::Scene>,
+    scene: &Arc<crate::window::Paint>,
     target: (TextureId, TextureViewId),
     previous: f32,
     values: [crate::SceneAnimationValue; N],
@@ -185,13 +193,13 @@ fn pixels<const N: usize>(
         }
         assert!(!damage.is_full());
     }
-    let blur_damage = crate::paint::backdrop_blur_animation_damage_plan(&scene, &previous_values, &values);
+    let blur_damage =
+        crate::paint::backdrop_blur_animation_damage_plan(&scene, &previous_values, &values);
     let mut packet = crate::PresentationPacket::new(
-        scene.clone(), std::sync::Arc::default(),
+        Arc::clone(scene),
         values,
         [],
         Instant::now(),
-        1.,
         damage,
         blur_damage,
         crate::PartialPresentMode::FullRedraw,

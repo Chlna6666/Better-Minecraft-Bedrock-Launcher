@@ -22,14 +22,44 @@
 | **P0-07** | P0 · **四后端共用 Scene Capture 损伤扩散源码已补；导航/首页动画与模糊 GPU 成本仍待四后端原生验收** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
 | **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
-| **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
+| **P1-01** | P1 · **发布/驻留所有权已审计；完整字节及延迟 A/B 待验** | **单一所有权 / 字节账本**：Frame 通过 Painter 构建并发布唯一 Paint，State/Packet/Renderer 共享同一 publication；生产 NovaRenderer 只有一个 FrameUpload scratch，RetainedUpload 独占 GPU Chunk residency | 本轮生命周期/原生回归见下节；继续测量构建→发布→排队→编码→上传→成功提交的分段延迟，不把 benchmark harness 当第二个生产 Owner |
 | **P1-02** | P1 · **部分实现：静态 Quad/操作流共享；操作流消费者已迁移，最新验证见下节** | **唯一持久 Paint Artifact + 局部失效**：Window 资格判定 → Scene 只读 Quad/Operation payload → Batch → Nova 增量上传已接通；继续迁移其它 Primitive，消除全量 replay/编码；完成嵌套 Capture 与重排依赖 | P1-01；已提交 Quad 切片 443 个定向测试、24 项四后端原生回归通过；本轮 Operation 结果逐项记录；GPU 既有增量上传保持不变，尚无应用 GPU 时间收益结论 |
-| **P1-03** | P1 · **待处理** | **唯一 GPU 消费协议**：替换 `PresentationPacket.scene` 全量快照与 `SceneSlot` 主链路，GPU Owner 的 Create/Update/Remove/Animation/Damage/Surface epoch 有顺序的增量提交；队列 latest-wins 不丢删除/资源操作 | P1-02 + P0-09；断帧、动画中断、跨窗口、Resize、队列拥塞与 GPU Fence 下正确；不额外建立 RenderTree/RenderCommit 等价影子结构 |
+| **P1-03** | P1 · **部分实现：SceneSlot/分散快照已删除；完整增量 GPU 协议未完成** | **唯一 GPU 消费协议**：单一 Arc<Paint> 直接拥有绘制数据、配对 retention 和布局代次；新 revision 仍遍历完整绘制描述进行实例编码，继续迁移其它 Primitive 的持久 Chunk 与 Create/Update/Remove 消费 | P1-02 + P0-09；latest-wins 累积 Damage、Surface epoch、旧 publication 生命周期与四后端像素必须保持；不以更换输入类型宣称完整增量化 |
 | **P2-01** | P2 · **待处理** | **显存预算与资源退休**：Filter/Root/Path/Atlas/Buffer 的 alloc/reuse/retire/budget/fragmentation/idle-trim 指标；统一资源所有者、Fence 退休，避免已预热 Spare Target 无限驻留 | P0-05/06、P1-03；高频弹层结束、关闭子窗口及 Resize 后 residency/peak/retire 可回落；DX11/DX12/VK/GL 资源生命周期等价 |
 | **P2-02** | P2 · **部分实现** | **原生 GPU 时间与 Render Graph 同步**：查询各后端 GPU pass timestamp、Copy/Upload、Filter、Composite、Present 的可比较时长；图资源版号和 Alias RD/WR/WAW barrier、Load/Clear/Scissor 与多 FrameSlot 保护 | P0-07、P2-01；不能用 Owner CPU busy 替代 GPU 时间；跨页面、跨帧物理 alias、首帧、Resize 后输出像素正确 |
 | **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
-| **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
+| **P3-01** | P3 · **部分删除：构建/发布状态已分离；全量实例编码仍保留** | **破坏性删除与消费者迁移**：已删除 SceneSlot、PresentationSnapshot、Frame.scene 字段和 Packet 分散静态字段；Scene 不再拥有构建栈/排序树。保留必要的基础 Replay、唯一 FrameUpload 实例编码与真实 Shader/Native 资源功能，待其增量消费者迁移后删除对应旧遍历 | 不保留 alias、旧名转发或双入口；本轮 all-feature tests/benches 编译及四后端像素结果见下节，不能删 gpui-3d::Scene、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 2026-10-16 构建状态与单一 Paint 发布迁移（基线 `92ec5442`）
+
+- `scene::Painter` 负责 UI 构建、排序树、Layer/Capture 栈、基础 Replay/Finish 与构建容量回收；`Scene` 只保留完成的绘制描述、批次和只读查询。真实方法已移到 Painter，全部生产/测试/benchmark 调用方同步迁移，没有保留 `impl Scene` 转发。
+- `Frame::publish` 将绘制 storage 直接移入 `Paint.scene: Scene`；唯一 `Arc<Paint>` 配对绘制描述、Window RetainedPaint 和 layout extent/epoch/scale。Frame history → PresentationState active/pending → Packet → RenderOwner/Nova 共享同一 publication，根数据不再经 `Arc<Scene>` 中转。删除 `SceneSlot`、`PresentationSnapshot`、`Frame.scene` 字段、Packet 的 scene/retention/布局字段，以及旧快照 accessor；嵌套 Filter Source 的不可变 Scene 仍是独立绘制内容，不能机械删除。
+- clear 仅从唯一 Paint 收回 drawing storage；有旧帧或 GPU Owner 引用时直接使用空构建 payload。构建辅助容量归 Painter；绘制容量仍从 Scene 计量。新增测试检查发布前后 PaintOperation 地址相同、Frame/State/Packet 同一 Arc、旧 publication 在新构建/clear 后不变。原有 pending 替换、未提交 Damage 合并、Resize epoch、GPU Fence 保护继续存在。
+- 所有权审计：生产只有 `NovaRenderer.frame_upload` 一个临时实例编码器；`RetainedUpload.quad_chunks` 是唯一跨帧 packed/GPU Chunk 缓存。bench-support 的 FrameUpload 属于测试夹具，不是重复生产 Owner，本轮没有虚构可删除的第二份 FrameUpload。
+- 全库回归触发了已有 retained-layout 问题：恢复缓存布局时直接运行依赖 StackSafe context 的测量回调。为 `TaffyLayoutEngine::restore_view_layout` 补齐与普通布局相同的 stacksafe 入口。旧基线独立复现该失败及五项 Window scheduling 测试失败，未通过修改调度断言隐藏它们。
+- 本地验证通过：`cargo check --workspace --no-default-features`、`cargo check -p bmcbl --lib --locked`、GPUI no-default-features + windows-manifest/mimalloc-collect、GPUI all-features tests/benches check、test no-run、bench no-run（dev profile）。482 项核心/缓存 View/Resize/采样动画定向测试通过；6 类用例 × DX11/DX12/Vulkan/OpenGL 共 24 项原生像素回归通过，包括普通 View 局部替换、弹层反向、in-flight Buffer、字体图片、Resize 和 AutoStatic。
+- 原生结果保持：64 个静态 Quad/Operation payload 共享，replay copy 0 B，既有局部 Quad upload 12288→192 B、COW refill 12480 B；Filter 链重建不重建 Root Texture/ResourceSet，Root-only 在 Full Native Present 下 unchanged source pixels=0。上述上传收益来自先前实现，本轮只证明迁移后保持正确，不记作新增性能提升。
+- 验证限制：workspace fmt 仍因原有无关文件差异失败（首处 bedrock-block-model/src/obj.rs:4825）；新增 Scene/Painter/Paint 模块 rustfmt check 与 git diff check 通过。全库测试未通过，运行中止于 `completed_asset_load_requests_dirty_frame` 的既有断言及 leak-detector 二次 panic。新增/既有失败均与保存的基线 executable 独立进程对照，结果见下表。未执行完整启动器 Tab/首页下拉/多窗口/最小化恢复的四后端人工视觉与性能矩阵，不能用夹具像素回归代替这些验收。
+- **剩余事实**：新 Paint revision 仍进入唯一 `FrameUpload::encode` 的完整描述遍历；静态 Quad/Operation 范围和 GPU resident 复用沿用现有增量路径，其它 Primitive 尚无完整持久增量协议。本轮完成构建/发布生命周期替换，不把 Arc 共享或符号删除等同端到端全增量/全零拷贝。尚无本轮应用 GPU Timestamp、任务管理器 GPU 占用或生成延迟 A/B 结论。
+
+本轮失败对照（旧基线 `92ec5442`，每项独立进程；没有修改下列断言）：
+
+| 用例 | 基线与当前结果 |
+| --- | --- |
+| active_image_animation_immediate_requests_are_coalesced | 均 exit 101，request count 1 / expected 2 |
+| animation_engine_frame_requests_are_coalesced_and_merge_drivers | 均 exit 101，request count 1 / expected 2 |
+| blur_auto_driver_advances_scene_values_without_notifying_view | 均 exit 101，FullRedraw / expected Partial |
+| clean_completed_frame_releases_dirty_frame_schedule_gate | 均 exit 101，request count 1 / expected 2 |
+| click_notify_requests_dirty_frame_without_animation | 均首个 request-count 断言失败，随后二次 panic，exit -1073740791 |
+| nested_work_is_not_double_counted_in_budget_occupancy | 均 exit 101，8ms / expected 10ms |
+| classifies_direction_bidi_and_shaping_independently_of_script_region | 均 exit 101，arabic.requires_complex_shaping 断言失败 |
+| raster_bounds_lru_keeps_interleaved_hot_entries | 均 exit 101，None / expected cached bounds |
+| clean_on_next_frame_callback_runs_without_rendering_view | 均 exit 101，ui_commit Required / expected AnimationTick |
+| completed_asset_load_requests_dirty_frame | 均首个 request-count 断言失败，随后二次 panic，exit -1073740791 |
+| plain_nested_leaf_update_preserves_ancestors_and_sibling_geometry | 基线 StackSafe panic 后 exit -1073740791；本轮补齐恢复入口后通过 |
+
+日志：`%TEMP%/bmcbl-publication-final-*.log`、`bmcbl-publication-target-*.log`、`bmcbl-publication-extra-*.log`、`bmcbl-publication-native-*.log`、`bmcbl-publication-known-*.log`、`bmcbl-fail-compare-*.log`。旧基线 binary SHA256：`59B73AD3457BC7F43592058D760B9E93B046EC63FB104DFCEC5AA1181597D189`。该 baseline worktree 已通过 Codex archive 回收；独立 executable 和对照日志保留在 TEMP。
 
 ### 2026-10-16 持久 PaintOperation 消费者迁移（基线 `4a151ea6`）
 

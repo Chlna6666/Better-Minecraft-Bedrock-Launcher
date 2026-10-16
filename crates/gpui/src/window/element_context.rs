@@ -877,7 +877,7 @@ impl Window {
                 if scanned_until < scene_range.end
                     && let Some(tail_bounds) = self
                         .next_frame
-                        .scene
+                        .scene()
                         .bounds_for_range(scanned_until..scene_range.end)
                 {
                     view_bounds = Some(match view_bounds {
@@ -894,7 +894,7 @@ impl Window {
                 {
                     let gap_bounds = if parent_scanned_until < scene_range.start {
                         self.next_frame
-                            .scene
+                            .scene()
                             .bounds_for_range(parent_scanned_until..scene_range.start)
                     } else {
                         None

@@ -81,7 +81,7 @@ remains shared with UI on Linux. The blocked-Render lab distinguishes animation 
 nominal-refresh continuity; both require backend/monitor validation. Linux runtime validation remains
 outstanding; details are in `GPUI_VENDOR_RENDERING.md`.
 
-Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `PresentationPacket` carries dynamic presentation values alongside the retained scene so a later compositor owner can hold the scene immutably. The packet itself owns dynamic/dirty/blur metadata and shares only the immutable Scene through `Arc`, so presentation submission no longer borrows Window state.
+Engine-owned animation samples are presentation state, not Scene state. A committed `Scene` must not be mutated merely to advance transform/opacity/blur/clip progress. `PresentationPacket` carries dynamic presentation values alongside one shared `Arc<Paint>`, which owns drawing data, paired retention proofs and layout provenance. The packet owns dynamic/dirty/blur metadata by value, so presentation submission never borrows Window state or mutable Painter construction state.
 
 Packet damage represents work not yet submitted. Successful renderer submission consumes dirty and
 backdrop-source damage; deferred or failed submission preserves it. The next animation sample
@@ -93,7 +93,7 @@ measured p50: the performance lab uses the current monitor's nominal refresh per
 inactive/invisible intervals ineligible for foreground validation. Submission timestamps still do
 not establish physical scanout timing.
 
-Committed scenes use active/pending ownership with latest-wins pending replacement. Pending promotion belongs to the presentation phase, before renderer-owned sampling/submission, not to UI scene generation. Sharing a committed Scene must never trigger copy-on-write of the whole display list: mutable UI scratch storage either stays uniquely owned and reuses capacity, or detaches to a fresh empty Scene while an older presentation snapshot is still alive.
+Committed Paint uses active/pending ownership with latest-wins pending replacement. Pending promotion belongs to the presentation phase, before renderer-owned sampling/submission, not to UI scene generation. `Frame::publish` moves drawing storage out of its UI-owned Painter into the single Paint publication. Sharing it must never trigger copy-on-write of the whole display list: scratch reset recovers storage from a unique publication or starts empty while an older publication is still alive. Frame, presentation and Renderer share the same Paint identity.
 
 Latest-wins is allowed to skip intermediate snapshots only when all unsubmitted pixel damage is carried forward. A later UI commit must merge the outstanding dirty region and backdrop-blur source damage instead of replacing them with a diff against an intermediate scene that was never submitted.
 

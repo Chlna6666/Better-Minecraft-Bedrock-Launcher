@@ -1,7 +1,7 @@
-use super::{PaintOperation, Scene};
+use super::{PaintOperation, Painter};
 use crate::ScaledPixels;
 
-impl Scene {
+impl Painter {
     /// Captures the root-scene indices needed to turn the next element-filter capture into a
     /// retained compositor layer after the child subtree has finished painting.
     pub(crate) fn composite_capture_checkpoint(&self) -> (usize, usize) {
@@ -101,7 +101,7 @@ mod tests {
     fn composite_capture_uses_real_pixel_bounds_and_zero_filter() {
         let layout_bounds = rect(0.0, 0.0, 1000.0, 700.0);
         let pixel_bounds = rect(40.0, 96.0, 420.0, 240.0);
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         let checkpoint = scene.composite_capture_checkpoint();
 
         scene.begin_blur(super::super::BlurCapture {

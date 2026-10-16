@@ -325,7 +325,7 @@ A UI commit produced after an early presentation sets needs_present and requests
 
 Engine-owned animation samples live in `PresentationState`, not in the committed `Scene`. `PresentationPacket` therefore carries a retained scene and a separate dynamic animation-value slice. Presentation ticks update only the dynamic state; they do not mutate display-list ownership or scene revision.
 
-UI scene storage is Arc-backed only at the commit boundary. A completed UI scene is published into a latest-wins pending presentation slot; the presentation phase promotes the newest pending snapshot before renderer-owned animation sampling or GPU submission. Scratch storage may reuse the previous Scene allocation only after presentation ownership releases it; while an older snapshot is shared, scratch reset detaches to a fresh empty Scene instead of cloning or mutating the committed display list.
+`Painter` owns mutable UI construction state, including the ordering tree, Layer/Capture stacks and reuse capacity policy. At the commit boundary, `Frame::publish` moves its drawing payload into one `Arc<Paint>` together with the paired retention proofs and layout provenance. Frame history, active/pending presentation, the owner queue and Renderer share that same publication. Paint owns Scene by value; there is no root `Arc<Scene>` snapshot or SceneSlot. Scratch reset recovers drawing storage only when the publication is uniquely owned, otherwise it starts empty without cloning or mutating an older publication. Presentation promotes the latest pending Paint before animation sampling or GPU submission.
 
 If multiple UI commits arrive before a successful submission, presentation damage is cumulative rather than relative only to the immediately previous UI frame. Dirty regions and backdrop-blur source damage preserve every unsubmitted transition, so skipping intermediate pending snapshots remains pixel-correct for partial presentation.
 
@@ -565,9 +565,9 @@ Paint planning and Window retention are separate from Scene storage:
 - Nova `RetainedUpload` remains the packed-byte/GPU-residency owner;
   `FilterRegistry` remains the owner of successfully submitted Filter content.
 
-`Scene::finish()` sorts and prepares Paint batches. Window retention separately
+`Painter::finish()` sorts and prepares Paint batches. Window retention separately
 preserves unchanged Paint revisions and plans reusable Chunks. Basic
-`Scene::replay()` reports whether draw-order mapping survived; it does not
+`Painter::replay()` reports whether draw-order mapping survived; it does not
 propagate Chunk candidates. Zero-radius captures with no coordinate animation
 preserve local child damage, while enclosing Gaussian/transformed captures
 still propagate their own affected output.
@@ -599,8 +599,10 @@ release unrelated old-page memory. Sharing retains payload allocations, never an
 old Scene or an accumulating chain of Scene snapshots.
 
 Other primitives still rebuild on replay, and BoundsTree/prefix validation still
-visits operations. This partial incremental path does not yet replace SceneSlot,
-presentation snapshots or full FrameUpload encoding.
+visits operations. SceneSlot and the separate presentation snapshot were removed;
+the canonical publication moves drawing storage without copying it. New Paint
+generations still require Nova's encoding traversal, with retained Quad ranges
+reusing the sole packed-byte cache. This is not a complete per-primitive delta protocol.
 
 Nova's window-owned `renderer/root_color.rs` owns the Root allocation, per-slot
 source/composite bindings and its successful-content version. Filter target
@@ -615,9 +617,9 @@ Root has no Filter Capture markers, target variant or Gaussian work. Its final
 descriptor shares the compositor shader ABI, while resource lookup resolves
 directly through the Root owner, including when no Filter chain exists. The graph
 also distinguishes reading resident Element color from refreshing its source.
-The Scene snapshot and full replay/encoding protocol still require migration to
-persistent Paint chunks; removing Root's Filter representation does not complete
-that incremental protocol.
+The remaining full replay/encoding traversal still requires migration to
+persistent Paint chunks; removing Root's Filter representation and consolidating
+publication do not complete that incremental protocol.
 
 Root also owns the animation samples represented by its last successful Present.
 Filter invalidation cannot reset that comparison baseline. Root-only frames do
@@ -628,10 +630,10 @@ Present invalidates Root content because offscreen writes may already have run.
 
 ## PresentationPacket
 
-After a successful draw, GPUI snapshots one lifetime-free presentation packet containing:
+After finalizing UI Paint, GPUI creates one lifetime-free presentation packet containing:
 
-- an `Arc<Scene>` to the immutable retained scene;
-- an immutable Window retention snapshot paired with that Paint generation;
+- one `Arc<Paint>` owning immutable drawing data, paired Window retention proofs
+  and layout extent/epoch/scale;
 - renderer-owned animation samples;
 - the accumulated dirty region;
 - backdrop-blur source damage;

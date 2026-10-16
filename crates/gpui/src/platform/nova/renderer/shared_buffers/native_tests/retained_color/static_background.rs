@@ -6,9 +6,9 @@ pub(super) fn page(
     revision: u64,
     background: crate::Rgba,
     captured_foreground: bool,
-) -> Arc<crate::Scene> {
+) -> Arc<crate::window::Paint> {
     let viewport = bounds(0., 0., size.width as f32, size.height as f32);
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     // A painter-ordered static prefix followed by independently animated foreground.
     scene.push_layer(viewport);
     scene.insert_primitive(quad(viewport, background));
@@ -31,7 +31,11 @@ pub(super) fn page(
     }
     scene.finish();
     scene.revision = revision;
-    Arc::new(scene)
+    Arc::new(crate::window::Paint::new(
+        scene.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ))
 }
 
 fn verify(backend: RendererBackend) {

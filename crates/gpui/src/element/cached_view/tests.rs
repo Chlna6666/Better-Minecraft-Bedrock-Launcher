@@ -983,12 +983,12 @@ fn cached_deferred_draw_reuse_records_one_scene_segment(cx: &mut TestAppContext)
 
     cx.update_window(window, |_, window, cx| {
         window.draw(cx).clear();
-        assert_ne!(window.rendered_frame.scene.len(), 0);
+        assert_ne!(window.rendered_frame.scene().len(), 0);
         assert_eq!(window.rendered_frame.retained_scene_segments.len(), 1);
 
         window.refresh();
         window.draw(cx).clear();
-        assert_ne!(window.rendered_frame.scene.len(), 0);
+        assert_ne!(window.rendered_frame.scene().len(), 0);
         assert_eq!(window.rendered_frame.retained_scene_segments.len(), 1);
     })
     .unwrap();

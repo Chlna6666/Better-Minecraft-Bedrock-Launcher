@@ -13,7 +13,11 @@ fn stable_sampled_static_nonidentity_sample_does_not_schedule_frames(cx: &mut Te
         animating: false,
     });
     visual.update(|window, _| {
-        assert!(window.rendered_frame.scene.quads[0].animation_id.is_some());
+        assert!(
+            window.rendered_frame.scene().quads[0]
+                .animation_id
+                .is_some()
+        );
         assert!(window.next_frame_callbacks.borrow().is_empty());
     });
 }
@@ -43,7 +47,7 @@ fn stable_sampled_retarget_and_settle_keep_binding_and_final_sample(cx: &mut Tes
         offset: 12.,
         animating: true,
     });
-    let id = visual.update(|window, _| window.rendered_frame.scene.quads[0].animation_id);
+    let id = visual.update(|window, _| window.rendered_frame.scene().quads[0].animation_id);
     for (offset, animating) in [(-3., true), (6., false)] {
         view.update(visual, |view, cx| {
             view.offset = offset;
@@ -52,17 +56,17 @@ fn stable_sampled_retarget_and_settle_keep_binding_and_final_sample(cx: &mut Tes
         });
         visual.update(|window, cx| {
             window.draw(cx).clear();
-            assert_eq!(window.rendered_frame.scene.quads[0].animation_id, id);
+            assert_eq!(window.rendered_frame.scene().quads[0].animation_id, id);
             let value = window
                 .rendered_frame
-                .scene
+                .scene()
                 .animation_values
                 .iter()
                 .find(|value| Some(value.animation_id) == id)
                 .unwrap_or_else(|| {
                     panic!(
                         "sample remains bound: offset={offset} id={id:?} values={:?}",
-                        window.rendered_frame.scene.animation_values
+                        window.rendered_frame.scene().animation_values
                     )
                 });
             assert_eq!(value.to[0], offset * window.scale_factor());

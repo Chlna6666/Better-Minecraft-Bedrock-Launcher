@@ -1491,14 +1491,14 @@ impl WindowsWindow {
         // native message changed the extent, rebuild for that extent rather
         // than restoring an obsolete smaller drawable on the GPU owner.
         if let Some(native) = self.native_client_extent()
-            && !native_extent_matches_layout(packet.layout_extent, native)
+            && !native_extent_matches_layout(packet.paint.geometry.layout_extent, native)
         {
             if crate::diagnostics::gpu_owner::resize_trace_enabled() {
                 log::info!(
                     target: "gpui_resize_trace",
                     "gpui_resize stage=intermediate_scene window_id={} layout_px={:?} native_px={}x{} framebuffer_only={}",
                     self.0.handle.window_id().data().as_ffi(),
-                    packet.layout_extent,
+                    packet.paint.geometry.layout_extent,
                     native.width,
                     native.height,
                     framebuffer_only,
@@ -1508,7 +1508,10 @@ impl WindowsWindow {
             self.request_frame(PlatformFrameRequest::ui_commit());
             return PlatformFrameResult::Deferred;
         }
-        if !self.try_apply_queued_renderer_resize(packet.layout_extent, packet.layout_epoch) {
+        if !self.try_apply_queued_renderer_resize(
+            packet.paint.geometry.layout_extent,
+            packet.paint.geometry.layout_epoch,
+        ) {
             return defer_scene_until_native_frame(self, packet, framebuffer_only);
         }
         let (result, has_submitted_frame, pending_gpu_work) = {

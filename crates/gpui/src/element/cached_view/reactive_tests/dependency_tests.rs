@@ -86,7 +86,7 @@ fn data_dependency_rebuilds_only_its_reader(cx: &mut TestAppContext) {
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.background.solid == crate::rgb(0x0000ff) })
@@ -94,7 +94,7 @@ fn data_dependency_rebuilds_only_its_reader(cx: &mut TestAppContext) {
         assert!(
             !window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.background.solid == crate::rgb(0xff0000) })
@@ -168,7 +168,7 @@ fn sibling_dependency_rebuilds_reader_without_refreshing_unrelated_cache(cx: &mu
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| quad.background.solid == crate::rgb(0xaa00aa))
@@ -176,7 +176,7 @@ fn sibling_dependency_rebuilds_reader_without_refreshing_unrelated_cache(cx: &mu
         assert!(
             !window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| quad.background.solid == crate::rgb(0xffffff))

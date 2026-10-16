@@ -316,7 +316,7 @@ impl Window {
                         self.active.get(),
                         self.platform_window.is_minimized(),
                         self.needs_present.get(),
-                        self.rendered_frame.scene.len()
+                        self.rendered_frame.scene().len()
                     );
                 }
             } else if !bypass_progressive_throttle && self.frame_throttle.should_delay(now) {
@@ -359,7 +359,7 @@ impl Window {
             && !self.needs_present.get()
             && self.last_input_timestamp.get() <= self.animation_time()
             && self.next_frame_callbacks.borrow().is_empty()
-            && self.rendered_frame.scene.len() != 0
+            && self.rendered_frame.scene().len() != 0
     }
 
     fn recently_received_input(&self, now: Instant) -> bool {
@@ -1061,10 +1061,18 @@ impl Window {
             let presentation_scene = self
                 .presentation_state
                 .active_scene()
-                .unwrap_or(&self.rendered_frame.scene);
+                .unwrap_or(self.rendered_frame.scene());
             let previous_values = self.presentation_state.active_engine_animation_values();
-            let pixel_damage = crate::paint::gpu_sample_damage(&presentation_scene, previous_values, &tick.scene_values);
-            let mut tick_blur_damage = crate::paint::backdrop_blur_animation_damage_plan(&presentation_scene, previous_values, &tick.scene_values);
+            let pixel_damage = crate::paint::gpu_sample_damage(
+                &presentation_scene,
+                previous_values,
+                &tick.scene_values,
+            );
+            let mut tick_blur_damage = crate::paint::backdrop_blur_animation_damage_plan(
+                &presentation_scene,
+                previous_values,
+                &tick.scene_values,
+            );
             if preserve_unpresented_damage {
                 tick_blur_damage.merge_from(&self.backdrop_blur_damage_plan);
             }
@@ -1098,10 +1106,10 @@ impl Window {
         let backdrop_output_damage = crate::paint::backdrop_blur_output_damage(
             self.presentation_state
                 .active_scene()
-                .unwrap_or(&self.rendered_frame.scene),
+                .unwrap_or(self.rendered_frame.scene()),
             &self.backdrop_blur_damage_plan,
         )
-            .collect::<SmallVec<[_; 4]>>();
+        .collect::<SmallVec<[_; 4]>>();
         for bounds in backdrop_output_damage {
             self.render_dirty_region.push(bounds);
         }
@@ -1236,7 +1244,7 @@ impl Window {
                 decision.activity.dirty,
                 frame_request.needs_ui_commit(),
                 decision.activity.pending_present,
-                self.rendered_frame.scene.len()
+                self.rendered_frame.scene().len()
             );
             false
         } else if decision.draw_frame {
@@ -1406,7 +1414,7 @@ impl Window {
             && (!self.inactive_dirty_redraw_enabled || load.minimized)
             && !had_frame_callbacks
             && !self.recently_received_input(now)
-            && (self.rendered_frame.scene.len() != 0 || load.minimized)
+            && (self.rendered_frame.scene().len() != 0 || load.minimized)
     }
 
     fn should_degrade_dirty_frame_to_retained_present(
@@ -1426,7 +1434,7 @@ impl Window {
                 .borrow()
                 .is_interactive_or_animating()
             && self.frame_throttle.should_delay(now)
-            && self.rendered_frame.scene.len() != 0
+            && self.rendered_frame.scene().len() != 0
     }
 
     pub(crate) fn draw_budget_exhausted(&self) -> bool {

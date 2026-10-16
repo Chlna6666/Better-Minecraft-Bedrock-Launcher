@@ -1542,7 +1542,7 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, packet: crate::PresentationPacket) -> crate::PlatformFrameResult {
         let mut this = self.0.lock();
-        this.renderer.draw(packet.scene.as_ref());
+        this.renderer.draw(&packet.paint.scene);
         crate::PlatformFrameResult::Submitted
     }
 

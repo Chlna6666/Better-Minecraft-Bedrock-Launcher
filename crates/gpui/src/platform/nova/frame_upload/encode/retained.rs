@@ -381,7 +381,7 @@ mod static_dynamic_batch_tests {
                 is_solid: index % 2 == 0,
             })
             .collect();
-        // All ranges are sorted and disjoint, as guaranteed by Scene::finish.
+        // Window retention finalizes sorted, disjoint Chunk ranges after Painter::finish.
         // Compare against the previous full scan, including adjacent boundaries
         // and ranges which cross multiple solid/non-solid prepared batches.
         for start in 0..=(48 * 8) {

@@ -112,7 +112,7 @@ fn rendered_leaf_notify_updates_parent_that_reads_its_state(cx: &mut TestAppCont
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.background.solid == crate::rgb(0xaa00aa) })
@@ -120,7 +120,7 @@ fn rendered_leaf_notify_updates_parent_that_reads_its_state(cx: &mut TestAppCont
         assert!(
             !window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| { quad.background.solid == crate::rgb(0xffffff) })
@@ -176,7 +176,7 @@ fn non_view_entity_notify_cannot_replay_stale_root(cx: &mut TestAppContext) {
         assert!(
             window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| quad.background.solid == crate::rgb(0x0000ff))
@@ -184,7 +184,7 @@ fn non_view_entity_notify_cannot_replay_stale_root(cx: &mut TestAppContext) {
         assert!(
             !window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .any(|quad| quad.background.solid == crate::rgb(0xff0000))
@@ -235,7 +235,7 @@ fn unrelated_plain_entities_update_independently(cx: &mut TestAppContext) {
     let baseline = (root_renders.get(), left_renders.get(), right_renders.get());
     let original = cx
         .update_window(window, |_, window, _| {
-            window.rendered_frame.scene.snapshot()
+            window.rendered_frame.published_paint()
         })
         .unwrap();
     let bounds: Vec<_> = original
@@ -258,7 +258,7 @@ fn unrelated_plain_entities_update_independently(cx: &mut TestAppContext) {
         cx.update_window(window, |_, window, _| {
             let current = window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .find(|quad| quad.bounds == bounds[1])
@@ -283,7 +283,7 @@ fn unrelated_plain_entities_update_independently(cx: &mut TestAppContext) {
         cx.update_window(window, |_, window, _| {
             let current = window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .find(|quad| quad.bounds == bounds[0])
@@ -336,7 +336,7 @@ fn plain_nested_leaf_update_preserves_ancestors_and_sibling_geometry(cx: &mut Te
     let baseline = (root_renders.get(), parent_renders.get(), leaf_renders.get());
     let before = cx
         .update_window(window, |_, window, _| {
-            window.rendered_frame.scene.snapshot()
+            window.rendered_frame.published_paint()
         })
         .unwrap();
     for revision in 1..=4 {
@@ -358,7 +358,7 @@ fn plain_nested_leaf_update_preserves_ancestors_and_sibling_geometry(cx: &mut Te
                     .unwrap();
                 let current = window
                     .rendered_frame
-                    .scene
+                    .scene()
                     .quads
                     .iter()
                     .find(|quad| quad.background.solid == crate::rgb(color))
@@ -372,7 +372,7 @@ fn plain_nested_leaf_update_preserves_ancestors_and_sibling_geometry(cx: &mut Te
             };
             let current = window
                 .rendered_frame
-                .scene
+                .scene()
                 .quads
                 .iter()
                 .find(|quad| quad.background.solid == crate::rgb(color))
@@ -405,7 +405,7 @@ fn plain_nested_leaf_update_preserves_ancestors_and_sibling_geometry(cx: &mut Te
             .unwrap();
         let current = window
             .rendered_frame
-            .scene
+            .scene()
             .quads
             .iter()
             .find(|quad| quad.background.solid == crate::rgb(0xf0f000))

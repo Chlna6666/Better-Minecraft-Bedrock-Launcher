@@ -143,8 +143,9 @@ impl Window {
         // retained/layout animations, and include any previous-frame backdrop output that samples
         // the changed pixels. Blur topology/config changes are handled separately by the normal
         // scene damage plan.
-        let backdrop_damage = crate::paint::backdrop_blur_damage(&self.rendered_frame.scene, damage)
-            .collect::<SmallVec<[_; 4]>>();
+        let backdrop_damage =
+            crate::paint::backdrop_blur_damage(self.rendered_frame.scene(), damage)
+                .collect::<SmallVec<[_; 4]>>();
         self.animation_dirty_region.push(damage);
         for bounds in backdrop_damage {
             self.animation_dirty_region.push(bounds);
@@ -255,7 +256,7 @@ impl Window {
                 crate::TransitionProperty::Translation,
             ])
         });
-        self.next_frame.scene.insert_primitive(MonochromeSprite {
+        self.next_frame.painter.insert_primitive(MonochromeSprite {
             order: 0,
             pad: MonochromeSpriteSampling::Linear as u32,
             animation_id,
@@ -549,7 +550,7 @@ impl Window {
                 .intersect(&context.content_mask.bounds);
             let previous_damage = self
                 .rendered_frame
-                .scene
+                .scene()
                 .polychrome_sprites
                 .iter()
                 .filter(|sprite| {
@@ -578,7 +579,7 @@ impl Window {
             crate::TransitionProperty::Translation,
         ]);
 
-        self.next_frame.scene.insert_primitive(PolychromeSprite {
+        self.next_frame.painter.insert_primitive(PolychromeSprite {
             order: 0,
             sampling: u32::from(sampling == ImageSampling::Nearest),
             grayscale,
@@ -621,7 +622,7 @@ impl Window {
             crate::TransitionProperty::Transform,
             crate::TransitionProperty::Translation,
         ]);
-        self.next_frame.scene.insert_primitive(PaintBackdropBlur {
+        self.next_frame.painter.insert_primitive(PaintBackdropBlur {
             order: 0,
             animation_id,
             bounds,
@@ -665,7 +666,7 @@ impl Window {
         ]);
         let mut primitive = PaintRendererExtension::new(bounds, content_mask, extension);
         primitive.animation_id = animation_id;
-        self.next_frame.scene.insert_primitive(primitive);
+        self.next_frame.painter.insert_primitive(primitive);
     }
 
     /// Paint a surface into the scene for the next frame at the current z-index.
@@ -680,7 +681,7 @@ impl Window {
         let scale_factor = self.scale_factor();
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
-        self.next_frame.scene.insert_primitive(PaintSurface {
+        self.next_frame.painter.insert_primitive(PaintSurface {
             order: 0,
             bounds,
             content_mask,
@@ -714,10 +715,10 @@ impl Window {
         let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
         live_tiles.clear();
         self.rendered_frame
-            .scene
+            .scene()
             .collect_polychrome_tile_ids_into(&mut live_tiles);
         self.next_frame
-            .scene
+            .painter
             .collect_polychrome_tile_ids_into(&mut live_tiles);
         for scene in self.presentation_state.committed_scenes() {
             scene.collect_polychrome_tile_ids_into(&mut live_tiles);
@@ -785,10 +786,10 @@ impl Window {
         let mut live_tiles = std::mem::take(&mut self.image_paint_live_tiles_scratch);
         live_tiles.clear();
         self.rendered_frame
-            .scene
+            .scene()
             .collect_polychrome_tile_ids_into(&mut live_tiles);
         self.next_frame
-            .scene
+            .painter
             .collect_polychrome_tile_ids_into(&mut live_tiles);
         for scene in self.presentation_state.committed_scenes() {
             scene.collect_polychrome_tile_ids_into(&mut live_tiles);

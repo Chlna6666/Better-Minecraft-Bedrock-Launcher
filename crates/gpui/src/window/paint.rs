@@ -145,14 +145,14 @@ impl Window {
         let clipped_bounds = bounds.intersect(&content_mask.bounds);
         if !clipped_bounds.is_empty() {
             self.next_frame
-                .scene
+                .painter
                 .push_layer(clipped_bounds.scale(scale_factor));
         }
 
         let result = f(self);
 
         if !clipped_bounds.is_empty() {
-            self.next_frame.scene.pop_layer();
+            self.next_frame.painter.pop_layer();
         }
 
         result
@@ -196,14 +196,16 @@ impl Window {
         let blur_bounds = self.visual_bounds(bounds).scale(scale_factor);
         let content_mask = self.visual_content_mask().scale(scale_factor);
         let layer_id = self.current_retained_element_id();
-        self.next_frame.scene.begin_blur(crate::scene::BlurCapture {
-            animation_id: composite_animation.map(|(animation_id, _)| animation_id),
-            layer_id,
-            bounds: blur_bounds,
-            content_mask,
-            radius: ScaledPixels(sigma * scale_factor * visual_scale),
-            opacity: previous_opacity,
-        });
+        self.next_frame
+            .painter
+            .begin_blur(crate::scene::BlurCapture {
+                animation_id: composite_animation.map(|(animation_id, _)| animation_id),
+                layer_id,
+                bounds: blur_bounds,
+                content_mask,
+                radius: ScaledPixels(sigma * scale_factor * visual_scale),
+                opacity: previous_opacity,
+            });
         self.element_opacity = 1.0;
         let previous_animation = if composite_animation.is_some() {
             self.scene_animation.take()
@@ -215,7 +217,7 @@ impl Window {
             self.scene_animation = previous_animation;
         }
         self.element_opacity = previous_opacity;
-        self.next_frame.scene.end_blur();
+        self.next_frame.painter.end_blur();
         result
     }
 
@@ -245,7 +247,7 @@ impl Window {
                 crate::TransitionProperty::HorizontalEdgeFirst,
                 crate::TransitionProperty::HorizontalEdgeSecond,
             ]);
-            self.next_frame.scene.insert_primitive(Shadow {
+            self.next_frame.painter.insert_primitive(Shadow {
                 order: 0,
                 blur_radius: shadow.blur_radius.scale(scale_factor * visual_scale),
                 animation_id,
@@ -304,7 +306,7 @@ impl Window {
         };
 
         if !quad.background.is_transparent() {
-            self.next_frame.scene.insert_primitive(quad);
+            self.next_frame.painter.insert_primitive(quad);
             return;
         }
 
@@ -329,7 +331,7 @@ impl Window {
             outer_bounds.bottom_right() - bottom_right_inset,
         );
         if inner_bounds.is_empty() {
-            self.next_frame.scene.insert_primitive(quad);
+            self.next_frame.painter.insert_primitive(quad);
             return;
         }
 
@@ -357,7 +359,7 @@ impl Window {
             if clipped_bounds.is_empty() {
                 continue;
             }
-            self.next_frame.scene.insert_primitive(Quad {
+            self.next_frame.painter.insert_primitive(Quad {
                 content_mask: ContentMask {
                     bounds: clipped_bounds,
                     ..quad.content_mask
@@ -390,7 +392,7 @@ impl Window {
         let mut path =
             path.scale_and_transform_for_paint(scale_factor, transform.scale, translation);
         path.content_mask = content_mask.scale(scale_factor);
-        self.next_frame.scene.insert_primitive(path);
+        self.next_frame.painter.insert_primitive(path);
     }
 
     /// Paint an underline into the scene for the next frame at the current z-index.
@@ -425,7 +427,7 @@ impl Window {
         ]);
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
 
-        self.next_frame.scene.insert_primitive(Underline {
+        self.next_frame.painter.insert_primitive(Underline {
             order: 0,
             pad: 0,
             animation_id,
@@ -469,7 +471,7 @@ impl Window {
         ]);
         let bounds = self.visual_bounds(bounds).scale(scale_factor);
 
-        self.next_frame.scene.insert_primitive(Underline {
+        self.next_frame.painter.insert_primitive(Underline {
             order: 0,
             pad: 0,
             animation_id,
@@ -524,7 +526,7 @@ impl Window {
             scale_factor: raster_scale_factor,
             grayscale_antialiasing: glyphs_require_grayscale_antialiasing(
                 self.platform_window.background_appearance(),
-                self.next_frame.scene.is_capturing_blur(),
+                self.next_frame.painter.is_capturing_blur(),
                 self.text_rendering_mode.get(),
                 geometry_animation.is_some(),
             ),
@@ -570,7 +572,7 @@ impl Window {
                 crate::TransitionProperty::Transform,
                 crate::TransitionProperty::Translation,
             ]);
-            self.next_frame.scene.insert_primitive(MonochromeSprite {
+            self.next_frame.painter.insert_primitive(MonochromeSprite {
                 order: 0,
                 pad: MonochromeSpriteSampling::Glyph as u32,
                 animation_id,
@@ -656,7 +658,7 @@ impl Window {
                 crate::TransitionProperty::Translation,
             ]);
 
-            self.next_frame.scene.insert_primitive(PolychromeSprite {
+            self.next_frame.painter.insert_primitive(PolychromeSprite {
                 order: 0,
                 sampling: 0,
                 grayscale: false,

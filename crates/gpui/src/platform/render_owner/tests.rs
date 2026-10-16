@@ -62,21 +62,26 @@ fn queued_ticks_wait_for_gpu_report_to_continue() {
     ));
 }
 
-
 #[test]
 fn first_windows_frame_enqueues_without_waiting_for_gpu_completion() {
-    use crate::{BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode, Scene};
+    use crate::{BackdropBlurDamagePlan, DirtyRegion, PartialPresentMode};
 
     // The GPU worker deliberately does not consume this queue. The producer must still
     // return immediately, even though this window has never presented a frame.
     let (owner, receiver) = owner(false);
     owner.status.submitted.store(false, Ordering::Release);
     let packet = PresentationPacket::new(
-        Arc::new(Scene::default()), std::sync::Arc::default(),
+        std::sync::Arc::new(crate::window::Paint::new(
+            crate::Scene::default(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                scale_factor: 1.0,
+                ..Default::default()
+            },
+        )),
         [],
         [],
         Instant::now(),
-        1.0,
         DirtyRegion::empty(),
         BackdropBlurDamagePlan::default(),
         PartialPresentMode::FullRedraw,

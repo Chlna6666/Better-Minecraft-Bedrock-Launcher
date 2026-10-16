@@ -745,7 +745,7 @@ mod retained_root_tests {
 
     #[test]
     fn scene_encode_generation_advances_only_when_repacking_the_scene() {
-        let scene = crate::Scene::default();
+        let scene = crate::scene::Painter::default();
         let mut upload = FrameUpload::default();
         let mut cache = RetainedQuadChunkCache::default();
         let drawable = DrawableSize {
@@ -780,7 +780,7 @@ mod retained_root_tests {
     #[test]
     fn auto_static_fingerprint_tracks_source_pixels_not_foreground_animation() {
         fn encoded_source(static_width: f32, foreground_width: f32) -> (u64, usize) {
-            let mut scene = crate::Scene::default();
+            let mut scene = crate::scene::Painter::default();
             for index in 0..100 {
                 let bounds = crate::bounds(
                     crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -852,7 +852,7 @@ mod retained_root_tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(20.0), crate::ScaledPixels(20.0)),
         );
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for _ in 0..100 {
             scene.insert_primitive(crate::Quad {
                 bounds,
@@ -927,7 +927,7 @@ mod retained_root_tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(24.0), crate::ScaledPixels(24.0)),
         );
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for _ in 0..100 {
             scene.insert_primitive(crate::Shadow {
                 bounds,
@@ -989,7 +989,7 @@ mod retained_root_tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(18.0), crate::ScaledPixels(18.0)),
         );
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for _ in 0..100 {
             scene.insert_primitive(crate::Quad {
                 bounds,
@@ -1147,7 +1147,7 @@ mod retained_root_tests {
     #[test]
     fn retained_quad_batches_receive_independent_bounds_after_single_packing_pass() {
         let mut scene = crate::window::retained::PaintFixture::default();
-        let paint_quads = |scene: &mut crate::Scene, x: f32, count: usize| {
+        let paint_quads = |scene: &mut crate::scene::Painter, x: f32, count: usize| {
             scene.push_layer(crate::bounds(
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
                 crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
@@ -1218,10 +1218,13 @@ mod retained_root_tests {
 
     #[test]
     fn encoded_animation_between_static_quads_keeps_independent_bounds() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for i in 0..25 {
             let bounds = crate::bounds(
-                crate::point(crate::ScaledPixels(i as f32 * 16.0), crate::ScaledPixels(8.0)),
+                crate::point(
+                    crate::ScaledPixels(i as f32 * 16.0),
+                    crate::ScaledPixels(8.0),
+                ),
                 crate::size(crate::ScaledPixels(8.0), crate::ScaledPixels(8.0)),
             );
             scene.insert_primitive(crate::Quad {

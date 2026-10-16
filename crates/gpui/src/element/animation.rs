@@ -1138,7 +1138,7 @@ impl<E: IntoElement + 'static> Element for StableSampledAnimationElement<E> {
                 .resolved_values(bounds, window.scale_factor(), window.visual_scale());
         window
             .next_frame
-            .scene
+            .painter
             .push_animation_value(crate::SceneAnimationValue {
                 animation_id: state.animation_id,
                 property: self.property.property,

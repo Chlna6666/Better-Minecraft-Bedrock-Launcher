@@ -12,9 +12,11 @@ impl Window {
         paint: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.invalidator.debug_assert_paint();
-        let checkpoint = self.next_frame.scene.composite_capture_checkpoint();
+        let checkpoint = self.next_frame.painter.composite_capture_checkpoint();
         let result = self.paint_element_blur(bounds, px(COMPOSITE_CAPTURE_IDENTITY_SIGMA), paint);
-        self.next_frame.scene.finalize_composite_capture(checkpoint);
+        self.next_frame
+            .painter
+            .finalize_composite_capture(checkpoint);
         result
     }
 
@@ -30,7 +32,7 @@ impl Window {
         }
         let bounds = self
             .next_frame
-            .scene
+            .painter
             .animation_visual_bounds(animation_id)?;
         Some(Bounds::new(
             point(

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    AbsoluteLength, ContentMask, Length, Quad, ScaledPixels, Scene, Timer, point, rgb, rgba, size,
+    AbsoluteLength, ContentMask, Length, Quad, ScaledPixels, Timer, point, rgb, rgba, size,
 };
 use std::collections::VecDeque;
 
@@ -434,7 +434,7 @@ impl Window {
             (mode, runtime.frame_time.lines(mode))
         };
         debug_frame_overlay_paint(
-            &mut self.next_frame.scene,
+            &mut self.next_frame.painter,
             self.viewport_size,
             self.scale_factor,
             mode,
@@ -762,7 +762,7 @@ fn format_frame_ms(duration: Option<Duration>) -> String {
 }
 
 fn debug_frame_overlay_paint(
-    scene: &mut Scene,
+    scene: &mut crate::scene::Painter,
     viewport_size: Size<Pixels>,
     scale_factor: f32,
     _mode: DebugFrameOverlayMode,
@@ -848,7 +848,7 @@ fn debug_frame_overlay_paint(
 }
 
 fn insert_debug_quad(
-    scene: &mut Scene,
+    scene: &mut crate::scene::Painter,
     bounds: Bounds<ScaledPixels>,
     content_mask: ContentMask<ScaledPixels>,
     background: Hsla,

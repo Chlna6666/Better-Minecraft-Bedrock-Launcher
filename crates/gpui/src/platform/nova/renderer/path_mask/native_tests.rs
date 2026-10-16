@@ -80,7 +80,7 @@ fn dx12_resident_mask_preserves_pixels_across_repeated_presentations() {
         .expect("destroy scratch texture");
 }
 
-fn scene(color: u32, quad_color: u32) -> Arc<crate::Scene> {
+fn scene(color: u32, quad_color: u32) -> Arc<crate::window::Paint> {
     changed_scene(color, quad_color, PathChange::None)
 }
 
@@ -91,7 +91,7 @@ enum PathChange {
     Scale,
 }
 
-fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::Scene> {
+fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::window::Paint> {
     let mut path = crate::Path::new(crate::point(crate::px(2.0), crate::px(2.0)));
     path.line_to(crate::point(crate::px(14.0), crate::px(2.0)));
     let end_x = if matches!(change, PathChange::Geometry) {
@@ -113,7 +113,7 @@ fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::
     if matches!(change, PathChange::Clip) {
         path.content_mask.bounds.size.width = crate::px(4.0);
     }
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.push_layer(bounds.scale(1.0));
     let scale = if matches!(change, PathChange::Scale) {
         0.5
@@ -136,16 +136,19 @@ fn changed_scene(color: u32, quad_color: u32, change: PathChange) -> Arc<crate::
         ..Default::default()
     });
     scene.finish();
-    Arc::new(scene)
+    Arc::new(crate::window::Paint::new(
+        scene.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ))
 }
 
-fn present(renderer: &mut NovaRenderer, scene: &Arc<crate::Scene>, window_id: u64) {
+fn present(renderer: &mut NovaRenderer, scene: &Arc<crate::window::Paint>, window_id: u64) {
     let mut packet = PresentationPacket::new(
-        Arc::clone(scene), std::sync::Arc::default(),
+        Arc::clone(scene),
         [],
         [],
         Instant::now(),
-        1.0,
         crate::DirtyRegion::empty(),
         crate::BackdropBlurDamagePlan::default(),
         PartialPresentMode::FullRedraw,

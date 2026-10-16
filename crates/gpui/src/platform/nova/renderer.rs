@@ -365,7 +365,7 @@ impl NovaRenderer {
         // The drawable extent is applied only for the Scene generation that
         // requested it. An older Scene keeps drawing into the current drawable,
         // and a newer request stays pending for its own Scene.
-        if !self.apply_pending_drawable_size(Some(packet.layout_epoch))? {
+        if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
             return Ok(false);
         }
         self.observe_presentation_packet(&packet);
@@ -383,7 +383,8 @@ impl NovaRenderer {
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
-            packet.scene.as_ref(), &packet.retained_paint,
+            &packet.paint.scene,
+            &packet.paint.retained_paint,
             packet.presentation_animation_values.as_slice(),
             backdrop_blur_quality,
         );
@@ -411,7 +412,7 @@ impl NovaRenderer {
             force_full_drawable_damage_after_resize(packet, self.current_size);
             self.observe_presentation_packet(packet);
         }
-        if !self.frame_submission_is_ready(&packet.scene)? {
+        if !self.frame_submission_is_ready(&packet.paint.scene)? {
             return Ok(false);
         }
         self.ensure_path_mask_target_for_frame()?;
@@ -786,7 +787,7 @@ impl NovaRenderer {
         self.pending_animation_completions
             .extend(packet.sample_animations(packet.frame_time));
         let result = (|| {
-        if !self.apply_pending_drawable_size(Some(packet.layout_epoch))? {
+            if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
                 return Ok(false);
             }
             self.observe_presentation_packet(&packet);
@@ -801,7 +802,8 @@ impl NovaRenderer {
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
-                packet.scene.as_ref(), &packet.retained_paint,
+                &packet.paint.scene,
+                &packet.paint.retained_paint,
                 packet.presentation_animation_values.as_slice(),
                 backdrop_blur_quality,
             );
@@ -827,7 +829,7 @@ impl NovaRenderer {
                 force_full_drawable_damage_after_resize(&mut packet, self.current_size);
                 self.observe_presentation_packet(&packet);
             }
-            if !self.frame_submission_is_ready(&packet.scene)? {
+            if !self.frame_submission_is_ready(&packet.paint.scene)? {
                 return Ok(false);
             }
             self.ensure_path_mask_target_for_frame()?;
@@ -1047,7 +1049,7 @@ impl NovaRenderer {
             return;
         }
         let damage = crate::paint::gpu_sample_damage(
-            &packet.scene,
+            &packet.paint.scene,
             self.root_color.animation_values(),
             &self.frame_upload.sampled_animation_values,
         );

@@ -52,7 +52,7 @@ fn opengl_static_buffer_versions_preserve_in_flight_pixels() {
     verify(RendererBackend::NovaOpenGl);
 }
 
-fn scene(renderer: &NovaRenderer, color: u32) -> crate::Scene {
+fn scene(renderer: &NovaRenderer, color: u32) -> crate::scene::Painter {
     let bounds = crate::bounds(
         crate::point(crate::px(0.0), crate::px(0.0)),
         crate::size(
@@ -61,7 +61,7 @@ fn scene(renderer: &NovaRenderer, color: u32) -> crate::Scene {
         ),
     )
     .scale(1.0);
-    let mut scene = crate::Scene::default();
+    let mut scene = crate::scene::Painter::default();
     scene.insert_primitive(Quad {
         bounds,
         content_mask: crate::ContentMask {

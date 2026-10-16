@@ -446,21 +446,33 @@ mod tests {
         let mut latest_damage = DirtyRegion::empty();
         latest_damage.push(rect(20.0, 10.0));
         let previous = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             [],
             frame_time,
-            1.0,
             previous_damage,
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
         );
         let mut latest = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             [],
             frame_time,
-            1.0,
             latest_damage,
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -476,11 +488,17 @@ mod tests {
         let now = Instant::now();
         let interval = Duration::from_millis(20);
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             [],
             now,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -591,11 +609,17 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -625,34 +649,73 @@ mod tests {
 
     #[test]
     fn scene_bound_packet_animation_ignores_viewport_timeline_damage() {
-        for property in [TransitionProperty::Opacity, TransitionProperty::HorizontalEdges] {
+        for property in [
+            TransitionProperty::Opacity,
+            TransitionProperty::HorizontalEdges,
+        ] {
             let started_at = Instant::now();
-            let element_id = GlobalElementId::from_path(&[ElementId::from("local-packet-animation")]);
+            let element_id =
+                GlobalElementId::from_path(&[ElementId::from("local-packet-animation")]);
             let animation_id = SceneAnimationId(1 << 31);
             let mut engine = AnimationEngine::new();
             engine.start_transition(
-                &element_id, property,
-                AnimationSpec::new(Duration::from_secs(1)).ease(Easing::Linear).driver(AnimationDriver::Gpu),
+                &element_id,
+                property,
+                AnimationSpec::new(Duration::from_secs(1))
+                    .ease(Easing::Linear)
+                    .driver(AnimationDriver::Gpu),
                 started_at,
             );
-            assert!(engine.bind_scene_animation(&element_id, property,
-                animation_id, [0.; 4], [1., 0., 0., 0.]));
-            assert!(engine.set_transition_bounds(&element_id, property,
-                bounds(Point::default(), size(crate::px(640.), crate::px(480.)))));
-            let local = bounds(crate::point(ScaledPixels(20.), ScaledPixels(20.)),
-                size(ScaledPixels(16.), ScaledPixels(16.)));
-            let mut scene = Scene::default();
-            scene.insert_animated_primitive(crate::Quad {
-                bounds: local, content_mask: crate::ContentMask::new(local), ..Default::default()
-            }, animation_id);
+            assert!(engine.bind_scene_animation(
+                &element_id,
+                property,
+                animation_id,
+                [0.; 4],
+                [1., 0., 0., 0.]
+            ));
+            assert!(engine.set_transition_bounds(
+                &element_id,
+                property,
+                bounds(Point::default(), size(crate::px(640.), crate::px(480.)))
+            ));
+            let local = bounds(
+                crate::point(ScaledPixels(20.), ScaledPixels(20.)),
+                size(ScaledPixels(16.), ScaledPixels(16.)),
+            );
+            let mut scene = crate::scene::Painter::default();
+            scene.insert_animated_primitive(
+                crate::Quad {
+                    bounds: local,
+                    content_mask: crate::ContentMask::new(local),
+                    ..Default::default()
+                },
+                animation_id,
+            );
             let mut packet = PresentationPacket::new(
-                Arc::new(scene), std::sync::Arc::default(), [], engine.presentation_timelines(), started_at, 1.,
-                DirtyRegion::empty(), BackdropBlurDamagePlan::default(), PartialPresentMode::FullRedraw,
+                std::sync::Arc::new(crate::window::Paint::new(
+                    scene.into_scene(),
+                    std::sync::Arc::default(),
+                    crate::window::PaintGeometry {
+                        scale_factor: 1.,
+                        ..Default::default()
+                    },
+                )),
+                [],
+                engine.presentation_timelines(),
+                started_at,
+                DirtyRegion::empty(),
+                BackdropBlurDamagePlan::default(),
+                PartialPresentMode::FullRedraw,
             );
             for elapsed in [250, 750] {
                 packet.sample_animations(started_at + Duration::from_millis(elapsed));
-                let expected = if property == TransitionProperty::Opacity { local } else {
-                    bounds(Point::default(), size(ScaledPixels(640.), ScaledPixels(480.)))
+                let expected = if property == TransitionProperty::Opacity {
+                    local
+                } else {
+                    bounds(
+                        Point::default(),
+                        size(ScaledPixels(640.), ScaledPixels(480.)),
+                    )
                 };
                 assert_eq!(packet.dirty_region.union_bounds(), Some(expected));
                 packet.consume_submitted_damage();
@@ -682,7 +745,7 @@ mod tests {
             [100.0, 0.0, 0.0, 0.0]
         ));
         let viewport = rect(0.0, 500.0);
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_animated_primitive(
             crate::Quad {
                 bounds: rect(0.0, 10.0),
@@ -706,11 +769,17 @@ mod tests {
             tint: None,
         });
         let mut packet = PresentationPacket::new(
-            Arc::new(scene), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                scene.into_scene(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -773,11 +842,17 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -837,11 +912,17 @@ mod tests {
             ));
         }
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             engine.scene_values(now),
             engine.presentation_timelines(),
             now,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -903,11 +984,17 @@ mod tests {
         }
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             engine.scene_values(started_at),
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -981,11 +1068,17 @@ mod tests {
         }
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -1003,11 +1096,17 @@ mod tests {
         }
 
         let completed_packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             engine.scene_values(started_at + Duration::from_millis(150)),
             engine.presentation_timelines(),
             started_at + Duration::from_millis(150),
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -1045,11 +1144,17 @@ mod tests {
         ));
 
         let mut packet = PresentationPacket::new(
-            Arc::new(Scene::default()), std::sync::Arc::default(),
+            std::sync::Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                std::sync::Arc::default(),
+                crate::window::PaintGeometry {
+                    scale_factor: 1.0,
+                    ..Default::default()
+                },
+            )),
             [],
             engine.presentation_timelines(),
             started_at,
-            1.0,
             DirtyRegion::empty(),
             BackdropBlurDamagePlan::default(),
             PartialPresentMode::FullRedraw,
@@ -1083,22 +1188,13 @@ pub(crate) enum RetainedResourceTrimPolicy {
 
 /// Lifetime-free payload submitted from the UI commit domain to presentation.
 ///
-/// The retained Scene is shared through Arc; all frame-varying metadata is snapshotted by value.
+/// One Arc<Paint> owns drawing data, paired retention proofs and layout provenance.
+/// All frame-varying metadata is snapshotted by value.
 /// The platform/renderer boundary therefore owns everything it needs to enqueue this packet
 /// without borrowing Window state.
 pub(crate) struct PresentationPacket {
     pub(crate) window_id: u64,
-    /// Physical viewport used to construct this immutable Scene. None is allowed
-    /// for synthetic/backend test packets that have no GPUI Window producer.
-    pub(crate) layout_extent: Option<(u32, u32)>,
-    /// Native client-geometry generation of the layout extent above.
-    ///
-    /// A drawable resize may only be applied to a Scene of the same generation.
-    /// Size equality is not sufficient: a window can return to a previous size
-    /// while its layout, DPI and content belong to a newer generation.
-    pub(crate) layout_epoch: u64,
-    pub(crate) scene: Arc<Scene>,
-    pub(crate) retained_paint: Arc<crate::window::retained::RetainedPaint>,
+    pub(crate) paint: Arc<crate::window::Paint>,
     pub(crate) presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     pub(crate) sampled_active_presentation_animation: bool,
     previous_presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
@@ -1109,7 +1205,6 @@ pub(crate) struct PresentationPacket {
     packed_visual_samples: FxHashMap<SceneAnimationId, PackedVisualSample>,
     pub(crate) presentation_animation_timelines: SmallVec<[SceneAnimationTimeline; 4]>,
     pub(crate) frame_time: Instant,
-    pub(crate) scale_factor: f32,
     pub(crate) dirty_region: DirtyRegion,
     pub(crate) backdrop_blur_damage_plan: BackdropBlurDamagePlan,
     pub(crate) partial_present_mode: PartialPresentMode,
@@ -1149,12 +1244,10 @@ impl PresentationPacket {
     }
 
     pub(crate) fn new(
-        scene: Arc<Scene>,
-        retained_paint: Arc<crate::window::retained::RetainedPaint>,
+        paint: Arc<crate::window::Paint>,
         presentation_animation_values: impl IntoIterator<Item = SceneAnimationValue>,
         presentation_animation_timelines: impl IntoIterator<Item = SceneAnimationTimeline>,
         frame_time: Instant,
-        scale_factor: f32,
         dirty_region: DirtyRegion,
         backdrop_blur_damage_plan: BackdropBlurDamagePlan,
         partial_present_mode: PartialPresentMode,
@@ -1192,13 +1285,10 @@ impl PresentationPacket {
             &mut packed_visual_samples,
             &mut presentation_animation_values,
         );
-        let scene_animation_ids = scene.animation_ids();
+        let scene_animation_ids = paint.scene.animation_ids();
         Self {
             window_id: 0,
-            layout_extent: None,
-            layout_epoch: 0,
-            scene,
-            retained_paint,
+            paint,
             presentation_animation_values,
             sampled_active_presentation_animation: false,
             previous_presentation_animation_values: SmallVec::new(),
@@ -1209,7 +1299,6 @@ impl PresentationPacket {
             packed_visual_samples,
             presentation_animation_timelines,
             frame_time,
-            scale_factor,
             dirty_region,
             backdrop_blur_damage_plan,
             partial_present_mode,
@@ -1267,7 +1356,7 @@ impl PresentationPacket {
         self.presentation_animation_tracks
             .retain(|value| !timeline_track_keys.contains(&(value.animation_id, value.property)));
         let mut completion_events = SmallVec::new();
-        let scale_factor = self.scale_factor;
+        let scale_factor = self.paint.geometry.scale_factor;
         let scene_animation_ids = &self.scene_animation_ids;
         let timelines = &mut self.presentation_animation_timelines;
         let tracks = &mut self.presentation_animation_tracks;
@@ -1304,20 +1393,22 @@ impl PresentationPacket {
         // Scene-bound tracks instead damage the actual old/new pixels, including
         // nested composites and geometry entering a fixed ancestor clip.
         for bounds in crate::paint::gpu_sample_damage(
-            &self.scene,
+            &self.paint.scene,
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,
         ) {
             self.dirty_region.push(bounds);
         }
         let animation_damage = crate::paint::backdrop_blur_animation_damage_plan(
-            &self.scene,
+            &self.paint.scene,
             &self.previous_presentation_animation_values,
             &self.presentation_animation_values,
         );
         self.backdrop_blur_damage_plan.merge_from(&animation_damage);
-        for bounds in crate::paint::backdrop_blur_output_damage(&self.scene, &self.backdrop_blur_damage_plan)
-        {
+        for bounds in crate::paint::backdrop_blur_output_damage(
+            &self.paint.scene,
+            &self.backdrop_blur_damage_plan,
+        ) {
             self.dirty_region.push(bounds);
         }
 

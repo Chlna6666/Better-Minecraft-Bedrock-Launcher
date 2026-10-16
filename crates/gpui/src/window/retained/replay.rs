@@ -110,7 +110,7 @@ mod tests {
     use crate::{BlurCapture, Bounds, Primitive, Quad, ScaledPixels};
     #[test]
     fn replay_structure_index_matches_prefix_scan_for_nested_and_invalid_ranges() {
-        let mut scene = Scene::default();
+        let mut scene = crate::scene::Painter::default();
         let quad = || PaintOperation::Primitive(Primitive::Quad(Quad::default()));
         scene.paint_operations.extend((0..132).map(|_| quad()));
         scene

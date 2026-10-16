@@ -1,21 +1,21 @@
 use super::RetainedPaint;
-use crate::{GlobalElementId, Scene};
+use crate::GlobalElementId;
 use std::ops::{Deref, DerefMut, Range};
 
 #[derive(Default)]
 pub(crate) struct PaintFixture {
-    pub(crate) paint: Scene,
+    pub(crate) paint: crate::scene::Painter,
     pub(crate) retention: RetainedPaint,
 }
 
 impl Deref for PaintFixture {
-    type Target = Scene;
-    fn deref(&self) -> &Scene {
+    type Target = crate::scene::Painter;
+    fn deref(&self) -> &crate::scene::Painter {
         &self.paint
     }
 }
 impl DerefMut for PaintFixture {
-    fn deref_mut(&mut self) -> &mut Scene {
+    fn deref_mut(&mut self) -> &mut crate::scene::Painter {
         &mut self.paint
     }
 }
@@ -25,7 +25,7 @@ impl PaintFixture {
     }
     pub(crate) fn finish(&mut self) {
         self.paint.finish();
-        self.retention.finish(&mut self.paint);
+        self.retention.finish(&mut self.paint.scene);
     }
     pub(crate) fn replay(&mut self, range: Range<usize>, previous: &Self) {
         let start = self.len();

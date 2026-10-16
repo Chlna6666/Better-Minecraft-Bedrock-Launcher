@@ -766,7 +766,7 @@ impl NovaRenderer {
             self.frame_upload
                 .register_element_blur_animations(scene, &mut summary);
             // Capture the encoded static prefix in place. No separate foreground
-            // Scene, second Scene::finish, or second primitive encoding pass.
+            // Scene, second Painter::finish, or second primitive encoding pass.
             let captured_static_prefix = auto_background.as_ref().is_some_and(|candidate| {
                 self.frame_upload.capture_encoded_static_prefix(
                     scene,
@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn auto_static_capture_owns_real_gpu_layer_only_for_flat_safe_prefix() {
-        let mut original = crate::Scene::default();
+        let mut original = crate::scene::Painter::default();
         for _ in 0..100 {
             let bounds = crate::bounds(
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -933,29 +933,38 @@ mod tests {
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
         );
-        let mut nested = crate::Scene::default();
+        let mut nested = crate::scene::Painter::default();
         nested.push_layer(viewport);
         nested.replay(0..100, &original, &[]);
         nested.pop_layer();
         nested.replay(100..101, &original, &[]);
         nested.finish();
         nested.revision = 2;
-        let size = DrawableSize { width: 640, height: 480 };
+        let size = DrawableSize {
+            width: 640,
+            height: 480,
+        };
         let nested_capture = auto_capture_static_background(&nested, &[], size)
             .expect("a closed nested prefix retains its layer ordering");
-        assert_eq!(nested_capture.first_dynamic_order, nested.quads.last().unwrap().order);
+        assert_eq!(
+            nested_capture.first_dynamic_order,
+            nested.quads.last().unwrap().order
+        );
         assert_eq!(nested_capture.content_mask.bounds, viewport);
-        let mut split = crate::Scene::default();
+        let mut split = crate::scene::Painter::default();
         split.push_layer(viewport);
         split.replay(0..101, &original, &[]);
         split.pop_layer();
         split.finish();
         split.revision = 3;
-        assert!(auto_capture_static_background(&split, &[], size).is_none(),
-            "capture cannot cut through an open layer");
+        assert!(
+            auto_capture_static_background(&split, &[], size).is_none(),
+            "capture cannot cut through an open layer"
+        );
         assert!(
             auto_capture_static_background(
-                &crate::Scene::default(), &[],
+                &crate::scene::Painter::default(),
+                &[],
                 DrawableSize {
                     width: 640,
                     height: 480
@@ -967,7 +976,7 @@ mod tests {
         // The entire cached background is independent from the dynamic
         // foreground. A change to one background quad must invalidate its
         // real source texture on the next committed scene.
-        let mut next = crate::Scene::default();
+        let mut next = crate::scene::Painter::default();
         for index in 0..100 {
             let bounds = crate::bounds(
                 crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
@@ -1007,7 +1016,7 @@ mod tests {
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
         );
         let id = crate::GlobalElementId::from_path(&["popup".into()]);
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         for _ in 0..24 {
             scene.insert_primitive(crate::Quad {
                 bounds: viewport,
@@ -1064,7 +1073,7 @@ mod tests {
             crate::size(crate::ScaledPixels(640.0), crate::ScaledPixels(480.0)),
         );
         let build = |radius| {
-            let mut scene = crate::Scene::default();
+            let mut scene = crate::scene::Painter::default();
             for _ in 0..24 {
                 scene.insert_primitive(crate::Quad {
                     bounds: rect,
@@ -1090,7 +1099,7 @@ mod tests {
             scene
         };
         assert!(auto_capture_static_background(&build(8.0), &[], size).is_none());
-        let mut interleaved = crate::Scene::default();
+        let mut interleaved = crate::scene::Painter::default();
         interleaved.begin_blur(crate::BlurCapture {
             animation_id: None,
             layer_id: Some(crate::GlobalElementId::from_path(&["panel".into()])),
@@ -1114,7 +1123,7 @@ mod tests {
 
     #[test]
     fn painter_order_distinguishes_static_background_from_interleaved_content() {
-        let mut background = crate::Scene::default();
+        let mut background = crate::scene::Painter::default();
         let mut quad = crate::Quad::default();
         background.paint_operations.extend(
             (0..12).map(|_| crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(quad))),
@@ -1144,7 +1153,7 @@ mod tests {
 
     #[test]
     fn animated_first_scene_must_not_trigger_full_window_auto_retention() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         let mut quad = crate::Quad::default();
         quad.animation_id = Some(crate::SceneAnimationId(9));
         scene
@@ -1192,7 +1201,7 @@ mod tests {
 
     #[test]
     fn complex_scene_color_cache_is_not_forced_on_small_ui() {
-        let scene = crate::Scene::default();
+        let scene = crate::scene::Painter::default();
         let mut summary = FrameUploadSummary::default();
         summary.quad_count = 48;
         assert!(!should_retain_complex_scene_color(&scene, &summary));
@@ -1202,7 +1211,7 @@ mod tests {
 
         // A filter scene already retains its isolated GPU results, so the
         // automatic full-window root must not duplicate that compositor.
-        let mut scene_with_blur = crate::Scene::default();
+        let mut scene_with_blur = crate::scene::Painter::default();
         let bounds = crate::bounds(
             crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
             crate::size(crate::ScaledPixels(10.0), crate::ScaledPixels(10.0)),

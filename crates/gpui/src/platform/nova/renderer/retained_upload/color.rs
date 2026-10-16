@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn inactive_parent_binding_does_not_block_small_popup() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         let panel = quad(64., 48., false);
         scene.begin_blur(crate::BlurCapture {
@@ -202,7 +202,7 @@ mod tests {
         }
     }
 
-    fn begin_capture(scene: &mut crate::Scene, animated: bool) {
+    fn begin_capture(scene: &mut crate::scene::Painter, animated: bool) {
         let bounds = quad(8., 8., false).bounds;
         scene.begin_blur(crate::BlurCapture {
             animation_id: animated.then_some(crate::SceneAnimationId(1)),
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn static_work_below_two_viewports_can_retain_local_motion() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(972., 600., false));
         scene.insert_primitive(quad(960., 585., false));
         scene.insert_primitive(quad(7., 7., false));
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn small_child_motion_does_not_make_a_large_static_capture_fully_dynamic() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         let panel = quad(64., 48., false);
         scene.begin_blur(crate::BlurCapture {
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn packed_visual_sample_progress_one_does_not_mean_motion_completed() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         scene.insert_primitive(quad(64., 48., false));
         scene.insert_primitive(quad(8., 8., true));
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn captured_owner_and_child_motion_select_local_color_retention() {
         for animated_owner in [true, false] {
-            let mut scene = crate::Scene::default();
+            let mut scene = crate::scene::Painter::default();
             scene.insert_primitive(quad(64., 64., false));
             scene.insert_primitive(quad(64., 64., false));
             begin_capture(&mut scene, animated_owner);
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn retained_capture_children_do_not_count_as_repeated_page_raster_work() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         scene.insert_primitive(quad(8., 8., true));
         begin_capture(&mut scene, false);
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn settled_large_panel_does_not_block_a_running_small_popup() {
         for animated_owner in [true, false] {
-            let mut scene = crate::Scene::default();
+            let mut scene = crate::scene::Painter::default();
             scene.insert_primitive(quad(64., 64., false));
             scene.insert_primitive(quad(64., 64., false));
             let panel = quad(64., 48., !animated_owner);
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn local_animation_retains_static_content_on_both_sides_of_painter_order() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         scene.insert_primitive(quad(8., 8., true));
         scene.insert_primitive(quad(64., 64., false));
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn cheap_pages_and_large_animated_surfaces_keep_direct_rendering() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         scene.insert_primitive(quad(8., 8., true));
         assert!(!should_retain_local_animation(&scene, SIZE, &[running(1)]));
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn static_pages_and_clipped_static_work_do_not_allocate_an_animation_cache() {
-        let mut scene = crate::Scene::default();
+        let mut scene = crate::scene::Painter::default();
         scene.insert_primitive(quad(64., 64., false));
         scene.insert_primitive(quad(64., 64., false));
         assert!(!should_retain_local_animation(&scene, SIZE, &[running(1)]));

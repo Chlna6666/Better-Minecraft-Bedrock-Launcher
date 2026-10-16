@@ -127,7 +127,8 @@ use frame::{
     DIRTY_REGION_FULL_REDRAW_RATIO, WINDOW_LIGHT_TRIM_IDLE_FRAMES, WINDOW_STRONG_TRIM_IDLE_FRAMES,
 };
 pub(crate) use frame::{
-    DeferredDraw, Frame, PaintIndex, PrepaintStateIndex, RetainedElementRange, RetainedSceneSegment,
+    DeferredDraw, Frame, Paint, PaintGeometry, PaintIndex, PrepaintStateIndex,
+    RetainedElementRange, RetainedSceneSegment,
 };
 pub use frame_clock::FrameClock;
 use frame_clock::{FrameClockRequest, FrameClockState, ReceivedPlatformFrame};

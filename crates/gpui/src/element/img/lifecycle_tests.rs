@@ -44,11 +44,11 @@ fn ordinary_image_survives_cache_eviction_between_layout_and_paint(cx: &mut Test
             image.layout_as_root(size(px(20.), px(20.)).into(), window, cx)
         });
         window.with_rendered_view(view_id, |window| image.prepaint(window, cx));
-        let before = window.next_frame.scene.len();
+        let before = window.next_frame.scene().len();
         window.invalidator.set_phase(DrawPhase::Paint);
         window.with_rendered_view(view_id, |window| image.paint(window, cx));
         assert!(
-            window.next_frame.scene.len() > before,
+            window.next_frame.scene().len() > before,
             "the resolved image must still emit a sprite after cache eviction"
         );
         window.invalidator.set_phase(DrawPhase::None);

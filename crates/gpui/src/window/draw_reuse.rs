@@ -607,7 +607,7 @@ impl Window {
 
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
-            scene_index: self.next_frame.scene.len(),
+            scene_index: self.next_frame.painter.len(),
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index: self.next_frame.debug_bounds_records.len(),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
@@ -624,9 +624,10 @@ impl Window {
         frame_range_is_valid(
             range.start.scene_index,
             range.end.scene_index,
-            self.rendered_frame.scene.len(),
+            self.rendered_frame.scene().len(),
         ) && self
-            .rendered_frame.range_is_replayable(range.start.scene_index..range.end.scene_index)
+            .rendered_frame
+            .range_is_replayable(range.start.scene_index..range.end.scene_index)
             && {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -733,11 +734,23 @@ impl Window {
         self.text_system
             .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
         let old_scene_range = range.start.scene_index..range.end.scene_index;
-        let replay_start = self.next_frame.scene.len();
-        let spans = self.rendered_frame.retained_paint.replay_quads(&self.rendered_frame.scene, old_scene_range.clone());
-        if self.next_frame.scene.replay(old_scene_range.clone(), &self.rendered_frame.scene, &spans) {
-            Arc::get_mut(&mut self.next_frame.retained_paint).expect("unpublished paint retention")
-                .replay(old_scene_range, &self.rendered_frame.retained_paint, replay_start);
+        let replay_start = self.next_frame.painter.len();
+        let spans = self
+            .rendered_frame
+            .retained_paint
+            .replay_quads(self.rendered_frame.scene(), old_scene_range.clone());
+        if self.next_frame.painter.replay(
+            old_scene_range.clone(),
+            self.rendered_frame.scene(),
+            &spans,
+        ) {
+            Arc::get_mut(&mut self.next_frame.retained_paint)
+                .expect("unpublished paint retention")
+                .replay(
+                    old_scene_range,
+                    &self.rendered_frame.retained_paint,
+                    replay_start,
+                );
         }
         true
     }
