@@ -346,7 +346,7 @@ fn verify(backend: RendererBackend) {
                     .frame_upload
                     .root_color.map(|root| root.index)
                     .expect("retained root");
-                let layers = renderer.prepare_color_layers(&[root]);
+                let layers = renderer.prepare_color_layers(&[root], false);
                 assert!(
                     !layers.is_empty(),
                     "local change must update retained color"

@@ -5,7 +5,7 @@
 > **所有后续对话/代理在编辑前必须重新读取 master HEAD、本文和相关源码，不得使用本文件的历史 HEAD 直接写入。**
 > 本文是唯一执行状态源；[GPUI P0 历史依赖审计](GPUI_P0_RENDER_DEPENDENCY_AUDIT.md)仅作已发生事实与当时源码快照参考，其旧 RenderTree/RenderCommit 方案不再是目标。
 
-## 最新执行看板（唯一实时任务表，2026-10-15）
+## 最新执行看板（唯一实时任务表，2026-10-16）
 
 **本节是当前决策依据**；下面 `P0-A / P0-B / P1–P3` 的长勾选记录与逐提交小节是**历史实现账本**，不再用它们单独认定完成。新增任务或改变状态先改此表，并在原有历史章节记对应提交/验证证据，不另建 TODO 文件。
 
@@ -56,6 +56,14 @@
 - Filter layout 只规划真实 Filter，先保留精确匹配，再复用同规格空闲目标；逻辑源有效性仍由 Filter Registry 验证。移除只验证旧 Root Variant 的用例，保留真实跨索引/参数失效及非破坏性失败验证。
 - 当前源码本地验证：workspace no-default check、bmcbl lib locked check、GPUI 指定 manifest features check、四后端 GPUI test-target check、全 features test no-run 通过；436 项唯一的定向测试通过（其中 Nova 316，27 ignored）；四后端各 6 项原生像素回归共 24 通过，包含 Filter 链重建而 Root 资源不变的 gate。workspace fmt check 因已有无关差异失败；未批量格式化。未测量 GPU Timestamp 前后差异，不能据此报告 GPU 占用降低。
 - 第 5 步仍未完成：CachedView replay 逐项复制 PaintOperation/Primitive，finish 全量排序及 Batch 整理，encoder 仍要求扁平类型数组。下一步必须让唯一 Paint 表示支持持久只读 chunk，并迁移 DrawOrder、闭合 Capture、全部 Batch/encoder 消费者；不能把 Arc clone 优化或既有 animation-only 缓存命中当作增量协议。
+
+### 2026-10-16 Root 状态与 Filter 失效解耦（接续 `45df69b`）
+
+- Root 的上次成功呈现动画样本迁入 Root Owner，删除 Filter Registry 的全局提交样本；每个 Filter 仍保存自己最后成功刷新的 Source 样本。Present 失败/拒绝时 Root 内容版本与样本一起失效，避免把可能已被离屏写入的纹理当作旧的有效内容。
+- 区分共享 compositor ABI 描述上传与实际 Filter 存在；Root-only 不再发布虚假的 Filter 有效状态，也不因 Filter quality/validity 单独变化而全量 Raster。Root 初始化、显式全量刷新和真实 atlas source 更新仍正确初始化；真实 Filter 输出重建仍触发 Root Composite，混合 Filter 的该路径目前保守，局部依赖优化继续归 P0-07。
+- 四后端新增 Root-only gate 已实际执行：`filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true`；保持 Root content version、一次最终 Composite，后续 opacity 动画局部结果与完整重绘一致。保留 Filter 重建不更换 Root Texture/ResourceSet 的 gate。上述为实际 DrawStep/面积及读回像素证据，不是 GPU Timestamp 或任务管理器 GPU 百分比。
+- 最终源码：全 features test no-run、workspace no-default check、bmcbl lib locked check、GPUI 指定 manifest features check 通过；436 个定向测试和 24 个四后端原生用例全部通过。`45df69b` 切片的默认优化 profile 全 features bench no-run 通过；本切片 dev profile 的全 features bench no-run 通过。workspace fmt check 仍报告已有无关格式差异，`git diff --check` 与 Root Owner rustfmt check 通过。没有关闭视觉效果或修改应用动画轨迹。
+- 总体仍是部分完成：P1-02/03 的持久 Paint Chunk、增量提交、SceneSlot/全量 FrameUpload 主通路替换未实现；四后端应用交互性能 A/B 与 GPU Timestamp 未完成。不能删除尚由正式消费者依赖的旧快照，更不能用改名或新增影子 Scene 作为替代。
 
 第 5 步当前生产者/消费者清单（删除前的功能门槛）：
 

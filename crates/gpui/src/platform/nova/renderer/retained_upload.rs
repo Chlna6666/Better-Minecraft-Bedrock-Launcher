@@ -416,7 +416,7 @@ impl StaticUploadMask {
     pub(super) fn mapped_upload_bytes(
         self,
         upload: &FrameUpload,
-        has_backdrop_blurs: bool,
+        has_compositor_descriptors: bool,
     ) -> usize {
         let mut bytes = 0usize;
         let mut add = |enabled: bool, len: usize| {
@@ -436,7 +436,7 @@ impl StaticUploadMask {
         add(self.mono_sprite, upload.mono_sprites.len());
         add(self.poly_sprite, upload.poly_sprites.len());
         add(self.underline, upload.underlines.len());
-        if has_backdrop_blurs {
+        if has_compositor_descriptors {
             add(self.backdrop_blur_pass, upload.backdrop_blur_passes.len());
             add(self.backdrop_blur, upload.backdrop_blurs.len());
         }

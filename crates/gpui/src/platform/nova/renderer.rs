@@ -536,17 +536,16 @@ impl NovaRenderer {
         Ok(())
     }
 
-    /// Only the exact native-color target may survive a Capture topology
-    /// rebind; none of the Gaussian/filter source pixels are inherited.
-    fn root_color_reuse_eligible(&self) -> bool {
+    /// Zero-radius sources may retain pixels only after their physical views
+    /// and stable source identities survive a Capture topology rebind.
+    fn identity_capture_layout_reuse_eligible(&self) -> bool {
         self.filters.is_valid()
-            && self.root_color.resident_on(self.root_color.identity())
             && !present::has_root_backdrop_blurs(&self.frame_upload)
             && self.frame_upload.backdrop_blur_configs().iter()
                 .all(|config| config.radius() == 0.0)
     }
 
-    /// AutoStatic exists independently of the synthetic full-window Root.
+    /// AutoStatic exists independently of optional window-color retention.
     /// Only validated zero-filter target chains can keep their content versions
     /// when the popup changes packed Capture order or active target count.
     fn auto_static_layout_reuse_eligible(&self) -> bool {
@@ -603,13 +602,6 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
-        // Preserve a *physical* full-window color target when the capture DAG
-        // changes only its zero-radius children. This proof must be made on
-        // native texture handles, not packed Blur member indices.
-        // A chain created without a Root does not own the independent native
-        // Root allocation. It must be recreated when a Root first appears:
-        // reinterpreting a scratch target as root would violate both the
-        // ownership and content-version proofs.
         // A Filter topology change may reassign the same Texture/View to
         // another Capture. Finish any native readers before touching the live
         // descriptor mapping, not just before the full recreation fallback.
@@ -618,12 +610,12 @@ impl NovaRenderer {
         if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
             self.wait_for_pending_submissions()?;
         }
-        let root_eligible = self.root_color_reuse_eligible();
+        let capture_reuse_eligible = self.identity_capture_layout_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
         let auto_static_indices = auto_static_eligible.then(|| {
             self.filters.matching_auto_static_indices(&self.frame_upload.element_blur_inputs)
         }).flatten();
-        let previous_capture_views = if root_eligible || auto_static_eligible {
+        let previous_capture_views = if capture_reuse_eligible || auto_static_eligible {
             self.identity_capture_views(true)
         } else {
             Vec::new()
@@ -636,12 +628,10 @@ impl NovaRenderer {
                 auto_static_indices,
             )
         }) {
-            // The native root survives an exact texture-view match, even if
-            // its flattened member index changed. All OTHER capture versions
-            // become untrusted and are individually rebuilt on first use.
-            let preserve_root_color = root_eligible
-                && self.root_color.resident_on(self.root_color.identity());
-            if preserve_root_color || auto_static_eligible {
+            // Root has its own lifetime. Only Filter sources whose physical
+            // views and identities survive this rebind retain content versions.
+            let preserve_root_color = self.root_color.resident_on(self.root_color.identity());
+            if capture_reuse_eligible || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
                 self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
@@ -1053,12 +1043,12 @@ impl NovaRenderer {
     /// accompanying View commit. Repair the root retained-color damage after
     /// the packed animation values are known, and before GPU Pass planning.
     fn reconcile_gpu_layer_animation_damage(&mut self, packet: &mut PresentationPacket) {
-        if self.frame_upload.root_color.is_none() || !self.filters.is_valid() {
+        if self.frame_upload.root_color.is_none() || self.root_color.content_version().is_none() {
             return;
         }
         let damage = crate::paint::gpu_sample_damage(
             &packet.scene,
-            &self.filters.last_gpu_animation_values,
+            self.root_color.animation_values(),
             &self.frame_upload.sampled_animation_values,
         );
         if damage.is_empty() {

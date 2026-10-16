@@ -105,7 +105,7 @@ fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retent
             super::super::buffer_upload::FrameBufferUpload {
                 buffers,
                 source: &renderer.frame_upload,
-                has_backdrop_blurs: false,
+                has_compositor_descriptors: false,
                 static_uploads: dirty,
                 quad_upload_plan: &plan,
             },

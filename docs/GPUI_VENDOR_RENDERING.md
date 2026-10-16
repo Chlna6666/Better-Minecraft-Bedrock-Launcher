@@ -589,6 +589,13 @@ The Scene snapshot and full replay/encoding protocol still require migration to
 persistent Paint chunks; removing Root's Filter representation does not complete
 that incremental protocol.
 
+Root also owns the animation samples represented by its last successful Present.
+Filter invalidation cannot reset that comparison baseline. Root-only frames do
+not consult Filter quality/validity to decide source rasterization; actual Filter
+output changes still require Root recomposition. Shared compositor descriptor
+uploads remain distinct from the existence of Filter passes. A failed/declined
+Present invalidates Root content because offscreen writes may already have run.
+
 ## PresentationPacket
 
 After a successful draw, GPUI snapshots one lifetime-free presentation packet containing:

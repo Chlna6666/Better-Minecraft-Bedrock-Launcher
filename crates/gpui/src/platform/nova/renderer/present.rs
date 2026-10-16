@@ -473,6 +473,9 @@ impl NovaRenderer {
         if !matches!(result, Ok(true)) {
             self.retained_upload
                 .invalidate_slot(self.current_frame_resource_index);
+            // Offscreen writes can precede a failed/declined native Present.
+            // The previous Root version no longer proves those texels or samples.
+            self.root_color.invalidate();
         } else if let Err(error) = self.coalesce_idle_static_buffers() {
             // This frame is already submitted; a failed rebind retains the old idle version.
             log::debug!("failed to coalesce idle nova static buffers: {error}");
@@ -523,30 +526,31 @@ impl NovaRenderer {
             .presentation_capabilities(self.swapchain)
             .partial_presentation;
         let submission_mode = self.presentation_submission_mode();
-        let has_backdrop_blurs = self.has_backdrop_blurs();
+        let has_compositor_descriptors = self.has_compositor_descriptors();
+        let has_filters = !self.frame_upload.backdrop_blur_configs().is_empty();
         let has_root_backdrop_blurs = has_root_backdrop_blurs(&self.frame_upload);
         let has_element_blurs = self.frame_upload.has_element_blurs();
 
-        let backdrop_source_atlas_textures = if has_backdrop_blurs {
+        let backdrop_source_atlas_textures = if has_compositor_descriptors {
             self.frame_upload.backdrop_source_atlas_texture_ids()
         } else {
             Default::default()
         };
-        let backdrop_source_atlas_tiles = if has_backdrop_blurs {
+        let backdrop_source_atlas_tiles = if has_compositor_descriptors {
             self.frame_upload.backdrop_source_atlas_tiles()
         } else {
             Default::default()
         };
         let atlas_content_generation = self.atlas.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
-        let backdrop_source_atlas_dirty = has_backdrop_blurs
+        let backdrop_source_atlas_dirty = has_compositor_descriptors
             && self
                 .atlas
                 .pending_uploads_touch_source_tiles(
                     &backdrop_source_atlas_textures,
                     &backdrop_source_atlas_tiles,
                 );
-        let shared_blur_cache_invalid = has_backdrop_blurs
+        let shared_blur_cache_invalid = has_filters
             && self
                 .filters
                 .refresh_required(backdrop_blur_quality, backdrop_source_atlas_dirty);
@@ -564,11 +568,12 @@ impl NovaRenderer {
             shared_blur_cache_invalid || packet.force_full_backdrop_blur_refresh,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
+        let root_force_full = self.root_color.content_version().is_none()
+            || packet.force_full_backdrop_blur_refresh || backdrop_source_atlas_dirty;
         if let Some(root) = self.frame_upload.root_color
-            && (self.root_color.content_version().is_none()
+            && (root_force_full
                 || !packet.dirty_region.is_empty()
-                || shared_blur_cache_invalid
-                || packet.force_full_backdrop_blur_refresh)
+                || shared_blur_cache_invalid)
         {
             dirty_element_indices.push(root.index);
         }
@@ -601,13 +606,13 @@ impl NovaRenderer {
 
         self.prepare_draw_steps(packet.scene.revision);
         self.prepare_path_mask_draw_steps(packet.scene.revision);
-        self.prepare_backdrop_blur_passes(has_backdrop_blurs);
+        self.prepare_backdrop_blur_passes(has_filters);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {
             Vec::new()
         };
-        let element_blur_layers = self.prepare_color_layers(&dirty_element_indices);
+        let element_blur_layers = self.prepare_color_layers(&dirty_element_indices, root_force_full);
         let root_scene_color_cached = self.frame_upload.root_color.is_some();
         let root_scene_color_refreshes = element_blur_layers
             .iter()
@@ -748,7 +753,7 @@ impl NovaRenderer {
         let upload_static = !static_uploads.is_empty();
         let animated_upload_bytes = self.frame_upload.animated_upload_bytes();
         let mut mapped_upload_bytes = if upload_static {
-            static_uploads.mapped_upload_bytes(&self.frame_upload, has_backdrop_blurs)
+            static_uploads.mapped_upload_bytes(&self.frame_upload, has_compositor_descriptors)
         } else {
             animated_upload_bytes
         };
@@ -915,7 +920,7 @@ impl NovaRenderer {
                         FrameBufferUpload {
                             buffers: frame_buffers,
                             source: &self.frame_upload,
-                            has_backdrop_blurs,
+                            has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
                         },
@@ -1025,7 +1030,7 @@ impl NovaRenderer {
                         FrameBufferUpload {
                             buffers: frame_buffers,
                             source: &self.frame_upload,
-                            has_backdrop_blurs,
+                            has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
                         },
@@ -1135,7 +1140,7 @@ impl NovaRenderer {
                         FrameBufferUpload {
                             buffers: frame_buffers,
                             source: &self.frame_upload,
-                            has_backdrop_blurs,
+                            has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
                         },
@@ -1244,7 +1249,7 @@ impl NovaRenderer {
                         FrameBufferUpload {
                             buffers: frame_buffers,
                             source: &self.frame_upload,
-                            has_backdrop_blurs,
+                            has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
                         },
@@ -1317,7 +1322,7 @@ impl NovaRenderer {
                         FrameBufferUpload {
                             buffers: frame_buffers,
                             source: &self.frame_upload,
-                            has_backdrop_blurs,
+                            has_compositor_descriptors,
                             static_uploads,
                             quad_upload_plan: &quad_upload_plan,
                         },
@@ -1506,39 +1511,33 @@ impl NovaRenderer {
         // undefined backbuffer contents as black client-area margins.
         self.retained_upload
             .mark_uploaded(self.current_frame_resource_index);
-        if has_backdrop_blurs {
-            self.filters.last_gpu_animation_values.clear();
-            self.filters
-                .last_gpu_animation_values
-                .extend_from_slice(&self.frame_upload.sampled_animation_values);
+        if has_filters {
             self.filters.record_element_blur_inputs(
                 &self.frame_upload.element_blur_inputs,
                 &self.frame_upload.sampled_animation_values,
                 element_blur_layers.iter().map(|layer| layer.index),
             );
-            let native_root = root_scene_color_cached
-                .then(|| self.root_color.identity())
-                .flatten();
-            self.root_color.record_present(
-                native_root,
-                root_scene_color_refreshes != 0,
-            );
-            log::trace!(
-                target: "gpui::diagnostics",
-                "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} refreshed={} retained_root={}",
-                packet.window_id,
-                native_root.map(|(texture, _)| texture),
-                native_root.map(|(_, view)| view),
-                self.root_color.content_version(),
-                root_scene_color_refreshes != 0,
-                root_scene_color_cached,
-            );
             self.filters
                 .record_submission(backdrop_blur_quality, atlas_content_generation);
         } else {
             self.invalidate_backdrop_blur_cache();
-            self.root_color.invalidate();
         }
+        let native_root = root_scene_color_cached.then(|| self.root_color.identity()).flatten();
+        self.root_color.record_present(
+            native_root,
+            root_scene_color_refreshes != 0,
+            &self.frame_upload.sampled_animation_values,
+        );
+        log::trace!(
+            target: "gpui::diagnostics",
+            "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} refreshed={} retained_root={}",
+            packet.window_id,
+            native_root.map(|(texture, _)| texture),
+            native_root.map(|(_, view)| view),
+            self.root_color.content_version(),
+            root_scene_color_refreshes != 0,
+            root_scene_color_cached,
+        );
         // This event is emitted AFTER a successful native submission, not when
         // a candidate static prefix was merely encoded. On compositor-only
         // frames the same resident content version must survive unchanged.

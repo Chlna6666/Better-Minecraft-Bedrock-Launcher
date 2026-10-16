@@ -42,7 +42,7 @@ impl NovaRenderer {
 pub(super) struct FrameBufferUpload<'a> {
     pub buffers: FrameBufferTargets,
     pub source: &'a FrameUpload,
-    pub has_backdrop_blurs: bool,
+    pub has_compositor_descriptors: bool,
     pub static_uploads: StaticUploadMask,
     pub quad_upload_plan: &'a QuadUploadPlan,
 }
@@ -154,12 +154,12 @@ fn plan_static_buffers<'a>(
         (
             buffers.backdrop_blur_pass,
             &source.backdrop_blur_passes,
-            upload.has_backdrop_blurs && dirty.backdrop_blur_pass,
+            upload.has_compositor_descriptors && dirty.backdrop_blur_pass,
         ),
         (
             buffers.backdrop_blur,
             &source.backdrop_blurs,
-            upload.has_backdrop_blurs && dirty.backdrop_blur,
+            upload.has_compositor_descriptors && dirty.backdrop_blur,
         ),
     ] {
         if selected {

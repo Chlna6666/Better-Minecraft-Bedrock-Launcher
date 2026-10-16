@@ -379,6 +379,7 @@ impl NovaRenderer {
     pub(super) fn prepare_color_layers(
         &self,
         dirty_indices: &[u32],
+        root_force_full: bool,
     ) -> Vec<PreparedColorLayer> {
         if dirty_indices.is_empty() {
             return Vec::new();
@@ -387,9 +388,9 @@ impl NovaRenderer {
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
-        let force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
+        let filter_force_full = self.draw_step_scratch.force_full_backdrop_blur_refresh;
         let window_damage = &self.draw_step_scratch.backdrop_blur_damage_region;
-        let composite_only = if force_full {
+        let composite_only = if filter_force_full {
             FxHashSet::default()
         } else {
             self.frame_upload.composite_only_element_blur_indices()
@@ -405,6 +406,14 @@ impl NovaRenderer {
             if !dirty_indices.contains(&range.index) {
                 continue;
             }
+            let is_retained_root = self.frame_upload.root_color.map(|root| root.index) == Some(range.index);
+            // Filter quality/residency has no authority over a Root-only source.
+            // With real Filters, rebuilding their output still requires Root recomposition.
+            let force_full = if is_retained_root {
+                root_force_full || (filter_force_full && !self.frame_upload.backdrop_blur_configs().is_empty())
+            } else {
+                filter_force_full
+            };
             // A retained child scene whose only changing state is the promoted final composite has
             // identical source pixels and Gaussian output. Keep the cached target and submit no
             // offscreen work. Non-spatial cache/atlas/quality invalidation sets `force_full`, which
@@ -419,7 +428,6 @@ impl NovaRenderer {
                 continue;
             };
 
-            let is_retained_root = self.frame_upload.root_color.map(|root| root.index) == Some(range.index);
             let direct_composite_target = if is_retained_root {
                 self.root_color.source_target(frame_resource_index)
             } else {
@@ -726,7 +734,7 @@ impl NovaRenderer {
         }
     }
 
-    pub(super) fn has_backdrop_blurs(&self) -> bool {
+    pub(super) fn has_compositor_descriptors(&self) -> bool {
         !self.frame_upload.backdrop_blurs.is_empty()
     }
 

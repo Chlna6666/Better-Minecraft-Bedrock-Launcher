@@ -29,10 +29,6 @@ pub(super) struct FilterRegistry {
     /// Snapshotting only on success prevents a deferred/failed present from
     /// validating an output texture that was never updated.
     pub(super) element_blur_inputs: Vec<RetainedFilterSource>,
-    /// Last successfully submitted shader animation samples. A GPU-side
-    /// retained target must be invalidated against this precise snapshot,
-    /// not merely the latest UI View invalidation.
-    pub(super) last_gpu_animation_values: Vec<crate::SceneAnimationValue>,
     next_content_version: u64,
     valid: bool,
 }
@@ -48,7 +44,6 @@ impl FilterRegistry {
             atlas_generation: 0,
             quality: None,
             element_blur_inputs: Vec::new(),
-            last_gpu_animation_values: Vec::new(),
             next_content_version: 0,
         }
     }
@@ -69,7 +64,6 @@ impl FilterRegistry {
         self.valid = false;
         self.quality = None;
         self.element_blur_inputs.clear();
-        self.last_gpu_animation_values.clear();
     }
 
     /// Only the packed content fingerprint establishes AutoStatic identity.
@@ -790,7 +784,6 @@ mod tests {
         let mut registry = FilterRegistry::new(None);
         registry.record_element_blur_inputs(&[(1, FilterSource::Element(source.clone()))], &[sample(0.2)], [1]);
         registry.record_submission(BackdropBlurQuality::Full, 0);
-        registry.last_gpu_animation_values.push(sample(0.2));
         registry.begin_refresh();
         assert_eq!(
             registry
@@ -859,7 +852,9 @@ mod tests {
         );
         // A newer frame can be submitted without refreshing this texture.
         // Its resident pixels must still be compared against sample(0.2).
-        registry.last_gpu_animation_values = vec![sample(0.7)];
+        registry.record_element_blur_inputs(
+            &[(1, FilterSource::Element(old_source.clone()))], &[sample(0.7)], [],
+        );
         let mut equivalent = crate::Scene::default();
         equivalent.replay(0..old_scene.len(), &old_scene);
         let mut rebuilt = old_source;

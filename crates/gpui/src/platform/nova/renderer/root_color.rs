@@ -7,6 +7,9 @@ pub(super) struct RootColor {
     pub(super) target: Option<RootColorTarget>,
     content_version: Option<u64>,
     next_version: u64,
+    /// Samples represented by the last successfully presented window color.
+    /// Filter refreshes keep their own source samples and cannot reset these.
+    animation_values: Vec<crate::SceneAnimationValue>,
 }
 
 pub(super) struct Descriptor {
@@ -43,6 +46,11 @@ impl RootColor {
 
     pub(super) fn invalidate(&mut self) {
         self.content_version = None;
+        self.animation_values.clear();
+    }
+
+    pub(super) fn animation_values(&self) -> &[crate::SceneAnimationValue] {
+        &self.animation_values
     }
 
     /// Publish only after successful submission; a filter-index move cannot import pixels.
@@ -50,12 +58,17 @@ impl RootColor {
         &mut self,
         identity: Option<(TextureId, TextureViewId)>,
         refreshed: bool,
+        animation_values: &[crate::SceneAnimationValue],
     ) {
         if identity.is_none() || identity != self.identity() {
             self.invalidate();
         } else if refreshed {
             self.next_version = self.next_version.wrapping_add(1).max(1);
             self.content_version = Some(self.next_version);
+        }
+        if self.content_version.is_some() {
+            self.animation_values.clear();
+            self.animation_values.extend_from_slice(animation_values);
         }
     }
 
@@ -276,12 +289,20 @@ mod tests {
         let mut root = RootColor::default();
         root.target = Some(target(1));
         let identity = root.identity();
-        root.record_present(identity, true);
+        let sample = crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: crate::TransitionProperty::Opacity,
+            progress: 0.2,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        root.record_present(identity, true, &[sample]);
         let first_version = root.content_version().expect("submitted root");
         let mut filters = filters::FilterRegistry::new(None);
         filters.invalidate();
         assert_eq!(root.content_version(), Some(first_version));
-        root.record_present(identity, false);
+        assert_eq!(root.animation_values(), &[sample]);
+        root.record_present(identity, false, &[sample]);
         assert_eq!(root.content_version(), Some(first_version));
         let retired = root.take_target().expect("single allocation retirement");
         assert_eq!(
@@ -290,22 +311,24 @@ mod tests {
         );
         assert!(root.take_target().is_none());
         assert!(root.content_version().is_none());
+        assert!(root.animation_values().is_empty());
         root.target = Some(target(2));
-        root.record_present(identity, true);
+        root.record_present(identity, true, &[sample]);
         assert!(
             root.content_version().is_none(),
             "old graph cannot validate new allocation"
         );
-        root.record_present(root.identity(), false);
+        root.record_present(root.identity(), false, &[sample]);
         assert!(
             root.content_version().is_none(),
             "new allocation needs a source pass"
         );
-        root.record_present(root.identity(), true);
+        root.record_present(root.identity(), true, &[sample]);
         assert_ne!(root.content_version(), Some(first_version));
         assert!(root.resident_on(root.identity()));
-        root.record_present(None, false);
+        root.record_present(None, false, &[sample]);
         assert!(root.content_version().is_none());
+        assert!(root.animation_values().is_empty());
         assert!(
             root.target.is_some(),
             "logical Root removal keeps its GPU allocation warm"
