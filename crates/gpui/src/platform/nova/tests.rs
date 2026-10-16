@@ -2182,7 +2182,7 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
     };
     let original_view = targets.exclusive_zero_radius_capture_view(3).unwrap();
     let shorter = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
@@ -2221,7 +2221,7 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
     };
     let texture_ids = targets.variants.iter()
         .map(|variant| variant.levels[0].texture_view)
@@ -2296,7 +2296,7 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
-        root_color_target: None,
+        root_binding: None,
     };
     let root_view = targets.retained_root_texture_view();
     let original_source_views = targets.isolated_sources.iter()
@@ -2385,10 +2385,10 @@ fn mixed_gaussian_and_zero_radius_popup_reindex_preserves_root_and_scratch() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: Some(3),
-        root_color_target: None,
+        root_binding: None,
     };
     let root_level = &targets.variants[3].levels[0];
-    targets.root_color_target = Some(RootColorTarget {
+    let root = RootColorTarget {
         target: RenderTarget {
             byte_size: root_level.byte_size,
             texture: root_level.texture,
@@ -2396,7 +2396,8 @@ fn mixed_gaussian_and_zero_radius_popup_reindex_preserves_root_and_scratch() {
         },
         pass_resource_sets: root_level.pass_resource_sets.clone(),
         composite_resource_sets: targets.variants[3].target_resource_sets.clone(),
-    });
+    };
+    targets.root_binding = Some(root.target);
     targets.variants[3].levels[0].pass_resource_sets.clear();
     targets.variants[3].target_resource_sets.clear();
     let physical_root = targets.retained_root_texture_view().expect("native Root owner");
@@ -2478,7 +2479,7 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
         variants: (0..3).map(make_variant).collect(),
         active_variant_count: 3,
         retained_root_variant: Some(2),
-        root_color_target: None,
+        root_binding: None,
     };
     let before_views = targets.variants.iter()
         .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
@@ -2530,7 +2531,7 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
         }],
         active_variant_count: 1,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
     };
     let before = targets.isolated_sources[0].target.texture_view;
     assert!(!targets.reuse_layout(&[config, config], &[0, 1], false, None, None));
@@ -2565,7 +2566,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
     };
     let original_views: Vec<_> = targets.variants.iter()
         .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
@@ -2638,7 +2639,7 @@ fn gaussian_capture_shift_reuses_compatible_scratch_without_moving_native_root()
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: Some(3),
-        root_color_target: None,
+        root_binding: None,
     };
     let root_level = &targets.variants[3].levels[0];
     let native = RenderTarget {
@@ -2646,11 +2647,12 @@ fn gaussian_capture_shift_reuses_compatible_scratch_without_moving_native_root()
         texture: root_level.texture,
         texture_view: root_level.texture_view,
     };
-    targets.root_color_target = Some(RootColorTarget {
+    let root = RootColorTarget {
         target: native,
         pass_resource_sets: vec![test_resource_set_id(100)],
         composite_resource_sets: vec![test_resource_set_id(101)],
-    });
+    };
+    targets.root_binding = Some(root.target);
     targets.variants[3].levels[0].pass_resource_sets.clear();
     targets.variants[3].target_resource_sets.clear();
     let old_gaussian_views = (0..3)
@@ -2673,7 +2675,7 @@ fn gaussian_capture_shift_reuses_compatible_scratch_without_moving_native_root()
     assert_eq!(targets.variants[2].levels[0].texture_view, old_gaussian_views[0]);
     assert_eq!(targets.root_color_texture_identity(),
         Some((native.texture, native.texture_view)));
-    assert_eq!(targets.resource_set_for_config(shifted[3], 0),
+    assert_eq!(targets.resource_set_for_config(shifted[3], 0, Some(&root)),
         Some(test_resource_set_id(101)));
     assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
     assert!(targets.variants[3].target_resource_sets.is_empty());
@@ -2727,7 +2729,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
     };
     let original_views = targets
         .variants
@@ -2787,12 +2789,12 @@ fn root_color_removed_reserves_native_target_until_reintroduced() {
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
         retained_root_variant: Some(1),
-        root_color_target: None,
+        root_binding: None,
     };
     let root_level = &targets.variants[1].levels[0];
     let root_texture = root_level.texture;
     let root_view = root_level.texture_view;
-    targets.root_color_target = Some(RootColorTarget {
+    let root = RootColorTarget {
         target: RenderTarget {
             byte_size: root_level.byte_size,
             texture: root_texture,
@@ -2800,7 +2802,8 @@ fn root_color_removed_reserves_native_target_until_reintroduced() {
         },
         pass_resource_sets: vec![test_resource_set_id(101)],
         composite_resource_sets: vec![test_resource_set_id(102)],
-    });
+    };
+    targets.root_binding = Some(root.target);
     targets.variants[1].levels[0].pass_resource_sets.clear();
     targets.variants[1].target_resource_sets.clear();
 
@@ -2844,9 +2847,9 @@ fn root_color_removed_reserves_native_target_until_reintroduced() {
     assert!(targets.rebind_zero_radius_layout(&reintroduced, false, Some(2), None));
     assert_eq!(targets.retained_root_variant, Some(2));
     assert_eq!(targets.root_color_texture_identity(), Some((root_texture, root_view)));
-    assert_eq!(targets.resource_set_for_config(reintroduced[2], 0),
+    assert_eq!(targets.resource_set_for_config(reintroduced[2], 0, Some(&root)),
         Some(test_resource_set_id(102)));
-    assert_eq!(targets.direct_composite_target(reintroduced[2], 0)
+    assert_eq!(targets.direct_composite_target(reintroduced[2], 0, Some(&root))
         .unwrap().source_resource_set, test_resource_set_id(101));
     assert!(targets.variants[2].levels[0].pass_resource_sets.is_empty());
     assert!(targets.variants[2].target_resource_sets.is_empty());
@@ -2860,7 +2863,7 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let targets = BackdropBlurTargets {
         active_variant_count: 1,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),
@@ -2928,7 +2931,7 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     let targets = BackdropBlurTargets {
         active_variant_count: 0,
         retained_root_variant: None,
-        root_color_target: None,
+        root_binding: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),

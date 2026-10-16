@@ -12,6 +12,7 @@ mod draw_steps;
 mod drawable;
 mod extensions;
 mod filters;
+mod root_color;
 mod frame_graph;
 #[cfg(target_os = "windows")]
 use drawable::native_windows_hwnd;
@@ -160,6 +161,7 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_pass_resource_set_layout: ResourceSetLayoutId,
     backdrop_blur_resource_set_layout: ResourceSetLayoutId,
     filters: filters::FilterRegistry,
+    root_color: root_color::RootColor,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
@@ -540,7 +542,7 @@ impl NovaRenderer {
         self.filters.is_valid()
             && self.filters.targets.as_ref().is_some_and(|targets| {
                 targets.can_preserve_root_color_capture()
-                    && self.filters.root_color_resident_on(targets)
+                    && self.root_color.resident_on(targets.root_color_texture_identity())
             })
             && !present::has_root_backdrop_blurs(&self.frame_upload)
             && self.frame_upload.backdrop_blur_configs().iter()
@@ -592,6 +594,7 @@ impl NovaRenderer {
     }
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
+        self.ensure_root_color()?;
         if self.filters.targets.as_ref().is_some_and(|targets| {
             targets.is_layout_compatible(
                 self.frame_upload.backdrop_blur_configs(),
@@ -621,7 +624,7 @@ impl NovaRenderer {
         }
         let root_needs_allocation = self.frame_upload.retained_root_blur.is_some()
             && self.filters.targets.as_ref().is_some_and(|targets| {
-                targets.root_color_target.is_none()
+                targets.root_binding.is_none()
             });
         let root_eligible = self.root_color_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
@@ -647,7 +650,7 @@ impl NovaRenderer {
             // become untrusted and are individually rebuilt on first use.
             let preserve_root_color = root_eligible
                 && self.filters.targets.as_ref().is_some_and(|targets| {
-                    self.filters.root_color_resident_on(targets)
+                    self.root_color.resident_on(targets.root_color_texture_identity())
                 });
             if preserve_root_color || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
@@ -661,7 +664,7 @@ impl NovaRenderer {
                 preserve_root_color,
                 auto_static_eligible,
                 auto_static_indices,
-                self.filters.root_color_content_version(),
+                self.root_color.content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
                 self.filters.targets.as_ref().expect("reused targets exist").variants.len(),
                 self.filters.targets.as_ref().expect("reused targets exist").active_isolated_source_count,
@@ -684,7 +687,7 @@ impl NovaRenderer {
         }) {
             let preserve_root_color = root_eligible
                 && self.filters.targets.as_ref().is_some_and(|targets| {
-                    self.filters.root_color_resident_on(targets)
+                    self.root_color.resident_on(targets.root_color_texture_identity())
                 });
             if preserve_root_color || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
@@ -699,7 +702,7 @@ impl NovaRenderer {
                 preserve_root_color,
                 auto_static_eligible,
                 auto_static_indices,
-                self.filters.root_color_content_version(),
+                self.root_color.content_version(),
                 self.frame_upload.backdrop_blur_configs().len(),
                 self.filters.targets.as_ref().map_or(0, |targets| targets.active_isolated_source_count),
                 self.filters.targets.as_ref().map_or(0, |targets| targets.isolated_sources.len()),
@@ -1039,6 +1042,7 @@ impl NovaRenderer {
             && self.frame_upload.backdrop_blurs.is_empty()
         {
             self.destroy_backdrop_blur_targets();
+            self.retire_root_color();
         }
 
         if matches!(

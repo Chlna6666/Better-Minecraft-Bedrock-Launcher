@@ -229,7 +229,7 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
             .frame_upload
             .retained_root_blur
             .expect("retained root");
-        let layers = renderer.prepare_element_blur_layers(&[root]);
+        let layers = renderer.prepare_color_layers(&[root]);
         assert!(!layers.is_empty(), "local root source refresh must execute");
         for layer in layers {
             assert!(layer.preserve_retained_source);

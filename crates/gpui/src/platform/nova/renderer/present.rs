@@ -1,5 +1,5 @@
 use super::buffer_upload::{FrameBufferUpload, upload_frame_buffers};
-use super::draw_steps::{PreparedBackdropBlurGroup, PreparedElementBlurLayer};
+use super::draw_steps::{PreparedBackdropBlurGroup, PreparedColorLayer};
 use super::filters::FilterRegistry;
 use super::frame_graph::{FrameGraphPlan, Pass as GraphPass};
 use super::*;
@@ -111,27 +111,13 @@ fn source_pass_required(first: bool, preserved: bool, has_steps: bool) -> bool {
     has_steps || (first && !preserved)
 }
 
-fn render_element_blur_layers<D>(
-    device: &mut D,
-    render_pass: RenderPassId,
-    filter_render_pass: RenderPassId,
-    depth_attachment: RenderPassDepthAttachment,
-    layers: &[PreparedElementBlurLayer],
-) -> Result<()>
-where
-    D: BackendPresentationCompat,
-{
-    let passes = element_blur_passes(render_pass, filter_render_pass, depth_attachment, layers);
-    Ok(device.render_step_lists_to_textures_compat(&passes)?)
-}
-
 /// Builds the actual attachment descriptors submitted to the backend. Source
 /// draws in every group share the first group's initialized depth footprint.
-pub(super) fn element_blur_passes(
+pub(super) fn color_layer_passes(
     render_pass: RenderPassId,
     filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
-    layers: &[PreparedElementBlurLayer],
+    layers: &[PreparedColorLayer],
 ) -> Vec<gfx_core::TextureRenderStepList<'_>> {
     let pass_count = layers
         .iter()
@@ -230,10 +216,12 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
     path_texture_view: TextureViewId,
     path_steps: &[DrawStepDescriptor],
     path_mask_cpu_elapsed: &mut Duration,
-    element_layers: &[PreparedElementBlurLayer],
+    element_layers: &[PreparedColorLayer],
+    root_layers: &[PreparedColorLayer],
     backdrop_source: Option<TextureViewId>,
     backdrop_groups: &[PreparedBackdropBlurGroup],
 ) -> Result<()> {
+    let mut color_passes = Vec::new();
     for pass in graph.offscreen_passes() {
         match pass {
             GraphPass::PathMask => path_mask::render(
@@ -246,14 +234,17 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
                 },
                 path_mask_cpu_elapsed,
             )?,
-            GraphPass::ElementLayers => render_element_blur_layers(
-                device,
-                render_pass,
-                filter_render_pass,
-                depth_attachment,
-                element_layers,
-            )?,
+            GraphPass::ElementLayers => color_passes.extend(color_layer_passes(
+                render_pass, filter_render_pass, depth_attachment, element_layers,
+            )),
+            GraphPass::RootColor => color_passes.extend(color_layer_passes(
+                render_pass, filter_render_pass, depth_attachment, root_layers,
+            )),
             GraphPass::BackdropBlur => {
+                if !color_passes.is_empty() {
+                    device.render_step_lists_to_textures_compat(&color_passes)?;
+                    color_passes.clear();
+                }
                 if let Some(source_texture_view) = backdrop_source {
                     render_backdrop_blur_groups(
                         device,
@@ -267,6 +258,9 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
             }
             GraphPass::MainPresent => unreachable!("swapchain Present is the graph sink"),
         }
+    }
+    if !color_passes.is_empty() {
+        device.render_step_lists_to_textures_compat(&color_passes)?;
     }
     Ok(())
 }
@@ -383,7 +377,7 @@ impl NovaRenderer {
     fn backdrop_blur_pixel_metrics(
         &self,
         backdrop_groups: &[PreparedBackdropBlurGroup],
-        element_layers: &[PreparedElementBlurLayer],
+        element_layers: &[PreparedColorLayer],
     ) -> (usize, [usize; 6]) {
         let drawable_pixels = self.drawable_pixels();
         let mut source_pixels = 0usize;
@@ -601,7 +595,7 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        let element_blur_layers = self.prepare_element_blur_layers(&dirty_element_indices);
+        let element_blur_layers = self.prepare_color_layers(&dirty_element_indices);
         let root_scene_color_cached = self.frame_upload.retained_root_blur.is_some();
         let root_scene_color_refreshes = element_blur_layers
             .iter()
@@ -658,10 +652,22 @@ impl NovaRenderer {
         let render_path_mask =
             path_mask_step_count != 0 && self.path_mask_residency.begin(path_mask_key);
         let mut path_mask_cpu_elapsed = Duration::ZERO;
+        let (root_color_layers, element_blur_layers): (Vec<_>, Vec<_>) =
+            element_blur_layers.into_iter().partition(|layer| {
+                Some(layer.index) == self.frame_upload.retained_root_blur
+            });
+        let root_access = if !root_scene_color_cached {
+            super::frame_graph::RootColorAccess::Absent
+        } else if root_color_layers.is_empty() {
+            super::frame_graph::RootColorAccess::Resident
+        } else {
+            super::frame_graph::RootColorAccess::Refresh
+        };
         let graph = FrameGraphPlan::compile(
             render_path_mask,
             element_blur_layers.len(),
             backdrop_blur_groups.len(),
+            root_access,
         );
         let mask_pass_count = usize::from(graph.requires(GraphPass::PathMask));
         let main_pass_count = usize::from(graph.requires(GraphPass::MainPresent));
@@ -693,7 +699,7 @@ impl NovaRenderer {
                 )
             },
         );
-        let element_blur_pass_count = element_blur_layers.iter().fold(0usize, |total, layer| {
+        let element_blur_pass_count = element_blur_layers.iter().chain(&root_color_layers).fold(0usize, |total, layer| {
             let source_passes = layer.source_groups.iter().enumerate().fold(
                 0usize,
                 |total, (index, group)| {
@@ -933,6 +939,7 @@ impl NovaRenderer {
                         self.draw_step_scratch.path_steps(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
+                        &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                     )?;
@@ -1042,6 +1049,7 @@ impl NovaRenderer {
                         self.draw_step_scratch.path_steps(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
+                        &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                     )?;
@@ -1151,6 +1159,7 @@ impl NovaRenderer {
                         self.draw_step_scratch.path_steps(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
+                        &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                     )?;
@@ -1247,6 +1256,7 @@ impl NovaRenderer {
                         self.draw_step_scratch.path_steps(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
+                        &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                     )?;
@@ -1331,6 +1341,7 @@ impl NovaRenderer {
                         self.draw_step_scratch.path_steps(),
                         &mut path_mask_cpu_elapsed,
                         &element_blur_layers,
+                        &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
                     )?;
@@ -1496,7 +1507,7 @@ impl NovaRenderer {
                 .then(|| self.filters.targets.as_ref()
                     .and_then(BackdropBlurTargets::root_color_texture_identity))
                 .flatten();
-            self.filters.record_root_color_present(
+            self.root_color.record_present(
                 native_root,
                 root_scene_color_refreshes != 0,
             );
@@ -1506,7 +1517,7 @@ impl NovaRenderer {
                 packet.window_id,
                 native_root.map(|(texture, _)| texture),
                 native_root.map(|(_, view)| view),
-                self.filters.root_color_content_version(),
+                self.root_color.content_version(),
                 root_scene_color_refreshes != 0,
                 root_scene_color_cached,
             );
@@ -1514,6 +1525,7 @@ impl NovaRenderer {
                 .record_submission(backdrop_blur_quality, atlas_content_generation);
         } else {
             self.invalidate_backdrop_blur_cache();
+            self.root_color.invalidate();
         }
         // This event is emitted AFTER a successful native submission, not when
         // a candidate static prefix was merely encoded. On compositor-only

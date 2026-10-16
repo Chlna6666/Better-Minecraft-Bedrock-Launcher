@@ -130,6 +130,9 @@ impl NovaRenderer {
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
                 }
+                if let Some(root) = self.root_color.take_target() {
+                    root_color::destroy_target(device, root);
+                }
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "OpenGL");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
@@ -166,6 +169,9 @@ impl NovaRenderer {
                 }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
+                }
+                if let Some(root) = self.root_color.take_target() {
+                    root_color::destroy_target(device, root);
                 }
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX11");
                 self.depth_texture = next_depth_texture;
@@ -204,6 +210,9 @@ impl NovaRenderer {
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
                 }
+                if let Some(root) = self.root_color.take_target() {
+                    root_color::destroy_target(device, root);
+                }
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "DX12");
                 self.depth_texture = next_depth_texture;
                 self.depth_texture_view = next_depth_texture_view;
@@ -226,6 +235,9 @@ impl NovaRenderer {
                 }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
+                }
+                if let Some(root) = self.root_color.take_target() {
+                    root_color::destroy_target(device, root);
                 }
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Metal");
                 self.depth_texture = next_depth_texture;
@@ -271,6 +283,9 @@ impl NovaRenderer {
                 }
                 if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
                     destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
+                }
+                if let Some(root) = self.root_color.take_target() {
+                    root_color::destroy_target(device, root);
                 }
                 destroy_depth_target(device, old_depth_texture, old_depth_texture_view, "Vulkan");
                 self.depth_texture = next_depth_texture;
@@ -756,6 +771,7 @@ impl NovaRenderer {
             needs_root_source: super::present::has_root_backdrop_blurs(&self.frame_upload),
             isolated_source_indices,
             root_color_capture_index: self.frame_upload.retained_root_blur,
+            root_color: self.root_color.target.as_ref().map(|root| root.target),
             pass_resource_set_layout: self.backdrop_blur_pass_resource_set_layout,
             blur_resource_set_layout: self.backdrop_blur_resource_set_layout,
             frame_buffers: self.frame_resource_buffers(),

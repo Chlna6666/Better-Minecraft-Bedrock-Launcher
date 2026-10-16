@@ -32,7 +32,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
         retained_root_variant: Some(5),
-        root_color_target: None,
+        root_binding: None,
     };
     let original_root_view = targets.variants[5].levels[0].texture_view;
     assert!(
@@ -41,7 +41,8 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     );
     let root_level = &targets.variants[5].levels[0];
     let original_root_identity = (root_level.texture, root_level.texture_view);
-    targets.root_color_target = Some(RootColorTarget {
+    let mut residency = crate::platform::nova::renderer::root_color::RootColor::default();
+    residency.target = Some(RootColorTarget {
         target: RenderTarget {
             byte_size: root_level.byte_size,
             texture: root_level.texture,
@@ -50,6 +51,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         pass_resource_sets: root_level.pass_resource_sets.clone(),
         composite_resource_sets: targets.variants[5].target_resource_sets.clone(),
     });
+    targets.root_binding = residency.target.as_ref().map(|root| root.target);
     // Match the production constructor: only native RootColorTarget owns
     // ResourceSet IDs. The zero-radius Filter slot borrows Texture/View only.
     targets.variants[5].levels[0].pass_resource_sets.clear();
@@ -60,7 +62,7 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     );
     assert!(targets.can_preserve_root_color_capture());
     assert!(
-        targets.root_color_target.is_some(),
+        residency.target.is_some(),
         "the native Root allocation must have one dedicated owner"
     );
     assert_eq!(
@@ -69,14 +71,14 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     );
     assert_eq!(
         targets.byte_size(),
-        6 * 64 * 32 * 4,
+        5 * 64 * 32 * 4,
         "a borrowed zero-radius Root descriptor must not double-count GPU residency"
     );
     assert!(targets.variants[5].levels[0].pass_resource_sets.is_empty());
     assert!(targets.variants[5].target_resource_sets.is_empty());
     assert_eq!(
-        targets
-            .root_color_target
+        residency
+            .target
             .as_ref()
             .unwrap()
             .pass_resource_sets
@@ -84,20 +86,19 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         1
     );
     assert_eq!(
-        targets
-            .root_color_target
+        residency
+            .target
             .as_ref()
             .unwrap()
             .composite_resource_sets
             .len(),
         1
     );
-    let mut residency = FilterRegistry::new(None);
-    residency.record_root_color_present(Some(original_root_identity), true);
+    residency.record_present(Some(original_root_identity), true);
     let root_version = residency
-        .root_color_content_version()
+        .content_version()
         .expect("submitted Root");
-    assert!(residency.root_color_resident_on(&targets));
+    assert!(residency.resident_on(targets.root_color_texture_identity()));
     for (count, root) in [(4_u32, 3_u32), (5, 4), (6, 5), (4, 3)] {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
@@ -113,8 +114,8 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
             targets.root_color_texture_identity(),
             Some(original_root_identity)
         );
-        assert!(residency.root_color_resident_on(&targets));
-        let native_owner = targets.root_color_target.as_ref().unwrap();
+        assert!(residency.resident_on(targets.root_color_texture_identity()));
+        let native_owner = residency.target.as_ref().unwrap();
         let logical = &targets.variants[root as usize];
         assert!(
             logical.levels[0].pass_resource_sets.is_empty(),
@@ -126,8 +127,8 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         );
         assert_eq!(native_owner.pass_resource_sets.len(), 1);
         assert_eq!(native_owner.composite_resource_sets.len(), 1);
-        residency.record_root_color_present(targets.root_color_texture_identity(), false);
-        assert_eq!(residency.root_color_content_version(), Some(root_version));
+        residency.record_present(targets.root_color_texture_identity(), false);
+        assert_eq!(residency.content_version(), Some(root_version));
         assert!(
             targets.can_preserve_root_color_capture(),
             "zero-radius popup count churn must not discard root GPU identity"
@@ -152,16 +153,16 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     assert!(targets.rebind_zero_radius_layout(&temporarily_no_root, false, None, None,));
     assert!(targets.root_capture_is_compatible(&temporarily_no_root, None));
     assert_eq!(
-        targets
-            .root_color_target
+        residency
+            .target
             .as_ref()
             .unwrap()
             .target
             .texture_view,
         original_root_view
     );
-    residency.record_root_color_present(None, false);
-    assert_eq!(residency.root_color_content_version(), None);
+    residency.record_present(None, false);
+    assert_eq!(residency.content_version(), None);
     let reintroduced_root = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
     assert!(!targets.root_capture_is_compatible(&reintroduced_root, Some(3)));
     assert!(targets.rebind_zero_radius_layout(&reintroduced_root, false, Some(3), None,));
@@ -170,10 +171,10 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         targets.root_color_texture_identity(),
         Some(original_root_identity)
     );
-    residency.record_root_color_present(Some(original_root_identity), true);
-    assert!(residency.root_color_resident_on(&targets));
+    residency.record_present(Some(original_root_identity), true);
+    assert!(residency.resident_on(targets.root_color_texture_identity()));
     let mut without_owner = targets.clone();
-    without_owner.root_color_target = None;
+    without_owner.root_binding = None;
     assert!(
         !without_owner.root_capture_is_compatible(&reintroduced_root, Some(3)),
         "a Filter scratch allocation must not silently become a Native Root"
@@ -185,40 +186,40 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     let new_pass_set = test_resource_set_id(901);
     let new_composite_set = test_resource_set_id(902);
     let logical_config = test_zero_radius_blur_config(3);
-    targets
-        .root_color_target
+    residency
+        .target
         .as_mut()
         .unwrap()
         .pass_resource_sets[0] = new_pass_set;
-    targets
-        .root_color_target
+    residency
+        .target
         .as_mut()
         .unwrap()
         .composite_resource_sets[0] = new_composite_set;
     assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
     assert!(targets.variants[3].target_resource_sets.is_empty());
     assert_eq!(
-        targets.resource_set_for_config(logical_config, 0),
+        targets.resource_set_for_config(logical_config, 0, residency.target.as_ref()),
         Some(new_composite_set)
     );
     let composite = targets
-        .direct_composite_target(logical_config, 0)
+        .direct_composite_target(logical_config, 0, residency.target.as_ref())
         .expect("the Render Graph resolves the native Root Color");
     assert_eq!(composite.source_resource_set, new_pass_set);
     assert_eq!(composite.texture_view, original_root_view);
     assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
     assert!(targets.variants[3].target_resource_sets.is_empty());
     assert_eq!(
-        targets
-            .root_color_target
+        residency
+            .target
             .as_ref()
             .unwrap()
             .pass_resource_sets[0],
         new_pass_set
     );
     assert_eq!(
-        targets
-            .root_color_target
+        residency
+            .target
             .as_ref()
             .unwrap()
             .composite_resource_sets[0],
@@ -241,12 +242,12 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
     assert!(targets.variants[3].target_resource_sets.is_empty());
     assert_eq!(targets.variants.len(), 6);
     assert_eq!(
-        targets.resource_set_for_config(remapped[3], 0),
+        targets.resource_set_for_config(remapped[3], 0, residency.target.as_ref()),
         Some(new_composite_set)
     );
     assert_eq!(
         targets
-            .direct_composite_target(remapped[3], 0)
+            .direct_composite_target(remapped[3], 0, residency.target.as_ref())
             .unwrap()
             .source_resource_set,
         new_pass_set
@@ -261,25 +262,21 @@ fn warmed_zero_radius_popup_targets_rebind_without_reallocating_textures() {
         different_native.root_color_texture_identity().is_none(),
         "the borrowed Filter variant may never impersonate a different Root allocation"
     );
-    assert!(!residency.root_color_resident_on(&different_native));
-    residency.record_root_color_present(different_native.root_color_texture_identity(), false);
-    assert_eq!(residency.root_color_content_version(), None);
+    assert!(!residency.resident_on(different_native.root_color_texture_identity()));
+    residency.record_present(different_native.root_color_texture_identity(), false);
+    assert_eq!(residency.content_version(), None);
     // Only a genuine Native owner replacement, accompanied by a new Root
     // rendering pass, can establish a version for the replacement Texture.
-    different_native
-        .root_color_target
-        .as_mut()
-        .unwrap()
-        .target
-        .texture = test_texture_id(777);
+    different_native.root_binding.as_mut().unwrap().texture = test_texture_id(777);
+    residency.target.as_mut().unwrap().target.texture = test_texture_id(777);
     assert!(different_native.root_color_texture_identity().is_some());
-    residency.record_root_color_present(different_native.root_color_texture_identity(), true);
-    assert!(residency.root_color_resident_on(&different_native));
-    assert_ne!(residency.root_color_content_version(), Some(root_version));
+    residency.record_present(different_native.root_color_texture_identity(), true);
+    assert!(residency.resident_on(different_native.root_color_texture_identity()));
+    assert_ne!(residency.content_version(), Some(root_version));
     different_native.variants[3].levels[0].texture_view = test_texture_view_id(778);
-    assert!(!residency.root_color_resident_on(&different_native));
-    residency.record_root_color_present(None, false);
-    assert_eq!(residency.root_color_content_version(), None);
+    assert!(!residency.resident_on(different_native.root_color_texture_identity()));
+    residency.record_present(None, false);
+    assert_eq!(residency.content_version(), None);
 
     // A closed Gaussian/isolated popup can leave scratch GPU textures warm.
     // They are independent from the Root Color physical view and must not

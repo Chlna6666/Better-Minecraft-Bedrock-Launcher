@@ -65,14 +65,14 @@ impl BackdropBlurTargets {
         // remains allocated. Reintroducing Root must find that same Texture,
         // never relabel an arbitrary scratch target as the Root allocation.
         let previous_root_owner = old_root.or_else(|| {
-            let native = self.root_color_target.as_ref()?.target;
+            let native = *self.root_binding.as_ref()?;
             self.variants.iter().position(|variant| {
                 variant.levels.len() == 1
                     && variant.levels[0].texture == native.texture
                     && variant.levels[0].texture_view == native.texture_view
             })
         });
-        if let Some(root) = self.root_color_target.as_ref() {
+        if let Some(root) = self.root_binding.as_ref() {
             let Some(owner_slot) = previous_root_owner else {
                 // Never let a Filter-only descriptor impersonate an orphaned
                 // Root native allocation.
@@ -83,8 +83,8 @@ impl BackdropBlurTargets {
             else {
                 return false;
             };
-            if level.texture != root.target.texture
-                || level.texture_view != root.target.texture_view
+            if level.texture != root.texture
+                || level.texture_view != root.texture_view
             {
                 return false;
             }
@@ -172,7 +172,7 @@ impl BackdropBlurTargets {
         // The source fingerprint check happens in FilterRegistry before this
         // method is called, not by guessing from a matching filter config.
         let previous_root_owner = self.retained_root_variant.or_else(|| {
-            let native = self.root_color_target.as_ref()?.target;
+            let native = *self.root_binding.as_ref()?;
             self.variants.iter().position(|variant| {
                 variant.levels.len() == 1
                     && variant.levels[0].texture == native.texture
@@ -182,14 +182,14 @@ impl BackdropBlurTargets {
         // Physical Root storage must not be reassigned to a non-Root
         // Capture while its logical role is absent. Its descriptor arrays
         // intentionally remain empty: only RootColorTarget owns those sets.
-        let native_root_slot = self.root_color_target.as_ref().and_then(|root| {
+        let native_root_slot = self.root_binding.as_ref().and_then(|root| {
             self.variants.iter().position(|variant| {
                 variant.levels.len() == 1
-                    && variant.levels[0].texture == root.target.texture
-                    && variant.levels[0].texture_view == root.target.texture_view
+                    && variant.levels[0].texture == root.texture
+                    && variant.levels[0].texture_view == root.texture_view
             })
         });
-        if self.root_color_target.is_some() && native_root_slot.is_none() {
+        if self.root_binding.is_some() && native_root_slot.is_none() {
             return false;
         }
         let pinned = if let (Some(previous), Some(current)) =
@@ -281,7 +281,7 @@ impl BackdropBlurTargets {
         // invalidate unproven captured pixels before any later sampling.
         let root_physical = self.retained_root_variant
             .filter(|_| new_root.is_some())
-            .and_then(|_| self.root_color_target.as_ref());
+            .and_then(|_| self.root_binding.as_ref());
         let mut rebound_zero_radius = 0usize;
         for (new_index, config) in next.iter().copied().enumerate() {
             if permutation[new_index] != usize::MAX {
@@ -294,11 +294,10 @@ impl BackdropBlurTargets {
                             && (new_root.is_some() || native_root_slot != Some(old))
                             && variant.config.radius() == 0.0
                             && variant.levels.len() == 1
-                            && variant.levels[0].byte_size == root.target.byte_size
+                            && variant.levels[0].byte_size == root.byte_size
+                            && !variant.target_resource_sets.is_empty()
                             && variant.levels[0].pass_resource_sets.len()
-                                == root.pass_resource_sets.len()
-                            && variant.target_resource_sets.len()
-                                == root.composite_resource_sets.len())
+                                == variant.target_resource_sets.len())
                             .then_some(old)
                     }) {
                         permutation[new_index] = source;
@@ -317,9 +316,8 @@ impl BackdropBlurTargets {
             // Never use Root's one-level Texture/View, and never substitute a
             // different downsample or frame-slot descriptor capacity.
             if config.radius() > 0.0 && new_root.is_some()
-                && pinned.is_some() && self.root_color_target.is_some()
+                && pinned.is_some() && self.root_binding.is_some()
             {
-                let root = self.root_color_target.as_ref().expect("checked above");
                 if let Some(source) = self.variants.iter().enumerate().find_map(|(old, variant)| {
                     (!permutation.contains(&old)
                         && native_root_slot != Some(old)
@@ -327,10 +325,9 @@ impl BackdropBlurTargets {
                         && variant.config.downsample() == config.downsample()
                         && variant.levels.len() == blur_variant_level_count(config)
                         && variant.levels.iter().all(|level| {
-                            level.pass_resource_sets.len() == root.pass_resource_sets.len()
+                            level.pass_resource_sets.len() == variant.target_resource_sets.len()
                         })
-                        && variant.target_resource_sets.len()
-                            == root.composite_resource_sets.len())
+                        && !variant.target_resource_sets.is_empty())
                         .then_some(old)
                 }) {
                     permutation[new_index] = source;

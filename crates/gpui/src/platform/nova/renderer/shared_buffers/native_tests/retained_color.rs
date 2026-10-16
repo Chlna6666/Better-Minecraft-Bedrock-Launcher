@@ -346,7 +346,7 @@ fn verify(backend: RendererBackend) {
                     .frame_upload
                     .retained_root_blur
                     .expect("retained root");
-                let layers = renderer.prepare_element_blur_layers(&[root]);
+                let layers = renderer.prepare_color_layers(&[root]);
                 assert!(
                     !layers.is_empty(),
                     "local change must update retained color"
@@ -354,7 +354,7 @@ fn verify(backend: RendererBackend) {
                 let mut source_draws = 0;
                 for layer in layers {
                     assert!(layer.preserve_retained_source);
-                    let passes = crate::platform::nova::renderer::present::element_blur_passes(
+                    let passes = crate::platform::nova::renderer::present::color_layer_passes(
                         renderer.render_pass,
                         renderer.pipelines.filter_render_pass,
                         RenderPassDepthAttachment {

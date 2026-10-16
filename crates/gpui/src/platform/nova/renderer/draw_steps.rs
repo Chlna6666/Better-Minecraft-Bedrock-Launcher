@@ -15,7 +15,7 @@ pub(super) struct PreparedBackdropBlurGroup {
     pub(super) preserve_filtered_pixels: bool,
 }
 
-pub(super) struct PreparedElementBlurLayer {
+pub(super) struct PreparedColorLayer {
     pub(super) index: u32,
     pub(super) source_texture_view: TextureViewId,
     pub(super) source_groups: Vec<PreparedBackdropBlurGroup>,
@@ -87,7 +87,7 @@ impl NovaRenderer {
                     },
                     self.underline_resource_set,
                     |config| {
-                        backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index)
+                        backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index, self.root_color.target.as_ref())
                     },
                     DrawStepMode::Present,
                     steps,
@@ -301,7 +301,7 @@ impl NovaRenderer {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
                 self.underline_resource_set,
-                |config| targets.resource_set_for_config(config, frame_resource_index),
+                |config| targets.resource_set_for_config(config, frame_resource_index, self.root_color.target.as_ref()),
                 DrawStepMode::BackdropSegment {
                     batch_start,
                     batch_end,
@@ -376,10 +376,10 @@ impl NovaRenderer {
     /// refresh retained ping/final targets. A zero-radius compositor layer instead renders the
     /// complete dirty subtree directly into its retained final target, so it has no H/V passes and
     /// no texture-copy stage. Composite-only animation is skipped above this path entirely.
-    pub(super) fn prepare_element_blur_layers(
+    pub(super) fn prepare_color_layers(
         &self,
         dirty_indices: &[u32],
-    ) -> Vec<PreparedElementBlurLayer> {
+    ) -> Vec<PreparedColorLayer> {
         if dirty_indices.is_empty() {
             return Vec::new();
         }
@@ -421,7 +421,7 @@ impl NovaRenderer {
             };
 
             let direct_composite_target =
-                targets.direct_composite_target(config, frame_resource_index);
+                targets.direct_composite_target(config, frame_resource_index, self.root_color.target.as_ref());
             let direct_composite = direct_composite_target.is_some();
             // Root color and resident identity compositors can preserve source pixels.
             // Filters and changed source geometry keep the full-layer refresh path.
@@ -590,7 +590,7 @@ impl NovaRenderer {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
                 self.underline_resource_set,
-                |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
+                |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index, self.root_color.target.as_ref()),
                 DrawStepMode::BlurContent {
                     batch_start: segment_start,
                     batch_end: range.content_end,
@@ -649,7 +649,7 @@ impl NovaRenderer {
             // expensive on Vulkan). Merge contiguous source-only segments
             // without crossing a real filter execution barrier.
             coalesce_source_groups(&mut source_groups);
-            layers.push(PreparedElementBlurLayer {
+            layers.push(PreparedColorLayer {
                 index: range.index,
                 source_texture_view,
                 source_groups,
@@ -686,7 +686,7 @@ impl NovaRenderer {
             self.path_resource_set,
             |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
             self.underline_resource_set,
-            |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index),
+            |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index, self.root_color.target.as_ref()),
             DrawStepMode::BlurContent {
                 batch_start,
                 batch_end,

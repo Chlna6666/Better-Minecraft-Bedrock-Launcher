@@ -6,6 +6,7 @@ struct WindowResources {
     atlas: FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     path: PathMaskTarget,
     blur: Option<BackdropBlurTargets>,
+    root: Option<RootColorTarget>,
     depth: RenderTarget,
     sampler: SamplerId,
     swapchain: SwapchainId,
@@ -17,6 +18,7 @@ impl NovaRenderer {
         let resources = WindowResources {
             path: self.current_path_mask_target(),
             blur: self.filters.targets.take(),
+            root: self.root_color.take_target(),
             frames: std::mem::take(&mut self.frame_resources),
             atlas: std::mem::take(&mut self.gpu_atlas_textures),
             depth: RenderTarget {
@@ -75,6 +77,9 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=filters");
     if let Some(blur) = resources.blur {
         destroy_backdrop_blur_target_chain(device, blur, backend);
+    }
+    if let Some(root) = resources.root {
+        root_color::destroy_target(device, root);
     }
     log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=atlas");
     for (atlas_id, texture) in resources.atlas {

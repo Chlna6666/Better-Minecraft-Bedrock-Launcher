@@ -14,7 +14,7 @@ fn retained_root_view(renderer: &NovaRenderer) -> TextureViewId {
         .targets
         .as_ref()
         .expect("targets")
-        .direct_composite_target(config, renderer.current_frame_resource_index)
+        .direct_composite_target(config, renderer.current_frame_resource_index, renderer.root_color.target.as_ref())
         .expect("root target")
         .texture_view
 }
@@ -33,6 +33,7 @@ pub(super) fn verify(
         false,
     );
     let original = retained_root_view(renderer);
+    verify_filter_retirement_keeps_root(renderer, open, target);
     let mut closed = page(false, renderer.current_size, PopupPlacement::Closed);
     Arc::get_mut(&mut closed)
         .expect("new closed scene is uniquely owned")
@@ -90,6 +91,32 @@ pub(super) fn verify(
     verify_root_reactivation(renderer, open, target);
 }
 
+fn verify_filter_retirement_keeps_root(
+    renderer: &mut NovaRenderer,
+    scene: &Arc<crate::Scene>,
+    target: (TextureId, TextureViewId),
+) {
+    let identity = renderer.root_color.identity();
+    let root = renderer.root_color.target.as_ref().expect("window Root owner");
+    let pass_sets = root.pass_resource_sets.clone();
+    let composite_sets = root.composite_resource_sets.clone();
+    let baseline = pixels(renderer, scene, target, 0.8, [sample(0.8)], false);
+    let version = renderer.root_color.content_version();
+    renderer.wait_for_pending_submissions().expect("retire readers before Filter destruction");
+    renderer.destroy_backdrop_blur_targets();
+    assert!(renderer.filters.targets.is_none());
+    assert_eq!(renderer.root_color.identity(), identity);
+    assert_eq!(renderer.root_color.content_version(), version);
+    let rebuilt = pixels(renderer, scene, target, 0.8, [sample(0.8)], false);
+    assert_eq!(baseline, rebuilt, "recreated Filters must preserve Root pixels");
+    assert_eq!(renderer.root_color.identity(), identity);
+    let root = renderer.root_color.target.as_ref().expect("same window Root owner");
+    assert_eq!(root.pass_resource_sets, pass_sets);
+    assert_eq!(root.composite_resource_sets, composite_sets);
+    eprintln!("root lifetime gate backend={:?} filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true",
+        renderer.backend_info.label());
+}
+
 fn verify_root_reactivation(
     renderer: &mut NovaRenderer,
     scene: &Arc<crate::Scene>,
@@ -109,7 +136,7 @@ fn verify_root_reactivation(
         false,
     );
     assert!(renderer.frame_upload.retained_root_blur.is_some());
-    assert!(renderer.filters.root_color_content_version().is_some());
+    assert!(renderer.root_color.content_version().is_some());
     let full = pixels(
         renderer,
         scene,
@@ -147,7 +174,7 @@ fn present_auto_static(renderer: &mut NovaRenderer, target: (TextureId, TextureV
         true,
     );
     assert!(renderer.frame_upload.retained_root_blur.is_none());
-    assert!(renderer.filters.root_color_content_version().is_none());
+    assert!(renderer.root_color.content_version().is_none());
     assert!(
         captured == reference,
         "AutoStatic and independent Popup must match direct pixels"

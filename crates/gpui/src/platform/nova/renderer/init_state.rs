@@ -91,6 +91,7 @@ impl NovaRenderer {
                 .backdrop_blur_pass_resource_set_layout,
             backdrop_blur_resource_set_layout: resources.backdrop_blur_resource_set_layout,
             filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
+            root_color: root_color::RootColor::default(),
             atlas_sampler: resources.atlas_sampler,
             path_texture: resources.path_texture,
             path_texture_view: resources.path_texture_view,
