@@ -572,10 +572,18 @@ propagate Chunk candidates. Zero-radius captures with no coordinate animation
 preserve local child damage, while enclosing Gaussian/transformed captures
 still propagate their own affected output.
 
-Root Color still participates in Nova's synthetic zero-radius Filter scheduling.
-The separate physical `RootColorTarget` does not yet remove that logical Root
-Filter dependency; removing it requires migrating its draw-step, target and
-submission consumers together.
+Nova's window-owned `renderer/root_color.rs` owns the Root allocation, per-slot
+source/composite bindings and its successful-content version. Filter target
+recreation borrows its Texture/View and cannot retire it. Resize, memory trim
+and window destruction retire Root independently after the existing submission
+fences drain; slot-buffer growth rebinds its descriptors through that owner.
+The Render Graph has separate RootColor read/refresh dependencies. Consecutive
+Element and Root attachments still share one backend offscreen submission.
+
+The upload stream still encodes Root through a synthetic zero-radius descriptor
+and borrowed Filter variant. These remaining logical consumers must migrate
+before removing `retained_root_blur`; they no longer own GPU Root resources or
+its content version.
 
 ## PresentationPacket
 
