@@ -104,6 +104,7 @@ impl FrameUploadBenchmarkCore {
         let summary = self.upload.encode(
             &mut self.quad_chunks,
             &self.scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 1_920,
@@ -150,6 +151,7 @@ impl PathPackingBenchmarkCore {
         let summary = self.upload.encode(
             &mut self.quad_chunks,
             &self.scene,
+            &crate::window::retained::RetainedPaint::default(),
             &[],
             DrawableSize {
                 width: 1_920,

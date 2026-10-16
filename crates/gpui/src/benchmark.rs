@@ -63,11 +63,11 @@ impl LayoutBenchmark {
         let children = (0..node_count)
             .map(|_| {
                 self.engine
-                    .request_layout(Style::default(), px(16.0), 1.0, &[])
+                    .request_layout(None, Style::default(), px(16.0), 1.0, &[])
             })
             .collect::<Vec<_>>();
         self.engine
-            .request_layout(Style::default(), px(16.0), 1.0, &children)
+            .request_layout(None, Style::default(), px(16.0), 1.0, &children)
     }
 }
 
