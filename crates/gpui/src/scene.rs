@@ -11,7 +11,7 @@ mod operations;
 mod painter;
 mod prepared;
 mod primitive;
-mod quad_stream;
+mod primitive_stream;
 #[cfg(test)]
 mod tests;
 
@@ -24,4 +24,4 @@ pub(crate) use operations::{OperationRange, Operations};
 pub(crate) use painter::Painter;
 pub(crate) use prepared::*;
 pub(crate) use primitive::*;
-pub(crate) use quad_stream::{QuadReplay, QuadStream};
+pub(crate) use primitive_stream::{PayloadIdentity, PrimitiveStream, QuadReplay};

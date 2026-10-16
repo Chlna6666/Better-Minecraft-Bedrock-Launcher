@@ -38,10 +38,8 @@ fn first_two_batch_candidates(
 }
 
 pub(super) struct BatchIterator<'a> {
-    pub(super) shadows: &'a [Shadow],
-    pub(super) shadows_start: usize,
-    pub(super) shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
-    pub(super) quads_iter: super::quad_stream::QuadCursor<'a>,
+    pub(super) shadows_iter: super::primitive_stream::Cursor<'a, Shadow>,
+    pub(super) quads_iter: super::primitive_stream::Cursor<'a, Quad>,
     pub(super) paths: &'a [Path<ScaledPixels>],
     pub(super) paths_start: usize,
     pub(super) paths_iter: Peekable<slice::Iter<'a, Path<ScaledPixels>>>,
@@ -119,28 +117,31 @@ impl<'a> Iterator for BatchIterator<'a> {
 
         match batch_kind {
             PrimitiveKind::Shadow => {
-                let shadows_start = self.shadows_start;
-                let mut shadows_end = shadows_start + 1;
-                self.shadows_iter.next();
-                while self
-                    .shadows_iter
-                    .next_if(|shadow| (shadow.order, batch_kind) < max_order_and_kind)
-                    .is_some()
-                {
-                    shadows_end += 1;
-                }
-                self.shadows_start = shadows_end;
-                Some(PrimitiveBatch::Shadows(
-                    &self.shadows[shadows_start..shadows_end],
-                ))
+                let start = self.shadows_iter.position();
+                let shadows = self.shadows_iter.remaining();
+                let count = shadows
+                    .partition_point(|shadow| (shadow.order, batch_kind) < max_order_and_kind);
+                debug_assert!(
+                    count > 0,
+                    "selected Shadow precedes the next batch candidate"
+                );
+                self.shadows_iter.advance(count);
+                Some(PrimitiveBatch::Shadows {
+                    shadows: &shadows[..count],
+                    range: start..start + count,
+                })
             }
             PrimitiveKind::Quad => {
                 let start = self.quads_iter.position();
                 let quads = self.quads_iter.remaining();
-                let count = quads.partition_point(|quad| (quad.order, batch_kind) < max_order_and_kind);
+                let count =
+                    quads.partition_point(|quad| (quad.order, batch_kind) < max_order_and_kind);
                 debug_assert!(count > 0, "selected Quad precedes the next batch candidate");
                 self.quads_iter.advance(count);
-                Some(PrimitiveBatch::Quads { quads: &quads[..count], range: start..start + count })
+                Some(PrimitiveBatch::Quads {
+                    quads: &quads[..count],
+                    range: start..start + count,
+                })
             }
             PrimitiveKind::Path => {
                 let paths_start = self.paths_start;
@@ -293,8 +294,14 @@ impl<'a> Iterator for BatchIterator<'a> {
     allow(dead_code)
 )]
 pub(crate) enum PrimitiveBatch<'a> {
-    Shadows(&'a [Shadow]),
-    Quads { quads: &'a [Quad], range: Range<usize> },
+    Shadows {
+        shadows: &'a [Shadow],
+        range: Range<usize>,
+    },
+    Quads {
+        quads: &'a [Quad],
+        range: Range<usize>,
+    },
     Paths(&'a [Path<ScaledPixels>]),
     Underlines(&'a [Underline]),
     MonochromeSprites {

@@ -49,9 +49,8 @@ impl Painter {
             self.blur_captures.is_empty(),
             "element blur capture must be closed before finishing a scene"
         );
-        self.scene
-            .shadows
-            .sort_unstable_by_key(|shadow| shadow.order);
+        self.scene.shadows.finish();
+        self.scene.shadows.compact();
         self.scene.quads.finish();
         self.scene.paths.sort_unstable_by_key(|path| path.order);
         self.scene
@@ -147,11 +146,11 @@ impl Painter {
         {
             self.scene.paint_operations.shrink_to(paint_floor);
         }
-        trim_vec_capacity(
-            &mut self.scene.shadows,
-            primitive_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.scene.shadows.capacity()
+            > primitive_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
+        {
+            self.scene.shadows.shrink_to(primitive_floor);
+        }
         if self.scene.quads.capacity()
             > primitive_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER)
         {
@@ -218,6 +217,16 @@ impl Painter {
         let mut prepared = std::mem::take(&mut self.scene.prepared_batches.batches);
         prepared.clear();
         for batch in self.batches() {
+            if let PrimitiveBatch::Shadows { range, .. } = batch {
+                if let Some(PreparedSceneBatch::Shadows(previous)) = prepared.last_mut()
+                    && previous.end == range.start
+                {
+                    previous.end = range.end;
+                } else {
+                    prepared.push(PreparedSceneBatch::Shadows(range));
+                }
+                continue;
+            }
             if let PrimitiveBatch::Quads { quads, range } = batch {
                 let mut append_run = |range: Range<usize>, is_solid| {
                     if let Some(PreparedSceneBatch::Quads(previous)) = prepared.last_mut()
@@ -249,8 +258,8 @@ impl Painter {
             }
 
             prepared.push(match batch {
-                PrimitiveBatch::Shadows(shadows) => {
-                    PreparedSceneBatch::Shadows(slice_range(&self.scene.shadows, shadows))
+                PrimitiveBatch::Shadows { .. } => {
+                    unreachable!("shadow segments are merged before this match")
                 }
                 PrimitiveBatch::Quads { .. } => {
                     unreachable!("quad batches are split before this match")

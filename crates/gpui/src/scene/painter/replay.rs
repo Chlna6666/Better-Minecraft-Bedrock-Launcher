@@ -1,4 +1,9 @@
 use super::*;
+
+enum ShadowReplay {
+    Shared(usize),
+    Rebind(usize),
+}
 impl Painter {
     fn replay_primitive(&mut self, primitive: &Primitive, retain_order: bool) {
         // A retained-order proof belongs to the exact ordering prefix that produced it.
@@ -159,8 +164,23 @@ impl Painter {
             self.retained_prefix_invalid = true;
         }
         let mut index = range.start;
+        let mut shadow_scan_end = index;
         let mut spans = quad_spans.iter().peekable();
         while index < range.end {
+            let operation = &prev_scene.paint_operations[index];
+            if index >= shadow_scan_end
+                && retain_order
+                && !self.retained_prefix_invalid
+                && matches!(operation, PaintOperation::Primitive(Primitive::Shadow(_)))
+            {
+                match self.replay_shadows(prev_scene, index..range.end) {
+                    ShadowReplay::Shared(end) => {
+                        index = end;
+                        continue;
+                    }
+                    ShadowReplay::Rebind(end) => shadow_scan_end = end,
+                }
+            }
             while spans
                 .peek()
                 .is_some_and(|span| span.paint_range.start < index)
@@ -178,7 +198,6 @@ impl Painter {
                 spans.next();
                 continue;
             }
-            let operation = &prev_scene.paint_operations[index];
             index += 1;
             match operation {
                 PaintOperation::Primitive(primitive) => {
@@ -282,6 +301,64 @@ impl Painter {
             .share(&previous.quads, span.quad_range.clone());
         self.scene.replayed_primitives += operations.len();
         true
+    }
+
+    /// Basic drawing-data replay, independent of GPU Chunk/cache eligibility.
+    /// Only an unchanged ordering prefix and a complete static typed range may
+    /// share storage; changed layers/captures take the ordinary rebinding path.
+    fn replay_shadows(&mut self, previous: &Scene, range: Range<usize>) -> ShadowReplay {
+        if !self.blur_captures.is_empty() {
+            return ShadowReplay::Rebind(range.start + 1);
+        }
+        let mut count = 0;
+        let mut first = DrawOrder::MAX;
+        let mut last = DrawOrder::MIN;
+        for operation in previous.paint_operations.range(range.clone()).iter() {
+            let PaintOperation::Primitive(Primitive::Shadow(shadow)) = operation else {
+                break;
+            };
+            if shadow.animation_id.is_some()
+                || self
+                    .layer_stack
+                    .last()
+                    .is_some_and(|order| *order != shadow.order)
+            {
+                break;
+            }
+            first = first.min(shadow.order);
+            last = last.max(shadow.order);
+            count += 1;
+        }
+        if count == 0 {
+            return ShadowReplay::Rebind(range.start + 1);
+        }
+        let start = previous
+            .shadows
+            .partition_point(|shadow| shadow.order < first);
+        let end = previous
+            .shadows
+            .partition_point(|shadow| shadow.order <= last);
+        // Partial equal-order ranges can include siblings not present in this
+        // replay. Never import those typed instances or lose their relative order.
+        if end - start != count {
+            return ShadowReplay::Rebind(range.start + count);
+        }
+        let paint_range = range.start..range.start + count;
+        if self.layer_stack.is_empty() {
+            for operation in previous.paint_operations.range(paint_range.clone()).iter() {
+                let PaintOperation::Primitive(primitive) = operation else {
+                    unreachable!()
+                };
+                self.primitive_bounds
+                    .insert_with_order(Self::ordering_bounds(primitive), primitive.order());
+            }
+        }
+        self.scene
+            .paint_operations
+            .share(&previous.paint_operations, paint_range.clone());
+        self.scene.shadows.share(&previous.shadows, start..end);
+        self.scene.replayed_primitives += count;
+        ShadowReplay::Shared(paint_range.end)
     }
 
     fn ordering_prefix_matches_previous(&self, prev_scene: &Scene, prefix_end: usize) -> bool {

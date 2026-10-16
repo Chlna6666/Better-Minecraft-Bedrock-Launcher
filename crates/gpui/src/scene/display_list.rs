@@ -15,8 +15,8 @@ use super::{
 pub(crate) struct Scene {
     pub(crate) revision: u64,
     pub(crate) paint_operations: super::Operations,
-    pub(crate) shadows: Vec<Shadow>,
-    pub(crate) quads: super::QuadStream,
+    pub(crate) shadows: super::PrimitiveStream<Shadow>,
+    pub(crate) quads: super::PrimitiveStream<super::Quad>,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
     pub(crate) underlines: Vec<Underline>,
     pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
@@ -181,9 +181,7 @@ impl Scene {
     )]
     pub(crate) fn batches(&self) -> impl Iterator<Item = PrimitiveBatch<'_>> {
         BatchIterator {
-            shadows: &self.shadows,
-            shadows_start: 0,
-            shadows_iter: self.shadows.iter().peekable(),
+            shadows_iter: self.shadows.cursor(),
             quads_iter: self.quads.cursor(),
             paths: &self.paths,
             paths_start: 0,

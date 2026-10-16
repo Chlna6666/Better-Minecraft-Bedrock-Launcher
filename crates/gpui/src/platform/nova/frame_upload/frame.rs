@@ -128,6 +128,11 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) text_raster_params: Vec<u8>,
     pub(in crate::platform::nova) quads: PackedQuadStream,
     pub(in crate::platform::nova) shadows: Vec<u8>,
+    /// Weak immutable-source identity for the sole packed Shadow buffer.
+    /// It owns no Paint payload or GPU residency; nested sources rebuild conservatively.
+    pub(in crate::platform::nova) shadow_source:
+        Option<crate::scene::PayloadIdentity<crate::Shadow>>,
+    pub(in crate::platform::nova) reused_shadow_bytes: usize,
     pub(in crate::platform::nova) path_rasterization_vertices: Vec<u8>,
     pub(in crate::platform::nova) path_sprites: Vec<u8>,
     pub(in crate::platform::nova) mono_sprites: Vec<u8>,

@@ -172,7 +172,17 @@ impl FrameUpload {
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
         cache.begin_frame();
-        self.encode_scene(
+        self.reused_shadow_bytes = if scene.blurs.is_empty()
+            && self
+                .shadow_source
+                .as_ref()
+                .is_some_and(|source| source.matches(&scene.shadows))
+        {
+            self.shadows.len()
+        } else {
+            0
+        };
+        let summary = self.encode_scene(
             cache,
             scene,
             retained_paint,
@@ -182,7 +192,23 @@ impl FrameUpload {
             premultiplied_alpha,
             backdrop_blur_quality,
             true,
-        )
+        );
+        if self.reused_shadow_bytes == 0 {
+            // Packed indices equal logical indices only when every source
+            // instance was encoded. Animated records may later be patched.
+            self.shadow_source = if scene.blurs.is_empty()
+                && scene.shadows.len() == self.shadows.len() / PACKED_SHADOW_BYTES
+                && scene
+                    .shadows
+                    .iter()
+                    .all(|shadow| shadow.animation_id.is_none())
+            {
+                scene.shadows.identity()
+            } else {
+                None
+            };
+        }
+        summary
     }
 
     /// Records independent window-color raster work and its final compositor descriptor.
@@ -262,7 +288,9 @@ impl FrameUpload {
             self.globals.clear();
             self.text_raster_params.clear();
             self.quads.clear();
-            self.shadows.clear();
+            if self.reused_shadow_bytes == 0 {
+                self.shadows.clear();
+            }
             self.path_rasterization_vertices.clear();
             self.path_sprites.clear();
             self.mono_sprites.clear();
@@ -352,7 +380,18 @@ impl FrameUpload {
                     );
                 }
                 PreparedSceneBatch::Shadows(range) => {
-                    self.encode_shadows(&scene.shadows[range.clone()], &mut summary);
+                    if self.reused_shadow_bytes > 0 {
+                        self.batches.push(UploadedBatch::Shadows {
+                            first: range.start as u32,
+                            count: range.len() as u32,
+                        });
+                        summary.shadow_count += range.len() as u32;
+                    } else {
+                        self.encode_shadows(
+                            scene.shadows.slices(range.clone()).flatten(),
+                            &mut summary,
+                        );
+                    }
                 }
                 PreparedSceneBatch::MonochromeSprites { range, .. } => {
                     self.encode_monochrome_sprites(

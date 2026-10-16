@@ -839,7 +839,7 @@ impl BladeRenderer {
                     );
                     encoder.draw(0, 4, 0, quads.len() as u32);
                 }
-                PrimitiveBatch::Shadows(shadows) => {
+                PrimitiveBatch::Shadows { shadows, .. } => {
                     let instance_buf =
                         unsafe { self.instance_belt.alloc_typed(shadows, &self.gpu) };
                     let mut encoder = pass.with(&self.pipelines.shadows);

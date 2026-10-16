@@ -1,12 +1,28 @@
-//! Immutable Quad payload segments. Window retention chooses which ranges may be shared.
+//! Immutable ordered primitive payload segments. Window retention chooses which ranges may be shared.
 #[cfg(test)]
 mod tests;
-use super::Quad;
+use super::{DrawOrder, Quad, Shadow};
+
+pub(crate) trait Ordered: Copy {
+    fn order(&self) -> DrawOrder;
+}
+
+impl Ordered for Quad {
+    fn order(&self) -> DrawOrder {
+        self.order
+    }
+}
+
+impl Ordered for Shadow {
+    fn order(&self) -> DrawOrder {
+        self.order
+    }
+}
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
     ops::{Index, Range},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 /// A caller-proven static Quad span in one source Paint generation.
@@ -16,14 +32,14 @@ pub(crate) struct QuadReplay {
     pub(crate) quad_range: Range<usize>,
 }
 
-struct Segment {
-    owner: Arc<Vec<Quad>>,
+struct Segment<T> {
+    owner: Arc<Vec<T>>,
     range: Range<usize>,
     end: usize,
 }
 
-impl Segment {
-    fn slice(&self) -> &[Quad] {
+impl<T> Segment<T> {
+    fn slice(&self) -> &[T] {
         &self.owner[self.range.clone()]
     }
     fn start(&self) -> usize {
@@ -31,20 +47,59 @@ impl Segment {
     }
 }
 
-#[derive(Default)]
-/// Sorted logical Quad storage backed by immutable payload segments and newly painted runs.
+/// Sorted logical primitive storage backed by immutable payload segments and newly painted runs.
 /// Segment boundaries do not change primitive indices or GPU ownership.
-pub(crate) struct QuadStream {
-    segments: Vec<Segment>,
-    pending: Vec<Quad>,
+pub(crate) struct PrimitiveStream<T: Ordered> {
+    segments: Vec<Segment<T>>,
+    pending: Vec<T>,
     len: usize,
 }
 
-impl QuadStream {
+/// Identity of immutable payload portions, without retaining their drawing data.
+/// Weak control blocks prevent allocation-address reuse from matching a retired source.
+pub(crate) struct PayloadIdentity<T> {
+    segments: Vec<(Weak<Vec<T>>, Range<usize>)>,
+}
+
+impl<T: Ordered> PayloadIdentity<T> {
+    pub(crate) fn matches(&self, stream: &PrimitiveStream<T>) -> bool {
+        stream.pending.is_empty()
+            && self.segments.len() == stream.segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(&stream.segments)
+                .all(|((owner, range), segment)| {
+                    owner.as_ptr() == Arc::as_ptr(&segment.owner) && *range == segment.range
+                })
+    }
+}
+
+impl<T: Ordered> Default for PrimitiveStream<T> {
+    fn default() -> Self {
+        Self {
+            segments: Vec::new(),
+            pending: Vec::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T: Ordered> PrimitiveStream<T> {
+    /// Unfinished mutable runs cannot serve as an immutable content identity.
+    pub(crate) fn identity(&self) -> Option<PayloadIdentity<T>> {
+        self.pending.is_empty().then(|| PayloadIdentity {
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| (Arc::downgrade(&segment.owner), segment.range.clone()))
+                .collect(),
+        })
+    }
     pub(crate) fn len(&self) -> usize {
         self.len
     }
-    pub(crate) fn push(&mut self, quad: Quad) {
+    pub(crate) fn push(&mut self, quad: T) {
         self.pending.push(quad);
         self.len += 1;
     }
@@ -71,18 +126,18 @@ impl QuadStream {
         }
         self.len = 0;
     }
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &Quad> {
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
         self.segments
             .iter()
             .flat_map(|segment| segment.slice().iter())
             .chain(self.pending.iter())
     }
-    pub(crate) fn last(&self) -> Option<&Quad> {
+    pub(crate) fn last(&self) -> Option<&T> {
         self.pending
             .last()
             .or_else(|| self.segments.last()?.slice().last())
     }
-    pub(crate) fn partition_point(&self, mut predicate: impl FnMut(&Quad) -> bool) -> usize {
+    pub(crate) fn partition_point(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
         let (mut first, mut end) = (0, self.len);
         while first < end {
             let middle = first + (end - first) / 2;
@@ -95,7 +150,7 @@ impl QuadStream {
         first
     }
     /// Borrows every contiguous payload portion in a logical sorted range.
-    pub(crate) fn slices(&self, range: Range<usize>) -> impl Iterator<Item = &[Quad]> {
+    pub(crate) fn slices(&self, range: Range<usize>) -> impl Iterator<Item = &[T]> {
         assert!(range.start <= range.end && range.end <= self.len);
         let first = self
             .segments
@@ -115,7 +170,7 @@ impl QuadStream {
             })
             .chain(pending)
     }
-    /// Append proven immutable source ranges; never clone or mutate their Quad payload.
+    /// Append proven immutable source ranges; never clone or mutate their primitive payload.
     pub(crate) fn share(&mut self, previous: &Self, range: Range<usize>) {
         assert!(previous.pending.is_empty(), "shared Paint must be finished");
         assert!(range.start <= range.end && range.end <= previous.len);
@@ -137,22 +192,30 @@ impl QuadStream {
             }
         }
     }
-    fn append(&mut self, owner: Arc<Vec<Quad>>, range: Range<usize>) {
+    fn append(&mut self, owner: Arc<Vec<T>>, range: Range<usize>) {
         let end = self.segments.last().map_or(0, |segment| segment.end) + range.len();
         self.len += range.len();
+        if let Some(previous) = self.segments.last_mut()
+            && Arc::ptr_eq(&previous.owner, &owner)
+            && previous.range.end == range.start
+        {
+            previous.range.end = range.end;
+            previous.end = end;
+            return;
+        }
         self.segments.push(Segment { owner, range, end });
     }
     fn freeze_pending(&mut self) {
         if !self.pending.is_empty() {
-            self.pending.sort_unstable_by_key(|quad| quad.order);
+            self.pending.sort_unstable_by_key(|quad| quad.order());
             let pending = std::mem::take(&mut self.pending);
             let count = pending.len();
-            // These Quads were already counted by push().
+            // These primitives were already counted by push().
             self.len -= count;
             self.append(Arc::new(pending), 0..count);
         }
     }
-    /// Sort only newly painted Quads, then merge immutable runs without rewriting old payload.
+    /// Sort only newly painted primitives, then merge immutable runs without rewriting old payload.
     pub(crate) fn finish(&mut self) {
         self.freeze_pending();
         if self.segments.windows(2).all(|pair| {
@@ -160,15 +223,15 @@ impl QuadStream {
                 .slice()
                 .last()
                 .expect("nonempty Paint segment")
-                .order
-                <= pair[1].slice()[0].order
+                .order()
+                <= pair[1].slice()[0].order()
         }) {
             return;
         }
         let mut sources = std::mem::take(&mut self.segments);
         let mut heads = BinaryHeap::new();
         for (index, segment) in sources.iter().enumerate() {
-            heads.push(Reverse((segment.slice()[0].order, index)));
+            heads.push(Reverse((segment.slice()[0].order(), index)));
         }
         self.len = 0;
         while let Some(Reverse((_, index))) = heads.pop() {
@@ -178,14 +241,14 @@ impl QuadStream {
                 .map_or(segment.range.len(), |Reverse((order, _))| {
                     segment
                         .slice()
-                        .partition_point(|quad| quad.order <= *order)
+                        .partition_point(|quad| quad.order() <= *order)
                         .max(1)
                 });
             let first = segment.range.start;
             self.append(Arc::clone(&segment.owner), first..first + count);
             segment.range.start += count;
             if !segment.range.is_empty() {
-                heads.push(Reverse((segment.slice()[0].order, index)));
+                heads.push(Reverse((segment.slice()[0].order(), index)));
             }
         }
     }
@@ -219,8 +282,8 @@ impl QuadStream {
             }
         }
     }
-    pub(super) fn cursor(&self) -> QuadCursor<'_> {
-        QuadCursor {
+    pub(super) fn cursor(&self) -> Cursor<'_, T> {
+        Cursor {
             stream: self,
             segment: 0,
             offset: 0,
@@ -228,9 +291,9 @@ impl QuadStream {
     }
 }
 
-impl Index<usize> for QuadStream {
-    type Output = Quad;
-    fn index(&self, index: usize) -> &Quad {
+impl<T: Ordered> Index<usize> for PrimitiveStream<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
         let segment = self
             .segments
             .partition_point(|segment| segment.end <= index);
@@ -242,13 +305,13 @@ impl Index<usize> for QuadStream {
     }
 }
 
-pub(super) struct QuadCursor<'a> {
-    stream: &'a QuadStream,
+pub(super) struct Cursor<'a, T: Ordered> {
+    stream: &'a PrimitiveStream<T>,
     segment: usize,
     offset: usize,
 }
 
-impl<'a> QuadCursor<'a> {
+impl<'a, T: Ordered> Cursor<'a, T> {
     pub(super) fn position(&self) -> usize {
         self.stream
             .segments
@@ -256,13 +319,13 @@ impl<'a> QuadCursor<'a> {
             .map_or(self.stream.len - self.stream.pending.len(), Segment::start)
             + self.offset
     }
-    pub(super) fn remaining(&self) -> &'a [Quad] {
+    pub(super) fn remaining(&self) -> &'a [T] {
         self.stream.segments.get(self.segment).map_or_else(
             || &self.stream.pending[self.offset..],
             |segment| &segment.slice()[self.offset..],
         )
     }
-    pub(super) fn peek(&self) -> Option<&'a Quad> {
+    pub(super) fn peek(&self) -> Option<&'a T> {
         self.remaining().first()
     }
     pub(super) fn advance(&mut self, count: usize) {

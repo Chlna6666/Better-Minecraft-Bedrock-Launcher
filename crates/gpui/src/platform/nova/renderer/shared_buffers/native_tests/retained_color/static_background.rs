@@ -22,6 +22,20 @@ pub(super) fn page(
         scene.pop_layer();
     }
     scene.pop_layer();
+    scene.push_layer(viewport);
+    for index in 0..32 {
+        scene.insert_primitive(crate::Shadow {
+            bounds: bounds(8. + (index % 3) as f32, 8., 48., 48.),
+            content_mask: crate::ContentMask::new(viewport),
+            blur_radius: crate::ScaledPixels(3.),
+            color: crate::Rgba {
+                a: 0.025,
+                ..crate::rgb(0x102030)
+            },
+            ..Default::default()
+        });
+    }
+    scene.pop_layer();
     if captured_foreground {
         popup(&mut scene, viewport);
     } else {
@@ -109,6 +123,62 @@ fn verify(backend: RendererBackend) {
     assert_eq!(
         crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
         0
+    );
+    // A new Paint generation shares real Shadow/operation allocations and
+    // preserves the static source through a foreground animation sample.
+    let prefix_end = unchanged.len() - 1;
+    let mut painter = crate::scene::Painter::default();
+    assert!(painter.replay(0..prefix_end, &unchanged, &[]));
+    painter.insert_animated_primitive(
+        quad(bounds(20., 20., 16., 16.), crate::rgb(0xff0000)),
+        crate::SceneAnimationId(1),
+    );
+    painter.finish();
+    painter.revision = 4;
+    assert_eq!(
+        &painter.shadows[0] as *const _,
+        &unchanged.shadows[0] as *const _
+    );
+    let shared_operation = unchanged
+        .paint_operations
+        .iter()
+        .position(|operation| {
+            matches!(
+                operation,
+                crate::scene::PaintOperation::Primitive(crate::Primitive::Shadow(_))
+            )
+        })
+        .expect("static shadow operation");
+    assert_eq!(
+        &painter.paint_operations[shared_operation] as *const _,
+        &unchanged.paint_operations[shared_operation] as *const _,
+    );
+    let replayed = Arc::new(crate::window::Paint::new(
+        painter.into_scene(),
+        Arc::default(),
+        Default::default(),
+    ));
+    let local = pixels(&mut renderer, &replayed, target, 0.8, [sample(0.2)], false);
+    assert_eq!(
+        crate::performance_metrics_snapshot().backdrop_blur_source_pixels,
+        0
+    );
+    assert_eq!(
+        renderer.frame_upload.shadows.len() / PACKED_SHADOW_BYTES,
+        32
+    );
+    assert_eq!(
+        renderer.frame_upload.reused_shadow_bytes,
+        32 * PACKED_SHADOW_BYTES
+    );
+    let full = pixels(&mut renderer, &direct, target, 0.2, [sample(0.2)], true);
+    assert_eq!(
+        local, full,
+        "shared Shadow source must match full rebuild on {backend}"
+    );
+    println!(
+        "persistent Shadow source gate backend={backend} cpu_shared_shadows=32 packed_reused_bytes={} source_pixels=0 pixels_equal=true",
+        32 * PACKED_SHADOW_BYTES
     );
     let changed = page(renderer.current_size, 3, crate::rgb(0x406080), false);
     let local = pixels(&mut renderer, &changed, target, 0.8, [sample(0.2)], false);

@@ -451,7 +451,7 @@ impl MetalRenderer {
 
         for batch in scene.batches() {
             let ok = match batch {
-                PrimitiveBatch::Shadows(shadows) => self.draw_shadows(
+                PrimitiveBatch::Shadows { shadows, .. } => self.draw_shadows(
                     shadows,
                     instance_buffer,
                     &mut instance_offset,

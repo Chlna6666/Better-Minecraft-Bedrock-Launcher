@@ -575,14 +575,16 @@ still propagate their own affected output.
 Qualified static Quad replay now shares immutable CPU payload ranges as well as
 Nova's existing packed GPU residency. Window retention supplies operation/Quad
 range proofs from its paired generation; Scene checks the current ordering
-prefix and Layer before sharing. Other replay still rebuilds its primitives.
-`QuadStream` replaces the flat Quad vector, sorts only new runs and merges their
-logical order without rewriting shared payload. Quad batches carry explicit
+prefix and Layer before sharing. Basic static Shadow replay can also share its
+complete typed range when the ordering prefix and current Layer agree; partial
+equal-order ranges, captures, animation and rebound orders use ordinary replay.
+`PrimitiveStream<Quad/Shadow>` replaces those flat vectors, sorts only new runs and merges their
+logical order without rewriting shared payload. Quad and Shadow batches carry explicit
 logical ranges and borrowed contiguous slices. Nova reads across slices while
 preserving draw-state runs, so CPU allocation boundaries add no GPU draws there.
 Blade and Metal retain their borrowed-slice batch interface.
 
-New Quad payload moves into immutable backing without a second boundary-copy.
+New Quad/Shadow payload moves into immutable backing without a second boundary-copy.
 Only sparse retained views are compacted to release unrelated old-page memory;
 all views of an allocation count toward that decision. Window owns qualification,
 the sparse replay index and its lifecycle; Scene holds drawing data, and Nova
@@ -597,6 +599,15 @@ requested operations, detaching shared edited subranges while leaving neighbouri
 payloads shared. Sparse operations use the same combined-owner coverage rule to
 release unrelated old-page memory. Sharing retains payload allocations, never an
 old Scene or an accumulating chain of Scene snapshots.
+
+Nova's sole FrameUpload can preserve its packed static Shadow buffer across new
+Paint generations when a weak payload identity proves the same immutable ranges.
+It then only rebuilds batch descriptors. The weak key retains no Paint data and
+cannot match a replacement allocation after retirement. Nested Element captures,
+animated Shadow, clipped/truncated packing or changed sources rebuild normally.
+Existing static signatures still hash the packed bytes and decide GPU uploads
+per FrameSlot; no GPU fence or physical-buffer initialization is bypassed. Partial
+Shadow content changes currently rebuild that packed stream, not only dirty chunks.
 
 Other primitives still rebuild on replay, and BoundsTree/prefix validation still
 visits operations. SceneSlot and the separate presentation snapshot were removed;

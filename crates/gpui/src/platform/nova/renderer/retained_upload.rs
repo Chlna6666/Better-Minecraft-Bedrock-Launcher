@@ -739,6 +739,7 @@ impl NovaRenderer {
         let mut signature_time = Duration::ZERO;
         let mut hashed_bytes = 0usize;
         if reusable {
+            self.frame_upload.reused_shadow_bytes = 0;
             summary.retained_chunk_hits = 0;
             summary.retained_chunk_misses = 0;
             summary.retained_chunk_reused_bytes = 0;
@@ -800,7 +801,7 @@ impl NovaRenderer {
             }
             log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI color retention result: scene_revision={} static_prefix_candidate={} static_prefix_captured={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={}",
+                "GPUI color retention result: scene_revision={} static_prefix_candidate={} static_prefix_captured={} retained_root={} kept_root={} full_redraw_fallback={} renderer_extensions={} unsupported_batches={} reused_shadow_bytes={}",
                 scene.revision,
                 auto_background.is_some(),
                 captured_static_prefix,
@@ -809,6 +810,7 @@ impl NovaRenderer {
                 crate::paint::requires_full_redraw_fallback(scene),
                 self.frame_upload.renderer_extensions.len(),
                 summary.unsupported_batches.total(),
+                self.frame_upload.reused_shadow_bytes,
             );
             // BeginBlur/EndBlur topology is a pure function of the static flattened batch stream.
             // Parse it once here and reuse the retained slice throughout target planning, present

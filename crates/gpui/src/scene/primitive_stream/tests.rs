@@ -17,13 +17,13 @@ fn quad(order: u32) -> Quad {
 
 #[test]
 fn immutable_runs_merge_with_new_orders_without_copying_shared_payload() {
-    let mut previous = QuadStream::default();
+    let mut previous = PrimitiveStream::default();
     for order in [1, 3, 5, 7] {
         previous.push(quad(order));
     }
     previous.finish();
     let original = &previous[0] as *const Quad;
-    let mut current = QuadStream::default();
+    let mut current = PrimitiveStream::default();
     current.share(&previous, 0..4);
     for order in [8, 2, 4, 6] {
         current.push(quad(order));
@@ -54,12 +54,12 @@ fn immutable_runs_merge_with_new_orders_without_copying_shared_payload() {
 #[test]
 fn every_segmented_range_matches_a_flat_sorted_reference() {
     for count in 0..=12 {
-        let mut previous = QuadStream::default();
+        let mut previous = PrimitiveStream::default();
         for index in 0..count {
             previous.push(quad(index * 2));
         }
         previous.finish();
-        let mut current = QuadStream::default();
+        let mut current = PrimitiveStream::default();
         current.share(&previous, 0..previous.len());
         let mut expected: Vec<_> = (0..count).map(|index| index * 2).collect();
         for order in [9, 1, 5, 3, 3] {
@@ -84,7 +84,7 @@ fn every_segmented_range_matches_a_flat_sorted_reference() {
 
 #[test]
 fn new_quad_between_shared_ranges_keeps_equal_layer_order() {
-    let mut previous = QuadStream::default();
+    let mut previous = PrimitiveStream::default();
     let marker = |position| Quad {
         bounds: bounds(
             point(ScaledPixels(position), ScaledPixels(0.)),
@@ -95,7 +95,7 @@ fn new_quad_between_shared_ranges_keeps_equal_layer_order() {
     previous.push(marker(1.));
     previous.push(marker(3.));
     previous.finish();
-    let mut current = QuadStream::default();
+    let mut current = PrimitiveStream::default();
     current.share(&previous, 0..1);
     current.push(marker(2.));
     current.share(&previous, 1..2);
@@ -114,7 +114,7 @@ fn new_quad_between_shared_ranges_keeps_equal_layer_order() {
 
 #[test]
 fn new_paint_stays_owned_and_sparse_ranges_release_unrelated_page() {
-    let mut previous = QuadStream::default();
+    let mut previous = PrimitiveStream::default();
     for order in 1..=1024 {
         previous.push(quad(order));
     }
@@ -127,7 +127,7 @@ fn new_paint_stays_owned_and_sparse_ranges_release_unrelated_page() {
         &previous[0] as *const Quad, original,
         "new payload must not be copied to manufacture Chunk boundaries"
     );
-    let mut current = QuadStream::default();
+    let mut current = PrimitiveStream::default();
     current.share(&previous, 0..32);
     current.finish();
     current.compact();
@@ -230,9 +230,147 @@ fn new_shadow_barrier_keeps_shared_and_new_quad_batches_in_painter_order() {
         .batches()
         .map(|batch| match batch {
             PrimitiveBatch::Quads { quads, .. } => (0, quads.len()),
-            PrimitiveBatch::Shadows(shadows) => (1, shadows.len()),
+            PrimitiveBatch::Shadows { shadows, .. } => (1, shadows.len()),
             _ => panic!("unexpected fixture primitive"),
         })
         .collect();
     assert_eq!(kinds, [(0, 32), (1, 1), (0, 1)]);
+}
+
+fn shadow(x: f32) -> crate::Shadow {
+    let quad = quad(0);
+    crate::Shadow {
+        bounds: bounds(point(ScaledPixels(x), ScaledPixels(0.)), quad.bounds.size),
+        content_mask: ContentMask::new(bounds(
+            point(ScaledPixels(0.), ScaledPixels(0.)),
+            size(ScaledPixels(640.), ScaledPixels(480.)),
+        )),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn shadow_replay_shares_operations_and_typed_payload_after_source_release() {
+    let mut previous = crate::scene::Painter::default();
+    for x in 0..32 {
+        previous.insert_primitive(shadow(x as f32));
+    }
+    previous.finish();
+    let payload = &previous.shadows[0] as *const crate::Shadow;
+    let operation = &previous.paint_operations[0] as *const _;
+    let mut current = crate::scene::Painter::default();
+    assert!(current.replay(0..previous.len(), &previous, &[]));
+    current.finish();
+    assert_eq!(&current.shadows[0] as *const _, payload);
+    assert_eq!(&current.paint_operations[0] as *const _, operation);
+    previous.clear();
+    assert_eq!(current.shadows.len(), 32);
+    assert_eq!(current.shadows[31].bounds.origin.x, ScaledPixels(31.));
+    assert_eq!(
+        current.prepared_batches(),
+        &[crate::PreparedSceneBatch::Shadows(0..32)]
+    );
+}
+
+#[test]
+fn shadow_replay_rebinds_changed_prefix_and_partial_equal_order_ranges() {
+    let mut previous = crate::scene::Painter::default();
+    let layer = shadow(0.).content_mask.bounds;
+    previous.push_layer(layer);
+    for x in 0..32 {
+        previous.insert_primitive(shadow(x as f32));
+    }
+    previous.pop_layer();
+    previous.finish();
+    let mut current = crate::scene::Painter::default();
+    current.push_layer(layer);
+    assert!(current.replay(1..17, &previous, &[]));
+    current.pop_layer();
+    current.finish();
+    assert_eq!(current.shadows.len(), 16);
+    assert_ne!(
+        &current.shadows[0] as *const _,
+        &previous.shadows[0] as *const _
+    );
+    let mut changed = crate::scene::Painter::default();
+    changed.insert_primitive(quad(0));
+    assert!(!changed.replay(0..previous.len(), &previous, &[]));
+    changed.finish();
+    assert_ne!(
+        &changed.shadows[0] as *const _,
+        &previous.shadows[0] as *const _
+    );
+}
+
+#[test]
+fn shadow_segments_preserve_equal_order_insertion_and_share_no_animation() {
+    let mut previous = PrimitiveStream::default();
+    previous.push(shadow(1.));
+    previous.push(shadow(3.));
+    previous.finish();
+    let mut current = PrimitiveStream::default();
+    current.share(&previous, 0..1);
+    current.push(shadow(2.));
+    current.share(&previous, 1..2);
+    current.finish();
+    current.compact();
+    assert_eq!(
+        current
+            .iter()
+            .map(|shadow| shadow.bounds.origin.x.0)
+            .collect::<Vec<_>>(),
+        [1., 2., 3.]
+    );
+    let mut animated = crate::scene::Painter::default();
+    animated.insert_animated_primitive(shadow(0.), crate::SceneAnimationId(7));
+    animated.finish();
+    let mut replayed = crate::scene::Painter::default();
+    assert!(replayed.replay(0..animated.len(), &animated, &[]));
+    replayed.finish();
+    assert_ne!(
+        &replayed.shadows[0] as *const _,
+        &animated.shadows[0] as *const _
+    );
+    assert_eq!(
+        replayed.shadows[0].animation_id,
+        Some(crate::SceneAnimationId(7))
+    );
+}
+
+#[test]
+fn weak_payload_identity_normalizes_ranges_without_pinning_retired_paint() {
+    let mut previous = PrimitiveStream::default();
+    for x in 0..32 {
+        previous.push(shadow(x as f32));
+    }
+    previous.finish();
+    let identity = previous.identity().expect("finished stream");
+    let mut current = PrimitiveStream::default();
+    current.share(&previous, 0..16);
+    current.share(&previous, 16..32);
+    current.finish();
+    assert!(
+        identity.matches(&current),
+        "adjacent logical views share the same payload"
+    );
+    previous.clear();
+    assert!(identity.matches(&current));
+    current.clear();
+    assert_eq!(
+        identity.segments[0].0.strong_count(),
+        0,
+        "identity must not keep Paint alive"
+    );
+    for x in 0..32 {
+        current.push(shadow(x as f32));
+    }
+    assert!(
+        !identity.matches(&current),
+        "pending/mutable runs have no immutable identity"
+    );
+    current.finish();
+    assert!(
+        !identity.matches(&current),
+        "replacement allocation must never match a retired control block"
+    );
 }
