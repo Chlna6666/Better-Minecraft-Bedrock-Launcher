@@ -43,7 +43,7 @@ impl FrameUpload {
             self.backdrop_blur_passes.capacity(),
             self.backdrop_blurs.capacity(),
             self.backdrop_blur_configs.capacity() * std::mem::size_of::<BackdropBlurConfig>(),
-            self.blur_content_ranges_cache.capacity() * std::mem::size_of::<BlurContentRange>(),
+            self.blur_content_ranges_cache.capacity() * std::mem::size_of::<ColorContentRange>(),
             self.isolated_blur_source_indices_cache.capacity() * std::mem::size_of::<u32>(),
             self.backdrop_source_atlas_texture_ids_cache.capacity()
                 * std::mem::size_of::<AtlasTextureId>(),

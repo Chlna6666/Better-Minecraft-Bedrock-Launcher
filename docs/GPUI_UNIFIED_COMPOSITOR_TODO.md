@@ -18,7 +18,7 @@
 | **P0-03** | P0 · **DX12 UI Trace 已采到；事件因果链未闭环** | **同一次实验的时间线闭环**：将 UI Dropdown 打开/收起、Re-target、页面切换、Frame Request 的原因、`static_prefix_captured`、`auto_static_relocation`、`GPUI AutoStatic submitted`、Draw/Present 按 `window_id` / scene revision / 事件顺序关联；确认 `src/ui/components/dropdown.rs` 与 `dropdown_overlay.rs` 现存 `tracing::trace!` **不会仅凭 `gpui::diagnostics=trace` 自动进入日志**，补安全的 UI 侧定向 Trace 或关联字段，不全局开启所有库 trace | P0-01/02；一份可复现完整 Trace + 帧事件对照，保留低开销默认关闭语义 |
 | **P0-04** | P0 · **AutoStatic 四后端合成像素/静态复用通过；真实 Dropdown Capture 待验证** | **AutoStatic 静态前缀真缓存命中**：公共 Dropdown 连续展开/回收与首页版本下拉 A/B；记录 `static_prefix_captured=true`、成功 Present 后 `source_index=Some`、稳定动画帧 `refreshed_layers=0`、`source_draw_steps=0`，且 `native_view/content_version` 无故不变更；失效/Resize 首帧允许必要重绘 | P0-01～03；逐帧结果及截图，不能把 “Capture candidate” 误报为真实 GPU 缓存命中；涉及 `renderer/{retained_upload,present,filters}.rs` |
 | **P0-05** | P0 · **新增同规格 Gaussian 跨索引物理复用源码；原生测试待执行，容量超限仍重建** | **Filter Target 高水位复用**：Gaussian/Root/Element + AutoStatic 混合，预热 3→4→6 后连续 6→3→4→6；`active_isolated/allocated_isolated`、`layout reused/recreated`、物理 View、ResourceSet、Filter 输出内容版本一起核验；新 Slot、资源变化必须重绘而非采样旧像素 | P0-01～04；容量以内不应每次重新 create/destroy 全链；容量以外可重建；必须校验异步 Fence / GPU in-flight / 多窗口 / Blur on/off |
-| **P0-06** | P0 · **Window GPU Owner、独立内容版本与 Root Graph Pass 已实现；旧上传描述待迁移** | **完成 Root 逻辑描述迁移**：物理 Texture/ResourceSet 已不由 Filter 链创建或退休；继续迁移 `retained_root_blur`/零半径 Variant 的正式消费者后删除该描述。Root 的 Fence 退休、FrameSlot descriptor 重绑仍沿唯一 Window GPU 提交顺序执行 | 四后端原生 Filter 链重建 gate 已确认 Root Texture/ResourceSet 均不重建且像素相同；其余编译/回归证据见本轮记录。不要新增第二张 Root 缓存或版本 Owner |
+| **P0-06** | P0 · **独立 Window GPU Owner、内容版本、Root Pass 与正式消费者已迁移；四后端像素回归通过** | **跟踪独立 Root 损伤与增量 Paint 消费**：已删除 `retained_root_blur`、借用 Variant、Root Filter scope 和链内资源引用。`root_color` 显式描述 Root source/final composite，FrameSlot/Fence 仍由唯一 Window GPU 提交顺序保护 | 四后端原生 Filter 链重建 gate 确认 Root Texture/ResourceSet 均不重建且像素相同；全量 Scene 编码与实际应用性能矩阵仍未完成，不新增第二张 Root 缓存或版本 Owner |
 | **P0-07** | P0 · **四后端共用 Scene Capture 损伤扩散源码已补；导航/首页动画与模糊 GPU 成本仍待四后端原生验收** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
 | **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
@@ -48,6 +48,14 @@
 - 尚未删除：上传流中的 `retained_root_blur`、借用的零半径 Variant、SceneSlot / Scene Snapshot 主通路。它们仍有生产消费者，本轮未以兼容 Wrapper 替换其语义，也未把完整重构标为完成。
 - 全 feature 消费者检查额外发现 Benchmark 上传缺少 Retained Paint 参数、布局 Benchmark 缺少 identity 参数；已补齐调用，继续执行 test/bench no-run 验证。
 - 最新本地验证：`cargo check --workspace --no-default-features`、`cargo check -p bmcbl --lib --locked`、`cargo test -p gpui --all-features --no-run` 通过。该 all-features 测试产物运行 437 个唯一的定向测试、24 个四后端原生像素用例，全部通过。全 workspace fmt check 仍因已有无关差异失败，未批量格式化其它模块。
+
+### 2026-10-16 Root 正式消费者迁移（接续 `4fce533e`）
+
+- 已删除 `FrameUpload.retained_root_blur`、Root Begin/EndBlur 标记、借用 Root Variant、Filter 链内 Root Texture/View/ResourceSet 引用及兼容重绑入口。`RootColorPass` 只记录 source range、clear primitive 与最终 compositor 描述；共享 shader ABI 不再意味着 Root 属于 Filter。
+- Root-only 窗口无需创建空 Filter 链；Root source 与最终 Present 分别读取明确范围，防止删除 Capture 标记后重复栅格化。Graph 对 resident ElementColor 声明读取依赖，不为读取缓存再添加 Element raster pass。
+- Filter layout 只规划真实 Filter，先保留精确匹配，再复用同规格空闲目标；逻辑源有效性仍由 Filter Registry 验证。移除只验证旧 Root Variant 的用例，保留真实跨索引/参数失效及非破坏性失败验证。
+- 当前源码本地验证：workspace no-default check、bmcbl lib locked check、GPUI 指定 manifest features check、四后端 GPUI test-target check、全 features test no-run 通过；436 项唯一的定向测试通过（其中 Nova 316，27 ignored）；四后端各 6 项原生像素回归共 24 通过，包含 Filter 链重建而 Root 资源不变的 gate。workspace fmt check 因已有无关差异失败；未批量格式化。未测量 GPU Timestamp 前后差异，不能据此报告 GPU 占用降低。
+- 第 5 步仍未完成：CachedView replay 逐项复制 PaintOperation/Primitive，finish 全量排序及 Batch 整理，encoder 仍要求扁平类型数组。下一步必须让唯一 Paint 表示支持持久只读 chunk，并迁移 DrawOrder、闭合 Capture、全部 Batch/encoder 消费者；不能把 Arc clone 优化或既有 animation-only 缓存命中当作增量协议。
 
 第 5 步当前生产者/消费者清单（删除前的功能门槛）：
 

@@ -396,7 +396,7 @@ impl NovaRenderer {
             self.submitted_frames,
             self.live_resize_active,
             self.swapchain_warmup_frames,
-            self.frame_upload.retained_root_blur.is_some(),
+            self.frame_upload.root_color.is_some(),
             self.frame_upload.element_blur_inputs.len(),
             packet.sampled_active_presentation_animation,
             packet.presentation_animation_timelines.len(),
@@ -540,10 +540,7 @@ impl NovaRenderer {
     /// rebind; none of the Gaussian/filter source pixels are inherited.
     fn root_color_reuse_eligible(&self) -> bool {
         self.filters.is_valid()
-            && self.filters.targets.as_ref().is_some_and(|targets| {
-                targets.can_preserve_root_color_capture()
-                    && self.root_color.resident_on(targets.root_color_texture_identity())
-            })
+            && self.root_color.resident_on(self.root_color.identity())
             && !present::has_root_backdrop_blurs(&self.frame_upload)
             && self.frame_upload.backdrop_blur_configs().iter()
                 .all(|config| config.radius() == 0.0)
@@ -554,13 +551,12 @@ impl NovaRenderer {
     /// when the popup changes packed Capture order or active target count.
     fn auto_static_layout_reuse_eligible(&self) -> bool {
         self.filters.is_valid()
-            && self.frame_upload.retained_root_blur.is_none()
+            && self.frame_upload.root_color.is_none()
             && !present::has_root_backdrop_blurs(&self.frame_upload)
             && self.frame_upload.backdrop_blur_configs().iter()
                 .all(|config| config.radius() == 0.0)
             && self.filters.targets.as_ref().is_some_and(|targets| {
-                targets.retained_root_variant.is_none()
-                    && targets.source.is_none()
+                targets.source.is_none()
                     && targets.isolated_sources.is_empty()
                     && targets.variants.iter().take(targets.active_variant_count)
                         .all(|variant| variant.config.radius() == 0.0)
@@ -595,14 +591,14 @@ impl NovaRenderer {
 
     fn ensure_backdrop_blur_targets(&mut self) -> Result<()> {
         self.ensure_root_color()?;
+        if self.frame_upload.backdrop_blur_configs().is_empty() && self.filters.targets.is_none() {
+            return Ok(());
+        }
         if self.filters.targets.as_ref().is_some_and(|targets| {
             targets.is_layout_compatible(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
                 present::has_root_backdrop_blurs(&self.frame_upload),
-            ) && targets.root_capture_is_compatible(
-                self.frame_upload.backdrop_blur_configs(),
-                self.frame_upload.retained_root_blur,
             )
         }) {
             return Ok(());
@@ -622,10 +618,6 @@ impl NovaRenderer {
         if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
             self.wait_for_pending_submissions()?;
         }
-        let root_needs_allocation = self.frame_upload.retained_root_blur.is_some()
-            && self.filters.targets.as_ref().is_some_and(|targets| {
-                targets.root_binding.is_none()
-            });
         let root_eligible = self.root_color_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
         let auto_static_indices = auto_static_eligible.then(|| {
@@ -636,12 +628,11 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        if !root_needs_allocation && self.filters.targets.as_mut().is_some_and(|targets| {
+        if self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
                 present::has_root_backdrop_blurs(&self.frame_upload),
-                self.frame_upload.retained_root_blur,
                 auto_static_indices,
             )
         }) {
@@ -649,9 +640,7 @@ impl NovaRenderer {
             // its flattened member index changed. All OTHER capture versions
             // become untrusted and are individually rebuilt on first use.
             let preserve_root_color = root_eligible
-                && self.filters.targets.as_ref().is_some_and(|targets| {
-                    self.root_color.resident_on(targets.root_color_texture_identity())
-                });
+                && self.root_color.resident_on(self.root_color.identity());
             if preserve_root_color || auto_static_eligible {
                 self.preserve_rebound_element_sources(&previous_capture_views);
             } else {
@@ -671,52 +660,14 @@ impl NovaRenderer {
                 self.filters.targets.as_ref().expect("reused targets exist").isolated_sources.len());
             return Ok(());
         }
-        // For zero-radius capture-only layouts, a popup can change the number
-        // and flattened order of captures without changing texture dimensions.
-        // Rebind warmed texture slots instead of destroying the whole target chain.
-        // Old Filter captures lose their flattened index identity. The root
-        // color may keep its pixels only if its native view still matches;
-        // every other capture must be rebuilt before it can be sampled.
-        if !root_needs_allocation && self.filters.targets.as_mut().is_some_and(|targets| {
-            targets.rebind_zero_radius_layout(
-                self.frame_upload.backdrop_blur_configs(),
-                present::has_root_backdrop_blurs(&self.frame_upload),
-                self.frame_upload.retained_root_blur,
-                auto_static_indices,
-            )
-        }) {
-            let preserve_root_color = root_eligible
-                && self.filters.targets.as_ref().is_some_and(|targets| {
-                    self.root_color.resident_on(targets.root_color_texture_identity())
-                });
-            if preserve_root_color || auto_static_eligible {
-                self.preserve_rebound_element_sources(&previous_capture_views);
-            } else {
-                self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
-                self.invalidate_backdrop_blur_cache();
-            }
-            self.invalidate_draw_step_cache();
-            log::debug!(
-                target: "gpui::diagnostics",
-                "GPUI zero-radius retained target layout rebound: root_color_preserved={} auto_static_eligible={} auto_static_relocation={:?} root_content_version={:?} active_variants={} active_isolated={} allocated_isolated={}",
-                preserve_root_color,
-                auto_static_eligible,
-                auto_static_indices,
-                self.root_color.content_version(),
-                self.frame_upload.backdrop_blur_configs().len(),
-                self.filters.targets.as_ref().map_or(0, |targets| targets.active_isolated_source_count),
-                self.filters.targets.as_ref().map_or(0, |targets| targets.isolated_sources.len()),
-            );
-            return Ok(());
-        }
         log::debug!(
             target: "gpui::diagnostics",
             "GPUI retained target recreation required: requested_variants={} previous_allocated={} previous_active={} previous_root={:?} requested_root={:?} old_root_source={} requested_root_source={} old_isolated={} allocated_isolated={} requested_isolated={} in_flight={}",
             self.frame_upload.backdrop_blur_configs().len(),
             self.filters.targets.as_ref().map_or(0, |targets| targets.variants.len()),
             self.filters.targets.as_ref().map_or(0, |targets| targets.active_variant_count),
-            self.filters.targets.as_ref().and_then(|targets| targets.retained_root_variant),
-            self.frame_upload.retained_root_blur,
+            self.root_color.identity(),
+            self.frame_upload.root_color.map(|root| root.index),
             self.filters.targets.as_ref().is_some_and(|targets| targets.source.is_some()),
             present::has_root_backdrop_blurs(&self.frame_upload),
             self.filters.targets.as_ref().map_or(0, |targets| targets.active_isolated_source_count),
@@ -822,18 +773,6 @@ impl NovaRenderer {
                 anyhow::bail!("nova-gfx renderer requires an explicit nova-gfx backend feature")
             }
         };
-        // Creation resolves the Root physical owner and its logical slot in
-        // one transaction. Never patch the slot here: doing so could attach a
-        // borrowed Filter descriptor to a different native allocation.
-        debug_assert_eq!(
-            next_backdrop_blur_targets.retained_root_variant,
-            self.frame_upload.retained_root_blur.and_then(|index| {
-                next_backdrop_blur_targets.variants.iter().position(|variant| {
-                    variant.config.contains_member_index(index)
-                        && variant.config.radius() == 0.0
-                })
-            }),
-        );
         log::debug!(target: "gpui::diagnostics",
             "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={}",
             next_backdrop_blur_targets.active_variant_count,
@@ -883,7 +822,7 @@ impl NovaRenderer {
                 self.submitted_frames,
                 self.live_resize_active,
                 self.swapchain_warmup_frames,
-                self.frame_upload.retained_root_blur.is_some(),
+                self.frame_upload.root_color.is_some(),
                 self.frame_upload.element_blur_inputs.len(),
                 packet.sampled_active_presentation_animation,
                 packet.presentation_animation_timelines.len(),
@@ -1114,7 +1053,7 @@ impl NovaRenderer {
     /// accompanying View commit. Repair the root retained-color damage after
     /// the packed animation values are known, and before GPU Pass planning.
     fn reconcile_gpu_layer_animation_damage(&mut self, packet: &mut PresentationPacket) {
-        if self.frame_upload.retained_root_blur.is_none() || !self.filters.is_valid() {
+        if self.frame_upload.root_color.is_none() || !self.filters.is_valid() {
             return;
         }
         let damage = crate::paint::gpu_sample_damage(

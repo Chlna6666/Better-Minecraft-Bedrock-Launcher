@@ -266,6 +266,10 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
 }
 
 pub(super) fn has_root_backdrop_blurs(frame_upload: &FrameUpload) -> bool {
+    if frame_upload.root_color.is_some() {
+        // Window backdrop barriers are executed inside the Root source pass.
+        return false;
+    }
     let mut element_depth = 0usize;
     for batch in &frame_upload.batches {
         match batch {
@@ -550,7 +554,7 @@ impl NovaRenderer {
             && (packet.force_full_backdrop_blur_refresh
                 || packet.backdrop_blur_damage_plan.refresh_required()
                 || shared_blur_cache_invalid);
-        let dirty_element_indices = dirty_element_blur_indices(
+        let mut dirty_element_indices = dirty_element_blur_indices(
             &self.frame_upload,
             &packet.dirty_region,
             &self.filters,
@@ -560,6 +564,14 @@ impl NovaRenderer {
             shared_blur_cache_invalid || packet.force_full_backdrop_blur_refresh,
         );
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
+        if let Some(root) = self.frame_upload.root_color
+            && (self.root_color.content_version().is_none()
+                || !packet.dirty_region.is_empty()
+                || shared_blur_cache_invalid
+                || packet.force_full_backdrop_blur_refresh)
+        {
+            dirty_element_indices.push(root.index);
+        }
         if backdrop_blur_refresh_required || element_blur_refresh_required {
             self.filters.begin_refresh();
         }
@@ -578,7 +590,7 @@ impl NovaRenderer {
         // Native dirty-rect presentation and retained scene-color damage are
         // independent. Vulkan cannot trust rotating backbuffer contents, but
         // it can still scissor the retained offscreen scene before a full present.
-        let retained_partial = self.frame_upload.retained_root_blur.is_some()
+        let retained_partial = self.frame_upload.root_color.is_some()
             && !packet.dirty_region.is_full()
             && !packet.dirty_region.is_empty();
         if present_damage.is_some() || retained_partial {
@@ -596,17 +608,17 @@ impl NovaRenderer {
             Vec::new()
         };
         let element_blur_layers = self.prepare_color_layers(&dirty_element_indices);
-        let root_scene_color_cached = self.frame_upload.retained_root_blur.is_some();
+        let root_scene_color_cached = self.frame_upload.root_color.is_some();
         let root_scene_color_refreshes = element_blur_layers
             .iter()
-            .filter(|layer| Some(layer.index) == self.frame_upload.retained_root_blur)
+            .filter(|layer| Some(layer.index) == self.frame_upload.root_color.map(|root| root.index))
             .count();
         // Unlike the main swapchain pass count, this measures actual root
         // source geometry replay after batch-level culling. Useful for
         // verifying that a small animation no longer replays static chrome.
         let retained_root_draw_steps: usize = element_blur_layers
             .iter()
-            .filter(|layer| Some(layer.index) == self.frame_upload.retained_root_blur)
+            .filter(|layer| Some(layer.index) == self.frame_upload.root_color.map(|root| root.index))
             .flat_map(|layer| &layer.source_groups)
             .map(|group| group.source_steps.len())
             .sum();
@@ -617,7 +629,7 @@ impl NovaRenderer {
             .saturating_add(
                 element_blur_layers
                     .iter()
-                    .filter(|layer| Some(layer.index) != self.frame_upload.retained_root_blur)
+                    .filter(|layer| Some(layer.index) != self.frame_upload.root_color.map(|root| root.index))
                     .flat_map(|layer| &layer.source_groups)
                     .map(|group| group.source_steps.len())
                     .sum::<usize>(),
@@ -654,7 +666,7 @@ impl NovaRenderer {
         let mut path_mask_cpu_elapsed = Duration::ZERO;
         let (root_color_layers, element_blur_layers): (Vec<_>, Vec<_>) =
             element_blur_layers.into_iter().partition(|layer| {
-                Some(layer.index) == self.frame_upload.retained_root_blur
+                Some(layer.index) == self.frame_upload.root_color.map(|root| root.index)
             });
         let root_access = if !root_scene_color_cached {
             super::frame_graph::RootColorAccess::Absent
@@ -668,6 +680,7 @@ impl NovaRenderer {
             element_blur_layers.len(),
             backdrop_blur_groups.len(),
             root_access,
+            has_element_blurs,
         );
         let mask_pass_count = usize::from(graph.requires(GraphPass::PathMask));
         let main_pass_count = usize::from(graph.requires(GraphPass::MainPresent));
@@ -1504,8 +1517,7 @@ impl NovaRenderer {
                 element_blur_layers.iter().map(|layer| layer.index),
             );
             let native_root = root_scene_color_cached
-                .then(|| self.filters.targets.as_ref()
-                    .and_then(BackdropBlurTargets::root_color_texture_identity))
+                .then(|| self.root_color.identity())
                 .flatten();
             self.root_color.record_present(
                 native_root,
@@ -1568,7 +1580,7 @@ impl NovaRenderer {
             );
         }
         self.swapchain_warmup_frames = self.swapchain_warmup_frames.saturating_sub(1);
-        if self.frame_upload.retained_root_blur.is_some() {
+        if self.frame_upload.root_color.is_some() {
             let pixels = self.drawable_pixels();
             crate::diagnostics::performance_metrics::record_retained_present(
                 pixels,
@@ -1685,7 +1697,7 @@ impl NovaRenderer {
 #[cfg(test)]
 mod per_layer_damage_tests {
     use super::{
-        BlurContentRange, FilterRegistry, FilterSource, FrameUpload, TextureViewId,
+        ColorContentRange, FilterRegistry, FilterSource, FrameUpload, TextureViewId,
         UploadedBatch, dirty_element_blur_indices, has_root_backdrop_blurs,
         source_pass_required,
     };
@@ -1693,7 +1705,7 @@ mod per_layer_damage_tests {
     #[test]
     fn auto_static_source_detects_changes_without_window_damage() {
         let mut frame = FrameUpload::default();
-        frame.blur_content_ranges_cache.push(BlurContentRange {
+        frame.blur_content_ranges_cache.push(ColorContentRange {
             index: 2,
             depth: 0,
             content_start: 0,
@@ -1734,7 +1746,7 @@ mod per_layer_damage_tests {
     #[test]
     fn auto_static_relocation_with_identical_native_view_skips_source_redraw() {
         let mut frame = FrameUpload::default();
-        frame.blur_content_ranges_cache.push(BlurContentRange {
+        frame.blur_content_ranges_cache.push(ColorContentRange {
             index: 5,
             depth: 0,
             content_start: 0,
@@ -1786,7 +1798,7 @@ mod per_layer_damage_tests {
     #[test]
     fn isolated_source_damage_does_not_depend_on_window_damage() {
         let mut frame = FrameUpload::default();
-        frame.blur_content_ranges_cache.push(BlurContentRange {
+        frame.blur_content_ranges_cache.push(ColorContentRange {
             index: 7,
             depth: 0,
             content_start: 0,

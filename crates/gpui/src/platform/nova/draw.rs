@@ -109,6 +109,15 @@ pub(super) fn draw_steps_for_upload_into_clipped(
     steps: &mut Vec<RenderStepDescriptor>,
 ) {
     steps.clear();
+    // Root source batches execute in the independent offscreen pass. Final
+    // presentation samples only its compositor descriptor, with no Filter scope markers.
+    let mode = match (mode, upload.root_color) {
+        (DrawStepMode::Present, Some(root)) => DrawStepMode::BackdropSegment {
+            batch_start: root.content_end,
+            batch_end: root.content_end + 1,
+        },
+        _ => mode,
+    };
     steps.reserve(upload.batches.len().saturating_add(1));
     let mut blur_depth = 0usize;
     for (batch_index, batch) in upload.batches.iter().enumerate() {

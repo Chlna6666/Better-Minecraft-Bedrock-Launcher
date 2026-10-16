@@ -142,11 +142,10 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) backdrop_blur_configs: Vec<BackdropBlurConfig>,
     /// Captured filter sources in packed blur-index order, including AutoStatic.
     pub(in crate::platform::nova) element_blur_inputs: Vec<(u32, FilterSource)>,
-    /// Synthetic zero-filter root compositor, stored in the existing retained blur targets.
-    pub(in crate::platform::nova) retained_root_blur: Option<u32>,
-    /// One immutable transparent quad used as a Replace-blend rect clear.
-    pub(in crate::platform::nova) retained_root_clear_quad: Option<u32>,
-    pub(in crate::platform::nova) blur_content_ranges_cache: Vec<BlurContentRange>,
+    /// Independent window color pass; only its final descriptor shares the compositor shader ABI.
+    pub(in crate::platform::nova) root_color: Option<RootColorPass>,
+    /// Real Element Filter ranges, sorted deepest first; excludes the Window Root pass.
+    pub(in crate::platform::nova) blur_content_ranges_cache: Vec<ColorContentRange>,
     pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
     pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:
         Arc<FxHashSet<AtlasTextureId>>,

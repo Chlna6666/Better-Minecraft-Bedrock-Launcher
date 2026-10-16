@@ -87,7 +87,7 @@ impl NovaRenderer {
                     },
                     self.underline_resource_set,
                     |config| {
-                        backdrop_blur_targets?.resource_set_for_config(config, frame_resource_index, self.root_color.target.as_ref())
+                        root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), backdrop_blur_targets, config, frame_resource_index)
                     },
                     DrawStepMode::Present,
                     steps,
@@ -301,7 +301,7 @@ impl NovaRenderer {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
                 self.underline_resource_set,
-                |config| targets.resource_set_for_config(config, frame_resource_index, self.root_color.target.as_ref()),
+                |config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), Some(targets), config, frame_resource_index),
                 DrawStepMode::BackdropSegment {
                     batch_start,
                     batch_end,
@@ -383,9 +383,7 @@ impl NovaRenderer {
         if dirty_indices.is_empty() {
             return Vec::new();
         }
-        let Some(targets) = self.filters.targets.as_ref() else {
-            return Vec::new();
-        };
+        let targets = self.filters.targets.as_ref();
         let blend_pipelines = self.current_blend_pipelines();
         let frame_resource_index = self.current_frame_resource_index;
         let gpu_atlas_textures = &self.gpu_atlas_textures;
@@ -398,7 +396,8 @@ impl NovaRenderer {
         };
         let mut layers = Vec::new();
 
-        for range in self.frame_upload.blur_content_ranges() {
+        let root_range = self.frame_upload.root_color.map(RootColorPass::content_range);
+        for range in self.frame_upload.blur_content_ranges().iter().chain(root_range.as_ref()) {
             // The input-dependency check already selected exactly which filter
             // outputs need rebuilding. Skip clean layers BEFORE creating their
             // source draw steps, resource-set bindings and Gaussian pass lists.
@@ -420,14 +419,17 @@ impl NovaRenderer {
                 continue;
             };
 
-            let direct_composite_target =
-                targets.direct_composite_target(config, frame_resource_index, self.root_color.target.as_ref());
+            let is_retained_root = self.frame_upload.root_color.map(|root| root.index) == Some(range.index);
+            let direct_composite_target = if is_retained_root {
+                self.root_color.source_target(frame_resource_index)
+            } else {
+                targets.and_then(|targets| targets.direct_composite_target(config, frame_resource_index))
+            };
             let direct_composite = direct_composite_target.is_some();
             // Root color and resident identity compositors can preserve source pixels.
             // Filters and changed source geometry keep the full-layer refresh path.
-            let is_retained_root = self.frame_upload.retained_root_blur == Some(range.index);
             let local_source_damage = if direct_composite && !is_retained_root && !force_full
-                && self.frame_upload.retained_root_clear_quad.is_some()
+                && self.frame_upload.root_color.is_some()
             {
                 self.frame_upload
                     .element_blur_source_for_index(range.index)
@@ -456,7 +458,8 @@ impl NovaRenderer {
                 && self.filters.layer_content_version(range.index).is_none();
             let layer_force_full = requires_full_isolated_layer_refresh(
                 is_retained_root,
-                force_full || auto_static_rebuild || capture_uninitialized,
+                force_full || auto_static_rebuild || capture_uninitialized
+                    || (is_retained_root && self.root_color.content_version().is_none()),
                 config,
                 self.current_size,
                 damage,
@@ -508,6 +511,7 @@ impl NovaRenderer {
             {
                 (target.texture_view, target.source_resource_set)
             } else {
+                let Some(targets) = targets else { continue };
                 let Some(source_texture_view) = targets.isolated_source_texture_view(range.index)
                 else {
                     continue;
@@ -570,7 +574,7 @@ impl NovaRenderer {
                     batch_index,
                     &dirty_barrier_configs[group_index],
                     source_resource_set,
-                    targets,
+                    targets.expect("backdrop barriers require allocated Filter targets"),
                     source_scissor,
                     damage,
                     layer_force_full,
@@ -590,7 +594,7 @@ impl NovaRenderer {
                     sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index)
                 },
                 self.underline_resource_set,
-                |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index, self.root_color.target.as_ref()),
+                |blur_config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), targets, blur_config, frame_resource_index),
                 DrawStepMode::BlurContent {
                     batch_start: segment_start,
                     batch_end: range.content_end,
@@ -604,7 +608,7 @@ impl NovaRenderer {
             if !direct_composite {
                 backdrop_blur_render_passes_for_configs_with_source_into(
                     &self.pipelines,
-                    targets,
+                    targets.expect("isolated source lookup proved Filter target allocation"),
                     frame_resource_index,
                     std::slice::from_ref(&config),
                     source_resource_set,
@@ -625,7 +629,7 @@ impl NovaRenderer {
                 preserve_filtered_pixels: !layer_force_full,
             });
             if preserve_source {
-                if let Some(clear_index) = self.frame_upload.retained_root_clear_quad {
+                if let Some(clear_index) = self.frame_upload.root_color.map(|root| root.clear_quad) {
                     // Replace (not alpha blend) with transparent black before
                     // replaying ALL intersecting primitives in painter order.
                     // This prevents transparent shadows from accumulating.
@@ -686,7 +690,7 @@ impl NovaRenderer {
             self.path_resource_set,
             |texture_id| sprite_resource_set(gpu_atlas_textures, texture_id, frame_resource_index),
             self.underline_resource_set,
-            |blur_config| targets.resource_set_for_config(blur_config, frame_resource_index, self.root_color.target.as_ref()),
+            |blur_config| root_color::composite_resource_set(&self.root_color, self.frame_upload.root_color.map(|root| root.index), Some(targets), blur_config, frame_resource_index),
             DrawStepMode::BlurContent {
                 batch_start,
                 batch_end,

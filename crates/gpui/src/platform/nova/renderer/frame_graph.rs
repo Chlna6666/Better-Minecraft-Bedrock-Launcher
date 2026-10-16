@@ -114,10 +114,12 @@ impl FrameGraphPlan {
         element_layer_count: usize,
         backdrop_group_count: usize,
         root_color: RootColorAccess,
+        resident_elements: bool,
     ) -> Self {
         // Root raster has its own producer and lifetime. Cached Root sampling
         // remains a read even on frames that submit only the native Present sink.
         let has_elements = element_layer_count != 0;
+        let reads_elements = has_elements || resident_elements;
         let has_backdrop = backdrop_group_count != 0;
         let mut ordered = SmallVec::<[Pass; 5]>::new();
         if render_path_mask {
@@ -137,7 +139,7 @@ impl FrameGraphPlan {
         // Most static/retained frames need only the swapchain sink. Keep this
         // on the same graph representation, without per-frame dependency
         // construction or a second cached copy of graph state.
-        if ordered.len() == 1 && root_color == RootColorAccess::Absent {
+        if ordered.len() == 1 && root_color == RootColorAccess::Absent && !reads_elements {
             let mut lifetimes = SmallVec::new();
             lifetimes.push(ResourceLifetime {
                 resource: Resource::Swapchain,
@@ -197,7 +199,7 @@ impl FrameGraphPlan {
                     if render_path_mask {
                         access(Resource::PathMask, Access::Read);
                     }
-                    if has_elements {
+                    if reads_elements {
                         access(Resource::ElementColor, Access::Read);
                     }
                     access(Resource::RootColor, Access::Write);
@@ -206,7 +208,7 @@ impl FrameGraphPlan {
                     if render_path_mask {
                         access(Resource::PathMask, Access::Read);
                     }
-                    if has_elements {
+                    if reads_elements {
                         access(Resource::ElementColor, Access::Read);
                     }
                     access(Resource::BackdropColor, Access::Write);
@@ -218,7 +220,7 @@ impl FrameGraphPlan {
                     if render_path_mask {
                         access(Resource::PathMask, Access::Read);
                     }
-                    if has_elements {
+                    if reads_elements && root_color == RootColorAccess::Absent {
                         access(Resource::ElementColor, Access::Read);
                     }
                     if has_backdrop {
@@ -271,7 +273,7 @@ mod tests {
 
     #[test]
     fn clean_scene_requires_only_main_swapchain_pass() {
-        let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Absent, false);
         assert_eq!(graph.ordered.as_slice(), &[Pass::MainPresent]);
         assert_eq!(graph.hazard_count(), 0);
         assert_eq!(graph.resource_count(), 1);
@@ -279,7 +281,7 @@ mod tests {
 
     #[test]
     fn resident_root_is_read_without_filter_or_root_raster_pass() {
-        let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Resident);
+        let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Resident, false);
         assert_eq!(graph.ordered.as_slice(), &[Pass::MainPresent]);
         assert!(!graph.requires(Pass::RootColor));
         assert!(!graph.requires(Pass::ElementLayers));
@@ -288,8 +290,18 @@ mod tests {
     }
 
     #[test]
+    fn root_refresh_reads_cached_element_color_without_repainting_it() {
+        let graph = FrameGraphPlan::compile(false, 0, 0, RootColorAccess::Refresh, true);
+        assert!(!graph.requires(Pass::ElementLayers));
+        assert_eq!(graph.ordered.as_slice(), &[Pass::RootColor, Pass::MainPresent]);
+        let lifetime = graph.lifetime(Resource::ElementColor).unwrap();
+        assert_eq!((lifetime.first, lifetime.last), (0, 0));
+        assert_eq!(lifetime.residency, Residency::Persistent);
+    }
+
+    #[test]
     fn root_raster_samples_element_outputs_before_final_composite() {
-        let graph = FrameGraphPlan::compile(true, 2, 0, RootColorAccess::Refresh);
+        let graph = FrameGraphPlan::compile(true, 2, 0, RootColorAccess::Refresh, false);
         assert_eq!(graph.ordered.as_slice(), &[
             Pass::PathMask, Pass::ElementLayers, Pass::RootColor, Pass::MainPresent,
         ]);
@@ -315,6 +327,7 @@ mod tests {
                         usize::from(elements),
                         usize::from(backdrop),
                         RootColorAccess::Absent,
+                        false,
                     );
                     let mut expected = Vec::new();
                     if path {
@@ -363,7 +376,7 @@ mod tests {
 
     #[test]
     fn read_after_read_does_not_add_extra_mask_barriers() {
-        let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent, false);
         let mask_hazards: Vec<_> = graph.hazards.iter()
             .filter(|intent| intent.resource == Resource::PathMask)
             .collect();
@@ -376,7 +389,7 @@ mod tests {
 
     #[test]
     fn independent_layer_capture_is_not_forced_by_a_clean_backdrop() {
-        let graph = FrameGraphPlan::compile(false, 1, 0, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(false, 1, 0, RootColorAccess::Absent, false);
         assert_eq!(graph.ordered.as_slice(), &[Pass::ElementLayers, Pass::MainPresent]);
         assert!(!graph.requires(Pass::BackdropBlur));
         assert_eq!(graph.hazard_count(), 1);
@@ -384,7 +397,7 @@ mod tests {
 
     #[test]
     fn dataflow_derives_producer_before_consumer() {
-        let graph = FrameGraphPlan::compile(true, 3, 2, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(true, 3, 2, RootColorAccess::Absent, false);
         assert_eq!(
             graph.ordered.as_slice(),
             &[Pass::PathMask, Pass::ElementLayers, Pass::BackdropBlur, Pass::MainPresent],
@@ -402,14 +415,14 @@ mod tests {
 
     #[test]
     fn no_read_after_read_hazard_or_duplicate_filter_passes() {
-        let graph = FrameGraphPlan::compile(false, 0, 2, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(false, 0, 2, RootColorAccess::Absent, false);
         assert_eq!(graph.ordered.as_slice(), &[Pass::BackdropBlur, Pass::MainPresent]);
         assert_eq!(graph.hazard_count(), 1);
     }
 
     #[test]
     fn persistent_and_in_flight_resources_must_never_alias() {
-        let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent);
+        let graph = FrameGraphPlan::compile(true, 1, 1, RootColorAccess::Absent, false);
         let mask = graph.lifetime(Resource::PathMask).expect("mask");
         let element = graph.lifetime(Resource::ElementColor).expect("element");
         assert!(!mask.can_alias_in_submission(element));

@@ -2181,22 +2181,18 @@ fn auto_static_target_keeps_exact_native_view_across_popup_reorders() {
         active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
-        retained_root_variant: None,
-        root_binding: None,
     };
     let original_view = targets.exclusive_zero_radius_capture_view(3).unwrap();
     let shorter = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
-    assert!(!targets.reuse_layout(&shorter, &[], false, None, Some((3, 1))),
-        "config-only remapping must not relabel a different physical texture");
-    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, Some((3, 1))));
+    assert!(targets.reuse_layout(&shorter, &[], false, Some((3, 1))));
     assert_eq!(targets.exclusive_zero_radius_capture_view(1), Some(original_view));
 
     let longer = (0..5).map(test_zero_radius_blur_config).collect::<Vec<_>>();
-    assert!(targets.rebind_zero_radius_layout(&longer, false, None, Some((1, 3))));
+    assert!(targets.reuse_layout(&longer, &[], false, Some((1, 3))));
     assert_eq!(targets.exclusive_zero_radius_capture_view(3), Some(original_view));
     let views = targets.variants.iter().map(|variant| variant.levels[0].texture_view)
         .collect::<Vec<_>>();
-    assert!(!targets.rebind_zero_radius_layout(&shorter, false, None, Some((99, 1))));
+    assert!(!targets.reuse_layout(&shorter, &[], false, Some((99, 1))));
     assert_eq!(targets.variants.iter().map(|variant| variant.levels[0].texture_view)
         .collect::<Vec<_>>(), views, "an invalid relocation cannot mutate resources");
 }
@@ -2220,8 +2216,6 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         active_isolated_source_count: 0,
         variants: (0..5).map(make_variant).collect(),
         active_variant_count: 5,
-        retained_root_variant: None,
-        root_binding: None,
     };
     let texture_ids = targets.variants.iter()
         .map(|variant| variant.levels[0].texture_view)
@@ -2230,9 +2224,8 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
         let configs = (0..count)
             .map(test_zero_radius_blur_config)
             .collect::<Vec<_>>();
-        assert!(targets.rebind_zero_radius_layout(&configs, false, None, None));
+        assert!(targets.reuse_layout(&configs, &[], false, None));
         assert_eq!(targets.active_variant_count, count as usize);
-        assert_eq!(targets.retained_root_variant, None);
         assert_eq!(
             targets.variants.iter()
                 .map(|variant| variant.levels[0].texture_view)
@@ -2240,20 +2233,8 @@ fn child_only_zero_radius_popup_slots_rebind_across_count_changes() {
             texture_ids,
         );
     }
-    assert!(!targets.rebind_zero_radius_layout(
-        &[test_backdrop_blur_config(2, 2)],
-        false,
-        None,
-        None,
-    ));
-    // Do not reuse an old child cache as a window root without a valid
-    // root index in the new flattened stream.
-    assert!(!targets.rebind_zero_radius_layout(
-        &[test_zero_radius_blur_config(0)],
-        false,
-        Some(100),
-        None,
-    ));
+    assert!(!targets.reuse_layout(&[test_backdrop_blur_config(2, 2)], &[], false, None));
+    assert!(targets.reuse_layout(&[test_zero_radius_blur_config(0)], &[], false, None));
 }
 
 #[test]
@@ -2295,10 +2276,7 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
         active_isolated_source_count: 5,
         variants: (0..6).map(make_variant).collect(),
         active_variant_count: 6,
-        retained_root_variant: Some(5),
-        root_binding: None,
     };
-    let root_view = targets.retained_root_texture_view();
     let original_source_views = targets.isolated_sources.iter()
         .map(|source| source.target.texture_view)
         .collect::<Vec<_>>();
@@ -2317,12 +2295,9 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
     for count in [3_u32, 4, 6, 3, 6] {
         let next = build(count);
         let required = (0..count-1).collect::<Vec<_>>();
-        assert!(targets.reuse_layout(
-            &next, &required, false, Some(count - 1), None,
-        ), "warmed isolated sources and root output can rebind without allocating");
+        assert!(targets.reuse_layout(&next, &required, false, None), "warmed isolated sources and root output can rebind without allocating");
         assert_eq!(targets.active_variant_count, count as usize);
         assert_eq!(targets.active_isolated_source_count, (count - 1) as usize);
-        assert_eq!(targets.retained_root_texture_view(), root_view);
         assert_eq!(
             targets.isolated_sources.iter().map(|source| source.target.texture_view)
                 .collect::<Vec<_>>(),
@@ -2344,104 +2319,48 @@ fn warmed_gaussian_sources_survive_popup_shrink_and_regrowth() {
 }
 
 #[test]
-fn mixed_gaussian_and_zero_radius_popup_reindex_preserves_root_and_scratch() {
-    // A real popup can transition Gaussian0/Gaussian1/Capture2/Root3
-    // to Gaussian0/Capture1/Root2 and back, without exceeding the
-    // already allocated native texture or isolated-source capacity.
-    let make_variant = |index: u32| {
-        let zero = index >= 2;
-        let config = if zero {
-            test_zero_radius_blur_config(index)
-        } else {
-            test_gaussian_capture_config(index)
-        };
+fn filter_reindex_preserves_compatible_source_and_output_allocations() {
+    let variant = |index| {
+        let gaussian = index < 2;
         BackdropBlurVariantTargets {
-            config,
-            levels: (0..if zero { 1 } else { 2 })
-                .map(|axis| BackdropBlurLevelTarget {
-                    byte_size: 64 * 32 * 4,
-                    texture: test_texture_id(100 + index * 2 + axis),
-                    texture_view: test_texture_view_id(100 + index * 2 + axis),
-                    pass_resource_sets: vec![test_resource_set_id(100 + index * 2 + axis)],
-                })
-                .collect(),
-            target_resource_sets: vec![test_resource_set_id(40 + index)],
+            config: if gaussian { test_gaussian_capture_config(index) } else { test_zero_radius_blur_config(index) },
+            levels: (0..if gaussian { 2 } else { 1 }).map(|axis| BackdropBlurLevelTarget {
+                byte_size: 64 * 32 * 4,
+                texture: test_texture_id(10 + index * 2 + axis),
+                texture_view: test_texture_view_id(10 + index * 2 + axis),
+                pass_resource_sets: vec![test_resource_set_id(10 + index * 2 + axis)],
+            }).collect(),
+            target_resource_sets: vec![test_resource_set_id(100 + index)],
         }
     };
-    let make_source = |index: u32| IsolatedBlurSource {
-        index,
-        target: RenderTarget {
-            byte_size: 64 * 32 * 4,
-            texture: test_texture_id(200 + index),
-            texture_view: test_texture_view_id(200 + index),
-        },
-        pass_resource_sets: vec![test_resource_set_id(200 + index)],
-    };
     let mut targets = BackdropBlurTargets {
-        source: None,
-        source_pass_resource_sets: Vec::new(),
-        isolated_sources: (0..2).map(make_source).collect(),
+        source: None, source_pass_resource_sets: Vec::new(),
+        isolated_sources: (0..2).map(|index| IsolatedBlurSource {
+            index,
+            target: RenderTarget {
+                byte_size: 64 * 32 * 4,
+                texture: test_texture_id(200 + index),
+                texture_view: test_texture_view_id(200 + index),
+            },
+            pass_resource_sets: vec![test_resource_set_id(200 + index)],
+        }).collect(),
         active_isolated_source_count: 2,
-        variants: (0..4).map(make_variant).collect(),
-        active_variant_count: 4,
-        retained_root_variant: Some(3),
-        root_binding: None,
+        variants: (0..3).map(variant).collect(), active_variant_count: 3,
     };
-    let root_level = &targets.variants[3].levels[0];
-    let root = RootColorTarget {
-        target: RenderTarget {
-            byte_size: root_level.byte_size,
-            texture: root_level.texture,
-            texture_view: root_level.texture_view,
-        },
-        pass_resource_sets: root_level.pass_resource_sets.clone(),
-        composite_resource_sets: targets.variants[3].target_resource_sets.clone(),
-    };
-    targets.root_binding = Some(root.target);
-    targets.variants[3].levels[0].pass_resource_sets.clear();
-    targets.variants[3].target_resource_sets.clear();
-    let physical_root = targets.retained_root_texture_view().expect("native Root owner");
-    let physical_spare_zero = targets.variants[2].levels[0].texture_view;
-    let physical_gaussian = targets.variants[1].levels[0].texture_view;
-    let source_views = targets.isolated_sources.iter()
-        .map(|source| source.target.texture_view).collect::<Vec<_>>();
-    let output_views = targets.variants.iter()
-        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
-        .collect::<std::collections::HashSet<_>>();
-    let backing = targets.variants.as_ptr();
-
-    let compact = [
-        test_gaussian_capture_config(0),
-        test_zero_radius_blur_config(1),
-        test_zero_radius_blur_config(2),
-    ];
-    assert!(targets.reuse_layout(&compact, &[0], false, Some(2), None),
-        "a spare native-size zero-radius output can take the popup's new index");
-    assert_eq!(targets.retained_root_texture_view(), Some(physical_root));
-    assert_eq!(targets.variants[1].levels[0].texture_view, physical_spare_zero);
-    assert_eq!(targets.active_variant_count, 3);
-    assert_eq!(targets.active_isolated_source_count, 1);
-    assert!(targets.isolated_source_texture_view(1).is_none());
-    assert!(targets.is_layout_compatible(&compact, &[0], false));
-
-    let expanded = [
-        test_gaussian_capture_config(0),
-        test_gaussian_capture_config(1),
-        test_zero_radius_blur_config(2),
-        test_zero_radius_blur_config(3),
-    ];
-    assert!(targets.reuse_layout(&expanded, &[0, 1], false, Some(3), None),
-        "the former Gaussian and zero-radius native views must survive regrowth");
-    assert_eq!(targets.retained_root_texture_view(), Some(physical_root));
-    assert_eq!(targets.variants[1].levels[0].texture_view, physical_gaussian);
-    assert_eq!(targets.variants[2].levels[0].texture_view, physical_spare_zero);
-    assert_eq!(targets.variants.as_ptr(), backing);
-    assert_eq!(targets.isolated_sources.iter()
-        .map(|source| source.target.texture_view).collect::<Vec<_>>(), source_views);
-    assert_eq!(targets.variants.iter()
-        .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
-        .collect::<std::collections::HashSet<_>>(), output_views);
-    assert!(targets.is_layout_compatible(&expanded, &[0, 1], false));
+    let old_views: Vec<_> = targets.variants.iter().map(|v| v.levels[0].texture_view).collect();
+    let source_views: Vec<_> = targets.isolated_sources.iter().map(|s| s.target.texture_view).collect();
+    let next = [test_gaussian_capture_config(41), test_zero_radius_blur_config(9), test_gaussian_capture_config(0)];
+    assert!(targets.reuse_layout(&next, &[0, 41], false, None));
+    assert_eq!(targets.variants.iter().map(|v| v.levels[0].texture_view).collect::<Vec<_>>(),
+        vec![old_views[1], old_views[2], old_views[0]]);
+    assert_eq!(targets.isolated_sources.iter().map(|s| s.target.texture_view).collect::<Vec<_>>(), source_views);
+    assert_eq!(targets.resource_set_for_config(next[1], 0), Some(test_resource_set_id(102)));
+    let before: Vec<_> = targets.variants.iter().map(|v| (v.config, v.levels[0].texture_view)).collect();
+    let incompatible = [test_backdrop_blur_config(41, 3), next[1], next[2]];
+    assert!(!targets.reuse_layout(&incompatible, &[0, 41], false, None));
+    assert!(targets.variants.iter().zip(before).all(|(now, (config, view))| {
+        now.config.same_target_slot(config) && now.levels[0].texture_view == view
+    }), "failed preflight must not mutate live target ownership");
 }
 
 #[test]
@@ -2478,8 +2397,6 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
         active_isolated_source_count: 2,
         variants: (0..3).map(make_variant).collect(),
         active_variant_count: 3,
-        retained_root_variant: Some(2),
-        root_binding: None,
     };
     let before_views = targets.variants.iter()
         .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
@@ -2490,16 +2407,15 @@ fn zero_radius_fallback_never_steals_gaussian_or_mutates_failed_layout() {
         test_zero_radius_blur_config(1),
         test_zero_radius_blur_config(2),
     ];
-    assert!(!targets.reuse_layout(&requested, &[0], false, Some(2), None),
+    assert!(!targets.reuse_layout(&requested, &[0], false, None),
         "a two-level Gaussian output cannot serve an unrelated one-level popup");
     assert_eq!(targets.active_variant_count, 3);
     assert_eq!(targets.active_isolated_source_count, 2);
-    assert_eq!(targets.retained_root_variant, Some(2));
     assert!(targets.variants.iter().zip(before_configs).all(|(v, c)| v.config.same_target_slot(c)));
     assert_eq!(targets.variants.iter()
         .map(|v| v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>())
         .collect::<Vec<_>>(), before_views);
-    assert!(!targets.reuse_layout(&requested, &[0], false, None, None),
+    assert!(!targets.reuse_layout(&requested, &[0], false, None),
         "zero-radius capacity fallback requires a pinned native Root");
 }
 
@@ -2530,11 +2446,9 @@ fn gaussian_source_capacity_overflow_keeps_layout_unchanged() {
             target_resource_sets: vec![test_resource_set_id(91)],
         }],
         active_variant_count: 1,
-        retained_root_variant: None,
-        root_binding: None,
     };
     let before = targets.isolated_sources[0].target.texture_view;
-    assert!(!targets.reuse_layout(&[config, config], &[0, 1], false, None, None));
+    assert!(!targets.reuse_layout(&[config, config], &[0, 1], false, None));
     assert_eq!(targets.active_variant_count, 1);
     assert_eq!(targets.active_isolated_source_count, 1);
     assert_eq!(targets.isolated_sources[0].target.texture_view, before);
@@ -2565,8 +2479,6 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
         active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
-        retained_root_variant: None,
-        root_binding: None,
     };
     let original_views: Vec<_> = targets.variants.iter()
         .flat_map(|variant| variant.levels.iter().map(|level| level.texture_view))
@@ -2576,7 +2488,7 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
             .map(|index| test_gaussian_capture_config(index))
             .collect::<Vec<_>>();
         assert!(
-            targets.reuse_layout(&configs, &[], true, None, None),
+            targets.reuse_layout(&configs, &[], true, None),
             "a changing active prefix should not allocate new GPU textures",
         );
         assert_eq!(targets.active_variant_count, count as usize);
@@ -2588,120 +2500,13 @@ fn gaussian_capture_count_churn_reuses_unified_gpu_target_layout() {
             original_views,
         );
     }
-    // Different source ownership or a different capture identity is not a
-    // stable prefix, even if the texture dimensions happen to match.
-    assert!(!targets.reuse_layout(
-        &[test_backdrop_blur_config(0, 2)],
-        &[],
-        false,
-        None,
-        None,
-    ));
-    assert!(!targets.reuse_layout(
-        &[test_backdrop_blur_config(99, 2)],
-        &[],
-        true,
-        None,
-        None,
-    ));
-    assert!(!targets.reuse_layout(
-        &[test_backdrop_blur_config(0, 2)],
-        &[],
-        true,
-        Some(99),
-        None,
-    ));
+    // Source attachment ownership cannot change through a layout rebind.
+    assert!(!targets.reuse_layout(&[test_backdrop_blur_config(0, 2)], &[], false, None));
+    assert!(!targets.reuse_layout(&[test_backdrop_blur_config(99, 2)], &[], true, None));
+    assert!(targets.reuse_layout(&[test_backdrop_blur_config(0, 2)], &[], true, None),
+        "same-size allocation reuse does not import any logical content version");
 }
 
-#[test]
-fn gaussian_capture_shift_reuses_compatible_scratch_without_moving_native_root() {
-    let make_variant = |index: u32| {
-        let root = index == 3;
-        BackdropBlurVariantTargets {
-            config: if root { test_zero_radius_blur_config(index) }
-                else { test_gaussian_capture_config(index) },
-            levels: (0..if root { 1 } else { 2 })
-                .map(|axis| BackdropBlurLevelTarget {
-                    byte_size: 64 * 32 * 4,
-                    texture: test_texture_id(index * 2 + axis + 1),
-                    texture_view: test_texture_view_id(index * 2 + axis + 1),
-                    pass_resource_sets: vec![test_resource_set_id(index * 2 + axis + 1)],
-                })
-                .collect(),
-            target_resource_sets: vec![test_resource_set_id(index + 20)],
-        }
-    };
-    let mut targets = BackdropBlurTargets {
-        source: None,
-        source_pass_resource_sets: Vec::new(),
-        isolated_sources: Vec::new(),
-        active_isolated_source_count: 0,
-        variants: (0..4).map(make_variant).collect(),
-        active_variant_count: 4,
-        retained_root_variant: Some(3),
-        root_binding: None,
-    };
-    let root_level = &targets.variants[3].levels[0];
-    let native = RenderTarget {
-        byte_size: root_level.byte_size,
-        texture: root_level.texture,
-        texture_view: root_level.texture_view,
-    };
-    let root = RootColorTarget {
-        target: native,
-        pass_resource_sets: vec![test_resource_set_id(100)],
-        composite_resource_sets: vec![test_resource_set_id(101)],
-    };
-    targets.root_binding = Some(root.target);
-    targets.variants[3].levels[0].pass_resource_sets.clear();
-    targets.variants[3].target_resource_sets.clear();
-    let old_gaussian_views = (0..3)
-        .map(|index| targets.variants[index].levels[0].texture_view)
-        .collect::<Vec<_>>();
-
-    // The flattened index 41 is not a new Gaussian physical geometry:
-    // bind it to spare Gaussian target 1 while indices 2 and 0 keep their
-    // exact existing slots, and the Root keeps its unique physical owner.
-    let shifted = [
-        test_gaussian_capture_config(41),
-        test_gaussian_capture_config(2),
-        test_gaussian_capture_config(0),
-        test_zero_radius_blur_config(3),
-    ];
-    assert!(targets.reuse_layout(&shifted, &[], false, Some(3), None));
-    assert_eq!(targets.active_variant_count, 4);
-    assert_eq!(targets.variants[0].levels[0].texture_view, old_gaussian_views[1]);
-    assert_eq!(targets.variants[1].levels[0].texture_view, old_gaussian_views[2]);
-    assert_eq!(targets.variants[2].levels[0].texture_view, old_gaussian_views[0]);
-    assert_eq!(targets.root_color_texture_identity(),
-        Some((native.texture, native.texture_view)));
-    assert_eq!(targets.resource_set_for_config(shifted[3], 0, Some(&root)),
-        Some(test_resource_set_id(101)));
-    assert!(targets.variants[3].levels[0].pass_resource_sets.is_empty());
-    assert!(targets.variants[3].target_resource_sets.is_empty());
-
-    // Downsampling changes the native horizontal/final attachment sizes;
-    // the lookup must reject this without partially permuting any target.
-    let before = targets.variants.iter().map(|v| (v.config,
-        v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>()))
-        .collect::<Vec<_>>();
-    let incompatible = [
-        test_backdrop_blur_config(2, 2),
-        shifted[1],
-        shifted[2],
-        shifted[3],
-    ];
-    assert!(!targets.reuse_layout(&incompatible, &[], false, Some(3), None));
-    let after = targets.variants.iter().map(|v| (v.config,
-        v.levels.iter().map(|level| level.texture_view).collect::<Vec<_>>()))
-        .collect::<Vec<_>>();
-    assert_eq!(before.len(), after.len());
-    assert!(before.iter().zip(after.iter()).all(|((old_config, old_views), (new_config, new_views))| {
-        old_config.same_target_slot(*new_config) && old_views == new_views
-    }));
-    assert_eq!(targets.root_color_texture_identity(),
-        Some((native.texture, native.texture_view)));
-}
 
 #[test]
 fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
@@ -2728,8 +2533,6 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
         active_isolated_source_count: 0,
         variants: (0..4).map(make_variant).collect(),
         active_variant_count: 4,
-        retained_root_variant: None,
-        root_binding: None,
     };
     let original_views = targets
         .variants
@@ -2740,7 +2543,7 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
     let requested = [2_u32, 0, 3, 1];
     let configs = requested
         .map(|index| test_gaussian_capture_config(index));
-    assert!(targets.reuse_layout(&configs, &[], true, None, None));
+    assert!(targets.reuse_layout(&configs, &[], true, None));
     assert_eq!(targets.active_variant_count, 4);
     assert_eq!(
         targets.variants.as_ptr(),
@@ -2755,104 +2558,12 @@ fn gaussian_capture_reorder_reuses_views_without_mutating_gpu_allocations() {
     let before = targets.variants.iter()
         .map(|v| (v.config, v.levels[0].texture_view))
         .collect::<Vec<_>>();
-    assert!(!targets.reuse_layout(
-        &[test_backdrop_blur_config(99, 2)],
-        &[],
-        true,
-        None,
-        None,
-    ));
+    assert!(!targets.reuse_layout(&[test_backdrop_blur_config(99, 2)], &[], true, None));
     assert!(targets.variants.iter().zip(before).all(|(variant, (config, view))| {
         variant.config.same_target_slot(config)
             && variant.levels[0].texture_view == view
     }));
     assert_eq!(targets.variants.as_ptr(), backing_allocation);
-}
-
-#[test]
-fn root_color_removed_reserves_native_target_until_reintroduced() {
-    let make_variant = |index: u32| BackdropBlurVariantTargets {
-        config: test_zero_radius_blur_config(index),
-        levels: vec![BackdropBlurLevelTarget {
-            byte_size: 64 * 32 * 4,
-            texture: test_texture_id(index + 1),
-            texture_view: test_texture_view_id(index + 1),
-            pass_resource_sets: vec![test_resource_set_id(index + 1)],
-        }],
-        target_resource_sets: vec![test_resource_set_id(index + 11)],
-    };
-    let mut targets = BackdropBlurTargets {
-        source: None,
-        source_pass_resource_sets: Vec::new(),
-        isolated_sources: Vec::new(),
-        active_isolated_source_count: 0,
-        variants: (0..4).map(make_variant).collect(),
-        active_variant_count: 4,
-        retained_root_variant: Some(1),
-        root_binding: None,
-    };
-    let root_level = &targets.variants[1].levels[0];
-    let root_texture = root_level.texture;
-    let root_view = root_level.texture_view;
-    let root = RootColorTarget {
-        target: RenderTarget {
-            byte_size: root_level.byte_size,
-            texture: root_texture,
-            texture_view: root_view,
-        },
-        pass_resource_sets: vec![test_resource_set_id(101)],
-        composite_resource_sets: vec![test_resource_set_id(102)],
-    };
-    targets.root_binding = Some(root.target);
-    targets.variants[1].levels[0].pass_resource_sets.clear();
-    targets.variants[1].target_resource_sets.clear();
-
-    let without_root = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
-    assert!(!targets.root_capture_is_compatible(&without_root, None));
-    let mut invalid_fast_path = targets.clone();
-    invalid_fast_path.retained_root_variant = None;
-    assert!(!invalid_fast_path.root_capture_is_compatible(&without_root, None),
-        "a root-less logical DAG cannot activate the native Root Texture as Filter scratch");
-    // No spare physical slot: a Filter-only capture may not inherit the Root
-    // allocation and its intentionally empty descriptor mirrors.
-    let old_views = targets.variants.iter()
-        .map(|v| v.levels[0].texture_view).collect::<Vec<_>>();
-    assert!(!targets.rebind_zero_radius_layout(&without_root, false, None, None));
-    assert_eq!(targets.variants.iter()
-        .map(|v| v.levels[0].texture_view).collect::<Vec<_>>(), old_views);
-    assert_eq!(targets.retained_root_variant, Some(1));
-
-    let shorter = (0..3).map(test_zero_radius_blur_config).collect::<Vec<_>>();
-    assert!(!targets.reuse_layout(&shorter, &[], false, None, None),
-        "exact config matching must never consume the parked Root texture");
-    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, None));
-    assert_eq!(targets.retained_root_variant, None);
-    assert!(targets.root_capture_is_compatible(&shorter, None));
-    assert_eq!(targets.variants[3].levels[0].texture, root_texture);
-    assert_eq!(targets.variants[3].levels[0].texture_view, root_view);
-    for variant in targets.variants.iter().take(targets.active_variant_count) {
-        assert_ne!(variant.levels[0].texture, root_texture);
-        assert!(!variant.levels[0].pass_resource_sets.is_empty());
-        assert!(!variant.target_resource_sets.is_empty());
-    }
-
-    // AutoStatic continues to relocate inside the Filter-only active prefix,
-    // without moving or sampling the parked Root Color native allocation.
-    let before_auto_static = targets.variants[0].levels[0].texture_view;
-    assert!(targets.rebind_zero_radius_layout(&shorter, false, None, Some((0, 2))));
-    assert_eq!(targets.variants[2].levels[0].texture_view, before_auto_static);
-    assert_eq!(targets.variants[3].levels[0].texture_view, root_view);
-
-    let reintroduced = (0..4).map(test_zero_radius_blur_config).collect::<Vec<_>>();
-    assert!(targets.rebind_zero_radius_layout(&reintroduced, false, Some(2), None));
-    assert_eq!(targets.retained_root_variant, Some(2));
-    assert_eq!(targets.root_color_texture_identity(), Some((root_texture, root_view)));
-    assert_eq!(targets.resource_set_for_config(reintroduced[2], 0, Some(&root)),
-        Some(test_resource_set_id(102)));
-    assert_eq!(targets.direct_composite_target(reintroduced[2], 0, Some(&root))
-        .unwrap().source_resource_set, test_resource_set_id(101));
-    assert!(targets.variants[2].levels[0].pass_resource_sets.is_empty());
-    assert!(targets.variants[2].target_resource_sets.is_empty());
 }
 
 
@@ -2862,8 +2573,6 @@ fn backdrop_blur_render_passes_blur_each_axis() {
     let config = test_backdrop_blur_config(2, 3);
     let targets = BackdropBlurTargets {
         active_variant_count: 1,
-        retained_root_variant: None,
-        root_binding: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),
@@ -2930,8 +2639,6 @@ fn backdrop_blur_render_passes_are_empty_without_levels() {
     let pipelines = test_pipelines();
     let targets = BackdropBlurTargets {
         active_variant_count: 0,
-        retained_root_variant: None,
-        root_binding: None,
         source: Some(RenderTarget {
             byte_size: 0,
             texture: test_texture_id(1),

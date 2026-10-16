@@ -150,15 +150,15 @@ impl FrameUpload {
         )
     }
 
-    /// Wraps an already-encoded frame in a zero-radius, full-viewport retained layer.
-    /// The normal blur texture and composite shaders also implement scene-color retention;
-    /// no backend-specific swapchain contents or image-copy extension is required.
-    pub(in crate::platform::nova) fn append_retained_root(
+    /// Records independent window-color raster work and its final compositor descriptor.
+    /// The descriptor shares the compositor shader ABI; it creates no Filter scope,
+    /// Gaussian work, Filter target or texture copy.
+    pub(in crate::platform::nova) fn append_root_color(
         &mut self,
         drawable_size: DrawableSize,
         summary: &mut FrameUploadSummary,
     ) -> bool {
-        if self.retained_root_blur.is_some()
+        if self.root_color.is_some()
             || self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES >= MAX_BACKDROP_BLURS
             || self.quads.len() / PACKED_QUAD_BYTES >= MAX_QUADS
             || drawable_size.width == 0
@@ -197,13 +197,10 @@ impl FrameUpload {
             1.0,
             drawable_size,
         );
-        self.batches.insert(0, UploadedBatch::BeginBlur { index: root_index });
-        self.batch_visual_bounds.insert(0, None);
-        self.batches.push(UploadedBatch::EndBlur { index: root_index });
+        let content_end = self.batches.len();
         self.batches.push(UploadedBatch::CompositeBlur { index: root_index });
-        self.batch_visual_bounds.extend([None, None]);
-        self.retained_root_blur = Some(root_index);
-        self.retained_root_clear_quad = Some(clear_index);
+        self.batch_visual_bounds.push(None);
+        self.root_color = Some(RootColorPass { index: root_index, clear_quad: clear_index, content_end });
         summary.quad_count = summary.quad_count.saturating_add(1);
         summary.backdrop_blur_count = summary.backdrop_blur_count.saturating_add(1);
         // The original encode already built the filter configs. Add this
@@ -229,7 +226,7 @@ impl FrameUpload {
         drawable_size: DrawableSize,
         summary: &mut FrameUploadSummary,
     ) -> bool {
-        if self.retained_root_blur.is_some()
+        if self.root_color.is_some()
             || self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES >= MAX_BACKDROP_BLURS
             || self.batches.is_empty()
         {
@@ -457,8 +454,7 @@ impl FrameUpload {
             self.backdrop_blurs.clear();
             self.backdrop_blur_configs.clear();
             self.element_blur_inputs.clear();
-            self.retained_root_blur = None;
-            self.retained_root_clear_quad = None;
+            self.root_color = None;
             #[cfg(test)]
             self.animation_bindings.clear();
             self.animation_values.clear();
@@ -1098,28 +1094,27 @@ mod retained_root_tests {
     }
 
     #[test]
-    fn synthetic_root_reuses_zero_filter_target_and_records_transparent_clear() {
+    fn root_color_records_composite_without_filter_scope_or_gaussian_work() {
         let mut upload = FrameUpload::default();
-        let mut chunk_cache = RetainedQuadChunkCache::default();
         let size = DrawableSize { width: 640, height: 480 };
         let mut summary = FrameUploadSummary::default();
-        assert!(upload.append_retained_root(size, &mut summary));
-        assert_eq!(upload.retained_root_blur, Some(0));
-        assert_eq!(upload.retained_root_clear_quad, Some(0));
+        assert!(upload.append_root_color(size, &mut summary));
+        assert_eq!(upload.root_color.map(|root| root.index), Some(0));
+        assert_eq!(upload.root_color.map(|root| root.clear_quad), Some(0));
         assert_eq!(upload.quads.len(), PACKED_QUAD_BYTES);
         assert_eq!(upload.backdrop_blurs.len(), PACKED_BACKDROP_BLUR_BYTES);
         assert_eq!(summary.quad_count, 1);
         assert_eq!(summary.backdrop_blur_count, 1);
-        assert!(matches!(upload.batches[0], UploadedBatch::BeginBlur { index: 0 }));
-        assert!(matches!(upload.batches[1], UploadedBatch::EndBlur { index: 0 }));
-        assert!(matches!(upload.batches[2], UploadedBatch::CompositeBlur { index: 0 }));
+        assert_eq!(upload.batches.len(), 1);
+        assert!(matches!(upload.batches[0], UploadedBatch::CompositeBlur { index: 0 }));
         assert_eq!(upload.batch_visual_bounds.len(), upload.batches.len());
         assert!(upload.batch_visual_bounds.iter().all(Option::is_none));
         upload.refresh_blur_content_ranges();
-        assert_eq!(upload.blur_content_ranges().len(), 1);
-        assert_eq!(upload.blur_content_ranges()[0].index, 0);
-        assert_eq!(upload.backdrop_blur_configs().len(), 1);
-        assert_eq!(upload.backdrop_blur_configs()[0].radius(), 0.0);
+        assert!(upload.blur_content_ranges().is_empty());
+        assert!(upload.isolated_blur_source_indices().is_empty());
+        assert!(upload.backdrop_blur_configs().is_empty());
+        assert!(upload.backdrop_blur_passes.is_empty());
+        assert_eq!(upload.root_color.unwrap().content_range().content_end, 0);
     }
 
     #[test]
@@ -1264,8 +1259,8 @@ mod retained_root_tests {
         let mut chunk_cache = RetainedQuadChunkCache::default();
         upload.backdrop_blurs.resize(MAX_BACKDROP_BLURS * PACKED_BACKDROP_BLUR_BYTES, 0);
         let mut summary = FrameUploadSummary::default();
-        assert!(!upload.append_retained_root(DrawableSize { width: 8, height: 8 }, &mut summary));
+        assert!(!upload.append_root_color(DrawableSize { width: 8, height: 8 }, &mut summary));
         assert_eq!(summary.backdrop_blur_count, 0);
-        assert!(upload.retained_root_blur.is_none());
+        assert!(upload.root_color.is_none());
     }
 }

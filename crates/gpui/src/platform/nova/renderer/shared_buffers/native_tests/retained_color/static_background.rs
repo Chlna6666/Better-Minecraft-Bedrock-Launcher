@@ -55,7 +55,7 @@ fn verify(backend: RendererBackend) {
         pixels(&mut renderer, &first, target, 0., [sample(0.)], true);
     }
     pixels(&mut renderer, &first, target, 0., [sample(0.)], true);
-    assert!(renderer.frame_upload.retained_root_blur.is_none());
+    assert!(renderer.frame_upload.root_color.is_none());
     assert!(renderer.frame_upload.has_element_blurs());
 
     let mut previous = 0.;

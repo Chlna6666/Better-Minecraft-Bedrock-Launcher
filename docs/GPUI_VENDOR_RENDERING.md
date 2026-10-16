@@ -574,16 +574,20 @@ still propagate their own affected output.
 
 Nova's window-owned `renderer/root_color.rs` owns the Root allocation, per-slot
 source/composite bindings and its successful-content version. Filter target
-recreation borrows its Texture/View and cannot retire it. Resize, memory trim
+recreation neither references nor retires that allocation. Resize, memory trim
 and window destruction retire Root independently after the existing submission
 fences drain; slot-buffer growth rebinds its descriptors through that owner.
 The Render Graph has separate RootColor read/refresh dependencies. Consecutive
 Element and Root attachments still share one backend offscreen submission.
 
-The upload stream still encodes Root through a synthetic zero-radius descriptor
-and borrowed Filter variant. These remaining logical consumers must migrate
-before removing `retained_root_blur`; they no longer own GPU Root resources or
-its content version.
+`FrameUpload.root_color` records a separate Root source range and final composite.
+Root has no Filter Capture markers, target variant or Gaussian work. Its final
+descriptor shares the compositor shader ABI, while resource lookup resolves
+directly through the Root owner, including when no Filter chain exists. The graph
+also distinguishes reading resident Element color from refreshing its source.
+The Scene snapshot and full replay/encoding protocol still require migration to
+persistent Paint chunks; removing Root's Filter representation does not complete
+that incremental protocol.
 
 ## PresentationPacket
 

@@ -31,10 +31,6 @@ pub(super) struct BackdropBlurTargets {
     pub(super) variants: Vec<BackdropBlurVariantTargets>,
     /// Live prefix; spare popup targets remain allocated until the chain is replaced or trimmed.
     pub(super) active_variant_count: usize,
-    /// The window-color target follows its role when popup slots appear/disappear.
-    pub(super) retained_root_variant: Option<usize>,
-    /// Borrowed graph binding only. Window RootColor owns the allocation and descriptors.
-    pub(super) root_binding: Option<RenderTarget>,
 }
 
 /// Unique native lifetime authority for the full-resolution Root Color.
@@ -47,103 +43,6 @@ pub(super) struct RootColorTarget {
 }
 
 impl BackdropBlurTargets {
-    /// The resident full-window color texture is identified by its actual GPU
-    /// handle, never by the position of a temporary flattened Blur index.
-    /// A popup may move this variant without moving its physical pixels.
-    pub(super) fn retained_root_texture_view(&self) -> Option<TextureViewId> {
-        self.root_color_texture_identity().map(|(_, view)| view)
-    }
-
-    /// Physical identity for the synthetic Root Color (not its flattened
-    /// Capture index). Only a one-level, unfiltered active native target is a
-    /// valid resident color surface. The view and underlying allocation must
-    /// both match the last successful GPU submission.
-    pub(super) fn root_color_texture_identity(&self) -> Option<(TextureId, TextureViewId)> {
-        let index = self.retained_root_variant?;
-        if index >= self.active_variant_count {
-            return None;
-        }
-        let variant = self.variants.get(index)?;
-        if variant.config.radius() != 0.0 {
-            return None;
-        }
-        let [level] = variant.levels.as_slice() else {
-            return None;
-        };
-        let root_color = self.root_binding.as_ref()?;
-        if root_color.texture != level.texture
-            || root_color.texture_view != level.texture_view
-        {
-            return None;
-        }
-        Some((root_color.texture, root_color.texture_view))
-    }
-
-    /// Changing a Root role is a physical ownership change even if all
-    /// filter configurations happen to retain identical member indices.
-    /// Prevent the fast path from silently promoting ordinary Filter scratch
-    /// into a resident Root without first allocating its dedicated owner.
-    pub(super) fn root_capture_is_compatible(
-        &self,
-        next: &[BackdropBlurConfig],
-        root_capture_index: Option<u32>,
-    ) -> bool {
-        let next_root = root_capture_index.and_then(|index| {
-            next.iter().position(|config| {
-                config.contains_member_index(index) && config.radius() == 0.0
-            })
-        });
-        if root_capture_index.is_some() && next_root.is_none() {
-            return false;
-        }
-        if self.retained_root_variant != next_root {
-            return false;
-        }
-        if next_root.is_some() {
-            return self.root_color_texture_identity().is_some();
-        }
-        // Once Root leaves the DAG its native Texture must be in the
-        // inactive suffix; otherwise an active Filter may sample a target
-        // whose borrowed ResourceSet arrays are intentionally empty.
-        !self.root_binding.as_ref().is_some_and(|root| {
-            self.variants.iter().take(self.active_variant_count).any(|variant| {
-                variant.levels.iter().any(|level| {
-                    level.texture == root.texture
-                        || level.texture_view == root.texture_view
-                })
-            })
-        })
-    }
-
-    /// The native Root Color owns its pixels independently of warmed, inactive
-    /// filter scratch storage. Capacity retained after closing a Gaussian
-    /// dropdown does not change the root's content or physical identity.
-    /// Only LIVE filter variants participate in the unfiltered-root proof.
-    pub(super) fn can_preserve_root_color_capture(&self) -> bool {
-        let Some(index) = self.retained_root_variant else { return false };
-        let Some((root_texture, root_view)) = self.root_color_texture_identity() else {
-            return false;
-        };
-        if self.source.is_some()
-            || self.variants.iter().take(self.active_variant_count)
-                .any(|variant| variant.config.radius() != 0.0)
-        {
-            return false;
-        }
-        // An aliased texture cannot be treated as independent Root residency.
-        // Compare all allocated (including spare) views, not only active slots.
-        !self.variants.iter().enumerate().any(|(other_index, variant)| {
-            other_index != index
-                && variant.levels.iter().any(|target| {
-                    target.texture == root_texture || target.texture_view == root_view
-                })
-        })
-            && !self.isolated_sources.iter().any(|source| {
-                source.target.texture == root_texture
-                    || source.target.texture_view == root_view
-            })
-    }
-
     /// Only a single-member zero-filter output has an independently initialized texture.
     pub(super) fn exclusive_zero_radius_capture_view(&self, index: u32) -> Option<TextureViewId> {
         let mut candidates = self.variants.iter().take(self.active_variant_count)
@@ -171,8 +70,7 @@ impl BackdropBlurTargets {
                 self.variants
                     .iter()
                     .flat_map(|variant| &variant.levels)
-                    .filter(|level| !self.root_binding.is_some_and(|root| root.texture == level.texture)
-                        && textures.insert(level.texture))
+                    .filter(|level| textures.insert(level.texture))
                     .map(|level| level.byte_size)
                     .sum::<u64>(),
             )
@@ -213,9 +111,6 @@ pub(super) struct BackdropBlurTargetDescriptor {
     /// Root backdrop barriers need a shared source; isolated captures already own their source.
     pub(super) needs_root_source: bool,
     pub(super) isolated_source_indices: Vec<u32>,
-    /// Logical root capture for this Scene, never a Gaussian filter owner.
-    pub(super) root_color_capture_index: Option<u32>,
-    pub(super) root_color: Option<RenderTarget>,
     pub(super) pass_resource_set_layout: ResourceSetLayoutId,
     pub(super) blur_resource_set_layout: ResourceSetLayoutId,
     pub(super) frame_buffers: Vec<FrameResourceBuffers>,
@@ -246,17 +141,11 @@ impl BackdropBlurTargets {
         &self,
         config: BackdropBlurConfig,
         frame_resource_index: usize,
-        root: Option<&RootColorTarget>,
     ) -> Option<ResourceSetId> {
         let variant = self.variants
             .iter()
             .take(self.active_variant_count)
             .find(|variant| variant.config.covers(config))?;
-        if let (Some(root), [level]) = (root, variant.levels.as_slice()) {
-            if root.target.texture == level.texture && root.target.texture_view == level.texture_view {
-                return root.composite_resource_sets.get(frame_resource_index).copied();
-            }
-        }
         variant.target_resource_sets.get(frame_resource_index).copied()
     }
 
@@ -462,16 +351,6 @@ where
             });
         }
 
-        // Bind the window-owned Root allocation without allocating it or
-        // taking descriptor ownership into the Filter chain.
-        let root_variant = descriptor.root_color_capture_index.and_then(|root| {
-            configs.iter().position(|config| config.contains_member_index(root)
-                && config.radius() == 0.0)
-        });
-        let root_binding = descriptor.root_color;
-        if root_variant.is_some() && root_binding.is_none() {
-            anyhow::bail!("Root graph binding requires a window-owned target");
-        }
         let mut variants = Vec::with_capacity(configs.len());
         for (variant_index, config) in configs.iter().copied().enumerate() {
             let downsample = u32::from(config.downsample().max(1));
@@ -497,39 +376,22 @@ where
             let pass_count = blur_variant_level_count(config);
             let mut levels = Vec::with_capacity(pass_count);
             for (pass_index, target_size) in pass_sizes.into_iter().take(pass_count).enumerate() {
-                let target = if root_variant == Some(variant_index) {
-                    // This slot describes (but does not own) the Root texture.
-                    // The only permitted root is a full-resolution, single-pass,
-                    // zero-radius capture.
-                    debug_assert_eq!(pass_count, 1);
-                    root_binding.expect("window Root target was provided")
-                } else {
-                    allocate_texture(
-                        device,
-                        &format!("{label} backdrop variant {variant_index} target {pass_index}"),
-                        target_size,
-                        descriptor.format,
-                    )?
-                };
-                // A Root logical variant has no descriptor ownership or mirror.
-                // The native RootColorTarget is consulted by every Graph consumer.
-                let pass_resource_sets = if root_variant == Some(variant_index) {
-                    Vec::new()
-                } else {
-                    let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
-                    for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                        sets.push(allocate_set(device, &ResourceSetDescriptor {
-                            label: Some(format!(
-                                "{label} backdrop variant {variant_index} target {pass_index} frame {frame_index} resource set"
-                            )),
-                            layout: descriptor.pass_resource_set_layout,
-                            bindings: backdrop_blur_pass_resource_bindings(
-                                &buffers, target.texture_view, descriptor.sampler,
-                            ),
-                        })?);
-                    }
-                    sets
-                };
+                let target = allocate_texture(
+                    device,
+                    &format!("{label} backdrop variant {variant_index} target {pass_index}"),
+                    target_size,
+                    descriptor.format,
+                )?;
+                let mut pass_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+                for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                    pass_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                        label: Some(format!("{label} filter target {variant_index}/{pass_index} frame {frame_index}")),
+                        layout: descriptor.pass_resource_set_layout,
+                        bindings: backdrop_blur_pass_resource_bindings(
+                            &buffers, target.texture_view, descriptor.sampler,
+                        ),
+                    })?);
+                }
                 levels.push(BackdropBlurLevelTarget {
                     byte_size: target.byte_size,
                     texture: target.texture,
@@ -538,27 +400,18 @@ where
                 });
             }
 
-            let target_resource_sets = if root_variant == Some(variant_index) {
-                Vec::new()
-            } else {
-                let mut sets = Vec::with_capacity(descriptor.frame_buffers.len());
-                for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-                    let source_texture_view = levels
-                        .last()
-                        .expect("every blur variant owns at least one target")
-                        .texture_view;
-                    sets.push(allocate_set(device, &ResourceSetDescriptor {
-                        label: Some(format!(
-                            "{label} backdrop blur variant {variant_index} frame {frame_index} resource set"
-                        )),
-                        layout: descriptor.blur_resource_set_layout,
-                        bindings: backdrop_blur_resource_bindings(
-                            &buffers, source_texture_view, descriptor.sampler,
-                        ),
-                    })?);
-                }
-                sets
-            };
+            let mut target_resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+            for (frame_index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
+                let source_texture_view = levels.last()
+                    .expect("every filter owns at least one target").texture_view;
+                target_resource_sets.push(allocate_set(device, &ResourceSetDescriptor {
+                    label: Some(format!("{label} filter composite {variant_index} frame {frame_index}")),
+                    layout: descriptor.blur_resource_set_layout,
+                    bindings: backdrop_blur_resource_bindings(
+                        &buffers, source_texture_view, descriptor.sampler,
+                    ),
+                })?);
+            }
             variants.push(BackdropBlurVariantTargets {
                 config,
                 levels,
@@ -573,8 +426,6 @@ where
             isolated_sources,
             variants,
             active_variant_count: configs.len(),
-            retained_root_variant: root_variant,
-            root_binding,
         })
     })();
     if result.is_err() {
@@ -616,47 +467,23 @@ pub(super) fn destroy_backdrop_blur_target_chain<D>(
         }
         destroy_render_texture_target(device, source.target, backend_name);
     }
-    let root_binding = targets.root_binding;
-    let mut gathered_textures = FxHashSet::default();
     let mut physical_targets = Vec::new();
+    let mut gathered_textures = FxHashSet::default();
     for variant in targets.variants {
-        let borrowed_root = root_binding.as_ref().is_some_and(|root| {
-            variant.levels.len() == 1
-                && variant.levels[0].texture == root.texture
-        });
-        if !borrowed_root {
-            for resource_set in variant.target_resource_sets {
-                if let Err(error) = device.destroy_resource_set(resource_set) {
-                    log::debug!(
-                        "failed to destroy {backend_name} backdrop blur target resource set: {error}"
-                    );
-                }
+        for set in variant.target_resource_sets {
+            if let Err(error) = device.destroy_resource_set(set) {
+                log::debug!("failed to retire {backend_name} filter composite set: {error}");
             }
         }
-        for target in variant.levels {
-            if !root_binding.as_ref().is_some_and(|root| {
-                root.texture == target.texture
-            }) {
-                for resource_set in target.pass_resource_sets {
-                    if let Err(error) = device.destroy_resource_set(resource_set) {
-                        log::debug!(
-                            "failed to destroy {backend_name} backdrop blur level resource set: {error}"
-                        );
-                    }
+        for level in variant.levels {
+            for set in level.pass_resource_sets {
+                if let Err(error) = device.destroy_resource_set(set) {
+                    log::debug!("failed to retire {backend_name} filter pass set: {error}");
                 }
             }
-            // Collect unique physical targets. They must not be destroyed
-            // while any other variant's descriptor set still references them.
-            if root_binding.as_ref().is_some_and(|root| root.texture == target.texture) {
-                // Root's descriptors and Texture/View are retired only by its
-                // independent native owner, not this logical Filter variant.
-                continue;
-            }
-            if gathered_textures.insert(target.texture) {
+            if gathered_textures.insert(level.texture) {
                 physical_targets.push(RenderTarget {
-                    byte_size: target.byte_size,
-                    texture: target.texture,
-                    texture_view: target.texture_view,
+                    byte_size: level.byte_size, texture: level.texture, texture_view: level.texture_view,
                 });
             }
         }

@@ -151,19 +151,7 @@ fn append_blur_bindings<'a>(
             backdrop_blur_pass_resource_bindings(buffers, source.target.texture_view, sampler),
         ));
     }
-    // Root descriptors are owned and rebound exactly once through RootColorTarget.
-    // Its logical Variant contains only borrowed IDs and must not create a
-    // second binding transaction for the same physical output.
-    let root_identity = targets.root_binding
-        .map(|root| (root.texture, root.texture_view));
     for variant in &mut targets.variants {
-        if root_identity.is_some_and(|(texture, view)| {
-            variant.levels.len() == 1
-                && variant.levels[0].texture == texture
-                && variant.levels[0].texture_view == view
-        }) {
-            continue;
-        }
         let source_view = variant
             .levels
             .last()

@@ -702,7 +702,7 @@ impl NovaRenderer {
         // large forwards-filled layer can finish without changing the revision.
         // Reconsider a rejected root once at completion, rather than freezing
         // the first moving sample's decision for the scene's entire lifetime.
-        let reconsider_color = self.frame_upload.retained_root_blur.is_none()
+        let reconsider_color = self.frame_upload.root_color.is_none()
             && presentation_animation_values.iter().any(|current| {
                 current.progress == 1.
                     && self.frame_upload.sampled_animation_values.iter().any(|previous| {
@@ -719,7 +719,7 @@ impl NovaRenderer {
             && !reconsider_color;
         // Once useful static window color is resident, finishing/removing a
         // small animation does not make those cached pixels disposable.
-        let keep_retained_root = self.frame_upload.retained_root_blur.is_some()
+        let keep_retained_root = self.frame_upload.root_color.is_some()
             && self.retained_upload.key.is_some_and(|previous| {
                 previous.size == key.size && previous.premultiplied_alpha == key.premultiplied_alpha
             });
@@ -799,7 +799,7 @@ impl NovaRenderer {
                     || should_retain_complex_scene_color(scene, &summary))
             {
                 self.frame_upload
-                    .append_retained_root(self.current_size, &mut summary);
+                    .append_root_color(self.current_size, &mut summary);
             }
             log::trace!(
                 target: "gpui::diagnostics",
@@ -807,7 +807,7 @@ impl NovaRenderer {
                 scene.revision,
                 auto_background.is_some(),
                 captured_static_prefix,
-                self.frame_upload.retained_root_blur.is_some(),
+                self.frame_upload.root_color.is_some(),
                 keep_retained_root,
                 crate::paint::requires_full_redraw_fallback(scene),
                 self.frame_upload.renderer_extensions.len(),
@@ -1050,7 +1050,7 @@ mod tests {
         ));
         assert_eq!(upload.element_blur_inputs.len(), 2,
             "the background and popup retain two independent sources");
-        assert!(upload.retained_root_blur.is_none(),
+        assert!(upload.root_color.is_none(),
             "the full-window root capture must not wrap the popup");
         upload.refresh_blur_content_ranges();
         assert_eq!(upload.blur_content_ranges().len(), 2);

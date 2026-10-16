@@ -1,5 +1,6 @@
 //! Window-owned color residency. Filter topology never owns or retires these resources.
 use super::*;
+use crate::platform::nova::composite_target::DirectCompositeTarget;
 
 #[derive(Default)]
 pub(super) struct RootColor {
@@ -18,6 +19,14 @@ pub(super) struct Descriptor {
 }
 
 impl RootColor {
+    pub(super) fn source_target(&self, slot: usize) -> Option<DirectCompositeTarget> {
+        let root = self.target.as_ref()?;
+        Some(DirectCompositeTarget {
+            texture_view: root.target.texture_view,
+            source_resource_set: *root.pass_resource_sets.get(slot)?,
+        })
+    }
+
     pub(super) fn identity(&self) -> Option<(TextureId, TextureViewId)> {
         self.target
             .as_ref()
@@ -54,6 +63,25 @@ impl RootColor {
     pub(super) fn take_target(&mut self) -> Option<RootColorTarget> {
         self.invalidate();
         self.target.take()
+    }
+}
+
+/// Resolve compositor bindings from their actual GPU owner. Root does not depend on a Filter slot.
+pub(super) fn composite_resource_set(
+    root: &RootColor,
+    root_index: Option<u32>,
+    filters: Option<&BackdropBlurTargets>,
+    config: BackdropBlurConfig,
+    slot: usize,
+) -> Option<ResourceSetId> {
+    if root_index.is_some_and(|index| config.exclusively_contains_member_index(index)) {
+        root.target
+            .as_ref()?
+            .composite_resource_sets
+            .get(slot)
+            .copied()
+    } else {
+        filters?.resource_set_for_config(config, slot)
     }
 }
 
@@ -162,7 +190,7 @@ impl NovaRenderer {
     }
 
     pub(super) fn ensure_root_color(&mut self) -> Result<()> {
-        if self.frame_upload.retained_root_blur.is_none() || self.root_color.target.is_some() {
+        if self.frame_upload.root_color.is_none() || self.root_color.target.is_some() {
             return Ok(());
         }
         let descriptor = Descriptor {
@@ -224,6 +252,23 @@ mod tests {
             pass_resource_sets: vec![ResourceSetId::from_parts(20, 1)],
             composite_resource_sets: vec![ResourceSetId::from_parts(21, 1)],
         }
+    }
+
+    #[test]
+    fn root_bindings_resolve_without_any_filter_target_chain() {
+        let mut root = RootColor::default();
+        root.target = Some(target(1));
+        let config = test_zero_radius_blur_config(3);
+        assert_eq!(
+            composite_resource_set(&root, Some(3), None, config, 0),
+            Some(ResourceSetId::from_parts(21, 1))
+        );
+        assert_eq!(
+            root.source_target(0).unwrap().source_resource_set,
+            ResourceSetId::from_parts(20, 1)
+        );
+        assert!(composite_resource_set(&root, Some(2), None, config, 0).is_none());
+        assert!(composite_resource_set(&root, Some(3), None, config, 1).is_none());
     }
 
     #[test]

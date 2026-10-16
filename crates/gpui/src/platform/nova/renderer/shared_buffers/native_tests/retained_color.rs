@@ -254,14 +254,14 @@ fn verify(backend: RendererBackend) {
                 &[popup_sample(0., placement), panel_sample(0.5)],
                 BackdropBlurQuality::default(),
             );
-            assert!(renderer.frame_upload.retained_root_blur.is_none());
+            assert!(renderer.frame_upload.root_color.is_none());
             renderer.pack_scene(
                 &scene, &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(1.)],
                 BackdropBlurQuality::default(),
             );
             assert!(
-                renderer.frame_upload.retained_root_blur.is_some(),
+                renderer.frame_upload.root_color.is_some(),
                 "same-revision panel completion must reconsider color retention"
             );
             renderer.retained_upload.invalidate_encode_key();
@@ -283,7 +283,7 @@ fn verify(backend: RendererBackend) {
                 [popup_sample(0.1, placement), panel_sample(1.)],
                 false,
             );
-            assert!(renderer.frame_upload.retained_root_blur.is_some());
+            assert!(renderer.frame_upload.root_color.is_some());
             let complete = pixels(
                 &mut renderer,
                 &scene,
@@ -305,7 +305,7 @@ fn verify(backend: RendererBackend) {
                 true,
             );
             assert!(
-                renderer.frame_upload.retained_root_blur.is_some(),
+                renderer.frame_upload.root_color.is_some(),
                 "a small popup over a static page must retain page pixels"
             );
             let mut previous = 0.;
@@ -344,7 +344,7 @@ fn verify(backend: RendererBackend) {
                 );
                 let root = renderer
                     .frame_upload
-                    .retained_root_blur
+                    .root_color.map(|root| root.index)
                     .expect("retained root");
                 let layers = renderer.prepare_color_layers(&[root]);
                 assert!(

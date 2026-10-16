@@ -1,12 +1,27 @@
 use super::*;
 use smallvec::SmallVec;
 
-/// One isolated element-blur content range in the flattened upload stream.
-///
-/// The range excludes both marker batches. Ranges are stored deepest first so a child blur can be
-/// rendered and retained in its target before its parent source samples the child composite.
+/// Window color work, separate from Element/Backdrop Filter topology.
+/// `index` addresses the shared compositor shader ABI; it is not a Filter target identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::platform::nova) struct BlurContentRange {
+pub(in crate::platform::nova) struct RootColorPass {
+    pub(in crate::platform::nova) index: u32,
+    pub(in crate::platform::nova) clear_quad: u32,
+    pub(in crate::platform::nova) content_end: usize,
+}
+
+impl RootColorPass {
+    pub(in crate::platform::nova) fn content_range(self) -> ColorContentRange {
+        ColorContentRange { index: self.index, depth: 0, content_start: 0, content_end: self.content_end }
+    }
+}
+
+/// One color-source range in the flattened upload stream.
+///
+/// Filter ranges exclude their marker batches and are sorted deepest first.
+/// Root owns a separate explicit range; it executes after its child Filter outputs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::platform::nova) struct ColorContentRange {
     pub(in crate::platform::nova) index: u32,
     pub(in crate::platform::nova) depth: usize,
     pub(in crate::platform::nova) content_start: usize,
@@ -40,7 +55,7 @@ impl FrameUpload {
                             continue;
                         }
                         stack.pop();
-                        ranges.push(BlurContentRange {
+                        ranges.push(ColorContentRange {
                             index,
                             depth,
                             content_start: begin.saturating_add(1),
@@ -83,7 +98,7 @@ impl FrameUpload {
     }
 
     #[inline]
-    pub(in crate::platform::nova) fn blur_content_ranges(&self) -> &[BlurContentRange] {
+    pub(in crate::platform::nova) fn blur_content_ranges(&self) -> &[ColorContentRange] {
         &self.blur_content_ranges_cache
     }
 

@@ -15,7 +15,6 @@ impl BackdropBlurTargets {
         &self,
         config: BackdropBlurConfig,
         frame_resource_index: usize,
-        root: Option<&RootColorTarget>,
     ) -> Option<DirectCompositeTarget> {
         if config.radius() > 0.0 {
             return None;
@@ -26,17 +25,6 @@ impl BackdropBlurTargets {
             .take(self.active_variant_count)
             .find(|variant| variant.config.covers(config))?;
         let target = variant.levels.last()?;
-        // A Root Color capture samples the authoritative native owner, not
-        // descriptor IDs cached on the logical zero-radius Filter Variant.
-        if let Some(root) = root.filter(|root| {
-            root.target.texture == target.texture
-                && root.target.texture_view == target.texture_view
-        }) {
-            return Some(DirectCompositeTarget {
-                texture_view: root.target.texture_view,
-                source_resource_set: *root.pass_resource_sets.get(frame_resource_index)?,
-            });
-        }
         Some(DirectCompositeTarget {
             texture_view: target.texture_view,
             source_resource_set: *target.pass_resource_sets.get(frame_resource_index)?,

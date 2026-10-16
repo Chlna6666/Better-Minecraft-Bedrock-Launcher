@@ -1,20 +1,13 @@
 use super::*;
 
 fn retained_root_view(renderer: &NovaRenderer) -> TextureViewId {
-    let index = renderer
-        .frame_upload
-        .retained_root_blur
-        .expect("a completed popup must leave static window color resident");
-    let config = renderer
-        .frame_upload
-        .backdrop_blur_config_for_index(index)
-        .expect("root config");
     renderer
-        .filters
-        .targets
-        .as_ref()
-        .expect("targets")
-        .direct_composite_target(config, renderer.current_frame_resource_index, renderer.root_color.target.as_ref())
+        .frame_upload
+        .root_color.map(|root| root.index)
+        .expect("a completed popup must leave static window color resident");
+    renderer
+        .root_color
+        .source_target(renderer.current_frame_resource_index)
         .expect("root target")
         .texture_view
 }
@@ -41,7 +34,7 @@ pub(super) fn verify(
     for _ in 0..3 {
         let local = pixels(renderer, &closed, target, 0., [], false);
         assert!(
-            renderer.frame_upload.retained_root_blur.is_some(),
+            renderer.frame_upload.root_color.is_some(),
             "removing a finished popup must keep static window color resident"
         );
         assert_eq!(
@@ -135,7 +128,7 @@ fn verify_root_reactivation(
         ],
         false,
     );
-    assert!(renderer.frame_upload.retained_root_blur.is_some());
+    assert!(renderer.frame_upload.root_color.is_some());
     assert!(renderer.root_color.content_version().is_some());
     let full = pixels(
         renderer,
@@ -173,7 +166,7 @@ fn present_auto_static(renderer: &mut NovaRenderer, target: (TextureId, TextureV
         [popup_sample(0.8, PopupPlacement::Sibling)],
         true,
     );
-    assert!(renderer.frame_upload.retained_root_blur.is_none());
+    assert!(renderer.frame_upload.root_color.is_none());
     assert!(renderer.root_color.content_version().is_none());
     assert!(
         captured == reference,

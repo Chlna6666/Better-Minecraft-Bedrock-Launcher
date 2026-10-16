@@ -3,9 +3,6 @@
 //! does not replace that provenance with a global cache invalidation.
 use super::*;
 
-#[cfg(test)]
-mod root_lifecycle_tests;
-
 /// Logical content version of an offscreen GPU target, advanced only when a
 /// successful Present made the freshly rendered texels eligible for reuse.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
