@@ -28,7 +28,7 @@ impl<'a> QuadChunkPlanner<'a> {
 
     /// Rejects animated, mixed-state, captured, incomplete or nonexclusive ranges.
     pub(crate) fn prove(&mut self, range: Range<usize>) -> Option<QuadChunkProof> {
-        let operations = self.scene.paint_operations.get(range.clone())?;
+        let operations = self.scene.paint_operations.get_range(range.clone())?;
         if operations.len() < 32 {
             return None;
         }
@@ -85,11 +85,13 @@ impl<'a> QuadChunkPlanner<'a> {
     }
 }
 
-fn static_quad_orders(operations: &[PaintOperation]) -> Option<(DrawOrder, DrawOrder, bool)> {
+fn static_quad_orders(
+    operations: crate::scene::OperationRange<'_>,
+) -> Option<(DrawOrder, DrawOrder, bool)> {
     let mut first = DrawOrder::MAX;
     let mut last = DrawOrder::MIN;
     let mut is_solid = None;
-    for operation in operations {
+    for operation in operations.iter() {
         let PaintOperation::Primitive(Primitive::Quad(quad)) = operation else {
             return None;
         };
@@ -127,7 +129,12 @@ pub(crate) fn range_is_replayable(scene: &Scene, range: Range<usize>) -> bool {
     }
     let mut blur_depth = 0usize;
     let mut layer_depth = 0usize;
-    for (index, operation) in scene.paint_operations[..range.end].iter().enumerate() {
+    for (index, operation) in scene
+        .paint_operations
+        .range(0..range.end)
+        .iter()
+        .enumerate()
+    {
         if index == range.start && (blur_depth != 0 || layer_depth != 0) {
             return false;
         }
@@ -159,7 +166,7 @@ pub(crate) fn paints_match(current: &Scene, previous: &Scene) -> bool {
         && current
             .paint_operations
             .iter()
-            .zip(&previous.paint_operations)
+            .zip(previous.paint_operations.iter())
             .all(|(current, previous)| match (current, previous) {
                 (PaintOperation::Primitive(current), PaintOperation::Primitive(previous)) => {
                     current.visually_eq(previous)
@@ -197,7 +204,7 @@ pub(crate) fn filter_source_matches(
     for (current, old) in scene
         .paint_operations
         .iter()
-        .zip(&previous.paint_operations)
+        .zip(previous.paint_operations.iter())
     {
         if !current.visually_eq(old) {
             return false;

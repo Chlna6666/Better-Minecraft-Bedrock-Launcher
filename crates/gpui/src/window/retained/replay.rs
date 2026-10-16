@@ -145,7 +145,10 @@ mod tests {
         }
         // A corrupted unmatched close must poison only ranges reaching it,
         // not an earlier completed prefix. The index retains this fact.
-        scene.paint_operations.insert(134, PaintOperation::EndBlur);
+        let mut operations: Vec<_> = scene.paint_operations.iter().cloned().collect();
+        operations.insert(134, PaintOperation::EndBlur);
+        scene.paint_operations.clear();
+        scene.paint_operations.extend(operations);
         scene.revision = 2;
         for start in 0..=scene.paint_operations.len() {
             let end = scene.paint_operations.len();

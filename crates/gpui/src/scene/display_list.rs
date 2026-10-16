@@ -18,7 +18,7 @@ use super::{
 pub(crate) struct Scene {
     /// Identity of the last completed static display list. Animation values are independent.
     pub(crate) revision: u64,
-    pub(crate) paint_operations: Vec<PaintOperation>,
+    pub(crate) paint_operations: super::Operations,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
     pub(crate) shadows: Vec<Shadow>,
@@ -125,7 +125,7 @@ impl Scene {
 
     pub(crate) fn bounds_for_range(&self, range: Range<usize>) -> Option<Bounds<ScaledPixels>> {
         let mut bounds = None::<Bounds<ScaledPixels>>;
-        for operation in self.paint_operations.get(range.clone())? {
+        for operation in self.paint_operations.get_range(range.clone())?.iter() {
             let operation_bounds = match operation {
                 PaintOperation::Primitive(primitive) => Some(primitive.visual_bounds()),
                 // Paint layers are ordering metadata, not pixel producers. Including their
@@ -369,7 +369,7 @@ impl Scene {
     }
 
     pub(crate) fn collect_animation_ids_into(&self, ids: &mut FxHashSet<SceneAnimationId>) {
-        for operation in &self.paint_operations {
+        for operation in self.paint_operations.iter() {
             match operation {
                 PaintOperation::Primitive(primitive) => {
                     if let Some(animation_id) = primitive.animation_id() {
@@ -600,7 +600,7 @@ impl Scene {
         if previous.animation_values.is_empty() {
             return;
         }
-        let referenced: FxHashSet<_> = previous.paint_operations[range]
+        let referenced: FxHashSet<_> = previous.paint_operations.range(range)
             .iter()
             .filter_map(|operation| match operation {
                 PaintOperation::Primitive(primitive) => primitive.animation_id(),
@@ -721,18 +721,18 @@ impl Scene {
         if !self.blur_captures.is_empty() || span.paint_range.is_empty()
             || span.paint_range.len() != span.quad_range.len()
         { return false; }
-        let Some(operations) = previous.paint_operations.get(span.paint_range.clone()) else { return false; };
+        let Some(operations) = previous.paint_operations.get_range(span.paint_range.clone()) else { return false; };
         if !operations.iter().all(|operation| matches!(operation,
             PaintOperation::Primitive(Primitive::Quad(quad))
                 if quad.animation_id.is_none() && self.layer_stack.last().is_none_or(|order| *order == quad.order)
         )) { return false; }
-        for operation in operations {
+        for operation in operations.iter() {
             let PaintOperation::Primitive(primitive) = operation else { unreachable!() };
             if self.layer_stack.is_empty() {
                 self.primitive_bounds.insert_with_order(Self::ordering_bounds(primitive), primitive.order());
             }
-            self.paint_operations.push(PaintOperation::Primitive(primitive.clone()));
         }
+        self.paint_operations.share(&previous.paint_operations, span.paint_range.clone());
         self.quads.share(&previous.quads, span.quad_range.clone());
         self.replayed_primitives += operations.len();
         true
@@ -740,21 +740,22 @@ impl Scene {
 
     fn ordering_prefix_matches_previous(&self, prev_scene: &Scene, prefix_end: usize) -> bool {
         let prefix_start = self.retained_prefix_verified_len;
-        let Some(current_prefix) = self.paint_operations.get(prefix_start..prefix_end) else {
+        let Some(current_prefix) = self.paint_operations.get_range(prefix_start..prefix_end) else {
             return false;
         };
-        let Some(previous_prefix) = prev_scene.paint_operations.get(prefix_start..prefix_end)
+        let Some(previous_prefix) = prev_scene.paint_operations.get_range(prefix_start..prefix_end)
         else {
             return false;
         };
 
         current_prefix
             .iter()
-            .zip(previous_prefix)
+            .zip(previous_prefix.iter())
             .all(|(current, previous)| ordering_operations_match(current, previous))
     }
 
     pub fn finish(&mut self) {
+        self.paint_operations.finish();
         debug_assert!(
             self.blur_captures.is_empty(),
             "element blur capture must be closed before finishing a scene"
@@ -907,11 +908,9 @@ impl Scene {
             .recent_peak_paint_operations
             .max(SCENE_MIN_RETAINED_CAPACITY);
 
-        trim_vec_capacity(
-            &mut self.paint_operations,
-            paint_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.paint_operations.capacity() > paint_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.paint_operations.shrink_to(paint_floor);
+        }
         trim_vec_capacity(
             &mut self.shadows,
             primitive_floor,

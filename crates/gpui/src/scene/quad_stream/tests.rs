@@ -163,10 +163,12 @@ fn retained() -> PaintFixture {
 fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     let mut previous = retained();
     let original = &previous.quads[0] as *const Quad;
+    let operation = &previous.paint_operations[0] as *const _;
     let mut current = PaintFixture::default();
     current.replay(0..previous.len(), &previous);
     current.finish();
     assert_eq!(&current.quads[0] as *const Quad, original);
+    assert_eq!(&current.paint_operations[0] as *const _, operation);
     assert_eq!(current.chunks()[0].id, previous.chunks()[0].id);
     assert!(current.chunks()[0].replayed);
     let mut reference = Scene::default();
@@ -185,6 +187,7 @@ fn window_replay_preserves_cpu_payload_and_gpu_chunk_identity() {
     );
     previous.clear();
     assert_eq!(&current.quads[0] as *const Quad, original);
+    assert_eq!(&current.paint_operations[0] as *const _, operation);
     assert_eq!(current.quads.len(), 32);
 }
 

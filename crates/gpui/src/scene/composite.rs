@@ -48,7 +48,9 @@ impl Scene {
             return;
         };
 
-        let Some(pixel_bounds) = self.paint_operations[operation_start + 1..operation_end]
+        let Some(pixel_bounds) = self
+            .paint_operations
+            .range(operation_start + 1..operation_end)
             .iter()
             .filter_map(PaintOperation::visual_bounds)
             .reduce(|left, right| left.union(&right))
@@ -60,20 +62,22 @@ impl Scene {
             return;
         }
 
-        if let Some(PaintOperation::StartBlur(capture)) =
-            self.paint_operations.get_mut(operation_start)
-        {
-            capture.bounds = tight_bounds;
-            capture.radius = ScaledPixels(0.0);
-        }
+        self.paint_operations
+            .edit(operation_start..operation_start + 1, |operation| {
+                if let PaintOperation::StartBlur(capture) = operation {
+                    capture.bounds = tight_bounds;
+                    capture.radius = ScaledPixels(0.0);
+                }
+            });
 
         // Retained replay feeds these operations back through Scene::begin_blur/end_blur. Clamp
         // structural layer bounds now so the replayed capture cannot grow back to its layout box.
-        for operation in &mut self.paint_operations[operation_start + 1..operation_end] {
-            if let PaintOperation::StartLayer(bounds) = operation {
-                *bounds = bounds.intersect(&tight_bounds);
-            }
-        }
+        self.paint_operations
+            .edit(operation_start + 1..operation_end, |operation| {
+                if let PaintOperation::StartLayer(bounds) = operation {
+                    *bounds = bounds.intersect(&tight_bounds);
+                }
+            });
 
         let blur = &mut self.blurs[blur_index];
         blur.bounds = tight_bounds;

@@ -47,7 +47,7 @@ impl StaticForegroundPartition {
 fn classify_static_foreground(scene: &crate::Scene) -> StaticForegroundPartition {
     let mut partition = StaticForegroundPartition::default();
     let mut saw_animation = false;
-    for operation in &scene.paint_operations {
+    for operation in scene.paint_operations.iter() {
         let crate::scene::PaintOperation::Primitive(primitive) = operation else {
             // StartLayer/EndLayer express batching and layout, not raster
             // ownership. Actual blur/filter scenes are excluded by the caller.

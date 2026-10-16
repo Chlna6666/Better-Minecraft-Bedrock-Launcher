@@ -55,6 +55,10 @@ fn replay_with_gap(renderer: &NovaRenderer, base: &crate::window::retained::Pain
     scene.replay(0..base.len(), base);
     scene.insert_primitive(quad(renderer, false, color));
     scene.finish();
+    for index in [1, 35] {
+        assert!(std::ptr::eq(&scene.paint_operations[index], &base.paint_operations[index]),
+            "retained operation payload must survive without a per-frame clone");
+    }
     scene
 }
 
@@ -214,7 +218,7 @@ pub(super) fn verify(renderer: &mut NovaRenderer) {
     let (first, delta) = verify_replay(renderer, &base);
     let fresh = verify_cow(renderer, &base);
     println!(
-        "P2-B {}: cpu_paint_shared_quads=64 shared_payload=12288 B owned_gap=192 B owned_capacity={} B replay_copy=0 B quad_upload={first}->{delta} B cow_full={fresh} B; chunk backing, dirty upload, old/new pixels and COW full refill verified",
+        "P2-B {}: cpu_paint_shared_quads=64 cpu_paint_shared_operations=64 shared_payload=12288 B owned_gap=192 B owned_capacity={} B replay_copy=0 B quad_upload={first}->{delta} B cow_full={fresh} B; chunk backing, dirty upload, old/new pixels and COW full refill verified",
         renderer.backend_info.label(),
         renderer.frame_upload.quads.capacity()
     );

@@ -178,11 +178,11 @@ pub(super) fn auto_capture_static_background(
     // The static prefix is Quad/Shadow-only; a zero-filter popup contributes
     // its output as a later Primitive::Blur, never as a member of the prefix.
     // Keep its draw-order barrier intact to avoid moving a popup behind chrome.
-    let mut foreground_orders = top_level_orders(scene, &scene.paint_operations[prefix_end..]);
+    let mut foreground_orders = top_level_orders(scene, scene.paint_operations.range(prefix_end..scene.len()));
     let Some(first_dynamic_order) = foreground_orders.clone().next().flatten() else {
         return reject_auto_static_capture(scene, "foreground_without_draw_order");
     };
-    if scene.paint_operations[..prefix_end]
+    if scene.paint_operations.range(0..prefix_end)
         .iter()
         .any(|operation| {
             matches!(operation, PaintOperation::Primitive(primitive)
@@ -217,7 +217,7 @@ pub(super) fn auto_capture_static_background(
 /// identity rejects admission. The caller has already proved balanced captures.
 fn top_level_orders<'a>(
     scene: &'a crate::Scene,
-    operations: &'a [crate::scene::PaintOperation],
+    operations: crate::scene::OperationRange<'a>,
 ) -> impl Iterator<Item = Option<crate::DrawOrder>> + Clone + 'a {
     use crate::scene::PaintOperation;
     let mut capture_depth = 0usize;

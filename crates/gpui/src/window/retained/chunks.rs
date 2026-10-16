@@ -47,6 +47,7 @@ impl RetainedPaint {
             self.prepared_retained_quad_chunks[*index].paint_range.start
         });
         scene.quads.compact();
+        scene.paint_operations.compact();
 
         self.finished = true;
         self.revision = scene.revision;

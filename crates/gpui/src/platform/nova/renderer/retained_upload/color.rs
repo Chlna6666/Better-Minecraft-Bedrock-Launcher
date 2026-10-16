@@ -49,7 +49,7 @@ fn raster_work(
     let mut animated_area = 0.;
     let mut has_animation = false;
     let mut capture_depth = 0usize;
-    for operation in &scene.paint_operations {
+    for operation in scene.paint_operations.iter() {
         let primitive = match operation {
             crate::scene::PaintOperation::StartBlur(_) => {
                 capture_depth += 1;
@@ -385,12 +385,12 @@ mod tests {
         scene.insert_primitive(quad(64., 64., false));
         assert!(!should_retain_local_animation(&scene, SIZE, &[running(1)]));
         scene.insert_primitive(quad(8., 8., true));
-        let crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(first)) =
-            &mut scene.paint_operations[0]
-        else {
-            panic!("first quad");
-        };
-        first.content_mask.bounds.size.width = crate::ScaledPixels(1.);
+        scene.paint_operations.edit(0..1, |operation| {
+            let crate::scene::PaintOperation::Primitive(crate::Primitive::Quad(first)) = operation else {
+                panic!("first quad");
+            };
+            first.content_mask.bounds.size.width = crate::ScaledPixels(1.);
+        });
         assert!(!should_retain_local_animation(&scene, SIZE, &[running(1)]));
     }
 }

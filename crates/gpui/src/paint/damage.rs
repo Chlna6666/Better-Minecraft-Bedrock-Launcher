@@ -18,16 +18,17 @@ fn visit_changed_bounds(
     previous_range: Range<usize>,
     mut visit: &mut dyn FnMut(Bounds<ScaledPixels>),
 ) -> bool {
-    let Some(current) = scene.paint_operations.get(current_range.clone()) else {
+    let Some(current) = scene.paint_operations.get_range(current_range.clone()) else {
         return false;
     };
-    let Some(previous_operations) = previous.paint_operations.get(previous_range.clone()) else {
+    let Some(previous_operations) = previous.paint_operations.get_range(previous_range.clone())
+    else {
         return false;
     };
 
     let prefix_len = current
         .iter()
-        .zip(previous_operations)
+        .zip(previous_operations.iter())
         .take_while(|(current, previous_operation)| {
             paint_operations_match_for_damage(scene, current, previous, previous_operation)
         })
@@ -47,8 +48,8 @@ fn visit_changed_bounds(
         .count();
 
     let previous_changed =
-        &previous_operations[prefix_len..previous_operations.len().saturating_sub(suffix_len)];
-    let current_changed = &current[prefix_len..current.len().saturating_sub(suffix_len)];
+        previous_operations.range(prefix_len..previous_operations.len().saturating_sub(suffix_len));
+    let current_changed = current.range(prefix_len..current.len().saturating_sub(suffix_len));
     // An unchanged zero-radius capture has identity source coordinates.
     // Its child Scene may differ in one small quad while the enclosing
     // PaintBlur still covers the entire page. Damaging that entire output
@@ -59,10 +60,17 @@ fn visit_changed_bounds(
     // transforms, Gaussian support, nested filters and backdrop sources.
     // Only one aligned changed composite is refined; any structural
     // uncertainty falls back to the full old/new output bounds below.
-    let refined_identity_capture = match (previous_changed, current_changed) {
+    let refined_identity_capture = match (
+        previous_changed.len(),
+        previous_changed.get(0),
+        current_changed.len(),
+        current_changed.get(0),
+    ) {
         (
-            [PaintOperation::Primitive(Primitive::Blur(old))],
-            [PaintOperation::Primitive(Primitive::Blur(new))],
+            1,
+            Some(PaintOperation::Primitive(Primitive::Blur(old))),
+            1,
+            Some(PaintOperation::Primitive(Primitive::Blur(new))),
         ) if old.order == new.order
             && old.layer_id == new.layer_id
             && old.animation_id.is_none()
@@ -103,12 +111,12 @@ fn visit_changed_bounds(
         _ => false,
     };
     if !refined_identity_capture {
-        for operation in previous_changed {
+        for operation in previous_changed.iter() {
             if let Some(bounds) = operation.visual_bounds() {
                 visit(bounds);
             }
         }
-        for operation in current_changed {
+        for operation in current_changed.iter() {
             if let Some(bounds) = operation.visual_bounds() {
                 visit(bounds);
             }
@@ -160,14 +168,14 @@ pub(crate) fn requires_full_redraw_fallback(scene: &Scene) -> bool {
 }
 
 pub(crate) fn collect_paint_operation_damage(
-    current: &[PaintOperation],
-    previous: &[PaintOperation],
+    current: crate::scene::OperationRange<'_>,
+    previous: crate::scene::OperationRange<'_>,
     region: Bounds<ScaledPixels>,
     mut visit: impl FnMut(Bounds<ScaledPixels>),
 ) {
     let prefix_len = current
         .iter()
-        .zip(previous)
+        .zip(previous.iter())
         .take_while(|(current, previous)| current.visually_eq(previous))
         .count();
     let max_suffix_len = current.len().min(previous.len()).saturating_sub(prefix_len);
@@ -179,11 +187,12 @@ pub(crate) fn collect_paint_operation_damage(
         .take_while(|(current, previous)| current.visually_eq(previous))
         .count();
 
-    let current_changed = &current[prefix_len..current.len().saturating_sub(suffix_len)];
-    let previous_changed = &previous[prefix_len..previous.len().saturating_sub(suffix_len)];
+    let current_changed = current.range(prefix_len..current.len().saturating_sub(suffix_len));
+    let previous_changed = previous.range(prefix_len..previous.len().saturating_sub(suffix_len));
 
     if current_changed.len() == previous_changed.len() {
-        for (current_operation, previous_operation) in current_changed.iter().zip(previous_changed)
+        for (current_operation, previous_operation) in
+            current_changed.iter().zip(previous_changed.iter())
         {
             if visit_opaque_solid_quad_move_damage(
                 current_operation,
@@ -201,7 +210,7 @@ pub(crate) fn collect_paint_operation_damage(
 
     current_changed
         .iter()
-        .chain(previous_changed)
+        .chain(previous_changed.iter())
         .for_each(|operation| visit_operation_damage(operation, region, &mut visit));
 }
 

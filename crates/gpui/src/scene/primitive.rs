@@ -29,6 +29,7 @@ pub(crate) enum PrimitiveKind {
     RendererExtension,
 }
 
+#[derive(Clone)]
 pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
@@ -293,7 +294,7 @@ impl PartialEq for PaintBlur {
                         .content
                         .paint_operations
                         .iter()
-                        .zip(&other.content.paint_operations)
+                        .zip(other.content.paint_operations.iter())
                         .all(|(left, right)| left.visually_eq(right))))
     }
 }

@@ -104,8 +104,8 @@ pub(crate) fn backdrop_blur_damage_plan(
         return plan;
     }
 
-    let current_blurs = backdrop_blur_operations(&scene.paint_operations);
-    let previous_blurs = backdrop_blur_operations(&previous.paint_operations);
+    let current_blurs = backdrop_blur_operations(scene.paint_operations.all());
+    let previous_blurs = backdrop_blur_operations(previous.paint_operations.all());
     if current_blurs.clone().count() != previous_blurs.clone().count() {
         for (_, blur) in current_blurs {
             plan.mark_full(blur.order);
@@ -125,8 +125,8 @@ pub(crate) fn backdrop_blur_damage_plan(
             continue;
         }
         collect_paint_operation_damage(
-            &scene.paint_operations[..current_index],
-            &previous.paint_operations[..previous_index],
+            scene.paint_operations.range(0..current_index),
+            previous.paint_operations.range(0..previous_index),
             source_region,
             |damage| plan.push(current_blur.order, damage),
         );
@@ -170,7 +170,7 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
         return;
     }
 
-    for (blur_index, blur) in backdrop_blur_operations(&scene.paint_operations) {
+    for (blur_index, blur) in backdrop_blur_operations(scene.paint_operations.all()) {
         if animation_value_changed(
             scene,
             previous_scene,
@@ -206,7 +206,7 @@ pub(crate) fn collect_backdrop_blur_animation_damage(
         if source_region.is_empty() {
             continue;
         }
-        for operation in &scene.paint_operations[..blur_index] {
+        for operation in scene.paint_operations.range(0..blur_index).iter() {
             let damage = match operation {
                 PaintOperation::Primitive(primitive)
                     if animation_value_changed(
@@ -271,7 +271,7 @@ pub(crate) fn backdrop_blur_output_damage(
     plan: &BackdropBlurDamagePlan,
 ) -> impl Iterator<Item = Bounds<ScaledPixels>> {
     let mut output_damage = SmallVec::<[Bounds<ScaledPixels>; 8]>::new();
-    for (_, blur) in backdrop_blur_operations(&scene.paint_operations) {
+    for (_, blur) in backdrop_blur_operations(scene.paint_operations.all()) {
         let (full_refresh, source_damage) = plan.source_damage_for_orders(blur.order, blur.order);
         if full_refresh {
             let bounds = blur.bounds.intersect(&blur.content_mask.bounds);
@@ -317,7 +317,7 @@ pub(crate) fn collect_backdrop_blur_damage(
 }
 
 pub(crate) fn backdrop_blur_operations(
-    operations: &[PaintOperation],
+    operations: crate::scene::OperationRange<'_>,
 ) -> impl Iterator<Item = (usize, &PaintBackdropBlur)> + Clone {
     operations
         .iter()

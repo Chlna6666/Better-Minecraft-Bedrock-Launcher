@@ -8,6 +8,7 @@ mod composite;
 mod display_list;
 pub(crate) mod geometry;
 mod prepared;
+mod operations;
 mod primitive;
 mod quad_stream;
 #[cfg(test)]
@@ -19,5 +20,6 @@ pub(crate) use batch::*;
 pub(crate) use bounds_tree::BoundsTree;
 pub(crate) use display_list::*;
 pub(crate) use prepared::*;
+pub(crate) use operations::{Operations, OperationRange};
 pub(crate) use primitive::*;
 pub(crate) use quad_stream::{QuadReplay, QuadStream};
