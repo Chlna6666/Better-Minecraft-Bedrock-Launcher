@@ -458,7 +458,7 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
-                PrimitiveBatch::Quads(quads) => self.draw_quads(
+                PrimitiveBatch::Quads { quads, .. } => self.draw_quads(
                     quads,
                     instance_buffer,
                     &mut instance_offset,

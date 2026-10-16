@@ -1,5 +1,5 @@
 use crate::{AtlasTextureId, ScaledPixels};
-use std::{iter::Peekable, slice};
+use std::{iter::Peekable, ops::Range, slice};
 
 use super::{
     DrawOrder, MonochromeSprite, MonochromeSpriteSampling, PaintBackdropBlur, PaintBlur,
@@ -41,9 +41,7 @@ pub(super) struct BatchIterator<'a> {
     pub(super) shadows: &'a [Shadow],
     pub(super) shadows_start: usize,
     pub(super) shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
-    pub(super) quads: &'a [Quad],
-    pub(super) quads_start: usize,
-    pub(super) quads_iter: Peekable<slice::Iter<'a, Quad>>,
+    pub(super) quads_iter: super::quad_stream::QuadCursor<'a>,
     pub(super) paths: &'a [Path<ScaledPixels>],
     pub(super) paths_start: usize,
     pub(super) paths_iter: Peekable<slice::Iter<'a, Path<ScaledPixels>>>,
@@ -137,18 +135,12 @@ impl<'a> Iterator for BatchIterator<'a> {
                 ))
             }
             PrimitiveKind::Quad => {
-                let quads_start = self.quads_start;
-                let mut quads_end = quads_start + 1;
-                self.quads_iter.next();
-                while self
-                    .quads_iter
-                    .next_if(|quad| (quad.order, batch_kind) < max_order_and_kind)
-                    .is_some()
-                {
-                    quads_end += 1;
-                }
-                self.quads_start = quads_end;
-                Some(PrimitiveBatch::Quads(&self.quads[quads_start..quads_end]))
+                let start = self.quads_iter.position();
+                let quads = self.quads_iter.remaining();
+                let count = quads.partition_point(|quad| (quad.order, batch_kind) < max_order_and_kind);
+                debug_assert!(count > 0, "selected Quad precedes the next batch candidate");
+                self.quads_iter.advance(count);
+                Some(PrimitiveBatch::Quads { quads: &quads[..count], range: start..start + count })
             }
             PrimitiveKind::Path => {
                 let paths_start = self.paths_start;
@@ -302,7 +294,7 @@ impl<'a> Iterator for BatchIterator<'a> {
 )]
 pub(crate) enum PrimitiveBatch<'a> {
     Shadows(&'a [Shadow]),
-    Quads(&'a [Quad]),
+    Quads { quads: &'a [Quad], range: Range<usize> },
     Paths(&'a [Path<ScaledPixels>]),
     Underlines(&'a [Underline]),
     MonochromeSprites {

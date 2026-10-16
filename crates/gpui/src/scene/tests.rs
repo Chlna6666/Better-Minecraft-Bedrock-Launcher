@@ -966,10 +966,10 @@ fn element_blur_replay_keeps_one_isolated_content_scene() {
     );
     let first = element_blur_scene(child_bounds);
     let mut second = Scene::default();
-    second.replay(0..first.len(), &first);
+    second.replay(0..first.len(), &first, &[]);
     second.finish();
     let mut third = Scene::default();
-    third.replay(0..second.len(), &second);
+    third.replay(0..second.len(), &second, &[]);
     third.finish();
 
     let expected_bounds = first.blurs[0].bounds;
@@ -1165,7 +1165,7 @@ fn retained_prefix_replay_preserves_draw_orders() {
         .collect::<Vec<_>>();
 
     let mut replayed = Scene::default();
-    replayed.replay(0..replay_end, &previous);
+    replayed.replay(0..replay_end, &previous, &[]);
     let actual_replayed_orders = replayed
         .paint_operations
         .iter()
@@ -1222,7 +1222,7 @@ fn retained_suffix_replay_accepts_matching_rebuilt_prefix() {
 
     let mut replayed = Scene::default();
     replayed.insert_primitive(first);
-    replayed.replay(1..previous.len(), &previous);
+    replayed.replay(1..previous.len(), &previous, &[]);
 
     assert!(!replayed.retained_prefix_invalid);
     assert_eq!(replayed.retained_prefix_verified_len, previous.len());
@@ -1270,7 +1270,7 @@ fn retained_suffix_replay_recomputes_after_prefix_bounds_change() {
 
     let mut replayed = Scene::default();
     replayed.insert_primitive(changed_first);
-    replayed.replay(1..previous.len(), &previous);
+    replayed.replay(1..previous.len(), &previous, &[]);
 
     assert!(replayed.retained_prefix_invalid);
 }
@@ -1370,13 +1370,13 @@ fn replay_preserves_only_referenced_samples_and_keeps_newer_values() {
     previous.push_animation_value(sample(id, 0.25));
     previous.push_animation_value(sample(SceneAnimationId(id.0 + 1), 0.5));
     let mut replayed = Scene::default();
-    replayed.replay(range.clone(), &previous);
+    replayed.replay(range.clone(), &previous, &[]);
     assert_eq!(replayed.animation_values, vec![sample(id, 0.25)]);
-    replayed.replay(range.clone(), &previous);
+    replayed.replay(range.clone(), &previous, &[]);
     assert_eq!(replayed.animation_values.len(), 1);
     let mut updated = Scene::default();
     updated.push_animation_value(sample(id, 0.75));
-    updated.replay(range, &previous);
+    updated.replay(range, &previous, &[]);
     assert_eq!(updated.animation_values, vec![sample(id, 0.75)]);
 }
 

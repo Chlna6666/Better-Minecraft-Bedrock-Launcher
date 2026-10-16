@@ -734,7 +734,8 @@ impl Window {
             .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index);
         let old_scene_range = range.start.scene_index..range.end.scene_index;
         let replay_start = self.next_frame.scene.len();
-        if self.next_frame.scene.replay(old_scene_range.clone(), &self.rendered_frame.scene) {
+        let spans = self.rendered_frame.retained_paint.replay_quads(&self.rendered_frame.scene, old_scene_range.clone());
+        if self.next_frame.scene.replay(old_scene_range.clone(), &self.rendered_frame.scene, &spans) {
             Arc::get_mut(&mut self.next_frame.retained_paint).expect("unpublished paint retention")
                 .replay(old_scene_range, &self.rendered_frame.retained_paint, replay_start);
         }

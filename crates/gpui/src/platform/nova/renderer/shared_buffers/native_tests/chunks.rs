@@ -133,6 +133,12 @@ fn verify_replay(renderer: &mut NovaRenderer, base: &crate::window::retained::Pa
         .map(Arc::clone)
         .collect();
     let green = replay_with_gap(renderer, base, 0x00ff00);
+    for index in [0, 32] {
+        assert_eq!(
+            &green.quads[index] as *const Quad, &base.quads[index] as *const Quad,
+            "Window replay must share CPU Paint as well as packed GPU bytes",
+        );
+    }
     let delta = upload(renderer, 0, &green, &green.retention);
     assert_eq!(delta, PACKED_QUAD_BYTES, "only the new gap uploads");
     assert_eq!(renderer.frame_upload.quads.owned_len(), PACKED_QUAD_BYTES);
@@ -208,7 +214,7 @@ pub(super) fn verify(renderer: &mut NovaRenderer) {
     let (first, delta) = verify_replay(renderer, &base);
     let fresh = verify_cow(renderer, &base);
     println!(
-        "P2-B {}: shared_payload=12288 B owned_gap=192 B owned_capacity={} B replay_copy=0 B quad_upload={first}->{delta} B cow_full={fresh} B; chunk backing, dirty upload, old/new pixels and COW full refill verified",
+        "P2-B {}: cpu_paint_shared_quads=64 shared_payload=12288 B owned_gap=192 B owned_capacity={} B replay_copy=0 B quad_upload={first}->{delta} B cow_full={fresh} B; chunk backing, dirty upload, old/new pixels and COW full refill verified",
         renderer.backend_info.label(),
         renderer.frame_upload.quads.capacity()
     );

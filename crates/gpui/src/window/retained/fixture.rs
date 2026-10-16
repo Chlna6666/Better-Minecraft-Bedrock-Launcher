@@ -25,11 +25,14 @@ impl PaintFixture {
     }
     pub(crate) fn finish(&mut self) {
         self.paint.finish();
-        self.retention.finish(&self.paint);
+        self.retention.finish(&mut self.paint);
     }
     pub(crate) fn replay(&mut self, range: Range<usize>, previous: &Self) {
         let start = self.len();
-        if self.paint.replay(range.clone(), &previous.paint) {
+        let spans = previous
+            .retention
+            .replay_quads(&previous.paint, range.clone());
+        if self.paint.replay(range.clone(), &previous.paint, &spans) {
             self.retention.replay(range, &previous.retention, start);
         }
     }

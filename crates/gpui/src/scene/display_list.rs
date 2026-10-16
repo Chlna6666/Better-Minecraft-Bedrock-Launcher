@@ -10,7 +10,7 @@ use super::{
     BatchIterator, BlurCapture, DrawOrder, MonochromeSprite, PaintBackdropBlur, PaintBlur,
     PaintOperation, PaintRendererExtension, PaintSurface, Path, PathId, PolychromeSprite,
     PreparedBackdropBlurGroup, PreparedQuadRun, PreparedSceneBatch, PreparedSceneBatches,
-    Primitive, PrimitiveBatch, Quad, SceneAnimationId, SceneAnimationValue, Shadow, Underline,
+    Primitive, PrimitiveBatch, SceneAnimationId, SceneAnimationValue, Shadow, Underline,
     blur_influence_radius,
 };
 
@@ -22,7 +22,7 @@ pub(crate) struct Scene {
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
     pub(crate) shadows: Vec<Shadow>,
-    pub(crate) quads: Vec<Quad>,
+    pub(crate) quads: super::QuadStream,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
     pub(crate) underlines: Vec<Underline>,
     pub(crate) monochrome_sprites: Vec<MonochromeSprite>,
@@ -628,7 +628,9 @@ impl Scene {
 
     /// Replays Paint operations and reports whether their draw-order mapping was preserved.
     /// Retention owners use this result to decide whether separately owned Chunk metadata is reusable.
-    pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) -> bool {
+    /// Quad spans must be qualified against this exact source generation by the caller;
+    /// their payload is shared only while the current Layer and ordering prefix still match.
+    pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene, quad_spans: &[super::QuadReplay]) -> bool {
         self.replay_animation_values(range.clone(), prev_scene);
         self.revision = 0;
         let range_end = range.end;
@@ -638,7 +640,21 @@ impl Scene {
         if !retain_order {
             self.retained_prefix_invalid = true;
         }
-        for operation in &prev_scene.paint_operations[range.clone()] {
+        let mut index = range.start;
+        let mut spans = quad_spans.iter().peekable();
+        while index < range.end {
+            while spans.peek().is_some_and(|span| span.paint_range.start < index) { spans.next(); }
+            if let Some(span) = spans.peek()
+                && span.paint_range.start == index && span.paint_range.end <= range.end
+                && retain_order && !self.retained_prefix_invalid
+                && self.replay_quad_span(prev_scene, span)
+            {
+                index = span.paint_range.end;
+                spans.next();
+                continue;
+            }
+            let operation = &prev_scene.paint_operations[index];
+            index += 1;
             match operation {
                 PaintOperation::Primitive(primitive) => {
                     if self.blur_captures.last().is_some() {
@@ -701,6 +717,27 @@ impl Scene {
         }
     }
 
+    fn replay_quad_span(&mut self, previous: &Scene, span: &super::QuadReplay) -> bool {
+        if !self.blur_captures.is_empty() || span.paint_range.is_empty()
+            || span.paint_range.len() != span.quad_range.len()
+        { return false; }
+        let Some(operations) = previous.paint_operations.get(span.paint_range.clone()) else { return false; };
+        if !operations.iter().all(|operation| matches!(operation,
+            PaintOperation::Primitive(Primitive::Quad(quad))
+                if quad.animation_id.is_none() && self.layer_stack.last().is_none_or(|order| *order == quad.order)
+        )) { return false; }
+        for operation in operations {
+            let PaintOperation::Primitive(primitive) = operation else { unreachable!() };
+            if self.layer_stack.is_empty() {
+                self.primitive_bounds.insert_with_order(Self::ordering_bounds(primitive), primitive.order());
+            }
+            self.paint_operations.push(PaintOperation::Primitive(primitive.clone()));
+        }
+        self.quads.share(&previous.quads, span.quad_range.clone());
+        self.replayed_primitives += operations.len();
+        true
+    }
+
     fn ordering_prefix_matches_previous(&self, prev_scene: &Scene, prefix_end: usize) -> bool {
         let prefix_start = self.retained_prefix_verified_len;
         let Some(current_prefix) = self.paint_operations.get(prefix_start..prefix_end) else {
@@ -723,7 +760,7 @@ impl Scene {
             "element blur capture must be closed before finishing a scene"
         );
         self.shadows.sort_unstable_by_key(|shadow| shadow.order);
-        self.quads.sort_unstable_by_key(|quad| quad.order);
+        self.quads.finish();
         self.paths.sort_unstable_by_key(|path| path.order);
         self.underlines
             .sort_unstable_by_key(|underline| underline.order);
@@ -757,9 +794,7 @@ impl Scene {
             shadows: &self.shadows,
             shadows_start: 0,
             shadows_iter: self.shadows.iter().peekable(),
-            quads: &self.quads,
-            quads_start: 0,
-            quads_iter: self.quads.iter().peekable(),
+            quads_iter: self.quads.cursor(),
             paths: &self.paths,
             paths_start: 0,
             paths_iter: self.paths.iter().peekable(),
@@ -882,11 +917,9 @@ impl Scene {
             primitive_floor,
             SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
         );
-        trim_vec_capacity(
-            &mut self.quads,
-            primitive_floor,
-            SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER,
-        );
+        if self.quads.capacity() > primitive_floor.saturating_mul(SCENE_IDLE_TRIM_WATERMARK_MULTIPLIER) {
+            self.quads.shrink_to(primitive_floor);
+        }
         trim_vec_capacity(
             &mut self.paths,
             primitive_floor,
@@ -947,8 +980,16 @@ impl Scene {
         let mut prepared = std::mem::take(&mut self.prepared_batches.batches);
         prepared.clear();
         for batch in self.batches() {
-            if let PrimitiveBatch::Quads(quads) = batch {
-                let range = slice_range(&self.quads, quads);
+            if let PrimitiveBatch::Quads { quads, range } = batch {
+                let mut append_run = |range: Range<usize>, is_solid| {
+                    if let Some(PreparedSceneBatch::Quads(previous)) = prepared.last_mut()
+                        && previous.is_solid == is_solid && previous.range.end == range.start
+                    {
+                        previous.range.end = range.end;
+                    } else {
+                        prepared.push(PreparedSceneBatch::Quads(PreparedQuadRun { range, is_solid }));
+                    }
+                };
                 let mut run_start = range.start;
                 let mut run_is_solid = quads.first().is_some_and(is_solid_quad);
                 for (offset, quad) in quads.iter().enumerate().skip(1) {
@@ -957,17 +998,11 @@ impl Scene {
                         continue;
                     }
                     let run_end = range.start + offset;
-                    prepared.push(PreparedSceneBatch::Quads(PreparedQuadRun {
-                        range: run_start..run_end,
-                        is_solid: run_is_solid,
-                    }));
+                    append_run(run_start..run_end, run_is_solid);
                     run_start = run_end;
                     run_is_solid = is_solid;
                 }
-                prepared.push(PreparedSceneBatch::Quads(PreparedQuadRun {
-                    range: run_start..range.end,
-                    is_solid: run_is_solid,
-                }));
+                append_run(run_start..range.end, run_is_solid);
                 continue;
             }
 
@@ -975,7 +1010,7 @@ impl Scene {
                 PrimitiveBatch::Shadows(shadows) => {
                     PreparedSceneBatch::Shadows(slice_range(&self.shadows, shadows))
                 }
-                PrimitiveBatch::Quads(_) => {
+                PrimitiveBatch::Quads { .. } => {
                     unreachable!("quad batches are split before this match")
                 }
                 PrimitiveBatch::Paths(paths) => {

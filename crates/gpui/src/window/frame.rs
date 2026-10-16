@@ -563,7 +563,7 @@ impl Frame {
         crate::window::retained::retain_revision(&mut self.scene, &prev_frame.scene);
         Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention")
-            .finish(&self.scene);
+            .finish(&mut self.scene);
     }
 
     pub(super) fn retained_capacity(&self) -> usize {

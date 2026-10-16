@@ -136,10 +136,14 @@ impl Window {
             return;
         }
         let replay_start = self.next_frame.scene.len();
+        let spans = self
+            .rendered_frame
+            .retained_paint
+            .replay_quads(&self.rendered_frame.scene, range.clone());
         if self
             .next_frame
             .scene
-            .replay(range.clone(), &self.rendered_frame.scene)
+            .replay(range.clone(), &self.rendered_frame.scene, &spans)
         {
             Arc::get_mut(&mut self.next_frame.retained_paint)
                 .expect("unpublished paint retention")

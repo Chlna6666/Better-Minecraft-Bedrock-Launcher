@@ -105,7 +105,7 @@ fn translated_geometry_entering_a_fixed_clip_marks_visible_pixels() {
         crate::size(ScaledPixels(16.), ScaledPixels(16.)),
     );
     let mut replayed = Scene::default();
-    replayed.replay(0..scene.len(), &scene);
+    replayed.replay(0..scene.len(), &scene, &[]);
     for retained in [&scene, &replayed] {
         for property in [
             TransitionProperty::Translation,

@@ -9,6 +9,7 @@ mod display_list;
 pub(crate) mod geometry;
 mod prepared;
 mod primitive;
+mod quad_stream;
 #[cfg(test)]
 mod tests;
 
@@ -19,3 +20,4 @@ pub(crate) use bounds_tree::BoundsTree;
 pub(crate) use display_list::*;
 pub(crate) use prepared::*;
 pub(crate) use primitive::*;
+pub(crate) use quad_stream::{QuadReplay, QuadStream};

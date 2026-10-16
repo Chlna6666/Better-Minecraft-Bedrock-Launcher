@@ -5,6 +5,7 @@ impl RetainedPaint {
     pub(crate) fn clear(&mut self) {
         self.retained_chunk_candidates.clear();
         self.prepared_retained_quad_chunks.clear();
+        self.replay_quad_indices.clear();
         self.finished = false;
         self.revision = 0;
         self.sources.clear();
@@ -14,6 +15,7 @@ impl RetainedPaint {
     pub(crate) fn retained_capacity(&self) -> usize {
         self.retained_chunk_candidates.capacity()
             + self.prepared_retained_quad_chunks.capacity()
+            + self.replay_quad_indices.capacity()
             + self.sources.capacity()
             + self
                 .replay_structure
@@ -30,6 +32,9 @@ impl RetainedPaint {
         }
         if self.prepared_retained_quad_chunks.capacity() > prepared_floor.saturating_mul(2) {
             self.prepared_retained_quad_chunks.shrink_to(prepared_floor);
+        }
+        if self.replay_quad_indices.capacity() > prepared_floor.saturating_mul(2) {
+            self.replay_quad_indices.shrink_to(prepared_floor);
         }
         let source_floor = current.sources.len().max(24);
         if self.sources.capacity() > source_floor.saturating_mul(2) {

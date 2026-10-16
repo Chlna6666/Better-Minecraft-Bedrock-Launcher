@@ -14,12 +14,13 @@ pub(super) struct RetainedChunkCandidate {
 pub(crate) struct PreparedRetainedQuadChunk {
     pub(crate) id: RetainedChunkId,
     pub(crate) quad_range: Range<usize>,
+    pub(crate) paint_range: Range<usize>,
     pub(crate) replayed: bool,
     pub(crate) is_solid: bool,
 }
 
 impl RetainedPaint {
-    pub(crate) fn finish(&mut self, scene: &Scene) {
+    pub(crate) fn finish(&mut self, scene: &mut Scene) {
         // Preserve one candidate authority and sort it in place. Recording
         // remains cheap append-only during Paint; finished retention permits
         // O(log chunks + locally overlapping chunks) replay lookups.
@@ -39,6 +40,13 @@ impl RetainedPaint {
                 .all(|pair| pair[0].scene_range.start <= pair[1].scene_range.start)
         );
         self.prepare_retained_quad_chunks(scene);
+        self.replay_quad_indices.clear();
+        self.replay_quad_indices
+            .extend(0..self.prepared_retained_quad_chunks.len());
+        self.replay_quad_indices.sort_unstable_by_key(|index| {
+            self.prepared_retained_quad_chunks[*index].paint_range.start
+        });
+        scene.quads.compact();
 
         self.finished = true;
         self.revision = scene.revision;
@@ -67,6 +75,33 @@ impl RetainedPaint {
                 .get(&scene.revision)
                 .map_or(&[], |chunks| chunks.as_slice())
         }
+    }
+
+    /// Select only closed, qualified static spans belonging to the paired source generation.
+    pub(crate) fn replay_quads(
+        &self,
+        scene: &Scene,
+        range: Range<usize>,
+    ) -> Vec<crate::scene::QuadReplay> {
+        if !self.finished || self.revision != scene.revision {
+            return Vec::new();
+        }
+        let chunks = &self.prepared_retained_quad_chunks;
+        let first = self
+            .replay_quad_indices
+            .partition_point(|index| chunks[*index].paint_range.start < range.start);
+        let end = self
+            .replay_quad_indices
+            .partition_point(|index| chunks[*index].paint_range.start < range.end);
+        self.replay_quad_indices[first..end]
+            .iter()
+            .map(|index| &chunks[*index])
+            .filter(|chunk| chunk.paint_range.end <= range.end)
+            .map(|chunk| crate::scene::QuadReplay {
+                paint_range: chunk.paint_range.clone(),
+                quad_range: chunk.quad_range.clone(),
+            })
+            .collect()
     }
 
     /// Carries only candidates fully contained in a draw-order-preserving Paint replay.
@@ -136,6 +171,7 @@ impl RetainedPaint {
             prepared.push(PreparedRetainedQuadChunk {
                 id: candidate.id.clone(),
                 quad_range: proof.range,
+                paint_range: candidate.scene_range.clone(),
                 replayed: candidate.replayed,
                 is_solid: proof.is_solid,
             });

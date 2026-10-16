@@ -16,6 +16,8 @@ mod lifecycle;
 pub(crate) struct RetainedPaint {
     retained_chunk_candidates: Vec<RetainedChunkCandidate>,
     prepared_retained_quad_chunks: Vec<PreparedRetainedQuadChunk>,
+    /// Sparse operation-order index into the sole prepared Chunk table.
+    replay_quad_indices: Vec<usize>,
     finished: bool,
     revision: u64,
     sources: collections::FxHashMap<u64, std::sync::Arc<Vec<PreparedRetainedQuadChunk>>>,

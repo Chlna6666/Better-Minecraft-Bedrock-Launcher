@@ -53,7 +53,7 @@ impl FrameUpload {
                 continue;
             }
             self.encode_quad_range(
-                &scene.quads[cursor..chunk.quad_range.start],
+                scene.quads.slices(cursor..chunk.quad_range.start).flatten(),
                 is_solid,
                 summary,
             );
@@ -63,7 +63,7 @@ impl FrameUpload {
             }
             cursor = chunk.quad_range.end;
         }
-        self.encode_quad_range(&scene.quads[cursor..range.end], is_solid, summary);
+        self.encode_quad_range(scene.quads.slices(cursor..range.end).flatten(), is_solid, summary);
     }
 
     fn encode_retained_quad_chunk(
@@ -134,7 +134,7 @@ impl FrameUpload {
         let mut count = 0_u32;
         let mut visual_bounds = None;
         let mut cullable = true;
-        for quad in &scene.quads[chunk.quad_range.clone()] {
+        for quad in scene.quads.slices(chunk.quad_range.clone()).flatten() {
             if count as usize == available {
                 break;
             }
@@ -210,9 +210,9 @@ impl FrameUpload {
         true
     }
 
-    fn encode_quad_range(
+    fn encode_quad_range<'a>(
         &mut self,
-        quads: &[crate::Quad],
+        quads: impl IntoIterator<Item = &'a crate::Quad>,
         is_solid: bool,
         summary: &mut FrameUploadSummary,
     ) -> u32 {
@@ -376,6 +376,7 @@ mod static_dynamic_batch_tests {
                     1,
                 ),
                 quad_range: index * 8..index * 8 + 8,
+                paint_range: index * 8..index * 8 + 8,
                 replayed: true,
                 is_solid: index % 2 == 0,
             })

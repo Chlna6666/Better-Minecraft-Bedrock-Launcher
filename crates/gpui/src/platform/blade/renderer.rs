@@ -827,7 +827,7 @@ impl BladeRenderer {
         profiling::scope!("render pass");
         for batch in scene.batches() {
             match batch {
-                PrimitiveBatch::Quads(quads) => {
+                PrimitiveBatch::Quads { quads, .. } => {
                     let instance_buf = unsafe { self.instance_belt.alloc_typed(quads, &self.gpu) };
                     let mut encoder = pass.with(&self.pipelines.quads);
                     encoder.bind(

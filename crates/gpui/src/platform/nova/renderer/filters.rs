@@ -805,7 +805,7 @@ mod tests {
         );
         source.radius = crate::ScaledPixels(0.);
         let mut replacement = crate::Scene::default();
-        replacement.replay(0..source.content.len(), &source.content);
+        replacement.replay(0..source.content.len(), &source.content, &[]);
         source.content = std::sync::Arc::new(replacement);
         assert_eq!(
             registry
@@ -856,7 +856,7 @@ mod tests {
             &[(1, FilterSource::Element(old_source.clone()))], &[sample(0.7)], [],
         );
         let mut equivalent = crate::Scene::default();
-        equivalent.replay(0..old_scene.len(), &old_scene);
+        equivalent.replay(0..old_scene.len(), &old_scene, &[]);
         let mut rebuilt = old_source;
         rebuilt.content = std::sync::Arc::new(equivalent);
         assert_eq!(

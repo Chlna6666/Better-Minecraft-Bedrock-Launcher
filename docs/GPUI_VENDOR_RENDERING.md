@@ -572,6 +572,24 @@ propagate Chunk candidates. Zero-radius captures with no coordinate animation
 preserve local child damage, while enclosing Gaussian/transformed captures
 still propagate their own affected output.
 
+Qualified static Quad replay now shares immutable CPU payload ranges as well as
+Nova's existing packed GPU residency. Window retention supplies operation/Quad
+range proofs from its paired generation; Scene checks the current ordering
+prefix and Layer before sharing. Other replay still rebuilds its primitives.
+`QuadStream` replaces the flat Quad vector, sorts only new runs and merges their
+logical order without rewriting shared payload. Quad batches carry explicit
+logical ranges and borrowed contiguous slices. Nova reads across slices while
+preserving draw-state runs, so CPU allocation boundaries add no GPU draws there.
+Blade and Metal retain their borrowed-slice batch interface.
+
+New Quad payload moves into immutable backing without a second boundary-copy.
+Only sparse retained views are compacted to release unrelated old-page memory;
+all views of an allocation count toward that decision. Window owns qualification,
+the sparse replay index and its lifecycle; Scene holds drawing data, and Nova
+remains the sole owner of packed-byte/GPU caches. PaintOperation replay and the
+remaining primitive arrays are still full CPU work. This Quad vertical slice
+does not replace SceneSlot, presentation snapshots or full FrameUpload encoding.
+
 Nova's window-owned `renderer/root_color.rs` owns the Root allocation, per-slot
 source/composite bindings and its successful-content version. Filter target
 recreation neither references nor retires that allocation. Resize, memory trim

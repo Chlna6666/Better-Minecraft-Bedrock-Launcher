@@ -23,13 +23,23 @@
 | **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
 | **P1-01** | P1 · **待处理** | **单一所有权 / 字节账本**：逐一列出 `Frame/SceneSlot/Scene/PresentationPacket/FrameUpload/DrawSteps` 的生产者、有效期、实际拥有的状态与 copy bytes；列所有消费者和可删除/必须保留职责 | 先通过 P0-01 并有 P0-07 profile；提供源码符号检索与现有功能清单，明确 Element/输入/IME、3D Scene、Shader/Native backend 不在误删范围 |
-| **P1-02** | P1 · **部分实现** | **唯一持久 Paint Artifact + 局部失效**：用持久 Chunk/Order/Filter/Property 依赖代替逐帧全量 Scene replay 与 Scene Finish；完成 CachedView 嵌套、中断/重定向动画、重排 Painter Order、纯 Composite 属性更新时不重建内容 | P1-01；相同输入下画面像素等价、静态 Buffer upload=0、变化只上传受影响范围；一条局部纵切跑通后再扩展 |
+| **P1-02** | P1 · **部分实现：静态 Quad CPU 共享纵切已通过四后端像素回归** | **唯一持久 Paint Artifact + 局部失效**：Window 资格判定 → Scene 只读 Quad payload → Batch → Nova 增量上传已接通；继续迁移 PaintOperation 与其它 Primitive，消除全量 replay/编码；完成嵌套 Capture 与重排依赖 | P1-01；本轮 443 个定向测试、24 项四后端原生回归通过；CPU payload 共享有指针证据，GPU 既有增量上传保持不变；尚无应用 GPU 时间收益结论 |
 | **P1-03** | P1 · **待处理** | **唯一 GPU 消费协议**：替换 `PresentationPacket.scene` 全量快照与 `SceneSlot` 主链路，GPU Owner 的 Create/Update/Remove/Animation/Damage/Surface epoch 有顺序的增量提交；队列 latest-wins 不丢删除/资源操作 | P1-02 + P0-09；断帧、动画中断、跨窗口、Resize、队列拥塞与 GPU Fence 下正确；不额外建立 RenderTree/RenderCommit 等价影子结构 |
 | **P2-01** | P2 · **待处理** | **显存预算与资源退休**：Filter/Root/Path/Atlas/Buffer 的 alloc/reuse/retire/budget/fragmentation/idle-trim 指标；统一资源所有者、Fence 退休，避免已预热 Spare Target 无限驻留 | P0-05/06、P1-03；高频弹层结束、关闭子窗口及 Resize 后 residency/peak/retire 可回落；DX11/DX12/VK/GL 资源生命周期等价 |
 | **P2-02** | P2 · **部分实现** | **原生 GPU 时间与 Render Graph 同步**：查询各后端 GPU pass timestamp、Copy/Upload、Filter、Composite、Present 的可比较时长；图资源版号和 Alias RD/WR/WAW barrier、Load/Clear/Scissor 与多 FrameSlot 保护 | P0-07、P2-01；不能用 Owner CPU busy 替代 GPU 时间；跨页面、跨帧物理 alias、首帧、Resize 后输出像素正确 |
 | **P2-03** | P2 · **待处理** | **跨后端/跨平台统一语义**：同一 Composition/Damage/Blend/Alpha/Filter/Texture ABI 接 DX11、DX12、Vulkan、OpenGL，Metal 与 Linux consumer 明确可编译迁移范围 | P1-03、P2-02；相同测试场景画面/动画/输入一致，记录不支持项，禁止只修某个 Backend |
 | **P3-01** | P3 · **待处理** | **破坏性删除与消费者迁移**：删除被替换的 `Scene` 全量容器/Replay/Finish、`Frame.scene`、`SceneSlot`、`pack_scene`、全场景 `FrameUpload` 等旧主通路；将 `render_pipeline` 的真 Shader/SVG/RendererOptions 分归正确模块并修全部消费者 | P1-01～03、P2-03；`rg` 符号搜索、编译/单测、示例/Bench/文档说明；不能删 `gpui-3d::Scene`、IME/Hitbox/Atlas/Native Surface |
 | **P3-02** | P3 · **待处理** | **完整回归与基准验收**：四后端静止 / Dropdown 高频 / Blur on-off / 多窗口 / Resize / 输入法 / 动态背景 / 字体图像 / 地图 / 关闭恢复场景的像素、CPU p50/p95/p99、GPU pass、RSS/VRAM、upload bytes / frame 全矩阵 | P0～P3-01；对相同硬件、刷新率/驱动/渲染参数做前后对照；仅有回归与不退化证据后才把统一合成器标记完成 |
+
+### 2026-10-16 持久 CPU Quad 绘制数据纵切（基线 `18fa3364`）
+
+- `Scene.quads` 直接采用唯一 `QuadStream` 绘制存储；新 Paint 只排序新段，合格旧段共享只读 allocation，没有新增影子 Scene 或 CPU Cache。不同 backing segment 不扩大 Nova Quad batch；GPU 驻留身份、Buffer/FrameSlot/Fence 仍由原 Nova Owner 管理。
+- Window Retained Owner 从唯一 Chunk 表建立 PaintOperation 顺序稀疏索引，按配对 revision 和闭合范围提供共享资格；同步迁移 finish/clear/trim。Scene 校验当前 Layer/DrawOrder 上下文，条件改变时重新绑定；旧两参数 Scene replay 接口已删除，所有生产、测试和 benchmark 调用方使用单一新入口，没有兼容转发。
+- 先冻结同 Layer 中新插入的 Quad 再拼接旧段，保证相同 DrawOrder 的 A/新 B/C 顺序。CPU allocation 不按 GPU Chunk 边界额外复制；仅当所有有效视图合计占旧 allocation 不足一半时压缩，避免小 Fragment 长期占住整页，也避免交错排序后错误逐段复制。
+- 定向测试 443 项通过；6 类原生用例 × DX11/DX12/Vulkan/OpenGL 共 24 项通过，覆盖 splice、快速反向、GPU in-flight、文字图片、Resize 与静态背景。原生用例证明 64 个静态 Quad 的 CPU backing 跨帧相同；原有 12288→192 字节局部 GPU 上传及 in-flight COW 像素保持正确。该 GPU 字节减少是原有能力，不能计为本轮新增性能收益。
+- 本地编译通过：`cargo check --workspace --no-default-features`、`cargo check -p bmcbl --lib --locked`、GPUI `windows-manifest,mimalloc-collect` 无默认 feature check、`cargo test -p gpui --all-features --no-run`、`cargo bench -p gpui --all-features --no-run --profile dev`。保留现有编译警告；dev profile benchmark 检查仅证明调用方可编译，不是 release 性能测量。
+- 全 workspace fmt check 仍在已有无关 `bedrock-block-model/src/obj.rs` 格式差异处失败；新增 Quad 模块和 Window Retained 模块 rustfmt check、git diff check 通过。未改动画轨迹、关闭效果或增加运行时开关；Metal/Blade 调用方已迁移，但本机原生验证仅覆盖上述四个 Nova 后端。
+- 未完成：PaintOperation 仍逐项回放和复制，BoundsTree 仍遍历，其它 Primitive 与嵌套 Capture 尚未持久增量化；SceneSlot、Presentation Snapshot 和全量 FrameUpload 主通路仍有正式消费者。继续迁移并删除旧通路，不保留旧版本兼容层。真实 Tab/首页下拉/公共 Dropdown 的 GPU Timestamp、任务管理器占用及完整交互 A/B 尚未采集。
 
 ### 2026-10-16 Scene 职责迁移（基线 `39caea45`）
 

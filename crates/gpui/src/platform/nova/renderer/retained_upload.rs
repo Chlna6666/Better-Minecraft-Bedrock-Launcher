@@ -935,9 +935,9 @@ mod tests {
         );
         let mut nested = crate::Scene::default();
         nested.push_layer(viewport);
-        nested.replay(0..100, &original);
+        nested.replay(0..100, &original, &[]);
         nested.pop_layer();
-        nested.replay(100..101, &original);
+        nested.replay(100..101, &original, &[]);
         nested.finish();
         nested.revision = 2;
         let size = DrawableSize { width: 640, height: 480 };
@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(nested_capture.content_mask.bounds, viewport);
         let mut split = crate::Scene::default();
         split.push_layer(viewport);
-        split.replay(0..101, &original);
+        split.replay(0..101, &original, &[]);
         split.pop_layer();
         split.finish();
         split.revision = 3;
