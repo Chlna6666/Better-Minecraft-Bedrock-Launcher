@@ -571,6 +571,7 @@ impl Window {
             frame_throttle: WindowFrameThrottle::default(),
             draw_deadline: None,
             draw_was_degraded: false,
+            frame_can_degrade: false,
             recovering_degraded_draw: false,
             degraded_draw_count: 0,
             recovery_full_redraw_count: 0,

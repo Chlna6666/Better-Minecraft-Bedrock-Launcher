@@ -1503,6 +1503,12 @@ impl Window {
     }
 
     pub(crate) fn allows_progressive_frame_degradation(&self) -> bool {
+        self.frame_can_degrade && self.progressive_degradation_conditions()
+    }
+
+    /// Rechecked while building, but only to revoke eligibility. The initial
+    /// positive decision is latched at begin_draw_cycle() before state moves.
+    pub(super) fn progressive_degradation_conditions(&self) -> bool {
         let diagnostics = self.dirty_frame_diagnostics.borrow();
         self.has_completed_rendered_frame
             // The recovery frame after a degraded draw must present progress instead of

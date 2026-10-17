@@ -694,6 +694,10 @@ pub struct Window {
     pub(super) frame_throttle: WindowFrameThrottle,
     pub(super) draw_deadline: Option<Instant>,
     pub(super) draw_was_degraded: bool,
+    /// Latched before the first Element State access. Dynamic conditions can
+    /// revoke abort eligibility but can never upgrade an in-progress draw:
+    /// states moved without a snapshot must not later become roll-backable.
+    pub(super) frame_can_degrade: bool,
     pub(super) recovering_degraded_draw: bool,
     pub(super) degraded_draw_count: u64,
     pub(super) recovery_full_redraw_count: u64,

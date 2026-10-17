@@ -176,6 +176,13 @@ impl Window {
         if was_dirty && !self.invalidator.active_targeted_replay() {
             self.force_view_cache_refresh = true;
         }
+        // Establish abort eligibility exactly once, before any Prepaint/Paint
+        // handler can move state from rendered_frame. The per-element snapshot
+        // decision and the eventual deadline-abort decision share this latch.
+        // Time passing may clear the recent-input guard, but it must NEVER
+        // retroactively make an already-running frame abortable.
+        self.frame_can_degrade =
+            !self.live_resize_active && self.progressive_degradation_conditions();
         self.requested_autoscroll = None;
         (self.restore_previous_input_handler(), directly_dirty_views)
     }
@@ -238,6 +245,7 @@ impl Window {
         // an intervening notification still forces the previous safe barrier.
         self.force_view_cache_refresh |= !targeted_retry;
         self.recovering_degraded_draw = true;
+        self.frame_can_degrade = false;
         self.draw_deadline = None;
         ArenaClearNeeded::new()
     }
@@ -435,6 +443,7 @@ impl Window {
         self.force_full_redraw.set(false);
         self.force_view_cache_refresh = false;
         self.recovering_degraded_draw = false;
+        self.frame_can_degrade = false;
         self.has_completed_rendered_frame = true;
         // A layout RAF may notify and rebuild a view after its sampled value has already
         // converged. Retain the newly built CPU scene, but do not encode, upload, or present an

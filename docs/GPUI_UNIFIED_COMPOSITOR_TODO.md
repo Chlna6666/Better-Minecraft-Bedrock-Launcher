@@ -1079,3 +1079,9 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 仅允许后台渐进构帧按需对首次访问的 `CachedViewState` 克隆已提交状态；Candidate Frame 更新独立副本，失败时保留原始 Range，成功时由候选状态覆盖旧状态。普通交互帧不增加该副本的分配或集合复制。
 - `WindowInvalidator::retry_aborted_frame` 只在失败帧具有完整 Targeted Provenance、且构帧期间没有新的未知通知时恢复原 Target/Scope；这种情况下可跳过恢复帧的全局 CachedView 强制刷新，未受影响子树继续复用。对于 Generic/Unknown/并发通知，仍回退完整恢复；保留旧 Scene 和 GPU Damage 差分。
 - 回归：`cargo test -p gpui --lib aborted_targeted_frame_preserves_exact_pending_scope`、`cargo test -p gpui --lib concurrent_dirty_request_forces_conservative_abort_recovery`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`。首次合入仍需四后端本地编译+像素验证；全局回退分支不删除。
+
+### 2026-10-17 Progressive Abort 资格事务性固定
+
+- 发现时序漏洞：`allows_progressive_frame_degradation()` 原来在构帧期间每次重新读取近期输入计时，可能由初始 false 在长帧中变为 true，从而在先前未为 CachedView 建立快照的情况下丢弃候选帧。
+- 现在在 `begin_draw_cycle()` 初始化 `frame_can_degrade`，它在完整 UI generation 中只允许变成不可降级。Deadline、CachedView 快照与真正 `degrade_current_draw` 统一使用这一资格；成功/失败收尾均清除。真实原生 Resize 不允许用旧场景代替新几何。
+- 需要测试：近期输入临界点内长帧、通知在 Prepaint 中到达、第一次访问 Element State 前后条件变化、连续超时及嵌套 CachedView 的 P95/P99。
