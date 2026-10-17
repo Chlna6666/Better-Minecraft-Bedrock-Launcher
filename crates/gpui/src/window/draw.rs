@@ -564,20 +564,29 @@ impl Window {
             && self.next_frame.scene().has_backdrop_blurs()
             && self.next_frame.scene().blurs.is_empty()
             && self.rendered_frame.scene().blurs.is_empty();
-        let recovery_scene_uncovered = self.recovering_degraded_draw
-            && [&self.rendered_frame, &self.next_frame]
-                .iter()
-                .any(|frame| {
-                    let scene_len = frame.scene().len();
-                    scene_len != 0
-                        && !frame.retained_scene_segments.iter().any(|segment| {
-                            segment.scene_range.start == 0 && segment.scene_range.end == scene_len
-                        })
-                });
+        // Retained fragments are allowed to partition the Scene. Requiring a
+        // *single* fragment to span every paint operation incorrectly forces
+        // full damage on normal multi-view pages after one degraded frame.
+        //
+        // The committed previous Scene was never replaced by the aborted
+        // generation. Diff the two completed painter streams directly; this
+        // covers every visual operation regardless of the ownership partition.
+        // A failed paint-range proof remains a conservative full redraw.
+        let mut recovery_scene_damage = DirtyRegion::empty();
+        let recovery_diff_failed = self.recovering_degraded_draw
+            && !force_full_redraw
+            && !scene_requires_full_redraw
+            && !crate::paint::for_each_changed_bounds(
+                self.next_frame.scene(),
+                0..self.next_frame.scene().len(),
+                self.rendered_frame.scene(),
+                0..self.rendered_frame.scene().len(),
+                |bounds| recovery_scene_damage.push(bounds),
+            );
         let requires_full_redraw = force_full_redraw
             || scene_requires_full_redraw
             || (backdrop_blur_topology_changed && !local_root_blur_topology)
-            || recovery_scene_uncovered;
+            || recovery_diff_failed;
         let mut spatial_area = dirty_region.area();
         let mut empty_damage_fallback = false;
 
@@ -607,7 +616,16 @@ impl Window {
             // semantic: treating every ancestor RetainedSceneSegment as changed makes a dirty root
             // segment turn a local child update into a full-window redraw. Compute damage from the
             // directly invalidated views instead and separately account for layout-induced moves.
-            self.add_direct_view_damage(&mut dirty_region, directly_dirty_views);
+            if self.recovering_degraded_draw {
+                // One ordered painter diff already includes every changed
+                // view/fragment and moved bound. Avoid repeating per-View
+                // operation comparisons over the same freshly rebuilt Scene.
+                for rect in recovery_scene_damage.rects() {
+                    dirty_region.push(rect.bounds);
+                }
+            } else {
+                self.add_direct_view_damage(&mut dirty_region, directly_dirty_views);
+            }
             for rect in self.animation_dirty_region.rects() {
                 dirty_region.push(rect.bounds);
             }
@@ -633,7 +651,7 @@ impl Window {
             self.handle.window_id().as_u64(), self.next_frame.scene().revision,
             dirty_region.is_full(), force_full_redraw, scene_requires_full_redraw,
             backdrop_blur_topology_changed, local_root_blur_topology,
-            recovery_scene_uncovered, accumulated_full, empty_damage_fallback,
+            recovery_diff_failed, accumulated_full, empty_damage_fallback,
             spatial_area, directly_dirty_views);
 
         if self.recovering_degraded_draw && dirty_region.is_full() {
@@ -657,15 +675,15 @@ impl Window {
         dirty_region: &mut DirtyRegion,
         directly_dirty_views: &[EntityId],
     ) {
-        if directly_dirty_views.is_empty() && !self.recovering_degraded_draw {
+        if directly_dirty_views.is_empty() {
             return;
         }
 
         let previous_entities = &self.rendered_frame.retained_scene_index;
         let current_entities = &self.next_frame.retained_scene_index;
 
-        // Recovery rebuilds every view cache, so compare every retained entity. On ordinary
-        // frames only directly invalidated views need scene-operation comparison.
+        // Only directly invalidated views need operation comparisons here.
+        // Degraded recovery uses a single whole-Scene ordered diff above.
         let mut diff_entity = |entity_id: &EntityId| {
             let previous = previous_entities.get(entity_id);
             let current = current_entities.get(entity_id);
@@ -707,21 +725,11 @@ impl Window {
                 }
             }
         };
-        if self.recovering_degraded_draw {
-            for entity_id in current_entities.keys() {
-                diff_entity(entity_id);
-            }
-            for entity_id in previous_entities.keys() {
-                if !current_entities.contains_key(entity_id) {
-                    diff_entity(entity_id);
-                }
-            }
-        } else {
-            // A layout-driven spring often belongs to a full-window page view even though only
-            // a button or pill changed. Diffing the scene avoids whole-view pixel damage.
-            for entity_id in directly_dirty_views {
-                diff_entity(entity_id);
-            }
+        // A layout-driven spring may live inside a full-page view even
+        // though only a small button changed. Compare the directly notified
+        // view rather than damaging its entire containing region.
+        for entity_id in directly_dirty_views {
+            diff_entity(entity_id);
         }
 
         // Layout changes can move siblings even though those siblings were not directly notified.
@@ -1186,5 +1194,48 @@ mod fragment_count_damage_tests {
         assert!(damage.contains(&popup.bounds));
         assert!(!damage.contains(&old_background.bounds));
         assert!(!damage.contains(&new_background.bounds));
+    }
+}
+
+#[cfg(test)]
+mod degraded_recovery_damage_tests {
+    use super::*;
+
+    #[test]
+    fn partitioned_retained_scene_recovery_can_damage_only_changed_operations() {
+        let viewport = Bounds::new(
+            crate::point(ScaledPixels(0.), ScaledPixels(0.)),
+            crate::size(ScaledPixels(900.), ScaledPixels(600.)),
+        );
+        let build = |x| {
+            let mut scene = crate::scene::Painter::default();
+            // These are independent static visual fragments. No single
+            // retained fragment need cover the entire painter stream.
+            for (left, top) in [(30., 20.), (x, 160.)] {
+                scene.insert_primitive(Quad {
+                    bounds: Bounds::new(
+                        crate::point(ScaledPixels(left), ScaledPixels(top)),
+                        crate::size(ScaledPixels(40.), ScaledPixels(26.)),
+                    ),
+                    content_mask: crate::ContentMask::new(viewport),
+                    ..Default::default()
+                });
+            }
+            scene.finish();
+            scene
+        };
+        let old = build(220.);
+        let updated = build(246.);
+        let mut dirty = DirtyRegion::empty();
+        assert!(crate::paint::for_each_changed_bounds(
+            &updated,
+            0..updated.len(),
+            &old,
+            0..old.len(),
+            |bounds| dirty.push(bounds),
+        ));
+        assert!(!dirty.is_full());
+        assert!(dirty.rect_count() >= 1);
+        assert!(dirty.area() < (900. * 600.) as f32);
     }
 }

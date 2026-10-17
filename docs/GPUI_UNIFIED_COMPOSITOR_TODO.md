@@ -1057,3 +1057,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 已存在的 `Window::viewport_size()/bounds()` 读取追踪产生 `viewport_dependent_views`；这些 View 在新尺寸帧明确失效，即使自身的缓存边界尺寸固定也要刷新。DPI/显示器变更仍走原来的 `RelayoutSubtree + force_view_cache_refresh` 安全屏障；没有证明来源的 generic dirty 仍由 `begin_draw_cycle` 禁止不安全回放。
 - 回归：`cargo test -p gpui --lib viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child`、`cargo test -p gpui --lib viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed`、`cargo test -p gpui --lib repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bounds`；还需四后端原生 Resize、DPI、HitTest、交错动画实测。
 - 不将此切片标记为 1ms 达成：Release p50/p95/p99、retained cache hit、Taffy work 和完整 UI 构帧耗时必须在同一场景 A/B 衡量。
+
+### 2026-10-17 Degraded Recovery：按整份已提交 Painter 差分恢复（阶段一切片）
+
+- 弃用“恢复帧必须有一个覆盖全部 Scene 的 Retained Segment”这一错误的全屏失效推断：多个有效静态片段共同覆盖 Paint Stream 是正常情况。新逻辑以已提交上一代 Scene 与完整新 Scene 的 paint_operations 顺序差分产生 Dirty Region，操作范围证明失败才保守全屏。Retained 源仍是最后一次完成提交的 Scene，不使用废弃帧像素。
+- 恢复阶段不再对每个 View 的所有 retained fragments 单独执行一遍 O(N) diff；普通局部更新仍保留已有 direct-view 精细比较与位移边界修复。Blur topology、Surface/RendererExtension 回退、既有累积 damage 和动画 dirty 仍保持原有安全策略。
+- 目前**尚未**撤销全局 Element State 恢复屏障：abort 期间调用 `with_element_state` 会把状态移至不完整的 `next_frame`，旧 range 可能遭到重基址或消费，必须先实现可证明的事务回滚与 dirty provenance 保留，才能安全放宽 Prepaint 缓存。不可假设只要 View 的 Bounds 不变就能回放未提交帧。
+- 定向验证：`cargo test -p gpui --lib partitioned_retained_scene_recovery_can_damage_only_changed_operations`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`；Release 比较 `recovery_full_redraw_count`、`prepaint_root_us`、Scene dirty-area 和构帧 P95/P99，四后端未验证前不得宣称恢复放大彻底消除。
