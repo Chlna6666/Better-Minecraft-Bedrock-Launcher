@@ -199,6 +199,8 @@ pub(crate) struct NovaRenderer {
     /// At most one unsubmitted independent Root/Filter generation.
     /// Never sampled by Active before the matching resize/present succeeds.
     pending_offscreen_targets: Option<pending_offscreen::PendingOffscreenTargets>,
+    /// Physical Filter allocations still referenced by specific outstanding GPU submissions.
+    retired_offscreen_targets: Vec<pending_offscreen::RetiredOffscreenTargets>,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
@@ -765,14 +767,11 @@ impl NovaRenderer {
         }) {
             return Ok(());
         }
-        // A Filter topology change may reassign the same Texture/View to
-        // another Capture. Finish any native readers before touching the live
-        // descriptor mapping, not just before the full recreation fallback.
-        // In async mode frame_submission_is_ready defers this path rather than
-        // blocking the UI thread; this fence is a synchronous safety fallback.
-        if self.filters.targets.is_some() && !self.pending_submissions.is_empty() {
-            self.wait_for_pending_submissions()?;
-        }
+        // An in-flight GPU submission still owns its Filter view/descriptors.
+        // Never mutate those allocations through reuse_layout while the GPU
+        // can sample them; allocate independent replacements instead, then
+        // retire the old physical targets after their exact native fences.
+        let has_inflight_readers = !self.pending_submissions.is_empty();
         let capture_reuse_eligible = self.identity_capture_layout_reuse_eligible();
         let auto_static_eligible = self.auto_static_layout_reuse_eligible();
         let auto_static_indices = auto_static_eligible.then(|| {
@@ -783,7 +782,7 @@ impl NovaRenderer {
         } else {
             Vec::new()
         };
-        if self.filters.targets.as_mut().is_some_and(|targets| {
+        if !has_inflight_readers && self.filters.targets.as_mut().is_some_and(|targets| {
             targets.reuse_layout(
                 self.frame_upload.backdrop_blur_configs(),
                 self.frame_upload.isolated_blur_source_indices(),
@@ -828,20 +827,15 @@ impl NovaRenderer {
             self.frame_upload.isolated_blur_source_indices().len(),
             self.pending_submissions.len(),
         );
-        // Texture topology changes can destroy the previous cached color
-        // targets. Those targets may still be sampled by a previously submitted
-        // GPU frame. Wait for the recorded fence completion BEFORE replacing
-        // any resource sets or texture views; a successful CPU Present does not
-        // imply the GPU is finished with their physical allocation.
-        //
-        // This is a correctness prerequisite for a future fence-retired
-        // transient allocation pool, not physical heap aliasing by itself.
+        // Construct all new physical resources first. Old Filter targets
+        // remain alive in their own retirement generation until every native
+        // submission that could sample them reports Fence::Complete. A failed
+        // allocation leaves the Active registry and its GPU views untouched.
         // New target storage has no retained filtered pixels. The first frame using the new chain
         // must therefore rebuild every root backdrop regardless of the current damage footprint.
         self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
-        let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
         // Record only actual allocation/retirement work, not frame packing,
         // full source rasterization, swapchain ResizeBuffers or GPU shader time.
         // Resize traces previously reported ~310 recreations without any
@@ -858,9 +852,6 @@ impl NovaRenderer {
                     "gpui nova opengl",
                     backdrop_blur_target_descriptor,
                 )?;
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "OpenGL");
-                }
                 targets
             }
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
@@ -870,9 +861,6 @@ impl NovaRenderer {
                     "gpui nova dx11",
                     backdrop_blur_target_descriptor,
                 )?;
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX11");
-                }
                 targets
             }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
@@ -882,9 +870,6 @@ impl NovaRenderer {
                     "gpui nova dx12",
                     backdrop_blur_target_descriptor,
                 )?;
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "DX12");
-                }
                 targets
             }
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
@@ -894,9 +879,6 @@ impl NovaRenderer {
                     "gpui nova metal",
                     backdrop_blur_target_descriptor,
                 )?;
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Metal");
-                }
                 targets
             }
             #[cfg(all(
@@ -909,9 +891,6 @@ impl NovaRenderer {
                     "gpui nova vulkan",
                     backdrop_blur_target_descriptor,
                 )?;
-                if let Some(old_backdrop_blur_targets) = old_backdrop_blur_targets {
-                    destroy_backdrop_blur_target_chain(device, old_backdrop_blur_targets, "Vulkan");
-                }
                 targets
             }
             #[cfg(not(any(
@@ -940,7 +919,9 @@ impl NovaRenderer {
             self.current_size.height,
             self.live_resize_active,
             target_recreation_started.elapsed().as_micros());
-        self.filters.targets = Some(next_backdrop_blur_targets);
+        if let Some(old) = self.filters.targets.replace(next_backdrop_blur_targets) {
+            self.retire_offscreen_targets(None, Some(old));
+        }
         // Cached steps borrow target resource-set handles. Fence retirement
         // protects submitted work, but these CPU copies also outlive a slot.
         self.invalidate_draw_step_cache();
@@ -1358,50 +1339,10 @@ impl NovaRenderer {
 
     fn destroy_backdrop_blur_targets(&mut self) {
         self.invalidate_backdrop_blur_cache();
-        let Some(targets) = self.filters.targets.take() else {
-            return;
-        };
-        match &mut *lock_backend(&self.backend) {
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => {
-                destroy_backdrop_blur_target_chain(device, targets, "OpenGL");
-            }
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => {
-                destroy_backdrop_blur_target_chain(device, targets, "DX11");
-            }
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => {
-                destroy_backdrop_blur_target_chain(device, targets, "DX12");
-            }
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => {
-                destroy_backdrop_blur_target_chain(device, targets, "Metal");
-            }
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => {
-                destroy_backdrop_blur_target_chain(device, targets, "Vulkan");
-            }
-            #[cfg(not(any(
-                all(
-                    feature = "nova-gfx-opengl",
-                    any(target_os = "windows", target_os = "linux")
-                ),
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(feature = "nova-gfx-metal", target_os = "macos"),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                )
-            )))]
-            NovaBackend::Unavailable => {}
+        if let Some(targets) = self.filters.targets.take() {
+            // Reuse the same exact-submission retirement protocol for memory
+            // pressure, layout removal and future compositor target switches.
+            self.retire_offscreen_targets(None, Some(targets));
         }
     }
 

@@ -114,7 +114,10 @@ impl NovaRenderer {
         self.submission_retry_pending = self.pending_submissions.len() >= MAX_IN_FLIGHT_SUBMISSIONS
             || self.next_available_frame_resource_index().is_err()
             || atlas_retirement
-            || ((path_rebind || filter_rebind) && !self.pending_submissions.is_empty());
+            // Filter topology changes use fresh Texture/View/ResourceSet IDs
+            // and fence-tracked physical retirement. Only mutable Path Mask
+            // target rebinding still needs the old-reader barrier.
+            || (path_rebind && !self.pending_submissions.is_empty());
         if self.submission_retry_pending {
             log::trace!(target: "gpui::diagnostics",
                 "Nova submission deferred: pending={} path_rebind={} filter_rebind={} atlas_retirement={}",
@@ -125,6 +128,20 @@ impl NovaRenderer {
 
     pub(crate) fn has_submission_retry(&self) -> bool {
         self.submission_retry_pending
+    }
+
+    /// An idle compositor can still own retired physical targets waiting for
+    /// older native GPU submissions. Poll those fences without emitting a
+    /// synthetic Scene/Present or scheduling UI work.
+    pub(crate) fn has_pollable_offscreen_retirements(&self) -> bool {
+        !self.retired_offscreen_targets.is_empty() && !self.pending_submissions.is_empty()
+    }
+
+    pub(crate) fn poll_offscreen_retirements(&mut self) -> Result<()> {
+        if self.has_pollable_offscreen_retirements() {
+            self.poll_pending_submissions()?;
+        }
+        Ok(())
     }
 
     pub(super) fn prepare_for_frame_submission(&mut self, frame_time: Instant) -> Result<()> {
@@ -189,6 +206,7 @@ impl NovaRenderer {
                     if let Some(publication) = retired.publication {
                         self.complete_gpu_submission(publication);
                     }
+                    self.on_offscreen_submission_complete(submission);
                 }
                 SubmissionStatus::Failed(error) => {
                     self.pending_submissions.remove(index);
@@ -230,6 +248,7 @@ impl NovaRenderer {
             if let Some(publication) = retired.publication {
                 self.complete_gpu_submission(publication);
             }
+            self.on_offscreen_submission_complete(submission);
         }
         Ok(())
     }

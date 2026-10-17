@@ -4,6 +4,82 @@
 //! through the existing successful-Present/Fence version protocol.
 use super::*;
 
+/// A single physical retirement generation can contain Root and/or Filter.
+/// All native submissions that could still sample either allocation are
+/// snapshotted at the moment of replacement. New submissions never inherit
+/// a retired view, so they never extend its retirement barrier.
+pub(super) struct RetiredOffscreenTargets {
+    pub(super) targets: PendingOffscreenTargets,
+    readers: OffscreenFenceReaders,
+}
+
+#[derive(Default)]
+struct OffscreenFenceReaders {
+    ids: SmallVec<[SubmissionId; 4]>,
+}
+
+impl OffscreenFenceReaders {
+    fn from_in_flight(submissions: &[PendingSubmission]) -> Self {
+        Self {
+            ids: submissions.iter().map(|entry| entry.submission).collect(),
+        }
+    }
+
+    fn complete(&mut self, id: SubmissionId) {
+        self.ids.retain(|reader| *reader != id);
+    }
+
+    fn safe_to_destroy(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+impl NovaRenderer {
+    /// New physical allocations may replace Active while previous GPU
+    /// readers are still executing. Capture only those old native fences.
+    /// No GPU wait and no early ResourceSet/Texture/View destruction.
+    pub(super) fn retire_offscreen_targets(
+        &mut self,
+        root: Option<RootColorTarget>,
+        filters: Option<BackdropBlurTargets>,
+    ) {
+        if root.is_none() && filters.is_none() {
+            return;
+        }
+        let readers = OffscreenFenceReaders::from_in_flight(&self.pending_submissions);
+        let targets = PendingOffscreenTargets {
+            size: self.current_size,
+            root,
+            filters,
+        };
+        if readers.safe_to_destroy() {
+            self.destroy_obsolete_pending_offscreen(targets);
+        } else {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "nova offscreen retirement deferred: reader_fences={} root={} filter={}",
+                readers.ids.len(), targets.root.is_some(), targets.filters.is_some(),
+            );
+            self.retired_offscreen_targets.push(RetiredOffscreenTargets { targets, readers });
+        }
+    }
+
+    /// Only Fence::Complete retires physical readers. A failed submission
+    /// retains its reference until backend/device teardown.
+    pub(super) fn on_offscreen_submission_complete(&mut self, submission: SubmissionId) {
+        let mut index = 0;
+        while index < self.retired_offscreen_targets.len() {
+            self.retired_offscreen_targets[index].readers.complete(submission);
+            if self.retired_offscreen_targets[index].readers.safe_to_destroy() {
+                let completed = self.retired_offscreen_targets.swap_remove(index);
+                self.destroy_obsolete_pending_offscreen(completed.targets);
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
 pub(super) struct PendingOffscreenTargets {
     pub(super) size: DrawableSize,
     pub(super) root: Option<RootColorTarget>,
@@ -183,6 +259,41 @@ impl NovaRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offscreen_retirement_waits_only_for_snapshotted_gpu_fence_readers() {
+        let a = SubmissionId::from_parts(1, 1);
+        let b = SubmissionId::from_parts(2, 1);
+        let future = SubmissionId::from_parts(3, 1);
+        let mut readers = OffscreenFenceReaders { ids: smallvec::smallvec![a, b] };
+        readers.complete(future);
+        assert!(!readers.safe_to_destroy(), "future submissions cannot retire old targets");
+        readers.complete(b);
+        assert!(!readers.safe_to_destroy(), "remaining old submission still samples texture");
+        readers.complete(a);
+        assert!(readers.safe_to_destroy());
+    }
+
+    #[test]
+    fn overlapping_offscreen_generations_retire_at_their_own_last_reader() {
+        let a = SubmissionId::from_parts(10, 1);
+        let b = SubmissionId::from_parts(11, 1);
+        let c = SubmissionId::from_parts(12, 1);
+        // Two physical generations were replaced between native fence events.
+        // Generation 1 only needs A/B; generation 2 needs B/C.
+        let mut old = OffscreenFenceReaders { ids: smallvec::smallvec![a, b] };
+        let mut newer = OffscreenFenceReaders { ids: smallvec::smallvec![b, c] };
+        old.complete(a);
+        newer.complete(a);
+        assert!(!old.safe_to_destroy());
+        assert!(!newer.safe_to_destroy());
+        old.complete(b);
+        newer.complete(b);
+        assert!(old.safe_to_destroy(), "C cannot delay A/B's retired allocation");
+        assert!(!newer.safe_to_destroy(), "C still owns the next retired allocation");
+        newer.complete(c);
+        assert!(newer.safe_to_destroy());
+    }
 
     #[test]
     fn pending_offscreen_size_identity_cannot_publish_stale_resize_resources() {

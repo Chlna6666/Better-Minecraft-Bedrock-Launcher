@@ -113,3 +113,17 @@ fn deferred_native_acquire_backs_off_and_stops_on_hide_or_completion() {
     schedule.after_frame(now, false, false, None, false);
     assert_eq!(schedule.deadline(), None);
 }
+
+#[test]
+fn gpu_only_retirement_poll_backs_off_and_stops_without_visual_work() {
+    let now = Instant::now();
+    let mut schedule = Schedule::default();
+    // No UI animation interval, active Scene request or presentation clock.
+    for delay_ms in [1, 2, 4, 8, 16, 16] {
+        schedule.retry_submission(now, true);
+        assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(delay_ms)));
+    }
+    schedule.retry_submission(now, false);
+    assert!(!schedule.is_retrying_submission());
+    assert_eq!(schedule.deadline(), None);
+}

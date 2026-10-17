@@ -346,12 +346,33 @@ impl Entry {
             }
             Command::Tick(now, timing) => self.tick(now, timing),
             Command::Continue(now) => {
-                // Windows swapchain-ready callbacks are serialized into this owner's
-                // command queue, not reported from a foreign callback thread.
-                if self.schedule.is_enabled()
+                // Physical Root/Filter retirement is not a visual frame.
+                // Once the last animation ends, continue polling only the
+                // exact fences still reading an old target, without drawing
+                // the last Scene again or requesting an empty UI frame.
+                if self.scene.is_none()
+                    && !self.renderer.has_active_presentation_animations()
+                    && self.renderer.has_pollable_offscreen_retirements()
+                {
+                    match self.renderer.poll_offscreen_retirements() {
+                        Ok(()) => self.schedule.retry_submission(
+                            now,
+                            self.renderer.has_pollable_offscreen_retirements(),
+                        ),
+                        Err(error) => {
+                            self.schedule.retry_submission(now, false);
+                            log::warn!(
+                                target: "gpui_gpu_stall",
+                                "offscreen retirement fence poll failed: {error:#}",
+                            );
+                        }
+                    }
+                } else if self.schedule.is_enabled()
                     || self.schedule.is_retrying_submission()
                     || cfg!(target_os = "windows")
                 {
+                    // Windows swapchain-ready callbacks are serialized into the
+                    // per-window GPU queue, not reported by a foreign thread.
                     self.tick(now, None);
                 }
             }
@@ -640,13 +661,18 @@ impl Entry {
         let pending = self.scene.is_some()
             || self.renderer.has_active_presentation_animations()
             || self.queue.has_presentation();
+        // An already-submitted frame can leave old physical Root/Filter
+        // allocations behind. Keep a bounded GPU-only Fence poll active until
+        // the retired generation is safe, independently of animation requests.
+        let retirement_poll = result.is_ok() && self.renderer.has_pollable_offscreen_retirements();
         self.schedule.retry_submission(
             Instant::now(),
-            pending
-                && result.is_ok()
-                && !submitted
-                && (self.renderer.has_submission_retry() || self.ready_poll_required)
-                && self.ready_registration.load(Ordering::Acquire) == 0,
+            retirement_poll
+                || (pending
+                    && result.is_ok()
+                    && !submitted
+                    && (self.renderer.has_submission_retry() || self.ready_poll_required)
+                    && self.ready_registration.load(Ordering::Acquire) == 0),
         );
         self.status.pending.store(pending, Ordering::Release);
         #[cfg(target_os = "windows")]

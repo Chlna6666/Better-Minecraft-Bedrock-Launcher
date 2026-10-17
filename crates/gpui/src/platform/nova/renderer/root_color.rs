@@ -187,43 +187,12 @@ pub(super) fn destroy_target<D: BackendResources + BackendPipelines>(
 }
 
 impl NovaRenderer {
-    /// Called only after the window's pending submissions have drained.
+    /// Retire physical Root Color through the same exact-fence owner as
+    /// Filter targets. A native submission cannot lose its Root Texture/View
+    /// just because a newer scene stopped requiring root retention.
     pub(super) fn retire_root_color(&mut self) {
-        let Some(root) = self.root_color.take_target() else {
-            return;
-        };
-        match &mut *lock_backend(&self.backend) {
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            NovaBackend::Dx11(device) => destroy_target(device, root),
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            NovaBackend::Dx12(device) => destroy_target(device, root),
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            NovaBackend::OpenGl(device) => destroy_target(device, root),
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            NovaBackend::Vulkan(device) => destroy_target(device, root),
-            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
-            NovaBackend::Metal(device) => destroy_target(device, root),
-            #[cfg(not(any(
-                all(feature = "nova-gfx-dx11", target_os = "windows"),
-                all(feature = "nova-gfx-dx12", target_os = "windows"),
-                all(
-                    feature = "nova-gfx-opengl",
-                    any(target_os = "windows", target_os = "linux")
-                ),
-                all(
-                    feature = "nova-gfx-vulkan",
-                    any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-                ),
-                all(feature = "nova-gfx-metal", target_os = "macos")
-            )))]
-            NovaBackend::Unavailable => {}
-        }
+        let root = self.root_color.take_target();
+        self.retire_offscreen_targets(root, None);
     }
 
     pub(super) fn ensure_root_color(&mut self) -> Result<()> {

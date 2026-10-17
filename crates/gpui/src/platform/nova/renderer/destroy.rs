@@ -8,6 +8,7 @@ struct WindowResources {
     blur: Option<BackdropBlurTargets>,
     root: Option<RootColorTarget>,
     pending_offscreen: Option<pending_offscreen::PendingOffscreenTargets>,
+    retired_offscreen: Vec<pending_offscreen::RetiredOffscreenTargets>,
     depth: RenderTarget,
     sampler: SamplerId,
     swapchain: SwapchainId,
@@ -21,6 +22,7 @@ impl NovaRenderer {
             blur: self.filters.targets.take(),
             root: self.root_color.take_target(),
             pending_offscreen: self.pending_offscreen_targets.take(),
+            retired_offscreen: std::mem::take(&mut self.retired_offscreen_targets),
             frames: std::mem::take(&mut self.frame_resources),
             atlas: std::mem::take(&mut self.gpu_atlas_textures),
             depth: RenderTarget {
@@ -82,6 +84,11 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     }
     if let Some(root) = resources.root {
         root_color::destroy_target(device, root);
+    }
+    // Old physical targets may be referenced by GPU work from a different
+    // frame slot. Renderer::destroy drains all window fences first.
+    for retired in resources.retired_offscreen {
+        pending_offscreen::destroy(device, backend, retired.targets);
     }
     // The prepared bundle was never submitted. Drop it independently of
     // Active and before releasing the frame buffers referenced by its sets.
