@@ -197,9 +197,32 @@ pub(crate) struct NovaRenderer {
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
     live_resize_active: bool,
+    /// The last successfully submitted scene/animation state. A candidate
+    /// must never replace this until its matching geometry reaches the GPU.
     active_presentation_packet: Option<PresentationPacket>,
+    /// The newest scene whose GPU submission was deferred. It is separate
+    /// from Active and owns all accumulated unsubmitted damage.
+    pending_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
+}
+
+/// Publish a candidate only after native GPU submission succeeded. Failed or
+/// backpressured submissions remain Pending, leaving the last successfully
+/// displayed scene intact. The newest candidate supersedes older pending
+/// work, but callers merge the old unsubmitted damage before replacement.
+fn publish_presentation_candidate<T>(
+    active: &mut Option<T>,
+    pending: &mut Option<T>,
+    candidate: T,
+    submitted: bool,
+) {
+    if submitted {
+        *active = Some(candidate);
+        *pending = None;
+    } else {
+        *pending = Some(candidate);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -365,7 +388,9 @@ impl NovaRenderer {
     }
 
     pub(crate) fn draw(&mut self, mut packet: PresentationPacket) -> Result<bool> {
-        if let Some(previous) = self.active_presentation_packet.as_ref() {
+        if let Some(previous) = self.pending_presentation_packet.as_ref()
+            .or(self.active_presentation_packet.as_ref())
+        {
             packet.merge_pending_damage_from(previous);
         }
         self.pending_animation_completions
@@ -377,7 +402,12 @@ impl NovaRenderer {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
-        self.active_presentation_packet = Some(packet);
+        publish_presentation_candidate(
+            &mut self.active_presentation_packet,
+            &mut self.pending_presentation_packet,
+            packet,
+            result.as_ref().is_ok_and(|submitted| *submitted),
+        );
         let elapsed = started_at.elapsed();
         crate::diagnostics::performance_metrics::record_frame_backend_draw_time(elapsed);
         crate::diagnostics::performance_metrics::record_first_frame_backend_draw_time(elapsed);
@@ -815,7 +845,9 @@ impl NovaRenderer {
         &mut self,
         mut packet: PresentationPacket,
     ) -> Result<bool> {
-        if let Some(previous) = self.active_presentation_packet.as_ref() {
+        if let Some(previous) = self.pending_presentation_packet.as_ref()
+            .or(self.active_presentation_packet.as_ref())
+        {
             packet.merge_pending_damage_from(previous);
         }
         self.pending_animation_completions
@@ -887,7 +919,12 @@ impl NovaRenderer {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
-        self.active_presentation_packet = Some(packet);
+        publish_presentation_candidate(
+            &mut self.active_presentation_packet,
+            &mut self.pending_presentation_packet,
+            packet,
+            result.as_ref().is_ok_and(|submitted| *submitted),
+        );
         self.sample_memory(
             self.submitted_frames == 1 && result.as_ref().is_ok_and(|submitted| *submitted),
             result.as_ref().err(),
@@ -901,18 +938,30 @@ impl NovaRenderer {
         now: Instant,
         presentation_timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<Option<ActivePresentationFrame>> {
-        let Some(mut packet) = self.active_presentation_packet.take() else {
+        // Retry a pending new-size Scene before sampling the last displayed
+        // scene. The latter remains the authoritative Active packet until the
+        // candidate's GPU submission succeeds.
+        let was_pending = self.pending_presentation_packet.is_some();
+        let Some(mut packet) = self.pending_presentation_packet.take()
+            .or_else(|| self.active_presentation_packet.take())
+        else {
             return Ok(None);
         };
-        if !packet.has_pending_presentation() {
+        // A candidate with zero dirty pixels may still need its first surface
+        // submission (for example a new empty layout after Resize).
+        if !was_pending && !packet.has_pending_presentation() {
             self.active_presentation_packet = Some(packet);
             return Ok(None);
         }
         if !packet.presentation_is_due(now) {
             let continues = !packet.presentation_animation_timelines.is_empty();
-            self.active_presentation_packet = Some(packet);
-            return Ok(continues.then(|| ActivePresentationFrame {
-                continues,
+            if was_pending {
+                self.pending_presentation_packet = Some(packet);
+            } else {
+                self.active_presentation_packet = Some(packet);
+            }
+            return Ok((continues || was_pending).then(|| ActivePresentationFrame {
+                continues: continues || was_pending,
                 completed_animations: SmallVec::new(),
             }));
         }
@@ -921,13 +970,27 @@ impl NovaRenderer {
         let continues = !packet.presentation_animation_timelines.is_empty();
         let mut presentation_timing = presentation_timing;
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
-        if draw_result.as_ref().is_ok_and(|submitted| *submitted) {
+        let submitted = draw_result.as_ref().is_ok_and(|submitted| *submitted);
+        if submitted {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
-        self.active_presentation_packet = Some(packet);
+        if was_pending {
+            publish_presentation_candidate(
+                &mut self.active_presentation_packet,
+                &mut self.pending_presentation_packet,
+                packet,
+                submitted,
+            );
+        } else if submitted {
+            self.active_presentation_packet = Some(packet);
+        } else {
+            // A compositor-only Tick cannot replace the committed geometry.
+            // Its dirty sample remains with the same Active packet to retry.
+            self.active_presentation_packet = Some(packet);
+        }
         self.sample_memory(
-            self.submitted_frames == 1 && draw_result.as_ref().is_ok_and(|submitted| *submitted),
+            self.submitted_frames == 1 && submitted,
             draw_result.as_ref().err(),
         );
         if !draw_result? {
@@ -940,16 +1003,19 @@ impl NovaRenderer {
     }
 
     pub(crate) fn has_active_presentation_animations(&self) -> bool {
-        self.active_presentation_packet
-            .as_ref()
-            .is_some_and(PresentationPacket::has_pending_presentation)
+        self.pending_presentation_packet.is_some()
+            || self.active_presentation_packet
+                .as_ref()
+                .is_some_and(PresentationPacket::has_pending_presentation)
     }
 
     pub(crate) fn active_presentation_is_due(&self, now: Instant) -> bool {
-        self.active_presentation_packet
-            .as_ref()
+        self.pending_presentation_packet.as_ref()
+            .or(self.active_presentation_packet.as_ref())
             .is_some_and(|packet| {
-                packet.has_pending_presentation() && packet.presentation_is_due(now)
+                (self.pending_presentation_packet.is_some()
+                    || packet.has_pending_presentation())
+                    && packet.presentation_is_due(now)
             })
     }
 
@@ -957,11 +1023,14 @@ impl NovaRenderer {
         if let Some(packet) = self.active_presentation_packet.as_mut() {
             packet.set_frame_interval(interval);
         }
+        if let Some(packet) = self.pending_presentation_packet.as_mut() {
+            packet.set_frame_interval(interval);
+        }
     }
 
     pub(crate) fn presentation_deadline(&self) -> Option<Instant> {
-        self.active_presentation_packet
-            .as_ref()
+        self.pending_presentation_packet.as_ref()
+            .or(self.active_presentation_packet.as_ref())
             .and_then(PresentationPacket::presentation_deadline)
     }
 
@@ -1061,6 +1130,7 @@ impl NovaRenderer {
         }
         self.destroyed = true;
         self.active_presentation_packet = None;
+        self.pending_presentation_packet = None;
         let destroy_started_at = Instant::now();
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
@@ -1711,6 +1781,35 @@ mod tests {
     #[test]
     fn invalid_cache_still_forces_full_blur_refresh() {
         assert!(force_full_backdrop_blur_refresh(false, false));
+    }
+
+    #[test]
+    fn pending_geometry_does_not_evict_last_submitted_active_scene() {
+        let mut active = Some(10u64);
+        let mut pending = None;
+        publish_presentation_candidate(&mut active, &mut pending, 11, false);
+        assert_eq!(active, Some(10));
+        assert_eq!(pending, Some(11));
+        publish_presentation_candidate(&mut active, &mut pending, 12, false);
+        assert_eq!(active, Some(10));
+        assert_eq!(pending, Some(12), "latest candidate supersedes stalled geometry");
+        publish_presentation_candidate(&mut active, &mut pending, 12, true);
+        assert_eq!(active, Some(12));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn retry_failure_must_leave_pending_scene_and_active_scene_unchanged() {
+        let mut active = Some(20u64);
+        let mut pending = Some(21);
+        let candidate = pending.take().unwrap();
+        publish_presentation_candidate(&mut active, &mut pending, candidate, false);
+        assert_eq!(active, Some(20));
+        assert_eq!(pending, Some(21));
+        let candidate = pending.take().unwrap();
+        publish_presentation_candidate(&mut active, &mut pending, candidate, true);
+        assert_eq!(active, Some(21));
+        assert!(pending.is_none());
     }
 
     #[cfg(target_os = "windows")]

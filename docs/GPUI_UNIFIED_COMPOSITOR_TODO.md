@@ -1104,3 +1104,9 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 删除重复、无消费者的 `DrawStepScratch::backdrop_blur_passes` 临时 Vec 与每帧 `prepare_backdrop_blur_passes(has_filters)`。真正渲染执行仍通过 `prepare_backdrop_blur_groups` 和 `execute_frame_graph_offscreen` 生成、消费过滤 Pass，不修改任何 Root/Element Blur 刷新判定。此删除减少高频带滤镜动画的 CPU Pass 描述符构建及内存保留；需用 `rg 'draw_step_scratch\.backdrop_blur_passes|prepare_backdrop_blur_passes' crates/gpui/src` 确认没有旧消费者，并运行定向图测试。
 
 - `paint::retention::filter_source_matches` 新增严格不可变同源快速证明：`std::ptr::eq(scene, previous)` 且完整 `SceneAnimationValue` 切片相等时，跳过逐 Operation 与嵌套 Blur 的递归比对。若样本不同，仍执行旧的逐层视觉等价与动画依赖验证，不能忽略静态内容或外层动画轨道；对应测试 `identical_filter_scene_and_samples_skip_nested_source_revalidation`。
+
+### 2026-10-17 Active / Pending Presentation Scene 事务切片
+
+- Nova 原来即使 `draw_frame` / `present_framebuffer_only` 返回 `Ok(false)` 或错误，也会覆盖 `active_presentation_packet`。现将候选包单独驻留 `pending_presentation_packet`，旧 Active 只由 GPU 成功提交的 Scene 替换；若新尺寸等待 GPU Fence/Swapchain，旧提交代次和 Paint Arc 不会被候选错误覆盖。再次输入新 Scene 时优先合并 Pending 尚未呈现的 Dirty/Filter Damage。
+- GPU Owner 的 Active Tick 先重试 Pending；即使 Pending 没有 DirtyRegion，也要尝试首次 Scene 提交。成功后原子升级为 Active，失败仍持有 Pending；Animation deadline/interval 与活动状态查询优先查看 Pending，不假装待提交包已成功显示。重试仍通过现有 GPU Fence/Ready 协议，绝不强行将旧 Scene 拉伸或在错误尺寸直接 Present。
+- 测试：`cargo test -p gpui --lib pending_geometry_does_not_evict_last_submitted_active_scene`、`cargo test -p gpui --lib retry_failure_must_leave_pending_scene_and_active_scene_unchanged`，还需编译及四后端实机。此项建立所有权边界，**没有**完成独立可并行的 GPU Compositor/Render Preparation 工作线程。
