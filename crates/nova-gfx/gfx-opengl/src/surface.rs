@@ -11,6 +11,31 @@ use glutin::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::num::NonZeroU32;
 
+// Retained allocation extent and the currently visible client extent are not
+// interchangeable. The display copy must never rescale UI coordinates when
+// the native WM_SIZE runs ahead of a matching GPU frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PresentCopy {
+    width: i32,
+    height: i32,
+    source_top: i32,
+}
+
+fn present_copy(
+    allocated_height: i32,
+    source: (i32, i32),
+    client: (i32, i32),
+) -> PresentCopy {
+    PresentCopy {
+        width: source.0.min(client.0).max(0),
+        height: source.1.min(client.1).max(0),
+        // The offscreen FBO stores logical row zero at this GL Y coordinate;
+        // clipping a shorter client must keep the top-left content, not shift
+        // the content up by the difference in client heights.
+        source_top: allocated_height - source.1,
+    }
+}
+
 pub(crate) struct Swapchain {
     pub(crate) window: Surface<WindowSurface>,
     pub(crate) color: glow::NativeTexture,
@@ -263,9 +288,10 @@ impl OpenGlDevice {
         self.make_window_current(&chain.window)?;
         let width = chain.config.size.width() as i32;
         let height = chain.config.size.height() as i32;
-        let source_width = chain.source_extent.width() as i32;
-        let source_height = chain.source_extent.height() as i32;
-        let source_bottom = height - source_height;
+        let source_size = (
+            chain.source_extent.width() as i32,
+            chain.source_extent.height() as i32,
+        );
         #[cfg(target_os = "windows")]
         let native_size = (
             i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
@@ -273,32 +299,111 @@ impl OpenGlDevice {
         );
         #[cfg(not(target_os = "windows"))]
         let native_size = (width, height);
-        // SAFETY: both source and native backbuffer belong to this current context. Select the
-        // top-left client-sized region from the retained allocation; when the scene matches the
-        // current client, the blit is 1:1 and does not resample UI geometry or image pixels.
+        let copy = present_copy(height, source_size, native_size);
+        // SAFETY: both framebuffers belong to the current GL context.
+        // The scene has already been rendered into the retained allocation;
+        // only the top-left intersection is copied 1:1. A native window that
+        // grew ahead of the GPU receives a temporary clear and edge extension
+        // instead of undefined black backbuffer pixels or scaled UI controls.
         unsafe {
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.disable(glow::FRAMEBUFFER_SRGB);
             self.gl
                 .bind_framebuffer(glow::READ_FRAMEBUFFER, Some(chain.framebuffer));
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-            self.gl.blit_framebuffer(
-                0,
-                source_bottom,
-                source_width,
-                height,
-                0,
-                native_size.1,
-                native_size.0,
-                0,
-                glow::COLOR_BUFFER_BIT,
-                glow::NEAREST,
-            );
+            self.gl.clear_color(color.red, color.green, color.blue, color.alpha);
+            self.gl.clear(glow::COLOR_BUFFER_BIT);
+            if copy.width > 0 && copy.height > 0 {
+                let right = native_size.0;
+                let bottom = native_size.1 - copy.height;
+                self.gl.blit_framebuffer(
+                    0,
+                    copy.source_top,
+                    copy.width,
+                    copy.source_top + copy.height,
+                    0,
+                    native_size.1,
+                    copy.width,
+                    bottom,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+                // Extend only the last valid column/row. The main scene and
+                // its text remain pixel-perfect; the edges are a temporary
+                // fallback until the latest geometry generation is presented.
+                if right > copy.width {
+                    self.gl.blit_framebuffer(
+                        copy.width - 1,
+                        copy.source_top,
+                        copy.width,
+                        copy.source_top + copy.height,
+                        copy.width,
+                        native_size.1,
+                        right,
+                        bottom,
+                        glow::COLOR_BUFFER_BIT,
+                        glow::NEAREST,
+                    );
+                }
+                if bottom > 0 {
+                    self.gl.blit_framebuffer(
+                        0,
+                        copy.source_top + copy.height - 1,
+                        copy.width,
+                        copy.source_top + copy.height,
+                        0,
+                        bottom,
+                        copy.width,
+                        0,
+                        glow::COLOR_BUFFER_BIT,
+                        glow::NEAREST,
+                    );
+                    if right > copy.width {
+                        self.gl.blit_framebuffer(
+                            copy.width - 1,
+                            copy.source_top + copy.height - 1,
+                            copy.width,
+                            copy.source_top + copy.height,
+                            copy.width,
+                            bottom,
+                            right,
+                            0,
+                            glow::COLOR_BUFFER_BIT,
+                            glow::NEAREST,
+                        );
+                    }
+                }
+            }
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         }
         self.check()?;
         chain.window.swap_buffers(&self.context).map_err(native)?;
         self.park()?;
         self.signal()
+    }
+}
+
+#[cfg(test)]
+mod present_copy_tests {
+    use super::present_copy;
+
+    #[test]
+    fn native_growth_does_not_scale_the_scene() {
+        let copy = present_copy(1200, (800, 600), (1100, 900));
+        assert_eq!((copy.width, copy.height), (800, 600));
+        assert_eq!(copy.source_top, 600);
+    }
+
+    #[test]
+    fn smaller_client_clips_from_logical_top_left_not_from_bottom() {
+        let copy = present_copy(1200, (800, 600), (400, 300));
+        assert_eq!((copy.width, copy.height), (400, 300));
+        assert_eq!(copy.source_top, 600);
+    }
+
+    #[test]
+    fn exact_extent_has_one_to_one_copy() {
+        let copy = present_copy(720, (1280, 720), (1280, 720));
+        assert_eq!((copy.width, copy.height, copy.source_top), (1280, 720, 0));
     }
 }
