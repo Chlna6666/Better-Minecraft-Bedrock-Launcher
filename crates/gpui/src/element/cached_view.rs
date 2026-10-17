@@ -621,12 +621,23 @@ impl Element for CachedView {
                         && !window.recovering_degraded_draw()
                         && force_refresh
                         && !view_dirty;
-                    let can_reuse_prepaint = element_state
-                        .as_ref()
-                        .is_some_and(|state| window.can_reuse_prepaint(&state.prepaint_range));
-                    let can_reuse_paint = element_state
-                        .as_ref()
-                        .is_some_and(|state| window.can_reuse_paint(&state.paint_range));
+                    // Resize/recovery may prohibit replay of every ordinary
+                    // cache boundary. Checking each old range then cannot turn
+                    // a miss into a hit: it only traverses frame-local tables
+                    // and text-layout validity while the new geometry is built.
+                    // Preserve the two explicit exceptions (opt-in refresh
+                    // reuse and progressive deferral), which still require the
+                    // complete range proof before touching prior-frame data.
+                    let can_attempt_range_reuse =
+                        !force_refresh || can_reuse_refresh || can_defer_dirty_view;
+                    let can_reuse_prepaint = can_attempt_range_reuse
+                        && element_state
+                            .as_ref()
+                            .is_some_and(|state| window.can_reuse_prepaint(&state.prepaint_range));
+                    let can_reuse_paint = can_attempt_range_reuse
+                        && element_state
+                            .as_ref()
+                            .is_some_and(|state| window.can_reuse_paint(&state.paint_range));
 
                     let stable_cache_key = element_state.as_ref().is_some_and(|state| {
                         state.cache_key.bounds == bounds
