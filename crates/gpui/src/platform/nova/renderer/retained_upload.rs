@@ -584,8 +584,8 @@ impl RetainedUpload {
     fn auto_static_candidate(
         &mut self,
         key: AutoStaticRejectionKey,
-        evaluate: impl FnOnce() -> Option<super::frame_upload::StaticPrefix>,
-    ) -> Option<super::frame_upload::StaticPrefix> {
+        evaluate: impl FnOnce() -> Option<crate::platform::nova::frame_upload::StaticPrefix>,
+    ) -> Option<crate::platform::nova::frame_upload::StaticPrefix> {
         if self.auto_static_rejection == Some(key) {
             return None;
         }
