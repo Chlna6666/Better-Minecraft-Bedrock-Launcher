@@ -97,6 +97,14 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
                 .any(|quad| { quad.bounds.size == new_size.scale(window.scale_factor) }),
             "the committed scene must cover the new viewport"
         );
+        // Replaying cached geometry must also replay its dispatch tree and
+        // HitTest data. Pixel equality alone does not prove correctness.
+        click_painted_fixed_child(window, cx);
+        assert_eq!(
+            fixed_clicks.get(),
+            1,
+            "retained fixed child must still receive input after client-only Resize"
+        );
 
         let fixed_before_scale_change = fixed_renders.get();
         let mut native = window.platform_window.as_test().unwrap().clone();
@@ -130,7 +138,7 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
         click_painted_fixed_child(window, cx);
         assert_eq!(
             fixed_clicks.get(),
-            1,
+            2,
             "painted center must hit the cached child after DPI change"
         );
     });
