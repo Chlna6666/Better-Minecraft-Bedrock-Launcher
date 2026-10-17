@@ -177,14 +177,15 @@ fn repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bound
     cx: &mut TestAppContext,
 ) {
     let (_, visual) = cx.add_window_view(|_, cx| {
-        let child = cx.new(|_| ResizeCachedChild {
+        let fixed = cx.new(|_| ResizeCachedChild {
             renders: Rc::new(Cell::new(0)),
             clicks: Rc::new(Cell::new(0)),
         });
-        ResizeCachedRoot {
-            fixed: child.clone(),
-            growing: child,
-        }
+        let growing = cx.new(|_| ResizeCachedChild {
+            renders: Rc::new(Cell::new(0)),
+            clicks: Rc::new(Cell::new(0)),
+        });
+        ResizeCachedRoot { fixed, growing }
     });
     visual.update(|window, cx| {
         let initial = window.viewport_size;
@@ -195,10 +196,16 @@ fn repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bound
             let next = size(initial.width + px(grow_w), initial.height + px(grow_h));
             window.platform_window.as_test().unwrap().0.lock().bounds.size = next;
             window.content_bounds_changed(cx);
+            if grow_w != 0. || grow_h != 0. {
+                assert!(
+                    window.force_view_cache_refresh(),
+                    "new client constraints must block stale cached view replay"
+                );
+            }
             window.draw(cx).clear();
             assert!(
                 window.rendered_frame.scene().quads.iter().any(|quad| {
-                    quad.bounds.origin == crate::point(ScaledPixels(0.), ScaledPixels(0.))
+                    quad.bounds.origin == crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(0.))
                         && quad.bounds.size == next.scale(window.scale_factor)
                 }),
                 "native client {:?} was not covered by the committed scene",

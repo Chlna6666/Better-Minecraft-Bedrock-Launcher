@@ -146,6 +146,15 @@ impl Window {
                 self.invalidator.invalidate_view(view_id, cx);
             }
         }
+        // Unlike normal state changes, root geometry has changed. A generic
+        // root View need not own a cached-element target, so the retained
+        // invalidator's subtree scope alone cannot reliably reach every nested
+        // CachedView. Make geometry changes a one-frame hard replay barrier for
+        // all cached Elements and their paint fragments; ordinary frames remain
+        // eligible for fine-grained retained reuse.
+        if layout_constraints_changed || text_rasterization_changed {
+            self.force_view_cache_refresh = true;
+        }
         self.redraw_without_view_cache_refresh();
 
         self.bounds_observers
