@@ -949,6 +949,24 @@ impl Window {
             overlay: overlay_prepaint_elapsed,
             hit_test: hit_test_elapsed,
         };
+        // Detailed Trace is opt-in. No per-element scans, allocations or
+        // synchronous logging are added to the normal 1ms hot path.
+        if log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "gpui prepaint work window={} root_us={} deferred_us={} overlay_us={} hit_test_us={} other_us={} total_us={}",
+                self.handle.window_id().as_u64(),
+                root_prepaint_elapsed.as_micros(),
+                deferred_prepaint_elapsed.as_micros(),
+                overlay_prepaint_elapsed.as_micros(),
+                hit_test_elapsed.as_micros(),
+                self.last_generation_stats
+                    .prepaint_breakdown
+                    .other(prepaint_time)
+                    .as_micros(),
+                prepaint_time.as_micros(),
+            );
+        }
 
         let paint_started_at = Instant::now();
         self.last_generation_stats

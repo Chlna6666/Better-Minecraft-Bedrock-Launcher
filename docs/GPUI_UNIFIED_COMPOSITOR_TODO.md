@@ -1047,4 +1047,6 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 计时：prepaint_elapsed 沿用总历时语义，root_us 包含嵌套布局和 View 工作；deferred_us 包含 Inspector/Deferred；overlay_us 为浮层准备，hit_test_us 为输入命中检测，other_us 为其余开销；不做每元素新 Hash 遍历。
 - Resize 缓存验证：已明确禁止回放的 CachedView 不再执行无收益的 Prepaint/Paint 范围验证；显式 reuse_on_window_refresh 与 progressive deferral 仍须完整校验，绝不放行无完整代次证明的旧状态。待原生验证后结合 root_us 与 cache hit 量化收益。
 - 正确性：实际尺寸或 DPI/display 改变仍保留 RelayoutSubtree 和一次性全 CachedView 刷新；原生 Resize 状态位变化不再强制整窗 GPU Damage，也不再经 generic root notify 清空全部 CachedView。退出拖拽时仍刷新已延迟的图片尺寸。待尺寸依赖证明通过才放宽根屏障。
-- 本地验收：`cargo test -p gpui --lib prepaint_work_breakdown_tests`、`cargo test -p gpui --lib viewport_change_needs_ui_commit_tests`、`cargo test -p gpui --lib viewport_resize`、`cargo check -p gpui`；四后端 Release 对比 p50/p95/p99 各阶段、degraded/recovery 计数与成功 Present 尺寸。未获得这些结果前状态保持“已提交·待验证”。
+- 本地验收：`cargo test -p gpui --lib prepaint_work_breakdown_tests`、`cargo test -p gpui --lib viewport_change_needs_ui_commit_tests`、`cargo test -p gpui --lib unchanged_native_size_move_state_does_not_dirty_root`、`cargo test -p gpui --lib viewport_resize`、`cargo check -p gpui`；四后端 Release 对比 p50/p95/p99 各阶段、degraded/recovery 计数与成功 Present 尺寸。未获得这些结果前状态保持“已提交·待验证”。
+
+- Trace：启用详细 Trace 时，每个完成根 Prepaint 的 UI generation 输出 `gpui prepaint work` 及各分项，不以超预算 WARN 代替常态采样；普通日志级别不执行逐帧格式化。

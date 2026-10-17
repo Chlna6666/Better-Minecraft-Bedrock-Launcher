@@ -214,3 +214,33 @@ fn repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bound
         }
     });
 }
+
+// Status-only native modal exit must not trigger a new full root cache
+// generation. The geometry- and DPI-changing tests above still require a
+// complete new-size draw before a Scene is presented.
+#[gpui::test]
+fn unchanged_native_size_move_state_does_not_dirty_root(cx: &mut TestAppContext) {
+    let (_, visual) = cx.add_window_view(|_, cx| {
+        let fixed = cx.new(|_| ResizeCachedChild {
+            renders: Rc::new(Cell::new(0)),
+            clicks: Rc::new(Cell::new(0)),
+        });
+        let growing = cx.new(|_| ResizeCachedChild {
+            renders: Rc::new(Cell::new(0)),
+            clicks: Rc::new(Cell::new(0)),
+        });
+        ResizeCachedRoot { fixed, growing }
+    });
+    visual.update(|window, cx| {
+        window.invalidator.set_dirty(false);
+        window.force_full_redraw.set(false);
+        // TestPlatform reports non-modal. Simulate GPUI having observed the
+        // preceding live-size flag without changing the native client rect.
+        window.live_resize_active = true;
+        window.content_bounds_changed(cx);
+        assert!(!window.invalidator.is_dirty());
+        assert!(!window.force_view_cache_refresh());
+        assert!(!window.force_full_redraw.get());
+        assert!(!window.live_resize_active);
+    });
+}
