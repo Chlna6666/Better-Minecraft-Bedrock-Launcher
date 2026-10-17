@@ -196,6 +196,37 @@ fn latest_scene_keeps_unsubmitted_damage_and_one_wake() {
 }
 
 #[test]
+fn queued_resize_scene_compaction_keeps_latest_extent_as_damage_authority() {
+    let queue = Queue::default();
+    let scene = |extent: (u32, u32), epoch| {
+        Arc::new(crate::window::Paint::new(
+            crate::Scene::default(),
+            Arc::default(),
+            crate::window::PaintGeometry {
+                layout_extent: Some(extent),
+                layout_epoch: epoch,
+                scale_factor: 1.0,
+            },
+        ))
+    };
+    queue
+        .enqueue(draw(packet(scene((400, 300), 3), 390.0)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(draw(packet(scene((800, 600), 4), 790.0)), || Ok(()))
+        .unwrap();
+    let Some(Command::Draw { packet, .. }) = queue.take() else {
+        panic!("expected latest scene after queue compaction");
+    };
+    assert_eq!(packet.paint.geometry.layout_extent, Some((800, 600)));
+    assert!(packet.dirty_region.is_full());
+    assert_eq!(packet.dirty_region.area(), 800.0 * 600.0);
+    assert!(packet.force_full_backdrop_blur_refresh);
+    assert!(matches!(packet.partial_present_mode, PartialPresentMode::FullRedraw));
+    assert!(queue.take().is_none());
+}
+
+#[test]
 fn presentation_replacement_does_not_cross_control_barrier() {
     let queue = Queue::default();
     let scene = Arc::new(crate::window::Paint::default());

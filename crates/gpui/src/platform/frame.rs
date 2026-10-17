@@ -354,6 +354,67 @@ mod tests {
     };
     use std::time::Duration;
 
+    fn geometry_packet_for_merge(extent: (u32, u32), epoch: u64, scale: f32) -> PresentationPacket {
+        PresentationPacket::new(
+            Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                Arc::default(),
+                crate::window::PaintGeometry {
+                    layout_extent: Some(extent),
+                    layout_epoch: epoch,
+                    scale_factor: scale,
+                },
+            )),
+            [],
+            [],
+            Instant::now(),
+            DirtyRegion::empty(),
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::Partial,
+        )
+    }
+
+    #[test]
+    fn superseding_pending_resize_uses_new_geometry_not_stale_damage_coordinates() {
+        let mut old = geometry_packet_for_merge((400, 300), 7, 1.0);
+        old.dirty_region.push(rect(390.0, 10.0));
+        let mut new = geometry_packet_for_merge((800, 600), 8, 1.0);
+        new.merge_pending_damage_from(&old);
+        assert!(new.dirty_region.is_full());
+        assert_eq!(new.dirty_region.area(), 800.0 * 600.0);
+        assert_eq!(new.partial_present_mode, PartialPresentMode::FullRedraw);
+        assert!(new.force_full_backdrop_blur_refresh);
+        // A third UI generation must not accidentally replace the NEW full
+        // extent with old layout-local rectangles when the GPU owner coalesces.
+        let mut newest = geometry_packet_for_merge((900, 700), 9, 1.0);
+        newest.merge_pending_damage_from(&new);
+        assert!(newest.dirty_region.is_full());
+        assert_eq!(newest.dirty_region.area(), 900.0 * 700.0);
+    }
+
+    #[test]
+    fn same_extent_new_layout_epoch_preserves_partial_pending_damage() {
+        let mut old = geometry_packet_for_merge((400, 300), 7, 1.0);
+        old.dirty_region.push(rect(4.0, 11.0));
+        let mut new = geometry_packet_for_merge((400, 300), 8, 1.0);
+        new.merge_pending_damage_from(&old);
+        assert!(!new.dirty_region.is_full());
+        assert_eq!(new.dirty_region.area(), 110.0);
+        assert!(!new.force_full_backdrop_blur_refresh);
+        assert_eq!(new.partial_present_mode, PartialPresentMode::Partial);
+    }
+
+    #[test]
+    fn same_pixel_extent_dpi_change_requires_full_pending_refresh() {
+        let mut old = geometry_packet_for_merge((400, 300), 7, 1.0);
+        old.dirty_region.push(rect(2.0, 5.0));
+        let mut new = geometry_packet_for_merge((400, 300), 8, 1.25);
+        new.merge_pending_damage_from(&old);
+        assert!(new.dirty_region.is_full());
+        assert_eq!(new.dirty_region.area(), 400.0 * 300.0);
+        assert!(new.force_full_backdrop_blur_refresh);
+    }
+
     #[test]
     fn presentation_tick_candidate_shares_immutable_animation_dependencies() {
         let committed = PresentationPacket::new(
@@ -1268,8 +1329,31 @@ impl PresentationPacket {
         self.force_full_backdrop_blur_refresh = false;
     }
 
-    /// Preserves unsubmitted damage when a newer scene supersedes this packet in the owner queue.
+    /// Preserve unsent work when a newer UI scene supersedes a deferred one.
+    /// DirtyRect and painter-order blur damage are expressed in the old Paint's
+    /// physical coordinates. They cannot be merged across an actual client
+    /// extent/DPI transition: capture/source indices and pixel positions may
+    /// no longer name the same GPU content. Promote exactly this transition
+    /// to a full NEW-extent refresh, not every layout_epoch increment.
     pub(crate) fn merge_pending_damage_from(&mut self, previous: &Self) {
+        let current_geometry = self.paint.geometry;
+        let previous_geometry = previous.paint.geometry;
+        let geometry_changed = current_geometry.layout_extent.is_some()
+            && (current_geometry.layout_extent != previous_geometry.layout_extent
+                || current_geometry.scale_factor.to_bits()
+                    != previous_geometry.scale_factor.to_bits());
+        if geometry_changed {
+            let (width, height) = current_geometry.layout_extent.expect("checked new extent");
+            let extent = crate::bounds(
+                crate::point(ScaledPixels(0.0), ScaledPixels(0.0)),
+                crate::size(ScaledPixels(width as f32), ScaledPixels(height as f32)),
+            );
+            self.dirty_region.mark_full(extent);
+            self.backdrop_blur_damage_plan = BackdropBlurDamagePlan::default();
+            self.force_full_backdrop_blur_refresh = true;
+            self.partial_present_mode = PartialPresentMode::FullRedraw;
+            return;
+        }
         self.dirty_region.merge_from(&previous.dirty_region);
         self.backdrop_blur_damage_plan
             .merge_from(&previous.backdrop_blur_damage_plan);
