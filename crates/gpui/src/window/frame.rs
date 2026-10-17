@@ -931,6 +931,43 @@ mod publication_tests {
         assert_eq!(candidate, vec![Some(17)]);
     }
 
+    fn test_cached_slot(value: u64) -> ElementStateBox {
+        ElementStateBox {
+            inner: Box::new(Some(value)),
+            #[cfg(debug_assertions)]
+            type_name: "Option<u64>",
+        }
+    }
+
+    fn test_cached_value(slot: &ElementStateBox) -> Option<u64> {
+        slot.inner.downcast_ref::<Option<u64>>().copied().flatten()
+    }
+
+    #[test]
+    fn abort_keeps_existing_committed_snapshot_and_discards_candidate() {
+        let key = (GlobalElementId::default(), TypeId::of::<u64>());
+        let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        old.element_states.insert(key.clone(), test_cached_slot(10));
+        candidate.element_states.insert(key.clone(), test_cached_slot(20));
+        old.rollback_element_states(&mut candidate);
+        assert_eq!(test_cached_value(&old.element_states[&key]), Some(10));
+        assert!(candidate.element_states.is_empty());
+    }
+
+    #[test]
+    fn successful_frame_prefers_candidate_state_over_committed_snapshot() {
+        let key = (GlobalElementId::default(), TypeId::of::<u64>());
+        let mut old = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        let mut candidate = Frame::new(DispatchTree::new(Default::default(), Default::default()));
+        old.element_states.insert(key.clone(), test_cached_slot(10));
+        candidate.element_states.insert(key.clone(), test_cached_slot(20));
+        candidate.accessed_element_states.push(key.clone());
+        candidate.finish(&mut old);
+        assert_eq!(test_cached_value(&candidate.element_states[&key]), Some(20));
+        assert!(!old.element_states.contains_key(&key));
+    }
+
     #[test]
     fn published_paint_moves_without_copying_and_next_build_is_independent() {
         let mut frame = Frame::new(DispatchTree::new(Default::default(), Default::default()));
