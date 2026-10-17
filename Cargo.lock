@@ -4328,13 +4328,22 @@ name = "gpui-3d"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.0",
  "bevy_mikktspace",
  "criterion",
  "gfx-core",
+ "gfx-dx11",
+ "gfx-dx12",
+ "gfx-opengl",
  "gfx-shader",
  "gfx-shader-build",
+ "gfx-vulkan",
  "gpui",
+ "image",
+ "raw-window-handle",
+ "serde_json",
  "thiserror 2.0.18",
+ "windows",
 ]
 
 [[package]]

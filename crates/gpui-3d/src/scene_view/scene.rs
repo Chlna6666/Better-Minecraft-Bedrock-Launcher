@@ -75,6 +75,7 @@ struct DrawResources {
     albedo_id: Option<TextureAssetId>,
     normal_id: Option<TextureAssetId>,
     occlusion_id: Option<TextureAssetId>,
+    metallic_roughness_id: Option<TextureAssetId>,
     resource_set: ResourceSetId,
 }
 
@@ -538,6 +539,7 @@ impl SceneResources {
             let albedo_id = draw.material.albedo_texture;
             let normal_id = draw.material.normal_texture;
             let occlusion_id = draw.material.occlusion_texture;
+            let metallic_roughness_id = draw.material.metallic_roughness_texture;
             if !force
                 && let Some(previous) = self.draw_resources.get(batch_index)
                 && previous.draw_index == index
@@ -547,6 +549,7 @@ impl SceneResources {
                 && previous.albedo_id == albedo_id
                 && previous.normal_id == normal_id
                 && previous.occlusion_id == occlusion_id
+                && previous.metallic_roughness_id == metallic_roughness_id
             {
                 next.push(DrawResources {
                     draw_index: index,
@@ -556,6 +559,7 @@ impl SceneResources {
                     albedo_id,
                     normal_id,
                     occlusion_id,
+                    metallic_roughness_id,
                     resource_set: previous.resource_set,
                 });
                 continue;
@@ -588,6 +592,14 @@ impl SceneResources {
             } else {
                 renderer.fallback_texture_view()?
             };
+            let metallic_roughness_view = if let Some(id) = metallic_roughness_id {
+                self.textures
+                    .get(&id)
+                    .map(|texture| texture.view)
+                    .ok_or_else(|| anyhow!("GPUI 3D texture {} was not uploaded", id.0))?
+            } else {
+                renderer.fallback_texture_view()?
+            };
             match create_draw_resource_set(
                 device,
                 DrawBindingResources {
@@ -602,6 +614,7 @@ impl SceneResources {
                     albedo_view,
                     normal_texture_view,
                     occlusion_view,
+                    metallic_roughness_view,
                     material_sampler: sampler,
                     frame_buffer: self.frame_buffer,
                 },
@@ -616,6 +629,7 @@ impl SceneResources {
                         albedo_id,
                         normal_id,
                         occlusion_id,
+                        metallic_roughness_id,
                         resource_set,
                     });
                 }

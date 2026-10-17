@@ -1,17 +1,23 @@
 # GPUI 3D Architecture And API
 
 This document defines the workspace boundary and current contract for `gpui-3d`. It is the source
-for 3D API ownership, scene preparation, scene-view resource lifetime, examples, and benchmark scope.
+for 3D API ownership, scene preparation, scene-view and offscreen renderer lifetimes, glTF asset
+import, examples, test assets, and GPU verification scope.
 
-Map Viewer and Skin Pack now convert their preview data to `gpui-3d` scenes. The dedicated GPUI mesh
-primitive, upload, cache, and draw path has been removed; GPUI retains the generic
-`RendererExtension` contract. Source-token review, `gpui-3d` tests/all-target checks, and the focused
-GPUI check pass; `cargo check --locked -p bmcbl --no-default-features` also passes, and the CPU
-`scene` example runs successfully. Real-window DX12 and Vulkan smoke captures show the scene-view
-geometry and three shared-resource sphere instances after the canvas was made to fill its available
-layout bounds. Frame pacing and GPU draw counts have not been measured, and the feature matrix below
-records remaining 3D work; this does not imply full feature
-parity or that all performance issues are resolved.
+The crate now contains two complementary rendering paths over one scene/asset/material model:
+
+1. The GPUI **scene-view** path renders inside the host compositor pass through the generic
+   `RendererExtension` contract. It is the in-UI path used by Map Viewer and Skin Pack.
+2. The **offscreen renderer** (`gpui_3d::OffscreenRenderer`) renders a multi-pass GPU frame owned by
+   the application: directional shadow map, linear PBR scene pass, and display-referred post pass,
+   resolved into an offscreen texture that can be read back or handed to a compositor. It uses the
+   public Nova device passed by the caller and never creates a second window renderer, swapchain,
+   cache owner, or render queue.
+
+A glTF 2.0 / GLB importer (`gpui_3d::load_path` / `load_bytes`) converts licensed test models and
+application assets into the same `Scene`, `Mesh`, `Material`, `TextureAsset`, light, camera, and
+animation-track types used by both rendering paths. The importer is CPU-only and validated against
+malformed input, missing limits, path escape attempts, and unsupported required extensions.
 
 ## Ownership
 
@@ -44,12 +50,14 @@ feature:
 
 | Area | Current local API | Remaining 3D work |
 | --- | --- | --- |
-| Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangent generation and authored tangent streams, optional per-triangle edge masks, fixed-topology vertex snapshot replacement, five primitives, bounds, BVH queries, automatic indexed instancing for compatible adjacent draws | Partial GPU geometry updates with an explicit in-flight resource lifetime contract |
-| Camera and picking | Perspective and orthographic projection, orbit/pan/zoom controls, authored/evaluated world bounds, bounds framing, CPU ray queries | Picking from submitted-frame ID/depth output |
-| Materials and lighting | Metallic-roughness and unlit materials, ambient/directional/point/spot lights, albedo, normal, and ambient-occlusion maps, caller-supplied mip chains, three alpha modes, opt-in anisotropic sampling | HDR environment lighting, directional shadows, linear/HDR output controls, and typed material bindings |
-| Render extension | One retained Nova scene-view path with a fixed shader, indexed instancing, content-mask projection, selected triangle-edge coverage, pixel offsets, depth bias, and projection-edge feathering | Generic material programs, custom vertex streams, configurable mesh passes, and their resource/error contracts |
-| Animation and deformation | Absolute-time translation, rotation, and scale tracks evaluated on CPU | Pose/weight blending, constraints and IK, morph/skin deformation, GPU deformation, and coupled geometry/bounds publication |
-| Output and capture | GPUI scene-view layout element | Headless rendering, viewport capture, asynchronous readback, and object/label outputs |
+| Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangents, per-triangle edge masks, five primitives, bounds, BVH queries, automatic indexed instancing; glTF primitives (indexed, non-indexed, morph-target base geometry, skinned bind pose) | GPU skinning/morph deformation, GPU geometry partial updates, compressed mesh extensions |
+| Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF declared cameras | Object-ID / depth GPU picking with async readback |
+| Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, exposure, ACES/Reinhard tone mapping | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows |
+| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow pass, PBR scene pass, post pass) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Pose blending/crossfade, skeletal skinning, morph weights, IK |
+| Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
+| Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
+| Test assets | `test_assets/manifest.toml` + SHA-256 downloader + licenses, offline cache, ignored native tests, GPU pixel matrix | Additional licensed large-scene and animation assets |
 
 These areas follow the feature categories in the [reference branch's crate guide](https://raw.githubusercontent.com/cradiy/gpui/main/crates/gpui_3d/README.md);
 they are not implemented merely because they appear in this checklist. A feature is ready for
@@ -339,13 +347,129 @@ Record GPU/backend/driver, window dimensions, display refresh, scene size, warm-
 timings separately for DX12 and Vulkan real-window comparisons. Shader compilation is a format
 check, not evidence of correct pixels or smooth presentation.
 
+## Offscreen multi-pass renderer
+
+`gpui_3d::OffscreenRenderer` renders one frame per public call and owns only that frame's GPU
+resources. Ownership boundaries:
+
+- The caller creates and owns the Nova `Device`; `gpui-3d` never submits work outside
+  `render`/`render_animated`/`capture`, never creates a window surface or swapchain, and never reads
+  CPU memory from a texture it did not create.
+- GPU objects created by the renderer: shadow color/depth targets, scene color/depth targets,
+  post color target (readback source), six shader modules, four pipelines (shadow, opaque, blended,
+  post), three render passes, three resource-set layouts, three pipeline layouts, three samplers, a
+  fallback texture, per-mesh vertex/index/tangent buffers, per-texture images, frame uniform/instance/
+  light/draw buffers, and cached per-batch resource sets.
+- `destroy` releases every one of those objects; it must run before the device is destroyed.
+  `trim(Light|Moderate|Aggressive)` drops cached meshes, textures, and resource sets without touching
+  target/pipeline state. `resize` recreates size-dependent targets, pipelines, and resource sets while
+  keeping mesh and texture caches resident.
+
+Render graph (three passes recorded into one backend submission through
+`render_step_lists_to_textures_compat`):
+
+| Pass | Color | Depth | Load | Content |
+| --- | --- | --- | --- | --- |
+| Shadow | `Rgba8Unorm` packed 24-bit depth | `Depth32Float` | Clear white / 1.0 | Opaque and masked draws from a light-space orthographic camera fitted to scene bounds |
+| Scene | `Rgba8Unorm` display-referred | `Depth32Float` | Caller clear color / 1.0 | Indexed instanced PBR draws, shadow comparison with 3x3 PCF, debug views |
+| Post | `Rgba8Unorm` + `COPY_SRC` | None | Clear | Fullscreen resolve with optional vignette grading, readback source |
+
+Per-frame updates are diffed against the last uploaded bytes: a static scene with an unchanged camera
+uploads 0 bytes and issues no mesh or texture upload after warm-up. Camera-only changes upload the
+240-byte frame uniform (padded to 256). Per-batch resource sets are cached by mesh id/generation, mesh
+part, draw index, instance count, material texture ids, and a target/frame-buffer epoch, so a static
+scene reuses every set without per-frame descriptor creation.
+
+## glTF 2.0 / GLB import
+
+`gpui_3d::load_path` and `load_bytes` produce `GltfScene` with `scene`, `textures`, `animations`,
+`cameras`, `warnings`, and `statistics`. Supported: GLB and JSON containers; embedded, data-URI, and
+external buffers; interleaved and compact accessors; sparse accessors; POSITION/NORMAL/TANGENT/
+TEXCOORD_0/COLOR_0; indexed and unindexed triangle primitives; material alpha modes and double-sided
+flags; base-color/normal/occlusion/metallic-roughness textures decoded through `image` with generated
+box-filtered mip chains; node TRS or matrix transforms; cameras; KHR_lights_punctual (directional,
+point, spot); KHR_materials_unlit; KHR_materials_emissive_strength; and STEP/LINEAR/CUBICSPLINE
+transform animation channels converted to absolute-time `TransformTrack`s.
+
+Import limits are `GltfLoadOptions`: document bytes, decoded buffer bytes, node count, vertices per
+primitive, texture dimension, texture decoding on/off, mip generation, and external-resource access.
+Every accessor read is bounds-checked with checked arithmetic; node cycles, duplicate animation times,
+out-of-range indices, non-finite values, and external paths that escape the document directory fail
+with a typed `GltfError`. Extensions listed in `extensionsRequired` outside {KHR_lights_punctual,
+KHR_materials_unlit} fail the import; unknown optional extensions are reported as warnings.
+
+Feature status to keep honest: skins and morph targets are parsed only far enough to render the bind
+pose and emit a warning; emissive textures are not sampled (the factor is ignored with a warning);
+KHR_texture_transform UV transforms are not applied; KTX2/Basis, Draco, and meshopt payloads are not
+decoded; KHR_materials_clearcoat/transmission/ior/variants are recorded as warnings and fall back to
+the base metallic-roughness model.
+
+## Test assets
+
+`crates/gpui-3d/test_assets/manifest.toml` lists every external model with source URL, SHA-256, byte
+size, license, attribution, and feature tags. `download.ps1` fetches missing files into `cache/`,
+verifies all hashes, and fails on any error. The cache is git-ignored; after first preparation the
+core regressions run fully offline. Verified assets:
+
+| Asset | License | Features exercised |
+| --- | --- | --- |
+| DamagedHelmet.glb | CC BY 4.0 (ctxwing) | GLB, PBR, base-color/normal/occlusion/metallic-roughness textures |
+| AnimatedCube.gltf + .bin + .png | CC0 (UX3D / Norbert Nopper) | JSON document, external buffer, external image, node rotation animation |
+| BoxVertexColors.glb | CC0 (Marco Hutte) | GLB, COLOR_0 vertex colors, indexed geometry |
+
+Tests that need the cache are marked `#[ignore]` and documented as requiring
+`test_assets/download.ps1`; they fail (not skip) when run without verified assets. Synthetic GLB
+fixtures generated inside `tests/gltf_import.rs` cover malformed containers, index overflow, node
+cycles, required extensions, and path escape without any external file.
+
+## GPU verification and measured results
+
+`tests/offscreen_gpu.rs` creates real Nova devices, renders through the public API, reads pixels back,
+and asserts: shaded output is non-uniform and lit; enabling directional shadows changes more than 100
+pixels; resize keeps rendering at the new extent; a repeated static frame uploads 0 bytes and creates
+no resources; aggressive trim forces re-upload; and DX11/Vulkan agree with the DX12 reference within 1%
+of pixels. Run it explicitly:
+
+```powershell
+cargo test -p gpui-3d --test offscreen_gpu -- --ignored --test-threads=1
+```
+
+`scene_lab` provides the scriptable capture path (`--backend=all --out=... --json=...`). Measured on
+this development machine (Windows 11 26100, AMD Radeon RX 7600M XT, 1280x720, 2048 shadow map, 8 draw
+calls / 7 shadow draws / 18,806 triangles / 13 instances, scene cached after the first frame):
+
+| Backend | First frame (prepare / submit) | Steady frame (prepare / submit) | Steady upload bytes | Capture (readback) |
+| --- | --- | --- | --- | --- |
+| DX12 | 80.4 ms / 2.1 ms | 0.82 ms / 0.78 ms | 0 | 5.2 ms |
+| DX11 | 2.2 ms / 0.1 ms | 0.28 ms / 0.13 ms | 0 | 26.4 ms |
+| Vulkan | 40.2 ms / 1.4 ms | 0.24 ms / 0.20 ms | 0 | 5.3 ms |
+| OpenGL 4.5 | 1.0 ms / 0.2 ms | 0.13 ms / 0.08 ms | 0 | 6.5 ms |
+
+The first-frame differences are shader/pipeline creation cost; after warm-up every backend reports
+0 mesh uploads, 0 texture uploads, 0 upload bytes, and identical draw/triangle/instance counts. These
+are CPU-side prepare/submit and readback timings, not GPU frame times: Nova still has no cross-backend
+GPU timestamp contract, so no GPU pass time is claimed here. Captures are written to
+`target/scene_lab/*.png`; DX11, DX12, Vulkan, and OpenGL images agree visually, and the GPU pixel test
+enforces DX11/Vulkan agreement with DX12 numerically.
+
+| Backend | GPUI scene-view shader | Offscreen shadow+PBR+post | Readback pixels | Cross-backend agreement |
+| --- | --- | --- | --- | --- |
+| DX12 | Build-time DXBC | Verified (scene_lab capture + GPU test) | Verified | Reference backend |
+| DX11 | Build-time SM5.0 bytecode | Verified (scene_lab capture + GPU test) | Verified | Within 1% of DX12 |
+| Vulkan | Build-time SPIR-V | Verified (scene_lab capture + GPU test) | Verified | Within 1% of DX12 |
+| OpenGL 4.5 | Build-time GLSL 4.50 | Verified through scene_lab capture (WGL hidden-window bootstrap) | Verified | Visually matches; not part of the automated matrix test |
+| Metal | Build-time MSL | Not implemented (no texture upload path) | Not supported | Pending |
+
 ## Validation
 
 ```powershell
 cargo fmt --all --check
-cargo test --locked -p gpui-3d
-cargo check --locked -p gpui-3d --all-targets --all-features
-cargo check --workspace --no-default-features
+cargo test -p gpui-3d
+cargo test -p gpui-3d -- --ignored --test-threads=1   # test assets + native GPU matrix
+cargo check -p gpui-3d --all-targets --all-features
+cargo clippy -p gpui-3d --all-targets --all-features --no-deps
+cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=2 --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --out=target/scene_lab/helmet.png
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and

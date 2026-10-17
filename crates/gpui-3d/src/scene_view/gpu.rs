@@ -1,8 +1,8 @@
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, FRAME_BINDING,
     FRAME_PARAMS_STRIDE, INSTANCE_BINDING, INSTANCE_STRIDE, LIGHT_BINDING, LIGHT_STRIDE,
-    NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE, SAMPLER_BINDING, TANGENT_BINDING,
-    VERTEX_BINDING,
+    METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, PACKED_VERTEX_STRIDE,
+    SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING,
 };
 use crate::{
     AlphaMode, Camera, Mat4, Mesh, PreparedLight, PreparedScene, ShadingModel, TextureAsset,
@@ -27,6 +27,7 @@ const SHADING_MODEL_UNLIT: u32 = 1;
 const TEXTURE_FLAG_ALBEDO: u32 = 1;
 const TEXTURE_FLAG_OCCLUSION: u32 = 2;
 const TEXTURE_FLAG_UV: u32 = 4;
+const TEXTURE_FLAG_METALLIC_ROUGHNESS: u32 = 8;
 const LIGHT_KIND_AMBIENT: u32 = 0;
 const LIGHT_KIND_DIRECTIONAL: u32 = 1;
 const LIGHT_KIND_POINT: u32 = 2;
@@ -58,14 +59,15 @@ pub(super) struct DrawBindingResources<'a> {
     pub(super) albedo_view: TextureViewId,
     pub(super) normal_texture_view: TextureViewId,
     pub(super) occlusion_view: TextureViewId,
+    pub(super) metallic_roughness_view: TextureViewId,
     pub(super) material_sampler: SamplerId,
     pub(super) frame_buffer: BufferId,
 }
 
-struct EncodedMesh {
-    vertices: Vec<u8>,
-    tangents: Option<Vec<u8>>,
-    indices: Vec<u8>,
+pub(crate) struct EncodedMesh {
+    pub(crate) vertices: Vec<u8>,
+    pub(crate) tangents: Option<Vec<u8>>,
+    pub(crate) indices: Vec<u8>,
 }
 
 pub(super) fn create_texture(
@@ -230,7 +232,7 @@ pub(super) fn create_mesh(
     })
 }
 
-fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
+pub(crate) fn encode_mesh(mesh: &Mesh) -> gpui::Result<EncodedMesh> {
     let mut vertices = Vec::new();
     let mut tangents = mesh.tangents().map(|_| Vec::new());
     let mut indices = Vec::new();
@@ -350,6 +352,7 @@ pub(super) fn create_draw_resource_set(
         albedo_view,
         normal_texture_view,
         occlusion_view,
+        metallic_roughness_view,
         material_sampler,
         frame_buffer,
     } = bindings;
@@ -423,6 +426,12 @@ pub(super) fn create_draw_resource_set(
                 binding: OCCLUSION_BINDING,
                 resource: BindingResource::Texture(TextureBinding {
                     texture_view: occlusion_view,
+                }),
+            },
+            ResourceBinding {
+                binding: METALLIC_ROUGHNESS_BINDING,
+                resource: BindingResource::Texture(TextureBinding {
+                    texture_view: metallic_roughness_view,
                 }),
             },
             ResourceBinding {
@@ -533,7 +542,7 @@ pub(super) fn encode_frame_params(
 }
 
 /// Encodes per-draw material state that is independent of the camera and viewport.
-pub(super) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
+pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * DRAW_SLOT_STRIDE);
     let light_count =
         u32::try_from(scene.lights.len()).context("GPUI 3D light count exceeds u32")?;
@@ -565,6 +574,9 @@ pub(super) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
         if draw.mesh.uses_uv_regions() {
             texture_flags |= TEXTURE_FLAG_UV;
         }
+        if draw.material.metallic_roughness_texture.is_some() {
+            texture_flags |= TEXTURE_FLAG_METALLIC_ROUGHNESS;
+        }
         write_u32(&mut bytes, texture_flags);
 
         let encoded_size = bytes.len() - slot_start;
@@ -585,7 +597,7 @@ pub(super) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
+pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * INSTANCE_STRIDE as usize);
     for draw in &scene.draws {
         let inverse = draw
@@ -610,7 +622,7 @@ pub(super) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
+pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len().max(1) * LIGHT_STRIDE as usize);
     for light in lights {
         match *light {
@@ -692,19 +704,19 @@ pub(super) fn transpose(matrix: crate::Mat4) -> crate::Mat4 {
     }))
 }
 
-pub(super) fn write_matrix(bytes: &mut Vec<u8>, matrix: [[f32; 4]; 4]) {
+pub(crate) fn write_matrix(bytes: &mut Vec<u8>, matrix: [[f32; 4]; 4]) {
     for column in matrix {
         write_vec4(bytes, column);
     }
 }
 
-pub(super) fn write_vec4(bytes: &mut Vec<u8>, vector: [f32; 4]) {
+pub(crate) fn write_vec4(bytes: &mut Vec<u8>, vector: [f32; 4]) {
     for value in vector {
         bytes.extend_from_slice(&value.to_ne_bytes());
     }
 }
 
-pub(super) fn write_f32(bytes: &mut Vec<u8>, value: f32) {
+pub(crate) fn write_f32(bytes: &mut Vec<u8>, value: f32) {
     bytes.extend_from_slice(&value.to_ne_bytes());
 }
 

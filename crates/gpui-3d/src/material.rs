@@ -386,6 +386,10 @@ pub struct Material {
     /// Optional linear red-channel ambient-occlusion texture, sampled with the mesh UVs.
     /// Create the asset with [`TextureAsset::linear_rgba8`].
     pub occlusion_texture: Option<TextureAssetId>,
+    /// Optional linear metallic-roughness texture following the glTF 2.0 channel layout:
+    /// green is roughness and blue is metallic. The scalar factors multiply the sampled values.
+    /// Create the asset with [`TextureAsset::linear_rgba8`].
+    pub metallic_roughness_texture: Option<TextureAssetId>,
     /// Strength of the occlusion texture in `0..=1`; zero disables occlusion.
     ///
     /// This attenuates ambient illumination only; direct lights remain unaffected.
@@ -415,6 +419,7 @@ impl Material {
             albedo_texture: None,
             normal_texture: None,
             occlusion_texture: None,
+            metallic_roughness_texture: None,
             occlusion_strength: 1.0,
         }
     }

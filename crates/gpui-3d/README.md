@@ -7,10 +7,70 @@ scene-view resources; BMCBL-specific world and preview policy stays in `src/ui`.
 
 The API is in active development and the crate is not published. Map Viewer and Skin Pack use this
 crate for preview scenes. GPUI owns the generic `RendererExtension` lifecycle; its dedicated mesh
-primitive and Nova upload/cache/draw path have been removed without compatibility wrappers. The
-crate and BMCBL checks pass, and the CPU scene example runs. Native DX12 and Vulkan smoke captures
-show the scene geometry and the three shared-resource sphere instances after fixing the scene-view
-element to fill its available layout bounds; frame pacing and GPU draw counts remain unmeasured.
+primitive and Nova upload/cache/draw path have been removed without compatibility wrappers.
+
+Two rendering paths share one scene/asset model:
+
+- **GPUI scene view**: renders inside the host compositor pass through `RendererExtension`.
+- **Offscreen renderer**: `OffscreenRenderer` renders a directional shadow pass, a linear PBR scene
+  pass, and a display-referred post pass into an offscreen target with readback, resize, trim,
+  debug views, and per-frame statistics. It uses an application-owned Nova device and adds no second
+  window renderer, swapchain, cache owner, or render queue.
+
+`load_path` / `load_bytes` import glTF 2.0 and GLB documents into the same scene types, including
+PBR materials, decoded textures with mip chains, node hierarchies, punctual lights, cameras, and
+transform animations. Licensed test models with pinned SHA-256 hashes live in `test_assets/`.
+
+Verified on this development machine (AMD Radeon RX 7600M XT): DX12, DX11, Vulkan, and OpenGL 4.5
+render the offscreen studio scene and DamagedHelmet.glb with shadows and PBR textures; the DX11 and
+Vulkan pixel outputs agree with DX12 within 1%; steady-state frames upload 0 bytes after warm-up.
+GPU timestamped pass timings, skeletal/morph deformation, IBL, and compositor hand-off of an
+offscreen target without CPU readback remain unimplemented; see `docs/GPUI_3D.md` for the full
+status matrix and measured numbers.
+
+## Offscreen renderer quick start
+
+```rust
+// The application owns the Nova device created by its backend of choice.
+let mut device = /* gfx_dx12::Dx12Device::new(&DeviceDescriptor::default())? */;
+let mut renderer = OffscreenRenderer::new(&mut device, 1280, 720)?;
+let image = renderer.render_to_image(&mut device, &scene, &textures, camera, &options)?;
+// image.rgba() is display-referred RGBA8; save it or inspect it directly.
+renderer.destroy(&mut device)?;
+```
+
+`RenderOptions` selects shadows (resolution/bias/strength), exposure, tone mapping (ACES, Reinhard,
+none), debug views (albedo, normal, depth, UV, shadow visibility, object id), the clear color, and
+post grading. `render_animated` samples caller-owned `TransformTrack`s at a caller-owned clip time,
+matching the GPUI scene-view contract: `gpui-3d` owns no playback clock.
+
+## glTF import quick start
+
+```rust
+let imported = gpui_3d::load_path("model.glb", &GltfLoadOptions::default())?;
+let image = renderer.render_to_image(&mut device, &imported.scene, &imported.textures, camera, &options)?;
+if let Some(clip) = imported.animations.first() {
+    renderer.render_animated(
+        &mut device,
+        &imported.scene,
+        &clip.tracks,
+        std::time::Duration::from_millis(350),
+        &imported.textures,
+        camera,
+        &options,
+    )?;
+}
+```
+
+## Test assets
+
+```powershell
+pwsh -NoProfile -File crates/gpui-3d/test_assets/download.ps1
+```
+
+The downloader verifies every SHA-256 pinned in `test_assets/manifest.toml`; a missing or mismatched
+file is an error. Once cached, the import and GPU tests run offline. Native pixel tests are ignored by
+default and run with `cargo test -p gpui-3d -- --ignored --test-threads=1`.
 
 ## Current scope
 

@@ -21,13 +21,16 @@ native = ["nova-gfx-opengl", "nova-gfx-dx11", "nova-gfx-dx12", "nova-gfx-vulkan"
 
 [dependencies]
 anyhow = "1.0.100"
+base64 = "0.23.0"
 bevy_mikktspace = "0.16.1"
 gfx-core = { path = "../nova-gfx/gfx-core" }
 gpui = { path = "../gpui", default-features = false }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg"] }
+serde_json = "1.0.145"
 thiserror = "2.0.17"
 
-# Compiles `scene_view.wgsl` into embedded backend artifacts, so creating a scene view
-# never runs the WGSL frontend or the Direct3D compiler.
+# Compiles the scene-view and offscreen-renderer WGSL into embedded backend artifacts, so
+# creating a renderer never runs the WGSL frontend or the Direct3D compiler.
 [build-dependencies.gfx-shader-build]
 path = "../nova-gfx/gfx-shader-build"
 
@@ -43,11 +46,29 @@ harness = false
 name = "scene_view"
 required-features = ["native"]
 
+[[example]]
+name = "scene_lab"
+path = "examples/scene_lab/main.rs"
+
 [dev-dependencies]
 criterion = "0.5"
-# Only the shader translation test needs to drive the WGSL frontend directly now that
-# production shaders come from build-generated artifacts.
+gfx-core = { path = "../nova-gfx/gfx-core" }
+# The shader translation test drives the WGSL frontend directly; production shaders come from
+# build-generated artifacts.
 gfx-shader = { path = "../nova-gfx/gfx-shader" }
+
+[target.'cfg(windows)'.dev-dependencies]
+gfx-dx11 = { path = "../nova-gfx/gfx-dx11" }
+gfx-dx12 = { path = "../nova-gfx/gfx-dx12" }
+gfx-vulkan = { path = "../nova-gfx/gfx-vulkan" }
+gfx-opengl = { path = "../nova-gfx/gfx-opengl" }
+raw-window-handle = "0.6"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+gfx-vulkan = { path = "../nova-gfx/gfx-vulkan" }
+gfx-opengl = { path = "../nova-gfx/gfx-opengl" }
+raw-window-handle = "0.6"
 
 [lints.rust]
 unsafe_code = "warn"

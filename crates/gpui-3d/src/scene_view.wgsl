@@ -75,6 +75,7 @@ const TEXTURE_FLAG_ALBEDO: u32 = 1u;
 const TEXTURE_FLAG_OCCLUSION: u32 = 2u;
 /// Draws whose mesh UVs address a texture region; meshes baked to vertex color leave this clear.
 const TEXTURE_FLAG_UV: u32 = 4u;
+const TEXTURE_FLAG_METALLIC_ROUGHNESS: u32 = 8u;
 const LIGHT_KIND_AMBIENT: u32 = 0u;
 const LIGHT_KIND_DIRECTIONAL: u32 = 1u;
 const LIGHT_KIND_POINT: u32 = 2u;
@@ -90,6 +91,7 @@ const LIGHT_KIND_SPOT: u32 = 3u;
 @group(0) @binding(7) var<storage, read> tangents: array<vec4<f32>>;
 @group(0) @binding(8) var<storage, read> instances: array<Instance>;
 @group(0) @binding(9) var<uniform> frame: FrameParams;
+@group(0) @binding(10) var metallic_roughness_texture: texture_2d<f32>;
 
 @vertex
 fn vs_main(
@@ -307,8 +309,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         surface_normal = apply_normal_map(input, surface_normal);
     }
     let view_direction = normalize(frame.camera_position.xyz - input.world_position);
-    let metallic = clamp(draw_params.metallic, 0.0, 1.0);
-    let roughness = clamp(draw_params.roughness, 0.045, 1.0);
+    var metallic = clamp(draw_params.metallic, 0.0, 1.0);
+    var roughness = clamp(draw_params.roughness, 0.045, 1.0);
+    if ((draw_params.texture_flags & TEXTURE_FLAG_METALLIC_ROUGHNESS) != 0u) {
+        let metallic_roughness_sample =
+            textureSample(metallic_roughness_texture, material_sampler, input.uv);
+        metallic = clamp(metallic * metallic_roughness_sample.b, 0.0, 1.0);
+        roughness = clamp(roughness * metallic_roughness_sample.g, 0.045, 1.0);
+    }
     var radiance = draw_params.emissive.rgb * draw_params.emissive.a;
     var ambient_radiance = vec3<f32>(0.03);
     for (var light_index = 0u; light_index < draw_params.light_count; light_index += 1u) {

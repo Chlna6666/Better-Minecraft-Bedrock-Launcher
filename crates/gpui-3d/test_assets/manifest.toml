@@ -1,0 +1,60 @@
+# Verified glTF test assets for gpui-3d.
+#
+# Every asset is downloaded exactly once by download.ps1, verified against the pinned SHA-256,
+# and then reused offline. A missing or mismatched file is a hard error in the downloader, so
+# tests never silently pass without the real asset.
+#
+# Source: KhronosGroup/glTF-Sample-Assets (https://github.com/KhronosGroup/glTF-Sample-Assets)
+# Only assets with CC0 or CC BY licenses are used; attribution is recorded per entry and in
+# licenses/.
+
+schema = 1
+source_repository = "https://github.com/KhronosGroup/glTF-Sample-Assets"
+
+[[asset]]
+name = "DamagedHelmet"
+cache_path = "DamagedHelmet.glb"
+source_url = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb"
+sha256 = "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8"
+bytes = 3773916
+license = "CC-BY-4.0"
+attribution = "Damaged Helmet, copyright 2018 ctxwing, Creative Commons Attribution 4.0 International"
+features = ["glb", "pbr-metallic-roughness", "base-color-texture", "normal-map", "occlusion-map", "metallic-roughness-texture"]
+
+[[asset]]
+name = "AnimatedCube"
+cache_path = "AnimatedCube/AnimatedCube.gltf"
+source_url = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/AnimatedCube/glTF/AnimatedCube.gltf"
+sha256 = "59a3c451a5167b8ac4b59d61d4b94b2b7a215ee827efaed75629677a1217b552"
+bytes = 4991
+license = "CC0-1.0"
+attribution = "Animated Cube, copyright 2017 UX3D, Norbert Nopper, Creative Commons Zero v1.0 Universal"
+features = ["gltf-json", "external-buffer", "external-image", "node-animation"]
+
+[[asset]]
+name = "AnimatedCube.bin"
+cache_path = "AnimatedCube/AnimatedCube.bin"
+source_url = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/AnimatedCube/glTF/AnimatedCube.bin"
+sha256 = "82de770fc82b48a77a33bb26abd4d7e75620491b36ddf98e8dca69fa73dd798c"
+bytes = 1860
+license = "CC0-1.0"
+features = ["external-buffer"]
+
+[[asset]]
+name = "AnimatedCubeBaseColor"
+cache_path = "AnimatedCube/AnimatedCube_BaseColor.png"
+source_url = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/AnimatedCube/glTF/AnimatedCube_BaseColor.png"
+sha256 = "0750d5a03c1bebc640571e309f66c6e88efbff2ef4c120619466a7014551bb9a"
+bytes = 565730
+license = "CC0-1.0"
+features = ["external-image", "png-decode"]
+
+[[asset]]
+name = "BoxVertexColors"
+cache_path = "BoxVertexColors.glb"
+source_url = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoxVertexColors/glTF-Binary/BoxVertexColors.glb"
+sha256 = "9c48227f33b0ba2fbcf23b98ebf60d1c8ae0c6e6c5281e0aa3cc58affee10382"
+bytes = 1924
+license = "CC0-1.0"
+attribution = "Box Vertex Colors, copyright 2023 Marco Hutte, Creative Commons Zero v1.0 Universal"
+features = ["glb", "vertex-colors", "indexed-geometry"]

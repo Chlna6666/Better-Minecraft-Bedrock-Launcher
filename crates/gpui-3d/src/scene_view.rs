@@ -14,31 +14,32 @@ use std::sync::{
 };
 use std::time::Duration;
 
-pub(super) const SHADER: &str = include_str!("scene_view.wgsl");
-pub(super) const PACKED_VERTEX_STRIDE: u32 = 64;
+pub(crate) const SHADER: &str = include_str!("scene_view.wgsl");
+pub(crate) const PACKED_VERTEX_STRIDE: u32 = 64;
 // WGSL DrawParams has 68 bytes of fields and 16-byte struct alignment, so its storage
 // stride is 80 bytes. Keeping this smaller makes DX12/Vulkan expose only a prefix of the
 // record: alpha_mode/shading_model/texture_flags then read as zero or adjacent garbage.
-pub(super) const DRAW_PARAMS_STRIDE: u32 = 80;
-pub(super) const DRAW_SLOT_STRIDE: usize = 512;
-pub(super) const FRAME_PARAMS_STRIDE: usize = 112;
-pub(super) const INSTANCE_STRIDE: u32 = 144;
-pub(super) const LIGHT_STRIDE: u32 = 80;
-pub(super) const VERTEX_BINDING: u32 = 0;
-pub(super) const DRAW_BINDING: u32 = 1;
-pub(super) const LIGHT_BINDING: u32 = 2;
-pub(super) const ALBEDO_BINDING: u32 = 3;
-pub(super) const SAMPLER_BINDING: u32 = 4;
-pub(super) const NORMAL_MAP_BINDING: u32 = 5;
-pub(super) const OCCLUSION_BINDING: u32 = 6;
-pub(super) const TANGENT_BINDING: u32 = 7;
-pub(super) const INSTANCE_BINDING: u32 = 8;
-pub(super) const FRAME_BINDING: u32 = 9;
+pub(crate) const DRAW_PARAMS_STRIDE: u32 = 80;
+pub(crate) const DRAW_SLOT_STRIDE: usize = 512;
+pub(crate) const FRAME_PARAMS_STRIDE: usize = 112;
+pub(crate) const INSTANCE_STRIDE: u32 = 144;
+pub(crate) const LIGHT_STRIDE: u32 = 80;
+pub(crate) const VERTEX_BINDING: u32 = 0;
+pub(crate) const DRAW_BINDING: u32 = 1;
+pub(crate) const LIGHT_BINDING: u32 = 2;
+pub(crate) const ALBEDO_BINDING: u32 = 3;
+pub(crate) const SAMPLER_BINDING: u32 = 4;
+pub(crate) const NORMAL_MAP_BINDING: u32 = 5;
+pub(crate) const OCCLUSION_BINDING: u32 = 6;
+pub(crate) const TANGENT_BINDING: u32 = 7;
+pub(crate) const INSTANCE_BINDING: u32 = 8;
+pub(crate) const FRAME_BINDING: u32 = 9;
+pub(crate) const METALLIC_ROUGHNESS_BINDING: u32 = 10;
 
 static NEXT_SCENE_VIEW_ID: AtomicU64 = AtomicU64::new(1);
 
 mod artifacts;
-mod gpu;
+pub(crate) mod gpu;
 mod projection;
 mod renderer;
 mod resources;

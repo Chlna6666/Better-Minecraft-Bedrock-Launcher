@@ -1225,3 +1225,11 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **额外诊断与测试**：`nova pending surface attachments prepared`、`installed`、`discarded`（明确 prepared 与 actual 尺寸），以及 `pending_surface_requires_exact_native_and_path_extents`，含 Path 是否确实预分配的约束，证明不向不匹配 Vulkan WSI 尺寸或 Path Extent 发布错误物理资源。
 - **不虚报已完成**：本阶段是可独立的 Depth/Path 提前准备与 WSI 切换处的尺寸校验；旧 Swapchain/Depth/Path 的真实退休仍须 `prepare_for_resize` 等待 Native Fence，没有独立双 Swapchain 的同 HWND 可见画面合成，更没有 GPU 多队列 Barrier/Fence 协议。旧尺寸 Active 动画仍可能被 Native WM_SIZE/Scene 几何门控冻结，此阶段无法宣称在拖拽时旧画面持续正常 Present；内存峰值可能因为 Active+Pending 双份 Depth/Path 暂时上升。真正解决需要 BackendSurface 对 per-window WSI 可原子替换/重用与 DXGI/DComp/Wayland 实际帧呈现规则的接口和像素实证，不可通过拉伸旧画面或解除 Fence 安全闸门硬凑。
 - **验收清单（均未执行）**：本地 `cargo fmt --all -- --check`、`cargo check -p gpui`、`cargo test -p gpui --lib pending_surface_requires_exact_native_and_path_extents`、`cargo test -p gpui --lib resize_reuses_unpromoted_one_pixel_path_mask`、既有 Root/Filter Fence 退休用例；四后端 240Hz 实机反复拖拽/缩放、DPI 变化、Vulkan WSI 尺寸不符、Trim/关闭窗口、分配与 WSI 失败注入、GPU 像素回读；收集 Resize `submission_wait`、`swapchain_resize`、`resources`、GPU Owner P95/P99、VRAM 峰值、Blur Pass、实际黑边/失焦。当前环境无 `cargo/rustc/rustfmt` 和 Windows GPU，源码逻辑与 GitHub 提交检查不是本地构建验证。
+
+### 2026-10-18 GPUI-3D 离线多 Pass 渲染与合成边界（新增状态，不改变现有 UI 合成结论）
+
+- **新增事实**：`crates/gpui-3d` 新增 `OffscreenRenderer`，在调用方拥有的 Nova Device 上记录 Shadow → PBR Scene → Post 三个 Pass，输出可回读的 Color Target；DX12 / DX11 / Vulkan / OpenGL 4.5 已完成原生像素与稳态零上传验证（见 `docs/GPUI_3D.md` 与 `tests/offscreen_gpu.rs`）。该路径不创建窗口、Swapchain、GPU Owner 或第二套缓存/队列。
+- **仍未集成到 GPUI 合成器**：GPUI 当前的 `RendererExtension` 只接收宿主 Pass 内的 `RenderStepDescriptor`，无法声明独立 Render Target、跨 Pass 依赖或提交命令；因此上面这套 3D Pass 没有进入 GPUI 的 Present 合成链路。现有 Map Viewer / Skin Pack 预览仍走原来的宿主 Pass 内 scene-view 路径，其像素、Fence、Swapchain 结论与本条无关。
+- **CPU 回读不能作为合成方案**：`OffscreenRenderer::capture` 的回读只用于测试、截图和脚本化验收；不得把 3D 结果 Readback 后当作 UI Image 再上传，这违反本文件既有合成性能约束。
+- **后续接口需求（未实现，不可标记完成）**：`RendererExtension` 需要一个通用的 Offscreen Pass 声明/所有权/Barrier/Fence 合同（或在 Nova Presentation 层提供共享 GPU 纹理句柄与栅栏协议），让 3D 输出以 GPU 资源形式进入统一合成；同时必须定义多窗口共享、Resize、Deferred Destruction、GPU Device Lost 与 Fence 未完成时的行为，并用四后端真实像素/延迟验证。
+- **验证状态**：本次只验证了 gpui-3d 离线路径；没有修改 GPUI 合成器，也没有取得 3D 经 GPUI 合成后的截图、Fence 或性能数据，不能把两者混为一谈。

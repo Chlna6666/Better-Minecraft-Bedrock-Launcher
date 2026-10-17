@@ -157,7 +157,7 @@ impl NovaRenderer {
             sampler: self.atlas_sampler,
         });
         let filter_descriptor = filter_needed.then(|| self.backdrop_blur_target_descriptor(extent));
-        let pending = match &mut *lock_backend(&self.backend) {
+        let pending: PendingOffscreenTargets = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-opengl", any(target_os = "windows", target_os = "linux")))]
             NovaBackend::OpenGl(device) => {
                 prepare(device, "OpenGL", size, root_descriptor, filter_descriptor)?

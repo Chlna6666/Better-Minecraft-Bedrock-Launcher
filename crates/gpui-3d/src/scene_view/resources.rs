@@ -1,6 +1,7 @@
 use super::{
     ALBEDO_BINDING, DRAW_BINDING, FRAME_BINDING, INSTANCE_BINDING, LIGHT_BINDING,
-    NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING, TANGENT_BINDING, VERTEX_BINDING,
+    METALLIC_ROUGHNESS_BINDING, NORMAL_MAP_BINDING, OCCLUSION_BINDING, SAMPLER_BINDING,
+    TANGENT_BINDING, VERTEX_BINDING,
 };
 use crate::TextureSampling;
 use anyhow::anyhow;
@@ -82,6 +83,11 @@ impl RendererResources {
                         },
                         ResourceSetLayoutEntry {
                             binding: OCCLUSION_BINDING,
+                            binding_type: ResourceBindingType::SampledTexture,
+                            stages: ShaderStages::FRAGMENT,
+                        },
+                        ResourceSetLayoutEntry {
+                            binding: METALLIC_ROUGHNESS_BINDING,
                             binding_type: ResourceBindingType::SampledTexture,
                             stages: ShaderStages::FRAGMENT,
                         },

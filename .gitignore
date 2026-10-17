@@ -36,3 +36,7 @@ build.log
 /.codex
 /.idea/
 /.zcode/
+
+# gpui-3d downloaded glTF test assets (see crates/gpui-3d/test_assets/manifest.toml).
+/crates/gpui-3d/test_assets/cache/
+

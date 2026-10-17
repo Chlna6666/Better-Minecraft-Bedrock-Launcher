@@ -57,6 +57,7 @@
 )]
 
 mod animation;
+mod asset;
 mod camera;
 mod light;
 mod material;
@@ -64,12 +65,17 @@ mod math;
 mod mesh;
 mod prepare;
 mod raycast;
+mod render;
 mod scene;
 mod scene_view;
 
 pub use animation::{
     AnimationError, AnimationScratch, Interpolation, Keyframe, RotationTrack, TransformTrack,
     Vec3Track,
+};
+pub use asset::{
+    GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, GltfStatistics, load_bytes,
+    load_path,
 };
 pub use camera::{Camera, CameraError, OrbitCamera, Projection};
 pub use light::{Light, LightError, PreparedLight, SpotCone, SpotLight};
@@ -81,6 +87,10 @@ pub use math::{Aabb, Mat4, Quat, Ray, Transform, Vec2, Vec3};
 pub use mesh::{GeneratedTangents, Mesh, MeshError, MeshId, MeshPart, TriangleEdgeMask, Vertex};
 pub use prepare::{DrawBatch, PreparedDraw, PreparedScene};
 pub use raycast::{RaycastError, RaycastHit, RaycastScratch};
+pub use render::{
+    CapturedImage, DebugView, FrameStatistics, OffscreenRenderer, RenderError, RenderOptions,
+    RendererStatistics, ShadowOptions, Tonemap,
+};
 pub use scene::{EvaluatedScene, Node, NodeError, NodeId, Scene, SceneError};
 pub use scene_view::{
     ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,

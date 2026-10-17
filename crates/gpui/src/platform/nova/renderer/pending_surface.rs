@@ -124,7 +124,7 @@ impl NovaRenderer {
             )?;
         let needs_new_path = path_size != self.path_texture_size;
         let descriptor = self.path_mask_target_descriptor(path_size);
-        let pending = match &mut *lock_backend(&self.backend) {
+        let pending: PendingSurfaceAttachments = match &mut *lock_backend(&self.backend) {
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) =>
                 create(device, "DX11", requested, path_size, needs_new_path, descriptor)?,
