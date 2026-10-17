@@ -151,12 +151,12 @@ mod platform {
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                 DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS,
-                DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
                 IDXGIFactory4, IDXGIFactory5, IDXGIFactory6, IDXGIOutput, IDXGISwapChain1,
-                IDXGISwapChain3,
+                IDXGISwapChain2, IDXGISwapChain3,
             },
         },
         Win32::{
@@ -437,16 +437,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // GPUI sizes the swapchain in physical pixels. During a native resize,
-                // the HWND can briefly be larger than the most recently presented
-                // buffer while the next frame rebuilds size-dependent targets. Stretching
-                // the composition content keeps the previous frame covering the client
-                // area during that interval; at a stable size no resampling occurs.
-                Scaling: if uses_composition {
-                    DXGI_SCALING_STRETCH
-                } else {
-                    DXGI_SCALING_NONE
-                },
+                // During live resize, SetSourceSize selects the current client-sized region from the
+                // retained allocation. Matching source and client extents present at native pixel scale.
+                Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
                 Flags: creation_flags,
@@ -505,9 +498,11 @@ mod platform {
                 None
             };
             let partial_presentation = true;
+            let source_extent = config.size;
             let mut swapchain = Dx12Swapchain {
                 surface,
                 config,
+                source_extent,
                 swapchain,
                 composition,
                 rtv_heap: None,
@@ -639,9 +634,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // Keep native pixel scale during resize. Spare backbuffer capacity is
-                // clipped by the HWND instead of stretching text and geometry.
-                Scaling: DXGI_SCALING_NONE,
+                // During live resize, SetSourceSize selects the current client-sized region from the
+                // retained allocation. Matching source and client extents present at native pixel scale.
+                Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -683,6 +678,30 @@ mod platform {
             let mut config = self.swapchains.get(swapchain)?.config;
             config.size = gfx_core::Extent2d::new(width, height)?;
             self.reconfigure_swapchain_in_place(swapchain, config)
+        }
+
+        /// Selects the client-sized source rectangle for the next presentation.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`Error`] if the swapchain is invalid or the source extent exceeds its buffers.
+        pub fn set_swapchain_source_extent(
+            &mut self,
+            id: SwapchainId,
+            extent: gfx_core::Extent2d,
+        ) -> Result<()> {
+            let swapchain = self.swapchains.get_mut(id)?;
+            if extent.width() == 0
+                || extent.height() == 0
+                || extent.width() > swapchain.config.size.width()
+                || extent.height() > swapchain.config.size.height()
+            {
+                return Err(Error::InvalidInput(
+                    "DX12 presentation source extent exceeds its swapchain".into(),
+                ));
+            }
+            swapchain.source_extent = extent;
+            Ok(())
         }
 
         /// Recreates an existing swapchain with a full surface configuration.
@@ -2029,6 +2048,7 @@ mod platform {
                 color_load_op,
                 clear_region: None,
                 depth_attachment,
+                viewport: None,
             }])
         }
 
@@ -2070,6 +2090,7 @@ mod platform {
                             pass.color_load_op,
                             pass.depth_attachment,
                             pass.clear_region,
+                            pass.viewport,
                         )?;
                     }
                     Ok(())
@@ -2335,6 +2356,18 @@ mod platform {
                     swapchain.creation_flags & (DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0 as u32) != 0;
                 let (sync_interval, flags) =
                     present_mode_to_dxgi(swapchain.config.present_mode, supports_tearing);
+                let source: IDXGISwapChain2 = swapchain
+                    .swapchain
+                    .cast()
+                    .map_err(|error| Error::Backend(error.to_string()))?;
+                // Keep the old source rectangle active until the matching frame reaches Present.
+                unsafe {
+                    source.SetSourceSize(
+                        swapchain.source_extent.width(),
+                        swapchain.source_extent.height(),
+                    )
+                }
+                .map_err(|error| Error::Backend(error.to_string()))?;
                 let result = if let Some(damage) = damage.filter(|_| swapchain.partial_presentation)
                 {
                     let mut rect = Self::damage_to_dxgi_rect(damage)?;
@@ -2907,18 +2940,18 @@ mod platform {
             let viewport = D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: swapchain.config.size.width() as f32,
-                Height: swapchain.config.size.height() as f32,
+                Width: swapchain.source_extent.width() as f32,
+                Height: swapchain.source_extent.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
             let scissor = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
-                right: i32::try_from(swapchain.config.size.width()).map_err(|error| {
+                right: i32::try_from(swapchain.source_extent.width()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain width overflow: {error}"))
                 })?,
-                bottom: i32::try_from(swapchain.config.size.height()).map_err(|error| {
+                bottom: i32::try_from(swapchain.source_extent.height()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
@@ -3107,18 +3140,18 @@ mod platform {
             let viewport = D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: swapchain.config.size.width() as f32,
-                Height: swapchain.config.size.height() as f32,
+                Width: swapchain.source_extent.width() as f32,
+                Height: swapchain.source_extent.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
             let scissor = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
-                right: i32::try_from(swapchain.config.size.width()).map_err(|error| {
+                right: i32::try_from(swapchain.source_extent.width()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain width overflow: {error}"))
                 })?,
-                bottom: i32::try_from(swapchain.config.size.height()).map_err(|error| {
+                bottom: i32::try_from(swapchain.source_extent.height()).map_err(|error| {
                     Error::InvalidInput(format!("swapchain height overflow: {error}"))
                 })?,
             };
@@ -3185,14 +3218,14 @@ mod platform {
                     (None, None) => ScissorRect {
                         x: 0,
                         y: 0,
-                        width: swapchain.config.size.width(),
-                        height: swapchain.config.size.height(),
+                        width: swapchain.source_extent.width(),
+                        height: swapchain.source_extent.height(),
                     },
                 };
                 if step_scissor.is_empty() {
                     continue;
                 }
-                let step_scissor = dx12_rect_for_scissor(step_scissor, swapchain.config.size)?;
+                let step_scissor = dx12_rect_for_scissor(step_scissor, swapchain.source_extent)?;
                 let (
                     pipeline_state,
                     root_signature,
@@ -3263,6 +3296,7 @@ mod platform {
                 color_load_op,
                 None,
                 None,
+                None,
             )
         }
 
@@ -3283,6 +3317,7 @@ mod platform {
                 color_load_op,
                 depth_attachment,
                 None,
+                None,
             )
         }
 
@@ -3299,6 +3334,7 @@ mod platform {
             color_load_op: LoadOp<ClearColor>,
             depth_attachment: Option<RenderPassDepthAttachment>,
             clear_region: Option<ScissorRect>,
+            viewport: Option<gfx_core::RenderViewport>,
         ) -> Result<()> {
             // Empty render-step lists are valid for attachment clears. Do not
             // reject the pass before recording its ClearRenderTargetView.
@@ -3337,6 +3373,10 @@ mod platform {
                 .ok_or_else(|| {
                     Error::Backend("DX12 color texture view has no RTV handle".to_string())
                 })?;
+            let viewport_size = viewport
+                .map(|viewport| viewport.for_target(texture_desc.size))
+                .transpose()?
+                .unwrap_or(texture_desc.size);
 
             if texture_state != D3D12_RESOURCE_STATE_RENDER_TARGET {
                 record_transition_barrier(
@@ -3353,25 +3393,25 @@ mod platform {
             let viewport = D3D12_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
-                Width: texture_desc.size.width() as f32,
-                Height: texture_desc.size.height() as f32,
+                Width: viewport_size.width() as f32,
+                Height: viewport_size.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             };
             let scissor = windows::Win32::Foundation::RECT {
                 left: 0,
                 top: 0,
-                right: i32::try_from(texture_desc.size.width()).map_err(|error| {
+                right: i32::try_from(viewport_size.width()).map_err(|error| {
                     Error::InvalidInput(format!("texture width overflow: {error}"))
                 })?,
-                bottom: i32::try_from(texture_desc.size.height()).map_err(|error| {
+                bottom: i32::try_from(viewport_size.height()).map_err(|error| {
                     Error::InvalidInput(format!("texture height overflow: {error}"))
                 })?,
             };
             // Restrict color/depth clears to the filter dependency region.
             let clear_rect = clear_region
                 .filter(|region| !region.is_empty())
-                .and_then(|region| dx12_rect_for_scissor(region, texture_desc.size).ok())
+                .and_then(|region| dx12_rect_for_scissor(region, viewport_size).ok())
                 .map(|rect| [rect]);
             let rtv_handle_pointer = &raw const rtv_handle;
             let dsv_handle_pointer = depth_handle
@@ -3422,7 +3462,7 @@ mod platform {
                     if region.is_empty() {
                         continue;
                     }
-                    dx12_rect_for_scissor(region, texture_desc.size)?
+                    dx12_rect_for_scissor(region, viewport_size)?
                 } else {
                     scissor
                 };
@@ -4595,6 +4635,14 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<SwapchainId> {
             Self::create_swapchain(self, surface, config)
+        }
+
+        fn set_swapchain_source_extent(
+            &mut self,
+            swapchain: SwapchainId,
+            extent: gfx_core::Extent2d,
+        ) -> Result<()> {
+            Self::set_swapchain_source_extent(self, swapchain, extent)
         }
 
         fn destroy_swapchain(&mut self, swapchain: SwapchainId) -> Result<()> {
@@ -6686,6 +6734,7 @@ mod platform {
     struct Dx12Swapchain {
         surface: SurfaceId,
         config: SurfaceConfig,
+        source_extent: gfx_core::Extent2d,
         swapchain: IDXGISwapChain3,
         composition: Option<Dx12Composition>,
         rtv_heap: Option<ID3D12DescriptorHeap>,

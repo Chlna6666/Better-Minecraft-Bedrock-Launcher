@@ -73,7 +73,7 @@ impl Dx11Device {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        self.render_target_with_clear_region(target, pass, steps, load, depth, None)
+        self.render_target_with_clear_region(target, pass, steps, load, depth, None, None)
     }
 
     pub(crate) fn render_target_with_clear_region(
@@ -84,9 +84,10 @@ impl Dx11Device {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
         clear_region: Option<ScissorRect>,
+        viewport: Option<RenderViewport>,
     ) -> Result<()> {
         let pass = self.passes.get(pass)?;
-        let (rtv, size, target_format) = match target {
+        let (rtv, size, target_format, viewport_size) = match target {
             RenderTarget::TextureView(id) => {
                 let view = self.views.get(id)?;
                 (
@@ -95,6 +96,10 @@ impl Dx11Device {
                     })?,
                     view.size,
                     view.format,
+                    viewport
+                        .map(|viewport| viewport.for_target(view.size))
+                        .transpose()?
+                        .unwrap_or(view.size),
                 )
             }
             RenderTarget::Swapchain {
@@ -113,6 +118,7 @@ impl Dx11Device {
                     })?,
                     chain.config.size,
                     chain.config.format,
+                    chain.source_extent,
                 )
             }
         };
@@ -176,8 +182,8 @@ impl Dx11Device {
             self.context
                 .OMSetRenderTargets(Some(&[Some(rtv.clone())]), dsv);
             self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
-                Width: size.width() as f32,
-                Height: size.height() as f32,
+                Width: viewport_size.width() as f32,
+                Height: viewport_size.height() as f32,
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
                 ..Default::default()
@@ -204,7 +210,13 @@ impl Dx11Device {
         }
         let mut state = Dx11PassState::default();
         for step in steps.iter() {
-            self.draw_step(step, size, target_format, dsv.is_some(), &mut state)?;
+            self.draw_step(
+                step,
+                viewport_size,
+                target_format,
+                dsv.is_some(),
+                &mut state,
+            )?;
         }
         // SAFETY: remove output bindings before these targets are sampled by another pass.
         unsafe {
@@ -422,6 +434,7 @@ impl PresentationDevice for Dx11Device {
                 pass.color_load_op,
                 pass.depth_attachment,
                 pass.clear_region,
+                pass.viewport,
             )?;
         }
         Ok(())

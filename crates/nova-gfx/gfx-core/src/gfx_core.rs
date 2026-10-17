@@ -2122,6 +2122,50 @@ pub struct RenderPassDepthAttachment {
 }
 
 /// One ordered render-step list targeting an offscreen texture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderViewport {
+    /// Active client extent in full-resolution drawable pixels.
+    pub extent: Extent2d,
+    /// Full-resolution drawable allocation that `extent` is relative to.
+    pub reference_extent: Extent2d,
+}
+
+impl RenderViewport {
+    /// Maps the active client area onto a full-resolution or downsampled render target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] if the active extent exceeds its reference allocation.
+    pub fn for_target(self, target_extent: Extent2d) -> Result<Extent2d> {
+        if self.extent.width() > self.reference_extent.width()
+            || self.extent.height() > self.reference_extent.height()
+        {
+            return Err(Error::InvalidInput(
+                "render viewport exceeds its reference extent".into(),
+            ));
+        }
+        let map_axis = |active: u32, reference: u32, target: u32| -> Result<u32> {
+            let numerator = u64::from(active) * u64::from(target);
+            let rounded_up = numerator.saturating_add(u64::from(reference - 1));
+            u32::try_from((rounded_up / u64::from(reference)).max(1))
+                .map_err(|error| Error::InvalidInput(format!("render viewport overflow: {error}")))
+        };
+        Extent2d::new(
+            map_axis(
+                self.extent.width(),
+                self.reference_extent.width(),
+                target_extent.width(),
+            )?,
+            map_axis(
+                self.extent.height(),
+                self.reference_extent.height(),
+                target_extent.height(),
+            )?,
+        )
+    }
+}
+
+/// One ordered render-step list targeting an offscreen texture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextureRenderStepList<'a> {
     /// Color texture view receiving this pass.
@@ -2139,6 +2183,10 @@ pub struct TextureRenderStepList<'a> {
     pub clear_region: Option<ScissorRect>,
     /// Optional depth target and load behavior.
     pub depth_attachment: Option<RenderPassDepthAttachment>,
+    /// Active client viewport mapped proportionally to this target. `None` renders across the
+    /// entire target. Scene capture passes should use this during retained-capacity resize so
+    /// coordinates and clipping match the current client area even when textures are larger.
+    pub viewport: Option<RenderViewport>,
 }
 
 /// Backend resource statistics.
@@ -2236,6 +2284,41 @@ mod tests {
         assert!(Extent2d::new(0, 1).is_err());
         assert!(Extent2d::new(1, 0).is_err());
         assert!(Extent2d::new(1, 1).is_ok());
+    }
+
+    #[test]
+    fn render_viewport_scales_to_retained_target_capacity() {
+        let viewport = RenderViewport {
+            extent: Extent2d::new(520, 522).expect("client extent"),
+            reference_extent: Extent2d::new(768, 768).expect("allocation extent"),
+        };
+
+        assert_eq!(
+            viewport
+                .for_target(Extent2d::new(768, 768).expect("full target"))
+                .expect("full target viewport"),
+            viewport.extent,
+        );
+        assert_eq!(
+            viewport
+                .for_target(Extent2d::new(384, 384).expect("half-resolution target"))
+                .expect("scaled viewport"),
+            Extent2d::new(260, 261).expect("scaled viewport extent"),
+        );
+    }
+
+    #[test]
+    fn render_viewport_rejects_extent_outside_reference() {
+        let viewport = RenderViewport {
+            extent: Extent2d::new(769, 768).expect("client extent"),
+            reference_extent: Extent2d::new(768, 768).expect("allocation extent"),
+        };
+
+        assert!(
+            viewport
+                .for_target(Extent2d::new(768, 768).expect("target extent"))
+                .is_err()
+        );
     }
 
     #[test]

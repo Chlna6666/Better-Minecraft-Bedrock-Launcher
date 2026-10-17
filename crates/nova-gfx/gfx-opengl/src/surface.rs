@@ -16,6 +16,7 @@ pub(crate) struct Swapchain {
     pub(crate) color: glow::NativeTexture,
     pub(crate) framebuffer: glow::NativeFramebuffer,
     pub(crate) config: SurfaceConfig,
+    pub(crate) source_extent: Extent2d,
     source: SurfaceId,
 }
 impl SurfaceDevice for OpenGlDevice {
@@ -85,14 +86,30 @@ impl SurfaceDevice for OpenGlDevice {
             )
             .map_err(native)?;
         let (color, framebuffer) = self.color_target(config)?;
+        let source_extent = config.size;
         self.park()?;
         Ok(self.swapchains.insert(Swapchain {
             window,
             color,
             framebuffer,
             config,
+            source_extent,
             source,
         }))
+    }
+    fn set_swapchain_source_extent(&mut self, id: SwapchainId, extent: Extent2d) -> Result<()> {
+        let chain = self.swapchains.get_mut(id)?;
+        if extent.width() == 0
+            || extent.height() == 0
+            || extent.width() > chain.config.size.width()
+            || extent.height() > chain.config.size.height()
+        {
+            return Err(Error::InvalidInput(
+                "OpenGL presentation source extent exceeds its swapchain".into(),
+            ));
+        }
+        chain.source_extent = extent;
+        Ok(())
     }
     fn destroy_swapchain(&mut self, id: SwapchainId) -> Result<()> {
         self.park()?;
@@ -246,15 +263,19 @@ impl OpenGlDevice {
         self.make_window_current(&chain.window)?;
         let width = chain.config.size.width() as i32;
         let height = chain.config.size.height() as i32;
+        let source_width = chain.source_extent.width() as i32;
+        let source_height = chain.source_extent.height() as i32;
+        let source_bottom = height - source_height;
         #[cfg(target_os = "windows")]
-        let native_height =
-            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?;
+        let native_size = (
+            i32::try_from(chain.window.width().unwrap_or(width as u32)).map_err(native)?,
+            i32::try_from(chain.window.height().unwrap_or(height as u32)).map_err(native)?,
+        );
         #[cfg(not(target_os = "windows"))]
-        let native_height = height;
-        // SAFETY: both source and native backbuffer belong to this current context. A
-        // nearest blit flips only orientation. Anchor to the native top edge when
-        // drawable capacity exceeds the client height, cropping instead of shifting
-        // or stretching the page during live resize.
+        let native_size = (width, height);
+        // SAFETY: both source and native backbuffer belong to this current context. Select the
+        // top-left client-sized region from the retained allocation; when the scene matches the
+        // current client, the blit is 1:1 and does not resample UI geometry or image pixels.
         unsafe {
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.disable(glow::FRAMEBUFFER_SRGB);
@@ -263,13 +284,13 @@ impl OpenGlDevice {
             self.gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
             self.gl.blit_framebuffer(
                 0,
-                0,
-                width,
+                source_bottom,
+                source_width,
                 height,
                 0,
-                native_height,
-                width,
-                native_height - height,
+                native_size.1,
+                native_size.0,
+                0,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );

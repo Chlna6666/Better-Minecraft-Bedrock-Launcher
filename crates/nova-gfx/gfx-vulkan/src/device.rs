@@ -37,7 +37,7 @@ use gfx_core::{
     RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
     RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
     ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
-    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
+    ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, RenderViewport, Result, SamplerDescriptor,
     SamplerId, ScissorRect, ShaderBinary, ShaderCode, ShaderModuleDescriptor, ShaderModuleId,
     ShaderStage, ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
     SurfaceDescriptor, SurfaceDevice, SurfaceId, TextureDataLayout, TextureDescriptor,
@@ -387,13 +387,13 @@ impl VulkanDevice {
         gfx_core::Extent2d::new(extent.width, extent.height)
     }
 
-    /// Whether this swapchain can retain the given image extent at native pixel scale
-    /// when the client extent changes. Unsupported maintenance1 features, gravity or
-    /// image extent limits return `false`; no resize or GPU work is performed.
+    /// Whether this swapchain can retain the given image extent and present it at native
+    /// pixel scale, anchored to the client's top-left. Unsupported maintenance1 features,
+    /// gravity or image extent limits return `false`; no resize or GPU work is performed.
     ///
     /// # Errors
     /// Returns an invalid-handle error for an unknown or retired swapchain.
-    pub fn supports_unscaled_presentation(
+    pub fn supports_native_pixel_presentation(
         &self,
         swapchain: gfx_core::SwapchainId,
         extent: gfx_core::Extent2d,
@@ -1444,6 +1444,7 @@ impl VulkanDevice {
             steps,
             depth_attachment,
             None,
+            None,
             false,
         )
     }
@@ -1456,6 +1457,7 @@ impl VulkanDevice {
         steps: RenderStepList<'_>,
         depth_attachment: Option<RenderPassDepthAttachment>,
         clear_region: Option<ScissorRect>,
+        viewport: Option<RenderViewport>,
         graph_write_hazard: bool,
     ) -> Result<()> {
         let mut transient_framebuffer = None;
@@ -1481,7 +1483,7 @@ impl VulkanDevice {
         let depth_load = depth_view
             .as_ref()
             .is_some_and(|(_, load_op)| matches!(load_op, LoadOp::Load));
-        let (framebuffer, extent, native_render_pass) = match pass.target {
+        let (framebuffer, extent, viewport_extent, native_render_pass) = match pass.target {
             RenderTarget::Swapchain {
                 swapchain,
                 image_index,
@@ -1517,7 +1519,12 @@ impl VulkanDevice {
                             Error::InvalidInput("swapchain image index out of range".to_string())
                         })?
                 };
-                (framebuffer, swapchain_record.extent, native_render_pass)
+                (
+                    framebuffer,
+                    swapchain_record.extent,
+                    swapchain_record.source_extent,
+                    native_render_pass,
+                )
             }
             RenderTarget::TextureView(texture_view_id) => {
                 let native_render_pass =
@@ -1540,12 +1547,23 @@ impl VulkanDevice {
                     image: texture.image,
                     old_layout: texture.layout,
                 });
+                let extent = vk::Extent2D {
+                    width: texture.desc.size.width(),
+                    height: texture.desc.size.height(),
+                };
+                let viewport_extent = viewport
+                    .map(|viewport| {
+                        viewport.for_target(texture.desc.size).map(|extent| vk::Extent2D {
+                            width: extent.width(),
+                            height: extent.height(),
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(extent);
                 (
                     framebuffer,
-                    vk::Extent2D {
-                        width: texture.desc.size.width(),
-                        height: texture.desc.size.height(),
-                    },
+                    extent,
+                    viewport_extent,
                     native_render_pass,
                 )
             }
@@ -1604,6 +1622,7 @@ impl VulkanDevice {
             framebuffer,
             steps: &draw_steps,
             extent,
+            viewport_extent,
             color_load_op: pass.color_load_op,
             depth_load_op: depth_view.map(|(_, load_op)| load_op),
             render_target_transition,
@@ -1911,6 +1930,7 @@ impl VulkanDevice {
             color_load_op,
             clear_region: None,
             depth_attachment,
+            viewport: None,
         }])
     }
 
@@ -1956,6 +1976,7 @@ impl VulkanDevice {
                 pass.steps,
                 pass.depth_attachment,
                 pass.clear_region,
+                pass.viewport,
                 graph_write_hazard,
             );
             if let Err(error) = result {
@@ -2593,6 +2614,7 @@ impl VulkanDevice {
             swapchain,
             format: surface_format.format,
             extent,
+            source_extent: extent,
             images,
             image_views,
             internal_render_pass: render_pass,
@@ -3400,6 +3422,24 @@ impl SurfaceDevice for VulkanDevice {
         config: SurfaceConfig,
     ) -> Result<gfx_core::SwapchainId> {
         Self::create_swapchain(self, surface, config)
+    }
+
+    fn set_swapchain_source_extent(
+        &mut self,
+        swapchain: gfx_core::SwapchainId,
+        extent: gfx_core::Extent2d,
+    ) -> Result<()> {
+        let swapchain = self.swapchains.get_mut(swapchain)?;
+        if extent.width() > swapchain.extent.width || extent.height() > swapchain.extent.height {
+            return Err(Error::InvalidInput(
+                "Vulkan source extent exceeds swapchain extent".into(),
+            ));
+        }
+        swapchain.source_extent = vk::Extent2D {
+            width: extent.width(),
+            height: extent.height(),
+        };
+        Ok(())
     }
 
     fn destroy_swapchain(&mut self, swapchain: gfx_core::SwapchainId) -> Result<()> {
@@ -4493,6 +4533,7 @@ struct VulkanSwapchain {
     swapchain: vk::SwapchainKHR,
     format: vk::Format,
     extent: vk::Extent2D,
+    source_extent: vk::Extent2D,
     images: Vec<vk::Image>,
     image_views: Vec<vk::ImageView>,
     internal_render_pass: vk::RenderPass,
@@ -5448,6 +5489,7 @@ struct CommandRecordInfo<'a> {
     framebuffer: vk::Framebuffer,
     steps: &'a [CommandDrawStepInfo],
     extent: vk::Extent2D,
+    viewport_extent: vk::Extent2D,
     color_load_op: LoadOp<ClearColor>,
     depth_load_op: Option<LoadOp<f32>>,
     render_target_transition: Option<CommandRenderTargetTransition>,
@@ -5776,12 +5818,12 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
     let viewport = vk::Viewport {
         x: 0.0,
         y: 0.0,
-        width: info.extent.width as f32,
-        height: info.extent.height as f32,
+        width: info.viewport_extent.width as f32,
+        height: info.viewport_extent.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
     };
-    let full_scissor = full_render_area(info.extent);
+    let full_scissor = full_render_area(info.viewport_extent);
     // SAFETY: Render pass, framebuffer, pipeline, and command buffer belong to this device.
     unsafe {
         info.device.cmd_begin_render_pass(
@@ -5794,7 +5836,7 @@ fn record_command_buffer(info: &CommandRecordInfo<'_>) -> Result<()> {
         for step in info.steps {
             let scissor = step
                 .scissor
-                .and_then(|scissor| vk_rect_for_scissor(scissor, info.extent).ok())
+                .and_then(|scissor| vk_rect_for_scissor(scissor, info.viewport_extent).ok())
                 .unwrap_or(full_scissor);
             info.device
                 .cmd_set_scissor(info.command_buffer, 0, &[scissor]);

@@ -12,7 +12,7 @@ use std::{
 use crate::{
     AsyncCapabilities, BackendKind, BoxFuture, BufferDescriptor, BufferId, BufferUploadStats,
     BufferWrite, ClearColor, CommandEncoderDescriptor, CommandEncoderId, DeviceMemoryBudget,
-    DrawDescriptor, DrawStepDescriptor, Error, LoadOp, MemoryArchitecture, MemoryTrimLevel,
+    DrawDescriptor, DrawStepDescriptor, Error, Extent2d, LoadOp, MemoryArchitecture, MemoryTrimLevel,
     PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
     RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
     RenderPipelineId, RenderStepDescriptor, RenderStepList, ResourceSetDescriptor, ResourceSetId,
@@ -127,6 +127,27 @@ pub trait SurfaceDevice {
         surface: SurfaceId,
         config: SurfaceConfig,
     ) -> Result<SwapchainId>;
+
+    /// Selects the active render viewport and top-left source rectangle used by the next
+    /// swapchain presentation.
+    ///
+    /// This lets a backend retain a larger allocation during live resize while presenting the
+    /// current client-sized region at native pixel scale. Backends must render into this active
+    /// extent even when their attachment allocation is larger. The extent must be nonzero and no
+    /// larger than the configured swapchain extent. Backends that naturally present the active
+    /// native surface region may keep the default implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the swapchain is stale, the extent is outside its allocation, or the
+    /// backend cannot select the requested source region.
+    fn set_swapchain_source_extent(
+        &mut self,
+        _swapchain: SwapchainId,
+        _extent: Extent2d,
+    ) -> Result<()> {
+        Ok(())
+    }
 
     /// Destroys a swapchain created by this device.
     ///

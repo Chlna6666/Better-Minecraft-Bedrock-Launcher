@@ -19,7 +19,7 @@ impl OpenGlDevice {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
     ) -> Result<()> {
-        self.render_target_with_clear_region(target, pass, steps, load, depth, None)
+        self.render_target_with_clear_region(target, pass, steps, load, depth, None, None)
     }
 
     pub(crate) fn render_target_with_clear_region(
@@ -30,10 +30,11 @@ impl OpenGlDevice {
         load: LoadOp<ClearColor>,
         depth: Option<RenderPassDepthAttachment>,
         clear_region: Option<ScissorRect>,
+        viewport: Option<RenderViewport>,
     ) -> Result<()> {
         self.park()?;
         let pass = self.passes.get(pass)?;
-        let (texture, framebuffer, size, format) = match target {
+        let (texture, framebuffer, size, format, viewport_size) = match target {
             RenderTarget::TextureView(id) => {
                 let view = self.views.get(id)?;
                 if !view.usage.contains(TextureUsage::COLOR_ATTACHMENT) {
@@ -41,7 +42,16 @@ impl OpenGlDevice {
                         "OpenGL target is not a color attachment".into(),
                     ));
                 }
-                (view.native, self.framebuffer, view.size, view.format)
+                (
+                    view.native,
+                    self.framebuffer,
+                    view.size,
+                    view.format,
+                    viewport
+                        .map(|viewport| viewport.for_target(view.size))
+                        .transpose()?
+                        .unwrap_or(view.size),
+                )
             }
             RenderTarget::Swapchain {
                 swapchain,
@@ -58,6 +68,7 @@ impl OpenGlDevice {
                     chain.framebuffer,
                     chain.config.size,
                     chain.config.format,
+                    chain.source_extent,
                 )
             }
         };
@@ -125,7 +136,12 @@ impl OpenGlDevice {
                 return Err(Error::Backend("OpenGL pass framebuffer incomplete".into()));
             }
             self.gl
-                .viewport(0, 0, size.width() as i32, size.height() as i32);
+                .viewport(
+                    0,
+                    (size.height() - viewport_size.height()) as i32,
+                    viewport_size.width() as i32,
+                    viewport_size.height() as i32,
+                );
             self.gl.disable(glow::SCISSOR_TEST);
             self.gl.depth_mask(true);
             if format.is_srgb() {
@@ -154,7 +170,14 @@ impl OpenGlDevice {
         let result = (|| {
             let mut state = GlPassState::default();
             for step in steps.iter() {
-                self.draw_step(step, size, format, depth_view.is_some(), &mut state)?;
+                self.draw_step(
+                    step,
+                    size,
+                    viewport_size,
+                    format,
+                    depth_view.is_some(),
+                    &mut state,
+                )?;
             }
             // A blur frame executes many short offscreen passes. glGetError after each
             // pass forces a driver query in the hottest loop. Keep per-pass diagnostics
@@ -191,7 +214,8 @@ impl OpenGlDevice {
     fn draw_step(
         &self,
         step: RenderStepRef<'_>,
-        size: Extent2d,
+        target_size: Extent2d,
+        viewport_size: Extent2d,
         format: Format,
         depth: bool,
         state: &mut GlPassState,
@@ -227,11 +251,11 @@ impl OpenGlDevice {
         let scissor = step.scissor().unwrap_or(ScissorRect {
             x: 0,
             y: 0,
-            width: size.width(),
-            height: size.height(),
+            width: viewport_size.width(),
+            height: viewport_size.height(),
         });
-        let x = scissor.x.min(size.width());
-        let y = scissor.y.min(size.height());
+        let x = scissor.x.min(viewport_size.width());
+        let y = scissor.y.min(viewport_size.height());
         // SAFETY: the graphics owner holds the current context throughout this pass.
         // Reuse program/VAO/depth/blend state between successive draws of one pipeline.
         // Resource bindings still run for every draw (they may include GPU mirror copies).
@@ -278,9 +302,9 @@ impl OpenGlDevice {
             }
             let clamped_scissor = (
                 x as i32,
-                y as i32,
-                scissor.width.min(size.width() - x) as i32,
-                scissor.height.min(size.height() - y) as i32,
+                (target_size.height() - viewport_size.height() + y) as i32,
+                scissor.width.min(viewport_size.width() - x) as i32,
+                scissor.height.min(viewport_size.height() - y) as i32,
             );
             if state.scissor != Some(clamped_scissor) {
                 self.gl.scissor(

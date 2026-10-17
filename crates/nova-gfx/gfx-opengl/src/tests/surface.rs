@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 #[ignore = "requires Windows native OpenGL 4.5 driver"]
-fn live_resize_capacity_blit_keeps_native_top_origin() {
+fn live_resize_capacity_blit_presents_only_the_native_client_region() {
     use glow::HasContext as _;
     let mut device = open_device();
     let window = TestWindow::new();
@@ -27,7 +27,7 @@ fn live_resize_capacity_blit_keeps_native_top_origin() {
             resource_set_layouts: vec![],
         })
         .expect("layout");
-    let source = "@vertex fn vs(@builtin(vertex_index) v:u32)->@builtin(position) vec4<f32>{ let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[v],0.0,1.0); } @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{if p.y<8.0{return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,1.0,1.0);}";
+    let source = "@vertex fn vs(@builtin(vertex_index) v:u32)->@builtin(position) vec4<f32>{ let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0));return vec4<f32>(p[v],0.0,1.0); } @fragment fn fs(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{if p.x<32.0{return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,1.0,1.0);}";
     let pipeline = pipeline(
         &mut device,
         source,
@@ -52,12 +52,15 @@ fn live_resize_capacity_blit_keeps_native_top_origin() {
             None,
             0,
             0,
-            64,
+            32,
             32,
             SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER,
         )
     }
     .expect("native shrink");
+    device
+        .set_swapchain_source_extent(chain, Extent2d::new(32, 32).expect("client extent"))
+        .expect("client source extent");
     device
         .render_step_list_and_present_compat(
             chain,
@@ -66,33 +69,48 @@ fn live_resize_capacity_blit_keeps_native_top_origin() {
             CLEAR,
             None,
         )
-        .expect("cropped presentation");
+        .expect("native-pixel presentation");
     let swapchain = device.swapchains.get(chain).expect("live swapchain");
     device
         .make_window_current(&swapchain.window)
         .expect("native readback context");
-    let mut pixel = [0_u8; 4];
-    // SAFETY: the front buffer is the presented native window; the 1x1 output owns four bytes.
+    let mut left_pixel = [0_u8; 4];
+    let mut right_pixel = [0_u8; 4];
+    // SAFETY: the front buffer is the presented native window; each 1x1 output owns four bytes.
     unsafe {
         device.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         device.gl.read_buffer(glow::FRONT);
         device.gl.read_pixels(
             4,
-            30,
+            16,
             1,
             1,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut pixel)),
+            glow::PixelPackData::Slice(Some(&mut left_pixel)),
+        );
+        device.gl.read_pixels(
+            24,
+            16,
+            1,
+            1,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelPackData::Slice(Some(&mut right_pixel)),
         );
         device.gl.read_buffer(glow::BACK);
     }
     device.check().expect("native pixel readback");
     device.park().expect("park native readback");
     assert_eq!(
-        pixel,
+        left_pixel,
         [255, 0, 0, 255],
-        "top red stripe must stay at the client's top while retaining 64-pixel capacity"
+        "the left client pixels must sample the matching side of the retained frame"
+    );
+    assert_eq!(
+        right_pixel,
+        [255, 0, 0, 255],
+        "the client must not expose or scale the unused right side of the retained allocation"
     );
     device.destroy_swapchain(chain).expect("destroy chain");
     device.destroy_surface(surface).expect("destroy surface");

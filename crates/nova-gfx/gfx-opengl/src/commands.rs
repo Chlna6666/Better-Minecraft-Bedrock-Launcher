@@ -67,6 +67,7 @@ impl PresentationDevice for OpenGlDevice {
                 pass.color_load_op,
                 pass.depth_attachment,
                 pass.clear_region,
+                pass.viewport,
             )?;
         }
         Ok(())

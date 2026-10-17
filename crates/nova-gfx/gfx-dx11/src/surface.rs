@@ -26,6 +26,7 @@ pub(crate) struct Swapchain {
     pub(crate) native: IDXGISwapChain3,
     pub(crate) view: Option<ID3D11RenderTargetView>,
     pub(crate) config: SurfaceConfig,
+    pub(crate) source_extent: Extent2d,
     surface: SurfaceId,
     composition: Option<Composition>,
     pub(crate) latency: HANDLE,
@@ -111,9 +112,9 @@ impl SurfaceDevice for Dx11Device {
             },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
-            // Composition requires STRETCH at creation, but HWND buffers must
-            // stay at native pixel scale while the next-size frame is prepared.
-            Scaling: if composited { DXGI_SCALING_STRETCH } else { DXGI_SCALING_NONE },
+            // During live resize, SetSourceSize selects the current client-sized region from the
+            // retained allocation. Matching source and client extents present at native pixel scale.
+            Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: if composited {
                 DXGI_ALPHA_MODE_PREMULTIPLIED
@@ -144,10 +145,12 @@ impl SurfaceDevice for Dx11Device {
                 "DXGI returned no frame latency handle".into(),
             ));
         }
+        let source_extent = config.size;
         let mut chain = Swapchain {
             native,
             view: None,
             config,
+            source_extent,
             surface,
             composition: None,
             latency,
@@ -158,6 +161,20 @@ impl SurfaceDevice for Dx11Device {
         }
         chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
         Ok(self.swapchains.insert(chain))
+    }
+    fn set_swapchain_source_extent(&mut self, id: SwapchainId, extent: Extent2d) -> Result<()> {
+        let chain = self.swapchains.get_mut(id)?;
+        if extent.width() == 0
+            || extent.height() == 0
+            || extent.width() > chain.config.size.width()
+            || extent.height() > chain.config.size.height()
+        {
+            return Err(Error::InvalidInput(
+                "D3D11 presentation source extent exceeds its swapchain".into(),
+            ));
+        }
+        chain.source_extent = extent;
+        Ok(())
     }
     fn destroy_swapchain(&mut self, id: SwapchainId) -> Result<()> {
         // SAFETY: clear context bindings so DXGI resources can be released at this lifecycle barrier.
@@ -338,6 +355,11 @@ impl Dx11Device {
             depth,
         )?;
         let chain = self.swapchains.get_mut(id)?;
+        let source: IDXGISwapChain2 = chain.native.cast().map_err(backend)?;
+        // Apply the source rectangle only after drawing the matching new-size scene. Before this
+        // Present, DXGI continues showing the previously committed frame.
+        unsafe { source.SetSourceSize(chain.source_extent.width(), chain.source_extent.height()) }
+            .map_err(backend)?;
         let interval = if chain.config.present_mode == PresentMode::Fifo {
             1
         } else {

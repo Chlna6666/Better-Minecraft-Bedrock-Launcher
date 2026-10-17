@@ -1,4 +1,4 @@
-//! Optional native-pixel presentation; unsupported surfaces keep exact-size swapchains.
+//! Optional retained-capacity one-to-one presentation; unsupported surfaces keep exact-size swapchains.
 use super::*;
 
 pub(super) struct Scaling {
@@ -71,8 +71,8 @@ pub(super) fn scaling(
     .map_err(VulkanError::from)?;
     let one_to_one = vk::PresentScalingFlagsEXT::ONE_TO_ONE;
     let minimum = vk::PresentGravityFlagsEXT::MIN;
-    // Win32 surfaces may only expose native gravity (zero flags). Retain that
-    // native alignment while explicitly forbidding whole-frame scaling.
+    // Win32 surfaces may expose native gravity (zero flags); keep presentation
+    // anchored to the top-left so a larger retained image exposes only the client-sized region.
     let gravity = if scaling.supported_present_gravity_x.contains(minimum)
         && scaling.supported_present_gravity_y.contains(minimum)
     {
