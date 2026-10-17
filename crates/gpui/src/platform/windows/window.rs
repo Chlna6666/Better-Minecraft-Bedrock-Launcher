@@ -2141,6 +2141,15 @@ impl WindowsWindow {
         if self.0.frame_dispatch_in_progress.replace(true) {
             return;
         }
+        if self.0.pending_native_size_retry.replace(false) {
+            // A nested WM_SIZE could not borrow the native window. Resolve the
+            // current HWND client rectangle before the UI cadence gate: even
+            // when this tick is throttled, the latest geometry generation must
+            // be published so the next permitted UI commit does not rebuild a
+            // stale size. This does not invoke Layout/Prepaint or queue a GPU
+            // swapchain change ahead of its matching Scene.
+            self.sync_current_native_size();
+        }
         if self.is_live_resizing() {
             let mut cadence = self.0.resize_cadence.get();
             if !cadence.accept(
@@ -2152,11 +2161,6 @@ impl WindowsWindow {
                 return;
             }
             self.0.resize_cadence.set(cadence);
-        }
-        if self.0.pending_native_size_retry.replace(false) {
-            // The original WM_SIZE arrived during a nested window borrow. Only this
-            // window re-queries its HWND, without polling all windows every DWM frame.
-            self.sync_current_native_size();
         }
         self.dispatch_pending_content_stretch();
         self.dispatch_pending_resize();

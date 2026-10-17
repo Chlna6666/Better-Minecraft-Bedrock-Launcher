@@ -1096,3 +1096,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 - 对 `RetainedUpload` 的 AutoStatic 负向准入结果增加仅匹配 Scene Revision 和 native viewport 的小型缓存；同一 Scene 仅动画时间改变时，不再逐帧扫描整份 Paint Operations 并重复记录 `backdrop_blur_present` 等相同拒绝原因。新 Scene 或 Resize 强制重新准入。该缓存只能避免 CPU 场景遍历与日志开销，**不会**跳过 Render Graph Filter/Blur 同步，也不会把已拒绝场景错误加入静态颜色缓存。
 - 下一项：Win32 Resize 绘制调度和 GPU Owner 长尾；四后端实际 GPU Pass 和原生黑边不能仅凭 AutoStatic 准入缓存声称修好。测试：`cargo test -p gpui --lib rejected_auto_static_admission_is_not_repeated_on_animation_only_frames`。
+
+- Win32 reentrant WM_SIZE 可靠性：将 `pending_native_size_retry` 的 HWND 尺寸重采样移到 Live Resize 的 UI cadence 限速之前。即使本次帧因 240Hz/自定义 cadence 被合并，也要先获得最新 native geometry epoch；真正的 UI Layout 和 GPU Resize 仍同代次提交，未恢复旧尺寸纹理拉伸，也没有为每次 WM_SIZE 增加完整构帧。
