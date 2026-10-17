@@ -442,7 +442,12 @@ impl Entry {
             self.present_scene()
         } else {
             (|| {
-                if !self.ready(None)? {
+                // The renderer may own a Pending Scene after its previous
+                // draw was deferred. Use that Scene's epoch for the native
+                // Resize gate; None would make a versioned resize request
+                // appear permanently unmatchable during compositor ticks.
+                let pending_epoch = self.renderer.pending_presentation_epoch();
+                if !self.ready(pending_epoch)? {
                     return Ok(false);
                 }
                 let eligibility_time = Instant::now();

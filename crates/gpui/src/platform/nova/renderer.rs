@@ -1002,6 +1002,15 @@ impl NovaRenderer {
         }))
     }
 
+    /// Match a deferred Scene against its original native Resize generation.
+    /// A GPU Owner tick without a UI Draw must not pass None as the geometry
+    /// epoch: it would perpetually defer a versioned swapchain request.
+    pub(crate) fn pending_presentation_epoch(&self) -> Option<u64> {
+        self.pending_presentation_packet
+            .as_ref()
+            .map(|packet| packet.paint.geometry.layout_epoch)
+    }
+
     pub(crate) fn has_active_presentation_animations(&self) -> bool {
         self.pending_presentation_packet.is_some()
             || self.active_presentation_packet
