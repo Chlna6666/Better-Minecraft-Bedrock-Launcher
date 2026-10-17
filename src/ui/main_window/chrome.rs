@@ -106,6 +106,17 @@ pub(super) struct NavRenderState {
     pub labels_opacity_factor: f32,
 }
 
+/// An abrupt 10px -> 13px jump at exactly 1000px used to shift every
+/// navigation item and restart the active-pill geometry as the native resize
+/// bounced around that boundary. Use a deterministic monotonic 40px ramp;
+/// unlike animation state it cannot accumulate, overshoot, or retarget.
+fn nav_link_padding_for_width(window_width: f32) -> Pixels {
+    if !window_width.is_finite() {
+        return px(10.0);
+    }
+    px(10.0 + 3.0 * ((window_width - 980.0) / 40.0).clamp(0.0, 1.0))
+}
+
 pub(super) fn render_nav(
     state: NavRenderState,
     nav_items: &[NavItem],
@@ -115,11 +126,7 @@ pub(super) fn render_nav(
     let labels_layout_factor = state.labels_layout_factor.clamp(0.0, 1.0);
     let labels_opacity_factor = state.labels_opacity_factor.clamp(0.0, 1.0);
 
-    let link_padding_x = if window_width_px <= 1000.0 {
-        px(10.)
-    } else {
-        px(13.)
-    };
+    let link_padding_x = nav_link_padding_for_width(window_width_px);
     let icon_width = px(18.);
     let label_width = px(33.) * labels_layout_factor;
     let label_gap = px(7.) * labels_layout_factor;
@@ -458,4 +465,26 @@ pub(super) fn render_shell(
         .child(topbar)
         .child(auth)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod native_resize_nav_tests {
+    use super::*;
+
+    #[test]
+    fn navigation_item_padding_changes_continuously_around_old_breakpoint() {
+        assert_eq!(nav_link_padding_for_width(970.) / px(1.), 10.);
+        assert_eq!(nav_link_padding_for_width(980.) / px(1.), 10.);
+        assert_eq!(nav_link_padding_for_width(1000.) / px(1.), 11.5);
+        assert_eq!(nav_link_padding_for_width(1020.) / px(1.), 13.);
+        assert_eq!(nav_link_padding_for_width(1100.) / px(1.), 13.);
+        assert_eq!(nav_link_padding_for_width(f32::NAN) / px(1.), 10.);
+        for width in 980..1020 {
+            let delta = (nav_link_padding_for_width((width + 1) as f32)
+                - nav_link_padding_for_width(width as f32))
+                / px(1.);
+            assert!(delta >= 0. && delta <= 0.0751,
+                "native one-pixel size changes must not jump item geometry");
+        }
+    }
 }
