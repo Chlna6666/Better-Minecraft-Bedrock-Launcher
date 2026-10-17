@@ -271,6 +271,23 @@ struct SubmittedResourceVersions {
     filters: SmallVec<[(u32, filters::TextureContentVersion); 4]>,
 }
 
+impl SubmittedResourceVersions {
+    /// A GPU submission still owns its FrameSlot/Fence even when it does not
+    /// write a retained texture. Such frames must not create empty version
+    /// publications or trigger no-op fence completion diagnostics.
+    fn new_if_written(
+        geometry_epoch: u64,
+        root: Option<((TextureId, TextureViewId), u64)>,
+        filters: impl IntoIterator<Item = (u32, filters::TextureContentVersion)>,
+    ) -> Option<Self> {
+        let filters: SmallVec<[_; 4]> = filters.into_iter().collect();
+        if root.is_none() && filters.is_empty() {
+            return None;
+        }
+        Some(Self { geometry_epoch, root, filters })
+    }
+}
+
 struct PendingSubmission {
     submission: SubmissionId,
     frame_resource_index: usize,
@@ -797,6 +814,11 @@ impl NovaRenderer {
         let target_size = Extent2d::new(self.current_size.width, self.current_size.height)?;
         let backdrop_blur_target_descriptor = self.backdrop_blur_target_descriptor(target_size);
         let old_backdrop_blur_targets = self.current_backdrop_blur_targets();
+        // Record only actual allocation/retirement work, not frame packing,
+        // full source rasterization, swapchain ResizeBuffers or GPU shader time.
+        // Resize traces previously reported ~310 recreations without any
+        // measure of how much of the owner service time they consumed.
+        let target_recreation_started = Instant::now();
         let next_backdrop_blur_targets: BackdropBlurTargets = match &mut *lock_backend(&self.backend) {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
@@ -882,10 +904,14 @@ impl NovaRenderer {
             }
         };
         log::debug!(target: "gpui::diagnostics",
-            "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={}",
+            "GPUI retained target layout recreated: active_variants={} active_isolated={} target_bytes={} physical_px={}x{} live_resize={} allocate_retire_us={}",
             next_backdrop_blur_targets.active_variant_count,
             next_backdrop_blur_targets.active_isolated_source_count,
-            next_backdrop_blur_targets.byte_size());
+            next_backdrop_blur_targets.byte_size(),
+            self.current_size.width,
+            self.current_size.height,
+            self.live_resize_active,
+            target_recreation_started.elapsed().as_micros());
         self.filters.targets = Some(next_backdrop_blur_targets);
         // Cached steps borrow target resource-set handles. Fence retirement
         // protects submitted work, but these CPU copies also outlive a slot.
@@ -1888,6 +1914,27 @@ mod tests {
         assert!(deferred.is_empty());
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].generation, 2);
+    }
+
+    #[test]
+    fn empty_resource_publication_skips_fence_version_bookkeeping() {
+        assert!(SubmittedResourceVersions::new_if_written(
+            12, None, std::iter::empty(),
+        ).is_none());
+        let root = (
+            (TextureId::from_parts(4, 1), TextureViewId::from_parts(4, 1)),
+            9u64,
+        );
+        let root_only = SubmittedResourceVersions::new_if_written(
+            13, Some(root), std::iter::empty(),
+        ).expect("root refresh");
+        assert_eq!(root_only.root, Some(root));
+        assert!(root_only.filters.is_empty());
+        let filter_only = SubmittedResourceVersions::new_if_written(
+            14, None, [(3, filters::TextureContentVersion(9))],
+        ).expect("filter refresh");
+        assert_eq!(filter_only.geometry_epoch, 14);
+        assert_eq!(filter_only.filters.len(), 1);
     }
 
     #[test]

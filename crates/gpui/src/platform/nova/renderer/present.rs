@@ -1588,35 +1588,42 @@ impl NovaRenderer {
         // the changed texture versions (never copy the complete filter registry)
         // on the native submission that protects them. Older fence callbacks
         // are unable to certify a different version or physical Root view.
-        let publication = SubmittedResourceVersions {
-            geometry_epoch: packet.paint.geometry.layout_epoch,
-            root: if root_scene_color_refreshes != 0 {
-                self.root_color.identity().zip(self.root_color.content_version())
-            } else {
-                None
-            },
-            filters: element_blur_layers.iter().filter_map(|layer| {
-                self.filters.layer_content_version(layer.index)
-                    .map(|version| (layer.index, version))
-            }).collect(),
-        };
-        if self.pending_submissions.len() > pending_submission_count_before {
-            log::trace!(
-                target: "gpui::diagnostics",
-                "nova resource publication submitted: geometry_epoch={} frame_slot={} root_version={:?} filter_writes={} fence_pending=true",
-                publication.geometry_epoch,
-                self.current_frame_resource_index,
-                publication.root.map(|(_, version)| version),
-                publication.filters.len(),
+        // Most compositor ticks update only swapchain presentation state. In
+        // those frames keep the native Fence/FrameSlot but bypass the entire
+        // Root/Filter publication and completion ledger. This removes one
+        // empty record per no-op version transaction, including diagnostics.
+        let refreshed_root = (root_scene_color_refreshes != 0)
+            .then(|| self.root_color.identity().zip(self.root_color.content_version()))
+            .flatten();
+        if refreshed_root.is_some() || !element_blur_layers.is_empty() {
+            let publication = SubmittedResourceVersions::new_if_written(
+                packet.paint.geometry.layout_epoch,
+                refreshed_root,
+                element_blur_layers.iter().filter_map(|layer| {
+                    self.filters.layer_content_version(layer.index)
+                        .map(|version| (layer.index, version))
+                }),
             );
-            if let Some(submission) = self.pending_submissions.last_mut() {
-                submission.publication = Some(publication);
+            if let Some(publication) = publication {
+                if self.pending_submissions.len() > pending_submission_count_before {
+                    log::trace!(
+                        target: "gpui::diagnostics",
+                        "nova resource publication submitted: geometry_epoch={} frame_slot={} root_version={:?} filter_writes={} fence_pending=true",
+                        publication.geometry_epoch,
+                        self.current_frame_resource_index,
+                        publication.root.map(|(_, version)| version),
+                        publication.filters.len(),
+                    );
+                    if let Some(submission) = self.pending_submissions.last_mut() {
+                        submission.publication = Some(publication);
+                    }
+                } else if submission_mode == GpuSubmissionMode::Synchronous
+                    || !async_capabilities.async_presentation
+                {
+                    // submit_present_frame already waited on a synchronous fence.
+                    self.complete_gpu_submission(publication);
+                }
             }
-        } else if submission_mode == GpuSubmissionMode::Synchronous
-            || !async_capabilities.async_presentation
-        {
-            // submit_present_frame already waited on a synchronous fence.
-            self.complete_gpu_submission(publication);
         }
         log::trace!(
             target: "gpui::diagnostics",
