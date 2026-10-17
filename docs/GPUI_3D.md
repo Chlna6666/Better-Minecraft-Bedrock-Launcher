@@ -678,3 +678,45 @@ cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and
 frame behavior on a real window. The Metal texture limitation above remains until the backend upload
 implementation changes and is revalidated.
+
+
+## Completion record
+
+This record closes the GPUI-3D work landed on `master` for the current phase. It is intentionally
+committed without a `[skip ci]` marker so the repository's Compile Check workflow validates the
+pushed tree.
+
+Delivered in this phase:
+
+- `gpui-3d` public API: scene graph, meshes/tangents, materials, cameras, ray queries, glTF 2.0/GLB
+  import, retained `PreparedScene`, offscreen multi-pass renderer, animation sampling, project/pick
+  helpers, GPU object-id picking, statistics and resource lifecycle APIs.
+- `nova-gfx`: linear HDR `Rgba16Float` format across DX11/DX12/Vulkan/OpenGL (Metal mapping added,
+  not runtime-validated on this host).
+- Offscreen render graph: packed-depth shadow pass, linear HDR PBR scene pass, half-resolution bloom
+  pass, HDR post resolve with exposure/tone mapping/FXAA/vignette/grain/dither, readback target.
+- Memory and performance: per-element hash-tracked incremental uploads, exponential streaming
+  buffers with trim, soft asset budget with LRU eviction, texture caching/downscaling, static-frame
+  reuse, camera-only re-cull, per-batch draw slots, reusable CPU staging buffers, bounded mesh-buffer
+  reuse pool, allocation/fragmentation metrics, pipeline-layout leak fix.
+- Verification assets and tooling: SHA-256-pinned licensed test-asset manifest and downloader, four
+  backend pixel matrix, 10 native memory/lifecycle tests, scene lab with quality presets, orbit
+  benchmarks, debug views, JSON statistics, and this documentation.
+
+Latest local verification before this record:
+
+- `cargo test -p gpui-3d`: 99 library tests, 8 glTF import tests, 5 CPU picking tests, 2 documentation
+  tests pass.
+- `cargo test -p gpui-3d -- --ignored --test-threads=1`: cached real-model imports, DX12→DX11→Vulkan
+  pixel agreement matrix, and 10 native renderer memory/lifecycle tests pass.
+- `cargo check --lib` (repository default features) and
+  `cargo check -p bmcbl --no-default-features` pass; changed Rust files are rustfmt-clean and add no
+  clippy warnings (the repository has a pre-existing formatting baseline unrelated to this work).
+- Scene lab captures were regenerated on DX12 with HDR + bloom + FXAA at quality presets, plus DX11,
+  Vulkan, and OpenGL 4.5 backends for the pixel matrix.
+
+Explicitly not implemented in this phase (documented, not claimed): GPU skinning/morph deformation,
+pose blending, IBL/environment maps, clustered Forward+, point/spot shadow maps, MSAA/TAA/SSAA,
+SSAO/SSR/motion blur/depth of field, multi-scale bloom, LUT grading, GPU timestamped pass timings,
+GPU-driven indirect submission, LOD/occlusion culling, asynchronous readback, compositor hand-off of
+an offscreen target without CPU readback, and Metal runtime validation.
