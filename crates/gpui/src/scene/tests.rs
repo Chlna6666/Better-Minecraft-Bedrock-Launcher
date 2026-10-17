@@ -1551,3 +1551,40 @@ fn gpu_sample_clip_reveal_damages_only_moving_pixels() {
             .is_empty()
     );
 }
+
+#[test]
+fn identical_filter_scene_and_samples_skip_nested_source_revalidation() {
+    let viewport = bounds(
+        point(ScaledPixels(0.0), ScaledPixels(0.0)),
+        size(ScaledPixels(128.0), ScaledPixels(128.0)),
+    );
+    let mut scene = crate::scene::Painter::default();
+    let id = scene.allocate_animation_id();
+    scene.begin_blur(BlurCapture {
+        animation_id: None,
+        layer_id: None,
+        bounds: viewport,
+        content_mask: ContentMask::new(viewport),
+        radius: ScaledPixels(0.0),
+        opacity: 1.0,
+    });
+    scene.insert_animated_primitive(Quad::default(), id);
+    scene.end_blur();
+    scene.finish();
+    let value = |progress| SceneAnimationValue {
+        animation_id: id,
+        property: crate::TransitionProperty::Opacity,
+        progress,
+        from: [0.0; 4],
+        to: [1.0, 0.0, 0.0, 0.0],
+    };
+    assert!(crate::paint::retention::filter_source_matches(
+        &scene, &scene, &[value(0.2)], &[value(0.2)]
+    ));
+    assert!(
+        !crate::paint::retention::filter_source_matches(
+            &scene, &scene, &[value(0.3)], &[value(0.2)]
+        ),
+        "the same Scene pointer does not allow a changed nested GPU animation sample"
+    );
+}

@@ -1102,3 +1102,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - RootColor 版本修复：`RootColor::record_present` 仅在对应 GPU 根颜色纹理真正成功刷新时，才更新 `animation_values`，并与 `content_version` 原子推进；纯合成 Present 不再把旧纹理的采样基线误更新为新动画时间。避免下次 `gpu_sample_damage` 漏算旧纹理实际未重绘的动画范围，也节约 240Hz 纯合成帧上的 `Vec::extend_from_slice`。测试：`compositor_only_presents_preserve_actual_root_pixel_sample_baseline`。
 
 - 删除重复、无消费者的 `DrawStepScratch::backdrop_blur_passes` 临时 Vec 与每帧 `prepare_backdrop_blur_passes(has_filters)`。真正渲染执行仍通过 `prepare_backdrop_blur_groups` 和 `execute_frame_graph_offscreen` 生成、消费过滤 Pass，不修改任何 Root/Element Blur 刷新判定。此删除减少高频带滤镜动画的 CPU Pass 描述符构建及内存保留；需用 `rg 'draw_step_scratch\.backdrop_blur_passes|prepare_backdrop_blur_passes' crates/gpui/src` 确认没有旧消费者，并运行定向图测试。
+
+- `paint::retention::filter_source_matches` 新增严格不可变同源快速证明：`std::ptr::eq(scene, previous)` 且完整 `SceneAnimationValue` 切片相等时，跳过逐 Operation 与嵌套 Blur 的递归比对。若样本不同，仍执行旧的逐层视觉等价与动画依赖验证，不能忽略静态内容或外层动画轨道；对应测试 `identical_filter_scene_and_samples_skip_nested_source_revalidation`。

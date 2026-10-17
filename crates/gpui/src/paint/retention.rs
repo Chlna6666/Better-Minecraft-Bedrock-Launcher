@@ -197,6 +197,14 @@ pub(crate) fn filter_source_matches(
     animation_values: &[SceneAnimationValue],
     previous_animation_values: &[SceneAnimationValue],
 ) -> bool {
+    // The exact immutable Scene and the complete GPU sample vector are a
+    // sufficient source-content proof. Avoid traversing every paint operation
+    // (including recursive Blur captures) on unchanged compositor ticks.
+    // When samples differ, fall back to the full recursive check: unrelated
+    // animation tracks must not wrongly invalidate a retained filter target.
+    if std::ptr::eq(scene, previous) && animation_values == previous_animation_values {
+        return true;
+    }
     if scene.paint_operations.len() != previous.paint_operations.len() {
         return false;
     }
