@@ -26,18 +26,17 @@ pub(super) fn resolve_surface_packet(
 /// avoiding repeated full-surface rerasterization on every active frame.
 /// Keep this independent from native partial-present capability.
 pub(super) fn requires_full_drawable_damage(
-    live_resize_active: bool,
+    _live_resize_active: bool,
     viewport_changed: bool,
 ) -> bool {
-    // Only an actual drawable-extent transition destroys the correctness
-    // proof for existing offscreen texels and their scissors. A nested
-    // Capture + active compositor animation is NOT a resize: that old test
-    // forced full damage and full filter refresh on every Dropdown tick,
-    // overriding the precise GPU-sample damage computed before this call.
+    // Being inside WM_ENTERSIZEMOVE does not invalidate retained pixels every
+    // display tick. Only a real swapchain/target replacement invalidates the
+    // old source texels and their scissors. The Scene's own dirty region still
+    // covers layout/repaint changes on same-size frames; the freshly resized
+    // target receives one forced full frame until its first successful Present.
     //
-    // WSI may still require a full swapchain Present (resolve_surface_packet),
-    // but that is independent of the dirty region and retained Filter inputs.
-    live_resize_active || viewport_changed
+    // Keep the presentation mode and GPU filter source damage independent.
+    viewport_changed
 }
 
 /// A newly recreated swapchain has no trustworthy old backbuffer pixels.

@@ -4018,7 +4018,7 @@ fn nova_resize_warmup_promotes_partial_damage_to_full_drawable() {
 #[test]
 fn only_real_resize_requires_full_drawable_damage() {
     assert!(!requires_full_drawable_damage(false, false));
-    assert!(requires_full_drawable_damage(true, false));
+    assert!(!requires_full_drawable_damage(true, false));
     assert!(requires_full_drawable_damage(false, true));
     assert!(requires_full_drawable_damage(true, true));
 }
