@@ -228,12 +228,15 @@ impl Window {
             .rollback_replayed_input_handlers(&mut self.next_frame);
         self.rendered_frame.rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
-        self.invalidator.set_dirty(true);
+        let targeted_retry = self.invalidator.retry_aborted_frame();
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
-        // The submitted scene is still intact. Rebuild view caches on recovery because partial
-        // frame ranges cannot be replayed, but let the completed scene determine pixel damage.
-        self.force_view_cache_refresh = true;
+        // The committed CachedViewState and dispatch listeners remain intact
+        // after the speculative rollback. A targeted generation can retry
+        // with its original dirty dependency scope, leaving unrelated
+        // committed cache ranges replayable. Unknown/global invalidation or
+        // an intervening notification still forces the previous safe barrier.
+        self.force_view_cache_refresh |= !targeted_retry;
         self.recovering_degraded_draw = true;
         self.draw_deadline = None;
         ArenaClearNeeded::new()

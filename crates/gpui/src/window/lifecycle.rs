@@ -727,6 +727,40 @@ impl WindowInvalidator {
         inner.dirty = is_dirty;
     }
 
+    /// Retry an aborted targeted generation without converting its known
+    /// retained dependencies into a generic whole-window invalidation.
+    /// When an independent notification arrived during the build, its dirty
+    /// provenance is not proven equivalent: fall back to the old hard barrier.
+    pub(in crate::window) fn retry_aborted_frame(&self) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        let can_retry_targeted = inner.active_targeted_replay && !inner.dirty;
+        if can_retry_targeted {
+            inner.pending_targeted_replay = true;
+            let active = mem::take(&mut inner.active_targeted_elements);
+            for (key, scope) in active {
+                inner
+                    .pending_targeted_elements
+                    .entry(key)
+                    .and_modify(|old| *old = old.merged(scope))
+                    .or_insert(scope);
+            }
+            let generic = mem::take(&mut inner.active_generic_dirty_views);
+            inner.pending_generic_dirty_views.extend(generic);
+            inner.active_targeted_replay = false;
+            inner
+                .dirty_to_present_started_at
+                .get_or_insert_with(Instant::now);
+            inner.dirty = true;
+        } else {
+            // Unscoped root changes and concurrent notifications still require
+            // the conservative recovery path. set_dirty clears old active
+            // targets so they cannot leak into a future geometry generation.
+            drop(inner);
+            self.set_dirty(true);
+        }
+        can_retry_targeted
+    }
+
     /// Schedules a frame whose only window-level change is outside the retained application tree.
     ///
     /// An empty target set means every stable retained element is eligible for replay. If a
@@ -1396,6 +1430,49 @@ mod retained_dirty_scope_tests {
 
         assert!(invalidator.active_targeted_replay());
         assert!(invalidator.active_generic_view_is_dirty(view));
+    }
+
+    #[test]
+    fn aborted_targeted_frame_preserves_exact_pending_scope() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let retained = path(&[0, 2]);
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            owner,
+            Some(&retained),
+            RetainedInvalidationScope::ReconcileSubtree,
+        ));
+        invalidator.set_dirty(false);
+        assert!(invalidator.active_targeted_replay());
+        assert!(invalidator.retry_aborted_frame());
+        assert!(invalidator.is_dirty());
+        invalidator.set_dirty(false);
+        assert!(invalidator.active_targeted_replay());
+        assert!(invalidator.retained_path_is_dirty(&retained));
+    }
+
+    #[test]
+    fn concurrent_dirty_request_forces_conservative_abort_recovery() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let retained = path(&[0, 2]);
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            owner,
+            Some(&retained),
+            RetainedInvalidationScope::ElementOnly,
+        ));
+        invalidator.set_dirty(false);
+        // Emulate a new unclassified draw request during an in-progress
+        // generation: speculative scope may no longer describe all changes.
+        {
+            let mut inner = invalidator.inner.borrow_mut();
+            inner.dirty = true;
+        }
+        assert!(!invalidator.retry_aborted_frame());
+        invalidator.set_dirty(false);
+        assert!(!invalidator.active_targeted_replay());
     }
 
     #[test]

@@ -676,7 +676,7 @@ impl Element for CachedView {
                         dirty_scope == Some(ViewDirtyScope::TraversalAncestor)
                             && stable_cache_key
                             && !force_refresh
-                            && !window.recovering_degraded_draw();
+                            && (!window.recovering_degraded_draw() || targeted_replay);
                     if dirty_scope == Some(ViewDirtyScope::TraversalAncestor) {
                         if !stable_cache_key {
                             window.record_selective_splice_miss(

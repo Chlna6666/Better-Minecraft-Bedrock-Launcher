@@ -1073,3 +1073,9 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 回归：`cargo test -p gpui --lib retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort`、`cargo test -p gpui --lib aborted_candidate_restores_noncloneable_input_handler_ownership`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`。
 
 - 清理一个无意义的旧包装：`MouseListener::take()` 实际是 `clone()`，已移除并在 Paint replay 使用 `iter().cloned()`，避免未来错误假设回放破坏旧帧鼠标监听器。
+
+### 2026-10-17 Degraded Recovery 定向事务重试
+
+- 仅允许后台渐进构帧按需对首次访问的 `CachedViewState` 克隆已提交状态；Candidate Frame 更新独立副本，失败时保留原始 Range，成功时由候选状态覆盖旧状态。普通交互帧不增加该副本的分配或集合复制。
+- `WindowInvalidator::retry_aborted_frame` 只在失败帧具有完整 Targeted Provenance、且构帧期间没有新的未知通知时恢复原 Target/Scope；这种情况下可跳过恢复帧的全局 CachedView 强制刷新，未受影响子树继续复用。对于 Generic/Unknown/并发通知，仍回退完整恢复；保留旧 Scene 和 GPU Damage 差分。
+- 回归：`cargo test -p gpui --lib aborted_targeted_frame_preserves_exact_pending_scope`、`cargo test -p gpui --lib concurrent_dirty_request_forces_conservative_abort_recovery`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`。首次合入仍需四后端本地编译+像素验证；全局回退分支不删除。
