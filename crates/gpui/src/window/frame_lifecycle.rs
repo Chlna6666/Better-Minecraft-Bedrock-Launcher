@@ -1502,7 +1502,7 @@ impl Window {
         self.draw_was_degraded
     }
 
-    fn allows_progressive_frame_degradation(&self) -> bool {
+    pub(crate) fn allows_progressive_frame_degradation(&self) -> bool {
         let diagnostics = self.dirty_frame_diagnostics.borrow();
         self.has_completed_rendered_frame
             // The recovery frame after a degraded draw must present progress instead of

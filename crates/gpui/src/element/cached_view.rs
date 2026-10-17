@@ -19,7 +19,8 @@ use std::mem;
 use std::rc::Rc;
 use std::{any::TypeId, ops::Range};
 
-struct CachedViewState {
+#[derive(Clone)]
+pub(crate) struct CachedViewState {
     weak_view: CachedWeakView,
     traversal_context: CachedViewTraversalContext,
     prepaint_range: Range<PrepaintStateIndex>,
@@ -31,6 +32,25 @@ struct CachedViewState {
     reactive_layout: Option<crate::layout::RetainedViewLayout>,
 }
 
+/// Clone only the opaque CachedView state retained by the last committed
+/// Frame. This path is called when a speculative progressive generation first
+/// touches that state; other ElementState types retain their original move
+/// semantics. A successful commit replaces the snapshot with fresh state,
+/// while an aborted generation discards the speculative copy.
+pub(crate) fn snapshot_committed_cached_view_state(
+    state: &crate::window::ElementStateBox,
+) -> Option<crate::window::ElementStateBox> {
+    let old = state
+        .inner
+        .downcast_ref::<Option<CachedViewState>>()?
+        .clone();
+    Some(crate::window::ElementStateBox {
+        inner: Box::new(old),
+        #[cfg(debug_assertions)]
+        type_name: state.type_name,
+    })
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CachedViewPaintContext {
     device_scale_factor: f32,
@@ -40,7 +60,7 @@ struct CachedViewPaintContext {
     visual_content_mask: ContentMask<Pixels>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CachedViewCacheKey {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,

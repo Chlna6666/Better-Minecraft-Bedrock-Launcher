@@ -226,9 +226,7 @@ impl Window {
         record_scene_frame_metrics(scene_metrics);
         self.rendered_frame
             .rollback_replayed_input_handlers(&mut self.next_frame);
-        self.rendered_frame
-            .element_states
-            .extend(self.next_frame.element_states.drain());
+        self.rendered_frame.rollback_element_states(&mut self.next_frame);
         self.next_frame.clear();
         self.invalidator.set_dirty(true);
         self.refreshing = false;

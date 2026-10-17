@@ -564,7 +564,10 @@ impl Frame {
             if let Some((element_state_key, element_state)) =
                 prev_frame.element_states.remove_entry(element_state_key)
             {
-                self.element_states.insert(element_state_key, element_state);
+                // Snapshot-based progressive frames keep the committed
+                // CachedViewState in prev_frame during construction. Fresh
+                // candidate state must win on successful publication.
+                self.element_states.entry(element_state_key).or_insert(element_state);
             }
         }
 
@@ -585,6 +588,16 @@ impl Frame {
     /// Abort a candidate generation without dropping IME handlers still
     /// owned by the last committed tree. The platform may already own the
     /// active handler; only nonempty speculative slots are restored.
+    /// Keep committed snapshots, but migrate non-cloneable states moved by
+    /// older Element implementations back from an aborted candidate.
+    /// Never overwrite an intact committed CachedView snapshot with an
+    /// uncommitted range generation.
+    pub(crate) fn rollback_element_states(&mut self, candidate: &mut Self) {
+        for (key, state) in candidate.element_states.drain() {
+            self.element_states.entry(key).or_insert(state);
+        }
+    }
+
     pub(crate) fn rollback_replayed_input_handlers(&mut self, candidate: &mut Self) -> usize {
         rollback_replayed_option_transfers(
             &mut self.input_handlers,
