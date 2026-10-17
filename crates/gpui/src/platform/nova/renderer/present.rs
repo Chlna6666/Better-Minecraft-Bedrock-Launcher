@@ -640,7 +640,6 @@ impl NovaRenderer {
 
         self.prepare_draw_steps(packet.paint.scene.revision);
         self.prepare_path_mask_draw_steps(packet.paint.scene.revision);
-        self.prepare_backdrop_blur_passes(has_filters);
         let backdrop_blur_groups = if backdrop_blur_refresh_required {
             self.prepare_backdrop_blur_groups(true)
         } else {

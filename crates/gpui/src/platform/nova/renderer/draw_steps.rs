@@ -352,26 +352,6 @@ impl NovaRenderer {
         groups
     }
 
-    pub(super) fn prepare_backdrop_blur_passes(&mut self, enabled: bool) {
-        let passes = &mut self.draw_step_scratch.backdrop_blur_passes;
-        passes.clear();
-        if !enabled {
-            return;
-        }
-        let Some(targets) = self.filters.targets.as_ref() else {
-            return;
-        };
-        let configs = self.frame_upload.backdrop_blur_configs();
-        backdrop_blur_render_passes_for_configs_into(
-            &self.pipelines,
-            targets,
-            self.current_frame_resource_index,
-            &configs,
-            passes,
-        );
-        apply_filter_pass_scissors(&configs, self.active_size, passes);
-    }
-
     /// Builds isolated element-filter work. Gaussian layers reconstruct their source scratch and
     /// refresh retained ping/final targets. A zero-radius compositor layer instead renders the
     /// complete dirty subtree directly into its retained final target, so it has no H/V passes and

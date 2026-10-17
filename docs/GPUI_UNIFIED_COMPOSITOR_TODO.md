@@ -1100,3 +1100,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - Win32 reentrant WM_SIZE 可靠性：将 `pending_native_size_retry` 的 HWND 尺寸重采样移到 Live Resize 的 UI cadence 限速之前。即使本次帧因 240Hz/自定义 cadence 被合并，也要先获得最新 native geometry epoch；真正的 UI Layout 和 GPU Resize 仍同代次提交，未恢复旧尺寸纹理拉伸，也没有为每次 WM_SIZE 增加完整构帧。
 
 - RootColor 版本修复：`RootColor::record_present` 仅在对应 GPU 根颜色纹理真正成功刷新时，才更新 `animation_values`，并与 `content_version` 原子推进；纯合成 Present 不再把旧纹理的采样基线误更新为新动画时间。避免下次 `gpu_sample_damage` 漏算旧纹理实际未重绘的动画范围，也节约 240Hz 纯合成帧上的 `Vec::extend_from_slice`。测试：`compositor_only_presents_preserve_actual_root_pixel_sample_baseline`。
+
+- 删除重复、无消费者的 `DrawStepScratch::backdrop_blur_passes` 临时 Vec 与每帧 `prepare_backdrop_blur_passes(has_filters)`。真正渲染执行仍通过 `prepare_backdrop_blur_groups` 和 `execute_frame_graph_offscreen` 生成、消费过滤 Pass，不修改任何 Root/Element Blur 刷新判定。此删除减少高频带滤镜动画的 CPU Pass 描述符构建及内存保留；需用 `rg 'draw_step_scratch\.backdrop_blur_passes|prepare_backdrop_blur_passes' crates/gpui/src` 确认没有旧消费者，并运行定向图测试。

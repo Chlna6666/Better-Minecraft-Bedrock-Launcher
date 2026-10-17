@@ -10,7 +10,6 @@ pub(super) struct DrawStepScratch {
     path_mask_cache: Vec<PathMaskCacheEntry>,
     prepared_path_mask_slot: Option<usize>,
     pub(super) path_mask_cache_hit: bool,
-    pub(super) backdrop_blur_passes: Vec<BackdropBlurRenderPass>,
     pub(super) backdrop_blur_damage_region: DirtyRegion,
     pub(super) backdrop_blur_damage_plan: crate::BackdropBlurDamagePlan,
     pub(super) force_full_backdrop_blur_refresh: bool,
@@ -148,7 +147,6 @@ impl DrawStepScratch {
         };
         trim_vec_capacity(&mut self.draw_steps, 64, multiplier);
         trim_vec_capacity(&mut self.path_mask_steps, 32, multiplier);
-        trim_vec_capacity(&mut self.backdrop_blur_passes, 16, multiplier);
         for cache in &mut self.path_mask_cache {
             if cache.steps.capacity() > 32usize.saturating_mul(multiplier.max(1)) {
                 *cache = PathMaskCacheEntry::default();
