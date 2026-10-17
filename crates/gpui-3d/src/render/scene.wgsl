@@ -271,13 +271,14 @@ fn tonemap(color: vec3<f32>, mode: u32) -> vec3<f32> {
     return clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-fn object_id_color(instance_index: u32) -> vec3<f32> {
-    var hash = instance_index * 2654435761u + 2246822519u;
-    hash = (hash ^ (hash >> 13u)) * 1274126177u;
-    let red = f32((hash >> 16u) & 255u) / 255.0;
-    let green = f32((hash >> 8u) & 255u) / 255.0;
-    let blue = f32(hash & 255u) / 255.0;
-    return vec3<f32>(red, green, blue) * 0.75 + vec3<f32>(0.15);
+fn encode_object_id(instance_index: u32) -> vec3<f32> {
+    // One-based 24-bit instance id in RGB so the CPU can decode the submitted draw exactly.
+    // Zero remains the cleared background.
+    let id = instance_index + 1u;
+    let red = f32(id & 255u) / 255.0;
+    let green = f32((id >> 8u) & 255u) / 255.0;
+    let blue = f32((id >> 16u) & 255u) / 255.0;
+    return vec3<f32>(red, green, blue);
 }
 
 @fragment
@@ -417,7 +418,7 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(vec3<f32>(shadow_visibility_value), 1.0);
     }
     if (debug_view == DEBUG_OBJECT_ID) {
-        return vec4<f32>(object_id_color(input.instance_index), 1.0);
+        return vec4<f32>(encode_object_id(input.instance_index), 1.0);
     }
 
     if (draw_params.shading_model == SHADING_MODEL_UNLIT) {

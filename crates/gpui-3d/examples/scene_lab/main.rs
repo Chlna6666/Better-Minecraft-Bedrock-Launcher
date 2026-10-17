@@ -51,6 +51,9 @@ struct Args {
     model: Option<String>,
     animation: Option<String>,
     animation_time: f32,
+    max_texture: Option<u32>,
+    budget_mb: Option<u64>,
+    pick: Option<(f32, f32)>,
     list: bool,
 }
 
@@ -65,7 +68,7 @@ impl Default for Args {
             frames: DEFAULT_FRAMES,
             debug: DebugView::Shaded,
             shadows: true,
-            shadow_resolution: 2048,
+            shadow_resolution: 1024,
             exposure: 1.0,
             tonemap: Tonemap::Aces,
             post_process: true,
@@ -76,6 +79,9 @@ impl Default for Args {
             model: None,
             animation: None,
             animation_time: 0.0,
+            max_texture: None,
+            budget_mb: None,
+            pick: None,
             list: false,
         }
     }
@@ -115,9 +121,13 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let mut load_options = GltfLoadOptions::default();
+    if let Some(max_texture) = args.max_texture {
+        load_options.max_texture_dimension = max_texture.max(1);
+    }
     let mut imported = match &args.model {
         Some(path) => Some(
-            gpui_3d::load_path(path, &GltfLoadOptions::default())
+            gpui_3d::load_path(path, &load_options)
                 .map_err(|error| format!("import {path}: {error}"))?,
         ),
         None => None,
@@ -206,6 +216,8 @@ fn run() -> Result<(), String> {
             width: args.width,
             height: args.height,
             frames: args.frames,
+            memory_budget: args.budget_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
+            pick: args.pick,
             animation: animation
                 .as_ref()
                 .map(|(tracks, time, _, _)| (*tracks, *time)),
@@ -370,6 +382,18 @@ fn parse_args() -> Result<Args, String> {
             "--model" => args.model = Some(required(value, key)?),
             "--animation" => args.animation = Some(required(value, key)?),
             "--animation-time" => args.animation_time = parse_float(value, key)?,
+            "--max-texture" => args.max_texture = Some(parse_number(value, key)?),
+            "--budget-mb" => args.budget_mb = Some(parse_number(value, key)?),
+            "--pick" => {
+                let text = required(value, key)?;
+                let (x, y) = text
+                    .split_once(',')
+                    .ok_or_else(|| "--pick expects x,y".to_string())?;
+                args.pick = Some((
+                    x.parse().map_err(|_| "invalid pick x")?,
+                    y.parse().map_err(|_| "invalid pick y")?,
+                ));
+            }
             "--sun" => {
                 let text = required(value, key)?;
                 let (azimuth, elevation) = text
@@ -445,6 +469,7 @@ fn help_text() -> String {
         "  --debug=shaded|albedo|normal|depth|uv|shadow|object-id",
         "  --yaw=0.62 --pitch=0.30 --distance=11.5 --sun=135,52",
         "  --model=model.glb --animation=clip --animation-time=1.5",
+        "  --max-texture=1024 --budget-mb=256 --pick=640,360",
         "  --list-backends",
     ]
     .join("\n")
@@ -501,16 +526,73 @@ fn print_report(report: &backend::BackendReport) {
     );
     let renderer = report.renderer;
     println!(
-        "renderer: live_meshes={} live_textures={} resource_sets={} buffers={}KB textures={}KB draw_capacity={} instance_capacity={} shadow={}",
+        "renderer: live_meshes={} live_textures={} resource_sets={} buffers={}KB targets={}KB cached_mesh={}KB cached_texture={}KB draw_capacity={} instance_capacity={} shadow={}",
         renderer.live_meshes,
         renderer.live_textures,
         renderer.resource_set_count,
         renderer.resident_buffer_bytes / 1024,
-        renderer.resident_texture_bytes / 1024,
+        renderer.target_bytes / 1024,
+        renderer.cached_mesh_bytes / 1024,
+        renderer.cached_texture_bytes / 1024,
         renderer.draw_capacity,
         renderer.instance_capacity,
         renderer.shadow_resolution,
     );
+    println!(
+        "memory: resident={}KB peak={}KB budget={} upload_total={}KB cache_hits(mesh={},texture={}) misses(mesh={},texture={}) evictions={} tracker_cpu={}KB",
+        (renderer.resident_buffer_bytes + renderer.resident_texture_bytes) / 1024,
+        renderer.peak_resident_bytes / 1024,
+        renderer
+            .memory_budget_bytes
+            .map_or_else(|| "none".to_string(), |bytes| format!("{}KB", bytes / 1024)),
+        renderer.upload_bytes_total / 1024,
+        renderer.mesh_cache_hits,
+        renderer.texture_cache_hits,
+        renderer.mesh_cache_misses,
+        renderer.texture_cache_misses,
+        renderer.evictions,
+        renderer.tracker_cpu_bytes / 1024,
+    );
+    if report.frames > 1 {
+        let mut render_samples = report
+            .samples
+            .iter()
+            .map(|sample| sample.render_nanos)
+            .collect::<Vec<_>>();
+        let mut capture_samples = report
+            .samples
+            .iter()
+            .map(|sample| sample.capture_nanos)
+            .collect::<Vec<_>>();
+        render_samples.sort_unstable();
+        capture_samples.sort_unstable();
+        println!(
+            "frame_times: render p50={:.2}ms p95={:.2}ms p99={:.2}ms max={:.2}ms | capture p50={:.2}ms p95={:.2}ms p99={:.2}ms",
+            percentile(&render_samples, 50) as f64 / 1.0e6,
+            percentile(&render_samples, 95) as f64 / 1.0e6,
+            percentile(&render_samples, 99) as f64 / 1.0e6,
+            render_samples.last().copied().unwrap_or(0) as f64 / 1.0e6,
+            percentile(&capture_samples, 50) as f64 / 1.0e6,
+            percentile(&capture_samples, 95) as f64 / 1.0e6,
+            percentile(&capture_samples, 99) as f64 / 1.0e6,
+        );
+    }
+    if let Some(pick) = &report.cpu_pick {
+        println!("cpu_pick: {pick}");
+    } else if report.cpu_pick.is_none() && report.frames > 0 {
+        println!("cpu_pick: none");
+    }
+    if let Some(pick) = &report.object_pick {
+        println!("object_pick: {pick}");
+    }
+}
+
+fn percentile(sorted: &[u64], percent: usize) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let index = ((sorted.len() - 1) * percent) / 100;
+    sorted[index]
 }
 
 fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> String {
@@ -532,7 +614,12 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
             "  \"debug_view\": \"{:?}\",\n",
             "  \"first_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
             "  \"steady_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
-            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{}}}\n",
+            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{}}},\n",
+            "  \"memory\": {{\"target_bytes\":{},\"cached_mesh_bytes\":{},\"cached_texture_bytes\":{},\"resident_bytes\":{},\"peak_resident_bytes\":{},\"upload_bytes_total\":{},\"mesh_cache_hits\":{},\"mesh_cache_misses\":{},\"texture_cache_hits\":{},\"texture_cache_misses\":{},\"evictions\":{},\"tracker_cpu_bytes\":{},\"budget_bytes\":{}}},\n",
+            "  \"frame_times_nanos\": {{\"render_p50\":{},\"render_p95\":{},\"render_p99\":{},\"capture_p50\":{},\"capture_p95\":{},\"capture_p99\":{}}},\n",
+            "  \"cpu_pick\": {},\n",
+            "  \"object_pick\": {},\n",
+            "  \"debug_view\": \"{:?}\"\n",
             "}}\n",
         ),
         report.backend,
@@ -571,5 +658,55 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
         renderer.draw_capacity,
         renderer.instance_capacity,
         renderer.light_capacity,
+        renderer.target_bytes,
+        renderer.cached_mesh_bytes,
+        renderer.cached_texture_bytes,
+        renderer.resident_buffer_bytes + renderer.resident_texture_bytes,
+        renderer.peak_resident_bytes,
+        renderer.upload_bytes_total,
+        renderer.mesh_cache_hits,
+        renderer.mesh_cache_misses,
+        renderer.texture_cache_hits,
+        renderer.texture_cache_misses,
+        renderer.evictions,
+        renderer.tracker_cpu_bytes,
+        renderer
+            .memory_budget_bytes
+            .map_or_else(|| "null".to_string(), |bytes| bytes.to_string()),
+        percentile_of(report, PercentileKind::Render, 50),
+        percentile_of(report, PercentileKind::Render, 95),
+        percentile_of(report, PercentileKind::Render, 99),
+        percentile_of(report, PercentileKind::Capture, 50),
+        percentile_of(report, PercentileKind::Capture, 95),
+        percentile_of(report, PercentileKind::Capture, 99),
+        json_string(report.cpu_pick.as_deref()),
+        json_string(report.object_pick.as_deref()),
+        options.debug_view,
     )
+}
+
+#[derive(Clone, Copy)]
+enum PercentileKind {
+    Render,
+    Capture,
+}
+
+fn percentile_of(report: &backend::BackendReport, kind: PercentileKind, percent: usize) -> u64 {
+    let mut samples = report
+        .samples
+        .iter()
+        .map(|sample| match kind {
+            PercentileKind::Render => sample.render_nanos,
+            PercentileKind::Capture => sample.capture_nanos,
+        })
+        .collect::<Vec<_>>();
+    samples.sort_unstable();
+    percentile(&samples, percent)
+}
+
+fn json_string(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")),
+        None => "null".to_string(),
+    }
 }

@@ -30,6 +30,10 @@ use std::time::Duration;
 
 /// Limits and optional decoding behavior for one import.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each switch independently controls import behavior (texture decoding, mip generation, downscaling, external resources) and callers set them individually."
+)]
 pub struct GltfLoadOptions {
     /// Maximum document size in bytes (JSON or GLB file).
     pub max_file_bytes: usize,
@@ -40,7 +44,14 @@ pub struct GltfLoadOptions {
     /// Maximum number of vertices in one primitive.
     pub max_vertices: usize,
     /// Maximum width or height of a decoded texture.
+    ///
+    /// Larger images are downscaled to fit when [`GltfLoadOptions::downscale_textures`] is set,
+    /// and rejected with [`GltfError::Limit`] otherwise.
     pub max_texture_dimension: u32,
+    /// Downscale oversized images to [`GltfLoadOptions::max_texture_dimension`] instead of
+    /// failing the import. Downscaling happens before mip generation, so it reduces GPU memory
+    /// proportionally to the squared scale factor.
+    pub downscale_textures: bool,
     /// Decode embedded and external images into GPU-ready textures.
     pub decode_textures: bool,
     /// Generate a complete box-filtered mip chain for decoded textures.
@@ -56,7 +67,8 @@ impl Default for GltfLoadOptions {
             max_buffer_bytes: 256 * 1024 * 1024,
             max_nodes: 65_536,
             max_vertices: 4_000_000,
-            max_texture_dimension: 8192,
+            max_texture_dimension: 2048,
+            downscale_textures: true,
             decode_textures: true,
             generate_mipmaps: true,
             allow_external_resources: true,

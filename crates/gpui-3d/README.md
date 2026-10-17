@@ -28,6 +28,13 @@ GPU timestamped pass timings, skeletal/morph deformation, IBL, and compositor ha
 offscreen target without CPU readback remain unimplemented; see `docs/GPUI_3D.md` for the full
 status matrix and measured numbers.
 
+Memory behavior is measurable and bounded: the renderer reports resident, peak, upload, cache-hit,
+and eviction counters; incremental uploads are tracked per element with content hashes instead of a
+full CPU copy; `set_memory_budget` evicts idle assets after a frame; texture import caps and
+downscales oversized images; and the default 1024 shadow map keeps target memory at about 8 MiB
+instead of 33 MiB. Measured: 720p studio at 19.8 MiB resident (1024 shadow) or 44.3 MiB (2048);
+DamagedHelmet 79.8 MiB resident at 2048 textures vs 30.7 MiB with `--max-texture=1024`.
+
 ## Offscreen renderer quick start
 
 ```rust
@@ -61,6 +68,13 @@ if let Some(clip) = imported.animations.first() {
     )?;
 }
 ```
+
+## Picking
+
+`pick` / `pick_evaluated` raycast from viewport pixels (stable node/mesh ids, distance, position,
+normal, UV) and `project` maps world points back to pixels. `OffscreenRenderer::pick_object` decodes
+the GPU object-id frame through a synchronous readback and returns the submitted draw, so CPU and GPU
+selection agree on pose and culling. The lab exposes both through `--pick=x,y`.
 
 ## Test assets
 

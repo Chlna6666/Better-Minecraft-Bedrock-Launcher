@@ -49,7 +49,8 @@ mod artifacts;
 mod gpu;
 
 use crate::{
-    AnimationScratch, Camera, CameraError, Scene, TextureAsset, TextureAssetId, TransformTrack,
+    AnimationScratch, Camera, CameraError, EvaluatedScene, MeshId, MeshPart, NodeId, RaycastError,
+    RaycastHit, RaycastScratch, Scene, TextureAsset, TextureAssetId, TransformTrack, Vec2,
 };
 use gfx_core::{BackendKind, Device, MemoryTrimLevel, TextureTransferDevice};
 use std::collections::HashMap;
@@ -118,6 +119,10 @@ pub struct ShadowOptions {
     /// Whether the shadow pass runs. When disabled the scene is fully lit.
     pub enabled: bool,
     /// Shadow map edge length in texels; 1 to 8192. Higher values cost GPU memory.
+    ///
+    /// The default 1024 target needs about 8 MiB for the packed-depth color and depth targets;
+    /// 2048 needs about 33 MiB and 4096 about 134 MiB, so raise it only when shadow detail
+    /// justifies the memory and fill cost.
     pub resolution: u32,
     /// Constant depth bias in normalized light-space depth.
     pub depth_bias: f32,
@@ -131,7 +136,7 @@ impl Default for ShadowOptions {
     fn default() -> Self {
         Self {
             enabled: true,
-            resolution: 2048,
+            resolution: 1024,
             depth_bias: 0.0025,
             normal_bias: 0.0025,
             strength: 1.0,
@@ -217,6 +222,138 @@ pub struct RendererStatistics {
     pub target_height: u32,
     /// Shadow map resolution in texels.
     pub shadow_resolution: u32,
+    /// GPU bytes owned by scene, shadow, and post render targets.
+    pub target_bytes: u64,
+    /// GPU bytes owned by cached meshes.
+    pub cached_mesh_bytes: u64,
+    /// GPU bytes owned by cached textures.
+    pub cached_texture_bytes: u64,
+    /// Peak resident GPU bytes observed since renderer creation.
+    pub peak_resident_bytes: u64,
+    /// Total upload bytes across all frames, including uniforms and range uploads.
+    pub upload_bytes_total: u64,
+    /// Mesh cache hits across all frames.
+    pub mesh_cache_hits: u64,
+    /// Mesh cache misses across all frames.
+    pub mesh_cache_misses: u64,
+    /// Texture cache hits across all frames.
+    pub texture_cache_hits: u64,
+    /// Texture cache misses across all frames.
+    pub texture_cache_misses: u64,
+    /// Assets released by trim or by the memory budget since creation.
+    pub evictions: u64,
+    /// CPU bytes retained by incremental-upload hash tables.
+    pub tracker_cpu_bytes: u64,
+    /// Current soft GPU memory budget in bytes, when one is configured.
+    pub memory_budget_bytes: Option<u64>,
+}
+
+/// GPU-assisted object selection result from [`OffscreenRenderer::pick_object`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectPick {
+    /// Scene node that produced the pixel.
+    pub node: NodeId,
+    /// Mesh asset identity.
+    pub mesh: MeshId,
+    /// Material part containing the picked triangle.
+    pub part: MeshPart,
+}
+
+/// Error produced by viewport pick and projection helpers.
+#[derive(Debug, thiserror::Error)]
+pub enum PickError {
+    /// The camera pose or NDC coordinates are invalid.
+    #[error(transparent)]
+    Camera(#[from] CameraError),
+    /// The constructed ray is invalid.
+    #[error(transparent)]
+    Ray(#[from] RaycastError),
+    /// Animation track sampling failed.
+    #[error(transparent)]
+    Animation(#[from] crate::AnimationError),
+}
+
+/// Converts a top-left-origin viewport pixel to a camera ray and picks the nearest surface.
+///
+/// `viewport` is the rendered pixel extent, so the result matches the frame produced by
+/// [`OffscreenRenderer::render`] for the same camera and target size. CPU picking ignores alpha
+/// masking and blended coverage, matching the scene raycast contract.
+///
+/// # Errors
+///
+/// Returns [`PickError`] when the camera cannot produce a ray for the pixel.
+pub fn pick(
+    scene: &Scene,
+    camera: Camera,
+    viewport: (u32, u32),
+    pixel: (f32, f32),
+    scratch: &mut RaycastScratch,
+) -> Result<Option<RaycastHit>, PickError> {
+    let ray = viewport_ray(camera, viewport, pixel)?;
+    Ok(scene.raycast(ray, scratch)?)
+}
+
+/// Picks against an evaluated animation pose, matching what
+/// [`OffscreenRenderer::render_animated`] submits for the same clip time.
+///
+/// # Errors
+///
+/// Returns [`PickError`] when the camera cannot produce a ray for the pixel.
+pub fn pick_evaluated(
+    evaluated: &EvaluatedScene<'_>,
+    camera: Camera,
+    viewport: (u32, u32),
+    pixel: (f32, f32),
+    scratch: &mut RaycastScratch,
+) -> Result<Option<RaycastHit>, PickError> {
+    let ray = viewport_ray(camera, viewport, pixel)?;
+    Ok(evaluated.raycast(ray, scratch)?)
+}
+
+/// Projects a world-space point to top-left-origin pixels and normalized zero-to-one depth.
+///
+/// Returns `None` when the point is behind the camera or produces a non-finite projection.
+///
+/// # Errors
+///
+/// Returns [`CameraError`] when the camera pose, projection, or viewport aspect is invalid.
+pub fn project(
+    camera: Camera,
+    viewport: (u32, u32),
+    world: crate::Vec3,
+) -> Result<Option<(f32, f32, f32)>, CameraError> {
+    if viewport.0 == 0 || viewport.1 == 0 {
+        return Ok(None);
+    }
+    let view_projection = camera.view_projection(viewport.0 as f32 / viewport.1 as f32)?;
+    let clip = view_projection.transform4([world.x, world.y, world.z, 1.0]);
+    if !clip[3].is_finite() || clip[3] <= 1.0e-6 {
+        return Ok(None);
+    }
+    let ndc = [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]];
+    if !ndc.iter().all(|value| value.is_finite()) {
+        return Ok(None);
+    }
+    Ok(Some((
+        (ndc[0] * 0.5 + 0.5) * viewport.0 as f32,
+        (0.5 - ndc[1] * 0.5) * viewport.1 as f32,
+        ndc[2],
+    )))
+}
+
+fn viewport_ray(
+    camera: Camera,
+    viewport: (u32, u32),
+    pixel: (f32, f32),
+) -> Result<crate::Ray, CameraError> {
+    if viewport.0 == 0 || viewport.1 == 0 {
+        return Err(CameraError::InvalidNdcPoint);
+    }
+    let ndc = Vec2::new(
+        2.0 * pixel.0 / viewport.0 as f32 - 1.0,
+        1.0 - 2.0 * pixel.1 / viewport.1 as f32,
+    );
+    camera.ray(ndc, viewport.0 as f32 / viewport.1 as f32)
 }
 
 /// Tightly packed RGBA8 image in display (sRGB-encoded) space.
@@ -274,6 +411,9 @@ pub enum RenderError {
     /// The renderer's GPU state was already destroyed.
     #[error("offscreen renderer has been destroyed")]
     Destroyed,
+    /// GPU object selection returned an instance id outside the submitted draw list.
+    #[error("offscreen object pick failed: {0}")]
+    Pick(String),
 }
 
 /// Multi-pass offscreen scene renderer.
@@ -292,6 +432,7 @@ pub struct OffscreenRenderer {
     gpu: gpu::GpuState,
     prepared: crate::PreparedScene,
     animation_scratch: AnimationScratch,
+    raycast_scratch: RaycastScratch,
     renderer_statistics: RendererStatistics,
 }
 
@@ -320,6 +461,7 @@ impl OffscreenRenderer {
             gpu,
             prepared: crate::PreparedScene::default(),
             animation_scratch: AnimationScratch::new(),
+            raycast_scratch: RaycastScratch::new(),
             renderer_statistics: RendererStatistics::default(),
         })
     }
@@ -351,7 +493,7 @@ impl OffscreenRenderer {
     ///
     /// Returns [`RenderError::InvalidSize`] for a zero or oversized target and
     /// [`RenderError::Gpu`] when target or pipeline recreation fails.
-    pub fn resize<D: Device + ?Sized>(
+    pub fn resize<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         width: u32,
@@ -379,7 +521,7 @@ impl OffscreenRenderer {
     ///
     /// Returns [`RenderError::Scene`] when the camera cannot produce a valid projection and
     /// [`RenderError::Gpu`] when uploads or submission fail.
-    pub fn render<D: Device + ?Sized>(
+    pub fn render<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         scene: &Scene,
@@ -414,7 +556,7 @@ impl OffscreenRenderer {
     /// Returns [`RenderError::Preparation`] when track sampling fails, [`RenderError::Scene`]
     /// when the camera cannot project the sampled pose, and [`RenderError::Gpu`] when submission
     /// fails.
-    pub fn render_animated<D: Device + ?Sized>(
+    pub fn render_animated<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         scene: &Scene,
@@ -490,7 +632,7 @@ impl OffscreenRenderer {
     /// # Errors
     ///
     /// Returns [`RenderError::Gpu`] when a resource cannot be destroyed.
-    pub fn trim<D: Device + ?Sized>(
+    pub fn trim<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         level: MemoryTrimLevel,
@@ -506,6 +648,133 @@ impl OffscreenRenderer {
         self.renderer_statistics
     }
 
+    /// Selects the nearest scene surface under a top-left-origin viewport pixel.
+    ///
+    /// Uses the CPU BVH and the camera pose supplied by the caller; it does not submit GPU work
+    /// and does not require a device. For blending/mask-accurate selection use
+    /// [`OffscreenRenderer::pick_object`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PickError`] when the camera cannot produce a ray for the pixel.
+    pub fn pick(
+        &mut self,
+        scene: &Scene,
+        camera: Camera,
+        pixel: (f32, f32),
+    ) -> Result<Option<RaycastHit>, PickError> {
+        pick(
+            scene,
+            camera,
+            (self.width, self.height),
+            pixel,
+            &mut self.raycast_scratch,
+        )
+    }
+
+    /// Selects the nearest surface of an animation-sampled pose under a viewport pixel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PickError`] when animation sampling produces a stale or invalid pose, or when the
+    /// camera cannot produce a ray.
+    pub fn pick_animated(
+        &mut self,
+        scene: &Scene,
+        tracks: &[TransformTrack],
+        animation_time: Duration,
+        camera: Camera,
+        pixel: (f32, f32),
+    ) -> Result<Option<RaycastHit>, PickError> {
+        let viewport = (self.width, self.height);
+        let ray = viewport_ray(camera, viewport, pixel)?;
+        let evaluated = scene.evaluate_with(tracks, animation_time, &mut self.animation_scratch)?;
+        Ok(evaluated.raycast(ray, &mut self.raycast_scratch)?)
+    }
+
+    /// Selects the submitted instance under a viewport pixel from the GPU object-id output.
+    ///
+    /// This re-renders the current scene with [`DebugView::ObjectId`], reads the resolved frame
+    /// back, decodes the submitted instance index, and maps it to the prepared draw. Unlike CPU
+    /// picking it follows the exact submitted pose, culling, and blend ordering, so it matches
+    /// what the GPU drew. The renderer's last frame remains the object-id frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError`] when rendering, readback, or the instance mapping fails.
+    pub fn pick_object<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+        scene: &Scene,
+        textures: &HashMap<TextureAssetId, Arc<TextureAsset>>,
+        camera: Camera,
+        options: &RenderOptions,
+        pixel: (u32, u32),
+    ) -> Result<Option<ObjectPick>, RenderError> {
+        let mut object_options = *options;
+        object_options.debug_view = DebugView::ObjectId;
+        object_options.post_process = false;
+        self.render(device, scene, textures, camera, &object_options)?;
+        let image = self.capture(device)?;
+        let x = pixel.0.min(self.width.saturating_sub(1));
+        let y = pixel.1.min(self.height.saturating_sub(1));
+        let offset = (y as usize * self.width as usize + x as usize) * 4;
+        let rgba = image.rgba();
+        let id = u32::from(rgba[offset])
+            | (u32::from(rgba[offset + 1]) << 8)
+            | (u32::from(rgba[offset + 2]) << 16);
+        if id == 0 {
+            return Ok(None);
+        }
+        let index = (id - 1) as usize;
+        let draw = self.prepared.draws.get(index).ok_or_else(|| {
+            RenderError::Pick(format!(
+                "object id {id} maps outside {} prepared draws",
+                self.prepared.draws.len()
+            ))
+        })?;
+        Ok(Some(ObjectPick {
+            node: draw.node,
+            mesh: draw.mesh.id(),
+            part: draw.part,
+        }))
+    }
+
+    /// Sets a soft GPU memory budget for cached assets.
+    ///
+    /// After every frame the renderer evicts least-recently-used assets that the frame did not
+    /// reference until the resident total fits the budget. Assets referenced by the current frame
+    /// are never evicted, so a single frame whose working set exceeds the budget stays over
+    /// budget. [`None`] disables automatic trimming.
+    pub fn set_memory_budget(&mut self, budget_bytes: Option<u64>) {
+        self.gpu.set_memory_budget(budget_bytes);
+        self.renderer_statistics = self.gpu.statistics();
+    }
+
+    /// Current soft GPU memory budget in bytes.
+    #[must_use]
+    pub fn memory_budget(&self) -> Option<u64> {
+        self.gpu.memory_budget()
+    }
+
+    /// Evicts least-recently-used cached assets until the resident total fits the budget.
+    ///
+    /// Returns the number of GPU bytes released. Assets referenced by the most recent frame are
+    /// retained, so the call can return zero while still over budget when the current working set
+    /// alone exceeds the budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::Gpu`] when a resource cannot be destroyed.
+    pub fn trim_to_budget<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<u64, RenderError> {
+        let released = self.gpu.enforce_memory_budget(device)?;
+        self.renderer_statistics = self.gpu.statistics();
+        Ok(released)
+    }
+
     /// Releases every GPU resource owned by this renderer.
     ///
     /// Call this before destroying the device. The renderer cannot allocate a new frame after
@@ -515,7 +784,10 @@ impl OffscreenRenderer {
     ///
     /// Returns [`RenderError::Gpu`] when a resource cannot be destroyed. Remaining resources
     /// stay tracked and will be released by later calls.
-    pub fn destroy<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<(), RenderError> {
+    pub fn destroy<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<(), RenderError> {
         self.gpu.destroy(device)
     }
 }

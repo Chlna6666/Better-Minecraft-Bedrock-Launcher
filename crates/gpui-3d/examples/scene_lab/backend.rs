@@ -9,9 +9,11 @@
 )]
 #![allow(
     clippy::borrow_as_ptr,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
     clippy::no_effect_underscore_binding,
     clippy::similar_names,
-    reason = "Win32 class registration borrows a stack value as a pointer and the hidden window binding documents its lifetime; the rendered/scene names describe distinct GPU frame stages."
+    reason = "Win32 class registration borrows a stack value as a pointer and the hidden window binding documents its lifetime; timing samples and validated positive pixel centers are narrowed for reporting only."
 )]
 
 use gpui_3d::{
@@ -30,8 +32,18 @@ pub(crate) struct RenderRequest<'a> {
     pub width: u32,
     pub height: u32,
     pub frames: u32,
+    /// Optional soft GPU memory budget for cached assets.
+    pub memory_budget: Option<u64>,
+    /// Optional viewport pixel for CPU and GPU object picking.
+    pub pick: Option<(f32, f32)>,
     /// Optional sampled animation clip and absolute clip time.
     pub animation: Option<(&'a [TransformTrack], Duration)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct FrameSample {
+    pub render_nanos: u64,
+    pub capture_nanos: u64,
 }
 
 pub(crate) struct BackendReport {
@@ -40,6 +52,9 @@ pub(crate) struct BackendReport {
     pub first_frame: FrameStatistics,
     pub steady_frame: FrameStatistics,
     pub renderer: RendererStatistics,
+    pub samples: Vec<FrameSample>,
+    pub cpu_pick: Option<String>,
+    pub object_pick: Option<String>,
     pub render_nanos: u128,
     pub capture_nanos: u128,
     pub frames: u32,
@@ -99,9 +114,11 @@ where
 {
     let mut renderer = OffscreenRenderer::new(device, request.width, request.height)
         .map_err(|error| format!("create offscreen renderer: {error}"))?;
+    renderer.set_memory_budget(request.memory_budget);
     let mut first_frame = FrameStatistics::default();
     let mut steady_frame = FrameStatistics::default();
     let mut image = None;
+    let mut samples = Vec::with_capacity(request.frames.max(1) as usize);
     let mut render_nanos = 0_u128;
     let mut capture_nanos = 0_u128;
     let frames = request.frames.max(1);
@@ -126,7 +143,8 @@ where
             ),
         };
         let statistics = rendered.map_err(|error| format!("render frame {frame}: {error}"))?;
-        render_nanos += start.elapsed().as_nanos();
+        let render_elapsed = start.elapsed().as_nanos();
+        render_nanos += render_elapsed;
         if frame == 0 {
             first_frame = statistics;
         }
@@ -137,9 +155,58 @@ where
                 .capture(device)
                 .map_err(|error| format!("capture frame {frame}: {error}"))?,
         );
-        capture_nanos += capture_start.elapsed().as_nanos();
+        let capture_elapsed = capture_start.elapsed().as_nanos();
+        capture_nanos += capture_elapsed;
+        samples.push(FrameSample {
+            render_nanos: render_elapsed as u64,
+            capture_nanos: capture_elapsed as u64,
+        });
     }
     let renderer_statistics = renderer.statistics();
+    let cpu_pick = match request.pick {
+        Some(pixel) => renderer
+            .pick(request.scene, request.camera, pixel)
+            .map_err(|error| format!("cpu pick: {error}"))?
+            .map(|hit| {
+                format!(
+                    "node={:?} mesh={:?} distance={:.4} position=({:.4},{:.4},{:.4}) normal=({:.4},{:.4},{:.4}) uv=({:.4},{:.4})",
+                    hit.node,
+                    hit.mesh,
+                    hit.distance,
+                    hit.position.x,
+                    hit.position.y,
+                    hit.position.z,
+                    hit.normal.x,
+                    hit.normal.y,
+                    hit.normal.z,
+                    hit.uv.x,
+                    hit.uv.y
+                )
+            }),
+        None => None,
+    };
+    let object_pick = match request.pick {
+        Some(pixel) => renderer
+            .pick_object(
+                device,
+                request.scene,
+                request.textures,
+                request.camera,
+                request.options,
+                (
+                    pixel.0.round().max(0.0) as u32,
+                    pixel.1.round().max(0.0) as u32,
+                ),
+            )
+            .map_err(|error| format!("object pick: {error}"))?
+            .map(|pick| {
+                format!(
+                    "node={:?} mesh={:?} part={:?}",
+                    pick.node, pick.mesh, pick.part
+                )
+            }),
+        None => None,
+    };
     renderer
         .destroy(device)
         .map_err(|error| format!("destroy renderer: {error}"))?;
@@ -149,6 +216,9 @@ where
         first_frame,
         steady_frame,
         renderer: renderer_statistics,
+        samples,
+        cpu_pick,
+        object_pick,
         render_nanos,
         capture_nanos,
         frames,

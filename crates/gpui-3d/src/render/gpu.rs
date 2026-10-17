@@ -11,7 +11,9 @@
     reason = "The renderer encodes fixed GPU layouts (byte counts, texel sizes) from validated u32/u64 values and keeps one function per render stage so the pass order stays reviewable."
 )]
 
-use super::{CapturedImage, FrameStatistics, RenderError, RenderOptions, RendererStatistics};
+use super::{
+    CapturedImage, DebugView, FrameStatistics, RenderError, RenderOptions, RendererStatistics,
+};
 use crate::scene_view::gpu::{
     encode_draws, encode_instances, encode_lights, encode_mesh, write_matrix, write_vec4,
 };
@@ -34,7 +36,7 @@ use gfx_core::{
     ResourceSetLayoutId, SamplerBinding, SamplerDescriptor, SamplerId, ShaderModuleDescriptor,
     ShaderModuleId, ShaderStage, ShaderStages, TextureBinding, TextureDataLayout,
     TextureDescriptor, TextureDimension, TextureId, TextureRenderStepList, TextureTransferDevice,
-    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWriteDescriptor,
+    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -77,6 +79,20 @@ pub(crate) struct GpuState {
     resource_epoch: u64,
     frame_index: u64,
     shadow_resolution: u32,
+    memory_budget: Option<u64>,
+    peak_resident_bytes: u64,
+    upload_bytes_total: u64,
+    mesh_cache_hits: u64,
+    mesh_cache_misses: u64,
+    texture_cache_hits: u64,
+    texture_cache_misses: u64,
+    evictions: u64,
+    /// True when a submitted frame has not been observed through a readback yet.
+    ///
+    /// The compatibility submission API does not expose a completion handle, so the renderer
+    /// drains the previous frame with the post-pass readback before it overwrites buffers or
+    /// destroys GPU resources. Callers that always capture do not pay this extra wait.
+    submission_unobserved: bool,
 }
 
 impl GpuState {
@@ -127,6 +143,15 @@ impl GpuState {
             resource_epoch: 1,
             frame_index: 0,
             shadow_resolution: DEFAULT_SHADOW_RESOLUTION,
+            memory_budget: None,
+            peak_resident_bytes: 0,
+            upload_bytes_total: 0,
+            mesh_cache_hits: 0,
+            mesh_cache_misses: 0,
+            texture_cache_hits: 0,
+            texture_cache_misses: 0,
+            evictions: 0,
+            submission_unobserved: false,
         })
     }
 
@@ -134,12 +159,13 @@ impl GpuState {
         self.backend
     }
 
-    pub(crate) fn resize<D: Device + ?Sized>(
+    pub(crate) fn resize<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         width: u32,
         height: u32,
     ) -> Result<(), RenderError> {
+        self.ensure_idle(device)?;
         if let Some(pipelines) = self.pipelines.take() {
             pipelines.destroy(device)?;
         }
@@ -154,7 +180,7 @@ impl GpuState {
         Ok(())
     }
 
-    fn set_shadow_resolution<D: Device + ?Sized>(
+    fn set_shadow_resolution<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         resolution: u32,
@@ -162,6 +188,7 @@ impl GpuState {
         if resolution == self.shadow_resolution {
             return Ok(());
         }
+        self.ensure_idle(device)?;
         if let Some(targets) = self.targets.as_mut() {
             targets.resize_shadow(device, resolution)?;
         }
@@ -185,7 +212,7 @@ impl GpuState {
     }
 
     /// Renders one frame into the offscreen targets.
-    pub(crate) fn render<D: Device + ?Sized>(
+    pub(crate) fn render<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         prepared: &PreparedScene,
@@ -195,6 +222,7 @@ impl GpuState {
         target: (u32, u32),
         started: Instant,
     ) -> Result<FrameStatistics, RenderError> {
+        self.ensure_idle(device)?;
         self.frame_index = self.frame_index.wrapping_add(1);
         let mut statistics = FrameStatistics::default();
 
@@ -239,12 +267,24 @@ impl GpuState {
         }
         let shadow_texel = 1.0 / self.shadow_resolution as f32;
 
+        let object_id_pass = options.debug_view == DebugView::ObjectId;
+        let mut effective_options = *options;
+        if object_id_pass {
+            // Object ids must survive the post pass byte-exactly, and the background must decode
+            // to id zero instead of the display clear color.
+            effective_options.post_process = false;
+        }
+        let clear_color = if object_id_pass {
+            [0.0, 0.0, 0.0, 1.0]
+        } else {
+            options.clear_color
+        };
         let frame_bytes = encode_frame(
             prepared.view_projection,
             light_view_projection,
             camera,
             directional,
-            options,
+            &effective_options,
             target,
             shadow_enabled,
             shadow_texel,
@@ -264,6 +304,11 @@ impl GpuState {
             self.invalidate_sets(device)?;
             self.resource_epoch = self.resource_epoch.wrapping_add(1);
         }
+        self.upload_bytes_total = self
+            .upload_bytes_total
+            .saturating_add(statistics.upload_bytes);
+        self.enforce_memory_budget(device)?;
+        self.peak_resident_bytes = self.peak_resident_bytes.max(self.resident_bytes());
 
         self.used_batch_keys.clear();
         let mut shadow_steps = Vec::new();
@@ -316,10 +361,10 @@ impl GpuState {
             render_pass: pipelines.scene_pass,
             steps: RenderStepList::Render(&scene_steps),
             color_load_op: LoadOp::Clear(ClearColor {
-                red: options.clear_color[0],
-                green: options.clear_color[1],
-                blue: options.clear_color[2],
-                alpha: options.clear_color[3],
+                red: clear_color[0],
+                green: clear_color[1],
+                blue: clear_color[2],
+                alpha: clear_color[3],
             }),
             clear_region: None,
             depth_attachment: Some(RenderPassDepthAttachment {
@@ -342,6 +387,7 @@ impl GpuState {
         device.render_step_lists_to_textures_compat(&[shadow_pass, scene_pass, post_pass])?;
         statistics.submit_nanos = submit_started.elapsed().as_nanos() as u64;
         statistics.cpu_prepare_nanos = started.elapsed().as_nanos() as u64;
+        self.submission_unobserved = true;
         Ok(statistics)
     }
 
@@ -364,6 +410,7 @@ impl GpuState {
                 readback.bytes_per_row
             )));
         }
+        self.submission_unobserved = false;
         Ok(CapturedImage {
             width: self.width,
             height: self.height,
@@ -372,11 +419,14 @@ impl GpuState {
     }
 
     /// Releases cached assets according to a trim level.
-    pub(crate) fn trim<D: Device + ?Sized>(
+    pub(crate) fn trim<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
         level: MemoryTrimLevel,
     ) -> Result<(), RenderError> {
+        self.ensure_idle(device)?;
+        let mut released_bytes = 0_u64;
+        let mut evicted_assets = 0_u64;
         let release_assets = match level {
             MemoryTrimLevel::Light => false,
             MemoryTrimLevel::Moderate => {
@@ -388,6 +438,8 @@ impl GpuState {
                     .collect::<Vec<_>>();
                 for key in stale_meshes {
                     if let Some(mesh) = self.meshes.remove(&key) {
+                        released_bytes += mesh.bytes;
+                        evicted_assets += 1;
                         destroy_mesh(device, mesh)?;
                     }
                 }
@@ -400,6 +452,8 @@ impl GpuState {
                     .collect::<Vec<_>>();
                 for key in stale_textures {
                     if let Some(texture) = self.textures.remove(&key) {
+                        released_bytes += texture.bytes;
+                        evicted_assets += 1;
                         destroy_texture(device, texture)?;
                     }
                 }
@@ -409,33 +463,41 @@ impl GpuState {
                 let mesh_keys = self.meshes.keys().copied().collect::<Vec<_>>();
                 for key in mesh_keys {
                     if let Some(mesh) = self.meshes.remove(&key) {
+                        released_bytes += mesh.bytes;
+                        evicted_assets += 1;
                         destroy_mesh(device, mesh)?;
                     }
                 }
                 let texture_keys = self.textures.keys().copied().collect::<Vec<_>>();
                 for key in texture_keys {
                     if let Some(texture) = self.textures.remove(&key) {
+                        released_bytes += texture.bytes;
+                        evicted_assets += 1;
                         destroy_texture(device, texture)?;
                     }
                 }
                 true
             }
         };
+        let _ = released_bytes;
         if release_assets {
+            self.evictions = self.evictions.saturating_add(evicted_assets);
             self.invalidate_sets(device)?;
             self.resource_epoch = self.resource_epoch.wrapping_add(1);
+            if matches!(level, MemoryTrimLevel::Aggressive) && self.frame_buffers.shrink(device)? {
+                self.resource_epoch = self.resource_epoch.wrapping_add(1);
+            }
         }
         Ok(())
     }
-
     pub(crate) fn statistics(&self) -> RendererStatistics {
         let resident_buffer_bytes = self.frame_buffers.resident_bytes();
-        let resident_texture_bytes = self.targets.as_ref().map_or(0, Targets::resident_bytes)
-            + self
-                .fallback_texture
-                .as_ref()
-                .map_or(0, |texture| texture.bytes)
-            + self.meshes.values().map(|mesh| mesh.bytes).sum::<u64>()
+        let target_bytes = self.targets.as_ref().map_or(0, Targets::resident_bytes);
+        let cached_mesh_bytes = self.meshes.values().map(|mesh| mesh.bytes).sum::<u64>();
+        let cached_texture_bytes = self
+            .fallback_texture
+            .as_ref()
+            .map_or(0, |texture| texture.bytes)
             + self
                 .textures
                 .values()
@@ -446,20 +508,119 @@ impl GpuState {
             live_textures: self.textures.len(),
             resource_set_count: self.batch_sets.len() + usize::from(self.post_set.is_some()),
             resident_buffer_bytes,
-            resident_texture_bytes,
-            draw_capacity: self.frame_buffers.draw_capacity / DRAW_SLOT_STRIDE,
-            instance_capacity: self.frame_buffers.instance_capacity / INSTANCE_STRIDE as usize,
-            light_capacity: self.frame_buffers.light_capacity / LIGHT_STRIDE as usize,
+            resident_texture_bytes: target_bytes + cached_texture_bytes,
+            draw_capacity: self.frame_buffers.draw_capacity(),
+            instance_capacity: self.frame_buffers.instance_capacity(),
+            light_capacity: self.frame_buffers.light_capacity(),
             target_width: self.width,
             target_height: self.height,
             shadow_resolution: self.shadow_resolution,
+            target_bytes,
+            cached_mesh_bytes,
+            cached_texture_bytes,
+            peak_resident_bytes: self.peak_resident_bytes,
+            upload_bytes_total: self.upload_bytes_total,
+            mesh_cache_hits: self.mesh_cache_hits,
+            mesh_cache_misses: self.mesh_cache_misses,
+            texture_cache_hits: self.texture_cache_hits,
+            texture_cache_misses: self.texture_cache_misses,
+            evictions: self.evictions,
+            tracker_cpu_bytes: self.frame_buffers.cpu_tracker_bytes(),
+            memory_budget_bytes: self.memory_budget,
         }
     }
 
-    pub(crate) fn destroy<D: Device + ?Sized>(
+    /// Resident GPU bytes owned by this renderer, excluding CPU-side bookkeeping.
+    fn resident_bytes(&self) -> u64 {
+        self.frame_buffers.resident_bytes()
+            + self.targets.as_ref().map_or(0, Targets::resident_bytes)
+            + self
+                .fallback_texture
+                .as_ref()
+                .map_or(0, |texture| texture.bytes)
+            + self.meshes.values().map(|mesh| mesh.bytes).sum::<u64>()
+            + self
+                .textures
+                .values()
+                .map(|texture| texture.bytes)
+                .sum::<u64>()
+    }
+
+    pub(crate) fn set_memory_budget(&mut self, budget_bytes: Option<u64>) {
+        self.memory_budget = budget_bytes.map(|bytes| bytes.max(1));
+    }
+
+    pub(crate) fn memory_budget(&self) -> Option<u64> {
+        self.memory_budget
+    }
+
+    /// Evicts least-recently-used assets that the current frame did not reference until the
+    /// resident total fits the configured soft budget. Returns the released GPU bytes.
+    pub(crate) fn enforce_memory_budget<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<u64, RenderError> {
+        let Some(budget) = self.memory_budget else {
+            return Ok(0);
+        };
+        let mut released = 0_u64;
+        let mut evicted = false;
+        loop {
+            if self.resident_bytes() <= budget {
+                break;
+            }
+            let mesh_candidate = self
+                .meshes
+                .iter()
+                .filter(|(_, mesh)| mesh.last_used_frame < self.frame_index)
+                .min_by_key(|(_, mesh)| mesh.last_used_frame)
+                .map(|(key, mesh)| (*key, mesh.bytes));
+            let texture_candidate = self
+                .textures
+                .iter()
+                .filter(|(_, texture)| texture.last_used_frame < self.frame_index)
+                .min_by_key(|(_, texture)| texture.last_used_frame)
+                .map(|(key, texture)| (*key, texture.bytes));
+            let evict_texture = match (mesh_candidate, texture_candidate) {
+                (Some((_, mesh_bytes)), Some((_, texture_bytes))) => texture_bytes > mesh_bytes,
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                (None, None) => break,
+            };
+            if evict_texture {
+                let Some((key, bytes)) = texture_candidate else {
+                    break;
+                };
+                if let Some(texture) = self.textures.remove(&key) {
+                    destroy_texture(device, texture)?;
+                    released += bytes;
+                    self.evictions += 1;
+                    evicted = true;
+                }
+            } else {
+                let Some((key, bytes)) = mesh_candidate else {
+                    break;
+                };
+                if let Some(mesh) = self.meshes.remove(&key) {
+                    destroy_mesh(device, mesh)?;
+                    released += bytes;
+                    self.evictions += 1;
+                    evicted = true;
+                }
+            }
+        }
+        if evicted {
+            self.invalidate_sets(device)?;
+            self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        }
+        Ok(released)
+    }
+
+    pub(crate) fn destroy<D: Device + TextureTransferDevice + ?Sized>(
         &mut self,
         device: &mut D,
     ) -> Result<(), RenderError> {
+        self.ensure_idle(device)?;
         let mut first_error = None;
         if let Err(error) = self.invalidate_sets(device) {
             first_error = Some(error);
@@ -504,6 +665,24 @@ impl GpuState {
         }
     }
 
+    /// Waits for the most recent submission by reading the post target back when the caller has
+    /// not captured it yet. This is the renderer's only completion primitive because the Nova
+    /// compatibility submission API exposes no fence handle.
+    fn ensure_idle<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<(), RenderError> {
+        if !self.submission_unobserved {
+            return Ok(());
+        }
+        self.submission_unobserved = false;
+        let Some(targets) = self.targets.as_ref() else {
+            return Ok(());
+        };
+        device.read_texture(targets.post_color)?;
+        Ok(())
+    }
+
     fn pipelines(&self) -> Result<&Pipelines, RenderError> {
         self.pipelines.as_ref().ok_or(RenderError::Destroyed)
     }
@@ -517,9 +696,12 @@ impl GpuState {
         let key = (mesh.id(), mesh.generation());
         if let Some(resources) = self.meshes.get_mut(&key) {
             resources.last_used_frame = self.frame_index;
+            self.mesh_cache_hits = self.mesh_cache_hits.saturating_add(1);
             return Ok(());
         }
-        let resources = create_mesh(device, self.backend, mesh)?;
+        self.mesh_cache_misses = self.mesh_cache_misses.saturating_add(1);
+        let mut resources = create_mesh(device, self.backend, mesh)?;
+        resources.last_used_frame = self.frame_index;
         statistics.mesh_uploads += 1;
         self.meshes.insert(key, resources);
         Ok(())
@@ -534,11 +716,13 @@ impl GpuState {
     ) -> Result<(), RenderError> {
         if let Some(resources) = self.textures.get_mut(&texture_id) {
             resources.last_used_frame = self.frame_index;
+            self.texture_cache_hits = self.texture_cache_hits.saturating_add(1);
             return Ok(());
         }
         let Some(asset) = textures.get(&texture_id) else {
             return Ok(());
         };
+        self.texture_cache_misses = self.texture_cache_misses.saturating_add(1);
         let (texture, view, bytes) = create_texture(device, asset)?;
         statistics.texture_uploads += 1;
         self.textures.insert(
@@ -649,12 +833,12 @@ impl GpuState {
         let tangents = mesh.tangents;
         let tangent_bytes = mesh.tangent_bytes;
         let draw_offset = u64::from(key.draw_index) * DRAW_SLOT_STRIDE as u64;
-        let draw_buffer = self.frame_buffers.draw;
-        let instance_buffer = self.frame_buffers.instance;
+        let draw_buffer = self.frame_buffers.draw.buffer;
+        let instance_buffer = self.frame_buffers.instance.buffer;
         let instance_bytes = self.frame_buffers.instance_bytes;
-        let light_buffer = self.frame_buffers.light;
+        let light_buffer = self.frame_buffers.light.buffer;
         let light_bytes = self.frame_buffers.light_bytes;
-        let frame_buffer = self.frame_buffers.frame;
+        let frame_buffer = self.frame_buffers.frame.buffer;
         let fallback_view = self
             .fallback_texture
             .as_ref()
@@ -809,7 +993,7 @@ impl GpuState {
                 sampler_binding(POST_SAMPLER_BINDING, pipelines.post_sampler),
                 buffer_binding(
                     POST_FRAME_BINDING,
-                    self.frame_buffers.frame,
+                    self.frame_buffers.frame.buffer,
                     0,
                     FRAME_STRIDE,
                     None,
@@ -1141,6 +1325,7 @@ fn create_texture<D: Device + ?Sized>(
         dimension: TextureDimension::D2,
     })?;
     let mut bytes = 0_u64;
+    let mut writes = Vec::with_capacity(asset.mip_level_count() as usize);
     for mip_level in 0..asset.mip_level_count() {
         let (width, height) = asset
             .mip_extent(mip_level)
@@ -1153,8 +1338,8 @@ fn create_texture<D: Device + ?Sized>(
         let data = asset
             .mip_pixels(mip_level)
             .ok_or_else(|| RenderError::Preparation("texture mip pixels are missing".into()))?;
-        if let Err(error) = device.write_texture(
-            TextureWriteDescriptor {
+        writes.push(TextureWrite {
+            descriptor: TextureWriteDescriptor {
                 texture,
                 mip_level,
                 layout,
@@ -1162,11 +1347,12 @@ fn create_texture<D: Device + ?Sized>(
                 size: mip_size,
             },
             data,
-        ) {
-            device.destroy_texture(texture)?;
-            return Err(error.into());
-        }
+        });
         bytes += u64::from(width) * u64::from(height) * 4;
+    }
+    if let Err(error) = device.write_texture_batch(writes) {
+        device.destroy_texture(texture)?;
+        return Err(error.into());
     }
     let view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("gpui-3d offscreen texture view {}", asset.id().0)),
@@ -2019,84 +2205,250 @@ struct FrameUpload {
     reallocated: bool,
 }
 
+/// CPU bookkeeping for one GPU buffer that only remembers per-element content hashes.
+///
+/// One 64-bit hash per element instead of a full CPU byte copy keeps host memory bounded for
+/// large draw/instance tables while still enabling exact byte-range uploads of changed elements.
+struct StrideTracker {
+    stride: usize,
+    len: usize,
+    hashes: Vec<u64>,
+}
+
+impl StrideTracker {
+    fn new(stride: usize) -> Self {
+        Self {
+            stride,
+            len: 0,
+            hashes: Vec::new(),
+        }
+    }
+
+    fn discard(&mut self) {
+        self.len = 0;
+        self.hashes.clear();
+    }
+
+    fn cpu_bytes(&self) -> u64 {
+        (self.hashes.capacity() * std::mem::size_of::<u64>()) as u64
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+struct TrackedBuffer {
+    label: &'static str,
+    buffer: BufferId,
+    capacity: usize,
+    tracker: StrideTracker,
+    usage: BufferUsage,
+    location: MemoryLocation,
+}
+
+impl TrackedBuffer {
+    fn new<D: Device + ?Sized>(
+        device: &mut D,
+        label: &'static str,
+        stride: u32,
+        usage: BufferUsage,
+        location: MemoryLocation,
+    ) -> Result<Self, RenderError> {
+        let (buffer, capacity) =
+            create_gpu_buffer(device, label, u64::from(stride), usage, location)?;
+        Ok(Self {
+            label,
+            buffer,
+            capacity: capacity as usize,
+            tracker: StrideTracker::new(stride.max(1) as usize),
+            usage,
+            location,
+        })
+    }
+
+    fn stride(&self) -> usize {
+        self.tracker.stride
+    }
+
+    /// Uploads only changed element ranges and updates the per-element hashes.
+    ///
+    /// Returns the uploaded byte count and whether the GPU buffer was reallocated, which
+    /// invalidates resource sets that reference the old handle.
+    fn sync<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+        data: &[u8],
+    ) -> Result<(u64, bool), RenderError> {
+        if data.is_empty() {
+            self.tracker.discard();
+            return Ok((0, false));
+        }
+        let stride = self.tracker.stride;
+        if !data.len().is_multiple_of(stride) {
+            device.write_buffer(self.buffer, 0, data)?;
+            return Ok((data.len() as u64, false));
+        }
+        let count = data.len() / stride;
+        let mut reallocated = false;
+        if data.len() > self.capacity {
+            let (buffer, capacity) = create_gpu_buffer(
+                device,
+                self.label,
+                data.len() as u64,
+                self.usage,
+                self.location,
+            )?;
+            device.destroy_buffer(self.buffer)?;
+            self.buffer = buffer;
+            self.capacity = capacity as usize;
+            self.tracker.discard();
+            reallocated = true;
+        }
+        if self.tracker.hashes.len() < count {
+            self.tracker.hashes.resize(count, 0);
+        }
+        let mut uploaded = 0_u64;
+        let mut run_start: Option<usize> = None;
+        for element in 0..count {
+            let start = element * stride;
+            let mut hash = fnv1a(&data[start..start + stride]);
+            if hash == 0 {
+                hash = 1;
+            }
+            if self.tracker.hashes[element] != hash {
+                self.tracker.hashes[element] = hash;
+                if run_start.is_none() {
+                    run_start = Some(element);
+                }
+            } else if let Some(first) = run_start.take() {
+                uploaded += self.write_run(device, data, first, element)?;
+            }
+        }
+        if let Some(first) = run_start {
+            uploaded += self.write_run(device, data, first, count)?;
+        }
+        self.tracker.len = count;
+        Ok((uploaded, reallocated))
+    }
+
+    fn write_run<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+        data: &[u8],
+        first: usize,
+        end: usize,
+    ) -> Result<u64, RenderError> {
+        let stride = self.tracker.stride;
+        let byte_start = first * stride;
+        let byte_end = end * stride;
+        device.write_buffer(self.buffer, byte_start as u64, &data[byte_start..byte_end])?;
+        Ok((byte_end - byte_start) as u64)
+    }
+
+    fn resident_bytes(&self) -> u64 {
+        self.capacity as u64
+    }
+
+    /// Recreates the buffer at the current live size when the allocation is much larger.
+    ///
+    /// Returns the number of bytes released and whether the buffer handle changed.
+    fn shrink<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<(u64, bool), RenderError> {
+        let used = (self.tracker.len.max(1) * self.tracker.stride) as u64;
+        let retained = used.max(4096);
+        if (self.capacity as u64) <= retained.saturating_mul(2) {
+            return Ok((0, false));
+        }
+        let (buffer, capacity) =
+            create_gpu_buffer(device, self.label, used, self.usage, self.location)?;
+        let released = (self.capacity.saturating_sub(capacity as usize)) as u64;
+        device.destroy_buffer(self.buffer)?;
+        self.buffer = buffer;
+        self.capacity = capacity as usize;
+        self.tracker.discard();
+        Ok((released, true))
+    }
+
+    fn destroy<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<(), RenderError> {
+        device.destroy_buffer(self.buffer)?;
+        Ok(())
+    }
+}
+
 struct FrameBuffers {
-    backend: BackendKind,
-    draw: BufferId,
-    draw_capacity: usize,
-    draw_last: Option<Vec<u8>>,
-    instance: BufferId,
-    instance_capacity: usize,
+    draw: TrackedBuffer,
+    instance: TrackedBuffer,
     instance_bytes: u64,
-    instance_last: Option<Vec<u8>>,
-    light: BufferId,
-    light_capacity: usize,
+    light: TrackedBuffer,
     light_bytes: u64,
-    light_last: Option<Vec<u8>>,
-    frame: BufferId,
-    frame_last: Option<Vec<u8>>,
+    frame: TrackedBuffer,
 }
 
 impl FrameBuffers {
     fn new<D: Device + ?Sized>(device: &mut D, backend: BackendKind) -> Result<Self, RenderError> {
         let location = staging_location(backend);
-        let mut created = HandleScratch::default();
-        let result = (|| {
-            let (draw, draw_size) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen draw slots",
-                DRAW_SLOT_STRIDE as u64,
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                location,
-            )?;
-            created.buffers.push(draw);
-            let (instance, instance_size) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen instances",
-                u64::from(INSTANCE_STRIDE),
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                location,
-            )?;
-            created.buffers.push(instance);
-            let (light, light_size) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen lights",
-                u64::from(LIGHT_STRIDE),
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                location,
-            )?;
-            created.buffers.push(light);
-            let (frame, _) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen frame uniform",
-                FRAME_STRIDE,
-                BufferUsage::UNIFORM | BufferUsage::COPY_DST,
-                staging_location(backend),
-            )?;
-            created.buffers.push(frame);
-            Ok(Self {
-                backend,
-                draw,
-                draw_capacity: draw_size as usize,
-                draw_last: None,
-                instance,
-                instance_capacity: instance_size as usize,
-                instance_bytes: 0,
-                instance_last: None,
-                light,
-                light_capacity: light_size as usize,
-                light_bytes: 0,
-                light_last: None,
-                frame,
-                frame_last: None,
-            })
-        })();
-        match result {
-            Ok(buffers) => Ok(buffers),
+        let draw = TrackedBuffer::new(
+            device,
+            "gpui-3d offscreen draw slots",
+            DRAW_SLOT_STRIDE as u32,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            location,
+        )?;
+        let instance = match TrackedBuffer::new(
+            device,
+            "gpui-3d offscreen instances",
+            INSTANCE_STRIDE,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            location,
+        ) {
+            Ok(buffer) => buffer,
             Err(error) => {
-                created.destroy(device);
-                Err(error)
+                let _ = device.destroy_buffer(draw.buffer);
+                return Err(error);
             }
-        }
+        };
+        let light = match TrackedBuffer::new(
+            device,
+            "gpui-3d offscreen lights",
+            LIGHT_STRIDE,
+            BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            location,
+        ) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                let _ = device.destroy_buffer(instance.buffer);
+                let _ = device.destroy_buffer(draw.buffer);
+                return Err(error);
+            }
+        };
+        let frame = match TrackedBuffer::new(
+            device,
+            "gpui-3d offscreen frame uniform",
+            FRAME_STRIDE as u32,
+            BufferUsage::UNIFORM | BufferUsage::COPY_DST,
+            staging_location(backend),
+        ) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                let _ = device.destroy_buffer(light.buffer);
+                let _ = device.destroy_buffer(instance.buffer);
+                let _ = device.destroy_buffer(draw.buffer);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            draw,
+            instance,
+            instance_bytes: 0,
+            light,
+            light_bytes: 0,
+            frame,
+        })
     }
 
     fn sync<D: Device + ?Sized>(
@@ -2108,92 +2460,76 @@ impl FrameBuffers {
         frame_bytes: &[u8],
     ) -> Result<FrameUpload, RenderError> {
         let mut reallocated = false;
-        if draw_bytes.len() > self.draw_capacity {
-            let (buffer, capacity) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen draw slots",
-                draw_bytes.len() as u64,
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                staging_location(self.backend),
-            )?;
-            device.destroy_buffer(self.draw)?;
-            self.draw = buffer;
-            self.draw_capacity = capacity as usize;
-            self.draw_last = None;
-            reallocated = true;
-        }
-        if instance_bytes.len() > self.instance_capacity {
-            let (buffer, capacity) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen instances",
-                instance_bytes.len() as u64,
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                staging_location(self.backend),
-            )?;
-            device.destroy_buffer(self.instance)?;
-            self.instance = buffer;
-            self.instance_capacity = capacity as usize;
-            self.instance_last = None;
-            reallocated = true;
-        }
-        if light_bytes.len() > self.light_capacity {
-            let (buffer, capacity) = create_gpu_buffer(
-                device,
-                "gpui-3d offscreen lights",
-                light_bytes.len() as u64,
-                BufferUsage::STORAGE | BufferUsage::COPY_DST,
-                staging_location(self.backend),
-            )?;
-            device.destroy_buffer(self.light)?;
-            self.light = buffer;
-            self.light_capacity = capacity as usize;
-            self.light_last = None;
-            reallocated = true;
-        }
-        let mut uploaded = 0;
-        uploaded += upload_bytes(device, self.draw, &mut self.draw_last, draw_bytes)?;
-        uploaded += upload_bytes(
-            device,
-            self.instance,
-            &mut self.instance_last,
-            instance_bytes,
-        )?;
-        uploaded += upload_bytes(device, self.light, &mut self.light_last, light_bytes)?;
-        uploaded += upload_bytes(device, self.frame, &mut self.frame_last, frame_bytes)?;
+        let mut bytes = 0_u64;
+        let (draw_uploaded, draw_reallocated) = self.draw.sync(device, draw_bytes)?;
+        bytes += draw_uploaded;
+        reallocated |= draw_reallocated;
+        let (instance_uploaded, instance_reallocated) =
+            self.instance.sync(device, instance_bytes)?;
+        bytes += instance_uploaded;
+        reallocated |= instance_reallocated;
+        let (light_uploaded, light_reallocated) = self.light.sync(device, light_bytes)?;
+        bytes += light_uploaded;
+        reallocated |= light_reallocated;
+        let (frame_uploaded, frame_reallocated) = self.frame.sync(device, frame_bytes)?;
+        bytes += frame_uploaded;
+        reallocated |= frame_reallocated;
         self.instance_bytes = instance_bytes.len() as u64;
         self.light_bytes = light_bytes.len() as u64;
-        Ok(FrameUpload {
-            bytes: uploaded,
-            reallocated,
-        })
+        Ok(FrameUpload { bytes, reallocated })
     }
 
     fn resident_bytes(&self) -> u64 {
-        self.draw_capacity as u64
-            + self.instance_capacity as u64
-            + self.light_capacity as u64
-            + FRAME_STRIDE
+        self.draw.resident_bytes()
+            + self.instance.resident_bytes()
+            + self.light.resident_bytes()
+            + self.frame.resident_bytes()
+    }
+
+    fn cpu_tracker_bytes(&self) -> u64 {
+        self.draw.tracker.cpu_bytes()
+            + self.instance.tracker.cpu_bytes()
+            + self.light.tracker.cpu_bytes()
+            + self.frame.tracker.cpu_bytes()
+    }
+
+    fn draw_capacity(&self) -> usize {
+        self.draw.capacity / self.draw.stride()
+    }
+
+    fn instance_capacity(&self) -> usize {
+        self.instance.capacity / self.instance.stride()
+    }
+
+    fn light_capacity(&self) -> usize {
+        self.light.capacity / self.light.stride()
+    }
+
+    /// Shrinks over-allocated streaming buffers during an explicit aggressive trim.
+    fn shrink<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<bool, RenderError> {
+        let mut changed = false;
+        let mut released = 0_u64;
+        let (draw_released, draw_changed) = self.draw.shrink(device)?;
+        released += draw_released;
+        changed |= draw_changed;
+        let (instance_released, instance_changed) = self.instance.shrink(device)?;
+        released += instance_released;
+        changed |= instance_changed;
+        let (light_released, light_changed) = self.light.shrink(device)?;
+        released += light_released;
+        changed |= light_changed;
+        let (frame_released, frame_changed) = self.frame.shrink(device)?;
+        released += frame_released;
+        changed |= frame_changed;
+        let _ = released;
+        Ok(changed)
     }
 
     fn destroy<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<(), RenderError> {
-        device.destroy_buffer(self.frame)?;
-        device.destroy_buffer(self.light)?;
-        device.destroy_buffer(self.instance)?;
-        device.destroy_buffer(self.draw)?;
+        self.frame.destroy(device)?;
+        self.light.destroy(device)?;
+        self.instance.destroy(device)?;
+        self.draw.destroy(device)?;
         Ok(())
     }
-}
-
-fn upload_bytes<D: Device + ?Sized>(
-    device: &mut D,
-    buffer: BufferId,
-    last: &mut Option<Vec<u8>>,
-    data: &[u8],
-) -> Result<u64, RenderError> {
-    if last.as_deref() == Some(data) {
-        return Ok(0);
-    }
-    device.write_buffer(buffer, 0, data)?;
-    *last = Some(data.to_vec());
-    Ok(data.len() as u64)
 }

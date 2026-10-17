@@ -51,9 +51,9 @@ feature:
 | Area | Current local API | Remaining 3D work |
 | --- | --- | --- |
 | Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangents, per-triangle edge masks, five primitives, bounds, BVH queries, automatic indexed instancing; glTF primitives (indexed, non-indexed, morph-target base geometry, skinned bind pose) | GPU skinning/morph deformation, GPU geometry partial updates, compressed mesh extensions |
-| Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF declared cameras | Object-ID / depth GPU picking with async readback |
+| Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF cameras, top-left viewport pick/project helpers, GPU object-id picking that matches the submitted frame | Depth GPU picking and asynchronous readback |
 | Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, exposure, ACES/Reinhard tone mapping | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows |
-| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow pass, PBR scene pass, post pass) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow pass, PBR scene pass, post pass) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
 | Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Pose blending/crossfade, skeletal skinning, morph weights, IK |
 | Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
 | Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
@@ -438,12 +438,12 @@ cargo test -p gpui-3d --test offscreen_gpu -- --ignored --test-threads=1
 this development machine (Windows 11 26100, AMD Radeon RX 7600M XT, 1280x720, 2048 shadow map, 8 draw
 calls / 7 shadow draws / 18,806 triangles / 13 instances, scene cached after the first frame):
 
-| Backend | First frame (prepare / submit) | Steady frame (prepare / submit) | Steady upload bytes | Capture (readback) |
-| --- | --- | --- | --- | --- |
-| DX12 | 80.4 ms / 2.1 ms | 0.82 ms / 0.78 ms | 0 | 5.2 ms |
-| DX11 | 2.2 ms / 0.1 ms | 0.28 ms / 0.13 ms | 0 | 26.4 ms |
-| Vulkan | 40.2 ms / 1.4 ms | 0.24 ms / 0.20 ms | 0 | 5.3 ms |
-| OpenGL 4.5 | 1.0 ms / 0.2 ms | 0.13 ms / 0.08 ms | 0 | 6.5 ms |
+| Backend | First frame (prepare / submit) | Warm render p50 | Steady frame (prepare / submit) | Steady upload bytes | Capture p50 |
+| --- | --- | --- | --- | --- | --- |
+| DX12 | 92.4 ms / 1.6 ms | 1.16 ms | 1.16 ms / 1.10 ms | 0 | 5.10 ms |
+| DX11 | 2.9 ms / 0.1 ms | 0.27 ms | 0.09 ms / 0.05 ms | 0 | 2.85 ms |
+| Vulkan | 40.4 ms / 1.5 ms | 0.31 ms | 0.30 ms / 0.25 ms | 0 | 5.09 ms |
+| OpenGL 4.5 | 0.9 ms / 0.1 ms | 0.12 ms | 0.09 ms / 0.05 ms | 0 | 1.85 ms |
 
 The first-frame differences are shader/pipeline creation cost; after warm-up every backend reports
 0 mesh uploads, 0 texture uploads, 0 upload bytes, and identical draw/triangle/instance counts. These
@@ -460,6 +460,84 @@ enforces DX11/Vulkan agreement with DX12 numerically.
 | OpenGL 4.5 | Build-time GLSL 4.50 | Verified through scene_lab capture (WGL hidden-window bootstrap) | Verified | Visually matches; not part of the automated matrix test |
 | Metal | Build-time MSL | Not implemented (no texture upload path) | Not supported | Pending |
 
+## GPU memory and cache lifecycle
+
+The renderer reports its own allocation accounting through `RendererStatistics`. These are
+engine-logical bytes measured at GPU resource creation time (Nova allocation accounting); they are
+not OS process RSS and not driver-reported residency, and the renderer does not claim them as such.
+
+| Field | Meaning |
+| --- | --- |
+| `resident_buffer_bytes` / `resident_texture_bytes` | Live GPU bytes owned by the renderer |
+| `target_bytes` | Shadow/scene/post render targets |
+| `cached_mesh_bytes` / `cached_texture_bytes` | Asset caches (textures include the fallback and their mip chains) |
+| `peak_resident_bytes` | Peak resident total observed after each frame |
+| `upload_bytes_total` | Cumulative uploaded bytes, including uniforms and partial range writes |
+| `mesh_cache_hits/misses`, `texture_cache_hits/misses` | Per-frame asset cache outcomes, accumulated |
+| `evictions` | Assets released by trim or the memory budget |
+| `tracker_cpu_bytes` | CPU memory retained to detect changed upload ranges |
+| `memory_budget_bytes` | Configured soft budget |
+
+`submission_unobserved` is an internal state: because the Nova compatibility submission API exposes
+no fence handle, `render` marks the frame unobserved and `capture` clears it. Maintenance calls
+(`render`, `resize`, `trim`, `trim_to_budget`, `destroy`) first drain an unobserved submission by
+reading the post target back. Callers that always capture never pay this extra wait. There is no
+deferred-retirement queue, so `pending_retirement_bytes` is intentionally absent rather than
+fabricated.
+
+Memory defaults and controls:
+
+- Shadow map default is 1024 (about 8 MiB for the packed-depth color + depth targets). 2048 costs
+  about 33 MiB and 4096 about 134 MiB; raise `ShadowOptions::resolution` only when the shadow detail
+  is worth it.
+- glTF import caps texture dimensions at 2048 by default and downscales oversized images before
+  generating mip chains. `GltfLoadOptions::max_texture_dimension` and
+  `GltfLoadOptions::downscale_textures` control the cap and fallback.
+- Texture cache keys are the source image index plus color space, so several glTF texture entries
+  sharing one image upload one GPU texture.
+- `OffscreenRenderer::set_memory_budget(Some(bytes))` enables soft-budget eviction: after each frame,
+  least-recently-used assets not referenced by that frame are evicted until the resident total fits.
+  `trim_to_budget` forces the same pass on demand.
+- `trim(Light|Moderate|Aggressive)` releases idle assets; Aggressive additionally shrinks
+  over-allocated streaming buffers.
+
+Measured VRAM effects on this machine (engine-logical bytes, 1280x720 studio or 960x540 helmet):
+
+| Configuration | Resident | Notes |
+| --- | --- | --- |
+| Studio, 720p, shadow map 1024 (default) | 19.8 MiB | targets 18.5 MiB, caches 1.4 MiB |
+| Studio, 720p, shadow map 2048 | 44.3 MiB | shadow targets dominate |
+| DamagedHelmet, 960x540, textures 2048 | 79.8 MiB | 64 MiB texture cache |
+| DamagedHelmet, 960x540, `--max-texture=1024` | 30.7 MiB | 16 MiB texture cache; 49 MiB less VRAM |
+
+Upload granularity is tracked per element with a 64-bit content hash per draw slot, instance, light,
+and frame uniform, so there is no retained CPU byte copy of these buffers. An animation frame that
+moves one of 64 instances uploads one 144-byte instance record (asserted in `renderer_memory` as less
+than 512 bytes out of a 9 KiB instance table) while the mesh, textures, and draw slots upload
+nothing.
+
+Native memory tests (`tests/renderer_memory.rs`, ignored by default) assert: soft-budget eviction
+releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
+cycle stays bounded and aggressive trim clears every cache/resource set; resize keeps the mesh cache
+warm while retargeting render targets; animation uploads only changed instance ranges; and CPU/GPU
+picking agree.
+
+## Picking and projection
+
+`pick` / `pick_evaluated` convert a top-left-origin viewport pixel to a camera ray and return
+`RaycastHit` (stable node and mesh ids, material part, distance, position, geometric normal, UV).
+`project` maps a world point back to pixels and normalized depth for gizmos or overlays.
+`OffscreenRenderer::pick` uses the renderer viewport and retains traversal storage;
+`pick_animated` samples the supplied clip time before raycasting.
+
+`OffscreenRenderer::pick_object` renders the scene with the object-id debug view, reads the resolved
+frame back, and decodes a one-based 24-bit instance id from RGB. The id maps to the prepared draw
+that the GPU actually submitted, so culling, blending order, and animation pose match the frame. It
+requires a device that implements `TextureTransferDevice` because the compatibility submission API
+has no asynchronous readback path yet; the readback is synchronous and the renderer last frame
+remains the object-id frame afterward. CPU and GPU picking agree in `renderer_memory`, and the scene
+lab prints both results with `--pick=x,y`.
+
 ## Validation
 
 ```powershell
@@ -467,11 +545,13 @@ enforces DX11/Vulkan agreement with DX12 numerically.
 # The repository as a whole is not currently rustfmt-clean: `cargo fmt --all --check` reports 728
 # pre-existing diffs in files untouched by this work, so it is not used as a gate here.
 cargo test -p gpui-3d
+cargo test -p gpui-3d --test picking
+cargo test -p gpui-3d --test renderer_memory -- --ignored --test-threads=1
 cargo test -p gpui-3d -- --ignored --test-threads=1   # test assets + native GPU matrix
 cargo check -p gpui-3d --all-targets --all-features
 cargo clippy -p gpui-3d --all-targets --all-features --no-deps
-cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=2 --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
-cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --out=target/scene_lab/helmet.png
+cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=3 --shadow-res=2048 --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and

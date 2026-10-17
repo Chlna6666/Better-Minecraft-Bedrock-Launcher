@@ -616,9 +616,6 @@ impl<'a> Document<'a> {
         texture_index: usize,
         srgb: bool,
     ) -> Result<Option<TextureAssetId>, GltfError> {
-        if let Some(id) = self.textures.get(&(texture_index, srgb)) {
-            return Ok(Some(*id));
-        }
         if !self.options.decode_textures {
             return Ok(None);
         }
@@ -633,17 +630,32 @@ impl<'a> Document<'a> {
                     "texture {texture_index} has no image source (compressed texture extensions are not decoded)"
                 ))
             })?;
+        // Cache by source image and color space so multiple glTF texture entries that share one
+        // image upload a single GPU texture, and duplicate material maps cannot multiply VRAM.
+        let key = (source as usize, srgb);
+        if let Some(id) = self.textures.get(&key) {
+            return Ok(Some(*id));
+        }
         let bytes = self.image_bytes(source as usize)?;
-        let asset = decode_texture(
+        let (asset, resized_from) = decode_texture(
             &bytes,
             srgb,
             self.options.max_texture_dimension,
             self.options.generate_mipmaps,
+            self.options.downscale_textures,
         )
         .map_err(|error| GltfError::Invalid(format!("image {source}: {error}")))?;
+        if let Some((width, height)) = resized_from {
+            self.warn(format!(
+                "image {source} was downscaled from {width}x{height} to {}x{} to fit the {} pixel limit",
+                asset.width(),
+                asset.height(),
+                self.options.max_texture_dimension
+            ));
+        }
         let id = asset.id();
         self.texture_table.insert(id, Arc::new(asset));
-        self.textures.insert((texture_index, srgb), id);
+        self.textures.insert(key, id);
         Ok(Some(id))
     }
 
