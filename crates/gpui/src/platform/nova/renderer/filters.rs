@@ -338,6 +338,23 @@ impl FilterRegistry {
         // for filters absent from this frame, releasing their child Scene Arcs.
         // Keep present-but-unrefreshed sources at their previous GPU version.
         debug_assert!(sources.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let mut refreshed_indices = refreshed_indices.into_iter().peekable();
+        // Most compositor-only ticks submit no offscreen filter passes.
+        // If the resident index set still exactly matches the active Scene,
+        // all content versions and their immutable source/animation snapshots
+        // already describe the last successfully submitted pixels. Rebuilding
+        // the set would only scan and binary-search unchanged entries.
+        //
+        // In particular, do NOT replace snapshots with the latest animation
+        // sample here: the retained texture was not refreshed at that time.
+        if refreshed_indices.peek().is_none()
+            && self.element_blur_inputs.len() == sources.len()
+            && self.element_blur_inputs.iter().zip(sources).all(
+                |(previous, (index, _))| previous.index == *index
+            )
+        {
+            return;
+        }
         self.element_blur_inputs.retain(|previous| {
             sources
                 .binary_search_by_key(&previous.index, |(index, _)| *index)
@@ -658,6 +675,55 @@ mod tests {
         assert_eq!(registry.element_blur_inputs[0].animation_values.as_deref().unwrap()[0].progress, 0.2);
         assert_eq!(registry.element_blur_inputs[1].animation_values.as_deref().unwrap()[0].progress, 0.8);
         registry.invalidate();
+        assert!(registry.element_blur_inputs.is_empty());
+    }
+
+    #[test]
+    fn compositor_only_frame_retains_filter_versions_and_actual_source_samples() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::Bounds::default();
+        let content = std::sync::Arc::new(crate::Scene::default());
+        let source = FilterSource::Element(crate::PaintBlur {
+            order: 0,
+            animation_id: None,
+            layer_id: Some(crate::SceneLayerId(17)),
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            radius: crate::ScaledPixels(0.0),
+            opacity: 1.0,
+            content,
+        });
+        let sample = |progress| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(1),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        let sources = [(3, source.clone())];
+        registry.record_element_blur_inputs(&sources, &[sample(0.2)], [3]);
+        let version = registry.layer_content_version(3);
+        let snapshot = registry.element_blur_inputs[0].animation_values.clone().unwrap();
+        for progress in [0.35, 0.55, 0.75] {
+            registry.record_element_blur_inputs(&sources, &[sample(progress)], []);
+            assert_eq!(registry.layer_content_version(3), version);
+            assert!(std::sync::Arc::ptr_eq(
+                &snapshot,
+                registry.element_blur_inputs[0].animation_values.as_ref().unwrap()
+            ));
+            assert_eq!(
+                registry.element_blur_inputs[0].animation_values.as_deref(),
+                Some(&[sample(0.2)][..])
+            );
+        }
+        // A true offscreen refresh must advance both version and sample.
+        registry.record_element_blur_inputs(&sources, &[sample(0.8)], [3]);
+        assert_ne!(registry.layer_content_version(3), version);
+        assert_eq!(
+            registry.element_blur_inputs[0].animation_values.as_deref(),
+            Some(&[sample(0.8)][..])
+        );
+        registry.record_element_blur_inputs(&[], &[], []);
         assert!(registry.element_blur_inputs.is_empty());
     }
 

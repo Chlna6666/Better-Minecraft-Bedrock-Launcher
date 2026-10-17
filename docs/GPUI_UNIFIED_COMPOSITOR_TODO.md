@@ -1114,3 +1114,8 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 修复 GPU Owner 独立 Tick 的尺寸代次：待提交 Scene 延期后，`tick()` 的 `ready()` 需要传递 Pending 的 `layout_epoch`，不能传 `None` 导致一个仍待提交的版本化 Resize 永远无法满足 `DrawableSizeRequest::applies_to`。现新增只读 `pending_presentation_epoch()`，优先用 Pending 所属尺寸代次执行准备与提交。
 
 - Animation Completion 事务：Pending 新 Scene 产生的完成事件只暂存在 `deferred_animation_completions`，GPU 提交成功后才交付；新 UI Scene 替换未提交候选时丢弃原候选的过期完成事件。独立合成重试会积累并正确交付一次事件，避免动画在实际显示前被 UI 判定结束。测试：`animation_completion_events_follow_successful_presentation`。
+
+### 2026-10-17 Active/Pending Filter Source 无刷新路径
+
+- 新增 `FilterRegistry::record_element_blur_inputs` 的精确无刷新快速路径：只有本次无真实离屏层刷新、且已提交 Filter Index 列表与当前 Scene 完全一致时才直接保留 GPU 内容版本与原始动画采样快照。已提交纹理及其状态不再因纯 Compositor Present 执行重复的 `retain`/二分搜索；新增/删除 Filter 或确有 GPU Pass 刷新时仍使用原有完整提交逻辑。
+- 测试：`cargo test -p gpui --lib compositor_only_frame_retains_filter_versions_and_actual_source_samples`，并保留 `removed_filter_releases_nested_scene_without_invalidating_live_source`。Release 需比较无 Blur 刷新动画的 Filter Snapshot CPU 耗时、Pass 数和峰值内存；这不是减少高斯 Pass 的证明。
