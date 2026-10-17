@@ -22,21 +22,24 @@ use std::{any::TypeId, ops::Range};
 #[derive(Clone)]
 pub(crate) struct CachedViewState {
     weak_view: CachedWeakView,
-    traversal_context: CachedViewTraversalContext,
+    // Immutable metadata is shared between committed and speculative
+    // generations. A snapshot must clone only Rc pointers and its own mutable
+    // paint/prepaint ranges, never the O(N) dependency sets or text style.
+    traversal_context: Rc<CachedViewTraversalContext>,
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
     metadata_range: Range<usize>,
-    cache_key: CachedViewCacheKey,
-    accessed_entities: FxHashSet<EntityId>,
-    render_dependencies: FxHashSet<EntityId>,
+    cache_key: Rc<CachedViewCacheKey>,
+    accessed_entities: Rc<FxHashSet<EntityId>>,
+    render_dependencies: Rc<FxHashSet<EntityId>>,
     reactive_layout: Option<crate::layout::RetainedViewLayout>,
 }
 
-/// Clone only the opaque CachedView state retained by the last committed
-/// Frame. This path is called when a speculative progressive generation first
-/// touches that state; other ElementState types retain their original move
-/// semantics. A successful commit replaces the snapshot with fresh state,
-/// while an aborted generation discards the speculative copy.
+/// Snapshot the opaque CachedView state retained by the last committed Frame.
+/// Only Rc metadata handles and independent numeric ranges are copied here:
+/// dependency HashSets, traversal stacks, text styles and layout nodes are
+/// shared read-only. New Prepaint/Render work replaces immutable metadata,
+/// never mutates the committed payload in place.
 pub(crate) fn snapshot_committed_cached_view_state(
     state: &crate::window::ElementStateBox,
 ) -> Option<crate::window::ElementStateBox> {
@@ -185,7 +188,7 @@ fn selective_cached_view_target(
             .ok_or(SelectiveSpliceMissReason::TargetStateUnavailable)?,
         state_global_id,
         retained_id,
-        traversal_context: state.traversal_context.clone(),
+        traversal_context: state.traversal_context.as_ref().clone(),
         source_outer,
         reactive_layout: state.reactive_layout.clone(),
     })
@@ -575,7 +578,7 @@ impl Element for CachedView {
     ) -> Self::PrepaintState {
         window.set_view_id(self.entity_id());
         let retained_id = window.current_retained_element_id();
-        let traversal_context = window.capture_cached_view_traversal_context();
+        let traversal_context = Rc::new(window.capture_cached_view_traversal_context());
         if let Some(retained_id) = retained_id.as_ref()
             && let Some(state_global_id) = global_id
         {
@@ -897,21 +900,21 @@ impl Element for CachedView {
                         CachedViewState {
                             weak_view: self.downgrade(),
                             traversal_context,
-                            accessed_entities,
-                            render_dependencies: mem::take(&mut self.render_dependencies),
+                            accessed_entities: Rc::new(accessed_entities),
+                            render_dependencies: Rc::new(mem::take(&mut self.render_dependencies)),
                             reactive_layout: self.reactive_layout.take().or_else(|| {
                                 self.reactive_layout_id.and_then(|id| window.capture_view_layout(id))
                             }),
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
                             metadata_range: 0..0,
-                            cache_key: CachedViewCacheKey {
+                            cache_key: Rc::new(CachedViewCacheKey {
                                 bounds,
                                 content_mask,
                                 text_style,
                                 paint_context,
                                 fingerprint: cache_fingerprint,
-                            },
+                            }),
                         },
                     )
                 },
