@@ -39,7 +39,8 @@ Static frames are retained: an unchanged scene, camera, and options return the l
 CPU preparation, uploads, or GPU submission, while a camera-only move re-culls without walking the
 scene graph. Instanced batching writes one draw slot per batch, so a 200,000-node cube field with
 one shared mesh/material renders in one indexed draw with 200,000 instances and 28 MiB of streaming
-buffers instead of 128 MiB. The lab exposes it with `--instances=200000`.
+buffers instead of 128 MiB. The lab exposes it with `--instances=200000`. Long-session budget
+cycling and two-renderers-on-one-device isolation are covered by the ignored native memory tests.
 
 ## Offscreen renderer quick start
 

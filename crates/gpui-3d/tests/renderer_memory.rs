@@ -488,3 +488,146 @@ fn static_frames_reuse_and_instanced_batches_keep_memory_linear() {
     );
     renderer.destroy(&mut device).expect("destroy renderer");
 }
+
+fn large_texture(seed: u8) -> Arc<TextureAsset> {
+    let mut pixels = Vec::with_capacity(512 * 512 * 4);
+    for y in 0..512_u32 {
+        for x in 0..512_u32 {
+            let value = if ((x / 16) ^ (y / 16)) % 2 == u32::from(seed % 2) {
+                200_u8
+            } else {
+                40_u8
+            };
+            pixels.extend_from_slice(&[value, seed, 160, 255]);
+        }
+    }
+    Arc::new(TextureAsset::rgba8(512, 512, pixels).expect("large texture"))
+}
+
+fn textured_cube() -> (Scene, HashMap<TextureAssetId, Arc<TextureAsset>>) {
+    let texture = large_texture(3);
+    let texture_id = texture.id();
+    let mut textures = HashMap::new();
+    textures.insert(texture_id, texture);
+    let mut material = Material::new();
+    material.albedo_texture = Some(texture_id);
+    let mut scene = Scene::new();
+    scene
+        .insert(
+            None,
+            Node::new()
+                .with_mesh(Arc::new(Mesh::cube()))
+                .with_materials([Arc::new(material.validated().expect("material"))])
+                .with_transform(Transform {
+                    scale: Vec3::new(1.5, 1.5, 1.5),
+                    ..Transform::default()
+                }),
+        )
+        .expect("cube node");
+    (scene, textures)
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn long_session_scene_cycling_stays_bounded() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 128, 96).expect("renderer");
+    let empty_textures = HashMap::new();
+    renderer
+        .render(
+            &mut device,
+            &empty_scene(),
+            &empty_textures,
+            camera(),
+            &options(),
+        )
+        .expect("baseline frame");
+    let baseline = renderer.statistics();
+    let overhead = baseline.target_bytes + baseline.resident_buffer_bytes;
+    renderer.set_memory_budget(Some(overhead + 2 * 1024 * 1024));
+
+    let scenes = [textured_cube(), textured_cube(), textured_cube()];
+    let mut peak_resident = 0;
+    let mut peak_resource_sets = 0;
+    for frame in 0..60 {
+        let (scene, textures) = &scenes[frame % scenes.len()];
+        let statistics = renderer
+            .render(&mut device, scene, textures, camera(), &options())
+            .expect("cycling frame");
+        assert_eq!(statistics.draw_calls, 1);
+        if frame % 5 == 0 {
+            renderer.capture(&mut device).expect("cycling capture");
+        }
+        let stats = renderer.statistics();
+        peak_resident =
+            peak_resident.max(stats.resident_buffer_bytes + stats.resident_texture_bytes);
+        peak_resource_sets = peak_resource_sets.max(stats.resource_set_count);
+        assert!(
+            stats.resident_buffer_bytes + stats.resident_texture_bytes
+                <= overhead + 4 * 1024 * 1024,
+            "frame {frame} resident {} exceeded the soft budget envelope",
+            stats.resident_buffer_bytes + stats.resident_texture_bytes
+        );
+        // The budget evicts the largest idle LRU asset first, so small meshes can outlive a
+        // texture eviction; the resident envelope is the actual contract.
+        assert!(stats.live_meshes <= 8, "frame {frame} kept too many meshes");
+    }
+    let steady = renderer.statistics();
+    assert!(steady.evictions >= 10, "budget never evicted assets");
+    assert!(
+        peak_resource_sets <= 4,
+        "resource sets leaked: {peak_resource_sets}"
+    );
+    assert!(peak_resident <= overhead + 4 * 1024 * 1024);
+    assert!(steady.upload_bytes_total > 0);
+    renderer
+        .trim(&mut device, gfx_core::MemoryTrimLevel::Aggressive)
+        .expect("aggressive trim");
+    let trimmed = renderer.statistics();
+    assert_eq!(trimmed.live_meshes, 0);
+    assert_eq!(trimmed.live_textures, 0);
+    assert_eq!(trimmed.resource_set_count, 0);
+    renderer.destroy(&mut device).expect("destroy renderer");
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn multiple_renderers_share_one_device_without_cross_talk() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut first = OffscreenRenderer::new(&mut device, 96, 64).expect("first renderer");
+    let mut second = OffscreenRenderer::new(&mut device, 160, 120).expect("second renderer");
+    let textures = HashMap::new();
+    let (scene, node) = cube_scene(None);
+    let first_frame = first
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("first frame");
+    let first_image = first.capture(&mut device).expect("first capture");
+    let second_frame = second
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("second frame");
+    let second_image = second.capture(&mut device).expect("second capture");
+    assert_eq!(first_frame.draw_calls, 1);
+    assert_eq!(second_frame.draw_calls, 1);
+    assert_eq!((first_image.width(), first_image.height()), (96, 64));
+    assert_eq!((second_image.width(), second_image.height()), (160, 120));
+    let first_stats = first.statistics();
+    let second_stats = second.statistics();
+    assert_eq!(first_stats.target_width, 96);
+    assert_eq!(second_stats.target_width, 160);
+    assert_ne!(first_stats.target_bytes, second_stats.target_bytes);
+
+    first.destroy(&mut device).expect("destroy first renderer");
+    // The surviving renderer keeps its own targets and caches after the other renderer dies.
+    let reused = second
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("surviving renderer frame");
+    assert!(reused.frame_reused);
+    let cpu_hit = second
+        .pick(&scene, camera(), (80.0, 60.0))
+        .expect("cpu pick")
+        .expect("center hit");
+    assert_eq!(cpu_hit.node, node);
+    second
+        .destroy(&mut device)
+        .expect("destroy second renderer");
+}

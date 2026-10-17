@@ -517,10 +517,13 @@ moves one of 64 instances uploads one 144-byte instance record (asserted in `ren
 than 512 bytes out of a 9 KiB instance table) while the mesh, textures, and draw slots upload
 nothing.
 
-Native memory tests (`tests/renderer_memory.rs`, ignored by default) assert: soft-budget eviction
+Native memory tests (`tests/renderer_memory.rs`, 8 ignored tests) assert: soft-budget eviction
 releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
-cycle stays bounded and aggressive trim clears every cache/resource set; resize keeps the mesh cache
-warm while retargeting render targets; animation uploads only changed instance ranges; CPU/GPU
+cycle stays bounded and aggressive trim clears every cache/resource set; a 60-frame three-scene
+cycling session under a 2 MiB asset budget stays under the resident envelope, keeps resource-set
+counts bounded, and records repeated evictions; two renderers can share one device with independent
+targets/caches and the survivor keeps rendering after the other is destroyed; resize keeps the mesh
+cache warm while retargeting render targets; animation uploads only changed instance ranges; CPU/GPU
 picking agree; a 10,000-instance field keeps one draw slot, reuses unchanged static frames with zero
 uploads, skips the scene walk for camera-only moves, and uploads one instance record for a single
 `node_mut` change.

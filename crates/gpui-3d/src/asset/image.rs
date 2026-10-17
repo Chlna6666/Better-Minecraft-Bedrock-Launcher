@@ -180,6 +180,13 @@ mod tests {
     }
 
     #[test]
+    fn invalid_image_bytes_are_reported_without_panicking() {
+        let error = decode_texture(b"not an image", true, 64, true, true)
+            .expect_err("garbage bytes must not decode");
+        assert!(matches!(error, super::ImageError::Decode(_)));
+    }
+
+    #[test]
     fn mip_generation_can_be_disabled() {
         let png = encode_png(8, 8);
         let (texture, resized_from) = decode_texture(&png, false, 32, false, true).expect("decode");
