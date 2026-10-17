@@ -708,12 +708,20 @@ impl Window {
                 .iter()
                 .cloned(),
         );
-        self.next_frame.input_handlers.extend(
-            self.rendered_frame.input_handlers
-                [range.start.input_handlers_index..range.end.input_handlers_index]
-                .iter_mut()
-                .map(|handler| handler.take()),
-        );
+        let input_target_start = self.next_frame.input_handlers.len();
+        for (offset, handler) in self.rendered_frame.input_handlers
+            [range.start.input_handlers_index..range.end.input_handlers_index]
+            .iter_mut()
+            .enumerate()
+        {
+            if handler.is_some() {
+                self.next_frame.replayed_input_handlers.push((
+                    range.start.input_handlers_index + offset,
+                    input_target_start + offset,
+                ));
+            }
+            self.next_frame.input_handlers.push(handler.take());
+        }
         self.next_frame.mouse_listeners.extend(
             self.rendered_frame.mouse_listeners
                 [range.start.mouse_listeners_index..range.end.mouse_listeners_index]

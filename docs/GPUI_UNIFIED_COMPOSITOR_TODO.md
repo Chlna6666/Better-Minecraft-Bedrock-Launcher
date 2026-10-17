@@ -1064,3 +1064,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 恢复阶段不再对每个 View 的所有 retained fragments 单独执行一遍 O(N) diff；普通局部更新仍保留已有 direct-view 精细比较与位移边界修复。Blur topology、Surface/RendererExtension 回退、既有累积 damage 和动画 dirty 仍保持原有安全策略。
 - 目前**尚未**撤销全局 Element State 恢复屏障：abort 期间调用 `with_element_state` 会把状态移至不完整的 `next_frame`，旧 range 可能遭到重基址或消费，必须先实现可证明的事务回滚与 dirty provenance 保留，才能安全放宽 Prepaint 缓存。不可假设只要 View 的 Bounds 不变就能回放未提交帧。
 - 定向验证：`cargo test -p gpui --lib partitioned_retained_scene_recovery_can_damage_only_changed_operations`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`；Release 比较 `recovery_full_redraw_count`、`prepaint_root_us`、Scene dirty-area 和构帧 P95/P99，四后端未验证前不得宣称恢复放大彻底消除。
+
+### 2026-10-17 Degraded Frame 输入所有权回滚
+
+- 旧 `DispatchTree` 的监听器改为借用与 `Rc` 浅克隆，`MouseListener` 原本就用共享回调，不再重复引入鼠标复制路径。
+- `PlatformInputHandler` 不可克隆：Retained `reuse_paint` 仅记录实际移动的非空 old/new slot；失败帧在丢弃工作 Frame 前归还仍由候选帧持有的 IME 对象；成功帧在 `Frame::finish` 清理回滚记录。
+- `CachedViewState` 仍可能在候选帧中写入未提交 Prepaint Range，目前保留其恢复失效屏障；待实现依赖代次安全证明再缩小 CPU 重建范围。
+- 回归：`cargo test -p gpui --lib retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort`、`cargo test -p gpui --lib aborted_candidate_restores_noncloneable_input_handler_ownership`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`。

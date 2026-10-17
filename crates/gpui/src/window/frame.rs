@@ -193,6 +193,9 @@ pub(crate) struct Frame {
     pub(crate) deferred_draws: Vec<DeferredDraw>,
     pub(crate) deferred_retained_metadata: Vec<DeferredRetainedMetadata>,
     pub(crate) input_handlers: Vec<Option<PlatformInputHandler>>,
+    /// Non-cloneable IME owners moved during speculative Paint replay.
+    /// Records exist only for non-empty source slots.
+    pub(crate) replayed_input_handlers: Vec<(usize, usize)>,
     pub(crate) tooltip_requests: Vec<Option<TooltipRequest>>,
     pub(crate) cursor_styles: Vec<CursorStyleRequest>,
     pub(crate) retained_scene_segments: Vec<RetainedSceneSegment>,
@@ -403,6 +406,7 @@ impl Frame {
             deferred_draws: Vec::new(),
             deferred_retained_metadata: Vec::new(),
             input_handlers: Vec::new(),
+            replayed_input_handlers: Vec::new(),
             tooltip_requests: Vec::new(),
             cursor_styles: Vec::new(),
             retained_scene_segments: Vec::new(),
@@ -454,6 +458,7 @@ impl Frame {
             self.retained_paint = Arc::default();
         }
         self.input_handlers.clear();
+        self.replayed_input_handlers.clear();
         self.tooltip_requests.clear();
         self.cursor_styles.clear();
         self.retained_scene_segments.clear();
@@ -563,6 +568,9 @@ impl Frame {
             }
         }
 
+        // A complete Frame is committed atomically, so speculative IME
+        // transfers no longer need an abort journal after publication.
+        self.replayed_input_handlers.clear();
         self.has_continuous_mouse_move_listener = self
             .mouse_listeners
             .iter()
@@ -572,6 +580,17 @@ impl Frame {
         Arc::get_mut(&mut self.retained_paint)
             .expect("unpublished paint retention")
             .finish(&mut self.painter.scene);
+    }
+
+    /// Abort a candidate generation without dropping IME handlers still
+    /// owned by the last committed tree. The platform may already own the
+    /// active handler; only nonempty speculative slots are restored.
+    pub(crate) fn rollback_replayed_input_handlers(&mut self, candidate: &mut Self) -> usize {
+        rollback_replayed_option_transfers(
+            &mut self.input_handlers,
+            &mut candidate.input_handlers,
+            &mut candidate.replayed_input_handlers,
+        )
     }
 
     pub(super) fn retained_capacity(&self) -> usize {
@@ -838,6 +857,28 @@ impl Frame {
     }
 }
 
+fn rollback_replayed_option_transfers<T>(
+    committed: &mut [Option<T>],
+    candidate: &mut [Option<T>],
+    transfers: &mut Vec<(usize, usize)>,
+) -> usize {
+    let mut count = 0;
+    for (from, to) in transfers.drain(..).rev() {
+        let (Some(source), Some(destination)) = (committed.get_mut(from), candidate.get_mut(to))
+        else {
+            debug_assert!(false, "retained input replay transfer index out of bounds");
+            continue;
+        };
+        // An in-flight IME owner may have returned to the platform already.
+        // Only restore still-owned candidate values.
+        if source.is_none() {
+            *source = destination.take();
+            count += usize::from(source.is_some());
+        }
+    }
+    count
+}
+
 fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize) {
     if vec.capacity() > floor.saturating_mul(multiplier) {
         vec.shrink_to(floor);
@@ -847,6 +888,36 @@ fn trim_frame_vec_capacity<T>(vec: &mut Vec<T>, floor: usize, multiplier: usize)
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+
+    #[test]
+    fn aborted_candidate_restores_noncloneable_input_handler_ownership() {
+        let mut committed = vec![Some(String::from("IME")), None, Some(String::from("Text"))];
+        let mut speculative = vec![committed[0].take(), committed[2].take()];
+        let mut transfers = vec![(0, 0), (2, 1)];
+        assert_eq!(
+            rollback_replayed_option_transfers(&mut committed, &mut speculative, &mut transfers),
+            2
+        );
+        assert_eq!(
+            committed,
+            vec![Some(String::from("IME")), None, Some(String::from("Text"))]
+        );
+        assert_eq!(speculative, vec![None, None]);
+        assert!(transfers.is_empty());
+    }
+
+    #[test]
+    fn rollback_does_not_take_a_fresh_input_handler_without_a_replay_record() {
+        let mut committed = vec![None::<u64>];
+        let mut candidate = vec![Some(17)];
+        let mut transfers = Vec::new();
+        assert_eq!(
+            rollback_replayed_option_transfers(&mut committed, &mut candidate, &mut transfers),
+            0
+        );
+        assert_eq!(candidate, vec![Some(17)]);
+    }
+
     #[test]
     fn published_paint_moves_without_copying_and_next_build_is_independent() {
         let mut frame = Frame::new(DispatchTree::new(Default::default(), Default::default()));
