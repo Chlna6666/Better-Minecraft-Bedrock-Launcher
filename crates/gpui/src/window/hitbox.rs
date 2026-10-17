@@ -59,13 +59,6 @@ impl MouseListener {
         RefMut::filter_map(self.listener.borrow_mut(), |listener| listener.as_mut()).ok()
     }
 
-    /// Replay this listener into the next frame without consuming the callback owned by the
-    /// currently presented frame. The two frame records coexist only while a draw is being built;
-    /// after a successful swap the old record is cleared, while a degraded draw simply drops the
-    /// speculative clone and leaves input on the visible frame intact.
-    pub(super) fn take(&mut self) -> Self {
-        self.clone()
-    }
 }
 
 #[derive(Clone)]

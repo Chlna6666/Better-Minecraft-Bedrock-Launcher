@@ -1071,3 +1071,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - `PlatformInputHandler` 不可克隆：Retained `reuse_paint` 仅记录实际移动的非空 old/new slot；失败帧在丢弃工作 Frame 前归还仍由候选帧持有的 IME 对象；成功帧在 `Frame::finish` 清理回滚记录。
 - `CachedViewState` 仍可能在候选帧中写入未提交 Prepaint Range，目前保留其恢复失效屏障；待实现依赖代次安全证明再缩小 CPU 重建范围。
 - 回归：`cargo test -p gpui --lib retained_dispatch_subtree_replay_keeps_committed_listeners_after_abort`、`cargo test -p gpui --lib aborted_candidate_restores_noncloneable_input_handler_ownership`、`cargo test -p gpui --lib degraded_draw_does_not_publish_discarded_cached_view_ranges`。
+
+- 清理一个无意义的旧包装：`MouseListener::take()` 实际是 `clone()`，已移除并在 Paint replay 使用 `iter().cloned()`，避免未来错误假设回放破坏旧帧鼠标监听器。
