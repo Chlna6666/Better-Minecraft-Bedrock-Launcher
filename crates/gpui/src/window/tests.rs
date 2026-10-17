@@ -25,6 +25,50 @@ impl Render for EmptyTestView {
     }
 }
 
+/// Simulates the recent-input guard expiring *inside* a long-running render.
+/// The started generation must never upgrade to progressive-abortable because
+/// its early CachedView states may already have been moved without snapshots.
+struct LateProgressiveAbortView {
+    trigger: bool,
+    candidate_was_aborted: Rc<Cell<bool>>,
+}
+
+impl Render for LateProgressiveAbortView {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        if self.trigger {
+            window
+                .last_input_timestamp
+                .set(Instant::now() - Duration::from_secs(2));
+            window.test_expire_draw_budget();
+            window.degrade_current_draw();
+            self.candidate_was_aborted.set(window.draw_was_degraded());
+        }
+        crate::div().child("progressive-frame-latch")
+    }
+}
+
+#[gpui::test]
+fn progressive_abort_never_upgrades_after_recent_input_expires_mid_frame(
+    cx: &mut TestAppContext,
+) {
+    let aborted = Rc::new(Cell::new(false));
+    let (view, mut context) = cx.add_window_view(|_, _| LateProgressiveAbortView {
+        trigger: false,
+        candidate_was_aborted: aborted.clone(),
+    });
+    context.update(|window, cx| {
+        // The first decision is made in begin_draw_cycle, before any element
+        // states are transferred. During Render the input guard will expire.
+        window.last_input_timestamp.set(Instant::now());
+        view.update(cx, |view, _| view.trigger = true);
+        window.refresh();
+        window.draw(cx).clear();
+        assert!(!aborted.get(), "eligibility cannot upgrade during a draw");
+        assert!(!window.draw_was_degraded());
+        assert!(!window.frame_can_degrade);
+    });
+}
+
 struct ResizeBudgetView {
     width: Pixels,
     expire_budget: bool,
