@@ -19,6 +19,8 @@ pub(super) struct RetainedFilterSource {
     animation_values: Option<std::sync::Arc<[crate::SceneAnimationValue]>>,
     /// Content version is independent of compositor transform/opacity samples.
     content_version: TextureContentVersion,
+    /// Fence-completed version; zero while the current submission is in flight.
+    completed_version: TextureContentVersion,
 }
 
 pub(super) struct FilterRegistry {
@@ -392,6 +394,7 @@ impl FilterRegistry {
                     })))
                 },
                 content_version: TextureContentVersion(self.next_content_version),
+                completed_version: TextureContentVersion(0),
             };
             match self
                 .element_blur_inputs
@@ -420,6 +423,7 @@ impl FilterRegistry {
                 .binary_search_by_key(&index, |source| source.index)
             {
                 self.element_blur_inputs[position].content_version = TextureContentVersion(0);
+                self.element_blur_inputs[position].completed_version = TextureContentVersion(0);
             }
         }
     }
@@ -431,6 +435,30 @@ impl FilterRegistry {
         self.source_at(index)
             .map(|source| source.content_version)
             .filter(|version| version.0 != 0)
+    }
+
+    pub(super) fn completed_layer_content_version(
+        &self,
+        index: u32,
+    ) -> Option<TextureContentVersion> {
+        self.source_at(index)
+            .map(|source| source.completed_version)
+            .filter(|version| version.0 != 0)
+    }
+
+    pub(super) fn complete_submission(
+        &mut self,
+        index: u32,
+        version: TextureContentVersion,
+    ) {
+        if let Ok(position) = self.element_blur_inputs
+            .binary_search_by_key(&index, |source| source.index)
+        {
+            let source = &mut self.element_blur_inputs[position];
+            if source.content_version == version && version.0 != 0 {
+                source.completed_version = version;
+            }
+        }
     }
 
     pub(super) fn record_submission(
@@ -447,6 +475,39 @@ impl FilterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_fence_completion_matches_only_current_content_generation() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(32.0), crate::ScaledPixels(32.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 123,
+            content_bytes: 16,
+        };
+        let mut filters = FilterRegistry::new(None);
+        filters.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
+        let first = filters.layer_content_version(3).unwrap();
+        assert_eq!(filters.completed_layer_content_version(3), None);
+
+        filters.record_element_blur_inputs(&[(3, source.clone())], &[], [3]);
+        let second = filters.layer_content_version(3).unwrap();
+        assert_ne!(first, second);
+        filters.complete_submission(3, first);
+        assert_eq!(filters.completed_layer_content_version(3), None);
+        filters.complete_submission(3, second);
+        assert_eq!(filters.completed_layer_content_version(3), Some(second));
+
+        filters.invalidate_inflight_layer_writes([3]);
+        assert_eq!(filters.completed_layer_content_version(3), None);
+        filters.complete_submission(3, second);
+        assert_eq!(filters.completed_layer_content_version(3), None);
+        filters.record_element_blur_inputs(&[(3, source)], &[], [3]);
+        assert_eq!(filters.completed_layer_content_version(3), None);
+    }
 
     #[test]
     fn interrupted_source_write_cannot_remap_invalidated_capture_version() {

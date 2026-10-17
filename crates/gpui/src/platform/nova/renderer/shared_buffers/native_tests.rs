@@ -253,6 +253,7 @@ fn verify(backend: RendererBackend) {
     renderer.pending_submissions.push(PendingSubmission {
         submission,
         frame_resource_index: 1,
+        publication: None,
     });
     let pending_at_switch = device!(renderer, device, {
         matches!(

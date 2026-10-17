@@ -71,6 +71,17 @@ fn submit_presentation_buffers(
     }
 }
 
+/// A failed native fence is not a successful compositor publication. Keep
+/// recovery damage in the latest Paint geometry, not a superseded swapchain
+/// extent. The UI may have committed multiple Resize generations meanwhile.
+fn mark_failed_submission_for_retry(
+    packet: &mut PresentationPacket,
+    committed_drawable: DrawableSize,
+) {
+    let size = packet_drawable_size(packet, committed_drawable);
+    force_full_drawable_damage_after_resize(packet, size);
+}
+
 impl NovaRenderer {
     /// Preflight before any target rebind or upload. Pending GPU readers keep their resources;
     /// the owner retries this packet without occupying the shared thread in a fence wait.
@@ -174,10 +185,14 @@ impl NovaRenderer {
             match status {
                 SubmissionStatus::Pending => index += 1,
                 SubmissionStatus::Complete => {
-                    self.pending_submissions.remove(index);
+                    let retired = self.pending_submissions.remove(index);
+                    if let Some(publication) = retired.publication {
+                        self.complete_gpu_submission(publication);
+                    }
                 }
                 SubmissionStatus::Failed(error) => {
                     self.pending_submissions.remove(index);
+                    self.invalidate_failed_gpu_submission();
                     return Err(gfx_core::Error::Backend(error).into());
                 }
             }
@@ -207,10 +222,60 @@ impl NovaRenderer {
                     self.pending_submissions.len(),
                 );
             }
-            result?;
-            self.pending_submissions.remove(0);
+            if let Err(error) = result {
+                self.invalidate_failed_gpu_submission();
+                return Err(error.into());
+            }
+            let retired = self.pending_submissions.remove(0);
+            if let Some(publication) = retired.publication {
+                self.complete_gpu_submission(publication);
+            }
         }
         Ok(())
+    }
+
+    /// Fence completion only validates content stamped by that exact GPU
+    /// submission. If a newer scene changed the version or physical allocation
+    /// before this fence signaled, completion cannot certify the new texture.
+    pub(super) fn complete_gpu_submission(
+        &mut self,
+        publication: SubmittedResourceVersions,
+    ) {
+        let root_version = publication.root.map(|(_, version)| version);
+        let filter_count = publication.filters.len();
+        if let Some((identity, version)) = publication.root {
+            self.root_color.complete_submission(identity, version);
+        }
+        for (index, version) in publication.filters {
+            self.filters.complete_submission(index, version);
+        }
+        log::trace!(
+            target: "gpui::diagnostics",
+            "nova resource fence complete: geometry_epoch={} root_version={:?} filter_versions={}",
+            publication.geometry_epoch,
+            root_version,
+            filter_count,
+        );
+    }
+
+    /// An asynchronous native submission may fail after CPU-side Scene and
+    /// texture versions were published. The failed command stream (and any
+    /// later queued submissions depending on it) cannot prove retained texels.
+    /// Preserve the physical allocations for outstanding fences, invalidate
+    /// the snapshots, and request complete redraw of the latest geometry.
+    fn invalidate_failed_gpu_submission(&mut self) {
+        self.root_color.invalidate();
+        self.filters.invalidate();
+        self.path_mask_residency.invalidate();
+        self.invalidate_draw_step_cache();
+        for slot in 0..self.frame_resources.len() {
+            self.retained_upload.invalidate_slot(slot);
+        }
+        for packet in self.active_presentation_packet.iter_mut()
+            .chain(self.pending_presentation_packet.iter_mut())
+        {
+            mark_failed_submission_for_retry(packet, self.current_size);
+        }
     }
 
     pub(super) fn prepare_for_resize(&mut self) -> Result<()> {
@@ -307,6 +372,7 @@ impl NovaRenderer {
             pending_submissions.push(PendingSubmission {
                 submission,
                 frame_resource_index,
+                publication: None,
             });
         }
         Ok(frame)
@@ -375,5 +441,42 @@ mod presentation_clock_upload_tests {
         let clock = presentation_clock_snapshot(time);
         assert_eq!(clock.len(), 24);
         assert!(clock[..16].iter().all(|value| *value == 0));
+    }
+}
+
+#[cfg(test)]
+mod resource_fence_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn failed_gpu_fence_requeues_complete_damage_in_latest_geometry() {
+        let extent = (700, 500);
+        let paint = std::sync::Arc::new(crate::window::Paint::new(
+            crate::Scene::default(),
+            std::sync::Arc::default(),
+            crate::window::PaintGeometry {
+                layout_extent: Some(extent),
+                layout_epoch: 15,
+                scale_factor: 1.0,
+            },
+        ));
+        let mut packet = PresentationPacket::new(
+            paint,
+            [],
+            [],
+            Instant::now(),
+            crate::DirtyRegion::empty(),
+            crate::BackdropBlurDamagePlan::default(),
+            PartialPresentMode::Partial,
+        );
+        // The native drawable can still be the old committed extent.
+        mark_failed_submission_for_retry(
+            &mut packet,
+            DrawableSize { width: 400, height: 300 },
+        );
+        assert!(packet.dirty_region.is_full());
+        assert_eq!(packet.dirty_region.area(), 700.0 * 500.0);
+        assert!(packet.force_full_backdrop_blur_refresh);
+        assert_eq!(packet.partial_present_mode, PartialPresentMode::FullRedraw);
     }
 }

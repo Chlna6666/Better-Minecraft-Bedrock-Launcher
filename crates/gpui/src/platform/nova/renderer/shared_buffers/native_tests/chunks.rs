@@ -122,6 +122,7 @@ fn submit_old_slot(renderer: &mut NovaRenderer) {
     renderer.pending_submissions.push(PendingSubmission {
         submission,
         frame_resource_index: 0,
+        publication: None,
     });
 }
 

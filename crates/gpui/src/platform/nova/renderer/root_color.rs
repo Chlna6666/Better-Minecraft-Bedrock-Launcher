@@ -6,6 +6,9 @@ use crate::platform::nova::composite_target::DirectCompositeTarget;
 pub(super) struct RootColor {
     pub(super) target: Option<RootColorTarget>,
     content_version: Option<u64>,
+    /// Only signaled by the native GPU fence (or synchronous submission).
+    /// The submitted version above is queue-ordered but may still be in flight.
+    completed_content_version: Option<u64>,
     next_version: u64,
     /// Samples represented by the last successfully REFRESHED root pixels,
     /// not the latest swapchain-only Present. Otherwise an animation-only
@@ -43,12 +46,28 @@ impl RootColor {
         self.content_version
     }
 
+    pub(super) fn completed_content_version(&self) -> Option<u64> {
+        self.completed_content_version
+    }
+
+    pub(super) fn complete_submission(
+        &mut self,
+        identity: (TextureId, TextureViewId),
+        version: u64,
+    ) {
+        // An older fence cannot complete a newly allocated or newer target.
+        if self.identity() == Some(identity) && self.content_version == Some(version) {
+            self.completed_content_version = Some(version);
+        }
+    }
+
     pub(super) fn resident_on(&self, identity: Option<(TextureId, TextureViewId)>) -> bool {
         self.content_version.is_some() && identity.is_some() && identity == self.identity()
     }
 
     pub(super) fn invalidate(&mut self) {
         self.content_version = None;
+        self.completed_content_version = None;
         self.animation_values.clear();
     }
 
@@ -68,6 +87,7 @@ impl RootColor {
         } else if refreshed {
             self.next_version = self.next_version.wrapping_add(1).max(1);
             self.content_version = Some(self.next_version);
+            self.completed_content_version = None;
             // Publish source samples atomically with the successful GPU color
             // refresh. A composite-only Present must neither advance the
             // pixel content version nor mutate the samples describing it.
@@ -286,6 +306,36 @@ mod tests {
         );
         assert!(composite_resource_set(&root, Some(2), None, config, 0).is_none());
         assert!(composite_resource_set(&root, Some(3), None, config, 1).is_none());
+    }
+
+    #[test]
+    fn root_fence_completion_cannot_certify_newer_pixels_or_reallocated_texture() {
+        let mut root = RootColor::default();
+        root.target = Some(target(1));
+        let first_identity = root.identity().unwrap();
+        root.record_present(Some(first_identity), true, &[]);
+        let first = root.content_version().unwrap();
+        assert_eq!(root.completed_content_version(), None);
+
+        root.record_present(Some(first_identity), true, &[]);
+        let second = root.content_version().unwrap();
+        assert_ne!(first, second);
+        root.complete_submission(first_identity, first);
+        assert_eq!(root.completed_content_version(), None);
+        root.complete_submission(first_identity, second);
+        assert_eq!(root.completed_content_version(), Some(second));
+
+        root.target = Some(target(2));
+        root.record_present(root.identity(), true, &[]);
+        assert_eq!(root.completed_content_version(), None);
+        root.complete_submission(first_identity, second);
+        assert_eq!(root.completed_content_version(), None);
+        let newest_identity = root.identity().unwrap();
+        let newest = root.content_version().unwrap();
+        root.complete_submission(newest_identity, newest);
+        assert_eq!(root.completed_content_version(), Some(newest));
+        root.invalidate();
+        assert_eq!(root.completed_content_version(), None);
     }
 
     #[test]

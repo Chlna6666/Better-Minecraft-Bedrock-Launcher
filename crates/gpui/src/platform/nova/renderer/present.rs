@@ -948,6 +948,10 @@ impl NovaRenderer {
         if !root_color_layers.is_empty() {
             self.root_color.invalidate();
         }
+        // Main Present is the fence whose completion certifies the frame's
+        // versioned Root/Filter writes. Record this boundary before any backend
+        // call; a previous frame's pending fence must never be stamped again.
+        let pending_submission_count_before = self.pending_submissions.len();
         let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
             match &mut *lock_backend(&self.backend) {
                 #[cfg(all(
@@ -1580,13 +1584,48 @@ impl NovaRenderer {
             root_scene_color_refreshes != 0,
             &self.frame_upload.sampled_animation_values,
         );
+        // Published means GPU queue-ordered, NOT fence-completed. Keep exactly
+        // the changed texture versions (never copy the complete filter registry)
+        // on the native submission that protects them. Older fence callbacks
+        // are unable to certify a different version or physical Root view.
+        let publication = SubmittedResourceVersions {
+            geometry_epoch: packet.paint.geometry.layout_epoch,
+            root: if root_scene_color_refreshes != 0 {
+                self.root_color.identity().zip(self.root_color.content_version())
+            } else {
+                None
+            },
+            filters: element_blur_layers.iter().filter_map(|layer| {
+                self.filters.layer_content_version(layer.index)
+                    .map(|version| (layer.index, version))
+            }).collect(),
+        };
+        if self.pending_submissions.len() > pending_submission_count_before {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "nova resource publication submitted: geometry_epoch={} frame_slot={} root_version={:?} filter_writes={} fence_pending=true",
+                publication.geometry_epoch,
+                self.current_frame_resource_index,
+                publication.root.map(|(_, version)| version),
+                publication.filters.len(),
+            );
+            if let Some(submission) = self.pending_submissions.last_mut() {
+                submission.publication = Some(publication);
+            }
+        } else if submission_mode == GpuSubmissionMode::Synchronous
+            || !async_capabilities.async_presentation
+        {
+            // submit_present_frame already waited on a synchronous fence.
+            self.complete_gpu_submission(publication);
+        }
         log::trace!(
             target: "gpui::diagnostics",
-            "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} refreshed={} retained_root={}",
+            "GPUI root color residency: window={} native_texture={:?} native_view={:?} content_version={:?} completed_version={:?} refreshed={} retained_root={}",
             packet.window_id,
             native_root.map(|(texture, _)| texture),
             native_root.map(|(_, view)| view),
             self.root_color.content_version(),
+            self.root_color.completed_content_version(),
             root_scene_color_refreshes != 0,
             root_scene_color_cached,
         );

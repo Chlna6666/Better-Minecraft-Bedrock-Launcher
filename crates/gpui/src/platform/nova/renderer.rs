@@ -261,10 +261,20 @@ fn record_animation_completion_sample(
     }
 }
 
-#[derive(Clone, Copy)]
+/// Successfully submitted physical content, waiting on the native GPU fence.
+/// A submitted version may be consumed by an ordered GPU queue but MUST NOT
+/// be mistaken for a completed version or retired before its fence completes.
+#[derive(Default)]
+struct SubmittedResourceVersions {
+    geometry_epoch: u64,
+    root: Option<((TextureId, TextureViewId), u64)>,
+    filters: SmallVec<[(u32, filters::TextureContentVersion); 4]>,
+}
+
 struct PendingSubmission {
     submission: SubmissionId,
     frame_resource_index: usize,
+    publication: Option<SubmittedResourceVersions>,
 }
 
 fn create_grown_quad_resources<D>(
