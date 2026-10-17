@@ -463,7 +463,9 @@ enforces DX11/Vulkan agreement with DX12 numerically.
 ## Validation
 
 ```powershell
-cargo fmt --all --check
+# Every file changed by this work is rustfmt-clean (verified with rustfmt --check per file).
+# The repository as a whole is not currently rustfmt-clean: `cargo fmt --all --check` reports 728
+# pre-existing diffs in files untouched by this work, so it is not used as a gate here.
 cargo test -p gpui-3d
 cargo test -p gpui-3d -- --ignored --test-threads=1   # test assets + native GPU matrix
 cargo check -p gpui-3d --all-targets --all-features
