@@ -2593,7 +2593,7 @@ impl VulkanDevice {
             .collect::<Result<Vec<_>>>()?;
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) =
             create_sync_objects(&self.device, images.len())?;
-        log::info!(
+        log::debug!(
             "nova-gfx Vulkan swapchain initialization: total_ms={} support_ms={} native_swapchain_ms={} image_resources_ms={} requested_images={} images={} format={:?} present_mode={:?} alpha={:?} extent={}x{}",
             started_at.elapsed().as_millis(),
             support_elapsed.as_millis(),
