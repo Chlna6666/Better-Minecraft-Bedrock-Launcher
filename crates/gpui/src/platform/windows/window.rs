@@ -165,6 +165,18 @@ fn allow_unpaced_native_frame(
     stalled && fallback_available
 }
 
+/// Native client geometry owns the modal cadence. Presentation-only animation
+/// ticks are never allowed to compete with an in-flight native Resize or the
+/// first matching UI Scene. This does not pause animations or their timestamps:
+/// the next full Scene samples the current animation time as usual.
+fn should_attempt_animation_present(
+    has_active_animation: bool,
+    native_resize_in_progress: bool,
+    renderer_resize_pending: bool,
+) -> bool {
+    has_active_animation && !native_resize_in_progress && !renderer_resize_pending
+}
+
 thread_local! {
     static WINDOWS_WITH_SIZE_MOVE_TIMER: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
     static WINDOWS_BY_HWND: RefCell<HashMap<isize, Weak<WindowsWindowInner>>> =
@@ -1946,7 +1958,11 @@ impl WindowsWindow {
             // transition. This control is enqueued once, not per WM_SIZE.
             self.set_live_resize_active(true);
         }
-        if self.is_live_resizing() {
+        // ContentStretch only changes a DirectComposition visual transform.
+        // Opaque native-titlebar windows render straight to an HWND flip chain;
+        // their backend has no composition Visual, so enqueuing this control
+        // on every WM_SIZE accomplishes nothing and delays the real Resize/Draw.
+        if self.is_live_resizing() && !self.0.use_native_decorations {
             self.0
                 .pending_content_stretch
                 .set(Some(resize.drawable_size));
@@ -2151,7 +2167,14 @@ impl WindowsWindow {
             // native client can expose its new extent before the matching GPUI Scene reaches the
             // renderer; suppressing these frames leaves that newly exposed area unpainted.
             let resize_pending = self.0.pending_renderer_size.get().is_some();
-            let presented = if had_active_presentation && !resize_pending {
+            let native_resize_in_progress =
+                self.0.size_move_active.get() && self.0.size_move_has_resized.get();
+            let try_animation_present = should_attempt_animation_present(
+                had_active_presentation,
+                native_resize_in_progress,
+                resize_pending,
+            );
+            let presented = if try_animation_present {
                 let window_id = self.0.handle.window_id().data().as_ffi();
                 record_window_active_presentation_attempt(window_id);
                 let frame_started_at = Instant::now();
@@ -2207,8 +2230,7 @@ impl WindowsWindow {
             } else {
                 false
             };
-            if had_active_presentation
-                && !resize_pending
+            if try_animation_present
                 && !presented
                 && matches!(self.current_visibility(), WindowVisibility::Visible)
             {
@@ -3214,6 +3236,16 @@ mod tests {
             None,
             Some(now)
         ));
+    }
+
+    #[test]
+    fn native_resize_prioritizes_latest_geometry_over_animation_only_presents() {
+        use super::should_attempt_animation_present;
+        assert!(should_attempt_animation_present(true, false, false));
+        assert!(!should_attempt_animation_present(true, true, false));
+        assert!(!should_attempt_animation_present(true, false, true));
+        assert!(!should_attempt_animation_present(true, true, true));
+        assert!(!should_attempt_animation_present(false, false, false));
     }
 
     #[test]
