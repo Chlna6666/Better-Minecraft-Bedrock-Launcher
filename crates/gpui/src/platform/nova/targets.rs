@@ -215,26 +215,41 @@ where
         memory_location: MemoryLocation::GpuOnly,
         dimension: TextureDimension::D2,
     })?;
-    let texture_view = device.create_texture_view(&TextureViewDescriptor {
+    let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} path mask texture view")),
         texture,
         base_mip_level: 0,
         mip_level_count: 1,
         format: descriptor.format,
-    })?;
-    let mut resource_sets = Vec::with_capacity(descriptor.frame_buffers.len());
+    }) {
+        Ok(view) => view,
+        Err(error) => {
+            let _ = device.destroy_texture(texture);
+            return Err(error.into());
+        }
+    };
+    let mut target = PathMaskTarget {
+        texture,
+        texture_view,
+        resource_sets: Vec::with_capacity(descriptor.frame_buffers.len()),
+    };
     for (index, buffers) in descriptor.frame_buffers.iter().copied().enumerate() {
-        resource_sets.push(device.create_resource_set(&ResourceSetDescriptor {
+        let result = device.create_resource_set(&ResourceSetDescriptor {
             label: Some(format!("{label} path mask frame {index} resource set")),
             layout: descriptor.resource_set_layout,
             bindings: path_resource_bindings(&buffers, texture_view, descriptor.sampler),
-        })?);
+        });
+        match result {
+            Ok(set) => target.resource_sets.push(set),
+            Err(error) => {
+                // A Pending surface can be abandoned at any frame slot.
+                // Never leak earlier descriptor sets or its physical texture.
+                destroy_path_mask_target(device, target, label);
+                return Err(error.into());
+            }
+        }
     }
-    Ok(PathMaskTarget {
-        texture,
-        texture_view,
-        resource_sets,
-    })
+    Ok(target)
 }
 
 pub(super) fn destroy_path_mask_target<D>(
@@ -505,13 +520,19 @@ where
     D: BackendResources,
 {
     let texture = create_depth_texture(device, label, size)?;
-    let texture_view = device.create_texture_view(&TextureViewDescriptor {
+    let texture_view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("{label} depth texture view")),
         texture,
         base_mip_level: 0,
         mip_level_count: 1,
         format: Format::Depth32Float,
-    })?;
+    }) {
+        Ok(view) => view,
+        Err(error) => {
+            let _ = device.destroy_texture(texture);
+            return Err(error.into());
+        }
+    };
     Ok((texture, texture_view))
 }
 

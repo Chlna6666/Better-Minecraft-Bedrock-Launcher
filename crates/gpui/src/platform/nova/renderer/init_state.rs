@@ -93,6 +93,7 @@ impl NovaRenderer {
             filters: filters::FilterRegistry::new(resources.backdrop_blur_targets),
             root_color: root_color::RootColor::default(),
             pending_offscreen_targets: None,
+            pending_surface_attachments: None,
             retired_offscreen_targets: Vec::new(),
             atlas_sampler: resources.atlas_sampler,
             path_texture: resources.path_texture,

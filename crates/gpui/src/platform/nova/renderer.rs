@@ -23,6 +23,7 @@ mod init_state;
 mod memory;
 mod path_mask;
 mod pending_offscreen;
+mod pending_surface;
 #[cfg(target_os = "windows")]
 mod preparation;
 use init_state::InitializedRenderer;
@@ -199,6 +200,7 @@ pub(crate) struct NovaRenderer {
     /// At most one unsubmitted independent Root/Filter generation.
     /// Never sampled by Active before the matching resize/present succeeds.
     pending_offscreen_targets: Option<pending_offscreen::PendingOffscreenTargets>,
+    pending_surface_attachments: Option<pending_surface::PendingSurfaceAttachments>,
     /// Physical Filter allocations still referenced by specific outstanding GPU submissions.
     retired_offscreen_targets: Vec<pending_offscreen::RetiredOffscreenTargets>,
     atlas_sampler: SamplerId,
@@ -1192,6 +1194,7 @@ impl NovaRenderer {
             if let Some(pending) = self.pending_offscreen_targets.take() {
                 self.destroy_obsolete_pending_offscreen(pending);
             }
+            self.discard_pending_surface_attachments();
         }
         if submissions_drained && matches!(level, GpuiMemoryTrimLevel::Moderate) {
             if let Err(error) = self.compact_atlas_page() {

@@ -8,6 +8,7 @@ struct WindowResources {
     blur: Option<BackdropBlurTargets>,
     root: Option<RootColorTarget>,
     pending_offscreen: Option<pending_offscreen::PendingOffscreenTargets>,
+    pending_surface: Option<pending_surface::PendingSurfaceAttachments>,
     retired_offscreen: Vec<pending_offscreen::RetiredOffscreenTargets>,
     depth: RenderTarget,
     sampler: SamplerId,
@@ -22,6 +23,7 @@ impl NovaRenderer {
             blur: self.filters.targets.take(),
             root: self.root_color.take_target(),
             pending_offscreen: self.pending_offscreen_targets.take(),
+            pending_surface: self.pending_surface_attachments.take(),
             retired_offscreen: std::mem::take(&mut self.retired_offscreen_targets),
             frames: std::mem::take(&mut self.frame_resources),
             atlas: std::mem::take(&mut self.gpu_atlas_textures),
@@ -94,6 +96,9 @@ fn destroy_resources<D: BackendResources + BackendSurface + BackendPipelines>(
     // Active and before releasing the frame buffers referenced by its sets.
     if let Some(pending) = resources.pending_offscreen {
         pending_offscreen::destroy(device, backend, pending);
+    }
+    if let Some(pending) = resources.pending_surface {
+        pending_surface::destroy(device, backend, pending);
     }
     log::debug!(target: "gpui_gpu_shutdown", "window resources destroy backend={backend} phase=atlas");
     for (atlas_id, texture) in resources.atlas {

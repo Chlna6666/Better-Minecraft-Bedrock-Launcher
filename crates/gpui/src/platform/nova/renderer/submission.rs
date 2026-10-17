@@ -330,6 +330,7 @@ impl NovaRenderer {
             if let Some(obsolete) = self.pending_offscreen_targets.take() {
                 self.destroy_obsolete_pending_offscreen(obsolete);
             }
+            self.discard_pending_surface_attachments();
             return Ok(true);
         }
 
@@ -343,6 +344,13 @@ impl NovaRenderer {
                 log::debug!(
                     target: "gpui::diagnostics",
                     "nova pending offscreen preparation deferred: backend={} size={}x{} error={error:#}",
+                    self.backend_info.label(), width, height,
+                );
+            }
+            if let Err(error) = self.prepare_pending_surface_attachments(requested) {
+                log::debug!(
+                    target: "gpui::diagnostics",
+                    "nova pending depth/path preparation deferred: backend={} size={}x{} error={error:#}",
                     self.backend_info.label(), width, height,
                 );
             }

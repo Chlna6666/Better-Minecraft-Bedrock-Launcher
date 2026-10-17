@@ -2,7 +2,7 @@ use super::*;
 
 /// A path mask promoted to the drawable extent must track Resize. Its 1x1
 /// placeholder can survive all intermediate client sizes without reallocation.
-fn planned_path_mask_size(
+pub(super) fn planned_path_mask_size(
     existing: Extent2d,
     old_drawable: DrawableSize,
     new_drawable: Extent2d,
@@ -114,13 +114,18 @@ impl NovaRenderer {
                 any(target_os = "windows", target_os = "linux")
             ))]
             NovaBackend::OpenGl(device) => {
-                let next_path_mask_target = if reuse_path_mask_target {
-                    old_path_mask_target.clone()
-                } else {
-                    create_path_mask_target(device, "gpui nova opengl", path_mask_target_descriptor)?
-                };
-                let (next_depth_texture, next_depth_texture_view) =
-                    create_depth_target(device, "gpui nova opengl", target_size)?;
+                let attachments = pending_surface::acquire_for_resize(
+                    device,
+                    "OpenGL",
+                    next_size,
+                    next_path_mask_size,
+                    old_path_mask_target.clone(),
+                    !reuse_path_mask_target,
+                    path_mask_target_descriptor,
+                    &mut self.pending_surface_attachments,
+                )?;
+                let next_path_mask_target = attachments.path;
+                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
                 // Keep the last presented swapchain valid while the expensive size-dependent
                 // targets are prepared. Replacing its buffers first exposes an unpresented
                 // surface to DWM for the remainder of this transaction during live resize.
@@ -155,13 +160,18 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
             NovaBackend::Dx11(device) => {
-                let next_path_mask_target = if reuse_path_mask_target {
-                    old_path_mask_target.clone()
-                } else {
-                    create_path_mask_target(device, "gpui nova dx11", path_mask_target_descriptor)?
-                };
-                let (next_depth_texture, next_depth_texture_view) =
-                    create_depth_target(device, "gpui nova dx11", target_size)?;
+                let attachments = pending_surface::acquire_for_resize(
+                    device,
+                    "DX11",
+                    next_size,
+                    next_path_mask_size,
+                    old_path_mask_target.clone(),
+                    !reuse_path_mask_target,
+                    path_mask_target_descriptor,
+                    &mut self.pending_surface_attachments,
+                )?;
+                let next_path_mask_target = attachments.path;
+                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
                 // Keep the last presented swapchain valid while the expensive size-dependent
                 // targets are prepared. Replacing its buffers first exposes an unpresented
                 // surface to DWM for the remainder of this transaction during live resize.
@@ -195,13 +205,18 @@ impl NovaRenderer {
             }
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
             NovaBackend::Dx12(device) => {
-                let next_path_mask_target = if reuse_path_mask_target {
-                    old_path_mask_target.clone()
-                } else {
-                    create_path_mask_target(device, "gpui nova dx12", path_mask_target_descriptor)?
-                };
-                let (next_depth_texture, next_depth_texture_view) =
-                    create_depth_target(device, "gpui nova dx12", target_size)?;
+                let attachments = pending_surface::acquire_for_resize(
+                    device,
+                    "DX12",
+                    next_size,
+                    next_path_mask_size,
+                    old_path_mask_target.clone(),
+                    !reuse_path_mask_target,
+                    path_mask_target_descriptor,
+                    &mut self.pending_surface_attachments,
+                )?;
+                let next_path_mask_target = attachments.path;
+                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
                 // Keep the last presented swapchain valid while the expensive size-dependent
                 // targets are prepared. Replacing its buffers first exposes an unpresented
                 // surface to DWM for the remainder of this transaction during live resize.
@@ -238,13 +253,18 @@ impl NovaRenderer {
                 let swapchain_started_at = Instant::now();
                 device.resize_swapchain(self.swapchain, width, height)?;
                 swapchain_resize = swapchain_started_at.elapsed();
-                let next_path_mask_target = if reuse_path_mask_target {
-                    old_path_mask_target.clone()
-                } else {
-                    create_path_mask_target(device, "gpui nova metal", path_mask_target_descriptor)?
-                };
-                let (next_depth_texture, next_depth_texture_view) =
-                    create_depth_target(device, "gpui nova metal", target_size)?;
+                let attachments = pending_surface::acquire_for_resize(
+                    device,
+                    "Metal",
+                    next_size,
+                    next_path_mask_size,
+                    old_path_mask_target.clone(),
+                    !reuse_path_mask_target,
+                    path_mask_target_descriptor,
+                    &mut self.pending_surface_attachments,
+                )?;
+                let next_path_mask_target = attachments.path;
+                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
                 if !reuse_path_mask_target {
                     destroy_path_mask_target(device, old_path_mask_target, "Metal");
                 }
@@ -278,21 +298,21 @@ impl NovaRenderer {
                 let reuse_path_mask_target = next_path_mask_size == self.path_texture_size;
                 let mut path_mask_target_descriptor = path_mask_target_descriptor;
                 path_mask_target_descriptor.size = next_path_mask_size;
-                let next_path_mask_target = if reuse_path_mask_target {
-                    old_path_mask_target.clone()
-                } else {
-                    create_path_mask_target(device, "gpui nova vulkan", path_mask_target_descriptor)?
-                };
-                let (next_depth_texture, next_depth_texture_view) =
-                    match create_depth_target(device, "gpui nova vulkan", actual_size) {
-                        Ok(target) => target,
-                        Err(error) => {
-                            if !reuse_path_mask_target {
-                                destroy_path_mask_target(device, next_path_mask_target, "Vulkan");
-                            }
-                            return Err(error);
-                        }
-                    };
+                let attachments = pending_surface::acquire_for_resize(
+                    device,
+                    "Vulkan",
+                    DrawableSize {
+                        width: actual_size.width(),
+                        height: actual_size.height(),
+                    },
+                    next_path_mask_size,
+                    old_path_mask_target.clone(),
+                    !reuse_path_mask_target,
+                    path_mask_target_descriptor,
+                    &mut self.pending_surface_attachments,
+                )?;
+                let next_path_mask_target = attachments.path;
+                let (next_depth_texture, next_depth_texture_view) = attachments.depth;
                 if !reuse_path_mask_target {
                     destroy_path_mask_target(device, old_path_mask_target, "Vulkan");
                 }
@@ -564,6 +584,7 @@ impl NovaRenderer {
         if let Some(obsolete) = self.pending_offscreen_targets.take() {
             self.destroy_obsolete_pending_offscreen(obsolete);
         }
+        self.discard_pending_surface_attachments();
 
         let config = SurfaceConfig {
             size: Extent2d::new(self.current_size.width, self.current_size.height)?,
