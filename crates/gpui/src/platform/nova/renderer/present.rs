@@ -483,9 +483,9 @@ impl NovaRenderer {
         if !matches!(result, Ok(true)) {
             self.retained_upload
                 .invalidate_slot(self.current_frame_resource_index);
-            // Offscreen writes can precede a failed/declined native Present.
-            // The previous Root version no longer proves those texels or samples.
-            self.root_color.invalidate();
+            // Root is invalidated only when its source pass may write, in
+            // draw_present_inner before backend execution. A failed preflight
+            // or a compositor-only Present cannot evict untouched root pixels.
         } else if let Err(error) = self.coalesce_idle_static_buffers() {
             // This frame is already submitted; a failed rebind retains the old idle version.
             log::debug!("failed to coalesce idle nova static buffers: {error}");

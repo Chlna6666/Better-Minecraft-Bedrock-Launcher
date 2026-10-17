@@ -354,6 +354,36 @@ mod tests {
     };
     use std::time::Duration;
 
+    #[test]
+    fn presentation_tick_candidate_shares_immutable_animation_dependencies() {
+        let committed = PresentationPacket::new(
+            Arc::new(crate::window::Paint::new(
+                crate::Scene::default(),
+                Arc::default(),
+                crate::window::PaintGeometry::default(),
+            )),
+            [],
+            [],
+            Instant::now(),
+            DirtyRegion::empty(),
+            BackdropBlurDamagePlan::default(),
+            PartialPresentMode::FullRedraw,
+        );
+        let mut pending = committed.clone();
+        assert!(Arc::ptr_eq(&committed.paint, &pending.paint));
+        assert!(Arc::ptr_eq(
+            &committed.grouped_visual_animation_ids,
+            &pending.grouped_visual_animation_ids,
+        ));
+        assert!(Arc::ptr_eq(
+            &committed.scene_animation_ids,
+            &pending.scene_animation_ids,
+        ));
+        pending.dirty_region.push(rect(1.0, 5.0));
+        assert!(committed.dirty_region.is_empty());
+        assert!(!pending.dirty_region.is_empty());
+    }
+
     fn rect(x: f32, width: f32) -> Bounds<ScaledPixels> {
         bounds(
             Point {
@@ -1192,6 +1222,7 @@ pub(crate) enum RetainedResourceTrimPolicy {
 /// All frame-varying metadata is snapshotted by value.
 /// The platform/renderer boundary therefore owns everything it needs to enqueue this packet
 /// without borrowing Window state.
+#[derive(Clone)]
 pub(crate) struct PresentationPacket {
     pub(crate) window_id: u64,
     pub(crate) paint: Arc<crate::window::Paint>,
@@ -1199,8 +1230,10 @@ pub(crate) struct PresentationPacket {
     pub(crate) sampled_active_presentation_animation: bool,
     previous_presentation_animation_values: SmallVec<[SceneAnimationValue; 4]>,
     presentation_animation_tracks: SmallVec<[SceneAnimationValue; 4]>,
-    grouped_visual_animation_ids: FxHashSet<SceneAnimationId>,
-    scene_animation_ids: FxHashSet<SceneAnimationId>,
+    // Immutable animation dependencies are shared between Active and a due
+    // compositor candidate; avoid rehashing these sets at 240Hz.
+    grouped_visual_animation_ids: Arc<FxHashSet<SceneAnimationId>>,
+    scene_animation_ids: Arc<FxHashSet<SceneAnimationId>>,
     timeline_track_keys: FxHashSet<(SceneAnimationId, TransitionProperty)>,
     packed_visual_samples: FxHashMap<SceneAnimationId, PackedVisualSample>,
     pub(crate) presentation_animation_timelines: SmallVec<[SceneAnimationTimeline; 4]>,
@@ -1293,8 +1326,8 @@ impl PresentationPacket {
             sampled_active_presentation_animation: false,
             previous_presentation_animation_values: SmallVec::new(),
             presentation_animation_tracks,
-            grouped_visual_animation_ids,
-            scene_animation_ids,
+            grouped_visual_animation_ids: Arc::new(grouped_visual_animation_ids),
+            scene_animation_ids: Arc::new(scene_animation_ids),
             timeline_track_keys: FxHashSet::default(),
             packed_visual_samples,
             presentation_animation_timelines,

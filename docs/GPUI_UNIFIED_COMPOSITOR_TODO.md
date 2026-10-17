@@ -5,7 +5,7 @@
 > **所有后续对话/代理在编辑前必须重新读取 master HEAD、本文和相关源码，不得使用本文件的历史 HEAD 直接写入。**
 > 本文是唯一执行状态源；[GPUI P0 历史依赖审计](GPUI_P0_RENDER_DEPENDENCY_AUDIT.md)仅作已发生事实与当时源码快照参考，其旧 RenderTree/RenderCommit 方案不再是目标。
 
-## 最新执行看板（唯一实时任务表，2026-10-16）
+## 最新执行看板（唯一实时任务表，2026-10-17）
 
 **本节是当前决策依据**；下面 `P0-A / P0-B / P1–P3` 的长勾选记录与逐提交小节是**历史实现账本**，不再用它们单独认定完成。新增任务或改变状态先改此表，并在原有历史章节记对应提交/验证证据，不另建 TODO 文件。
 
@@ -22,7 +22,7 @@
 | **P0-07** | P0 · **四后端共用 Scene Capture 损伤扩散源码已补；导航/首页动画与模糊 GPU 成本仍待四后端原生验收** | **Dropdown GPU40% vs 首页20% 端到端归因**：记录 UI notify / Render、Taffy layout/Prepaint/Paint、CPU Encode/Upload、Resident Copy、Filter/Composite Pass 和 GPU Timestamp；用同一后端和物理尺寸、刷新率、模糊设置做 A/B，区分 CPU Owner busy 与任务管理器 GPU 使用率 | P0-02～05；历史 DX12 日志 24 次 layout recreated、`composite_passes=12`、`blur_source_pixels=1,489,240` 仅作旧版基线；必须确认**最新 master** 的新指标，不预设是模糊或 Taffy 的单一根因 |
 | **P0-08** | P0 · **公共动画绑定/replay/精确损伤修复已实现；定向测试通过，最终调用方与跨平台实机待验** | **UI 粒度失效和帧请求源**：对独立 Settings 内容 Entity、Overlay、CachedView/DispatchTree、NavChrome、Toast、任务与隐藏页更新验证“不可见页停止构帧、纯动画不用 UI 每帧重排、静态画面无无效 Present”；补 Frame Request reason 与进入 UI/Composite/WSI 的时序 | P0-03/07；Frame Request ≠ Draw ≠ Present；记录 240Hz 静止/动画以及隐藏/失活/最小化的 requests、draws、p95 Prepaint，前台过渡不卡顿 |
 | **P0-09** | P0 · **DX12 子窗口关闭修复后 UI 复验 2 次通过；Resize/其余后端待验收** | **Resize 与窗口生命周期四后端回归**：WM_SIZE 消息栈不重型构帧；尺寸代次 Client→Layout→Drawable→成功 Present 对齐；专项 DX11 拖拽不出帧、DX12 子窗口关闭 exit 2173、Vulkan 拉伸/裁剪、OpenGL 拖拽卡顿，以及 DPI、多窗口、DComp/透明、最小化恢复 | P0-01/03；附真实像素/视频和日志、未提交帧 Fence 和窗口析构状态；不能用强制整窗重绘/每帧 wait_idle 伪修复 |
-| **P0-10** | P0 · **1ms 热路径首个切片已提交·待验证** | **Prepaint 分段与独立 Compositor**：本轮新增 Root/Deferred/Overlay/HitTest/Other 分段计时，修复 Resize 状态变化单独强制全 GPU Damage；后续依次推进 Resize 缓存依赖缩减、degraded 恢复、Active/Pending Compositor、异步 Chunk/Worker 和 Native 尺寸同步。 | 每阶段需当前 HEAD Rust check/定向测试、Release 性能 A/B 和四后端 Resize 像素证明；不把 1ms 当现状，不删除真实消费者。 |
+| **P0-10** | P0 · **阶段一及 Active/Pending 事务切片已提交·待本轮编译验证** | **Active/Pending 原子合成续建**：Prepaint 分段、依赖级 Resize CachedView 与定向 degraded 恢复已有源码；本轮修复纯动画 Active Tick 失败仍污染已提交 Sample，并缩小失败 Root 离屏纹理失效，Filter invalid version 禁止跨 View 重映射。后续并行 Worker/完整 Epoch、Fence 的闭环仍未完成。 | 当前 HEAD 运行 `cargo check -p gpui` 和候选/Root/Filter 单测；Windows DX11/12、Vulkan、OpenGL 测 Resize/Blur/Dropdown/失败重试、GPU Busy、Pass/Prepaint P95/P99。此切片没有本机实测，不能宣称 1ms 已达成。 |
 | **P1-01** | P1 · **发布/驻留所有权已审计；完整字节及延迟 A/B 待验** | **单一所有权 / 字节账本**：Frame 通过 Painter 构建并发布唯一 Paint，State/Packet/Renderer 共享同一 publication；生产 NovaRenderer 只有一个 FrameUpload scratch，RetainedUpload 独占 GPU Chunk residency | 本轮生命周期/原生回归见下节；继续测量构建→发布→排队→编码→上传→成功提交的分段延迟，不把 benchmark harness 当第二个生产 Owner |
 | **P1-02** | P1 · **部分实现：静态 Quad/Shadow/操作流共享；最新验证见下节** | **唯一持久 Paint Artifact + 局部失效**：Window 资格判定 → 只读 payload → Batch → Nova 消费已接通；Shadow 不可变来源可跨新 Paint 代次保留唯一 packed buffer。继续迁移其它 Primitive、局部 Shadow 更新及嵌套 Capture | P1-01；本轮逐项记录测试与四后端像素；CPU payload/编码字节复用与 GPU 上传、执行时间分开统计，尚无应用 GPU 时间收益结论 |
 | **P1-03** | P1 · **部分实现：SceneSlot/分散快照已删除；完整增量 GPU 协议未完成** | **唯一 GPU 消费协议**：单一 Arc<Paint> 直接拥有绘制数据、配对 retention 和布局代次；新 revision 仍遍历完整绘制描述进行实例编码，继续迁移其它 Primitive 的持久 Chunk 与 Create/Update/Remove 消费 | P1-02 + P0-09；latest-wins 累积 Damage、Surface epoch、旧 publication 生命周期与四后端像素必须保持；不以更换输入类型宣称完整增量化 |
@@ -1124,3 +1124,15 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 - **修复安全性**：Offscreen Pass 可先于 Swapchain Present 修改 Filter/Root 物理纹理。规划完 Dirty Layer 和局部 Scissor 后，先将 Render Graph 实际要写的已提交 Filter 内容版本置为无效；若最终 Present 失败，不会再用旧 Snapshot 误认证已被覆盖的 texels。未刷新层的版本和采样保持完整。成功 Present 后原有 `record_element_blur_inputs` 会发布新有效版本。RootColor 仅在真正计划刷新其离屏 Target 时，提前将旧内容版本置无效；成功后 `record_present` 重新发布，避免不同步。
 - 测试：`cargo test -p gpui --lib interrupted_offscreen_submit_invalidates_only_touched_gpu_layers`，结合现有 `root_color` 和四后端 Frame Graph 回归。该修复保守处理 GPU 失败，不宣称 GPU Pass 数量因此减少；需验证失败 Present 后没有 Filter 旧图残留。
+
+### 2026-10-17 Active Tick 原子候选与 Root 定向失效（待本机编译）
+
+- **审查结论**：`present_active_frame` 曾在无 Pending 时 `take()` Active 并直接执行 `sample_animations` / `draw_frame`；延期或错误后将已修改的候选写回 Active，破坏“Active 必须只代表最后一次成功 GPU 提交”的不变量。此前的 Pending Retry 已能保留旧 Active，但未覆盖**纯合成动画 Tick 失败**。
+- **代码实现**：`platform/frame.rs` 为 `PresentationPacket` 增加浅共享 `Arc<Paint>` 的 `Clone`；`renderer.rs` 在检查无工作/尚未到期后才构造候选。Pending Retry 直接取回所有权；Active Tick 克隆元数据进行采样；仅 `Ok(true)` 发布新 Active，其余结果保留旧 Active，并保留/更新 Pending，原 Dirty/Filter damage 与动画完成事件提交协议继续生效。避免在 idle、未到期 Tick 复制包。
+- **Filter/Root 资源安全**：`present.rs::draw_present_inner` 已在 GPU 命令前仅对实际计划写入的 `element_blur_layers` / `root_color_layers` 失效；`draw_present` 删除失败时额外无条件失效所有 Root 内容版本的旧兜底，防止无 Root Pass 的提交失败导致下一帧重复 Root 离屏重绘。已执行命令后失败仍保守失效被写纹理，不将未提交纹理误当作已发布新版本。Filter 重排的 Fence/TextureView 匹配机制保持现状。
+- **新增回归源码**：`compositor_only_tick_failure_preserves_committed_active_animation_sample`，覆盖 Active 动画候选失败隔离、Pending 直接重试、成功原子替换；配合 `retry_failure_must_leave_pending_scene_and_active_scene_unchanged`、`interrupted_offscreen_submit_invalidates_only_touched_gpu_layers`、`compositor_only_presents_preserve_actual_root_pixel_sample_baseline`。仅代码级静态检查；本地 Rust 编译、测试及 DX11/DX12/Vulkan/OpenGL 仍**未执行**，不得标记通过。
+- **下一步性能/安全门**：Windows 执行 `cargo fmt --all -- --check`、`cargo check -p gpui`、`cargo test -p gpui --lib compositor_only_tick_failure_preserves_committed_active_animation_sample` 与上述 Filter/Root 定向测试；四后端复测 Live Resize、透明标题栏、Popup/Blur、GPU fail/defer、动画中断及多窗口子窗口关闭。统计 idle/tick 候选克隆次数、Prepaint P95/P99、Offscreen Pass、GPU Busy、root_content_version 和 in-flight Fence 退休，若每帧完整 Packet Clone 在 Release 成为热路径瓶颈，再将不变的动画依赖集合封装为共享只读 Payload，勿在未取得编译与性能数据前臆定 1ms 达标。当前仍非独立 Render Preparation Worker；Geometry/Texture/Filter Epoch 完整原子切换尚未完成。
+
+- **Filter 失效补强**：`filters.rs::remap_identity_capture_sources` 不再把 `content_version=0` 的旧目标快照当作可重映射资源，即使真实 TextureView 未变也需下一帧重绘。新增 `interrupted_source_write_cannot_remap_invalidated_capture_version` 验证失败 Offscreen 写入后的索引迁移不能继承旧 texels，刷新成功才重建版本；不引入额外常驻缓存。
+
+- **CPU Tick 克隆成本控制**：`PresentationPacket` 的只读 `grouped_visual_animation_ids` 和 `scene_animation_ids` 改为 `Arc<FxHashSet>`，只在 UI 新 Paint 构造时计算一次；Active 派生候选与 Pending 重试不再重新哈希这两个集合，mutable timeline/scratch/damage 仍保持独立。新增 `presentation_tick_candidate_shares_immutable_animation_dependencies` 验证共享只读依赖、Paint Arc 唯一引用及 DirtyRegion 隔离。需 Release profiler 验证真实 Tick Clone CPU 分配与 p95。

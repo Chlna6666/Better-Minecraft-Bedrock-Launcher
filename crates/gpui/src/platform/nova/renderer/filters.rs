@@ -133,6 +133,12 @@ impl FilterRegistry {
                 continue;
             };
             let mut candidates = previous.iter().filter(|old| {
+                // A failed native Present can leave the target's texels
+                // overwritten. A zero version is not a resident snapshot,
+                // even when the physical TextureView and Capture ID survive.
+                if old.content_version.0 == 0 {
+                    return false;
+                }
                 if !old_views.iter().any(|(old_index, old_view)| {
                     *old_index == old.index && old_view == target_view
                 }) {
@@ -441,6 +447,40 @@ impl FilterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_source_write_cannot_remap_invalidated_capture_version() {
+        let bounds = crate::bounds(
+            crate::point(crate::ScaledPixels(0.0), crate::ScaledPixels(0.0)),
+            crate::size(crate::ScaledPixels(40.0), crate::ScaledPixels(20.0)),
+        );
+        let source = FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: 13,
+            content_bytes: 64,
+        };
+        let mut registry = FilterRegistry::new(None);
+        registry.record_element_blur_inputs(&[(2, source.clone())], &[], [2]);
+        assert!(registry.layer_content_version(2).is_some());
+        // Offscreen write may have executed before a failed WSI Present.
+        registry.invalidate_inflight_layer_writes([2]);
+        assert!(registry.layer_content_version(2).is_none());
+        let view = TextureViewId::new(81);
+        assert_eq!(
+            registry.remap_identity_capture_sources(
+                &[(2, view)],
+                &[(5, view)],
+                &[(5, source.clone())],
+            ),
+            0,
+            "invalidated texels must never inherit an old content version",
+        );
+        assert!(registry.element_blur_inputs.is_empty());
+        assert!(!registry.source_unchanged(5, &source, &[]));
+        registry.record_element_blur_inputs(&[(5, source.clone())], &[], [5]);
+        assert!(registry.source_unchanged(5, &source, &[]));
+    }
 
     #[test]
     fn zero_filter_target_reorder_preserves_only_same_layer_and_texture() {

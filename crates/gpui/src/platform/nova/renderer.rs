@@ -227,6 +227,21 @@ fn publish_presentation_candidate<T>(
     }
 }
 
+/// Stage a compositor tick without moving the successfully submitted Active
+/// packet. Pending already has exclusive ownership and needs no clone; an
+/// Active tick forks only when a new sample is actually due. A failed GPU
+/// submission must not advance Active's geometry, animation samples or damage.
+fn take_presentation_candidate<T: Clone>(
+    active: &Option<T>,
+    pending: &mut Option<T>,
+) -> Option<(T, bool)> {
+    if let Some(candidate) = pending.take() {
+        Some((candidate, true))
+    } else {
+        active.as_ref().cloned().map(|candidate| (candidate, false))
+    }
+}
+
 /// Defer endpoint notifications until their scene is really submitted.
 fn record_animation_completion_sample(
     published: &mut SmallVec<[crate::SceneAnimationCompletion; 4]>,
@@ -973,33 +988,34 @@ impl NovaRenderer {
         now: Instant,
         presentation_timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<Option<ActivePresentationFrame>> {
-        // Retry a pending new-size Scene before sampling the last displayed
-        // scene. The latter remains the authoritative Active packet until the
-        // candidate's GPU submission succeeds.
+        // Inspect scheduling state by reference first. No packet clone or
+        // ownership transfer is needed for idle or not-yet-due ticks.
         let was_pending = self.pending_presentation_packet.is_some();
-        let Some(mut packet) = self.pending_presentation_packet.take()
-            .or_else(|| self.active_presentation_packet.take())
+        let Some(reference) = self.pending_presentation_packet.as_ref()
+            .or(self.active_presentation_packet.as_ref())
         else {
             return Ok(None);
         };
-        // A candidate with zero dirty pixels may still need its first surface
-        // submission (for example a new empty layout after Resize).
-        if !was_pending && !packet.has_pending_presentation() {
-            self.active_presentation_packet = Some(packet);
+        // A Pending new-size Scene must be submitted even without dirty pixels.
+        if !was_pending && !reference.has_pending_presentation() {
             return Ok(None);
         }
-        if !packet.presentation_is_due(now) {
-            let continues = !packet.presentation_animation_timelines.is_empty();
-            if was_pending {
-                self.pending_presentation_packet = Some(packet);
-            } else {
-                self.active_presentation_packet = Some(packet);
-            }
+        if !reference.presentation_is_due(now) {
+            let continues = !reference.presentation_animation_timelines.is_empty();
             return Ok((continues || was_pending).then(|| ActivePresentationFrame {
                 continues: continues || was_pending,
                 completed_animations: SmallVec::new(),
             }));
         }
+        // Only Pending may be taken in place. The Active packet remains the
+        // exact last submitted generation until the new GPU submission succeeds.
+        // Cloning the small packet metadata does not clone its Arc<Paint>.
+        let Some((mut packet, _)) = take_presentation_candidate(
+            &self.active_presentation_packet,
+            &mut self.pending_presentation_packet,
+        ) else {
+            return Ok(None);
+        };
         let sampled_completions = packet.sample_animations(now);
         let continues = !packet.presentation_animation_timelines.is_empty();
         let mut presentation_timing = presentation_timing;
@@ -1016,20 +1032,12 @@ impl NovaRenderer {
             submitted,
             false,
         );
-        if was_pending {
-            publish_presentation_candidate(
-                &mut self.active_presentation_packet,
-                &mut self.pending_presentation_packet,
-                packet,
-                submitted,
-            );
-        } else if submitted {
-            self.active_presentation_packet = Some(packet);
-        } else {
-            // A compositor-only Tick cannot replace the committed geometry.
-            // Its dirty sample remains with the same Active packet to retry.
-            self.active_presentation_packet = Some(packet);
-        }
+        publish_presentation_candidate(
+            &mut self.active_presentation_packet,
+            &mut self.pending_presentation_packet,
+            packet,
+            submitted,
+        );
         self.sample_memory(
             self.submitted_frames == 1 && submitted,
             draw_result.as_ref().err(),
@@ -1884,6 +1892,33 @@ mod tests {
         assert_eq!(pending, Some(12), "latest candidate supersedes stalled geometry");
         publish_presentation_candidate(&mut active, &mut pending, 12, true);
         assert_eq!(active, Some(12));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn compositor_only_tick_failure_preserves_committed_active_animation_sample() {
+        // Unlike a new UI scene, an animation tick starts from the committed
+        // Active. Mutating the sampled candidate must never overwrite it on
+        // either a deferred or failed GPU submission.
+        let mut active = Some(vec![10u64, 20]);
+        let mut pending = None;
+        let (mut candidate, was_pending) =
+            take_presentation_candidate(&active, &mut pending).expect("active tick");
+        assert!(!was_pending);
+        candidate.push(30);
+        publish_presentation_candidate(&mut active, &mut pending, candidate, false);
+        assert_eq!(active.as_deref(), Some(&[10, 20][..]));
+        assert_eq!(pending.as_deref(), Some(&[10, 20, 30][..]));
+
+        // A retry owns Pending directly, so it does not clone the committed
+        // scene or accumulate duplicate intermediate animation samples.
+        let (mut retry, was_pending) =
+            take_presentation_candidate(&active, &mut pending).expect("retry");
+        assert!(was_pending);
+        assert!(pending.is_none());
+        retry.push(40);
+        publish_presentation_candidate(&mut active, &mut pending, retry, true);
+        assert_eq!(active.as_deref(), Some(&[10, 20, 30, 40][..]));
         assert!(pending.is_none());
     }
 
