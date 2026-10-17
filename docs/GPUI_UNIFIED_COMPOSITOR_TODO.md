@@ -1085,3 +1085,9 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 发现时序漏洞：`allows_progressive_frame_degradation()` 原来在构帧期间每次重新读取近期输入计时，可能由初始 false 在长帧中变为 true，从而在先前未为 CachedView 建立快照的情况下丢弃候选帧。
 - 现在在 `begin_draw_cycle()` 初始化 `frame_can_degrade`，它在完整 UI generation 中只允许变成不可降级。Deadline、CachedView 快照与真正 `degrade_current_draw` 统一使用这一资格；成功/失败收尾均清除。真实原生 Resize 不允许用旧场景代替新几何。
 - 需要测试：近期输入临界点内长帧、通知在 Prepaint 中到达、第一次访问 Element State 前后条件变化、连续超时及嵌套 CachedView 的 P95/P99。
+
+### 2026-10-17 CachedView 事务快照减负
+
+- 将 `CachedViewState` 已提交代次的 `accessed_entities`、`render_dependencies`、Traversal Context 和 Cache Key 变为 `Rc` 只读共享；事务快照只复制引用计数和独立的 Paint/Prepaint/Metadata Range，消除最坏情况下集合深拷贝与 TextStyle/路径栈的重复复制。新的 Fresh Render 仍构造自己的集合和元数据，不通过 `Rc::make_mut` 修改旧代次。
+- 新增 `progressive_cache_snapshot_shares_immutable_metadata_and_isolates_ranges`：检查四类只读数据的真实指针共享、候选 Range 修改不会影响已提交状态，以及 Fresh 元数据替换不会回写旧帧。
+- 注意：共享 `Rc` 仍带来正常 Fresh Render 时的少量引用计数对象分配；是否进一步将四个对象合为单个只读 Payload，应以 Release 的 `prepaint_root_us`、CPU 分配次数、连续 Deadline Miss 前后 P95/P99 和内存峰值证据决定。本提交不声称达到 1ms。

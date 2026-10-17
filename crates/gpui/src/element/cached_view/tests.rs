@@ -1108,3 +1108,60 @@ fn reactive_and_cached_views_own_frame_local_metadata() {
         crate::RetainedReplayCapability::OwnsFrameLocalCacheBoundary,
     );
 }
+
+#[gpui::test]
+fn progressive_cache_snapshot_shares_immutable_metadata_and_isolates_ranges(
+    cx: &mut TestAppContext,
+) {
+    let window = cx.update(|cx| {
+        let leaf = cx.new(|_| RenderCountCachedLeafView {
+            renders: Rc::new(std::cell::Cell::new(0)),
+        });
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| ProgressiveCachedRootView {
+                leaf,
+                expire_budget: false,
+            })
+        })
+        .unwrap()
+    });
+    let handle = AnyWindowHandle::from(window);
+    cx.update_window(handle, |_, window, cx| {
+        window.draw(cx).clear();
+        let (_, committed) = window
+            .rendered_frame
+            .element_states
+            .iter()
+            .find(|((_, ty), _)| *ty == TypeId::of::<CachedViewState>())
+            .expect("completed frame must retain a CachedView state");
+        let original = committed
+            .inner
+            .downcast_ref::<Option<CachedViewState>>()
+            .expect("CachedView stores a typed Option")
+            .as_ref()
+            .expect("committed CachedView is initialized");
+        let old_metadata_range = original.metadata_range.clone();
+        let mut speculative = snapshot_committed_cached_view_state(committed)
+            .expect("progressive CachedView snapshot exists");
+        let candidate = speculative
+            .inner
+            .downcast_mut::<Option<CachedViewState>>()
+            .unwrap()
+            .as_mut()
+            .unwrap();
+        // Identity, not content equality, proves that even large dependency
+        // sets and text-style metadata are not copied during snapshotting.
+        assert!(Rc::ptr_eq(&original.accessed_entities, &candidate.accessed_entities));
+        assert!(Rc::ptr_eq(&original.render_dependencies, &candidate.render_dependencies));
+        assert!(Rc::ptr_eq(&original.traversal_context, &candidate.traversal_context));
+        assert!(Rc::ptr_eq(&original.cache_key, &candidate.cache_key));
+        candidate.metadata_range = usize::MAX - 8..usize::MAX;
+        assert_eq!(original.metadata_range, old_metadata_range);
+        assert_ne!(original.metadata_range, candidate.metadata_range);
+        // Fresh candidate generation must replace its own metadata without
+        // changing anything reachable through the last committed frame.
+        candidate.accessed_entities = Rc::new(FxHashSet::default());
+        assert!(!Rc::ptr_eq(&original.accessed_entities, &candidate.accessed_entities));
+    })
+    .unwrap();
+}
