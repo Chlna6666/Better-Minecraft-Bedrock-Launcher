@@ -1045,5 +1045,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 - 阶段：① 1ms CPU Prepaint、分离布局与缓存依赖、降级恢复；② Active/Pending 独立合成与动画采样；③ Worker 纯计算及持久 GPU Chunk 增量上传；④ Native Client / Scene / Surface / Presented epoch 原子同步。**当前只实现阶段一的第一个切片。**
 - 计时：prepaint_elapsed 沿用总历时语义，root_us 包含嵌套布局和 View 工作；deferred_us 包含 Inspector/Deferred；overlay_us 为浮层准备，hit_test_us 为输入命中检测，other_us 为其余开销；不做每元素新 Hash 遍历。
-- 正确性：实际尺寸或 DPI/display 改变仍保留 RelayoutSubtree 和一次性全 CachedView 刷新，只是原生 Resize 状态位变化不再强制整窗 GPU Damage。待尺寸依赖证明通过才放宽根屏障。
-- 本地验收：`cargo test -p gpui --lib prepaint_work_breakdown_tests`、`cargo test -p gpui --lib viewport_resize`、`cargo check -p gpui`；四后端 Release 对比 p50/p95/p99 各阶段、degraded/recovery 计数与成功 Present 尺寸。未获得这些结果前状态保持“已提交·待验证”。
+- 正确性：实际尺寸或 DPI/display 改变仍保留 RelayoutSubtree 和一次性全 CachedView 刷新；原生 Resize 状态位变化不再强制整窗 GPU Damage，也不再经 generic root notify 清空全部 CachedView。退出拖拽时仍刷新已延迟的图片尺寸。待尺寸依赖证明通过才放宽根屏障。
+- 本地验收：`cargo test -p gpui --lib prepaint_work_breakdown_tests`、`cargo test -p gpui --lib viewport_change_needs_ui_commit_tests`、`cargo test -p gpui --lib viewport_resize`、`cargo check -p gpui`；四后端 Release 对比 p50/p95/p99 各阶段、degraded/recovery 计数与成功 Present 尺寸。未获得这些结果前状态保持“已提交·待验证”。

@@ -1,6 +1,16 @@
 use super::*;
 use super::lifecycle::RetainedInvalidationScope;
 
+/// Actual scene dependencies, not the Win32 modal-loop flag, determine
+/// whether changing native state should schedule another UI generation.
+fn viewport_change_needs_ui_commit(
+    layout_changed: bool,
+    raster_changed: bool,
+    settling_deferred_images: bool,
+) -> bool {
+    layout_changed || raster_changed || settling_deferred_images
+}
+
 impl Window {
     fn invalidate_text_rasterization(&mut self) {
         // Platform shaping/layout is expressed in logical Pixels and its API does not depend on
@@ -82,6 +92,17 @@ impl Window {
         self.mouse_position = self.platform_window.mouse_position();
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
+        }
+        // Enter/ExitSizeMove can update the native status without changing a
+        // single client pixel. Do not route that flag through a generic root
+        // notify: it would disable every CachedView and rebuild the full UI.
+        // Exit remains visible to deferred image owners that must settle.
+        if !viewport_change_needs_ui_commit(
+            layout_constraints_changed,
+            text_rasterization_changed,
+            !live_resize_active && !self.live_resize_image_views.is_empty(),
+        ) {
+            return;
         }
         // A change of native modal-loop state alone does not invalidate
         // previously drawn pixels. Full damage is for actual geometry or
@@ -178,5 +199,22 @@ impl Window {
         self.appearance_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
+    }
+}
+
+#[cfg(test)]
+mod viewport_change_needs_ui_commit_tests {
+    use super::viewport_change_needs_ui_commit;
+
+    #[test]
+    fn native_resize_flag_alone_does_not_invalidate_scene() {
+        assert!(!viewport_change_needs_ui_commit(false, false, false));
+    }
+
+    #[test]
+    fn geometry_dpi_and_deferred_image_settlement_remain_required() {
+        assert!(viewport_change_needs_ui_commit(true, false, false));
+        assert!(viewport_change_needs_ui_commit(false, true, false));
+        assert!(viewport_change_needs_ui_commit(false, false, true));
     }
 }
