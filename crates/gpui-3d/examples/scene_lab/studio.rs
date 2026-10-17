@@ -14,7 +14,7 @@
 //! all four light kinds, alpha blending, an unlit emissive material, and directional shadows.
 
 use gpui_3d::{
-    AlphaMode, Camera, Light, Material, Mesh, Node, Scene, ShadingModel, SpotCone, SpotLight,
+    AlphaMode, Camera, Light, Material, Mesh, Node, Quat, Scene, ShadingModel, SpotCone, SpotLight,
     TextureAsset, TextureAssetId, Transform, Vec3,
 };
 use std::collections::HashMap;
@@ -254,6 +254,76 @@ pub(crate) fn build(options: &StudioOptions) -> Result<StudioScene, Box<dyn Erro
     )?;
 
     Ok(StudioScene { scene, textures })
+}
+
+/// Builds a dense grid of cubes that share one mesh and one material snapshot.
+///
+/// The offscreen renderer must collapse these nodes into a single indexed instanced draw and keep
+/// per-frame uploads proportional to changed instances, not to the node count. Returns the scene
+/// and its world bounds radius so the caller can frame the camera.
+pub(crate) fn build_instance_field(count: u32) -> Result<(Scene, f32), Box<dyn Error>> {
+    let mut scene = Scene::new();
+    let cube = Arc::new(Mesh::cube());
+    let mut material = Material::new();
+    material.base_color = [0.62, 0.68, 0.82, 1.0];
+    material.metallic = 0.15;
+    material.roughness = 0.5;
+    let material = Arc::new(
+        material
+            .validated()
+            .ok_or("instance material failed validation")?,
+    );
+    let side = (f64::from(count).sqrt().ceil() as u32).max(1);
+    let spacing = 0.55_f32;
+    let offset = (side as f32 - 1.0) * 0.5;
+    for index in 0..count {
+        let column = (index % side) as f32;
+        let row = (index / side) as f32;
+        let translation = Vec3::new(
+            (column - offset) * spacing,
+            ((index % 7) as f32 - 3.0) * 0.012,
+            (row - offset) * spacing,
+        );
+        scene.insert(
+            None,
+            Node::new()
+                .with_mesh(cube.clone())
+                .with_materials([material.clone()])
+                .with_transform(Transform {
+                    translation,
+                    rotation: Quat::from_axis_angle(Vec3::Y, (index % 17) as f32 * 0.2)
+                        .ok_or("invalid field rotation")?,
+                    scale: Vec3::new(0.28, 0.28, 0.28),
+                }),
+        )?;
+    }
+    scene.insert(
+        None,
+        Node::new().with_light(Light::Directional {
+            direction: Vec3::new(-0.45, -0.8, -0.35),
+            color: [1.0, 0.93, 0.82],
+            intensity: 4.2,
+        }),
+    )?;
+    scene.insert(
+        None,
+        Node::new().with_light(Light::Ambient {
+            color: [0.44, 0.53, 0.72],
+            intensity: 0.26,
+        }),
+    )?;
+    let radius = scene
+        .bounds()?
+        .map_or(1.0, |bounds| {
+            let extent = Vec3::new(
+                bounds.max.x - bounds.min.x,
+                bounds.max.y - bounds.min.y,
+                bounds.max.z - bounds.min.z,
+            );
+            (extent.x * extent.x + extent.y * extent.y + extent.z * extent.z).sqrt() * 0.5
+        })
+        .max(0.5);
+    Ok((scene, radius))
 }
 
 pub(crate) fn studio_camera(options: &StudioOptions) -> Camera {

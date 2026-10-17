@@ -195,6 +195,11 @@ pub struct FrameStatistics {
     pub cpu_prepare_nanos: u64,
     /// CPU time spent in the backend submit call.
     pub submit_nanos: u64,
+    /// True when the renderer served the frame from its retained static-frame cache without any
+    /// CPU preparation, upload, or GPU submission.
+    pub frame_reused: bool,
+    /// True when only the camera changed, so the scene graph was not re-walked before culling.
+    pub camera_only_update: bool,
 }
 
 /// Renderer-owned resource statistics.
@@ -210,7 +215,7 @@ pub struct RendererStatistics {
     pub resident_buffer_bytes: u64,
     /// GPU bytes owned by renderer textures, including shadow and scene targets.
     pub resident_texture_bytes: u64,
-    /// Draw-slot capacity in entries.
+    /// Instanced draw-slot capacity in entries (one slot per submitted batch, not per instance).
     pub draw_capacity: usize,
     /// Instance capacity in entries.
     pub instance_capacity: usize,
@@ -431,9 +436,21 @@ pub struct OffscreenRenderer {
     height: u32,
     gpu: gpu::GpuState,
     prepared: crate::PreparedScene,
+    prepared_key: Option<(u64, u64)>,
+    last_frame: Option<(FrameReuseKey, FrameStatistics)>,
     animation_scratch: AnimationScratch,
     raycast_scratch: RaycastScratch,
     renderer_statistics: RendererStatistics,
+}
+
+/// Everything that can change a rendered frame while the prepared draw list stays valid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FrameReuseKey {
+    scene_id: u64,
+    scene_version: u64,
+    camera: Camera,
+    options: RenderOptions,
+    target: (u32, u32),
 }
 
 impl OffscreenRenderer {
@@ -460,6 +477,8 @@ impl OffscreenRenderer {
             height,
             gpu,
             prepared: crate::PreparedScene::default(),
+            prepared_key: None,
+            last_frame: None,
             animation_scratch: AnimationScratch::new(),
             raycast_scratch: RaycastScratch::new(),
             renderer_statistics: RendererStatistics::default(),
@@ -508,6 +527,7 @@ impl OffscreenRenderer {
         self.gpu.resize(device, width, height)?;
         self.width = width;
         self.height = height;
+        self.last_frame = None;
         Ok(())
     }
 
@@ -531,8 +551,37 @@ impl OffscreenRenderer {
     ) -> Result<FrameStatistics, RenderError> {
         let aspect = self.width as f32 / self.height as f32;
         let started = Instant::now();
-        self.prepared.update(scene, camera, aspect)?;
-        let statistics = self.gpu.render(
+        let key = FrameReuseKey {
+            scene_id: scene.instance_id(),
+            scene_version: scene.version(),
+            camera,
+            options: *options,
+            target: (self.width, self.height),
+        };
+        if let Some((last_key, last_statistics)) = self.last_frame
+            && last_key == key
+        {
+            let mut statistics = last_statistics;
+            statistics.frame_reused = true;
+            statistics.camera_only_update = false;
+            statistics.mesh_uploads = 0;
+            statistics.texture_uploads = 0;
+            statistics.upload_bytes = 0;
+            statistics.submit_nanos = 0;
+            statistics.cpu_prepare_nanos =
+                u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            self.renderer_statistics = self.gpu.statistics();
+            return Ok(statistics);
+        }
+        let camera_only = self.prepared_key == Some((key.scene_id, key.scene_version))
+            && self.prepared.camera() != Some(camera);
+        if camera_only {
+            self.prepared.update_camera(camera, aspect)?;
+        } else {
+            self.prepared.update(scene, camera, aspect)?;
+        }
+        self.prepared_key = Some((key.scene_id, key.scene_version));
+        let mut statistics = self.gpu.render(
             device,
             &self.prepared,
             textures,
@@ -540,8 +589,11 @@ impl OffscreenRenderer {
             options,
             (self.width, self.height),
             started,
+            !camera_only,
         )?;
+        statistics.camera_only_update = camera_only;
         self.renderer_statistics = self.gpu.statistics();
+        self.last_frame = Some((key, statistics));
         Ok(statistics)
     }
 
@@ -572,6 +624,8 @@ impl OffscreenRenderer {
             .evaluate_with(tracks, animation_time, &mut self.animation_scratch)
             .map_err(|error| RenderError::Preparation(format!("animation evaluation: {error}")))?;
         self.prepared.update_evaluated(&evaluated, camera, aspect)?;
+        self.prepared_key = None;
+        self.last_frame = None;
         let statistics = self.gpu.render(
             device,
             &self.prepared,
@@ -580,6 +634,7 @@ impl OffscreenRenderer {
             options,
             (self.width, self.height),
             started,
+            true,
         )?;
         self.renderer_statistics = self.gpu.statistics();
         Ok(statistics)
@@ -638,6 +693,7 @@ impl OffscreenRenderer {
         level: MemoryTrimLevel,
     ) -> Result<(), RenderError> {
         self.gpu.trim(device, level)?;
+        self.last_frame = None;
         self.renderer_statistics = self.gpu.statistics();
         Ok(())
     }
@@ -716,6 +772,8 @@ impl OffscreenRenderer {
         object_options.post_process = false;
         self.render(device, scene, textures, camera, &object_options)?;
         let image = self.capture(device)?;
+        // The object-id frame is a debugging side effect; never serve it as a later shaded frame.
+        self.last_frame = None;
         let x = pixel.0.min(self.width.saturating_sub(1));
         let y = pixel.1.min(self.height.saturating_sub(1));
         let offset = (y as usize * self.width as usize + x as usize) * 4;
@@ -748,6 +806,7 @@ impl OffscreenRenderer {
     /// budget. [`None`] disables automatic trimming.
     pub fn set_memory_budget(&mut self, budget_bytes: Option<u64>) {
         self.gpu.set_memory_budget(budget_bytes);
+        self.last_frame = None;
         self.renderer_statistics = self.gpu.statistics();
     }
 
@@ -771,6 +830,7 @@ impl OffscreenRenderer {
         device: &mut D,
     ) -> Result<u64, RenderError> {
         let released = self.gpu.enforce_memory_budget(device)?;
+        self.last_frame = None;
         self.renderer_statistics = self.gpu.statistics();
         Ok(released)
     }

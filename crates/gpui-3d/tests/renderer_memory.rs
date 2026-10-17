@@ -359,3 +359,132 @@ fn cpu_and_gpu_object_picking_agree_on_the_submitted_frame() {
     );
     renderer.destroy(&mut device).expect("destroy renderer");
 }
+
+fn instance_field_scene(count: u32) -> (Scene, Camera, NodeId) {
+    let mut scene = Scene::new();
+    let mesh = Arc::new(Mesh::cube());
+    let material = Arc::new(Material::new().validated().expect("material"));
+    let side = (f64::from(count).sqrt().ceil() as u32).max(1);
+    let spacing = 0.35_f32;
+    let offset = (side as f32 - 1.0) * 0.5;
+    let mut first_node = None;
+    for index in 0..count {
+        let column = (index % side) as f32;
+        let row = (index / side) as f32;
+        let node = scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(mesh.clone())
+                    .with_materials([material.clone()])
+                    .with_transform(Transform {
+                        translation: Vec3::new(
+                            (column - offset) * spacing,
+                            0.0,
+                            (row - offset) * spacing,
+                        ),
+                        scale: Vec3::new(0.2, 0.2, 0.2),
+                        ..Transform::default()
+                    }),
+            )
+            .expect("field node");
+        first_node.get_or_insert(node);
+    }
+    scene
+        .insert(
+            None,
+            Node::new().with_light(gpui_3d::Light::Directional {
+                direction: Vec3::new(-0.4, -0.8, -0.3),
+                color: [1.0, 0.95, 0.9],
+                intensity: 3.5,
+            }),
+        )
+        .expect("field light");
+    let radius = ((side as f32 * spacing).powi(2) * 2.0).sqrt() * 0.5 + 0.5;
+    let camera = Camera::perspective(
+        Vec3::new(0.0, radius * 1.6, radius * 4.2),
+        Vec3::new(0.0, radius * 0.15, 0.0),
+        Vec3::Y,
+        55.0_f32.to_radians(),
+        0.05,
+        radius * 12.0 + 50.0,
+    );
+    (scene, camera, first_node.expect("at least one field node"))
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn static_frames_reuse_and_instanced_batches_keep_memory_linear() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 160, 120).expect("renderer");
+    let textures = HashMap::new();
+    let (mut scene, camera, first_node) = instance_field_scene(10_000);
+    let first = renderer
+        .render(&mut device, &scene, &textures, camera, &options())
+        .expect("first field frame");
+    renderer.capture(&mut device).expect("sync field frame");
+    assert_eq!(
+        first.draw_calls, 1,
+        "instanced field must be one indexed draw"
+    );
+    assert_eq!(first.instances, 10_000);
+    assert_eq!(first.mesh_uploads, 1);
+    assert!(first.upload_bytes >= 10_000 * 144);
+    let loaded = renderer.statistics();
+    assert_eq!(
+        loaded.draw_capacity, 1,
+        "draw slots must not scale with instances"
+    );
+    assert!(loaded.instance_capacity >= 10_000);
+    assert!(
+        loaded.resident_buffer_bytes < 2 * 10_000 * 144,
+        "buffer bytes {} should stay near the instance table",
+        loaded.resident_buffer_bytes
+    );
+
+    let second = renderer
+        .render(&mut device, &scene, &textures, camera, &options())
+        .expect("reused field frame");
+    assert!(second.frame_reused, "unchanged frame must not resubmit");
+    assert_eq!(second.upload_bytes, 0);
+    assert_eq!(second.mesh_uploads, 0);
+    assert_eq!(second.draw_calls, 1);
+
+    let moved_camera = Camera::perspective(
+        Vec3::new(2.0, 9.0, 21.0),
+        Vec3::ZERO,
+        Vec3::Y,
+        55.0_f32.to_radians(),
+        0.05,
+        200.0,
+    );
+    let third = renderer
+        .render(&mut device, &scene, &textures, moved_camera, &options())
+        .expect("camera-only frame");
+    assert!(
+        third.camera_only_update,
+        "camera move must skip the scene walk"
+    );
+    assert!(!third.frame_reused);
+    assert_eq!(third.mesh_uploads, 0);
+    assert_eq!(third.draw_calls, 1);
+    assert!(
+        third.upload_bytes <= 512,
+        "camera-only frame uploaded {} bytes",
+        third.upload_bytes
+    );
+
+    scene.node_mut(first_node).unwrap().transform.translation.y += 0.3;
+    let fourth = renderer
+        .render(&mut device, &scene, &textures, camera, &options())
+        .expect("one-instance mutation frame");
+    assert!(!fourth.camera_only_update);
+    assert_eq!(fourth.draw_calls, 1);
+    assert_eq!(fourth.instances, 10_000);
+    assert!(
+        fourth.upload_bytes >= 128 && fourth.upload_bytes <= 1024,
+        "one changed instance uploaded {} bytes",
+        fourth.upload_bytes
+    );
+    renderer.destroy(&mut device).expect("destroy renderer");
+}

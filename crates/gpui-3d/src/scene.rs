@@ -167,12 +167,29 @@ struct NodeSlot {
 }
 
 /// Mutable 3D scene graph with generational handles and shared immutable assets.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Scene {
     nodes: Vec<NodeSlot>,
     free_slots: Vec<u32>,
     roots: Vec<NodeId>,
     live_nodes: usize,
+    version: u64,
+    instance_id: u64,
+}
+
+static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Default for Scene {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            free_slots: Vec::new(),
+            roots: Vec::new(),
+            live_nodes: 0,
+            version: 0,
+            instance_id: NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 /// Read-only scene view with transform tracks sampled at one absolute clip time.
@@ -203,6 +220,30 @@ impl Scene {
     /// Creates an empty scene.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Monotonic mutation counter for retained renderer/preparation reuse.
+    ///
+    /// Every structural change (insert, remove, reparent) and every [`Scene::node_mut`] call
+    /// increments the counter; `node_mut` bumps conservatively because the caller may or may not
+    /// write fields afterwards. The counter wraps only after `u64::MAX` mutations. A cloned scene
+    /// keeps the same counter value, so retained caches must also compare scene identity rather
+    /// than relying on the version alone.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn bump_version(&mut self) {
+        self.version = self.version.wrapping_add(1);
+    }
+
+    /// Process-unique scene identity used by retained renderers to validate cached frames.
+    ///
+    /// This is crate-internal: callers cannot construct or compare identities, so a dropped and
+    /// recreated scene can never inherit another scene's cached frame.
+    pub(crate) fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     /// Evaluates transform tracks without mutating authored scene data.
@@ -280,6 +321,7 @@ impl Scene {
         if parent.is_some_and(|parent| self.node_slot(parent).is_none()) {
             return Err(SceneError::StaleNode);
         }
+        self.bump_version();
         let id = if let Some(index) = self.free_slots.pop() {
             let slot = &mut self.nodes[index as usize];
             slot.parent = parent;
@@ -321,6 +363,8 @@ impl Scene {
 
     /// Returns a mutable node by its generational handle.
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.node_slot(id)?.node.as_ref()?;
+        self.bump_version();
         self.node_slot_mut(id)?.node.as_mut()
     }
 
@@ -357,6 +401,7 @@ impl Scene {
         if old_parent == parent {
             return Ok(());
         }
+        self.bump_version();
         if let Some(old_parent) = old_parent {
             self.node_slot_mut(old_parent)
                 .ok_or(SceneError::StaleNode)?
@@ -384,6 +429,7 @@ impl Scene {
     /// Returns [`SceneError::StaleNode`] when `id` is not live.
     pub fn remove(&mut self, id: NodeId) -> Result<(), SceneError> {
         let parent = self.node_slot(id).ok_or(SceneError::StaleNode)?.parent;
+        self.bump_version();
         if let Some(parent) = parent {
             self.node_slot_mut(parent)
                 .ok_or(SceneError::StaleNode)?
@@ -465,6 +511,29 @@ mod tests {
         };
         assert!(replacement.index() == root.index() || replacement.index() == child.index());
         assert_ne!(replacement.generation(), stale.generation());
+    }
+
+    #[test]
+    fn version_tracks_mutations_and_scene_identity_is_unique() {
+        let mut scene = Scene::new();
+        assert_eq!(scene.version(), 0);
+        let first = scene.insert(None, Node::new()).unwrap();
+        let second = scene.insert(None, Node::new()).unwrap();
+        assert_eq!(scene.version(), 2);
+        scene.node_mut(first).unwrap().transform.translation = crate::Vec3::new(1.0, 0.0, 0.0);
+        assert_eq!(scene.version(), 3);
+        scene.reparent(second, Some(first)).unwrap();
+        assert_eq!(scene.version(), 4);
+        // Reparenting to the same parent is a no-op and must not invalidate retained work.
+        scene.reparent(second, Some(first)).unwrap();
+        assert_eq!(scene.version(), 4);
+        scene.remove(first).unwrap();
+        assert_eq!(scene.version(), 5);
+        assert!(scene.node_mut(first).is_none());
+        assert_eq!(scene.version(), 5);
+        let other = Scene::new();
+        assert_eq!(other.version(), 0);
+        assert_ne!(other.instance_id(), scene.instance_id());
     }
 
     #[test]

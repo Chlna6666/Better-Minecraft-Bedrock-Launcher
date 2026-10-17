@@ -89,7 +89,7 @@ pub(super) fn create_texture(
     })?;
     if let Err(error) = write_texture_mips(device, texture, asset) {
         device.destroy_texture(texture)?;
-        return Err(error.into());
+        return Err(error);
     }
     let view = match device.create_texture_view(&TextureViewDescriptor {
         label: Some(format!("gpui-3d texture view {}", asset.id().0)),
@@ -547,49 +547,7 @@ pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let light_count =
         u32::try_from(scene.lights.len()).context("GPUI 3D light count exceeds u32")?;
     for draw in &scene.draws {
-        let slot_start = bytes.len();
-        write_vec4(&mut bytes, draw.material.base_color);
-        write_vec4(&mut bytes, draw.material.emissive);
-        write_f32(&mut bytes, draw.material.metallic);
-        write_f32(&mut bytes, draw.material.roughness);
-        write_f32(&mut bytes, draw.material.alpha_cutoff);
-        let normal_mapping_enabled = draw.material.shading_model == ShadingModel::MetallicRoughness
-            && draw.material.normal_texture.is_some();
-        write_u32(&mut bytes, u32::from(normal_mapping_enabled));
-        write_f32(&mut bytes, draw.material.occlusion_strength);
-        write_u32(&mut bytes, alpha_mode_value(draw.material.alpha_mode));
-        write_u32(&mut bytes, light_count);
-        let shading_model = match draw.material.shading_model {
-            ShadingModel::MetallicRoughness => SHADING_MODEL_METALLIC_ROUGHNESS,
-            ShadingModel::Unlit => SHADING_MODEL_UNLIT,
-        };
-        write_u32(&mut bytes, shading_model);
-        let mut texture_flags = 0;
-        if draw.material.albedo_texture.is_some() {
-            texture_flags |= TEXTURE_FLAG_ALBEDO;
-        }
-        if draw.material.occlusion_texture.is_some() {
-            texture_flags |= TEXTURE_FLAG_OCCLUSION;
-        }
-        if draw.mesh.uses_uv_regions() {
-            texture_flags |= TEXTURE_FLAG_UV;
-        }
-        if draw.material.metallic_roughness_texture.is_some() {
-            texture_flags |= TEXTURE_FLAG_METALLIC_ROUGHNESS;
-        }
-        write_u32(&mut bytes, texture_flags);
-
-        let encoded_size = bytes.len() - slot_start;
-        if encoded_size > DRAW_PARAMS_STRIDE as usize {
-            return Err(anyhow!(
-                "GPUI 3D DrawParams encoding is {encoded_size} bytes but WGSL stride is {DRAW_PARAMS_STRIDE}"
-            )
-            .into());
-        }
-        let slot_end = slot_start
-            .checked_add(DRAW_SLOT_STRIDE)
-            .ok_or_else(|| anyhow!("GPUI 3D draw slot size overflow"))?;
-        bytes.resize(slot_end, 0);
+        encode_draw_slot(draw, light_count, &mut bytes)?;
     }
     if scene.draws.is_empty() {
         bytes.resize(DRAW_SLOT_STRIDE, 0);
@@ -597,6 +555,61 @@ pub(crate) fn encode_draws(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Encodes one padded draw slot for a draw (or one representative per instanced batch).
+///
+/// Offscreen batching submits one draw slot per batch instead of one per instance, so the
+/// streaming draw buffer grows with distinct material/mesh combinations rather than node count.
+pub(crate) fn encode_draw_slot(
+    draw: &crate::PreparedDraw,
+    light_count: u32,
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    let slot_start = bytes.len();
+    write_vec4(bytes, draw.material.base_color);
+    write_vec4(bytes, draw.material.emissive);
+    write_f32(bytes, draw.material.metallic);
+    write_f32(bytes, draw.material.roughness);
+    write_f32(bytes, draw.material.alpha_cutoff);
+    let normal_mapping_enabled = draw.material.shading_model == ShadingModel::MetallicRoughness
+        && draw.material.normal_texture.is_some();
+    write_u32(bytes, u32::from(normal_mapping_enabled));
+    write_f32(bytes, draw.material.occlusion_strength);
+    write_u32(bytes, alpha_mode_value(draw.material.alpha_mode));
+    write_u32(bytes, light_count);
+    let shading_model = match draw.material.shading_model {
+        ShadingModel::MetallicRoughness => SHADING_MODEL_METALLIC_ROUGHNESS,
+        ShadingModel::Unlit => SHADING_MODEL_UNLIT,
+    };
+    write_u32(bytes, shading_model);
+    let mut texture_flags = 0;
+    if draw.material.albedo_texture.is_some() {
+        texture_flags |= TEXTURE_FLAG_ALBEDO;
+    }
+    if draw.material.occlusion_texture.is_some() {
+        texture_flags |= TEXTURE_FLAG_OCCLUSION;
+    }
+    if draw.mesh.uses_uv_regions() {
+        texture_flags |= TEXTURE_FLAG_UV;
+    }
+    if draw.material.metallic_roughness_texture.is_some() {
+        texture_flags |= TEXTURE_FLAG_METALLIC_ROUGHNESS;
+    }
+    write_u32(bytes, texture_flags);
+
+    let encoded_size = bytes.len() - slot_start;
+    if encoded_size > DRAW_PARAMS_STRIDE as usize {
+        return Err(anyhow!(
+                "GPUI 3D DrawParams encoding is {encoded_size} bytes but WGSL stride is {DRAW_PARAMS_STRIDE}"
+            )
+            .into());
+    }
+    let slot_end = slot_start
+        .checked_add(DRAW_SLOT_STRIDE)
+        .ok_or_else(|| anyhow!("GPUI 3D draw slot size overflow"))?;
+    bytes.resize(slot_end, 0);
+
+    Ok(())
+}
 pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * INSTANCE_STRIDE as usize);
     for draw in &scene.draws {

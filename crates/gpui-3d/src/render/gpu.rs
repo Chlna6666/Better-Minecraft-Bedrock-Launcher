@@ -15,7 +15,7 @@ use super::{
     CapturedImage, DebugView, FrameStatistics, RenderError, RenderOptions, RendererStatistics,
 };
 use crate::scene_view::gpu::{
-    encode_draws, encode_instances, encode_lights, encode_mesh, write_matrix, write_vec4,
+    encode_draw_slot, encode_instances, encode_lights, encode_mesh, write_matrix, write_vec4,
 };
 use crate::scene_view::{
     DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, PACKED_VERTEX_STRIDE,
@@ -221,6 +221,7 @@ impl GpuState {
         options: &RenderOptions,
         target: (u32, u32),
         started: Instant,
+        frame_data_dirty: bool,
     ) -> Result<FrameStatistics, RenderError> {
         self.ensure_idle(device)?;
         self.frame_index = self.frame_index.wrapping_add(1);
@@ -289,14 +290,26 @@ impl GpuState {
             shadow_enabled,
             shadow_texel,
         );
-        let draw_bytes = encode_draws(prepared).map_err(prepare_error)?;
-        let instance_bytes = encode_instances(prepared).map_err(prepare_error)?;
-        let light_bytes = encode_lights(&prepared.lights);
+        let draw_bytes = if frame_data_dirty {
+            Some(encode_batch_draws(prepared)?)
+        } else {
+            None
+        };
+        let instance_bytes = if frame_data_dirty {
+            Some(encode_instances(prepared).map_err(prepare_error)?)
+        } else {
+            None
+        };
+        let light_bytes = if frame_data_dirty {
+            Some(encode_lights(&prepared.lights))
+        } else {
+            None
+        };
         let upload = self.frame_buffers.sync(
             device,
-            &draw_bytes,
-            &instance_bytes,
-            &light_bytes,
+            draw_bytes.as_deref(),
+            instance_bytes.as_deref(),
+            light_bytes.as_deref(),
             &frame_bytes,
         )?;
         statistics.upload_bytes = statistics.upload_bytes.saturating_add(upload.bytes);
@@ -313,8 +326,13 @@ impl GpuState {
         self.used_batch_keys.clear();
         let mut shadow_steps = Vec::new();
         let mut scene_steps = Vec::new();
-        for batch in prepared.draw_batches() {
-            let batch_steps = self.batch_steps(device, batch)?;
+        for (batch_slot, batch) in prepared.draw_batches().enumerate() {
+            let batch_steps = self.batch_steps(
+                device,
+                batch,
+                u32::try_from(batch_slot)
+                    .map_err(|_| RenderError::Preparation("draw batch count exceeds u32".into()))?,
+            )?;
             statistics.draw_calls += 1;
             statistics.triangles += batch_steps.triangles;
             statistics.instances += batch_steps.instances;
@@ -741,6 +759,7 @@ impl GpuState {
         &mut self,
         device: &mut D,
         batch: crate::DrawBatch<'_>,
+        slot: u32,
     ) -> Result<BatchSteps, RenderError> {
         let first = batch
             .draws()
@@ -753,6 +772,7 @@ impl GpuState {
             mesh_id: mesh_key.0,
             generation: mesh_key.1,
             part_first_index: part.first_index(),
+            slot,
             draw_index: batch.first_instance() as u32,
             instance_count: batch.draws().len() as u32,
             albedo: material.albedo_texture,
@@ -832,7 +852,7 @@ impl GpuState {
         let vertex_bytes = mesh.vertex_bytes;
         let tangents = mesh.tangents;
         let tangent_bytes = mesh.tangent_bytes;
-        let draw_offset = u64::from(key.draw_index) * DRAW_SLOT_STRIDE as u64;
+        let draw_offset = u64::from(key.slot) * DRAW_SLOT_STRIDE as u64;
         let draw_buffer = self.frame_buffers.draw.buffer;
         let instance_buffer = self.frame_buffers.instance.buffer;
         let instance_bytes = self.frame_buffers.instance_bytes;
@@ -1005,6 +1025,27 @@ impl GpuState {
     }
 }
 
+/// Encodes one draw-parameter slot per instanced batch.
+///
+/// The scene-view extension still writes one slot per draw because the host pass has no instanced
+/// batch contract. The offscreen renderer owns batching, so its draw buffer is sized by batch count
+/// and a 200k-instance field keeps a single 512-byte slot instead of 102 MiB of duplicated slots.
+fn encode_batch_draws(prepared: &PreparedScene) -> Result<Vec<u8>, RenderError> {
+    let light_count = u32::try_from(prepared.lights.len())
+        .map_err(|_| RenderError::Preparation("GPUI 3D light count exceeds u32".into()))?;
+    let mut bytes = Vec::with_capacity(prepared.draws.len().min(1024) * DRAW_SLOT_STRIDE);
+    for batch in prepared.draw_batches() {
+        let Some(draw) = batch.draws().first() else {
+            continue;
+        };
+        encode_draw_slot(draw, light_count, &mut bytes).map_err(prepare_error)?;
+    }
+    if bytes.is_empty() {
+        bytes.resize(DRAW_SLOT_STRIDE, 0);
+    }
+    Ok(bytes)
+}
+
 fn prepared_bounds(prepared: &PreparedScene) -> Option<Aabb> {
     let mut bounds: Option<Aabb> = None;
     for draw in &prepared.draws {
@@ -1068,6 +1109,9 @@ struct BatchKey {
     mesh_id: MeshId,
     generation: u64,
     part_first_index: u32,
+    /// Streaming draw-buffer slot; one slot per instanced batch.
+    slot: u32,
+    /// First instance index in the instance buffer.
     draw_index: u32,
     instance_count: u32,
     albedo: Option<TextureAssetId>,
@@ -2454,28 +2498,33 @@ impl FrameBuffers {
     fn sync<D: Device + ?Sized>(
         &mut self,
         device: &mut D,
-        draw_bytes: &[u8],
-        instance_bytes: &[u8],
-        light_bytes: &[u8],
+        draw_bytes: Option<&[u8]>,
+        instance_bytes: Option<&[u8]>,
+        light_bytes: Option<&[u8]>,
         frame_bytes: &[u8],
     ) -> Result<FrameUpload, RenderError> {
         let mut reallocated = false;
         let mut bytes = 0_u64;
-        let (draw_uploaded, draw_reallocated) = self.draw.sync(device, draw_bytes)?;
-        bytes += draw_uploaded;
-        reallocated |= draw_reallocated;
-        let (instance_uploaded, instance_reallocated) =
-            self.instance.sync(device, instance_bytes)?;
-        bytes += instance_uploaded;
-        reallocated |= instance_reallocated;
-        let (light_uploaded, light_reallocated) = self.light.sync(device, light_bytes)?;
-        bytes += light_uploaded;
-        reallocated |= light_reallocated;
+        if let Some(draw_bytes) = draw_bytes {
+            let (uploaded, grew) = self.draw.sync(device, draw_bytes)?;
+            bytes += uploaded;
+            reallocated |= grew;
+        }
+        if let Some(instance_bytes) = instance_bytes {
+            let (uploaded, grew) = self.instance.sync(device, instance_bytes)?;
+            bytes += uploaded;
+            reallocated |= grew;
+            self.instance_bytes = instance_bytes.len() as u64;
+        }
+        if let Some(light_bytes) = light_bytes {
+            let (uploaded, grew) = self.light.sync(device, light_bytes)?;
+            bytes += uploaded;
+            reallocated |= grew;
+            self.light_bytes = light_bytes.len() as u64;
+        }
         let (frame_uploaded, frame_reallocated) = self.frame.sync(device, frame_bytes)?;
         bytes += frame_uploaded;
         reallocated |= frame_reallocated;
-        self.instance_bytes = instance_bytes.len() as u64;
-        self.light_bytes = light_bytes.len() as u64;
         Ok(FrameUpload { bytes, reallocated })
     }
 

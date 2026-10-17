@@ -35,6 +35,12 @@ downscales oversized images; and the default 1024 shadow map keeps target memory
 instead of 33 MiB. Measured: 720p studio at 19.8 MiB resident (1024 shadow) or 44.3 MiB (2048);
 DamagedHelmet 79.8 MiB resident at 2048 textures vs 30.7 MiB with `--max-texture=1024`.
 
+Static frames are retained: an unchanged scene, camera, and options return the last frame with zero
+CPU preparation, uploads, or GPU submission, while a camera-only move re-culls without walking the
+scene graph. Instanced batching writes one draw slot per batch, so a 200,000-node cube field with
+one shared mesh/material renders in one indexed draw with 200,000 instances and 28 MiB of streaming
+buffers instead of 128 MiB. The lab exposes it with `--instances=200000`.
+
 ## Offscreen renderer quick start
 
 ```rust

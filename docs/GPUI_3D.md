@@ -54,6 +54,7 @@ feature:
 | Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF cameras, top-left viewport pick/project helpers, GPU object-id picking that matches the submitted frame | Depth GPU picking and asynchronous readback |
 | Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, exposure, ACES/Reinhard tone mapping | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows |
 | Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow pass, PBR scene pass, post pass) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Scene scale and reuse | Retained draw list with frustum culling, instanced batches, static-frame reuse, camera-only re-cull without a scene walk, per-element hash-tracked uploads, verified 200,000-instance field in one indexed draw | GPU-driven indirect submission, LOD, occlusion culling, GPU-side scene traversal |
 | Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Pose blending/crossfade, skeletal skinning, morph weights, IK |
 | Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
 | Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
@@ -519,8 +520,45 @@ nothing.
 Native memory tests (`tests/renderer_memory.rs`, ignored by default) assert: soft-budget eviction
 releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
 cycle stays bounded and aggressive trim clears every cache/resource set; resize keeps the mesh cache
-warm while retargeting render targets; animation uploads only changed instance ranges; and CPU/GPU
-picking agree.
+warm while retargeting render targets; animation uploads only changed instance ranges; CPU/GPU
+picking agree; a 10,000-instance field keeps one draw slot, reuses unchanged static frames with zero
+uploads, skips the scene walk for camera-only moves, and uploads one instance record for a single
+`node_mut` change.
+
+## Retained frame reuse and scene scale
+
+Frame statistics expose two additional CPU-side fast paths:
+
+- `FrameStatistics::frame_reused`: the scene identity, mutation version, camera pose, options, and
+  target size all match the last submitted frame. The renderer returns the retained statistics
+  without walking the scene, encoding buffers, uploading, or submitting GPU work; a following
+  `capture` reads the still-valid render target. Static frames therefore cost zero CPU preparation
+  and zero upload bytes.
+- `FrameStatistics::camera_only_update`: only the camera moved. `PreparedScene::update_camera`
+  re-culls and re-sorts the retained candidate draws without re-walking the scene graph, and only
+  the frame uniform is uploaded because draw, instance, and light content hashes are unchanged.
+
+`Scene::version` is a monotonic mutation counter bumped by insert, remove, reparent, and
+`node_mut` (conservatively). The renderer validates both the scene's process-unique identity and
+the version, so a dropped and recreated scene can never inherit a cached frame.
+
+Instanced batching also fixes draw-buffer growth: the offscreen renderer writes one draw-parameter
+slot per instanced batch instead of one per draw. A 200,000-node field that shares one mesh and
+material submits a single indexed draw with 200,000 instances and a 512-byte draw slot instead of
+200,000 duplicated 512-byte slots (about 100 MiB saved). The lab exposes this with
+`--instances=N`. Measured on this machine, 1280x720, shadow map 1024, static camera:
+
+| Nodes | Draw calls | Instances | Triangles | Buffer bytes | Target bytes | Resident | First frame prepare | Steady frame |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5,000 | 1 | 5,000 | 60,000 | 704 KiB | 18.5 MiB | 19.7 MiB | 29.7 ms | reused, 0 upload |
+| 50,000 | 1 | 50,000 | 600,000 | 7.0 MiB | 18.5 MiB | 25.7 MiB | 44 ms | reused, 0 upload |
+| 200,000 | 1 | 200,000 | 2,400,000 | 28.1 MiB | 18.5 MiB | 47.1 MiB | 242 ms | reused, 0 upload |
+
+Before the per-batch draw slot change the 200,000-node field reported 128 MiB of buffers, 147 MiB
+resident, and 353 ms first-frame preparation. Remaining costs are the initial CPU scene walk and
+GPU submission of the full instance range; there is still no GPU-driven indirect submission,
+clustered lighting, or LOD, so the field renders every instance every time the camera or scene
+changes.
 
 ## Picking and projection
 
@@ -552,6 +590,7 @@ cargo check -p gpui-3d --all-targets --all-features
 cargo clippy -p gpui-3d --all-targets --all-features --no-deps
 cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=3 --shadow-res=2048 --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --frames=4 --out=target/scene_lab/instances.png --json=target/scene_lab/instances.json
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and

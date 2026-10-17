@@ -24,6 +24,7 @@ mod backend;
 mod studio;
 
 use gpui_3d::{DebugView, GltfLoadOptions, RenderOptions, ShadowOptions, Tonemap};
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -49,6 +50,7 @@ struct Args {
     pitch: f32,
     distance: Option<f32>,
     model: Option<String>,
+    instances: Option<u32>,
     animation: Option<String>,
     animation_time: f32,
     max_texture: Option<u32>,
@@ -77,6 +79,7 @@ impl Default for Args {
             pitch: 0.30,
             distance: None,
             model: None,
+            instances: None,
             animation: None,
             animation_time: 0.0,
             max_texture: None,
@@ -113,7 +116,15 @@ fn run() -> Result<(), String> {
         sun_azimuth_degrees: args.sun.0,
         sun_elevation_degrees: args.sun.1,
     };
-    let studio_scene = if args.model.is_none() {
+    let field_scene = match args.instances {
+        Some(count) if args.model.is_none() => Some(
+            studio::build_instance_field(count)
+                .map_err(|error| format!("build instance field: {error}"))?,
+        ),
+        _ => None,
+    };
+    let field_textures = HashMap::new();
+    let studio_scene = if args.model.is_none() && field_scene.is_none() {
         Some(
             studio::build(&studio_options)
                 .map_err(|error| format!("build studio scene: {error}"))?,
@@ -151,15 +162,22 @@ fn run() -> Result<(), String> {
             println!("import warning: {warning}");
         }
     }
-    let camera = match (&studio_scene, &imported) {
-        (Some(_), _) => studio::studio_camera(&studio_options),
-        (_, Some(imported)) => imported
-            .cameras
-            .first()
-            .map(|camera| camera.camera)
-            .unwrap_or_else(|| imported_camera(imported, &args)),
-        _ => studio::studio_camera(&studio_options),
+    let camera = if let Some((field, radius)) = &field_scene {
+        field_camera(field, *radius, &args)
+    } else {
+        match (&studio_scene, &imported) {
+            (Some(_), _) => studio::studio_camera(&studio_options),
+            (_, Some(imported)) => imported
+                .cameras
+                .first()
+                .map(|camera| camera.camera)
+                .unwrap_or_else(|| imported_camera(imported, &args)),
+            _ => studio::studio_camera(&studio_options),
+        }
     };
+    if let Some((field, radius)) = &field_scene {
+        println!("instance field: nodes={} radius={radius:.3}", field.len());
+    }
     let animation = imported.as_ref().and_then(|imported| {
         let clip = match &args.animation {
             Some(name) => imported.animation(name),
@@ -203,10 +221,14 @@ fn run() -> Result<(), String> {
     };
     let mut failures = Vec::new();
     for backend_name in backends {
-        let (scene, textures) = match (&studio_scene, &imported) {
-            (Some(studio), _) => (&studio.scene, &studio.textures),
-            (_, Some(imported)) => (&imported.scene, &imported.textures),
-            _ => unreachable!("one scene source is always selected"),
+        let (scene, textures) = if let Some((field, _)) = &field_scene {
+            (field, &field_textures)
+        } else {
+            match (&studio_scene, &imported) {
+                (Some(studio), _) => (&studio.scene, &studio.textures),
+                (_, Some(imported)) => (&imported.scene, &imported.textures),
+                _ => unreachable!("one scene source is always selected"),
+            }
         };
         let request = backend::RenderRequest {
             scene,
@@ -312,27 +334,38 @@ fn add_studio_lights(scene: &mut gpui_3d::Scene, args: &Args) -> Result<(), Stri
 }
 
 fn imported_camera(imported: &gpui_3d::GltfScene, args: &Args) -> gpui_3d::Camera {
-    use gpui_3d::{Camera, Vec3};
-    let bounds = imported.scene.bounds().ok().flatten();
-    let (center, radius) = match bounds {
-        Some(bounds) => {
-            let center = Vec3::new(
-                (bounds.min.x + bounds.max.x) * 0.5,
-                (bounds.min.y + bounds.max.y) * 0.5,
-                (bounds.min.z + bounds.max.z) * 0.5,
-            );
-            let extent = Vec3::new(
-                bounds.max.x - bounds.min.x,
-                bounds.max.y - bounds.min.y,
-                bounds.max.z - bounds.min.z,
-            );
-            (
-                center,
-                (extent.x * extent.x + extent.y * extent.y + extent.z * extent.z).sqrt() * 0.5,
-            )
-        }
-        None => (Vec3::ZERO, 1.0),
+    let (center, radius) = scene_bounds(&imported.scene);
+    framed_camera(center, radius, args)
+}
+
+fn field_camera(scene: &gpui_3d::Scene, radius: f32, args: &Args) -> gpui_3d::Camera {
+    let (center, _) = scene_bounds(scene);
+    framed_camera(center, radius.max(0.05), args)
+}
+
+fn scene_bounds(scene: &gpui_3d::Scene) -> (gpui_3d::Vec3, f32) {
+    use gpui_3d::Vec3;
+    let Some(bounds) = scene.bounds().ok().flatten() else {
+        return (Vec3::ZERO, 1.0);
     };
+    let center = Vec3::new(
+        (bounds.min.x + bounds.max.x) * 0.5,
+        (bounds.min.y + bounds.max.y) * 0.5,
+        (bounds.min.z + bounds.max.z) * 0.5,
+    );
+    let extent = Vec3::new(
+        bounds.max.x - bounds.min.x,
+        bounds.max.y - bounds.min.y,
+        bounds.max.z - bounds.min.z,
+    );
+    (
+        center,
+        (extent.x * extent.x + extent.y * extent.y + extent.z * extent.z).sqrt() * 0.5,
+    )
+}
+
+fn framed_camera(center: gpui_3d::Vec3, radius: f32, args: &Args) -> gpui_3d::Camera {
+    use gpui_3d::{Camera, Vec3};
     let radius = radius.max(0.05);
     let distance = args.distance.unwrap_or_else(|| radius * 2.1);
     let horizontal = distance * args.pitch.cos();
@@ -380,6 +413,7 @@ fn parse_args() -> Result<Args, String> {
             "--pitch" => args.pitch = parse_float(value, key)?,
             "--distance" => args.distance = Some(parse_float(value, key)?),
             "--model" => args.model = Some(required(value, key)?),
+            "--instances" => args.instances = Some(parse_number(value, key)?),
             "--animation" => args.animation = Some(required(value, key)?),
             "--animation-time" => args.animation_time = parse_float(value, key)?,
             "--max-texture" => args.max_texture = Some(parse_number(value, key)?),
@@ -469,6 +503,7 @@ fn help_text() -> String {
         "  --debug=shaded|albedo|normal|depth|uv|shadow|object-id",
         "  --yaw=0.62 --pitch=0.30 --distance=11.5 --sun=135,52",
         "  --model=model.glb --animation=clip --animation-time=1.5",
+        "  --instances=20000  (procedural instanced cube field)",
         "  --max-texture=1024 --budget-mb=256 --pick=640,360",
         "  --list-backends",
     ]
@@ -513,7 +548,7 @@ fn print_report(report: &backend::BackendReport) {
         first.submit_nanos as f64 / 1.0e6,
     );
     println!(
-        "steady_frame: draws={} shadow_draws={} triangles={} instances={} mesh_uploads={} texture_uploads={} upload_bytes={} prepare={:.2}ms submit={:.2}ms",
+        "steady_frame: draws={} shadow_draws={} triangles={} instances={} mesh_uploads={} texture_uploads={} upload_bytes={} prepare={:.2}ms submit={:.2}ms reused={} camera_only={}",
         steady.draw_calls,
         steady.shadow_draw_calls,
         steady.triangles,
@@ -523,6 +558,8 @@ fn print_report(report: &backend::BackendReport) {
         steady.upload_bytes,
         steady.cpu_prepare_nanos as f64 / 1.0e6,
         steady.submit_nanos as f64 / 1.0e6,
+        steady.frame_reused,
+        steady.camera_only_update,
     );
     let renderer = report.renderer;
     println!(
