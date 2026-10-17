@@ -119,6 +119,7 @@ impl NovaRenderer {
             active_presentation_packet: None,
             pending_presentation_packet: None,
             pending_animation_completions: SmallVec::new(),
+            deferred_animation_completions: SmallVec::new(),
             destroyed: false,
         };
         renderer.sample_memory(true, None);

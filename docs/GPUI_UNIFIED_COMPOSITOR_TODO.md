@@ -1112,3 +1112,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 测试：`cargo test -p gpui --lib pending_geometry_does_not_evict_last_submitted_active_scene`、`cargo test -p gpui --lib retry_failure_must_leave_pending_scene_and_active_scene_unchanged`，还需编译及四后端实机。此项建立所有权边界，**没有**完成独立可并行的 GPU Compositor/Render Preparation 工作线程。
 
 - 修复 GPU Owner 独立 Tick 的尺寸代次：待提交 Scene 延期后，`tick()` 的 `ready()` 需要传递 Pending 的 `layout_epoch`，不能传 `None` 导致一个仍待提交的版本化 Resize 永远无法满足 `DrawableSizeRequest::applies_to`。现新增只读 `pending_presentation_epoch()`，优先用 Pending 所属尺寸代次执行准备与提交。
+
+- Animation Completion 事务：Pending 新 Scene 产生的完成事件只暂存在 `deferred_animation_completions`，GPU 提交成功后才交付；新 UI Scene 替换未提交候选时丢弃原候选的过期完成事件。独立合成重试会积累并正确交付一次事件，避免动画在实际显示前被 UI 判定结束。测试：`animation_completion_events_follow_successful_presentation`。

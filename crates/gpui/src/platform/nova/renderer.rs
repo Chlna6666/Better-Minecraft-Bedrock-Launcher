@@ -204,6 +204,8 @@ pub(crate) struct NovaRenderer {
     /// from Active and owns all accumulated unsubmitted damage.
     pending_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    /// Completion events from a candidate which has not reached the GPU.
+    deferred_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
 }
 
@@ -222,6 +224,25 @@ fn publish_presentation_candidate<T>(
         *pending = None;
     } else {
         *pending = Some(candidate);
+    }
+}
+
+/// Defer endpoint notifications until their scene is really submitted.
+fn record_animation_completion_sample(
+    published: &mut SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    deferred: &mut SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    sampled: SmallVec<[crate::SceneAnimationCompletion; 4]>,
+    submitted: bool,
+    new_candidate: bool,
+) {
+    if new_candidate {
+        deferred.clear();
+    }
+    if submitted {
+        published.extend(deferred.drain(..));
+        published.extend(sampled);
+    } else {
+        deferred.extend(sampled);
     }
 }
 
@@ -393,15 +414,22 @@ impl NovaRenderer {
         {
             packet.merge_pending_damage_from(previous);
         }
-        self.pending_animation_completions
-            .extend(packet.sample_animations(packet.frame_time));
+        let sampled_completions = packet.sample_animations(packet.frame_time);
         let started_at = Instant::now();
         let mut presentation_timing = None;
         let result = self.draw_frame(&mut packet, &mut presentation_timing);
-        if result.as_ref().is_ok_and(|submitted| *submitted) {
+        let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
+        if submitted {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
+        record_animation_completion_sample(
+            &mut self.pending_animation_completions,
+            &mut self.deferred_animation_completions,
+            sampled_completions,
+            submitted,
+            true,
+        );
         publish_presentation_candidate(
             &mut self.active_presentation_packet,
             &mut self.pending_presentation_packet,
@@ -850,8 +878,7 @@ impl NovaRenderer {
         {
             packet.merge_pending_damage_from(previous);
         }
-        self.pending_animation_completions
-            .extend(packet.sample_animations(packet.frame_time));
+        let sampled_completions = packet.sample_animations(packet.frame_time);
         let result = (|| {
             if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
                 return Ok(false);
@@ -915,10 +942,18 @@ impl NovaRenderer {
                 &mut presentation_timing,
             )
         })();
-        if result.as_ref().is_ok_and(|submitted| *submitted) {
+        let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
+        if submitted {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
+        record_animation_completion_sample(
+            &mut self.pending_animation_completions,
+            &mut self.deferred_animation_completions,
+            sampled_completions,
+            submitted,
+            true,
+        );
         publish_presentation_candidate(
             &mut self.active_presentation_packet,
             &mut self.pending_presentation_packet,
@@ -965,8 +1000,7 @@ impl NovaRenderer {
                 completed_animations: SmallVec::new(),
             }));
         }
-        self.pending_animation_completions
-            .extend(packet.sample_animations(now));
+        let sampled_completions = packet.sample_animations(now);
         let continues = !packet.presentation_animation_timelines.is_empty();
         let mut presentation_timing = presentation_timing;
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
@@ -975,6 +1009,13 @@ impl NovaRenderer {
             self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
+        record_animation_completion_sample(
+            &mut self.pending_animation_completions,
+            &mut self.deferred_animation_completions,
+            sampled_completions,
+            submitted,
+            false,
+        );
         if was_pending {
             publish_presentation_candidate(
                 &mut self.active_presentation_packet,
@@ -1140,6 +1181,7 @@ impl NovaRenderer {
         self.destroyed = true;
         self.active_presentation_packet = None;
         self.pending_presentation_packet = None;
+        self.deferred_animation_completions.clear();
         let destroy_started_at = Instant::now();
         if let Err(error) = self.wait_for_pending_submissions() {
             log::debug!("failed to drain nova-gfx submissions during renderer destroy: {error}");
@@ -1790,6 +1832,44 @@ mod tests {
     #[test]
     fn invalid_cache_still_forces_full_blur_refresh() {
         assert!(force_full_backdrop_blur_refresh(false, false));
+    }
+
+    #[test]
+    fn animation_completion_events_follow_successful_presentation() {
+        let completion = |generation| crate::SceneAnimationCompletion {
+            animation_id: crate::SceneAnimationId(3),
+            property: crate::TransitionProperty::Opacity,
+            generation,
+            view_id: None,
+            retained_id: None,
+        };
+        let mut published = SmallVec::new();
+        let mut deferred = SmallVec::new();
+        record_animation_completion_sample(
+            &mut published, &mut deferred,
+            smallvec::smallvec![completion(1)], false, true,
+        );
+        assert!(published.is_empty());
+        assert_eq!(deferred.len(), 1);
+        record_animation_completion_sample(
+            &mut published, &mut deferred,
+            SmallVec::new(), false, false,
+        );
+        assert_eq!(deferred.len(), 1);
+        // Superseding a never-presented Scene drops only its events.
+        record_animation_completion_sample(
+            &mut published, &mut deferred,
+            smallvec::smallvec![completion(2)], false, true,
+        );
+        assert!(published.is_empty());
+        assert_eq!(deferred[0].generation, 2);
+        record_animation_completion_sample(
+            &mut published, &mut deferred,
+            SmallVec::new(), true, false,
+        );
+        assert!(deferred.is_empty());
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].generation, 2);
     }
 
     #[test]
