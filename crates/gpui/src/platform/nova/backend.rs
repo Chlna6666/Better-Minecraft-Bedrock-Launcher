@@ -354,37 +354,6 @@ impl NovaBackend {
         }
     }
 
-    /// Whether this backend can expose a native-pixel client region from retained capacity.
-    pub(super) fn supports_live_resize_capacity(
-        &self,
-        swapchain: SwapchainId,
-        extent: gfx_core::Extent2d,
-    ) -> Result<bool> {
-        match self {
-            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(_) => Ok(true),
-            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(_) => Ok(true),
-            #[cfg(all(
-                feature = "nova-gfx-opengl",
-                any(target_os = "windows", target_os = "linux")
-            ))]
-            Self::OpenGl(_) => Ok(cfg!(target_os = "windows")),
-            #[cfg(all(
-                feature = "nova-gfx-vulkan",
-                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-            ))]
-            Self::Vulkan(device) => {
-                Ok(device.supports_native_pixel_presentation(swapchain, extent)?)
-            }
-            #[allow(unreachable_patterns)]
-            _ => {
-                let _ = (swapchain, extent);
-                Ok(false)
-            }
-        }
-    }
-
     pub(super) fn label(&self) -> &'static str {
         match self {
             #[cfg(all(

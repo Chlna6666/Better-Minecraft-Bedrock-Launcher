@@ -230,16 +230,14 @@ impl NovaRenderer {
             width: size.width.0.max(1) as u32,
             height: size.height.0.max(1) as u32,
         };
-        let capacity =
-            super::resize_plan::planned_size(self.current_size, requested, self.live_resize_active);
-        let retain_capacity = self.live_resize_active
-            && lock_backend(&self.backend).supports_live_resize_capacity(
-                self.swapchain,
-                Extent2d::new(capacity.width, capacity.height)?,
-            )?;
-        let planned = if retain_capacity { capacity } else { requested };
-        let width = planned.width;
-        let height = planned.height;
+        // Keep the committed swapchain and its render viewport in one pixel
+        // coordinate system. Oversizing DXGI swapchains during WM_SIZE used to
+        // leave a visibly black native client region even when Scene/Present
+        // reported the latest geometry: source-size cropping is not a native
+        // backbuffer resize. Reuse immutable GPU atlas/upload resources instead
+        // of allocating a larger *presentation* surface.
+        let width = requested.width;
+        let height = requested.height;
         let size = crate::size(DevicePixels(width as i32), DevicePixels(height as i32));
         if self.current_size.width == width && self.current_size.height == height {
             return Ok(true);

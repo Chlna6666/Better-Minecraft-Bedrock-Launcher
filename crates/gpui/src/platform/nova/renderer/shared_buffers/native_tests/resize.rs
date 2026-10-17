@@ -226,15 +226,10 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
 }
 
 fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRenderer) {
-    let supports_capacity = lock_backend(&renderer.backend)
-        .supports_live_resize_capacity(renderer.swapchain, Extent2d::new(640, 640).unwrap())
-        .expect("native-pixel presentation capability");
-    println!(
-        "live_resize backend={} native_pixel_growth_capacity={supports_capacity}",
-        renderer.backend_info.label()
-    );
+    // A live client and the actual swapchain must use a single native-pixel
+    // extent. In particular no geometric headroom may silently cause DXGI
+    // to crop an enlarged backing buffer to a smaller source region.
     renderer.set_live_resize_active(true);
-    let mut depth = None;
     for extent in [(520, 520), (525, 522), (530, 528)] {
         window.resize(extent.0, extent.1);
         renderer.update_drawable_size(
@@ -242,30 +237,19 @@ fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRendere
             None,
         );
         present_geometry(renderer, extent);
-        if supports_capacity {
-            assert_eq!(renderer.committed_drawable_extent(), (768, 768));
-            if let Some(depth) = depth {
-                assert_eq!(
-                    renderer.depth_texture, depth,
-                    "live size events must reuse targets inside capacity"
-                );
-            }
-        }
-        depth = Some(renderer.depth_texture);
+        assert_eq!(
+            renderer.committed_drawable_extent(),
+            extent,
+            "every rendered Scene must target the exact active client extent"
+        );
     }
-    let allocated = renderer.committed_drawable_extent();
-    let depth = renderer.depth_texture;
     window.resize(500, 500);
     renderer.update_drawable_size(crate::size(DevicePixels(500), DevicePixels(500)), None);
     present_geometry(renderer, (500, 500));
     assert_eq!(
         renderer.committed_drawable_extent(),
-        allocated,
-        "live shrink must reuse capacity while presenting the current client extent"
-    );
-    assert_eq!(
-        renderer.depth_texture, depth,
-        "live shrink must reuse depth capacity"
+        (500, 500),
+        "native shrink must not leave a larger DXGI backbuffer"
     );
     renderer.set_live_resize_active(false);
     present_geometry(renderer, (500, 500));

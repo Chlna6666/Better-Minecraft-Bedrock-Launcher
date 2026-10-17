@@ -357,9 +357,6 @@ impl NovaRenderer {
 
     pub(crate) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: Option<u64>) {
         let request = DrawableSizeRequest { size, epoch };
-        if self.live_resize_active {
-            self.live_resize_size = Some(request);
-        }
         self.pending_drawable_size = Some(request);
     }
 

@@ -27,7 +27,6 @@ mod preparation;
 use init_state::InitializedRenderer;
 mod present;
 mod retained_upload;
-mod resize_plan;
 mod shared_buffers;
 mod submission;
 mod surface_lifecycle;
@@ -198,7 +197,6 @@ pub(crate) struct NovaRenderer {
     submitted_frames: u64,
     swapchain_warmup_frames: u8,
     live_resize_active: bool,
-    live_resize_size: Option<DrawableSizeRequest>,
     active_presentation_packet: Option<PresentationPacket>,
     pending_animation_completions: SmallVec<[crate::SceneAnimationCompletion; 4]>,
     destroyed: bool,
@@ -331,14 +329,9 @@ impl NovaRenderer {
     }
 
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
-        if self.live_resize_active && !active {
-            // Ending the gesture releases temporary capacity. The release keeps
-            // its original generation so it is applied together with a matching
-            // Scene instead of resizing an unpainted surface on its own.
-            if let Some(request) = self.live_resize_size.take() {
-                self.pending_drawable_size = Some(request);
-            }
-        }
+        // The pending DrawableSizeRequest is already authoritative, regardless
+        // of gesture state. Do not overwrite a newer size/epoch with an old
+        // "release capacity" request on WM_EXITSIZEMOVE.
         self.live_resize_active = active;
     }
 
