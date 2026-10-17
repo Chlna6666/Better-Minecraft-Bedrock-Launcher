@@ -89,6 +89,14 @@ fn should_retain_complex_scene_color(scene: &crate::Scene, summary: &FrameUpload
     partition.has_proven_static_majority()
 }
 
+/// AutoStatic admission is a pure function of committed Scene topology,
+/// retained chunk ownership and viewport extent, not of animation time.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AutoStaticRejectionKey {
+    scene_revision: u64,
+    size: DrawableSize,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct UploadKey {
     scene_revision: u64,
@@ -460,6 +468,9 @@ pub(super) struct RetainedUpload {
     /// Sole owner of packed retained Quad payloads across Scene revisions.
     pub(super) quad_chunks: RetainedQuadChunkCache,
     key: Option<UploadKey>,
+    /// Do not rescan a Scene that already failed AutoStatic safety admission
+    /// on a prior animation sample at the same native client extent.
+    auto_static_rejection: Option<AutoStaticRejectionKey>,
     summary: FrameUploadSummary,
     static_signature: Option<StaticUploadSignature>,
     uploaded_slots: Vec<Option<StaticUploadSignature>>,
@@ -472,6 +483,40 @@ pub(super) struct RetainedUpload {
 #[cfg(test)]
 mod capacity_tests {
     use super::*;
+
+    #[test]
+    fn rejected_auto_static_admission_is_not_repeated_on_animation_only_frames() {
+        let mut upload = RetainedUpload::default();
+        let key = AutoStaticRejectionKey {
+            scene_revision: 42,
+            size: DrawableSize { width: 640, height: 480 },
+        };
+        assert!(upload.auto_static_candidate(key, || None).is_none());
+        // The same immutable scene and extent may retry a GPU encode after an
+        // animation-value change. A failed static prefix is still ineligible.
+        assert!(upload.auto_static_candidate(key, || panic!("rescan")).is_none());
+        // New geometry/Scene must re-evaluate because the static prefix may
+        // become safe and useful after relayout or the capture topology changes.
+        let resized = AutoStaticRejectionKey {
+            size: DrawableSize { width: 800, height: 480 },
+            ..key
+        };
+        let mut examined_resize = false;
+        assert!(upload.auto_static_candidate(resized, || {
+            examined_resize = true;
+            None
+        }).is_none());
+        assert!(examined_resize);
+        let mut examined_revision = false;
+        assert!(upload.auto_static_candidate(AutoStaticRejectionKey {
+            scene_revision: 43,
+            ..resized
+        }, || {
+            examined_revision = true;
+            None
+        }).is_none());
+        assert!(examined_revision);
+    }
 
     #[test]
     fn mask_residency_uses_path_content_not_other_static_streams() {
@@ -536,6 +581,19 @@ mod capacity_tests {
 }
 
 impl RetainedUpload {
+    fn auto_static_candidate(
+        &mut self,
+        key: AutoStaticRejectionKey,
+        evaluate: impl FnOnce() -> Option<super::frame_upload::StaticPrefix>,
+    ) -> Option<super::frame_upload::StaticPrefix> {
+        if self.auto_static_rejection == Some(key) {
+            return None;
+        }
+        let candidate = evaluate();
+        self.auto_static_rejection = candidate.is_none().then_some(key);
+        candidate
+    }
+
     pub(super) fn path_mask_token(&self) -> Option<StaticStreamToken> {
         self.static_signature
             .map(|signature| signature.path_rasterization_vertex)
@@ -742,7 +800,17 @@ impl NovaRenderer {
         // retained by default without changing ordinary/complex Scene handling.
         let auto_background = (!reusable)
             .then(|| {
-                auto_capture_static_background(scene, retained_paint.chunks_for(scene), render_size)
+                self.retained_upload.auto_static_candidate(
+                    AutoStaticRejectionKey {
+                        scene_revision: scene.revision,
+                        size: render_size,
+                    },
+                    || auto_capture_static_background(
+                        scene,
+                        retained_paint.chunks_for(scene),
+                        render_size,
+                    ),
+                )
             })
             .flatten();
         let mut summary = self.retained_upload.summary;

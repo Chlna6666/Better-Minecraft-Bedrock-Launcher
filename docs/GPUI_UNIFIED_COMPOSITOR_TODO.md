@@ -1091,3 +1091,8 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 将 `CachedViewState` 已提交代次的 `accessed_entities`、`render_dependencies`、Traversal Context 和 Cache Key 变为 `Rc` 只读共享；事务快照只复制引用计数和独立的 Paint/Prepaint/Metadata Range，消除最坏情况下集合深拷贝与 TextStyle/路径栈的重复复制。新的 Fresh Render 仍构造自己的集合和元数据，不通过 `Rc::make_mut` 修改旧代次。
 - 新增 `progressive_cache_snapshot_shares_immutable_metadata_and_isolates_ranges`：检查四类只读数据的真实指针共享、候选 Range 修改不会影响已提交状态，以及 Fresh 元数据替换不会回写旧帧。
 - 注意：共享 `Rc` 仍带来正常 Fresh Render 时的少量引用计数对象分配；是否进一步将四个对象合为单个只读 Payload，应以 Release 的 `prepaint_root_us`、CPU 分配次数、连续 Deadline Miss 前后 P95/P99 和内存峰值证据决定。本提交不声称达到 1ms。
+
+### 2026-10-17 GPU 合成热路径（诊断驱动）
+
+- 对 `RetainedUpload` 的 AutoStatic 负向准入结果增加仅匹配 Scene Revision 和 native viewport 的小型缓存；同一 Scene 仅动画时间改变时，不再逐帧扫描整份 Paint Operations 并重复记录 `backdrop_blur_present` 等相同拒绝原因。新 Scene 或 Resize 强制重新准入。该缓存只能避免 CPU 场景遍历与日志开销，**不会**跳过 Render Graph Filter/Blur 同步，也不会把已拒绝场景错误加入静态颜色缓存。
+- 下一项：Win32 Resize 绘制调度和 GPU Owner 长尾；四后端实际 GPU Pass 和原生黑边不能仅凭 AutoStatic 准入缓存声称修好。测试：`cargo test -p gpui --lib rejected_auto_static_admission_is_not_repeated_on_animation_only_frames`。
