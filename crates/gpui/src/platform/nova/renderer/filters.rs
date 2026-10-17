@@ -686,7 +686,7 @@ mod tests {
         let source = FilterSource::Element(crate::PaintBlur {
             order: 0,
             animation_id: None,
-            layer_id: Some(crate::SceneLayerId(17)),
+            layer_id: None,
             bounds,
             content_mask: crate::ContentMask::new(bounds),
             radius: crate::ScaledPixels(0.0),
