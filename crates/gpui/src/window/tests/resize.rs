@@ -49,7 +49,7 @@ impl Render for ResizeCachedRoot {
 }
 
 #[gpui::test]
-fn viewport_resize_rebuilds_nested_cached_geometry_and_repaints_growing_child(cx: &mut TestAppContext) {
+fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut TestAppContext) {
     let fixed_renders = Rc::new(Cell::new(0));
     let fixed_clicks = Rc::new(Cell::new(0));
     let growing_renders = Rc::new(Cell::new(0));
@@ -81,8 +81,8 @@ fn viewport_resize_rebuilds_nested_cached_geometry_and_repaints_growing_child(cx
         window.live_resize_active = true;
         window.draw(cx).clear();
         assert!(
-            fixed_renders.get() > fixed_before,
-            "a native Resize is a hard geometry boundary for nested CachedView"
+            fixed_renders.get() == fixed_before,
+            "fixed cached content with unchanged bounds/context should replay across client resize"
         );
         assert!(
             growing_renders.get() > growing_before,
@@ -198,8 +198,8 @@ fn repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bound
             window.content_bounds_changed(cx);
             if grow_w != 0. || grow_h != 0. {
                 assert!(
-                    window.force_view_cache_refresh(),
-                    "new client constraints must block stale cached view replay"
+                    !window.force_view_cache_refresh(),
+                    "pure client resize uses dependency-checked replay instead of a global cache barrier"
                 );
             }
             window.draw(cx).clear();
@@ -242,5 +242,74 @@ fn unchanged_native_size_move_state_does_not_dirty_root(cx: &mut TestAppContext)
         assert!(!window.force_view_cache_refresh());
         assert!(!window.force_full_redraw.get());
         assert!(!window.live_resize_active);
+    });
+}
+
+struct ViewportDependentFixedChild {
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for ViewportDependentFixedChild {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        // Its outer cache bounds are fixed, but its content reads the native
+        // viewport. This dependency forbids reuse on a client-size change.
+        let viewport_width = window.viewport_size().width;
+        crate::div()
+            .id("viewport-dependent-fixed-child")
+            .size_full()
+            .bg(if viewport_width > px(1000.) {
+                crate::black()
+            } else {
+                crate::white()
+            })
+    }
+}
+
+struct ViewportDependentFixedRoot {
+    child: Entity<ViewportDependentFixedChild>,
+}
+
+impl Render for ViewportDependentFixedRoot {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        crate::div().relative().size_full().child(
+            crate::div()
+                .absolute()
+                .left(px(0.))
+                .top(px(0.))
+                .w(px(80.))
+                .h(px(40.))
+                .child(
+                    self.child
+                        .clone()
+                        .cached(crate::StyleRefinement::default().size_full()),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed(cx: &mut TestAppContext) {
+    let renders = Rc::new(Cell::new(0));
+    let (_, visual) = cx.add_window_view(|_, cx| ViewportDependentFixedRoot {
+        child: cx.new(|_| ViewportDependentFixedChild {
+            renders: renders.clone(),
+        }),
+    });
+    visual.update(|window, cx| {
+        let before = renders.get();
+        assert!(before > 0, "the initial cached child must be rendered");
+        let original = window.viewport_size;
+        let changed = size(original.width + px(180.), original.height + px(90.));
+        window.platform_window.as_test().unwrap().0.lock().bounds.size = changed;
+        window.content_bounds_changed(cx);
+        window.draw(cx).clear();
+        assert!(
+            renders.get() > before,
+            "viewport-dependent cached contents must be rebuilt even with fixed outer bounds"
+        );
+        assert!(window.rendered_frame.scene().quads.iter().any(|quad| {
+            quad.bounds.size == changed.scale(window.scale_factor)
+        }));
     });
 }

@@ -1050,3 +1050,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 本地验收：`cargo test -p gpui --lib prepaint_work_breakdown_tests`、`cargo test -p gpui --lib viewport_change_needs_ui_commit_tests`、`cargo test -p gpui --lib unchanged_native_size_move_state_does_not_dirty_root`、`cargo test -p gpui --lib viewport_resize`、`cargo check -p gpui`；四后端 Release 对比 p50/p95/p99 各阶段、degraded/recovery 计数与成功 Present 尺寸。未获得这些结果前状态保持“已提交·待验证”。
 
 - Trace：启用详细 Trace 时，每个完成根 Prepaint 的 UI generation 输出 `gpui prepaint work` 及各分项，不以超预算 WARN 代替常态采样；普通日志级别不执行逐帧格式化。
+
+### 2026-10-17 真实 Resize 的依赖级缓存重用（阶段一后续）
+
+- 对于只有 native client 尺寸发生变化的 Resize，根视图改为 `ReconcileSubtree`（根必须以新约束重新布局），而不是把整个子树一律标为 `RelayoutSubtree`。这不是恢复旧的无条件缓存命中：CachedView 仍需相同的绝对 Bounds、Clip、Paint Context、文本风格、fingerprint，以及有效的 Prepaint/Paint/HitTest/Dispatch/Deferred 范围。
+- 已存在的 `Window::viewport_size()/bounds()` 读取追踪产生 `viewport_dependent_views`；这些 View 在新尺寸帧明确失效，即使自身的缓存边界尺寸固定也要刷新。DPI/显示器变更仍走原来的 `RelayoutSubtree + force_view_cache_refresh` 安全屏障；没有证明来源的 generic dirty 仍由 `begin_draw_cycle` 禁止不安全回放。
+- 回归：`cargo test -p gpui --lib viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child`、`cargo test -p gpui --lib viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed`、`cargo test -p gpui --lib repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bounds`；还需四后端原生 Resize、DPI、HitTest、交错动画实测。
+- 不将此切片标记为 1ms 达成：Release p50/p95/p99、retained cache hit、Taffy work 和完整 UI 构帧耗时必须在同一场景 A/B 衡量。

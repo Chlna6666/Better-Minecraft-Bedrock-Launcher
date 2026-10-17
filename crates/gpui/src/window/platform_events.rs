@@ -137,17 +137,20 @@ impl Window {
         let root_view_id = self.root.as_ref().map(AnyView::entity_id);
         if let Some(root_id) = root_view_id {
             if text_rasterization_changed || layout_constraints_changed {
-                // WGPUI's simpler Resize contract is the right correctness
-                // boundary: a new root constraint must rebuild the geometry
-                // of every descendant before a new-size Scene is committed.
-                // ReflowSubtree used to let nested CachedView reuse pixels laid
-                // out for the previous HWND even after root size_full changed.
-                // Normal non-resize retained frames still reuse these views.
-                self.invalidator.invalidate_view_with_scope(
-                    root_id,
-                    cx,
-                    RetainedInvalidationScope::RelayoutSubtree,
-                );
+                // The root must rerender against the new client constraint.
+                // A DPI/display transition changes glyph pixels and is still
+                // a hard subtree barrier. For a pure client-size change,
+                // reconcile descendants instead: each CachedView can replay
+                // only after proving its absolute bounds, clip, paint context,
+                // fingerprint and frame-local input ranges unchanged. Views
+                // reading Window::viewport_size/bounds are explicitly dirty
+                // below even if their outer bounds happen to stay fixed.
+                let scope = if text_rasterization_changed {
+                    RetainedInvalidationScope::RelayoutSubtree
+                } else {
+                    RetainedInvalidationScope::ReconcileSubtree
+                };
+                self.invalidator.invalidate_view_with_scope(root_id, cx, scope);
             } else {
                 self.invalidator.invalidate_view(root_id, cx);
             }
@@ -172,13 +175,13 @@ impl Window {
                 self.invalidator.invalidate_view(view_id, cx);
             }
         }
-        // Unlike normal state changes, root geometry has changed. A generic
-        // root View need not own a cached-element target, so the retained
-        // invalidator's subtree scope alone cannot reliably reach every nested
-        // CachedView. Make geometry changes a one-frame hard replay barrier for
-        // all cached Elements and their paint fragments; ordinary frames remain
-        // eligible for fine-grained retained reuse.
-        if layout_constraints_changed || text_rasterization_changed {
+        // A raster-scale/display change invalidates all cached output. Pure
+        // client-size changes instead use root ReconcileSubtree and targeted
+        // viewport readers: bounds-dependent descendants recompute while
+        // fixed, context-stable cache boundaries retain their exact pixels,
+        // HitTest and input metadata. Generic/unproven invalidation still
+        // forces a hard refresh at begin_draw_cycle().
+        if text_rasterization_changed {
             self.force_view_cache_refresh = true;
         }
         self.redraw_without_view_cache_refresh();
