@@ -383,12 +383,6 @@ impl Entry {
                 self.ready_registration.store(0, Ordering::Release);
                 self.renderer.update_drawable_size(size, epoch);
             }
-            #[cfg(any(test, target_os = "windows"))]
-            Command::ContentStretch(size) => {
-                if let Err(error) = self.renderer.set_content_stretch(size) {
-                    log::debug!("failed to stretch Windows swapchain content during resize: {error:#}");
-                }
-            }
             Command::Call(operation) => operation(&mut self.renderer),
             Command::Transparency(transparent) => {
                 self.ready_registration.store(0, Ordering::Release);

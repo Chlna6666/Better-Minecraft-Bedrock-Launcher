@@ -377,13 +377,6 @@ impl RenderOwner {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    pub(super) fn set_content_stretch(&self, size: Size<DevicePixels>) {
-        if let Err(error) = self.enqueue(Command::ContentStretch(size)) {
-            log::debug!("failed to queue Windows resize content stretch: {error:#}");
-        }
-    }
-
     /// Accepts a resize in command order; target recreation runs on the next GPU frame
     /// whose Scene belongs to the same native geometry generation.
     pub(super) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: u64) {

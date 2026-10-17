@@ -183,7 +183,6 @@ pub(crate) struct NovaRenderer {
     draw_step_scratch: DrawStepScratch,
     path_mask_residency: path_mask::Residency,
     active_size: DrawableSize,
-    displayed_size: DrawableSize,
     current_size: DrawableSize,
     pending_drawable_size: Option<DrawableSizeRequest>,
     atlas: Arc<NovaAtlas>,
@@ -391,29 +390,6 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
-    #[cfg(target_os = "windows")]
-    pub(crate) fn set_content_stretch(&mut self, size: Size<DevicePixels>) -> Result<()> {
-        let target_width = size.width.0.max(1) as u32;
-        let target_height = size.height.0.max(1) as u32;
-        let scale = [
-            target_width as f32 / self.displayed_size.width.max(1) as f32,
-            target_height as f32 / self.displayed_size.height.max(1) as f32,
-        ];
-        lock_backend(&self.backend).set_swapchain_content_stretch(
-            self.swapchain,
-            Some(scale),
-        )
-    }
-
-    fn finish_presented_frame(&mut self) {
-        if let Err(error) = lock_backend(&self.backend)
-            .set_swapchain_content_stretch(self.swapchain, None)
-        {
-            log::warn!("failed to reset swapchain content stretch after resize: {error:#}");
-        }
-        self.displayed_size = self.active_size;
-    }
-
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
         // The pending DrawableSizeRequest is already authoritative, regardless
         // of gesture state. Do not overwrite a newer size/epoch with an old
@@ -462,7 +438,6 @@ impl NovaRenderer {
         let result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
-            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(
@@ -995,7 +970,6 @@ impl NovaRenderer {
         })();
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
-            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(
@@ -1058,7 +1032,6 @@ impl NovaRenderer {
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
         let submitted = draw_result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
-            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         record_animation_completion_sample(

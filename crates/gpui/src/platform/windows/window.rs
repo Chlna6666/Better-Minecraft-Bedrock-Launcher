@@ -178,6 +178,10 @@ fn should_attempt_animation_present(
 }
 
 thread_local! {
+    // Each modal frame rotates the first window serviced. The HWND registry
+    // uses a HashMap, whose iteration order is arbitrary and can otherwise
+    // make one expensive Resize monopolize the front of every dispatch burst.
+    static MODAL_WINDOW_DISPATCH_CURSOR: Cell<usize> = const { Cell::new(0) };
     static WINDOWS_WITH_SIZE_MOVE_TIMER: RefCell<HashSet<isize>> = RefCell::new(HashSet::new());
     static WINDOWS_BY_HWND: RefCell<HashMap<isize, Weak<WindowsWindowInner>>> =
         RefCell::new(HashMap::new());
@@ -299,6 +303,15 @@ fn redraw_size_move_frame(hwnd: HWND) {
     }
 }
 
+/// Rotate a stable HWND snapshot so every child/main window eventually leads
+/// the shared modal dispatch, regardless of the HashMap's random hash order.
+/// This does not add a timer, duplicate frame requests or mix window epochs.
+fn rotate_modal_window_dispatch<T>(windows: &mut [T], cursor: usize) {
+    if !windows.is_empty() {
+        windows.rotate_left(cursor % windows.len());
+    }
+}
+
 /// Snapshot registered windows without holding the HWND registry across GPUI callbacks.
 /// The winit event loop cannot dispatch user events while Windows is in its nested drag loop;
 /// active companion windows must still receive their own pending presentation requests.
@@ -306,7 +319,7 @@ fn dispatch_modal_window_updates(
     hwnd: HWND,
     timing: Option<super::vsync::VSyncEventTiming>,
 ) {
-    let windows = WINDOWS_BY_HWND.with(|registry| {
+    let mut windows = WINDOWS_BY_HWND.with(|registry| {
         registry
             .borrow()
             .values()
@@ -314,15 +327,25 @@ fn dispatch_modal_window_updates(
             .map(WindowsWindow)
             .collect::<Vec<_>>()
     });
-
-    for window in windows {
-        // A completion can arm the next retained animation tick for any window;
-        // it is not tied to the HWND currently being dragged.
+    // Synchronize the dragged HWND before any expensive work on its peers,
+    // otherwise a slow child-window Paint can postpone the latest WM_SIZE.
+    if let Some(active) = native_window(hwnd) {
+        active.sync_current_native_size();
+    }
+    // Finish GPU reports for ALL windows before anyone starts a potentially
+    // expensive UI commit. This keeps child window completions responsive
+    // when another HWND is continuously live-resizing.
+    for window in &windows {
         window.drain_gpu_reports();
-        // A move with unchanged client size is not a layout invalidation.
-        if window.native_hwnd() == Some(hwnd) {
-            window.sync_current_native_size();
-        }
+    }
+    windows.sort_by_key(|window| window.native_hwnd().map_or(0, |hwnd| hwnd.0 as usize));
+    let cursor = MODAL_WINDOW_DISPATCH_CURSOR.with(|cursor| {
+        let previous = cursor.get();
+        cursor.set(previous.wrapping_add(1));
+        previous
+    });
+    rotate_modal_window_dispatch(&mut windows, cursor);
+    for window in windows {
         if !window.has_pending_native_frame() {
             continue;
         }
@@ -1347,7 +1370,6 @@ pub(crate) struct WindowsWindowInner {
     size_move_active: Cell<bool>,
     size_move_has_resized: Cell<bool>,
     pending_live_resize_active: Cell<Option<bool>>,
-    pending_content_stretch: Cell<Option<Size<DevicePixels>>>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<PendingWindowsResize>>,
     fallback_corner_radius: Option<Pixels>,
@@ -1749,7 +1771,6 @@ impl WindowsWindow {
             size_move_active: Cell::new(false),
             size_move_has_resized: Cell::new(false),
             pending_live_resize_active: Cell::new(None),
-            pending_content_stretch: Cell::new(None),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             fallback_corner_radius,
@@ -1958,15 +1979,6 @@ impl WindowsWindow {
             // transition. This control is enqueued once, not per WM_SIZE.
             self.set_live_resize_active(true);
         }
-        // ContentStretch only changes a DirectComposition visual transform.
-        // Opaque native-titlebar windows render straight to an HWND flip chain;
-        // their backend has no composition Visual, so enqueuing this control
-        // on every WM_SIZE accomplishes nothing and delays the real Resize/Draw.
-        if self.is_live_resizing() && !self.0.use_native_decorations {
-            self.0
-                .pending_content_stretch
-                .set(Some(resize.drawable_size));
-        }
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
@@ -1979,6 +1991,10 @@ impl WindowsWindow {
                 self.native_is_maximized().unwrap_or(false),
             );
         }
+        // Never scale the preceding swapchain image to the new client extent.
+        // Stretching rasterized glyphs and blur passes causes interpolated,
+        // visibly breathing text during live drag. Only the correctly sized
+        // Scene may cover the new client pixels once GPU/WSI is ready.
         // Keep the previous scene paired with its own geometry until the matching
         // new layout arrives; a native size event alone does not update scene layout.
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
@@ -2162,7 +2178,6 @@ impl WindowsWindow {
             }
             self.0.resize_cadence.set(cadence);
         }
-        self.dispatch_pending_content_stretch();
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
@@ -2295,18 +2310,6 @@ impl WindowsWindow {
             );
         }
         self.request_frame(PlatformFrameRequest::ui_commit());
-    }
-
-    fn dispatch_pending_content_stretch(&self) {
-        let Some(size) = self.0.pending_content_stretch.take() else {
-            return;
-        };
-        let renderer_state = self.0.renderer.borrow();
-        if let WindowsRendererState::Ready(renderer) = &*renderer_state {
-            renderer.set_content_stretch(size);
-        } else {
-            self.0.pending_content_stretch.set(Some(size));
-        }
     }
 
     fn try_apply_queued_renderer_resize(
@@ -2959,6 +2962,23 @@ impl ClickState {
 
 #[cfg(test)]
 mod tests {
+    use super::rotate_modal_window_dispatch;
+
+    #[test]
+    fn modal_dispatch_rotates_main_and_child_windows_without_starvation() {
+        let mut windows = [10, 20, 30];
+        rotate_modal_window_dispatch(&mut windows, 0);
+        assert_eq!(windows, [10, 20, 30]);
+        windows = [10, 20, 30];
+        rotate_modal_window_dispatch(&mut windows, 1);
+        assert_eq!(windows, [20, 30, 10]);
+        windows = [10, 20, 30];
+        rotate_modal_window_dispatch(&mut windows, 2);
+        assert_eq!(windows, [30, 10, 20]);
+        let mut none: [u8; 0] = [];
+        rotate_modal_window_dispatch(&mut none, usize::MAX);
+    }
+
     #[test]
     fn native_material_requests_use_distinct_dwm_backdrops() {
         use super::system_backdrop;

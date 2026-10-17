@@ -26,8 +26,6 @@ pub(super) enum Command {
         /// Native client-geometry generation, or `None` for an unversioned resize.
         epoch: Option<u64>,
     },
-    #[cfg(any(test, target_os = "windows"))]
-    ContentStretch(Size<DevicePixels>),
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -70,7 +68,6 @@ impl Command {
                 | Self::Draw { reply: None, .. }
                 | Self::Tick(..)
                 | Self::Continue(..)
-                | Self::ContentStretch(..)
         )
     }
 
@@ -145,10 +142,6 @@ impl Queue {
         // Profiling includes producer lock contention, while replacement keeps backlog age.
         let mut first_enqueued_at = enqueued_at;
         let mut coalesced_count = 0_u64;
-        // A resize Draw can replace obsolete GPU packets, but must not lose
-        // the latest compositor transform protecting newly exposed client pixels.
-        #[cfg(any(test, target_os = "windows"))]
-        let mut latest_content_stretch = None;
         let mut state = self.0.lock();
         if state.closing {
             return Err(anyhow!("GPU renderer is closing"));
@@ -181,7 +174,6 @@ impl Queue {
                     Command::Resize { .. }
                     | Command::Tick(..)
                     | Command::Continue(..) => {}
-                    Command::ContentStretch(size) => latest_content_stretch = Some(size),
                     Command::Draw {
                         packet: previous,
                         reply: None,
@@ -230,7 +222,6 @@ impl Queue {
                         }
                         Command::Tick(..)
                         | Command::Continue(..) => {}
-                        Command::ContentStretch(size) => latest_content_stretch = Some(size),
                         _ => unreachable!("resize compaction must not cross a control barrier"),
                     }
                 }
@@ -242,19 +233,6 @@ impl Queue {
                     coalesced_count: 0,
                 });
             }
-        }
-        // Compositor stretching is an independent native-surface requirement:
-        // replacing an intermediate Resize + Draw must preserve its latest
-        // requested scale until a new-size frame actually presents. Reinsert
-        // it immediately before the surviving Draw, still behind hard controls.
-        #[cfg(any(test, target_os = "windows"))]
-        if let Some(size) = latest_content_stretch {
-            state.commands.push_back(QueuedCommand {
-                command: Command::ContentStretch(size),
-                enqueued_at,
-                first_enqueued_at: enqueued_at,
-                coalesced_count: 0,
-            });
         }
         let barrier = state
             .commands
@@ -269,22 +247,6 @@ impl Queue {
                     .commands
                     .back()
                     .is_some_and(|last| matches!(last.command, Command::Resize { .. }))
-                {
-                    let previous = state
-                        .commands
-                        .pop_back()
-                        .expect("the previous command was checked");
-                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
-                    coalesced_count = previous.coalesced_count.saturating_add(1);
-                }
-            }
-            #[cfg(any(test, target_os = "windows"))]
-            Command::ContentStretch(_) => {
-                // Resize bursts keep only the latest temporary compositor scale.
-                if state
-                    .commands
-                    .back()
-                    .is_some_and(|last| matches!(last.command, Command::ContentStretch(_)))
                 {
                     let previous = state
                         .commands

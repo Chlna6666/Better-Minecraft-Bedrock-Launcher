@@ -102,7 +102,6 @@ impl NovaRenderer {
             draw_step_scratch: DrawStepScratch::default(),
             path_mask_residency: path_mask::Residency::default(),
             active_size: current_size,
-            displayed_size: current_size,
             current_size,
             pending_drawable_size: None,
             atlas: atlas.0,
