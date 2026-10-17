@@ -19,6 +19,41 @@ const RECENT_INPUT_DIRTY_FRAME_GRACE: Duration = Duration::from_millis(500);
 #[cfg(test)]
 pub(super) const DIRTY_FRAME_BACKPRESSURE_BUDGET: Duration = Duration::from_millis(4);
 
+// The viewport owns the next Scene's geometry. Never make convergence
+// conditional on still being inside Win32's modal drag loop.
+fn native_geometry_requires_sync(
+    current_live_resize: bool,
+    native_live_resize: bool,
+    current_viewport: Size<Pixels>,
+    native_viewport: Size<Pixels>,
+    current_scale: f32,
+    native_scale: f32,
+) -> bool {
+    current_live_resize != native_live_resize
+        || current_viewport != native_viewport
+        || current_scale != native_scale
+}
+
+#[cfg(test)]
+mod native_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn fast_resize_finishing_before_first_modal_ui_frame_still_reconciles() {
+        let old = crate::size(px(700.), px(500.));
+        let latest = crate::size(px(1100.), px(730.));
+        assert!(native_geometry_requires_sync(false, false, old, latest, 1., 1.));
+    }
+
+    #[test]
+    fn unchanged_native_geometry_does_not_request_extra_layout() {
+        let size = crate::size(px(1100.), px(730.));
+        assert!(!native_geometry_requires_sync(false, false, size, size, 1., 1.));
+        assert!(native_geometry_requires_sync(true, false, size, size, 1., 1.));
+        assert!(native_geometry_requires_sync(false, false, size, size, 1., 1.25));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FrameCompletion {
     Normal,
@@ -837,17 +872,25 @@ impl Window {
             return;
         };
         self.animation_time.set(frame_started_at);
-        // Ending a native resize may leave the geometry unchanged. Revisit the
-        // root once so deferred size-specific image work settles at that extent.
-        let live_resize_active = self.platform_window.is_live_resizing();
-        if self.live_resize_active != live_resize_active
-            || (live_resize_active
-                && (self.viewport_size != self.platform_window.content_size()
-                    || self.scale_factor != self.platform_window.scale_factor()))
-        {
-            // A nested native resize can defer its App/Window callback behind
-            // this frame. Sample authoritative geometry before building layout,
-            // so a new drawable can never be paired with an old-size root scene.
+        // The native HWND remains the source of truth even AFTER WM_EXITSIZEMOVE.
+        // A resize callback may have been coalesced or deferred while GPUI held
+        // an App/Window borrow. The former live_resize_active gate skipped this
+        // reconciliation when a fast drag ended before any in-gesture UI frame:
+        // platform size had advanced but GPUI would keep presenting an old root.
+        // Sample geometry on every consumed UI frame; content_bounds_changed
+        // itself is a no-op for identical dimensions and does not invalidate
+        // normal static frames.
+        let native_live_resize = self.platform_window.is_live_resizing();
+        let native_viewport = self.platform_window.content_size();
+        let native_scale = self.platform_window.scale_factor();
+        if native_geometry_requires_sync(
+            self.live_resize_active,
+            native_live_resize,
+            self.viewport_size,
+            native_viewport,
+            self.scale_factor,
+            native_scale,
+        ) {
             self.content_bounds_changed(cx);
         }
         self.frame_throttle.record_frame_start(frame_started_at);
