@@ -145,6 +145,10 @@ impl Queue {
         // Profiling includes producer lock contention, while replacement keeps backlog age.
         let mut first_enqueued_at = enqueued_at;
         let mut coalesced_count = 0_u64;
+        // A resize Draw can replace obsolete GPU packets, but must not lose
+        // the latest compositor transform protecting newly exposed client pixels.
+        #[cfg(any(test, target_os = "windows"))]
+        let mut latest_content_stretch = None;
         let mut state = self.0.lock();
         if state.closing {
             return Err(anyhow!("GPU renderer is closing"));
@@ -176,8 +180,8 @@ impl Queue {
                 match obsolete.command {
                     Command::Resize { .. }
                     | Command::Tick(..)
-                    | Command::Continue(..)
-                    | Command::ContentStretch(..) => {}
+                    | Command::Continue(..) => {}
+                    Command::ContentStretch(size) => latest_content_stretch = Some(size),
                     Command::Draw {
                         packet: previous,
                         reply: None,
@@ -225,8 +229,8 @@ impl Queue {
                             packet.merge_pending_damage_from(&previous);
                         }
                         Command::Tick(..)
-                        | Command::Continue(..)
-                        | Command::ContentStretch(..) => {}
+                        | Command::Continue(..) => {}
+                        Command::ContentStretch(size) => latest_content_stretch = Some(size),
                         _ => unreachable!("resize compaction must not cross a control barrier"),
                     }
                 }
@@ -238,6 +242,19 @@ impl Queue {
                     coalesced_count: 0,
                 });
             }
+        }
+        // Compositor stretching is an independent native-surface requirement:
+        // replacing an intermediate Resize + Draw must preserve its latest
+        // requested scale until a new-size frame actually presents. Reinsert
+        // it immediately before the surviving Draw, still behind hard controls.
+        #[cfg(any(test, target_os = "windows"))]
+        if let Some(size) = latest_content_stretch {
+            state.commands.push_back(QueuedCommand {
+                command: Command::ContentStretch(size),
+                enqueued_at,
+                first_enqueued_at: enqueued_at,
+                coalesced_count: 0,
+            });
         }
         let barrier = state
             .commands

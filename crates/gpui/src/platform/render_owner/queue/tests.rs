@@ -738,3 +738,118 @@ fn live_resize_compaction_preserves_synchronous_first_frame_handshake() {
     );
     assert!(queue.take().is_none());
 }
+
+#[test]
+fn compacted_live_resize_keeps_latest_compositor_stretch_before_new_scene() {
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(crate::window::Paint::default());
+    for (side, epoch) in [(800, 1), (900, 2), (1100, 3)] {
+        queue
+            .enqueue(Command::ContentStretch(extent(side)), || Ok(()))
+            .unwrap();
+        queue
+            .enqueue(
+                resized_draw(extent(side), epoch, packet(scene.clone(), (epoch * 10) as f32)),
+                || Ok(()),
+            )
+            .unwrap();
+    }
+
+    assert!(matches!(
+        queue.take(),
+        Some(Command::ContentStretch(size)) if size == extent(1100)
+    ));
+    let Some(Command::Draw {
+        packet,
+        resize: Some(resize),
+        ..
+    }) = queue.take()
+    else {
+        panic!("expected a newest-size draw");
+    };
+    assert_eq!(resize.size, extent(1100));
+    assert_eq!(resize.epoch, Some(3));
+    assert_eq!(
+        packet.dirty_region.union_bounds().unwrap().size.width,
+        ScaledPixels(30.0),
+    );
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn queued_resize_compaction_keeps_latest_compositor_stretch() {
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(crate::window::Paint::default());
+
+    queue.enqueue(resize(extent(800)), || Ok(())).unwrap();
+    queue
+        .enqueue(Command::ContentStretch(extent(800)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(draw(packet(scene.clone(), 0.0)), || Ok(()))
+        .unwrap();
+    queue.enqueue(resize(extent(1000)), || Ok(())).unwrap();
+    queue
+        .enqueue(Command::ContentStretch(extent(1000)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(draw(packet(scene, 30.0)), || Ok(()))
+        .unwrap();
+
+    assert!(matches!(
+        queue.take(),
+        Some(Command::Resize { size, .. }) if size == extent(1000)
+    ));
+    assert!(matches!(
+        queue.take(),
+        Some(Command::ContentStretch(size)) if size == extent(1000)
+    ));
+    let Some(Command::Draw { packet, .. }) = queue.take() else {
+        panic!("expected newest resize scene");
+    };
+    assert_eq!(
+        packet.dirty_region.union_bounds().unwrap().size.width,
+        ScaledPixels(40.0),
+    );
+    assert!(queue.take().is_none());
+}
+
+#[test]
+fn compacted_resize_stretch_does_not_cross_renderer_control_barrier() {
+    let queue = Queue::default();
+    let extent = |side| size(DevicePixels(side), DevicePixels(side));
+    let scene = Arc::new(crate::window::Paint::default());
+    queue
+        .enqueue(Command::ContentStretch(extent(800)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(Command::Call(Box::new(|_| {})), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(resized_draw(extent(900), 1, packet(scene.clone(), 0.0)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(Command::ContentStretch(extent(1000)), || Ok(()))
+        .unwrap();
+    queue
+        .enqueue(resized_draw(extent(1000), 2, packet(scene, 10.0)), || Ok(()))
+        .unwrap();
+
+    assert!(matches!(
+        queue.take(),
+        Some(Command::ContentStretch(size)) if size == extent(800)
+    ));
+    assert!(matches!(queue.take(), Some(Command::Call(_))));
+    assert!(matches!(
+        queue.take(),
+        Some(Command::ContentStretch(size)) if size == extent(1000)
+    ));
+    assert!(matches!(
+        queue.take(),
+        Some(Command::Draw { resize: Some(resize), .. })
+            if resize.size == extent(1000) && resize.epoch == Some(2)
+    ));
+    assert!(queue.take().is_none());
+}
