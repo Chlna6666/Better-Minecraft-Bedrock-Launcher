@@ -235,14 +235,15 @@ Interactive Win32 resize correctness:
   coalesced foreground retry that reads the latest authoritative viewport.
   Each live UI frame also reconciles native content size/scale before layout,
   covering the case where that deferred callback has not run before the frame.
-- Live resize retains native pixel scale. Do not stretch an old framebuffer to
-  hide delayed layout. The UI viewport always follows the client extent; an
-  unscaled backend may retain larger drawable capacity in 128-pixel increments,
-  cropping at the client boundary and using the allocated extent for projection,
-  viewport and attachments. Pointer release settles to the final exact extent.
-  Vulkan requires maintenance1 ONE_TO_ONE scaling with top/left or native Win32
-  gravity. Retained capacity must fit the advertised scaled-image extent limits;
-  unsupported surfaces retain exact-size swapchains.
+- Live resize commits scene geometry for the current client extent while the GPU
+  allocation may retain larger capacity in 128-pixel increments. Draw that scene
+  at native client-pixel coordinates in the top-left of the allocation; presentation
+  must select that same client-sized source region and must not scale the complete
+  retained allocation. DXGI uses `SetSourceSize`, OpenGL blits the active region at
+  native size, and Vulkan uses maintenance1 `ONE_TO_ONE` with top/left or native
+  gravity. Pointer release settles to the final exact extent. Retained capacity must
+  fit Vulkan's advertised scaled-image extent limits; unsupported surfaces use
+  exact-size swapchains.
 - A pure move does not invalidate layout. Resize must ultimately update root
   constraints and GPUI viewport, and render elements at their new layout positions.
 - Submit a changed drawable extent with its matching UI Scene. A retained tick
