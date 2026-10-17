@@ -49,7 +49,7 @@ impl Render for ResizeCachedRoot {
 }
 
 #[gpui::test]
-fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut TestAppContext) {
+fn viewport_resize_rebuilds_nested_cached_geometry_and_repaints_growing_child(cx: &mut TestAppContext) {
     let fixed_renders = Rc::new(Cell::new(0));
     let fixed_clicks = Rc::new(Cell::new(0));
     let growing_renders = Rc::new(Cell::new(0));
@@ -80,10 +80,9 @@ fn viewport_resize_reuses_fixed_cached_child_and_repaints_growing_child(cx: &mut
         window.content_bounds_changed(cx);
         window.live_resize_active = true;
         window.draw(cx).clear();
-        assert_eq!(
-            fixed_renders.get(),
-            fixed_before,
-            "unchanged clipped subtree must replay"
+        assert!(
+            fixed_renders.get() > fixed_before,
+            "a native Resize is a hard geometry boundary for nested CachedView"
         );
         assert!(
             growing_renders.get() > growing_before,
@@ -171,4 +170,40 @@ fn click_painted_fixed_child(window: &mut Window, cx: &mut App) {
         }),
         cx,
     );
+}
+
+#[gpui::test]
+fn repeated_window_resize_commits_exact_root_coverage_without_stale_cached_bounds(
+    cx: &mut TestAppContext,
+) {
+    let (_, visual) = cx.add_window_view(|_, cx| {
+        let child = cx.new(|_| ResizeCachedChild {
+            renders: Rc::new(Cell::new(0)),
+            clicks: Rc::new(Cell::new(0)),
+        });
+        ResizeCachedRoot {
+            fixed: child.clone(),
+            growing: child,
+        }
+    });
+    visual.update(|window, cx| {
+        let initial = window.viewport_size;
+        // Simulate a fast expand/shrink sequence across retained scene
+        // generations. Each committed root background must cover its own
+        // authoritative client, rather than the previous cached viewport.
+        for (grow_w, grow_h) in [(260., 160.), (80., 40.), (340., 200.), (0., 0.)] {
+            let next = size(initial.width + px(grow_w), initial.height + px(grow_h));
+            window.platform_window.as_test().unwrap().0.lock().bounds.size = next;
+            window.content_bounds_changed(cx);
+            window.draw(cx).clear();
+            assert!(
+                window.rendered_frame.scene().quads.iter().any(|quad| {
+                    quad.bounds.origin == crate::point(ScaledPixels(0.), ScaledPixels(0.))
+                        && quad.bounds.size == next.scale(window.scale_factor)
+                }),
+                "native client {:?} was not covered by the committed scene",
+                next,
+            );
+        }
+    });
 }

@@ -111,15 +111,17 @@ impl Window {
         let root_view_id = self.root.as_ref().map(AnyView::entity_id);
         if let Some(root_id) = root_view_id {
             if text_rasterization_changed || layout_constraints_changed {
-                let scope = if text_rasterization_changed {
-                    // Old scene coordinates and glyph atlas entries belong to
-                    // the previous physical scale/display, even if logical
-                    // bounds stayed equal. This is a hard replay barrier.
-                    RetainedInvalidationScope::RelayoutSubtree
-                } else {
-                    RetainedInvalidationScope::ReflowSubtree
-                };
-                self.invalidator.invalidate_view_with_scope(root_id, cx, scope);
+                // WGPUI's simpler Resize contract is the right correctness
+                // boundary: a new root constraint must rebuild the geometry
+                // of every descendant before a new-size Scene is committed.
+                // ReflowSubtree used to let nested CachedView reuse pixels laid
+                // out for the previous HWND even after root size_full changed.
+                // Normal non-resize retained frames still reuse these views.
+                self.invalidator.invalidate_view_with_scope(
+                    root_id,
+                    cx,
+                    RetainedInvalidationScope::RelayoutSubtree,
+                );
             } else {
                 self.invalidator.invalidate_view(root_id, cx);
             }

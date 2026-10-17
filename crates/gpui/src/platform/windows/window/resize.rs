@@ -1,12 +1,8 @@
 use std::time::{Duration, Instant};
 
-// At 240 Hz a native drag can deliver many WM_SIZE notifications between
-// displays. Rebuilding the entire UI for every notification only increases
-// GPU queue lag; cap layout commits at 120 Hz while coalescing the latest
-// authoritative HWND geometry. Native sizing and compositor fallback remain
-// asynchronous and are not delayed by this CPU cadence.
-const MIN_LIVE_RESIZE_FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
-
+// Windows can post many WM_SIZE messages in one display interval. Coalesce
+// latest native geometry at DWM cadence without inventing a 120 Hz ceiling on
+// 240 Hz monitors; expensive frames naturally back-pressure their next wake.
 /// Paces native live-resize UI commits; the first frame starts immediately.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Cadence {
@@ -23,8 +19,7 @@ impl Cadence {
         let interval = self
             .configured_interval
             .unwrap_or_default()
-            .max(display_interval)
-            .max(MIN_LIVE_RESIZE_FRAME_INTERVAL);
+            .max(display_interval);
         self.last_started_at
             .is_none_or(|last| now.saturating_duration_since(last) >= interval)
     }
@@ -81,12 +76,14 @@ mod tests {
     }
 
     #[test]
-    fn high_refresh_native_resize_has_a_bounded_ui_commit_rate() {
+    fn high_refresh_native_resize_follows_actual_display_interval() {
         let now = Instant::now();
         let mut cadence = Cadence::default();
         let refresh_240hz = Duration::from_micros(4_167);
         assert!(cadence.accept(now, refresh_240hz));
-        assert!(!cadence.accept(now + refresh_240hz, refresh_240hz));
-        assert!(cadence.accept(now + Duration::from_micros(8_333), refresh_240hz));
+        assert!(!cadence.accept(now + Duration::from_millis(2), refresh_240hz));
+        assert!(cadence.accept(now + refresh_240hz, refresh_240hz));
+        assert!(!cadence.accept(now + Duration::from_millis(6), refresh_240hz));
+        assert!(cadence.accept(now + refresh_240hz * 2, refresh_240hz));
     }
 }

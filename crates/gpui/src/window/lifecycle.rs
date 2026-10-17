@@ -51,10 +51,6 @@ pub(crate) enum RetainedInvalidationScope {
     #[default]
     ElementOnly,
     ReconcileSubtree,
-    /// Recompute geometry after viewport constraints change. An explicit cached
-    /// view may replay only if its new bounds and complete cache key are equal.
-    /// Content/context invalidation merges to a stronger scope below.
-    ReflowSubtree,
     InvalidateSubtree,
     /// Invalidate layout ancestors; old cached geometry must never be spliced.
     RelayoutSubtree,
@@ -822,12 +818,7 @@ impl WindowInvalidator {
             .active_targeted_elements
             .iter()
             .any(|((owner, dirty), scope)| {
-                let scope = if cached_view && *scope == RetainedInvalidationScope::ReflowSubtree {
-                    RetainedInvalidationScope::ReconcileSubtree
-                } else {
-                    *scope
-                };
-                retained_path_requires_repaint(global_id, dirty, scope)
+                retained_path_requires_repaint(global_id, dirty, *scope)
                     && owner_shares_view_route(*owner)
             })
     }
@@ -981,7 +972,7 @@ fn retained_path_requires_repaint(
     scope: RetainedInvalidationScope,
 ) -> bool {
     global_element_path_is_prefix(candidate, dirty)
-        || scope >= RetainedInvalidationScope::ReflowSubtree
+        || scope >= RetainedInvalidationScope::InvalidateSubtree
             && global_element_path_is_prefix(dirty, candidate)
 }
 
@@ -1301,7 +1292,7 @@ mod retained_dirty_scope_tests {
     }
 
     #[test]
-    fn viewport_reflow_preserves_cached_boundary_validation_and_stronger_dirty_scope() {
+    fn viewport_relayout_invalidates_nested_cached_bounds() {
         let invalidator = WindowInvalidator::new();
         let view = EntityId::from(1);
         let boundary = path(&[0]);
@@ -1310,25 +1301,12 @@ mod retained_dirty_scope_tests {
         invalidator.invalidate_retained_path_with_scope(
             view,
             Some(&boundary),
-            RetainedInvalidationScope::ReflowSubtree,
+            RetainedInvalidationScope::RelayoutSubtree,
         );
         invalidator.set_dirty(false);
         assert!(invalidator.retained_path_is_dirty(&descendant));
-        assert!(!invalidator.cached_view_path_is_dirty_for_view_route(&descendant, &|_| true));
-        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&boundary, &|_| true));
-
-        invalidator.invalidate_retained_path_with_scope(
-            view,
-            Some(&boundary),
-            RetainedInvalidationScope::ReflowSubtree,
-        );
-        invalidator.invalidate_retained_path_with_scope(
-            view,
-            Some(&boundary),
-            RetainedInvalidationScope::InvalidateSubtree,
-        );
-        invalidator.set_dirty(false);
         assert!(invalidator.cached_view_path_is_dirty_for_view_route(&descendant, &|_| true));
+        assert!(invalidator.cached_view_path_is_dirty_for_view_route(&boundary, &|_| true));
     }
 
     #[test]
