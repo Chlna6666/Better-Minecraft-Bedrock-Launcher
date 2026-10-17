@@ -733,7 +733,13 @@ impl WindowInvalidator {
     /// provenance is not proven equivalent: fall back to the old hard barrier.
     pub(in crate::window) fn retry_aborted_frame(&self) -> bool {
         let mut inner = self.inner.borrow_mut();
-        let can_retry_targeted = inner.active_targeted_replay && !inner.dirty;
+        // A generic dirty View may have modified opaque ElementState or
+        // inherited context without a stable retained range. An aborted
+        // candidate cannot prove that its committed snapshot is reusable
+        // just because some *other* targets carried exact provenance.
+        let can_retry_targeted = inner.active_targeted_replay
+            && !inner.dirty
+            && inner.active_generic_dirty_views.is_empty();
         if can_retry_targeted {
             inner.pending_targeted_replay = true;
             let active = mem::take(&mut inner.active_targeted_elements);
@@ -1470,6 +1476,46 @@ mod retained_dirty_scope_tests {
             let mut inner = invalidator.inner.borrow_mut();
             inner.dirty = true;
         }
+        assert!(!invalidator.retry_aborted_frame());
+        invalidator.set_dirty(false);
+        assert!(!invalidator.active_targeted_replay());
+    }
+
+    #[test]
+    fn repeated_targeted_aborts_keep_original_scope_without_widening_to_generic() {
+        let invalidator = WindowInvalidator::new();
+        let view = EntityId::from(1);
+        let target = path(&[0, 3]);
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            view, Some(&target), RetainedInvalidationScope::RelayoutSubtree
+        ));
+        invalidator.set_dirty(false);
+        for _ in 0..3 {
+            assert!(invalidator.retry_aborted_frame());
+            invalidator.set_dirty(false);
+            assert!(invalidator.active_targeted_replay());
+            assert!(invalidator.retained_path_is_dirty(&target));
+            assert!(!invalidator.active_generic_view_is_dirty(view));
+        }
+    }
+
+    #[test]
+    fn mixed_generic_view_and_exact_target_cannot_use_speculative_retry() {
+        let invalidator = WindowInvalidator::new();
+        let owner = EntityId::from(1);
+        let generic = EntityId::from(2);
+        let target = path(&[0, 1]);
+        invalidator.set_dirty(false);
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            owner, Some(&target), RetainedInvalidationScope::ReconcileSubtree
+        ));
+        assert!(invalidator.invalidate_retained_path_with_scope(
+            generic, None, RetainedInvalidationScope::InvalidateSubtree
+        ));
+        invalidator.set_dirty(false);
+        assert!(invalidator.active_targeted_replay());
+        assert!(invalidator.active_generic_view_is_dirty(generic));
         assert!(!invalidator.retry_aborted_frame());
         invalidator.set_dirty(false);
         assert!(!invalidator.active_targeted_replay());
