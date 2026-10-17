@@ -397,6 +397,14 @@ impl RenderOwner {
         }
     }
 
+    /// Unversioned Linux/FreeBSD native resize; pair the latest extent with the next
+    /// UI scene instead of borrowing the Windows native geometry epoch.
+    #[cfg(not(target_os = "windows"))]
+    pub(super) fn update_drawable_size_unversioned(&mut self, size: Size<DevicePixels>) {
+        *self.pending_drawable_size.lock() = Some(DrawableResize { size, epoch: None });
+        self.viewport_size = size;
+    }
+
     pub(super) fn set_frame_interval(&self, interval: Option<Duration>) {
         if let Err(error) = self.control(move |renderer| renderer.set_frame_interval(interval)) {
             log::error!("failed to queue GPU frame interval: {error:#}");

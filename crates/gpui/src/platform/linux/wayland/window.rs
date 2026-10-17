@@ -111,7 +111,6 @@ struct InProgressConfigure {
     size: Option<Size<Pixels>>,
     fullscreen: bool,
     maximized: bool,
-    resizing: bool,
     visibility: WindowVisibility,
     tiling: Tiling,
 }
@@ -147,7 +146,6 @@ pub struct WaylandWindowState {
     active: bool,
     hovered: bool,
     in_progress_configure: Option<InProgressConfigure>,
-    resize_throttle: bool,
     in_progress_window_controls: Option<WindowControls>,
     window_controls: WindowControls,
     client_inset: Option<Pixels>,
@@ -282,7 +280,6 @@ impl WaylandWindowState {
             tiling: Tiling::default(),
             window_bounds: options.bounds,
             in_progress_configure: None,
-            resize_throttle: false,
             client,
             appearance,
             handle,
@@ -448,6 +445,23 @@ impl WaylandWindowState {
         let height = self.bounds.size.height.0.ceil().max(1.0) as u32;
         let (width, height) = frame.add_borders(width, height);
         Some((point(x, y), size(width as i32, height as i32)))
+    }
+
+    /// xdg_window_geometry is expressed in surface-local logical coordinates.
+    /// Never feed it the physical drawable size (which scales with DPI).
+    fn sync_window_geometry(&self) {
+        let (origin, size) = self.client_frame_geometry().unwrap_or_else(|| {
+            let bounds = inset_by_tiling(
+                self.bounds.map_origin(|_| px(0.0)),
+                self.inset(),
+                self.tiling,
+            )
+            .map(|value| value.0 as i32)
+            .map_size(|value| if value <= 0 { 1 } else { value });
+            (bounds.origin, bounds.size)
+        });
+        self.xdg_surface
+            .set_window_geometry(origin.x, origin.y, size.width, size.height);
     }
 
     fn subtract_client_frame_borders(&self, configured_size: Size<Pixels>) -> Size<Pixels> {
@@ -789,7 +803,6 @@ impl WaylandWindowStatePtr {
             return;
         }
         state.frame_callback_pending = None;
-        state.resize_throttle = false;
         if !state.pending_frame_request.requires_frame() || !callback_registered {
             state.frame_in_progress = false;
             return;
@@ -862,13 +875,9 @@ impl WaylandWindowStatePtr {
                     let visibility_changed = state.visibility != configure.visibility;
                     state.visibility = configure.visibility;
                     state.refresh_client_frame();
-                    // Limit interactive resizes to once per vblank, but still publish visibility
-                    // changes carried by the same configure event.
-                    let throttled = configure.resizing && state.resize_throttle;
-                    if configure.resizing && !throttled {
-                        state.resize_throttle = true;
-                    }
-                    if !throttled && !configure.fullscreen && !configure.maximized {
+                    // Every xdg_surface.configure must be acknowledged. Dropping a
+                    // throttled configure here can strand the compositor on a stale size.
+                    if !configure.fullscreen && !configure.maximized {
                         configure.size = if got_unmaximized {
                             Some(state.window_bounds.size)
                         } else {
@@ -885,9 +894,6 @@ impl WaylandWindowStatePtr {
                     if visibility_changed {
                         self.report_visibility(configure.visibility);
                     }
-                    if throttled {
-                        return;
-                    }
                     if let Some(size) = configure.size {
                         self.resize(size);
                     }
@@ -897,23 +903,7 @@ impl WaylandWindowStatePtr {
             state.xdg_surface.ack_configure(serial);
 
             state.refresh_client_frame();
-            let window_geometry = state.client_frame_geometry().unwrap_or_else(|| {
-                let bounds = inset_by_tiling(
-                    state.bounds.map_origin(|_| px(0.0)),
-                    state.inset(),
-                    state.tiling,
-                )
-                .map(|value| value.0 as i32)
-                .map_size(|value| if value <= 0 { 1 } else { value });
-                (bounds.origin, bounds.size)
-            });
-
-            state.xdg_surface.set_window_geometry(
-                window_geometry.0.x,
-                window_geometry.0.y,
-                window_geometry.1.width,
-                window_geometry.1.height,
-            );
+            state.sync_window_geometry();
 
             let request_frame_callback = !state.acknowledged_first_configure;
             if request_frame_callback {
@@ -982,7 +972,6 @@ impl WaylandWindowStatePtr {
                 let mut tiling = Tiling::default();
                 let mut fullscreen = false;
                 let mut maximized = false;
-                let mut resizing = false;
                 let mut visibility = WindowVisibility::Visible;
 
                 for state in states {
@@ -993,7 +982,6 @@ impl WaylandWindowStatePtr {
                         xdg_toplevel::State::Fullscreen => {
                             fullscreen = true;
                         }
-                        xdg_toplevel::State::Resizing => resizing = true,
                         xdg_toplevel::State::Suspended => visibility = WindowVisibility::Hidden,
                         xdg_toplevel::State::TiledTop => {
                             tiling.top = true;
@@ -1025,7 +1013,6 @@ impl WaylandWindowStatePtr {
                     size,
                     fullscreen,
                     maximized,
-                    resizing,
                     visibility,
                     tiling,
                 });
@@ -1183,6 +1170,16 @@ impl WaylandWindowStatePtr {
             let device_bounds = state.bounds.to_device_pixels(state.scale);
             state.renderer.update_drawable_size(device_bounds.size);
             state.refresh_client_frame();
+            state.sync_window_geometry();
+            // Viewport, geometry and native drawable request must be published in
+            // order before committing a surface; commit-before-viewport stretched
+            // old-sized image content during interactive resize.
+            if let Some(viewport) = &state.viewport {
+                viewport.set_destination(
+                    state.bounds.size.width.0.ceil().max(1.0) as i32,
+                    state.bounds.size.height.0.ceil().max(1.0) as i32,
+                );
+            }
             state.surface.commit();
             (state.bounds.size, state.scale)
         };
@@ -1191,12 +1188,6 @@ impl WaylandWindowStatePtr {
             fun(size, scale);
         }
 
-        {
-            let state = self.state.borrow();
-            if let Some(viewport) = &state.viewport {
-                viewport.set_destination(size.width.0 as i32, size.height.0 as i32);
-            }
-        }
     }
 
     pub fn resize(&self, size: Size<Pixels>) {
@@ -1394,18 +1385,10 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
-        let mut state = self.borrow_mut();
+        let state = self.borrow();
         let state_ptr = self.0.clone();
-        let dp_size = size.to_device_pixels(state.scale);
-
-        state.xdg_surface.set_window_geometry(
-            state.bounds.origin.x.0 as i32,
-            state.bounds.origin.y.0 as i32,
-            dp_size.width.0,
-            dp_size.height.0,
-        );
-        state.renderer.resize(dp_size).log_err();
-
+        // Let the native resize handler publish the drawable, viewport,
+        // window geometry and UI layout as one ordered transaction.
         state
             .globals
             .executor

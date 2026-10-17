@@ -158,7 +158,8 @@ impl OwnedNovaRenderer {
         self.owner
             .as_mut()
             .expect("live GPU owner")
-            .update_drawable_size(size)
+            .update_drawable_size_unversioned(size);
+        Ok(())
     }
 
     pub(crate) fn update_transparency(&self, transparent: bool) {
