@@ -421,6 +421,11 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             if let Some(window) = native_window(hwnd) {
                 window.0.vsync_scheduler.finish_modal_loop(hwnd.0 as isize);
                 window.0.size_move_active.set(false);
+                // The final exact-size UI commit must not inherit the last
+                // in-gesture frame deadline.
+                let mut cadence = window.0.resize_cadence.get();
+                cadence.reset();
+                window.0.resize_cadence.set(cadence);
                 let resized = window.0.size_move_has_resized.replace(false);
                 if resized {
                     window.set_live_resize_active(false);
@@ -2125,8 +2130,6 @@ impl WindowsWindow {
             if !cadence.accept(
                 Instant::now(),
                 self.0.vsync_scheduler.refresh_interval(),
-                self.0.pending_resize.get().is_some()
-                    || self.0.pending_renderer_size.get().is_some(),
             ) {
                 self.0.frame_dispatch_in_progress.set(false);
                 self.0.vsync_scheduler.request_frame();

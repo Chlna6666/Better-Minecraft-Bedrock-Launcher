@@ -1,6 +1,13 @@
 use std::time::{Duration, Instant};
 
-/// Paces presentation wakes; changed native extents form an immediate resize transaction.
+// At 240 Hz a native drag can deliver many WM_SIZE notifications between
+// displays. Rebuilding the entire UI for every notification only increases
+// GPU queue lag; cap layout commits at 120 Hz while coalescing the latest
+// authoritative HWND geometry. Native sizing and compositor fallback remain
+// asynchronous and are not delayed by this CPU cadence.
+const MIN_LIVE_RESIZE_FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
+
+/// Paces native live-resize UI commits; the first frame starts immediately.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Cadence {
     pub(super) configured_interval: Option<Duration>,
@@ -16,18 +23,17 @@ impl Cadence {
         let interval = self
             .configured_interval
             .unwrap_or_default()
-            .max(display_interval);
+            .max(display_interval)
+            .max(MIN_LIVE_RESIZE_FRAME_INTERVAL);
         self.last_started_at
             .is_none_or(|last| now.saturating_duration_since(last) >= interval)
     }
 
-    pub(super) fn accept(
-        &mut self,
-        now: Instant,
-        display_interval: Duration,
-        extent_changed: bool,
-    ) -> bool {
-        if !extent_changed && !self.is_due(now, display_interval) {
+    pub(super) fn accept(&mut self, now: Instant, display_interval: Duration) -> bool {
+        // WM_SIZE may change every millisecond. A newer extent replaces the
+        // pending slot, but cannot bypass the UI commit cadence: doing so
+        // rebuilds multiple obsolete Scenes in a single display interval.
+        if !self.is_due(now, display_interval) {
             return false;
         }
         self.last_started_at = Some(now);
@@ -44,29 +50,43 @@ mod tests {
         let now = Instant::now();
         let interval = Duration::from_millis(16);
         let mut cadence = Cadence::default();
-        assert!(cadence.accept(now, interval, false));
+        assert!(cadence.accept(now, interval));
         // A size event followed by a DWM wake must not generate a second frame.
-        assert!(!cadence.accept(now + Duration::from_millis(1), interval, false));
-        assert!(!cadence.accept(now + Duration::from_millis(15), interval, false));
-        assert!(cadence.accept(now + interval, interval, false));
+        assert!(!cadence.accept(now + Duration::from_millis(1), interval));
+        assert!(!cadence.accept(now + Duration::from_millis(15), interval));
+        assert!(cadence.accept(now + interval, interval));
 
         // A new native gesture starts immediately, preserving an explicit FPS limit.
         cadence.configured_interval = Some(Duration::from_millis(33));
         cadence.reset();
-        assert!(cadence.accept(now + Duration::from_millis(17), interval, false));
-        assert!(!cadence.accept(now + Duration::from_millis(33), interval, false));
-        assert!(cadence.accept(now + Duration::from_millis(50), interval, false));
+        assert!(cadence.accept(now + Duration::from_millis(17), interval));
+        assert!(!cadence.accept(now + Duration::from_millis(33), interval));
+        assert!(cadence.accept(now + Duration::from_millis(50), interval));
     }
 
     #[test]
-    fn changed_extent_submits_immediately_and_paces_following_vsync() {
+    fn rapid_native_extents_are_coalesced_at_the_ui_cadence() {
         let now = Instant::now();
         let interval = Duration::from_millis(16);
         let mut cadence = Cadence::default();
         cadence.configured_interval = Some(Duration::from_millis(33));
-        assert!(cadence.accept(now, interval, true));
-        assert!(cadence.accept(now + Duration::from_millis(1), interval, true));
-        assert!(!cadence.accept(now + Duration::from_millis(2), interval, false));
-        assert!(cadence.accept(now + Duration::from_millis(34), interval, false));
+        assert!(cadence.accept(now, interval));
+        assert!(!cadence.accept(now + Duration::from_millis(1), interval));
+        assert!(!cadence.accept(now + Duration::from_millis(32), interval));
+        assert!(cadence.accept(now + Duration::from_millis(33), interval));
+        // A new drag starts with a fresh frame even if the preceding modal loop
+        // just committed at the same timestamp.
+        cadence.reset();
+        assert!(cadence.accept(now + Duration::from_millis(34), interval));
+    }
+
+    #[test]
+    fn high_refresh_native_resize_has_a_bounded_ui_commit_rate() {
+        let now = Instant::now();
+        let mut cadence = Cadence::default();
+        let refresh_240hz = Duration::from_micros(4_167);
+        assert!(cadence.accept(now, refresh_240hz));
+        assert!(!cadence.accept(now + refresh_240hz, refresh_240hz));
+        assert!(cadence.accept(now + Duration::from_micros(8_333), refresh_240hz));
     }
 }
