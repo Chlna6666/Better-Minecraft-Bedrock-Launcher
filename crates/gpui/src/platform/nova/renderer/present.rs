@@ -46,6 +46,7 @@ fn render_backdrop_blur_groups<D>(
     filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
     groups: &[PreparedBackdropBlurGroup],
+    viewport: gfx_core::RenderViewport,
 ) -> Result<()>
 where
     D: BackendPresentationCompat,
@@ -84,6 +85,7 @@ where
                 color_load_op: source_load_op,
                 clear_region: if first_group { group.source_clear_region } else { None },
                 depth_attachment: Some(source_depth_attachment),
+                viewport: Some(viewport),
             });
         }
         let filter_load_op = if group.preserve_filtered_pixels {
@@ -99,6 +101,7 @@ where
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
+                viewport: None,
             });
         }
     }
@@ -118,6 +121,7 @@ pub(super) fn color_layer_passes(
     filter_render_pass: RenderPassId,
     depth_attachment: RenderPassDepthAttachment,
     layers: &[PreparedColorLayer],
+    viewport: gfx_core::RenderViewport,
 ) -> Vec<gfx_core::TextureRenderStepList<'_>> {
     let pass_count = layers
         .iter()
@@ -170,6 +174,7 @@ pub(super) fn color_layer_passes(
                         None
                     },
                     depth_attachment: Some(source_depth_attachment),
+                    viewport: Some(viewport),
                 });
             }
             let filter_load_op = if group.preserve_filtered_pixels {
@@ -185,6 +190,7 @@ pub(super) fn color_layer_passes(
                     color_load_op: filter_load_op,
                     clear_region: None,
                     depth_attachment: None,
+                    viewport: None,
                 });
             }
         }
@@ -201,6 +207,7 @@ pub(super) fn color_layer_passes(
                 color_load_op: filter_load_op,
                 clear_region: None,
                 depth_attachment: None,
+                viewport: None,
             });
         }
     }
@@ -220,6 +227,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
     root_layers: &[PreparedColorLayer],
     backdrop_source: Option<TextureViewId>,
     backdrop_groups: &[PreparedBackdropBlurGroup],
+    viewport: gfx_core::RenderViewport,
 ) -> Result<()> {
     let mut color_passes = Vec::new();
     for pass in graph.offscreen_passes() {
@@ -231,14 +239,15 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
                     render_pass,
                     steps: path_steps,
                     depth_attachment,
+                    viewport,
                 },
                 path_mask_cpu_elapsed,
             )?,
             GraphPass::ElementLayers => color_passes.extend(color_layer_passes(
-                render_pass, filter_render_pass, depth_attachment, element_layers,
+                render_pass, filter_render_pass, depth_attachment, element_layers, viewport,
             )),
             GraphPass::RootColor => color_passes.extend(color_layer_passes(
-                render_pass, filter_render_pass, depth_attachment, root_layers,
+                render_pass, filter_render_pass, depth_attachment, root_layers, viewport,
             )),
             GraphPass::BackdropBlur => {
                 if !color_passes.is_empty() {
@@ -253,6 +262,7 @@ fn execute_frame_graph_offscreen<D: BackendPresentationCompat>(
                         filter_render_pass,
                         depth_attachment,
                         backdrop_groups,
+                        viewport,
                     )?;
                 }
             }
@@ -375,7 +385,7 @@ fn render_step_scissor(step: &RenderStepDescriptor) -> Option<ScissorRect> {
 
 impl NovaRenderer {
     fn drawable_pixels(&self) -> usize {
-        (self.current_size.width as usize).saturating_mul(self.current_size.height as usize)
+        (self.active_size.width as usize).saturating_mul(self.active_size.height as usize)
     }
 
     fn backdrop_blur_pixel_metrics(
@@ -522,6 +532,29 @@ impl NovaRenderer {
         }
         let frame_started = Instant::now();
         let backend_label = self.backend_info.label();
+        let source_extent = self.active_size;
+        if source_extent.width > self.current_size.width
+            || source_extent.height > self.current_size.height
+        {
+            anyhow::bail!(
+                "presentation source extent {}x{} exceeds retained target {}x{}",
+                source_extent.width,
+                source_extent.height,
+                self.current_size.width,
+                self.current_size.height,
+            );
+        }
+        lock_backend(&self.backend).set_swapchain_source_extent(
+            self.swapchain,
+            Extent2d::new(source_extent.width, source_extent.height)?,
+        )?;
+        let render_viewport = gfx_core::RenderViewport {
+            extent: Extent2d::new(source_extent.width, source_extent.height)?,
+            reference_extent: Extent2d::new(
+                self.current_size.width,
+                self.current_size.height,
+            )?,
+        };
         let async_capabilities = lock_backend(&self.backend).async_capabilities();
         let native_partial_presentation = lock_backend(&self.backend)
             .presentation_capabilities(self.swapchain)
@@ -583,7 +616,7 @@ impl NovaRenderer {
         }
         let present_damage = (native_partial_presentation
             && upload.unsupported_batches.total() == 0)
-            .then(|| partial_scissor_for_packet(packet, self.current_size))
+            .then(|| partial_scissor_for_packet(packet, self.active_size))
             .flatten();
         let present_damage = present_damage.filter(|damage| {
             let drawable_pixels = self.drawable_pixels();
@@ -663,7 +696,7 @@ impl NovaRenderer {
             draw_plan: path_draw_plan,
             texture_view: self.path_texture_view,
             target_size: self.path_texture_size,
-            viewport: self.current_size,
+            viewport: self.active_size,
             format: self.surface_format,
             pipeline: self.pipelines.path_rasterization,
         };
@@ -961,6 +994,7 @@ impl NovaRenderer {
                         &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
+                        render_viewport,
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1071,6 +1105,7 @@ impl NovaRenderer {
                         &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
+                        render_viewport,
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1181,6 +1216,7 @@ impl NovaRenderer {
                         &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
+                        render_viewport,
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1278,6 +1314,7 @@ impl NovaRenderer {
                         &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
+                        render_viewport,
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1363,6 +1400,7 @@ impl NovaRenderer {
                         &root_color_layers,
                         backdrop_blur_source_texture_view,
                         &backdrop_blur_groups,
+                        render_viewport,
                     )?;
                     backdrop_blur_refreshed = graph.requires(GraphPass::BackdropBlur);
                     element_blur_refreshed = graph.requires(GraphPass::ElementLayers);
@@ -1497,10 +1535,12 @@ impl NovaRenderer {
         if crate::diagnostics::gpu_owner::resize_trace_enabled() {
             log::info!(
                 target: "gpui_resize_trace",
-                "gpui_resize stage=present window_id={} physical_px={}x{} scene_revision={} scene_primitives={} dirty_full={}",
+                "gpui_resize stage=present window_id={} target_capacity_px={}x{} scene_px={}x{} scene_revision={} scene_primitives={} dirty_full={}",
                 packet.window_id,
                 self.current_size.width,
                 self.current_size.height,
+                self.active_size.width,
+                self.active_size.height,
                 packet.paint.scene.revision,
                 packet.paint.scene.len(),
                 packet.dirty_region.is_full(),

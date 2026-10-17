@@ -94,6 +94,7 @@ struct UploadKey {
     scene_revision: u64,
     atlas_placement_generation: u64,
     size: DrawableSize,
+    target_size: DrawableSize,
     premultiplied_alpha: bool,
     blur_quality: BackdropBlurQuality,
 }
@@ -675,6 +676,7 @@ impl NovaRenderer {
         scene: &crate::Scene,
         retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
+        drawable_size: DrawableSize,
         blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
         crate::diagnostics::performance_metrics::reset_frame_upload_metrics();
@@ -691,10 +693,15 @@ impl NovaRenderer {
         let key = UploadKey {
             scene_revision: scene.revision,
             atlas_placement_generation: self.atlas.placement_generation(),
-            size: self.current_size,
+            size: drawable_size,
+            target_size: self.current_size,
             premultiplied_alpha: self.surface_alpha.outputs_premultiplied_alpha(),
             blur_quality,
         };
+        // Scene geometry and normalized shader coordinates belong to this frame's native client
+        // area. The retained target may be larger during live resize; its extra capacity is not
+        // part of the scene viewport or the source image presented to the window.
+        let render_size = drawable_size;
         // Display-specific text raster parameters invalidate only this CPU encode key when their
         // visual values change. Element-blur child scenes are flattened into the same static upload,
         // and retained-animation refresh recursively rebuilds only the animation-value stream.
@@ -721,7 +728,9 @@ impl NovaRenderer {
         // small animation does not make those cached pixels disposable.
         let keep_retained_root = self.frame_upload.root_color.is_some()
             && self.retained_upload.key.is_some_and(|previous| {
-                previous.size == key.size && previous.premultiplied_alpha == key.premultiplied_alpha
+                previous.size == key.size
+                    && previous.target_size == key.target_size
+                    && previous.premultiplied_alpha == key.premultiplied_alpha
             });
         // Rebuild the capture only on Scene commits. Retained animation-only
         // frames keep the already encoded recursive prefix (which owns no
@@ -732,7 +741,9 @@ impl NovaRenderer {
         // prefixes and unstable resources. Its proven quad/shadow prefix can be
         // retained by default without changing ordinary/complex Scene handling.
         let auto_background = (!reusable)
-            .then(|| auto_capture_static_background(scene, retained_paint.chunks_for(scene), self.current_size))
+            .then(|| {
+                auto_capture_static_background(scene, retained_paint.chunks_for(scene), render_size)
+            })
             .flatten();
         let mut summary = self.retained_upload.summary;
         let mut encode_time = Duration::ZERO;
@@ -752,11 +763,12 @@ impl NovaRenderer {
             let encode_started_at = Instant::now();
             self.atlas
                 .copy_placements_into(&mut self.frame_upload.atlas_placements);
-            summary = self.frame_upload.encode(
+            summary = self.frame_upload.encode_for_target_size(
                 &mut self.retained_upload.quad_chunks,
                 scene,
                 retained_paint,
                 presentation_animation_values,
+                render_size,
                 self.current_size,
                 &self.rendering_parameters,
                 key.premultiplied_alpha,
@@ -769,7 +781,7 @@ impl NovaRenderer {
             // Capture the encoded static prefix in place. No separate foreground
             // Scene, second Painter::finish, or second primitive encoding pass.
             let captured_static_prefix = auto_background.as_ref().is_some_and(|candidate| {
-                self.frame_upload.capture_encoded_static_prefix(
+                self.frame_upload.capture_encoded_static_prefix_for_target_size(
                     candidate,
                     self.current_size,
                     &mut summary,
@@ -791,13 +803,17 @@ impl NovaRenderer {
                 && (keep_retained_root
                     || color::should_retain_local_animation(
                         scene,
-                        self.current_size,
+                        render_size,
                         presentation_animation_values,
                     )
                     || should_retain_complex_scene_color(scene, &summary))
             {
                 self.frame_upload
-                    .append_root_color(self.current_size, &mut summary);
+                    .append_root_color_for_target_size(
+                        render_size,
+                        self.current_size,
+                        &mut summary,
+                    );
             }
             log::trace!(
                 target: "gpui::diagnostics",
@@ -848,7 +864,7 @@ impl NovaRenderer {
         self.frame_upload.retained_static_reused =
             reusable && !gpu_indexed_animation_blocks_blur_reuse;
         self.frame_upload
-            .sample_animated_primitives(self.current_size);
+            .sample_animated_primitives_for_target_size(self.current_size);
         self.retained_upload.update_shareability(&self.frame_upload);
 
         let static_stream_misses = self
@@ -1189,6 +1205,10 @@ mod tests {
             scene_revision,
             atlas_placement_generation: 0,
             size: DrawableSize {
+                width: 640,
+                height: 480,
+            },
+            target_size: DrawableSize {
                 width: 640,
                 height: 480,
             },

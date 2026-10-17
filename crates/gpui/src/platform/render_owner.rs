@@ -32,7 +32,7 @@ mod schedule;
 mod tests;
 mod worker;
 
-use queue::{Command, Queue};
+use queue::{Command, DrawableResize, Queue};
 use worker::{Entry, Worker};
 
 #[derive(Debug)]
@@ -170,6 +170,7 @@ pub(crate) struct RenderOwner {
     owner_thread: ThreadId,
     status: Arc<Status>,
     gpu_specs: GpuSpecs,
+    pending_drawable_size: Mutex<Option<DrawableResize>>,
     #[cfg(not(target_os = "windows"))]
     atlas: Arc<dyn crate::PlatformAtlas>,
     #[cfg(not(target_os = "windows"))]
@@ -250,6 +251,7 @@ impl RenderOwner {
             owner_thread: thread::current().id(),
             status,
             gpu_specs,
+            pending_drawable_size: Mutex::new(None),
             #[cfg(not(target_os = "windows"))]
             atlas,
             #[cfg(not(target_os = "windows"))]
@@ -271,7 +273,12 @@ impl RenderOwner {
         self.enqueue(Command::Call(Box::new(operation)))
     }
 
-    fn submit(&self, packet: PresentationPacket, framebuffer_only: bool) -> Result<bool> {
+    fn submit(
+        &self,
+        packet: PresentationPacket,
+        framebuffer_only: bool,
+        resize: Option<DrawableResize>,
+    ) -> Result<bool> {
         // On Windows the HWND and GPUI App share the same foreground thread. Waiting for
         // the GPU to present even a first frame would block ALL windows and input while
         // another window initializes, resizes or waits on its swapchain.
@@ -284,8 +291,12 @@ impl RenderOwner {
                 packet,
                 framebuffer_only,
                 reply: None,
+                resize,
             }) {
                 self.status.pending.store(false, Ordering::Release);
+                if let Some(resize) = resize {
+                    *self.pending_drawable_size.lock() = Some(resize);
+                }
 
                 return Err(error);
             }
@@ -306,6 +317,7 @@ impl RenderOwner {
                 packet,
                 framebuffer_only,
                 reply,
+                resize,
             })?;
             if let Some(receiver) = receiver {
                 receiver
@@ -318,11 +330,12 @@ impl RenderOwner {
     }
 
     pub(super) fn draw(&self, packet: PresentationPacket) -> Result<bool> {
-        self.submit(packet, false)
+        let resize = self.pending_drawable_size.lock().take();
+        self.submit(packet, false, resize)
     }
 
     pub(super) fn present_framebuffer_only(&self, packet: PresentationPacket) -> Result<bool> {
-        self.submit(packet, true)
+        self.submit(packet, true, None)
     }
 
     pub(super) fn present_active_frame(
@@ -364,22 +377,24 @@ impl RenderOwner {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    pub(super) fn set_content_stretch(&self, size: Size<DevicePixels>) {
+        if let Err(error) = self.enqueue(Command::ContentStretch(size)) {
+            log::debug!("failed to queue Windows resize content stretch: {error:#}");
+        }
+    }
+
     /// Accepts a resize in command order; target recreation runs on the next GPU frame
     /// whose Scene belongs to the same native geometry generation.
-    pub(super) fn update_drawable_size(
-        &mut self,
-        size: Size<DevicePixels>,
-        epoch: u64,
-    ) -> Result<()> {
-        self.enqueue(Command::Resize {
+    pub(super) fn update_drawable_size(&mut self, size: Size<DevicePixels>, epoch: u64) {
+        *self.pending_drawable_size.lock() = Some(DrawableResize {
             size,
             epoch: Some(epoch),
-        })?;
+        });
         #[cfg(not(target_os = "windows"))]
         {
             self.viewport_size = size;
         }
-        Ok(())
     }
 
     pub(super) fn set_frame_interval(&self, interval: Option<Duration>) {

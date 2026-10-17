@@ -120,6 +120,14 @@ pub(super) fn write_backdrop_blur(
     blur: &crate::PaintBackdropBlur,
     drawable_size: DrawableSize,
 ) {
+    write_backdrop_blur_for_target_size(bytes, blur, drawable_size);
+}
+
+pub(super) fn write_backdrop_blur_for_target_size(
+    bytes: &mut Vec<u8>,
+    blur: &crate::PaintBackdropBlur,
+    target_size: DrawableSize,
+) {
     write_u32_vec(bytes, blur.order);
     write_u32_vec(bytes, u32::from(blur.downsample));
     write_u32_vec(bytes, u32::from(blur.levels.clamp(1, 6)));
@@ -133,8 +141,8 @@ pub(super) fn write_backdrop_blur(
     );
     write_f32_vec(bytes, blur.radius.0);
     write_f32_vec(bytes, blur.saturation);
-    write_f32_vec(bytes, drawable_size.width as f32);
-    write_f32_vec(bytes, drawable_size.height as f32);
+    write_f32_vec(bytes, target_size.width as f32);
+    write_f32_vec(bytes, target_size.height as f32);
     write_f32_vec(bytes, blur.opacity);
     // Shared compositor kind: 0 keeps the auxiliary 16-byte slot interpreted as HSLA tint.
     write_u32_vec(bytes, 0);
@@ -151,14 +159,22 @@ pub(super) fn write_paint_blur(
     blur: &crate::PaintBlur,
     drawable_size: DrawableSize,
 ) {
-    write_paint_blur_fields(
+    write_paint_blur_for_target_size(bytes, blur, drawable_size);
+}
+
+pub(super) fn write_paint_blur_for_target_size(
+    bytes: &mut Vec<u8>,
+    blur: &crate::PaintBlur,
+    target_size: DrawableSize,
+) {
+    write_paint_blur_fields_for_target_size(
         bytes,
         blur.order,
         blur.bounds,
         blur.content_mask,
         blur.radius,
         blur.opacity,
-        drawable_size,
+        target_size,
     );
 }
 
@@ -173,6 +189,26 @@ pub(super) fn write_paint_blur_fields(
     opacity: f32,
     drawable_size: DrawableSize,
 ) {
+    write_paint_blur_fields_for_target_size(
+        bytes,
+        order,
+        bounds,
+        content_mask,
+        radius,
+        opacity,
+        drawable_size,
+    );
+}
+
+pub(super) fn write_paint_blur_fields_for_target_size(
+    bytes: &mut Vec<u8>,
+    order: crate::DrawOrder,
+    bounds: crate::Bounds<crate::ScaledPixels>,
+    content_mask: crate::ContentMask<crate::ScaledPixels>,
+    radius: crate::ScaledPixels,
+    opacity: f32,
+    target_size: DrawableSize,
+) {
     write_u32_vec(bytes, order);
     write_u32_vec(bytes, 1);
     write_u32_vec(bytes, 1);
@@ -185,8 +221,8 @@ pub(super) fn write_paint_blur_fields(
     write_bounds_scaled(bytes, &bounds);
     write_f32_vec(bytes, radius.0);
     write_f32_vec(bytes, 1.0);
-    write_f32_vec(bytes, drawable_size.width as f32);
-    write_f32_vec(bytes, drawable_size.height as f32);
+    write_f32_vec(bytes, target_size.width as f32);
+    write_f32_vec(bytes, target_size.height as f32);
     write_f32_vec(bytes, opacity);
     write_u32_vec(bytes, 1);
 }

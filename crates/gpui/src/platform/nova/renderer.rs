@@ -60,6 +60,18 @@ fn surface_alpha_allows_partial_presentation(surface_alpha: SurfaceAlphaState) -
     }
 }
 
+fn packet_drawable_size(packet: &PresentationPacket, fallback: DrawableSize) -> DrawableSize {
+    let (width, height) = packet
+        .paint
+        .geometry
+        .layout_extent
+        .unwrap_or((fallback.width, fallback.height));
+    DrawableSize {
+        width: width.max(1),
+        height: height.max(1),
+    }
+}
+
 pub(super) fn nova_present_mode_for_backend(
     backend: RendererBackend,
     renderer_options: &RendererOptions,
@@ -171,6 +183,8 @@ pub(crate) struct NovaRenderer {
     retained_upload: retained_upload::RetainedUpload,
     draw_step_scratch: DrawStepScratch,
     path_mask_residency: path_mask::Residency,
+    active_size: DrawableSize,
+    displayed_size: DrawableSize,
     current_size: DrawableSize,
     pending_drawable_size: Option<DrawableSizeRequest>,
     atlas: Arc<NovaAtlas>,
@@ -293,6 +307,29 @@ fn retire_replaced_path_rasterization_resources<D>(
 }
 
 impl NovaRenderer {
+    #[cfg(target_os = "windows")]
+    pub(crate) fn set_content_stretch(&mut self, size: Size<DevicePixels>) -> Result<()> {
+        let target_width = size.width.0.max(1) as u32;
+        let target_height = size.height.0.max(1) as u32;
+        let scale = [
+            target_width as f32 / self.displayed_size.width.max(1) as f32,
+            target_height as f32 / self.displayed_size.height.max(1) as f32,
+        ];
+        lock_backend(&self.backend).set_swapchain_content_stretch(
+            self.swapchain,
+            Some(scale),
+        )
+    }
+
+    fn finish_presented_frame(&mut self) {
+        if let Err(error) = lock_backend(&self.backend)
+            .set_swapchain_content_stretch(self.swapchain, None)
+        {
+            log::warn!("failed to reset swapchain content stretch after resize: {error:#}");
+        }
+        self.displayed_size = self.active_size;
+    }
+
     pub(crate) fn set_live_resize_active(&mut self, active: bool) {
         if self.live_resize_active && !active {
             // Ending the gesture releases temporary capacity. The release keeps
@@ -344,6 +381,7 @@ impl NovaRenderer {
         let mut presentation_timing = None;
         let result = self.draw_frame(&mut packet, &mut presentation_timing);
         if result.as_ref().is_ok_and(|submitted| *submitted) {
+            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         self.active_presentation_packet = Some(packet);
@@ -368,6 +406,8 @@ impl NovaRenderer {
         if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
             return Ok(false);
         }
+        let drawable_size = packet_drawable_size(packet, self.current_size);
+        self.active_size = drawable_size;
         self.observe_presentation_packet(&packet);
         let supports_partial = self.swapchain_warmup_frames == 0
             && surface_alpha_allows_partial_presentation(self.surface_alpha)
@@ -379,13 +419,14 @@ impl NovaRenderer {
             // The backbuffer/retained target dimensions changed. A full Present
             // mode alone does not expand Scene/GPU Layer scissors from old dirty
             // rectangles; the first successful frame must repaint the new extent.
-            force_full_drawable_damage_after_resize(packet, self.current_size);
+            force_full_drawable_damage_after_resize(packet, self.active_size);
         }
         let backdrop_blur_quality = self.backdrop_blur_quality(packet);
         let upload = self.pack_scene(
             &packet.paint.scene,
             &packet.paint.retained_paint,
             packet.presentation_animation_values.as_slice(),
+            drawable_size,
             backdrop_blur_quality,
         );
         self.reconcile_gpu_layer_animation_damage(packet);
@@ -409,7 +450,7 @@ impl NovaRenderer {
             self.live_resize_active,
             self.swapchain_warmup_frames != 0,
         ) {
-            force_full_drawable_damage_after_resize(packet, self.current_size);
+            force_full_drawable_damage_after_resize(packet, self.active_size);
             self.observe_presentation_packet(packet);
         }
         if !self.frame_submission_is_ready(&packet.paint.scene)? {
@@ -790,6 +831,8 @@ impl NovaRenderer {
             if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
                 return Ok(false);
             }
+            let drawable_size = packet_drawable_size(&packet, self.current_size);
+            self.active_size = drawable_size;
             self.observe_presentation_packet(&packet);
             let supports_partial = self.swapchain_warmup_frames == 0
                 && surface_alpha_allows_partial_presentation(self.surface_alpha)
@@ -798,13 +841,14 @@ impl NovaRenderer {
                     .partial_presentation;
             resolve_surface_packet(&mut packet, !supports_partial);
             if self.swapchain_warmup_frames != 0 {
-                force_full_drawable_damage_after_resize(&mut packet, self.current_size);
+                force_full_drawable_damage_after_resize(&mut packet, self.active_size);
             }
             let backdrop_blur_quality = self.backdrop_blur_quality(&packet);
             let upload = self.pack_scene(
                 &packet.paint.scene,
                 &packet.paint.retained_paint,
                 packet.presentation_animation_values.as_slice(),
+                drawable_size,
                 backdrop_blur_quality,
             );
             self.reconcile_gpu_layer_animation_damage(&mut packet);
@@ -826,7 +870,7 @@ impl NovaRenderer {
                 self.live_resize_active,
                 self.swapchain_warmup_frames != 0,
             ) {
-                force_full_drawable_damage_after_resize(&mut packet, self.current_size);
+                force_full_drawable_damage_after_resize(&mut packet, self.active_size);
                 self.observe_presentation_packet(&packet);
             }
             if !self.frame_submission_is_ready(&packet.paint.scene)? {
@@ -847,6 +891,7 @@ impl NovaRenderer {
             )
         })();
         if result.as_ref().is_ok_and(|submitted| *submitted) {
+            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         self.active_presentation_packet = Some(packet);
@@ -884,6 +929,7 @@ impl NovaRenderer {
         let mut presentation_timing = presentation_timing;
         let draw_result = self.draw_frame(&mut packet, &mut presentation_timing);
         if draw_result.as_ref().is_ok_and(|submitted| *submitted) {
+            self.finish_presented_frame();
             packet.record_presentation(Instant::now());
         }
         self.active_presentation_packet = Some(packet);

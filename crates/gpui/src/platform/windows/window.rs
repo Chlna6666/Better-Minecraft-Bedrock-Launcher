@@ -17,9 +17,9 @@ use std::{
 };
 
 use ::util::ResultExt;
-use parking_lot::Mutex as ParkingMutex;
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot::{self, Receiver};
+use parking_lot::Mutex as ParkingMutex;
 use slotmap::Key;
 use windows::{
     Win32::{
@@ -145,10 +145,14 @@ const UNPACED_FRAME_WATCHDOG_INTERVAL: Duration = Duration::from_millis(33);
 
 fn allow_unpaced_native_frame(
     scheduler_active: bool,
+    resize_pending: bool,
     now: Instant,
     last_vsync: Option<Instant>,
     last_fallback: Option<Instant>,
 ) -> bool {
+    if resize_pending {
+        return true;
+    }
     if !scheduler_active {
         return true;
     }
@@ -450,11 +454,17 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
             // Let Win32 finish its native client-geometry update first. DefWindowProc
             // also dispatches WM_SIZE from WM_WINDOWPOSCHANGED when appropriate.
             // Neither native message may execute GPUI layout/prepaint synchronously:
-            // sync_size -> queue_resize records the latest extent/epoch and wakes
-            // the existing modal VSync or fallback redraw consumer.
+            // sync_size -> queue_resize records the latest extent/epoch and posts
+            // a coalesced modal wake; no GPUI layout/prepaint runs on this stack.
             let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
             if let Some(window) = native_window(hwnd) {
                 window.sync_current_native_size();
+                if window.0.size_move_active.get() && window.0.pending_native_size_retry.get() {
+                    // Commit the latest size on a posted modal-loop wake instead of
+                    // waiting for the next DWM VSync after a reentrant size read.
+                    // This does not run GPUI layout on the WM_SIZE stack.
+                    window.0.vsync_scheduler.wake_modal_ui_tasks();
+                }
                 window.schedule_visibility_report();
             }
             return result;
@@ -513,7 +523,7 @@ unsafe extern "system" fn size_move_loop_subclass_proc(
                     .take_modal_ui_task_wake(hwnd.0 as isize)
             {
                 // GPU reports may be the only reason for this wake. Drain them
-                // independently of GPUI foreground tasks, without a GPU Present.
+                // independently; pending native resize work is dispatched below.
                 drain_modal_gpu_reports();
                 let needs_more_tasks = super::platform::poll_modal_foreground_tasks();
                 // A foreground runnable can enqueue the newest frame request. Flush
@@ -1320,6 +1330,7 @@ pub(crate) struct WindowsWindowInner {
     size_move_active: Cell<bool>,
     size_move_has_resized: Cell<bool>,
     pending_live_resize_active: Cell<Option<bool>>,
+    pending_content_stretch: Cell<Option<Size<DevicePixels>>>,
     vsync_scheduler: Arc<super::vsync::VSyncScheduler>,
     pub(crate) pending_renderer_size: Cell<Option<PendingWindowsResize>>,
     fallback_corner_radius: Option<Pixels>,
@@ -1721,6 +1732,7 @@ impl WindowsWindow {
             size_move_active: Cell::new(false),
             size_move_has_resized: Cell::new(false),
             pending_live_resize_active: Cell::new(None),
+            pending_content_stretch: Cell::new(None),
             vsync_scheduler,
             pending_renderer_size: Cell::new(None),
             fallback_corner_radius,
@@ -1929,6 +1941,11 @@ impl WindowsWindow {
             // transition. This control is enqueued once, not per WM_SIZE.
             self.set_live_resize_active(true);
         }
+        if self.is_live_resizing() {
+            self.0
+                .pending_content_stretch
+                .set(Some(resize.drawable_size));
+        }
         // Redraw and idle dispatch consume this slot, so an event burst keeps only its latest size
         // without imposing a separate timer cadence on interactive resizing.
         self.0.pending_resize.set(Some(resize));
@@ -1941,10 +1958,13 @@ impl WindowsWindow {
                 self.native_is_maximized().unwrap_or(false),
             );
         }
-        // Keep the previous scene at its native pixel scale until the matching
-        // new layout arrives. Scaling old pixels is not a viewport/layout update.
+        // Keep the previous scene paired with its own geometry until the matching
+        // new layout arrives; a native size event alone does not update scene layout.
         // Do not rely on WM_PAINT to wake a DirectComposition/no-redirection window.
         self.request_frame(PlatformFrameRequest::ui_commit());
+        if self.is_live_resizing() {
+            self.0.vsync_scheduler.wake_modal_ui_tasks();
+        }
     }
 
     /// Read the *current* Win32 client extent. Winit Resized events can be
@@ -2048,14 +2068,18 @@ impl WindowsWindow {
     }
 
     pub(crate) fn dispatch_pending_update(&self) {
-        // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer
-        // can all reach this method. If each consumes the pending frame, they
-        // defeat VSync coalescing and produce hundreds of uncadenced UI redraws
-        // per second. Let these paths poll tasks/geometry, but leave frame
-        // ownership to the native compositor unless it has stalled.
+        // Win32 WM_PAINT, nested modal foreground tasks and the fallback timer can
+        // all reach this method. Generic redraws remain VSync-coalesced; a pending
+        // native resize is the exception because waiting for VSync leaves newly
+        // exposed client pixels uncovered for another refresh.
         let now = Instant::now();
+        let resize_pending = self.0.size_move_active.get()
+            && (self.0.pending_resize.get().is_some()
+                || self.0.pending_renderer_size.get().is_some()
+                || self.0.pending_native_size_retry.get());
         if !allow_unpaced_native_frame(
             self.0.vsync_scheduler.is_active(),
+            resize_pending,
             now,
             self.0.last_native_vsync_frame_at.get(),
             self.0.last_unpaced_frame_at.get(),
@@ -2115,13 +2139,16 @@ impl WindowsWindow {
             // window re-queries its HWND, without polling all windows every DWM frame.
             self.sync_current_native_size();
         }
+        self.dispatch_pending_content_stretch();
         self.dispatch_pending_resize();
         let options = self.take_pending_frame_request();
         if options.requires_frame() {
             let had_active_presentation = self.has_active_presentation_animations();
-            // UI commits and retained presentation are separate request domains. Continue sampling
-            // an already committed scene even when this wakeup also asks the UI owner to commit.
-            let presented = if had_active_presentation {
+            // Keep presenting the committed scene while a resize commit is being built. The
+            // native client can expose its new extent before the matching GPUI Scene reaches the
+            // renderer; suppressing these frames leaves that newly exposed area unpainted.
+            let resize_pending = self.0.pending_renderer_size.get().is_some();
+            let presented = if had_active_presentation && !resize_pending {
                 let window_id = self.0.handle.window_id().data().as_ffi();
                 record_window_active_presentation_attempt(window_id);
                 let frame_started_at = Instant::now();
@@ -2178,6 +2205,7 @@ impl WindowsWindow {
                 false
             };
             if had_active_presentation
+                && !resize_pending
                 && !presented
                 && matches!(self.current_visibility(), WindowVisibility::Visible)
             {
@@ -2240,6 +2268,18 @@ impl WindowsWindow {
         self.request_frame(PlatformFrameRequest::ui_commit());
     }
 
+    fn dispatch_pending_content_stretch(&self) {
+        let Some(size) = self.0.pending_content_stretch.take() else {
+            return;
+        };
+        let renderer_state = self.0.renderer.borrow();
+        if let WindowsRendererState::Ready(renderer) = &*renderer_state {
+            renderer.set_content_stretch(size);
+        } else {
+            self.0.pending_content_stretch.set(Some(size));
+        }
+    }
+
     fn try_apply_queued_renderer_resize(
         &self,
         scene_extent: Option<(u32, u32)>,
@@ -2265,12 +2305,8 @@ impl WindowsWindow {
                 // immediately have to reverse it on the GPU owner).
                 // Keep the latest extent for the subsequent UI commit.
                 self.0.pending_renderer_size.set(Some(resize));
-            } else if let Err(error) = renderer
-                .update_drawable_size(resize.drawable_size, resize.epoch)
-            {
-                self.0.pending_renderer_size.set(Some(resize));
-                log::error!("failed to queue Windows GPU resize: {error:#}");
-                return false;
+            } else {
+                renderer.update_drawable_size(resize.drawable_size, resize.epoch);
             }
         }
         true
@@ -2706,9 +2742,11 @@ impl PlatformWindow for WindowsWindow {
         now: Instant,
         timing: Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<Option<crate::platform::frame::ActivePresentationFrame>> {
-        if !matches!(self.current_visibility(), WindowVisibility::Visible)
-            || self.0.pending_renderer_size.get().is_some()
-        {
+        if !matches!(self.current_visibility(), WindowVisibility::Visible) {
+            return Ok(None);
+        }
+
+        if self.0.pending_renderer_size.get().is_some() {
             return Ok(None);
         }
 
@@ -3087,25 +3125,55 @@ mod tests {
 
     #[test]
     fn os_redraw_does_not_race_healthy_dwm_vsync() {
-        use super::{allow_unpaced_native_frame, UNPACED_FRAME_WATCHDOG_INTERVAL};
+        use super::{UNPACED_FRAME_WATCHDOG_INTERVAL, allow_unpaced_native_frame};
         use std::time::Instant;
 
         let now = Instant::now();
         let fresh_native = now - Duration::from_millis(4);
-        assert!(!allow_unpaced_native_frame(true, now, Some(fresh_native), None));
         assert!(!allow_unpaced_native_frame(
             true,
+            false,
+            now,
+            Some(fresh_native),
+            None
+        ));
+        assert!(!allow_unpaced_native_frame(
+            true,
+            false,
             now,
             Some(now - Duration::from_millis(32)),
             None,
         ));
         assert!(allow_unpaced_native_frame(
             true,
+            false,
             now,
             Some(now - UNPACED_FRAME_WATCHDOG_INTERVAL),
             None,
         ));
-        assert!(allow_unpaced_native_frame(false, now, Some(fresh_native), None));
+        assert!(allow_unpaced_native_frame(
+            false,
+            false,
+            now,
+            Some(fresh_native),
+            None
+        ));
+    }
+
+    #[test]
+    fn pending_resize_bypasses_healthy_dwm_vsync_coalescing() {
+        use super::allow_unpaced_native_frame;
+        use std::time::Instant;
+
+        let now = Instant::now();
+        let fresh_native = now - Duration::from_millis(4);
+        assert!(allow_unpaced_native_frame(
+            true,
+            true,
+            now,
+            Some(fresh_native),
+            None,
+        ));
     }
 
     #[test]
@@ -3114,21 +3182,35 @@ mod tests {
         use std::time::Instant;
 
         let now = Instant::now();
-        assert!(allow_unpaced_native_frame(true, now, None, None));
-        assert!(!allow_unpaced_native_frame(true, now, None, Some(now)));
+        assert!(allow_unpaced_native_frame(true, false, now, None, None));
         assert!(!allow_unpaced_native_frame(
             true,
+            false,
+            now,
+            None,
+            Some(now)
+        ));
+        assert!(!allow_unpaced_native_frame(
+            true,
+            false,
             now + Duration::from_millis(32),
             None,
             Some(now),
         ));
         assert!(allow_unpaced_native_frame(
             true,
+            false,
             now + Duration::from_millis(33),
             None,
             Some(now),
         ));
-        assert!(allow_unpaced_native_frame(false, now, None, Some(now)));
+        assert!(allow_unpaced_native_frame(
+            false,
+            false,
+            now,
+            None,
+            Some(now)
+        ));
     }
 
     #[test]

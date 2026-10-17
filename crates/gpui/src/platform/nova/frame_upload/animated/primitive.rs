@@ -120,6 +120,15 @@ impl AnimatedUpload {
         size: DrawableSize,
         bytes: &mut Vec<u8>,
     ) -> AnimatedPrimitiveSample {
+        self.sample_resolved_for_target_size(values, size, bytes)
+    }
+
+    pub(super) fn sample_resolved_for_target_size(
+        &self,
+        values: &ResolvedAnimationValues,
+        target_size: DrawableSize,
+        bytes: &mut Vec<u8>,
+    ) -> AnimatedPrimitiveSample {
         let mut primitive = self.primitive.clone();
         let resolved_value = values.get(&self.animation_id).copied();
         let filter_parameters_changed = resolved_value.is_some_and(|value| {
@@ -169,9 +178,11 @@ impl AnimatedUpload {
             Primitive::Shadow(shadow) => write_shadow(bytes, &shadow),
             Primitive::MonochromeSprite(sprite) => write_monochrome_sprite(bytes, &sprite),
             Primitive::PolychromeSprite(sprite) => write_polychrome_sprite(bytes, &sprite),
-            Primitive::BackdropBlur(blur) => write_backdrop_blur(bytes, &blur, size),
+            Primitive::BackdropBlur(blur) => {
+                write_backdrop_blur_for_target_size(bytes, &blur, target_size);
+            }
             Primitive::Blur(blur) => {
-                write_paint_blur(bytes, &blur, size);
+                write_paint_blur_for_target_size(bytes, &blur, target_size);
                 if let Primitive::Blur(base) = &self.primitive {
                     write_packed_bounds_at(bytes, BLUR_SOURCE_BOUNDS_OFFSET, base.bounds);
                 }

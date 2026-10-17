@@ -233,7 +233,7 @@ impl NovaRenderer {
         let capacity =
             super::resize_plan::planned_size(self.current_size, requested, self.live_resize_active);
         let retain_capacity = self.live_resize_active
-            && lock_backend(&self.backend).supports_unscaled_presentation(
+            && lock_backend(&self.backend).supports_live_resize_capacity(
                 self.swapchain,
                 Extent2d::new(capacity.width, capacity.height)?,
             )?;

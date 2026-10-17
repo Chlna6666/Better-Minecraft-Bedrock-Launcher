@@ -4,7 +4,7 @@ impl FrameUpload {
     pub(super) fn encode_backdrop_blurs(
         &mut self,
         blurs: &[crate::PaintBackdropBlur],
-        drawable_size: DrawableSize,
+        target_size: DrawableSize,
         quality: BackdropBlurQuality,
         summary: &mut FrameUploadSummary,
     ) {
@@ -24,7 +24,11 @@ impl FrameUpload {
             };
             let blur = blur.as_ref();
             let primitive_index = (self.backdrop_blurs.len() / PACKED_BACKDROP_BLUR_BYTES) as u32;
-            write_backdrop_blur(&mut self.backdrop_blurs, blur, drawable_size);
+            write_backdrop_blur_for_target_size(
+                &mut self.backdrop_blurs,
+                blur,
+                target_size,
+            );
             register_scene_animated_primitive(
                 self,
                 summary,

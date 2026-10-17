@@ -273,7 +273,33 @@ impl Entry {
                 mut packet,
                 framebuffer_only,
                 reply,
+                resize,
             } => {
+                if let Some(resize) = resize {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let target = (
+                            resize.size.width.0.max(1) as u32,
+                            resize.size.height.0.max(1) as u32,
+                        );
+                        self.requested_swapchain_extent = Some(target);
+                        self.requested_swapchain_epoch = resize.epoch;
+                        self.resize_awaiting_draw = false;
+                        if gpu_owner::resize_trace_enabled() {
+                            log::info!(
+                                target: "gpui_resize_trace",
+                                "gpui_resize stage=gpu_queued window_id={} owner_id={} physical_px={}x{}",
+                                packet.window_id,
+                                self.id,
+                                target.0,
+                                target.1
+                            );
+                        }
+                    }
+                    self.ready_registration.store(0, Ordering::Release);
+                    self.renderer
+                        .update_drawable_size(resize.size, resize.epoch);
+                }
                 #[cfg(target_os = "windows")]
                 {
                     // A newer native generation stays queued for its own Scene.
@@ -357,6 +383,12 @@ impl Entry {
                 self.ready_registration.store(0, Ordering::Release);
                 self.renderer.update_drawable_size(size, epoch);
             }
+            #[cfg(any(test, target_os = "windows"))]
+            Command::ContentStretch(size) => {
+                if let Err(error) = self.renderer.set_content_stretch(size) {
+                    log::debug!("failed to stretch Windows swapchain content during resize: {error:#}");
+                }
+            }
             Command::Call(operation) => operation(&mut self.renderer),
             Command::Transparency(transparent) => {
                 self.ready_registration.store(0, Ordering::Release);
@@ -395,7 +427,7 @@ impl Entry {
         // and Draw commands. Do not render the old scene at the newly requested
         // extent: the queued Draw owns the matching layout and samples the
         // current timeline itself. Resource-control barriers remain ordered.
-        if self.queue.has_pending_draw() {
+        if self.queue.has_pending_draw() || self.queue.has_pending_resize_draw() {
             return;
         }
         #[cfg(not(target_os = "windows"))]
@@ -455,11 +487,21 @@ impl Entry {
     }
 
     fn present_scene(&mut self) -> Result<bool> {
+        #[cfg(target_os = "windows")]
+        if self.queue.has_pending_draw() || self.queue.has_pending_resize_draw() {
+            return Ok(false);
+        }
         let scene_epoch = self
             .scene
             .as_ref()
             .map(|(packet, _)| packet.paint.geometry.layout_epoch);
         if !self.ready(scene_epoch)? {
+            return Ok(false);
+        }
+        // Surface replacement may block while a newer paired size/Scene arrives.
+        // Do not present this now-stale frame into the newly resized HWND.
+        #[cfg(target_os = "windows")]
+        if self.queue.has_pending_draw() || self.queue.has_pending_resize_draw() {
             return Ok(false);
         }
         let Some((mut packet, framebuffer_only)) = self.scene.take() else {

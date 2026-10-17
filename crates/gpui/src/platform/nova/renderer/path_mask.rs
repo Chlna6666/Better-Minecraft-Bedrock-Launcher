@@ -86,6 +86,7 @@ pub(super) struct Pass<'a> {
     pub(super) render_pass: RenderPassId,
     pub(super) steps: &'a [DrawStepDescriptor],
     pub(super) depth_attachment: RenderPassDepthAttachment,
+    pub(super) viewport: gfx_core::RenderViewport,
 }
 
 pub(super) fn render<D: BackendPresentationCompat>(
@@ -94,13 +95,15 @@ pub(super) fn render<D: BackendPresentationCompat>(
     cpu_elapsed: &mut Duration,
 ) -> Result<()> {
     let started = Instant::now();
-    let result = device.render_step_list_to_texture(
-        pass.texture_view,
-        pass.render_pass,
-        RenderStepList::from_draw_steps(pass.steps),
-        LoadOp::Clear(clear_color()),
-        Some(pass.depth_attachment),
-    );
+    let result = device.render_step_lists_to_textures_compat(&[gfx_core::TextureRenderStepList {
+        texture_view: pass.texture_view,
+        render_pass: pass.render_pass,
+        steps: RenderStepList::from_draw_steps(pass.steps),
+        color_load_op: LoadOp::Clear(clear_color()),
+        clear_region: None,
+        depth_attachment: Some(pass.depth_attachment),
+        viewport: Some(pass.viewport),
+    }]);
     *cpu_elapsed = started.elapsed();
     result.map_err(Into::into)
 }

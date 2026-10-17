@@ -1,4 +1,5 @@
 use super::*;
+use gfx_core::SurfaceDevice as _;
 
 pub(super) enum NovaBackend {
     #[cfg(all(
@@ -305,8 +306,56 @@ impl NovaBackend {
         }
     }
 
-    /// Whether an oversized drawable is cropped at native pixel scale instead of stretched.
-    pub(super) fn supports_unscaled_presentation(
+    pub(super) fn set_swapchain_source_extent(
+        &mut self,
+        swapchain: SwapchainId,
+        extent: gfx_core::Extent2d,
+    ) -> Result<()> {
+        match self {
+            #[cfg(all(
+                feature = "nova-gfx-opengl",
+                any(target_os = "windows", target_os = "linux")
+            ))]
+            Self::OpenGl(device) => Ok(device.set_swapchain_source_extent(swapchain, extent)?),
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.set_swapchain_source_extent(swapchain, extent)?),
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.set_swapchain_source_extent(swapchain, extent)?),
+            #[cfg(all(
+                feature = "nova-gfx-vulkan",
+                any(target_os = "windows", target_os = "linux", target_os = "freebsd")
+            ))]
+            Self::Vulkan(device) => Ok(device.set_swapchain_source_extent(swapchain, extent)?),
+            #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
+            Self::Metal(device) => Ok(device.set_swapchain_source_extent(swapchain, extent)?),
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = (swapchain, extent);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn set_swapchain_content_stretch(
+        &mut self,
+        swapchain: SwapchainId,
+        scale: Option<[f32; 2]>,
+    ) -> Result<()> {
+        match self {
+            #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
+            Self::Dx11(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
+            #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
+            Self::Dx12(device) => Ok(device.set_swapchain_content_stretch(swapchain, scale)?),
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = (swapchain, scale);
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether this backend can expose a native-pixel client region from retained capacity.
+    pub(super) fn supports_live_resize_capacity(
         &self,
         swapchain: SwapchainId,
         extent: gfx_core::Extent2d,
@@ -325,7 +374,9 @@ impl NovaBackend {
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => Ok(device.supports_unscaled_presentation(swapchain, extent)?),
+            Self::Vulkan(device) => {
+                Ok(device.supports_native_pixel_presentation(swapchain, extent)?)
+            }
             #[allow(unreachable_patterns)]
             _ => {
                 let _ = (swapchain, extent);

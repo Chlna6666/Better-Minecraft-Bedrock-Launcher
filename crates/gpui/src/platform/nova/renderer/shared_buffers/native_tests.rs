@@ -80,7 +80,14 @@ fn upload(renderer: &mut NovaRenderer, slot: usize, scene: &crate::Scene, retent
     renderer
         .activate_frame_resources(slot)
         .expect("activate slot");
-    renderer.pack_scene(scene, retention, &[], BackdropBlurQuality::Full);
+    let drawable_size = renderer.current_size;
+    renderer.pack_scene(
+        scene,
+        retention,
+        &[],
+        drawable_size,
+        BackdropBlurQuality::Full,
+    );
     renderer
         .prepare_static_buffers()
         .expect("select static versions");
@@ -262,7 +269,14 @@ fn verify(backend: RendererBackend) {
         "cannot mutate the pending slot"
     );
     renderer.activate_frame_resources(0).expect("free slot");
-    renderer.pack_scene(&green, &crate::window::retained::RetainedPaint::default(), &[], BackdropBlurQuality::Full);
+    let drawable_size = renderer.current_size;
+    renderer.pack_scene(
+        &green,
+        &crate::window::retained::RetainedPaint::default(),
+        &[],
+        drawable_size,
+        BackdropBlurQuality::Full,
+    );
     let old_ids = renderer.frame_resources[0].buffers.ids();
     let count = device!(renderer, device, { device.resource_stats().buffers });
     let layout = renderer.quad_resource_set_layout;

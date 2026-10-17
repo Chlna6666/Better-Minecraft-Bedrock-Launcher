@@ -17,7 +17,7 @@ pub(super) enum Command {
         packet: PresentationPacket,
         framebuffer_only: bool,
         reply: Option<SyncSender<Result<bool>>>,
-
+        resize: Option<DrawableResize>,
     },
     Tick(Instant, Option<ActivePresentationTiming>),
     Continue(Instant),
@@ -26,6 +26,8 @@ pub(super) enum Command {
         /// Native client-geometry generation, or `None` for an unversioned resize.
         epoch: Option<u64>,
     },
+    #[cfg(any(test, target_os = "windows"))]
+    ContentStretch(Size<DevicePixels>),
     Transparency(bool),
     #[cfg(any(test, not(target_os = "windows")))]
     PresentationInterval(Option<Duration>),
@@ -37,8 +39,14 @@ pub(super) enum Command {
     Shutdown(SyncSender<()>),
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct DrawableResize {
+    pub(super) size: Size<DevicePixels>,
+    pub(super) epoch: Option<u64>,
+}
+
 impl Command {
-    #[cfg(any(test, target_os = "windows"))]
+    #[cfg(test)]
     fn resize(size: Size<DevicePixels>) -> Self {
         Self::Resize { size, epoch: None }
     }
@@ -47,13 +55,38 @@ impl Command {
     /// overtake while compacting obsolete *unexecuted* native resize frames.
     #[cfg(any(test, target_os = "windows"))]
     fn is_resize_compaction_barrier(&self) -> bool {
+        if matches!(
+            self,
+            Self::Draw {
+                resize: Some(_),
+                ..
+            }
+        ) {
+            return true;
+        }
         !matches!(
             self,
             Self::Resize { .. }
                 | Self::Draw { reply: None, .. }
                 | Self::Tick(..)
                 | Self::Continue(..)
+                | Self::ContentStretch(..)
         )
+    }
+
+    #[cfg(any(test, target_os = "windows"))]
+    fn is_live_resize_compaction_barrier(&self) -> bool {
+        match self {
+            Self::Draw { reply: Some(_), .. }
+            | Self::Transparency(_)
+            | Self::Call(_)
+            | Self::Shutdown(_) => true,
+            #[cfg(any(test, not(target_os = "windows")))]
+            Self::PresentationInterval(_) => true,
+            #[cfg(not(target_os = "windows"))]
+            Self::PresentationClock(_) | Self::PresentationVisibility(_) => true,
+            _ => false,
+        }
     }
 
     fn is_barrier(&self) -> bool {
@@ -62,7 +95,10 @@ impl Command {
             | Self::Transparency(_)
             | Self::Call(_)
             | Self::Shutdown(_)
-            | Self::Draw { reply: Some(_), .. } => true,
+            | Self::Draw { reply: Some(_), .. }
+            | Self::Draw {
+                resize: Some(_), ..
+            } => true,
             #[cfg(any(test, not(target_os = "windows")))]
             Self::PresentationInterval(_) => true,
             #[cfg(not(target_os = "windows"))]
@@ -117,6 +153,40 @@ impl Queue {
             state.closing = true;
             state.commands.clear();
         }
+        // A live resize frame owns both its geometry and the Scene laid out for
+        // that geometry. Replace queued presentation work as one transaction so
+        // a newer WM_SIZE cannot be separated from its matching Scene.
+        #[cfg(any(test, target_os = "windows"))]
+        if let Command::Draw {
+            packet,
+            reply: None,
+            resize: Some(_),
+            ..
+        } = &mut command
+        {
+            let start = state
+                .commands
+                .iter()
+                .rposition(|queued| queued.command.is_live_resize_compaction_barrier())
+                .map_or(0, |index| index + 1);
+            for obsolete in state.commands.drain(start..) {
+                first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
+                coalesced_count =
+                    coalesced_count.saturating_add(obsolete.coalesced_count.saturating_add(1));
+                match obsolete.command {
+                    Command::Resize { .. }
+                    | Command::Tick(..)
+                    | Command::Continue(..)
+                    | Command::ContentStretch(..) => {}
+                    Command::Draw {
+                        packet: previous,
+                        reply: None,
+                        ..
+                    } => packet.merge_pending_damage_from(&previous),
+                    _ => unreachable!("live resize compaction must not cross a control barrier"),
+                }
+            }
+        }
         // Several WM_SIZE generations can arrive while the shared GPU owner
         // is busy. Each obsolete Resize + Draw used to be a barrier, forcing
         // costly intermediate swapchain/blur/depth rebuilds on every backend.
@@ -124,27 +194,39 @@ impl Queue {
         // complete accumulated damage need to reach the GPU. Never cross a
         // resource-control command or a synchronous first-frame handshake.
         #[cfg(any(test, target_os = "windows"))]
-        if let Command::Draw { packet, reply: None, .. } = &mut command {
+        if let Command::Draw {
+            packet,
+            reply: None,
+            ..
+        } = &mut command
+        {
             let start = state
                 .commands
                 .iter()
                 .rposition(|queued| queued.command.is_resize_compaction_barrier())
                 .map_or(0, |index| index + 1);
-            let resize_count = state.commands.iter().skip(start).filter(|queued| {
-                matches!(queued.command, Command::Resize { .. })
-            }).count();
+            let resize_count = state
+                .commands
+                .iter()
+                .skip(start)
+                .filter(|queued| matches!(queued.command, Command::Resize { .. }))
+                .count();
             if resize_count >= 2 {
                 let mut newest_resize = None;
                 for obsolete in state.commands.drain(start..) {
                     first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
-                    coalesced_count = coalesced_count
-                        .saturating_add(obsolete.coalesced_count.saturating_add(1));
+                    coalesced_count =
+                        coalesced_count.saturating_add(obsolete.coalesced_count.saturating_add(1));
                     match obsolete.command {
                         Command::Resize { size, epoch } => newest_resize = Some((size, epoch)),
-                        Command::Draw { packet: previous, .. } => {
+                        Command::Draw {
+                            packet: previous, ..
+                        } => {
                             packet.merge_pending_damage_from(&previous);
                         }
-                        Command::Tick(..) | Command::Continue(..) => {}
+                        Command::Tick(..)
+                        | Command::Continue(..)
+                        | Command::ContentStretch(..) => {}
                         _ => unreachable!("resize compaction must not cross a control barrier"),
                     }
                 }
@@ -166,10 +248,30 @@ impl Queue {
             Command::Resize { .. } => {
                 // Collapse adjacent unconsumed resizes only. Never cross a Draw,
                 // fence-bearing Call, or resource ownership barrier.
-                if state.commands.back().is_some_and(|last| {
-                    matches!(last.command, Command::Resize { .. })
-                }) {
-                    let previous = state.commands.pop_back()
+                if state
+                    .commands
+                    .back()
+                    .is_some_and(|last| matches!(last.command, Command::Resize { .. }))
+                {
+                    let previous = state
+                        .commands
+                        .pop_back()
+                        .expect("the previous command was checked");
+                    first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
+                    coalesced_count = previous.coalesced_count.saturating_add(1);
+                }
+            }
+            #[cfg(any(test, target_os = "windows"))]
+            Command::ContentStretch(_) => {
+                // Resize bursts keep only the latest temporary compositor scale.
+                if state
+                    .commands
+                    .back()
+                    .is_some_and(|last| matches!(last.command, Command::ContentStretch(_)))
+                {
+                    let previous = state
+                        .commands
+                        .pop_back()
                         .expect("the previous command was checked");
                     first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
                     coalesced_count = previous.coalesced_count.saturating_add(1);
@@ -193,11 +295,13 @@ impl Queue {
                     ) {
                         continue;
                     }
-                    let obsolete = state.commands.remove(index)
+                    let obsolete = state
+                        .commands
+                        .remove(index)
                         .expect("index was validated against the queue");
                     first_enqueued_at = first_enqueued_at.min(obsolete.first_enqueued_at);
-                    coalesced_count = coalesced_count
-                        .saturating_add(obsolete.coalesced_count.saturating_add(1));
+                    coalesced_count =
+                        coalesced_count.saturating_add(obsolete.coalesced_count.saturating_add(1));
                 }
                 if let Some(index) = (barrier..state.commands.len()).rev().find(|index| {
                     matches!(
@@ -210,8 +314,8 @@ impl Queue {
                         .remove(index)
                         .expect("index was obtained from the queue");
                     first_enqueued_at = first_enqueued_at.min(previous.first_enqueued_at);
-                    coalesced_count = coalesced_count
-                        .saturating_add(previous.coalesced_count.saturating_add(1));
+                    coalesced_count =
+                        coalesced_count.saturating_add(previous.coalesced_count.saturating_add(1));
                     let Command::Draw {
                         packet: previous, ..
                     } = previous.command
@@ -290,6 +394,19 @@ impl Queue {
             }
         }
         false
+    }
+
+    pub(super) fn has_pending_resize_draw(&self) -> bool {
+        self.0.lock().commands.iter().any(|queued| {
+            matches!(
+                queued.command,
+                Command::Draw {
+                    resize: Some(_),
+                    reply: None,
+                    ..
+                }
+            )
+        })
     }
 
     pub(super) fn has_commands(&self) -> bool {

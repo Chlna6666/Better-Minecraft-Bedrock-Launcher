@@ -150,10 +150,11 @@ impl VSyncScheduler {
         self.modal_task_wake_pending.swap(false, Ordering::AcqRel)
     }
 
-    /// Wake the HWND owner to run GPUI foreground tasks, not to submit a GPU frame.
-    /// Multiple producers posting from the same drag are combined into one Win32 message.
-    /// Returns true when the active native modal loop owns the wake. Callers with
-    /// a winit fallback can avoid queueing redundant outer-loop user events.
+    /// Wake the HWND owner to flush coalesced modal UI work. A live resize can use
+    /// this to commit its latest client size before the next DWM VSync; the posted
+    /// message itself does not submit a GPU frame. Multiple wakes during one drag
+    /// are combined into one Win32 message. Returns true when the active native
+    /// modal loop owns the wake, so callers can avoid redundant outer-loop events.
     pub(super) fn wake_modal_ui_tasks(&self) -> bool {
         let modal = self.modal_frame.lock().expect("modal vsync lock poisoned");
         let Some(target) = modal.as_ref() else {

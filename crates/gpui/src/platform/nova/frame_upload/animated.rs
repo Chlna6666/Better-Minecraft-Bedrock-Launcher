@@ -25,6 +25,13 @@ struct BackdropFilterSamples {
 
 impl FrameUpload {
     pub(in crate::platform::nova) fn sample_animated_primitives(&mut self, size: DrawableSize) {
+        self.sample_animated_primitives_for_target_size(size);
+    }
+
+    pub(in crate::platform::nova) fn sample_animated_primitives_for_target_size(
+        &mut self,
+        target_size: DrawableSize,
+    ) {
         self.backdrop_blur_use_base_filter_indices.clear();
         self.backdrop_blur_ignore_animation_damage_indices.clear();
         self.backdrop_blur_passes_dirty_this_frame = false;
@@ -46,7 +53,7 @@ impl FrameUpload {
 
         let current_animation_ids = self.current_animation_ids();
 
-        let samples = self.sample_primitive_records(&resolved_animation_values, size);
+        let samples = self.sample_primitive_records(&resolved_animation_values, target_size);
         let filter_samples = self.sample_backdrop_filters(&samples);
 
         self.suppress_backdrop_blur_damage(
@@ -126,7 +133,7 @@ impl FrameUpload {
     fn sample_primitive_records(
         &mut self,
         values: &values::ResolvedAnimationValues,
-        size: DrawableSize,
+        target_size: DrawableSize,
     ) -> AnimatedPrimitiveSamples {
         let mut samples = AnimatedPrimitiveSamples::default();
         samples.visual_bounds = std::mem::take(&mut self.animated_visual_bounds_scratch);
@@ -139,7 +146,7 @@ impl FrameUpload {
         staging.reserve(PACKED_BACKDROP_BLUR_BYTES);
 
         for primitive in &self.animated_primitives {
-            let sample = primitive.sample_resolved(values, size, &mut staging);
+            let sample = primitive.sample_resolved_for_target_size(values, target_size, &mut staging);
             samples.filter_parameters_changed |= sample.filter_parameters_changed;
             samples.visual_bounds.push(sample.visual_bounds);
             let byte_len = primitive.bytes.len();

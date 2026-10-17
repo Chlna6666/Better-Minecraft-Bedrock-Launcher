@@ -257,15 +257,18 @@ fn verify(backend: RendererBackend) {
             .expect("native renderer");
             let target = super::target(&renderer);
             let scene = page(backdrop, renderer.current_size, placement);
+            let drawable_size = renderer.current_size;
             renderer.pack_scene(
                 &scene, &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(0.5)],
+                drawable_size,
                 BackdropBlurQuality::default(),
             );
             assert!(renderer.frame_upload.root_color.is_none());
             renderer.pack_scene(
                 &scene, &crate::window::retained::RetainedPaint::default(),
                 &[popup_sample(0., placement), panel_sample(1.)],
+                drawable_size,
                 BackdropBlurQuality::default(),
             );
             assert!(
@@ -370,6 +373,18 @@ fn verify(backend: RendererBackend) {
                             depth_load_op: LoadOp::Clear(1.),
                         },
                         std::slice::from_ref(&layer),
+                        gfx_core::RenderViewport {
+                            extent: Extent2d::new(
+                                renderer.active_size.width,
+                                renderer.active_size.height,
+                            )
+                            .expect("client extent"),
+                            reference_extent: Extent2d::new(
+                                renderer.current_size.width,
+                                renderer.current_size.height,
+                            )
+                            .expect("retained target extent"),
+                        },
                     );
                     let first = passes
                         .iter()

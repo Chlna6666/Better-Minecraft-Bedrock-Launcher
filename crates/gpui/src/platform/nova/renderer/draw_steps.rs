@@ -65,7 +65,7 @@ impl NovaRenderer {
             // rebuild the FrameUpload without changing the producer Scene.
             // Pure animation sampling does not advance this encode generation.
             encode_generation: self.frame_upload.encode_generation,
-            size: self.current_size,
+            size: self.active_size,
             frame_resource_index,
             atlas_texture_generation: self.synced_atlas_texture_generation,
             atlas_texture_count: self.gpu_atlas_textures.len(),
@@ -101,7 +101,7 @@ impl NovaRenderer {
             &mut self.frame_upload.renderer_extension_steps,
             extension_count,
         );
-        let viewport = Extent2d::new(self.current_size.width, self.current_size.height)?;
+        let viewport = Extent2d::new(self.active_size.width, self.active_size.height)?;
         let active_types = self.active_renderer_extension_types();
         self.release_inactive_renderer_extensions(&active_types);
         for index in 0..extension_count {
@@ -141,11 +141,11 @@ impl NovaRenderer {
         frame_time: Instant,
     ) -> Result<()> {
         let extension = self.frame_upload.renderer_extensions[index].clone();
-        let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.current_size) else {
+        let Some(bounds_scissor) = bounds_to_scissor(extension.bounds, self.active_size) else {
             return Ok(());
         };
         let Some(mask_scissor) =
-            bounds_to_scissor(extension.content_mask.bounds, self.current_size)
+            bounds_to_scissor(extension.content_mask.bounds, self.active_size)
         else {
             return Ok(());
         };
@@ -247,7 +247,7 @@ impl NovaRenderer {
             .map(|((_, configs), (group_full_refresh, damage))| {
                 blur_configs_for_refresh(
                     configs,
-                    self.current_size,
+                    self.active_size,
                     damage,
                     force_full || *group_full_refresh,
                 )
@@ -275,7 +275,7 @@ impl NovaRenderer {
             .filter_map(|(config, (group_full_refresh, damage))| {
                 blur_source_scissor_for_refresh(
                     config,
-                    self.current_size,
+                    self.active_size,
                     damage,
                     force_full || *group_full_refresh,
                 )
@@ -327,7 +327,7 @@ impl NovaRenderer {
                 );
                 apply_filter_refresh_scissors(
                     configs,
-                    self.current_size,
+                    self.active_size,
                     damage,
                     group_force_full,
                     &mut filter_passes,
@@ -369,7 +369,7 @@ impl NovaRenderer {
             &configs,
             passes,
         );
-        apply_filter_pass_scissors(&configs, self.current_size, passes);
+        apply_filter_pass_scissors(&configs, self.active_size, passes);
     }
 
     /// Builds isolated element-filter work. Gaussian layers reconstruct their source scratch and
@@ -469,7 +469,7 @@ impl NovaRenderer {
                 force_full || auto_static_rebuild || capture_uninitialized
                     || (is_retained_root && self.root_color.content_version().is_none()),
                 config,
-                self.current_size,
+                self.active_size,
                 damage,
             );
             // Chromium-style paint invalidation: keep spatially disconnected
@@ -490,7 +490,7 @@ impl NovaRenderer {
                     &self.frame_upload,
                     range.content_start,
                     range.content_end,
-                    self.current_size,
+                    self.active_size,
                     damage,
                 ),
                 damage,
@@ -503,9 +503,9 @@ impl NovaRenderer {
             let preserve_source = (is_retained_root || local_source_damage.is_some())
                 && !layer_force_full && !damage.is_full();
             let outer_source_scissor = if direct_composite && !preserve_source && !is_retained_root {
-                blur_full_source_scissor(config, self.current_size)
+                blur_full_source_scissor(config, self.active_size)
             } else {
-                blur_source_scissor_for_refresh(config, self.current_size, damage, layer_force_full)
+                blur_source_scissor_for_refresh(config, self.active_size, damage, layer_force_full)
             };
             let Some(outer_source_scissor) = outer_source_scissor else {
                 // The caller can conservatively select a layer whose effect bounds intersect a
@@ -553,7 +553,7 @@ impl NovaRenderer {
             let dirty_barrier_configs: Vec<Vec<BackdropBlurConfig>> = barrier_groups
                 .iter()
                 .map(|(_, configs)| {
-                    blur_configs_for_refresh(configs, self.current_size, damage, layer_force_full)
+                    blur_configs_for_refresh(configs, self.active_size, damage, layer_force_full)
                 })
                 .collect();
 
@@ -567,7 +567,7 @@ impl NovaRenderer {
                 .filter_map(|nested_config| {
                     blur_source_scissor_for_refresh(
                         nested_config,
-                        self.current_size,
+                        self.active_size,
                         damage,
                         layer_force_full,
                     )
@@ -624,7 +624,7 @@ impl NovaRenderer {
                 );
                 apply_filter_refresh_scissors(
                     std::slice::from_ref(&config),
-                    self.current_size,
+                    self.active_size,
                     damage,
                     layer_force_full,
                     &mut filter_passes,
@@ -720,7 +720,7 @@ impl NovaRenderer {
             );
             apply_filter_refresh_scissors(
                 configs,
-                self.current_size,
+                self.active_size,
                 dirty_region,
                 force_full,
                 &mut filter_passes,

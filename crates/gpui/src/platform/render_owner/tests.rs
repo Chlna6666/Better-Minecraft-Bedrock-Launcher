@@ -8,12 +8,12 @@ fn owner(pending: bool) -> (RenderOwner, mpsc::Receiver<Job>) {
         sender,
         owner_thread: thread::current().id(),
         status: Arc::new(Status {
-
             pending: AtomicBool::new(pending),
             submitted: AtomicBool::new(true),
             waiting_for_frame_ready: AtomicBool::new(false),
         }),
         gpu_specs: GpuSpecs::default(),
+        pending_drawable_size: Mutex::new(None),
     };
     (owner, receiver)
 }
@@ -136,7 +136,10 @@ fn blocked_swapchain_suppresses_only_its_own_speculative_ticks() {
         .store(true, Ordering::Release);
 
     assert!(
-        blocked.present_active_frame(Instant::now(), None).unwrap().is_none(),
+        blocked
+            .present_active_frame(Instant::now(), None)
+            .unwrap()
+            .is_none(),
         "blocked window must await its GPU-ready callback rather than polling DWM"
     );
     assert!(blocked.queue.take().is_none());
@@ -146,7 +149,10 @@ fn blocked_swapchain_suppresses_only_its_own_speculative_ticks() {
     ));
 
     assert!(
-        responsive.present_active_frame(Instant::now(), None).unwrap().is_some(),
+        responsive
+            .present_active_frame(Instant::now(), None)
+            .unwrap()
+            .is_some(),
         "an independent window must remain schedulable"
     );
     assert!(matches!(responsive.queue.take(), Some(Command::Tick(_, _))));
@@ -156,7 +162,12 @@ fn blocked_swapchain_suppresses_only_its_own_speculative_ticks() {
         .status
         .waiting_for_frame_ready
         .store(false, Ordering::Release);
-    assert!(blocked.present_active_frame(Instant::now(), None).unwrap().is_some());
+    assert!(
+        blocked
+            .present_active_frame(Instant::now(), None)
+            .unwrap()
+            .is_some()
+    );
     assert!(matches!(blocked.queue.take(), Some(Command::Tick(_, _))));
     blocked.queue.close();
     responsive.queue.close();

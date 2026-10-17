@@ -171,6 +171,31 @@ impl FrameUpload {
         premultiplied_alpha: bool,
         backdrop_blur_quality: BackdropBlurQuality,
     ) -> FrameUploadSummary {
+        self.encode_for_target_size(
+            cache,
+            scene,
+            retained_paint,
+            presentation_animation_values,
+            drawable_size,
+            drawable_size,
+            rendering_parameters,
+            premultiplied_alpha,
+            backdrop_blur_quality,
+        )
+    }
+
+    pub(in crate::platform::nova) fn encode_for_target_size(
+        &mut self,
+        cache: &mut RetainedQuadChunkCache,
+        scene: &crate::Scene,
+        retained_paint: &crate::window::retained::RetainedPaint,
+        presentation_animation_values: &[crate::SceneAnimationValue],
+        drawable_size: DrawableSize,
+        target_size: DrawableSize,
+        rendering_parameters: &RenderingParameters,
+        premultiplied_alpha: bool,
+        backdrop_blur_quality: BackdropBlurQuality,
+    ) -> FrameUploadSummary {
         cache.begin_frame();
         self.reused_shadow_bytes = if scene.blurs.is_empty()
             && self
@@ -188,6 +213,7 @@ impl FrameUpload {
             retained_paint,
             presentation_animation_values,
             drawable_size,
+            target_size,
             rendering_parameters,
             premultiplied_alpha,
             backdrop_blur_quality,
@@ -217,6 +243,15 @@ impl FrameUpload {
     pub(in crate::platform::nova) fn append_root_color(
         &mut self,
         drawable_size: DrawableSize,
+        summary: &mut FrameUploadSummary,
+    ) -> bool {
+        self.append_root_color_for_target_size(drawable_size, drawable_size, summary)
+    }
+
+    pub(in crate::platform::nova) fn append_root_color_for_target_size(
+        &mut self,
+        drawable_size: DrawableSize,
+        target_size: DrawableSize,
         summary: &mut FrameUploadSummary,
     ) -> bool {
         if self.root_color.is_some()
@@ -249,14 +284,14 @@ impl FrameUpload {
         // Root color is already GPU-resident; constructing an empty Scene
         // solely to encode its compositor descriptor wastes a separate Arc
         // allocation and confuses capture ownership with presentation data.
-        write_paint_blur_fields(
+        write_paint_blur_fields_for_target_size(
             &mut self.backdrop_blurs,
             0,
             bounds,
             crate::ContentMask::new(bounds),
             crate::ScaledPixels(0.0),
             1.0,
-            drawable_size,
+            target_size,
         );
         let content_end = self.batches.len();
         self.batches.push(UploadedBatch::CompositeBlur { index: root_index });
@@ -278,6 +313,7 @@ impl FrameUpload {
         retained_paint: &crate::window::retained::RetainedPaint,
         presentation_animation_values: &[crate::SceneAnimationValue],
         drawable_size: DrawableSize,
+        target_size: DrawableSize,
         rendering_parameters: &RenderingParameters,
         premultiplied_alpha: bool,
         backdrop_blur_quality: BackdropBlurQuality,
@@ -418,7 +454,7 @@ impl FrameUpload {
                 PreparedSceneBatch::BackdropBlurs(group) => {
                     self.encode_backdrop_blurs(
                         &scene.backdrop_blurs[group.range.clone()],
-                        drawable_size,
+                        target_size,
                         backdrop_blur_quality,
                         &mut summary,
                     );
@@ -436,7 +472,11 @@ impl FrameUpload {
                         }
 
                         self.element_blur_inputs.push((blur_index, FilterSource::Element(blur.clone())));
-                        write_paint_blur(&mut self.backdrop_blurs, blur, drawable_size);
+                        write_paint_blur_for_target_size(
+                            &mut self.backdrop_blurs,
+                            blur,
+                            target_size,
+                        );
                         self.batches
                             .push(UploadedBatch::BeginBlur { index: blur_index });
                         // Recursive Quad encoding appends bounds in global batch order.
@@ -448,6 +488,7 @@ impl FrameUpload {
                             &blur.content, retained_paint,
                             &[],
                             drawable_size,
+                            target_size,
                             rendering_parameters,
                             premultiplied_alpha,
                             backdrop_blur_quality,

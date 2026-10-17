@@ -138,6 +138,10 @@ mod tests {
                     width: 16,
                     height: 16,
                 },
+                target_size: DrawableSize {
+                    width: 16,
+                    height: 16,
+                },
                 premultiplied_alpha: false,
                 blur_quality: BackdropBlurQuality::Full,
             },

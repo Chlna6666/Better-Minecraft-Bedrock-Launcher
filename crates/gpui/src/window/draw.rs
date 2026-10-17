@@ -314,26 +314,63 @@ impl Window {
             // Resizing a swapchain is not proof that the new Scene covers that extent.
             // A missing root cache invalidation can replay quads clipped to the old
             // viewport. Record the committed CPU Scene bounds, without a GPU readback.
-            // Quads are only a coverage heuristic: sprites/paths are separate draws.
-            let (quad_right, quad_bottom) = self.rendered_frame.scene().quads.iter().fold(
-                (0.0_f32, 0.0_f32),
-                |(right, bottom), quad| {
-                    (
-                        right.max(quad.bounds.right().0),
-                        bottom.max(quad.bounds.bottom().0),
-                    )
-                },
-            );
+            // Quads and sprites are measured separately because image content and its clip can
+            // retain stale bounds even when the chrome quads track the new viewport.
+            let scene = self.rendered_frame.scene();
+            let (quad_right, quad_bottom) =
+                scene
+                    .quads
+                    .iter()
+                    .fold((0.0_f32, 0.0_f32), |(right, bottom), quad| {
+                        (
+                            right.max(quad.bounds.right().0),
+                            bottom.max(quad.bounds.bottom().0),
+                        )
+                    });
+            let (poly_right, poly_bottom, poly_clip_right, poly_clip_bottom) =
+                scene.polychrome_sprites.iter().fold(
+                    (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32),
+                    |(right, bottom, clip_right, clip_bottom), sprite| {
+                        (
+                            right.max(sprite.bounds.right().0),
+                            bottom.max(sprite.bounds.bottom().0),
+                            clip_right.max(sprite.content_mask.bounds.right().0),
+                            clip_bottom.max(sprite.content_mask.bounds.bottom().0),
+                        )
+                    },
+                );
+            let (mono_right, mono_bottom, mono_clip_right, mono_clip_bottom) =
+                scene.monochrome_sprites.iter().fold(
+                    (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32),
+                    |(right, bottom, clip_right, clip_bottom), sprite| {
+                        (
+                            right.max(sprite.bounds.right().0),
+                            bottom.max(sprite.bounds.bottom().0),
+                            clip_right.max(sprite.content_mask.bounds.right().0),
+                            clip_bottom.max(sprite.content_mask.bounds.bottom().0),
+                        )
+                    },
+                );
             log::info!(
                 target: "gpui_resize_trace",
-                "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} force_full_redraw=true",
+                "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} poly_sprites={} poly_right_px={:.1} poly_bottom_px={:.1} poly_clip_right_px={:.1} poly_clip_bottom_px={:.1} mono_sprites={} mono_right_px={:.1} mono_bottom_px={:.1} mono_clip_right_px={:.1} mono_clip_bottom_px={:.1} force_full_redraw=true",
                 self.handle.window_id().as_u64(),
                 (self.viewport_size.width.0 * self.scale_factor).round() as u32,
                 (self.viewport_size.height.0 * self.scale_factor).round() as u32,
                 self.rendered_frame.scene().len(),
-                self.rendered_frame.scene().quads.len(),
+                scene.quads.len(),
                 quad_right,
-                quad_bottom
+                quad_bottom,
+                scene.polychrome_sprites.len(),
+                poly_right,
+                poly_bottom,
+                poly_clip_right,
+                poly_clip_bottom,
+                scene.monochrome_sprites.len(),
+                mono_right,
+                mono_bottom,
+                mono_clip_right,
+                mono_clip_bottom,
             );
         }
         // GPU/CPU retained fragments may skip the layout traversal entirely,

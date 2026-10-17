@@ -1,6 +1,6 @@
 //! Native resize must converge and rebuild filters from the new scene exactly once.
 use super::*;
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 
 #[test]
 #[cfg(feature = "nova-gfx-dx11")]
@@ -140,6 +140,7 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
             std::sync::Arc::default(),
             crate::window::PaintGeometry {
                 scale_factor: 1.,
+                layout_extent: Some(extent),
                 ..Default::default()
             },
         )),
@@ -174,29 +175,47 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
     let output = super::target(renderer);
     device!(renderer, device, {
         device
-            .render_step_list_to_texture_compat(
-                output.1,
-                renderer.render_pass,
-                RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
-                LoadOp::Clear(clear_color()),
-                Some(RenderPassDepthAttachment {
+            .render_step_lists_to_textures_compat(&[gfx_core::TextureRenderStepList {
+                texture_view: output.1,
+                render_pass: renderer.render_pass,
+                steps: RenderStepList::from_render_steps(renderer.draw_step_scratch.steps()),
+                color_load_op: LoadOp::Clear(clear_color()),
+                clear_region: None,
+                depth_attachment: Some(RenderPassDepthAttachment {
                     target: renderer.depth_texture_view,
                     depth_load_op: LoadOp::Clear(1.),
                 }),
-            )
+                viewport: Some(gfx_core::RenderViewport {
+                    extent: Extent2d::new(extent.0, extent.1).expect("client viewport"),
+                    reference_extent: Extent2d::new(
+                        renderer.current_size.width,
+                        renderer.current_size.height,
+                    )
+                    .expect("retained target extent"),
+                }),
+            }])
             .expect("live geometry pixel draw");
         let pixels = device.read_texture(output.0).expect("live geometry pixels");
+        let target_width = renderer.current_size.width;
+        let target_height = renderer.current_size.height;
         for (x, y, expected) in [
             (extent.0 - 20, extent.1 - 20, [0, 0, 255, 255]),
             (8, 8, [0, 255, 0, 255]),
+            (extent.0 - 2, extent.1 - 2, [0, 255, 0, 255]),
         ] {
-            let offset = y as usize * pixels.bytes_per_row as usize + x as usize * 4;
+            let readback_y = if renderer.backend_info.label() == "nova-opengl" {
+                target_height - extent.1 + y
+            } else {
+                y
+            };
+            let offset = readback_y as usize * pixels.bytes_per_row as usize + x as usize * 4;
             assert_eq!(
                 &pixels.bytes[offset..offset + 4],
                 &expected,
-                "native pixel geometry at ({x},{y}) must not stretch to drawable capacity"
+                "the current scene must retain native client-pixel geometry at ({x},{y})"
             );
         }
+        assert!(target_width >= extent.0 && target_height >= extent.1);
         device
             .destroy_texture_view(output.1)
             .expect("live output view");
@@ -208,20 +227,20 @@ fn verify_marker(renderer: &NovaRenderer, extent: (u32, u32)) {
 
 fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRenderer) {
     let supports_capacity = lock_backend(&renderer.backend)
-        .supports_unscaled_presentation(renderer.swapchain, Extent2d::new(640, 640).unwrap())
-        .expect("native pixel capability");
+        .supports_live_resize_capacity(renderer.swapchain, Extent2d::new(640, 640).unwrap())
+        .expect("native-pixel presentation capability");
     println!(
-        "live_resize backend={} native_growth_capacity={supports_capacity}",
+        "live_resize backend={} native_pixel_growth_capacity={supports_capacity}",
         renderer.backend_info.label()
     );
     renderer.set_live_resize_active(true);
     let mut depth = None;
     for extent in [(520, 520), (525, 522), (530, 528)] {
         window.resize(extent.0, extent.1);
-        renderer.update_drawable_size(crate::size(
-            DevicePixels(extent.0 as i32),
-            DevicePixels(extent.1 as i32),
-        ), None);
+        renderer.update_drawable_size(
+            crate::size(DevicePixels(extent.0 as i32), DevicePixels(extent.1 as i32)),
+            None,
+        );
         present_geometry(renderer, extent);
         if supports_capacity {
             assert_eq!(renderer.committed_drawable_extent(), (768, 768));
@@ -242,7 +261,7 @@ fn verify_live_resize(window: &native_window::Window, renderer: &mut NovaRendere
     assert_eq!(
         renderer.committed_drawable_extent(),
         allocated,
-        "live shrink must crop rather than stretch/reallocate"
+        "live shrink must reuse capacity while presenting the current client extent"
     );
     assert_eq!(
         renderer.depth_texture, depth,
