@@ -8,7 +8,6 @@ use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    mem,
     ops::Range,
     rc::Rc,
 };
@@ -221,7 +220,10 @@ impl DispatchTree {
         self.node_stack.pop();
     }
 
-    fn move_node(&mut self, source: &mut DispatchNode) {
+    /// Candidate-frame replay must not drain listeners from the committed
+    /// tree: a degraded draw may discard the candidate before publication.
+    /// All three listener types use Rc callbacks, so cloning is shallow.
+    fn replay_node(&mut self, source: &DispatchNode) {
         self.push_node();
         if let Some(context) = source.context.clone() {
             self.set_key_context(context);
@@ -234,9 +236,9 @@ impl DispatchTree {
         }
 
         let target = self.active_node();
-        target.key_listeners = mem::take(&mut source.key_listeners);
-        target.action_listeners = mem::take(&mut source.action_listeners);
-        target.modifiers_changed_listeners = mem::take(&mut source.modifiers_changed_listeners);
+        target.key_listeners.clone_from(&source.key_listeners);
+        target.action_listeners.clone_from(&source.action_listeners);
+        target.modifiers_changed_listeners.clone_from(&source.modifiers_changed_listeners);
     }
 
     pub fn reuse_subtree(
@@ -251,7 +253,7 @@ impl DispatchTree {
         let mut source_stack = vec![];
         for (source_node_id, source_node) in source
             .nodes
-            .iter_mut()
+            .iter()
             .enumerate()
             .skip(old_range.start)
             .take(old_range.len())
@@ -270,7 +272,7 @@ impl DispatchTree {
             if source_node.focus_id.is_some() && source_node.focus_id == focus {
                 contains_focus = true;
             }
-            self.move_node(source_node);
+            self.replay_node(source_node);
         }
 
         while !source_stack.is_empty() {
@@ -352,8 +354,8 @@ impl DispatchTree {
             if source.nodes[index].focus_id.is_some() && source.nodes[index].focus_id == focus {
                 contains_focus = true;
             }
-            let source_node = &mut source.nodes[index];
-            self.move_node(source_node);
+            let source_node = &source.nodes[index];
+            self.replay_node(source_node);
             let new_id = self
                 .active_node_id()
                 .expect("moving a dispatch node must leave it active");
