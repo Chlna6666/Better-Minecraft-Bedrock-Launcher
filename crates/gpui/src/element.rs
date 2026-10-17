@@ -88,6 +88,7 @@ pub use text_animation::*;
 pub use traits::*;
 pub use uniform_list::*;
 
+pub(crate) use cached_view::{CachedViewState, snapshot_committed_cached_view_state};
 pub(crate) use div::{
     DivPrepaint, RetainedDivSelfScene, RetainedDivSelfSceneStyle, RetainedDivSemanticKey,
 };

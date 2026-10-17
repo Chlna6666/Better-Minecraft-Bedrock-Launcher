@@ -228,13 +228,13 @@ impl Window {
             // Only a background/progressive generation may abandon the
             // candidate Frame. Preserve the committed CachedViewState before
             // Prepaint mutates range indices in the speculative copy.
-            if state_type == TypeId::of::<crate::CachedViewState>()
+            if state_type == TypeId::of::<crate::element::CachedViewState>()
                 && self.allows_progressive_frame_degradation()
             {
                 self.rendered_frame
                     .element_states
                     .get(&key)
-                    .and_then(crate::snapshot_committed_cached_view_state)
+                    .and_then(crate::element::snapshot_committed_cached_view_state)
             } else {
                 self.rendered_frame.element_states.remove(&key)
             }
