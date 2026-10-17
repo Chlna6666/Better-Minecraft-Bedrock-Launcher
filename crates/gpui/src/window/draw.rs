@@ -971,7 +971,11 @@ impl Window {
         };
         // Detailed Trace is opt-in. No per-element scans, allocations or
         // synchronous logging are added to the normal 1ms hot path.
-        if log::log_enabled!(log::Level::Trace) {
+        // Match the actual event target when testing the Trace filter.
+        // The module's own log level can be lower even when
+        // gpui::diagnostics=trace is explicitly enabled, which previously
+        // suppressed every per-frame Prepaint sample.
+        if log::log_enabled!(target: "gpui::diagnostics", log::Level::Trace) {
             log::trace!(
                 target: "gpui::diagnostics",
                 "gpui prepaint work window={} root_us={} deferred_us={} overlay_us={} hit_test_us={} other_us={} total_us={}",
