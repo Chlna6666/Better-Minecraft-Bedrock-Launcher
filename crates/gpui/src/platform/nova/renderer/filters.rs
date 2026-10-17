@@ -397,11 +397,34 @@ impl FilterRegistry {
         }
     }
 
+    /// The offscreen render can modify an existing target before the native
+    /// swapchain Present succeeds. Its previous version must cease to be
+    /// reusable as soon as GPU work may start: a failed Present is not a
+    /// rollback of the texels that were already written.
+    ///
+    /// This is applied AFTER dirty-layer planning (including partial scissors)
+    /// and BEFORE issuing any backend commands. Untouched layer snapshots
+    /// retain their versions and their original captured animation samples.
+    pub(super) fn invalidate_inflight_layer_writes(
+        &mut self,
+        indices: impl IntoIterator<Item = u32>,
+    ) {
+        for index in indices {
+            if let Ok(position) = self.element_blur_inputs
+                .binary_search_by_key(&index, |source| source.index)
+            {
+                self.element_blur_inputs[position].content_version = TextureContentVersion(0);
+            }
+        }
+    }
+
     /// Texture contents become resident only through record_element_blur_inputs
     /// after a successful presentation. A retained layer skipped by the Render
     /// Graph keeps its previous version.
     pub(super) fn layer_content_version(&self, index: u32) -> Option<TextureContentVersion> {
-        self.source_at(index).map(|source| source.content_version)
+        self.source_at(index)
+            .map(|source| source.content_version)
+            .filter(|version| version.0 != 0)
     }
 
     pub(super) fn record_submission(
@@ -676,6 +699,34 @@ mod tests {
         assert_eq!(registry.element_blur_inputs[1].animation_values.as_deref().unwrap()[0].progress, 0.8);
         registry.invalidate();
         assert!(registry.element_blur_inputs.is_empty());
+    }
+
+    #[test]
+    fn interrupted_offscreen_submit_invalidates_only_touched_gpu_layers() {
+        let mut registry = FilterRegistry::new(None);
+        let bounds = crate::Bounds::default();
+        let src = |hash| FilterSource::AutoStatic {
+            bounds,
+            content_mask: crate::ContentMask::new(bounds),
+            content_hash: hash,
+            content_bytes: 128,
+        };
+        let sources = [(1, src(11)), (3, src(33))];
+        registry.record_element_blur_inputs(&sources, &[], [1, 3]);
+        let old_first = registry.layer_content_version(1).expect("resident 1");
+        let old_second = registry.layer_content_version(3).expect("resident 3");
+        registry.invalidate_inflight_layer_writes([3]);
+        assert_eq!(registry.layer_content_version(1), Some(old_first));
+        assert_eq!(registry.layer_content_version(3), None);
+        assert!(registry.source_unchanged(1, &sources[0].1, &[]));
+        assert!(!registry.source_unchanged(3, &sources[1].1, &[]));
+        // A failed Present never invokes record_element_blur_inputs: the
+        // zero content version remains until an actual source pass succeeds.
+        registry.record_element_blur_inputs(&sources, &[], []);
+        assert_eq!(registry.layer_content_version(3), None);
+        registry.record_element_blur_inputs(&sources, &[], [3]);
+        assert_ne!(registry.layer_content_version(3), Some(old_second));
+        assert_eq!(registry.layer_content_version(1), Some(old_first));
     }
 
     #[test]

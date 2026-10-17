@@ -1119,3 +1119,8 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 
 - 新增 `FilterRegistry::record_element_blur_inputs` 的精确无刷新快速路径：只有本次无真实离屏层刷新、且已提交 Filter Index 列表与当前 Scene 完全一致时才直接保留 GPU 内容版本与原始动画采样快照。已提交纹理及其状态不再因纯 Compositor Present 执行重复的 `retain`/二分搜索；新增/删除 Filter 或确有 GPU Pass 刷新时仍使用原有完整提交逻辑。
 - 测试：`cargo test -p gpui --lib compositor_only_frame_retains_filter_versions_and_actual_source_samples`，并保留 `removed_filter_releases_nested_scene_without_invalidating_live_source`。Release 需比较无 Blur 刷新动画的 Filter Snapshot CPU 耗时、Pass 数和峰值内存；这不是减少高斯 Pass 的证明。
+
+### 2026-10-17 Filter Source GPU 写入与 Present 事务边界
+
+- **修复安全性**：Offscreen Pass 可先于 Swapchain Present 修改 Filter/Root 物理纹理。规划完 Dirty Layer 和局部 Scissor 后，先将 Render Graph 实际要写的已提交 Filter 内容版本置为无效；若最终 Present 失败，不会再用旧 Snapshot 误认证已被覆盖的 texels。未刷新层的版本和采样保持完整。成功 Present 后原有 `record_element_blur_inputs` 会发布新有效版本。RootColor 仅在真正计划刷新其离屏 Target 时，提前将旧内容版本置无效；成功后 `record_present` 重新发布，避免不同步。
+- 测试：`cargo test -p gpui --lib interrupted_offscreen_submit_invalidates_only_touched_gpu_layers`，结合现有 `root_color` 和四后端 Frame Graph 回归。该修复保守处理 GPU 失败，不宣称 GPU Pass 数量因此减少；需验证失败 Present 后没有 Filter 旧图残留。

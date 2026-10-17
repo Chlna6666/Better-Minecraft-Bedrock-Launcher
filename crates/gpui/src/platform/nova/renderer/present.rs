@@ -936,6 +936,18 @@ impl NovaRenderer {
         let backend_work_started = Instant::now();
         let atlas_resource_descriptor = self.atlas_resource_descriptor();
 
+        // Offscreen writes are not transactional with DXGI/WSI Present.
+        // A backend can finish replacing retained color texels and then
+        // report deferred/failed Present. Invalidate only the graph's actual
+        // write targets before issuing any GPU command; their new versions
+        // are published below only after successful native submission.
+        // All retained targets skipped by the graph remain safely resident.
+        self.filters.invalidate_inflight_layer_writes(
+            element_blur_layers.iter().map(|layer| layer.index)
+        );
+        if !root_color_layers.is_empty() {
+            self.root_color.invalidate();
+        }
         let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
             match &mut *lock_backend(&self.backend) {
                 #[cfg(all(
