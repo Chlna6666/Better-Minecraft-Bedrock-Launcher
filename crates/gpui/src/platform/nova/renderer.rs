@@ -71,6 +71,16 @@ fn packet_drawable_size(packet: &PresentationPacket, fallback: DrawableSize) -> 
     }
 }
 
+
+fn scene_matches_committed_drawable(
+    geometry: &crate::window::PaintGeometry,
+    committed: DrawableSize,
+) -> bool {
+    geometry.layout_extent.is_none_or(|(width, height)| {
+        width.max(1) == committed.width && height.max(1) == committed.height
+    })
+}
+
 pub(super) fn nova_present_mode_for_backend(
     backend: RendererBackend,
     renderer_options: &RendererOptions,
@@ -111,6 +121,18 @@ pub(super) struct DrawableSizeRequest {
 impl DrawableSizeRequest {
     pub(super) fn applies_to(self, scene_epoch: Option<u64>) -> bool {
         self.epoch.is_none_or(|epoch| scene_epoch == Some(epoch))
+    }
+
+    /// A native generation alone cannot certify the physical Scene extent.
+    pub(super) fn matches_scene(
+        self,
+        scene_epoch: Option<u64>,
+        scene_extent: Option<(u32, u32)>,
+    ) -> bool {
+        self.applies_to(scene_epoch) && scene_extent.is_none_or(|(width, height)| {
+            self.size.width.0.max(1) as u32 == width.max(1)
+                && self.size.height.0.max(1) as u32 == height.max(1)
+        })
     }
 }
 
@@ -408,8 +430,15 @@ impl NovaRenderer {
     pub(crate) fn can_present_without_wait(
         &mut self,
         scene_epoch: Option<u64>,
+        scene_extent: Option<(u32, u32)>,
     ) -> Result<bool> {
-        if !self.apply_pending_drawable_size(scene_epoch)? {
+        if !self.apply_pending_drawable_size(scene_epoch, scene_extent)? {
+            return Ok(false);
+        }
+        if !scene_extent.is_none_or(|(width, height)| {
+            width.max(1) == self.current_size.width
+                && height.max(1) == self.current_size.height
+        }) {
             return Ok(false);
         }
         lock_backend(&self.backend).can_present_without_wait(self.swapchain)
@@ -471,7 +500,27 @@ impl NovaRenderer {
         // The drawable extent is applied only for the Scene generation that
         // requested it. An older Scene keeps drawing into the current drawable,
         // and a newer request stays pending for its own Scene.
-        if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
+        if !self.apply_pending_drawable_size(
+            Some(packet.paint.geometry.layout_epoch),
+            packet.paint.geometry.layout_extent,
+        )? {
+            return Ok(false);
+        }
+        // The native size event can overtake an immutable Scene while another
+        // window owns the GPU thread. A successful epoch check does not prove
+        // that this packet's physical layout matches the CURRENT swapchain.
+        // Do not run an offscreen Filter/Scissor/Present at another extent.
+        if !scene_matches_committed_drawable(&packet.paint.geometry, self.current_size) {
+            log::trace!(
+                target: "gpui::diagnostics",
+                "nova deferred mismatched scene geometry: window={} scene_epoch={} scene_px={:?} committed_px={}x{} pending_resize={}",
+                packet.window_id,
+                packet.paint.geometry.layout_epoch,
+                packet.paint.geometry.layout_extent,
+                self.current_size.width,
+                self.current_size.height,
+                self.pending_drawable_size.is_some(),
+            );
             return Ok(false);
         }
         let drawable_size = packet_drawable_size(packet, self.current_size);
@@ -906,7 +955,24 @@ impl NovaRenderer {
         }
         let sampled_completions = packet.sample_animations(packet.frame_time);
         let result = (|| {
-            if !self.apply_pending_drawable_size(Some(packet.paint.geometry.layout_epoch))? {
+            if !self.apply_pending_drawable_size(
+                Some(packet.paint.geometry.layout_epoch),
+                packet.paint.geometry.layout_extent,
+            )? {
+                return Ok(false);
+            }
+            // Framebuffer-only redraws are not allowed to silently render the
+            // previous logical size into a different committed native surface.
+            if !scene_matches_committed_drawable(&packet.paint.geometry, self.current_size) {
+                log::trace!(
+                    target: "gpui::diagnostics",
+                    "nova deferred mismatched direct scene: window={} scene_epoch={} scene_px={:?} committed_px={}x{}",
+                    packet.window_id,
+                    packet.paint.geometry.layout_epoch,
+                    packet.paint.geometry.layout_extent,
+                    self.current_size.width,
+                    self.current_size.height,
+                );
                 return Ok(false);
             }
             let drawable_size = packet_drawable_size(&packet, self.current_size);
@@ -1067,6 +1133,12 @@ impl NovaRenderer {
         self.pending_presentation_packet
             .as_ref()
             .map(|packet| packet.paint.geometry.layout_epoch)
+    }
+
+    pub(crate) fn pending_presentation_extent(&self) -> Option<(u32, u32)> {
+        self.pending_presentation_packet
+            .as_ref()
+            .and_then(|packet| packet.paint.geometry.layout_extent)
     }
 
     pub(crate) fn has_active_presentation_animations(&self) -> bool {
@@ -1840,6 +1912,29 @@ fn force_full_backdrop_blur_refresh(cache_valid: bool, explicitly_forced: bool) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_scene_and_committed_surface_must_have_identical_pixel_geometry() {
+        let current = DrawableSize { width: 972, height: 600 };
+        let mut geometry = crate::window::PaintGeometry {
+            layout_extent: Some((972, 600)),
+            layout_epoch: 7,
+            scale_factor: 1.0,
+        };
+        assert!(scene_matches_committed_drawable(&geometry, current));
+        // Same epoch does not rescue an old layout from a new HWND drawable.
+        geometry.layout_extent = Some((971, 600));
+        assert!(!scene_matches_committed_drawable(&geometry, current));
+        geometry.layout_extent = Some((972, 601));
+        assert!(!scene_matches_committed_drawable(&geometry, current));
+        geometry.layout_extent = Some((972, 600));
+        geometry.layout_epoch += 1;
+        assert!(scene_matches_committed_drawable(&geometry, current));
+        // Legacy/headless Paint without physical provenance uses the committed
+        // surface and must not stall unrelated backend tests.
+        geometry.layout_extent = None;
+        assert!(scene_matches_committed_drawable(&geometry, current));
+    }
 
     #[test]
     fn empty_spatial_damage_does_not_force_full_blur_refresh() {

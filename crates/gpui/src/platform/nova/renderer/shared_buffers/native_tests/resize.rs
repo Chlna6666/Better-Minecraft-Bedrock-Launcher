@@ -273,7 +273,7 @@ fn verify_extent(
     renderer.update_drawable_size(size, None);
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     while !renderer
-        .apply_pending_drawable_size(None)
+        .apply_pending_drawable_size(None, None)
         .expect("exact resize")
     {
         assert!(Instant::now() < deadline, "pending resize must converge");

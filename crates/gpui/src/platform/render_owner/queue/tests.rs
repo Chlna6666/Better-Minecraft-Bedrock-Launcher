@@ -352,6 +352,27 @@ fn shutdown_discards_pending_work_and_rejects_later_commits() {
 }
 
 #[test]
+fn shutting_down_dx12_child_queue_does_not_invalidate_main_window_queue() {
+    // Backend-independent ownership contract needed for DX12 child-window
+    // teardown: each Entry owns its own Queue; Shutdown only closes that
+    // window's queue and cannot clear a peer window's resize transaction.
+    let child = Queue::default();
+    let main = Queue::default();
+    let scene = Arc::new(crate::window::Paint::default());
+    main.enqueue(resized_draw(size(DevicePixels(900), DevicePixels(600)), 31, packet(scene, 0.0)), || Ok(())).unwrap();
+    child.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
+    let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+    child.enqueue(Command::Shutdown(reply), || Ok(())).unwrap();
+    assert!(matches!(child.take(), Some(Command::Shutdown(_))));
+    assert!(receiver.recv().is_err(), "dropped child receiver must not block");
+    assert!(child.is_closed());
+    assert!(!main.is_closed(), "child closure must never close the main queue");
+    assert!(matches!(main.take(), Some(Command::Draw { resize: Some(resize), .. }) if resize.epoch == Some(31)));
+    main.enqueue(Command::Tick(Instant::now(), None), || Ok(())).unwrap();
+    assert!(matches!(main.take(), Some(Command::Tick(..))));
+}
+
+#[test]
 fn draining_rearms_only_after_queue_becomes_empty() {
     let queue = Queue::default();
     queue

@@ -34,6 +34,21 @@ mod resize_plan_tests {
     }
 
     #[test]
+    fn resize_request_rejects_matching_epoch_with_stale_physical_scene_extent() {
+        let request = DrawableSizeRequest {
+            size: crate::size(DevicePixels(900), DevicePixels(700)),
+            epoch: Some(18),
+        };
+        assert!(request.matches_scene(Some(18), Some((900, 700))));
+        assert!(!request.matches_scene(Some(17), Some((900, 700))));
+        assert!(!request.matches_scene(Some(18), Some((899, 700))));
+        assert!(!request.matches_scene(Some(18), Some((900, 699))));
+        // Old tests and legacy/headless paint without physical provenance can
+        // still use the last committed drawable as their authority.
+        assert!(request.matches_scene(Some(18), None));
+    }
+
+    #[test]
     fn resize_reuses_unpromoted_one_pixel_path_mask() {
         let old = DrawableSize { width: 1000, height: 700 };
         let placeholder = Extent2d::new(1, 1).unwrap();
@@ -366,6 +381,7 @@ impl NovaRenderer {
     pub(super) fn apply_pending_drawable_size(
         &mut self,
         scene_epoch: Option<u64>,
+        scene_extent: Option<(u32, u32)>,
     ) -> Result<bool> {
         #[cfg(all(
             feature = "nova-gfx-vulkan",
@@ -392,7 +408,10 @@ impl NovaRenderer {
         let Some(request) = self.pending_drawable_size.take() else {
             return Ok(true);
         };
-        if !request.applies_to(scene_epoch) {
+        // Epoch equality alone does not mean the Scene was laid out in the
+        // request's physical coordinate space. Do not spend a ResizeBuffers
+        // and Root/Filter/Depth rebuild on an intermediate mismatched Scene.
+        if !request.matches_scene(scene_epoch, scene_extent) {
             self.pending_drawable_size = Some(request);
             return Ok(false);
         }
@@ -511,7 +530,6 @@ impl NovaRenderer {
     }
 
     fn reconfigure_surface_alpha(&mut self, alpha: SurfaceAlphaState) -> Result<()> {
-        self.wait_for_pending_submissions()?;
         if self.surface_alpha.swapchain_mode == alpha.swapchain_mode {
             log::debug!(
                 concat!(
@@ -529,6 +547,12 @@ impl NovaRenderer {
             self.surface_alpha = alpha;
             return Ok(());
         }
+
+        // Only native swapchain reconfiguration changes physical resources
+        // referenced by in-flight GPU work. Output-only policy transitions
+        // (same swapchain alpha mode) must never force a cross-window GPU fence
+        // wait on the shared device owner.
+        self.wait_for_pending_submissions()?;
 
         let config = SurfaceConfig {
             size: Extent2d::new(self.current_size.width, self.current_size.height)?,

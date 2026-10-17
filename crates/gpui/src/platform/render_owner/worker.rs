@@ -441,7 +441,8 @@ impl Entry {
                 // Resize gate; None would make a versioned resize request
                 // appear permanently unmatchable during compositor ticks.
                 let pending_epoch = self.renderer.pending_presentation_epoch();
-                if !self.ready(pending_epoch)? {
+                let pending_extent = self.renderer.pending_presentation_extent();
+                if !self.ready(pending_epoch, pending_extent)? {
                     return Ok(false);
                 }
                 let eligibility_time = Instant::now();
@@ -494,7 +495,11 @@ impl Entry {
             .scene
             .as_ref()
             .map(|(packet, _)| packet.paint.geometry.layout_epoch);
-        if !self.ready(scene_epoch)? {
+        let scene_extent = self
+            .scene
+            .as_ref()
+            .and_then(|(packet, _)| packet.paint.geometry.layout_extent);
+        if !self.ready(scene_epoch, scene_extent)? {
             return Ok(false);
         }
         // Surface replacement may block while a newer paired size/Scene arrives.
@@ -520,8 +525,13 @@ impl Entry {
         }
     }
 
-    fn ready(&mut self, scene_epoch: Option<u64>) -> Result<bool> {
-        let can_present = match self.renderer.can_present_without_wait(scene_epoch) {
+    fn ready(
+        &mut self,
+        scene_epoch: Option<u64>,
+        scene_extent: Option<(u32, u32)>,
+    ) -> Result<bool> {
+        let can_present =
+            match self.renderer.can_present_without_wait(scene_epoch, scene_extent) {
             Ok(ready) => ready,
             Err(error) if self.renderer.has_pending_drawable_size() => {
                 // ResizeBuffers / swapchain recreation can transiently fail while
