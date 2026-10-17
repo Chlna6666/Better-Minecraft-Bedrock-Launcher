@@ -149,6 +149,7 @@ impl Window {
         self.dirty_frame_scheduled = false;
         self.draw_deadline = Some(Instant::now() + frame_budget);
         self.draw_was_degraded = false;
+        self.last_generation_stats.prepaint_breakdown = state::PrepaintWorkBreakdown::default();
         self.last_generation_stats
             .deadline_remaining_at_prepaint_start_us = None;
         self.last_generation_stats
@@ -878,6 +879,7 @@ impl Window {
             }
         };
 
+        let root_prepaint_started_at = Instant::now();
         let mut root_element = self
             .root
             .as_ref()
@@ -889,7 +891,9 @@ impl Window {
         self.with_critical_draw(|window| {
             root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
         });
+        let root_prepaint_elapsed = root_prepaint_started_at.elapsed();
 
+        let deferred_prepaint_started_at = Instant::now();
         #[cfg(any(feature = "inspector", debug_assertions))]
         let inspector_element = if self.inspector.is_some() && self.draw_budget_exhausted() {
             self.degrade_current_draw();
@@ -909,6 +913,8 @@ impl Window {
             self.deferred_draw_traversal_order()
         };
 
+        let deferred_prepaint_elapsed = deferred_prepaint_started_at.elapsed();
+        let overlay_prepaint_started_at = Instant::now();
         let mut prompt_element = None;
         let mut active_drag_element = None;
         let mut tooltip_element = None;
@@ -932,8 +938,17 @@ impl Window {
             tooltip_element = self.prepaint_tooltip(cx);
         }
 
+        let overlay_prepaint_elapsed = overlay_prepaint_started_at.elapsed();
+        let hit_test_started_at = Instant::now();
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        let hit_test_elapsed = hit_test_started_at.elapsed();
         let prepaint_time = prepaint_started_at.elapsed();
+        self.last_generation_stats.prepaint_breakdown = state::PrepaintWorkBreakdown {
+            root: root_prepaint_elapsed,
+            deferred: deferred_prepaint_elapsed,
+            overlay: overlay_prepaint_elapsed,
+            hit_test: hit_test_elapsed,
+        };
 
         let paint_started_at = Instant::now();
         self.last_generation_stats

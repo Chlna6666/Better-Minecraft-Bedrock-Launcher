@@ -83,7 +83,12 @@ impl Window {
         if text_rasterization_changed {
             self.invalidate_text_rasterization();
         }
-        self.force_full_redraw.set(true);
+        // A change of native modal-loop state alone does not invalidate
+        // previously drawn pixels. Full damage is for actual geometry or
+        // rasterization changes, not WM_ENTERSIZEMOVE/WM_EXITSIZEMOVE.
+        if layout_constraints_changed || text_rasterization_changed {
+            self.force_full_redraw.set(true);
+        }
 
         #[cfg(target_os = "windows")]
         if crate::diagnostics::gpu_owner::resize_trace_enabled() {

@@ -6,6 +6,27 @@ pub(super) struct LayoutCacheFrameMetrics {
     pub(super) misses: usize,
 }
 
+/// The inclusive Prepaint wall time contains layout, deferred UI and hit-test.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct PrepaintWorkBreakdown {
+    pub(super) root: Duration,
+    pub(super) deferred: Duration,
+    pub(super) overlay: Duration,
+    pub(super) hit_test: Duration,
+}
+
+impl PrepaintWorkBreakdown {
+    /// Setup, cache bookkeeping and measurement overhead not included above.
+    pub(super) fn other(self, total: Duration) -> Duration {
+        total.saturating_sub(
+            self.root
+                .saturating_add(self.deferred)
+                .saturating_add(self.overlay)
+                .saturating_add(self.hit_test),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct FrameGenerationStats {
     pub(super) layout: LayoutFrameMetrics,
@@ -15,6 +36,7 @@ pub(super) struct FrameGenerationStats {
     pub(super) frame_retained_capacity: usize,
     pub(super) list_measured_items: usize,
     pub(super) prepaint_elapsed: Duration,
+    pub(super) prepaint_breakdown: PrepaintWorkBreakdown,
     pub(super) paint_elapsed: Duration,
     pub(super) scene_finish_elapsed: Duration,
     pub(super) finalize_elapsed: Duration,
@@ -963,5 +985,22 @@ mod presentation_extent_tests {
         assert_eq!(presentation.active_layout_extent(), Some((1400, 900)));
         assert_eq!(presentation.active_layout_epoch(), 3);
         assert_eq!(presentation.active_layout_scale_factor(), Some(1.5));
+    }
+}
+
+#[cfg(test)]
+mod prepaint_work_breakdown_tests {
+    use super::*;
+
+    #[test]
+    fn phase_totals_account_for_unclassified_overhead_without_underflow() {
+        let metrics = PrepaintWorkBreakdown {
+            root: Duration::from_micros(350),
+            deferred: Duration::from_micros(140),
+            overlay: Duration::from_micros(70),
+            hit_test: Duration::from_micros(40),
+        };
+        assert_eq!(metrics.other(Duration::from_micros(850)), Duration::from_micros(250));
+        assert_eq!(metrics.other(Duration::from_micros(300)), Duration::ZERO);
     }
 }
