@@ -507,7 +507,11 @@ impl MainWindowView {
             .child(
                 self.background_view
                     .clone()
-                    .cached_absolute_by(&"main-window-background")
+                    .cached_absolute_by(&(
+                        "main-window-background",
+                        model.window_width,
+                        model.window_height,
+                    ))
                     .reuse_on_window_refresh()
                     .critical()
                     .into_any_element(),
