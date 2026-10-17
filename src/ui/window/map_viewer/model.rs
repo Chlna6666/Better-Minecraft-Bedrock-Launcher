@@ -76,7 +76,7 @@ impl PhysicalRenderBatchBudget {
 
     pub(super) fn try_acquire(&self, limit: usize) -> Option<PhysicalRenderBatchPermit> {
         self.active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < limit.max(1)).then_some(active.saturating_add(1))
             })
             .ok()?;

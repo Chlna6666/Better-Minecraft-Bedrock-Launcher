@@ -362,7 +362,7 @@ fn spawn_launcher_snapshot_pump(task_id: Arc<str>, cx: &mut App) {
     .detach();
 }
 
-fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
+pub(crate) fn launcher_snapshot_changed(previous: &LauncherSnapshot, current: &LauncherSnapshot) -> bool {
     previous.show_modal != current.show_modal
         || previous.modal_visible != current.modal_visible
         || previous.task_id != current.task_id
