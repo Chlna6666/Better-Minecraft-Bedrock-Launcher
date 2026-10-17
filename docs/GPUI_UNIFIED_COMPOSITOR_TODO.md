@@ -1098,3 +1098,5 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - 下一项：Win32 Resize 绘制调度和 GPU Owner 长尾；四后端实际 GPU Pass 和原生黑边不能仅凭 AutoStatic 准入缓存声称修好。测试：`cargo test -p gpui --lib rejected_auto_static_admission_is_not_repeated_on_animation_only_frames`。
 
 - Win32 reentrant WM_SIZE 可靠性：将 `pending_native_size_retry` 的 HWND 尺寸重采样移到 Live Resize 的 UI cadence 限速之前。即使本次帧因 240Hz/自定义 cadence 被合并，也要先获得最新 native geometry epoch；真正的 UI Layout 和 GPU Resize 仍同代次提交，未恢复旧尺寸纹理拉伸，也没有为每次 WM_SIZE 增加完整构帧。
+
+- RootColor 版本修复：`RootColor::record_present` 仅在对应 GPU 根颜色纹理真正成功刷新时，才更新 `animation_values`，并与 `content_version` 原子推进；纯合成 Present 不再把旧纹理的采样基线误更新为新动画时间。避免下次 `gpu_sample_damage` 漏算旧纹理实际未重绘的动画范围，也节约 240Hz 纯合成帧上的 `Vec::extend_from_slice`。测试：`compositor_only_presents_preserve_actual_root_pixel_sample_baseline`。

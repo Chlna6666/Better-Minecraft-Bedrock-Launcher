@@ -7,8 +7,11 @@ pub(super) struct RootColor {
     pub(super) target: Option<RootColorTarget>,
     content_version: Option<u64>,
     next_version: u64,
-    /// Samples represented by the last successfully presented window color.
-    /// Filter refreshes keep their own source samples and cannot reset these.
+    /// Samples represented by the last successfully REFRESHED root pixels,
+    /// not the latest swapchain-only Present. Otherwise an animation-only
+    /// compositor Present can overwrite the retained source baseline without
+    /// updating its texels, concealing later source damage. Filter refreshes
+    /// keep their own independent snapshots.
     animation_values: Vec<crate::SceneAnimationValue>,
 }
 
@@ -65,8 +68,9 @@ impl RootColor {
         } else if refreshed {
             self.next_version = self.next_version.wrapping_add(1).max(1);
             self.content_version = Some(self.next_version);
-        }
-        if self.content_version.is_some() {
+            // Publish source samples atomically with the successful GPU color
+            // refresh. A composite-only Present must neither advance the
+            // pixel content version nor mutate the samples describing it.
             self.animation_values.clear();
             self.animation_values.extend_from_slice(animation_values);
         }
@@ -282,6 +286,43 @@ mod tests {
         );
         assert!(composite_resource_set(&root, Some(2), None, config, 0).is_none());
         assert!(composite_resource_set(&root, Some(3), None, config, 1).is_none());
+    }
+
+    #[test]
+    fn compositor_only_presents_preserve_actual_root_pixel_sample_baseline() {
+        let mut root = RootColor::default();
+        root.target = Some(target(1));
+        let identity = root.identity();
+        let sample = |progress: f32| crate::SceneAnimationValue {
+            animation_id: crate::SceneAnimationId(99),
+            property: crate::TransitionProperty::Opacity,
+            progress,
+            from: [0.; 4],
+            to: [1., 0., 0., 0.],
+        };
+        root.record_present(identity, true, &[sample(0.1)]);
+        let committed_version = root.content_version();
+        assert!(committed_version.is_some());
+
+        // N+1 and N+2 merely composite from an existing GPU texture.
+        // They must not consume N+1 samples as the baseline for the next
+        // source refresh, and must not touch the old sample vector.
+        for progress in [0.4, 0.7] {
+            root.record_present(identity, false, &[sample(progress)]);
+            assert_eq!(root.content_version(), committed_version);
+            assert_eq!(root.animation_values(), &[sample(0.1)]);
+        }
+
+        root.record_present(identity, true, &[sample(0.8)]);
+        assert_ne!(root.content_version(), committed_version);
+        assert_eq!(root.animation_values(), &[sample(0.8)]);
+
+        // A replaced GPU allocation is never allowed to inherit the
+        // old texture's samples or content version.
+        root.target = Some(target(2));
+        root.record_present(identity, false, &[sample(0.9)]);
+        assert!(root.content_version().is_none());
+        assert!(root.animation_values().is_empty());
     }
 
     #[test]
