@@ -61,6 +61,7 @@ pub(crate) fn format(value: Format) -> DXGI_FORMAT {
         Format::Bgra8UnormSrgb => DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
         Format::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
         Format::Rgba8UnormSrgb => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        Format::Rgba16Float => DXGI_FORMAT_R16G16B16A16_FLOAT,
         Format::Depth32Float => DXGI_FORMAT_D32_FLOAT,
     }
 }

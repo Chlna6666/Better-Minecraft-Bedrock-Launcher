@@ -17,8 +17,9 @@
 )]
 
 use gpui_3d::{
-    Camera, Keyframe, Material, Mesh, Node, NodeId, OffscreenRenderer, RenderOptions, Scene,
-    ShadowOptions, TextureAsset, TextureAssetId, Transform, TransformTrack, Vec3, Vec3Track,
+    AntialiasMode, BloomOptions, Camera, CapturedImage, Keyframe, Material, Mesh, Node, NodeId,
+    OffscreenRenderer, PostEffects, RenderOptions, RenderQuality, Scene, ShadowOptions,
+    TextureAsset, TextureAssetId, Transform, TransformTrack, Vec3, Vec3Track,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -312,7 +313,7 @@ fn resize_stress_keeps_caches_warm_and_targets_correct() {
         let statistics = renderer.statistics();
         assert_eq!(statistics.target_width, width);
         assert_eq!(statistics.target_height, height);
-        assert_eq!(statistics.resource_set_count, 2);
+        assert_eq!(statistics.resource_set_count, 3);
     }
     renderer.destroy(&mut device).expect("destroy renderer");
 }
@@ -630,4 +631,143 @@ fn multiple_renderers_share_one_device_without_cross_talk() {
     second
         .destroy(&mut device)
         .expect("destroy second renderer");
+}
+
+fn differing_pixels(first: &CapturedImage, second: &CapturedImage) -> usize {
+    let left = first.rgba();
+    let right = second.rgba();
+    let mut changed = 0;
+    for index in (0..left.len().min(right.len())).step_by(4) {
+        if left[index..index + 4] != right[index..index + 4] {
+            changed += 1;
+        }
+    }
+    changed
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn hdr_post_effects_and_quality_presets_change_the_resolved_frame() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 192, 144).expect("renderer");
+    let textures = HashMap::new();
+    let (scene, node) = cube_scene(None);
+    let mut plain = RenderOptions {
+        shadows: ShadowOptions {
+            enabled: false,
+            ..ShadowOptions::default()
+        },
+        bloom: BloomOptions {
+            enabled: false,
+            ..BloomOptions::default()
+        },
+        antialias: AntialiasMode::None,
+        post_effects: PostEffects {
+            vignette: 0.0,
+            grain: 0.0,
+            dither: 0.0,
+        },
+        ..RenderOptions::default()
+    };
+    renderer
+        .render(&mut device, &scene, &textures, camera(), &plain)
+        .expect("plain frame");
+    let plain_image = renderer.capture(&mut device).expect("plain capture");
+    let hdr_stats = renderer.statistics();
+    assert!(
+        hdr_stats.target_bytes >= 192 * 144 * 16,
+        "HDR scene target plus bloom must cost 16 bytes/pixel, got {}",
+        hdr_stats.target_bytes
+    );
+    assert!(hdr_stats.buffer_allocation_count >= 4);
+    assert!(hdr_stats.cpu_staging_bytes > 0);
+
+    plain.bloom.enabled = true;
+    plain.bloom.strength = 1.0;
+    plain.bloom.threshold = 0.25;
+    plain.antialias = AntialiasMode::Fxaa;
+    plain.post_effects = PostEffects {
+        vignette: 0.6,
+        grain: 0.05,
+        dither: 1.0,
+    };
+    renderer
+        .render(&mut device, &scene, &textures, camera(), &plain)
+        .expect("post effect frame");
+    let effects_image = renderer.capture(&mut device).expect("effects capture");
+    let changed = differing_pixels(&plain_image, &effects_image);
+    assert!(changed > 50, "post effects only changed {changed} pixels");
+
+    let reused = renderer
+        .render(&mut device, &scene, &textures, camera(), &plain)
+        .expect("reused effects frame");
+    assert!(reused.frame_reused);
+
+    let ultra = RenderQuality::Ultra.render_options();
+    assert_eq!(ultra.shadows.resolution, 4096);
+    assert!(ultra.bloom.enabled);
+    assert_eq!(ultra.antialias, AntialiasMode::Fxaa);
+    assert!(ultra.post_effects.dither > 0.0);
+    let changed_quality = renderer
+        .render(&mut device, &scene, &textures, camera(), &ultra)
+        .expect("quality frame");
+    assert!(
+        !changed_quality.frame_reused,
+        "changing quality options must invalidate the retained frame"
+    );
+    renderer
+        .trim(&mut device, gfx_core::MemoryTrimLevel::Aggressive)
+        .expect("trim");
+    let trimmed = renderer.statistics();
+    assert!(trimmed.buffer_slack_bytes < 64 * 1024);
+
+    let object = renderer
+        .pick_object(&mut device, &scene, &textures, camera(), &plain, (96, 72))
+        .expect("object pick with HDR post")
+        .expect("center instance");
+    assert_eq!(object.node, node);
+    renderer.destroy(&mut device).expect("destroy renderer");
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn mesh_buffer_pool_reuses_allocations_and_releases_on_aggressive_trim() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 128, 96).expect("renderer");
+    let empty_textures = HashMap::new();
+    let mut options = options();
+    options.post_process = false;
+    options.shadows.enabled = false;
+    renderer
+        .render(
+            &mut device,
+            &empty_scene(),
+            &empty_textures,
+            camera(),
+            &options,
+        )
+        .expect("baseline frame");
+    let baseline = renderer.statistics();
+    let overhead = baseline.target_bytes + baseline.resident_buffer_bytes;
+    renderer.set_memory_budget(Some(overhead + 3 * 1024));
+    let mut reuses = 0;
+    for _ in 0..16 {
+        let (scene, _) = cube_scene(None);
+        renderer
+            .render(&mut device, &scene, &empty_textures, camera(), &options)
+            .expect("cycling cube frame");
+        reuses = renderer.statistics().buffer_reuses;
+    }
+    assert!(reuses > 0, "mesh buffers were never served from the pool");
+    let pooled = renderer.statistics();
+    assert!(pooled.buffer_allocation_count >= 4);
+    renderer
+        .trim(&mut device, gfx_core::MemoryTrimLevel::Aggressive)
+        .expect("aggressive trim");
+    let trimmed = renderer.statistics();
+    assert_eq!(trimmed.live_meshes, 0);
+    assert_eq!(trimmed.pooled_buffer_bytes, 0);
+    assert_eq!(trimmed.pooled_buffer_count, 0);
+    assert_eq!(trimmed.buffer_allocation_count, 4);
+    renderer.destroy(&mut device).expect("destroy renderer");
 }

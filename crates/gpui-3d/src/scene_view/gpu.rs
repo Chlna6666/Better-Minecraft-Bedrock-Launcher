@@ -612,15 +612,28 @@ pub(crate) fn encode_draw_slot(
 }
 pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(scene.draws.len().max(1) * INSTANCE_STRIDE as usize);
+    encode_instances_into(scene, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Appends instance records to a reusable staging buffer.
+///
+/// The offscreen renderer reuses its staging buffer across frames so a dirty frame does not
+/// allocate the full instance table again; the GPUI scene-view path keeps the allocating wrapper.
+pub(crate) fn encode_instances_into(
+    scene: &PreparedScene,
+    bytes: &mut Vec<u8>,
+) -> gpui::Result<()> {
+    let start_len = bytes.len();
     for draw in &scene.draws {
         let inverse = draw
             .world
             .inverse()
             .ok_or_else(|| anyhow!("GPUI 3D draw has a singular world transform"))?;
-        write_matrix(&mut bytes, draw.world.columns());
-        write_matrix(&mut bytes, transpose(inverse).columns());
+        write_matrix(bytes, draw.world.columns());
+        write_matrix(bytes, transpose(inverse).columns());
         write_vec4(
-            &mut bytes,
+            bytes,
             [
                 draw.pixel_offset.x,
                 draw.pixel_offset.y,
@@ -629,33 +642,41 @@ pub(crate) fn encode_instances(scene: &PreparedScene) -> gpui::Result<Vec<u8>> {
             ],
         );
     }
-    if scene.draws.is_empty() {
+    if scene.draws.is_empty() && bytes.len() == start_len {
         bytes.resize(INSTANCE_STRIDE as usize, 0);
     }
-    Ok(bytes)
+    debug_assert_eq!((bytes.len() - start_len) % INSTANCE_STRIDE as usize, 0);
+    Ok(())
 }
 
 pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(lights.len().max(1) * LIGHT_STRIDE as usize);
+    encode_lights_into(lights, &mut bytes);
+    bytes
+}
+
+/// Appends light records to a reusable staging buffer for the offscreen renderer.
+pub(crate) fn encode_lights_into(lights: &[PreparedLight], bytes: &mut Vec<u8>) {
+    let start_len = bytes.len();
     for light in lights {
         match *light {
             PreparedLight::Ambient { color, intensity } => {
-                write_light_header(&mut bytes, LIGHT_KIND_AMBIENT);
-                write_vec4(&mut bytes, [0.0, 0.0, 0.0, 0.0]);
-                write_vec4(&mut bytes, [0.0, 0.0, 0.0, 0.0]);
-                write_vec4(&mut bytes, [color[0], color[1], color[2], intensity]);
-                write_spot_cone_cosines(&mut bytes, 0.0, 0.0);
+                write_light_header(bytes, LIGHT_KIND_AMBIENT);
+                write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
+                write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
+                write_vec4(bytes, [color[0], color[1], color[2], intensity]);
+                write_spot_cone_cosines(bytes, 0.0, 0.0);
             }
             PreparedLight::Directional {
                 direction,
                 color,
                 intensity,
             } => {
-                write_light_header(&mut bytes, LIGHT_KIND_DIRECTIONAL);
-                write_vec4(&mut bytes, [0.0, 0.0, 0.0, 0.0]);
-                write_vec4(&mut bytes, [direction.x, direction.y, direction.z, 0.0]);
-                write_vec4(&mut bytes, [color[0], color[1], color[2], intensity]);
-                write_spot_cone_cosines(&mut bytes, 0.0, 0.0);
+                write_light_header(bytes, LIGHT_KIND_DIRECTIONAL);
+                write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
+                write_vec4(bytes, [direction.x, direction.y, direction.z, 0.0]);
+                write_vec4(bytes, [color[0], color[1], color[2], intensity]);
+                write_spot_cone_cosines(bytes, 0.0, 0.0);
             }
             PreparedLight::Point {
                 position,
@@ -663,11 +684,11 @@ pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
                 intensity,
                 range,
             } => {
-                write_light_header(&mut bytes, LIGHT_KIND_POINT);
-                write_vec4(&mut bytes, [position.x, position.y, position.z, range]);
-                write_vec4(&mut bytes, [0.0, 0.0, 0.0, 0.0]);
-                write_vec4(&mut bytes, [color[0], color[1], color[2], intensity]);
-                write_spot_cone_cosines(&mut bytes, 0.0, 0.0);
+                write_light_header(bytes, LIGHT_KIND_POINT);
+                write_vec4(bytes, [position.x, position.y, position.z, range]);
+                write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
+                write_vec4(bytes, [color[0], color[1], color[2], intensity]);
+                write_spot_cone_cosines(bytes, 0.0, 0.0);
             }
             PreparedLight::Spot {
                 position,
@@ -678,18 +699,18 @@ pub(crate) fn encode_lights(lights: &[PreparedLight]) -> Vec<u8> {
                 inner_angle,
                 outer_angle,
             } => {
-                write_light_header(&mut bytes, LIGHT_KIND_SPOT);
-                write_vec4(&mut bytes, [position.x, position.y, position.z, range]);
-                write_vec4(&mut bytes, [direction.x, direction.y, direction.z, 0.0]);
-                write_vec4(&mut bytes, [color[0], color[1], color[2], intensity]);
-                write_spot_cone_cosines(&mut bytes, outer_angle.cos(), inner_angle.cos());
+                write_light_header(bytes, LIGHT_KIND_SPOT);
+                write_vec4(bytes, [position.x, position.y, position.z, range]);
+                write_vec4(bytes, [direction.x, direction.y, direction.z, 0.0]);
+                write_vec4(bytes, [color[0], color[1], color[2], intensity]);
+                write_spot_cone_cosines(bytes, outer_angle.cos(), inner_angle.cos());
             }
         }
     }
-    if lights.is_empty() {
+    if lights.is_empty() && bytes.len() == start_len {
         bytes.resize(LIGHT_STRIDE as usize, 0);
     }
-    bytes
+    debug_assert_eq!((bytes.len() - start_len) % LIGHT_STRIDE as usize, 0);
 }
 
 fn write_light_header(bytes: &mut Vec<u8>, light_kind: u32) {

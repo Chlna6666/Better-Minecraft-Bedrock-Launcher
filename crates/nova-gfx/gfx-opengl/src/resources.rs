@@ -44,6 +44,7 @@ pub(crate) fn format(value: Format) -> (u32, u32, u32) {
         Format::Bgra8UnormSrgb => (glow::SRGB8_ALPHA8, glow::BGRA, glow::UNSIGNED_BYTE),
         Format::Rgba8Unorm => (glow::RGBA8, glow::RGBA, glow::UNSIGNED_BYTE),
         Format::Rgba8UnormSrgb => (glow::SRGB8_ALPHA8, glow::RGBA, glow::UNSIGNED_BYTE),
+        Format::Rgba16Float => (glow::RGBA16F, glow::RGBA, glow::HALF_FLOAT),
         Format::Depth32Float => (glow::DEPTH_COMPONENT32F, glow::DEPTH_COMPONENT, glow::FLOAT),
     }
 }

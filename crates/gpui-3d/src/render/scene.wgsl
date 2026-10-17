@@ -1,8 +1,8 @@
-// Linear-space PBR scene pass for the offscreen gpui-3d renderer.
+// Linear-space HDR PBR scene pass for the offscreen gpui-3d renderer.
 //
-// The pass renders into an RGBA8 display-referred target. Lighting is accumulated in
-// linear space, shadowed by the packed directional shadow map, then exposed, tone mapped,
-// and gamma encoded in the fragment shader.
+// Lighting is accumulated in linear space, shadowed by the packed directional shadow map, and
+// written to an RGBA16Float target without clamping. Exposure, tone mapping, bloom, FXAA, and
+// gamma are resolved by the post pass so bright lights keep headroom until grading.
 //
 // Bind group 0:
 //   0 packed vertices, 1 draw params, 2 lights, 3 albedo, 4 material sampler,
@@ -64,6 +64,12 @@ struct Frame {
     shadow: vec4<f32>,
     // target width, target height, normal bias, object-id seed
     misc: vec4<f32>,
+    // bloom threshold, bloom strength, shadow softness, FXAA enabled
+    effects: vec4<f32>,
+    // vignette, film grain, dither, debug-view bypass
+    effects2: vec4<f32>,
+    // bloom radius, bloom threshold duplicate, unused, unused
+    effects3: vec4<f32>,
 };
 
 @group(0) @binding(0) var<storage, read> vertices: array<PackedVertex>;
@@ -238,15 +244,19 @@ fn shadow_visibility(light_clip: vec4<f32>, surface_normal: vec3<f32>) -> f32 {
     let light_direction = normalize(-frame.light_direction.xyz);
     let slope = 1.0 - clamp(dot(surface_normal, light_direction), 0.0, 1.0);
     let bias = frame.shadow.z + frame.misc.z * slope;
-    let sum = textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, -1.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, -1.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, -1.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 0.0) * frame.shadow.xy)
+    // Keep the 3x3 comparison grid but scale its radius with the quality softness so the same
+    // packed depth target can be crisp or soft. Offsets stay within one texel group for stability.
+    let softness = clamp(frame.effects.z, 0.2, 4.0);
+    let step = frame.shadow.xy * softness;
+    let sum = textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, -1.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, -1.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, -1.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 0.0) * step)
         + textureSample(shadow_map_texture, material_sampler, uv)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 0.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 1.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, 1.0) * frame.shadow.xy)
-        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 1.0) * frame.shadow.xy);
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 0.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(-1.0, 1.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(0.0, 1.0) * step)
+        + textureSample(shadow_map_texture, material_sampler, uv + vec2<f32>(1.0, 1.0) * step);
     let stored = unpack_depth(sum / 9.0);
     let visible = select(0.0, 1.0, ndc.z - bias <= stored + 0.00002);
     return mix(1.0, visible, frame.post.w);
@@ -424,15 +434,13 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
     if (draw_params.shading_model == SHADING_MODEL_UNLIT) {
         let unlit_color = clamp(base_color.rgb, vec3<f32>(0.0), vec3<f32>(1.0))
             + draw_params.emissive.rgb * draw_params.emissive.a;
-        return vec4<f32>(pow(clamp(unlit_color, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2)), 1.0);
+        return vec4<f32>(unlit_color, 1.0);
     }
 
-    let exposed = radiance * frame.post.x;
-    let mapped = tonemap(exposed, u32(round(frame.post.y)));
-    let display_color = pow(max(mapped, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    // HDR scene target: keep linear radiance. Exposure, tone mapping, bloom, FXAA, and gamma are
+    // resolved by the post pass so highlights still have headroom when they reach grading.
     if (alpha_mode == ALPHA_MODE_BLEND) {
-        let output_alpha = alpha;
-        return vec4<f32>(display_color * output_alpha, output_alpha);
+        return vec4<f32>(radiance * alpha, alpha);
     }
-    return vec4<f32>(display_color, 1.0);
+    return vec4<f32>(max(radiance, vec3<f32>(0.0)), 1.0);
 }

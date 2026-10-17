@@ -88,9 +88,9 @@ pub use mesh::{GeneratedTangents, Mesh, MeshError, MeshId, MeshPart, TriangleEdg
 pub use prepare::{DrawBatch, PreparedDraw, PreparedScene};
 pub use raycast::{RaycastError, RaycastHit, RaycastScratch};
 pub use render::{
-    CapturedImage, DebugView, FrameStatistics, ObjectPick, OffscreenRenderer, PickError,
-    RenderError, RenderOptions, RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated,
-    project,
+    AntialiasMode, BloomOptions, CapturedImage, DebugView, FrameStatistics, ObjectPick,
+    OffscreenRenderer, PickError, PostEffects, RenderError, RenderOptions, RenderQuality,
+    RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated, project,
 };
 pub use scene::{EvaluatedScene, Node, NodeError, NodeId, Scene, SceneError};
 pub use scene_view::{

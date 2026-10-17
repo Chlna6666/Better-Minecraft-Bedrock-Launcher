@@ -42,6 +42,17 @@ one shared mesh/material renders in one indexed draw with 200,000 instances and 
 buffers instead of 128 MiB. The lab exposes it with `--instances=200000`. Long-session budget
 cycling and two-renderers-on-one-device isolation are covered by the ignored native memory tests.
 
+Rendering resolves in linear HDR: the scene pass writes `Rgba16Float`, a half-resolution bloom pass
+bleeds bright emissive/specular light, and the post pass applies exposure, tone mapping, FXAA-style
+edge blending, vignette, film grain, and ordered dithering into the readback target. Debug views and
+object-id selection bypass grading. `RenderQuality` presets (Low/Medium/High/Ultra) select shadow
+resolution, bloom strength, FXAA, and grading; overrides stay available per option. Per-frame CPU
+encoders reuse staging buffers, evicted mesh buffers enter a bounded reuse pool (measured reuses,
+zero create/destroy churn across scene cycling), and pipeline layouts are now destroyed with the
+renderer instead of leaking on every drop/resize. Allocator metrics are exposed through
+`buffer_allocation_count`, `buffer_slack_bytes`, `pooled_buffer_bytes`, `pooled_buffer_count`,
+`buffer_reuses`, and `cpu_staging_bytes`.
+
 ## Offscreen renderer quick start
 
 ```rust

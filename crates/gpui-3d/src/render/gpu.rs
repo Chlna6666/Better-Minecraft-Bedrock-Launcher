@@ -15,7 +15,8 @@ use super::{
     CapturedImage, DebugView, FrameStatistics, RenderError, RenderOptions, RendererStatistics,
 };
 use crate::scene_view::gpu::{
-    encode_draw_slot, encode_instances, encode_lights, encode_mesh, write_matrix, write_vec4,
+    encode_draw_slot, encode_instances_into, encode_lights_into, encode_mesh, write_matrix,
+    write_vec4,
 };
 use crate::scene_view::{
     DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, PACKED_VERTEX_STRIDE,
@@ -42,10 +43,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Byte stride of the scene/shadow frame uniform buffer.
+/// Byte stride of the scene/shadow/post frame uniform buffer.
 ///
-/// WGSL declares 240 bytes of fields; the trailing bytes keep the buffer a multiple of 16.
-const FRAME_STRIDE: u64 = 256;
+/// The WGSL Frame layout declares exactly these 288 bytes of matrix, vector, and effect fields.
+const FRAME_STRIDE: u64 = 288;
 const SHADOW_VERTEX_BINDING: u32 = 0;
 const SHADOW_INSTANCE_BINDING: u32 = 1;
 const SHADOW_FRAME_BINDING: u32 = 2;
@@ -54,13 +55,128 @@ const SCENE_METALLIC_ROUGHNESS_BINDING: u32 = 11;
 const POST_COLOR_BINDING: u32 = 0;
 const POST_SAMPLER_BINDING: u32 = 1;
 const POST_FRAME_BINDING: u32 = 2;
+const POST_BLOOM_BINDING: u32 = 3;
+const BLOOM_SCENE_BINDING: u32 = 0;
+const BLOOM_SAMPLER_BINDING: u32 = 1;
+const BLOOM_FRAME_BINDING: u32 = 2;
 const DEFAULT_SHADOW_RESOLUTION: u32 = 2048;
 const IDLE_MESH_FRAMES: u64 = 120;
+const FRAME_BUFFER_COUNT: usize = 4;
 
 const SHADOW_COLOR_FORMAT: Format = Format::Rgba8Unorm;
-const SCENE_COLOR_FORMAT: Format = Format::Rgba8Unorm;
+const SCENE_COLOR_FORMAT: Format = Format::Rgba16Float;
 const POST_COLOR_FORMAT: Format = Format::Rgba8Unorm;
+const BLOOM_COLOR_FORMAT: Format = Format::Rgba8Unorm;
 const DEPTH_FORMAT: Format = Format::Depth32Float;
+
+/// Untyped GPU buffer kept for reuse after a mesh is evicted.
+struct PooledBuffer {
+    buffer: BufferId,
+    capacity: u64,
+    usage: BufferUsage,
+    location: MemoryLocation,
+}
+
+/// Bounded pool of freed mesh buffers, keyed by usage and fitted to the next mesh request.
+///
+/// Reusing exact or slightly larger buffers avoids repeated create/destroy cycles (and the
+/// allocator/virtual-memory churn that fragments GPU heaps) while scene meshes are evicted and
+/// rebuilt during budget trimming or scene switching.
+#[derive(Default)]
+struct MeshBufferPool {
+    entries: Vec<PooledBuffer>,
+    bytes: u64,
+    reuses: u64,
+}
+
+const MESH_POOL_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
+const MESH_POOL_LIMIT_ENTRIES: usize = 64;
+
+impl MeshBufferPool {
+    fn take(
+        &mut self,
+        needed: u64,
+        usage: BufferUsage,
+        location: MemoryLocation,
+    ) -> Option<(BufferId, u64)> {
+        let needed = aligned_buffer_size(needed);
+        let mut best: Option<(usize, u64)> = None;
+        for (index, entry) in self.entries.iter().enumerate() {
+            if entry.usage != usage
+                || entry.location != location
+                || entry.capacity < needed
+                || entry.capacity > needed.saturating_mul(2)
+            {
+                continue;
+            }
+            let fits_better = best.is_none_or(|(_, capacity)| entry.capacity < capacity);
+            if fits_better {
+                best = Some((index, entry.capacity));
+            }
+        }
+        let (index, capacity) = best?;
+        let entry = self.entries.swap_remove(index);
+        self.bytes = self.bytes.saturating_sub(entry.capacity);
+        self.reuses = self.reuses.saturating_add(1);
+        Some((entry.buffer, capacity))
+    }
+
+    /// Recycles a buffer, or destroys it when the pool is at capacity or the buffer is oversized.
+    fn recycle<D: Device + ?Sized>(&mut self, device: &mut D, entry: PooledBuffer, reserved: u64) {
+        let fits = self.entries.len() < MESH_POOL_LIMIT_ENTRIES
+            && entry.capacity + self.bytes <= MESH_POOL_LIMIT_BYTES
+            && entry.capacity + reserved <= MESH_POOL_LIMIT_BYTES;
+        if fits {
+            self.bytes = self.bytes.saturating_add(entry.capacity);
+            self.entries.push(entry);
+        } else {
+            let _ = device.destroy_buffer(entry.buffer);
+        }
+    }
+
+    fn clear<D: Device + ?Sized>(&mut self, device: &mut D) -> Result<u64, RenderError> {
+        let released = self.bytes;
+        let mut first_error = None;
+        for entry in self.entries.drain(..) {
+            if let Err(error) = device.destroy_buffer(entry.buffer) {
+                first_error.get_or_insert(error);
+            }
+        }
+        self.bytes = 0;
+        match first_error {
+            Some(error) => Err(error.into()),
+            None => Ok(released),
+        }
+    }
+}
+
+/// Reusable CPU staging buffers for per-frame encoders.
+///
+/// Dirty frames rewrite draw, instance, light, and frame bytes; keeping their capacity alive avoids
+/// four heap allocations (and the associated allocator churn) on every scene or camera change.
+#[derive(Default)]
+struct StagingBuffers {
+    draw: Vec<u8>,
+    instance: Vec<u8>,
+    light: Vec<u8>,
+    frame: Vec<u8>,
+}
+
+impl StagingBuffers {
+    fn cpu_bytes(&self) -> u64 {
+        (self.draw.capacity()
+            + self.instance.capacity()
+            + self.light.capacity()
+            + self.frame.capacity()) as u64
+    }
+
+    fn shrink(&mut self) {
+        self.draw.shrink_to_fit();
+        self.instance.shrink_to_fit();
+        self.light.shrink_to_fit();
+        self.frame.shrink_to_fit();
+    }
+}
 
 /// Everything the renderer owns on one GPU device.
 pub(crate) struct GpuState {
@@ -70,12 +186,15 @@ pub(crate) struct GpuState {
     pipelines: Option<Pipelines>,
     targets: Option<Targets>,
     frame_buffers: FrameBuffers,
+    staging: StagingBuffers,
+    mesh_pool: MeshBufferPool,
     meshes: HashMap<(MeshId, u64), MeshResources>,
     textures: HashMap<TextureAssetId, TextureResources>,
     fallback_texture: Option<TextureResources>,
     batch_sets: HashMap<BatchKey, BatchSets>,
     used_batch_keys: Vec<BatchKey>,
     post_set: Option<ResourceSetId>,
+    bloom_set: Option<ResourceSetId>,
     resource_epoch: u64,
     frame_index: u64,
     shadow_resolution: u32,
@@ -134,12 +253,15 @@ impl GpuState {
             pipelines: Some(pipelines),
             targets: Some(targets),
             frame_buffers,
+            staging: StagingBuffers::default(),
+            mesh_pool: MeshBufferPool::default(),
             meshes: HashMap::new(),
             textures: HashMap::new(),
             fallback_texture: Some(fallback_texture),
             batch_sets: HashMap::new(),
             used_batch_keys: Vec::new(),
             post_set: None,
+            bloom_set: None,
             resource_epoch: 1,
             frame_index: 0,
             shadow_resolution: DEFAULT_SHADOW_RESOLUTION,
@@ -204,6 +326,9 @@ impl GpuState {
             if let Some(sets) = self.batch_sets.remove(&key) {
                 destroy_batch_sets(device, sets)?;
             }
+        }
+        if let Some(set) = self.bloom_set.take() {
+            device.destroy_resource_set(set)?;
         }
         if let Some(set) = self.post_set.take() {
             device.destroy_resource_set(set)?;
@@ -280,7 +405,8 @@ impl GpuState {
         } else {
             options.clear_color
         };
-        let frame_bytes = encode_frame(
+        self.staging.frame.clear();
+        encode_frame_into(
             prepared.view_projection,
             light_view_projection,
             camera,
@@ -289,29 +415,23 @@ impl GpuState {
             target,
             shadow_enabled,
             shadow_texel,
+            &mut self.staging.frame,
         );
-        let draw_bytes = if frame_data_dirty {
-            Some(encode_batch_draws(prepared)?)
-        } else {
-            None
-        };
-        let instance_bytes = if frame_data_dirty {
-            Some(encode_instances(prepared).map_err(prepare_error)?)
-        } else {
-            None
-        };
-        let light_bytes = if frame_data_dirty {
-            Some(encode_lights(&prepared.lights))
-        } else {
-            None
-        };
-        let upload = self.frame_buffers.sync(
-            device,
-            draw_bytes.as_deref(),
-            instance_bytes.as_deref(),
-            light_bytes.as_deref(),
-            &frame_bytes,
-        )?;
+        if frame_data_dirty {
+            self.staging.draw.clear();
+            encode_batch_draws_into(prepared, &mut self.staging.draw)?;
+            self.staging.instance.clear();
+            encode_instances_into(prepared, &mut self.staging.instance).map_err(prepare_error)?;
+            self.staging.light.clear();
+            encode_lights_into(&prepared.lights, &mut self.staging.light);
+        }
+        let staging = &self.staging;
+        let drawn = frame_data_dirty.then_some(staging.draw.as_slice());
+        let instanced = frame_data_dirty.then_some(staging.instance.as_slice());
+        let lighted = frame_data_dirty.then_some(staging.light.as_slice());
+        let upload = self
+            .frame_buffers
+            .sync(device, drawn, instanced, lighted, &staging.frame)?;
         statistics.upload_bytes = statistics.upload_bytes.saturating_add(upload.bytes);
         if upload.reallocated {
             self.invalidate_sets(device)?;
@@ -345,6 +465,15 @@ impl GpuState {
         self.release_unused_batch_sets(device)?;
 
         let post_set = self.ensure_post_set(device)?;
+        let bloom_enabled = options.post_process
+            && options.bloom.enabled
+            && options.bloom.strength > 0.0
+            && options.debug_view == DebugView::Shaded;
+        let bloom_set = if bloom_enabled {
+            Some(self.ensure_bloom_set(device)?)
+        } else {
+            None
+        };
         let post_steps = [RenderStepDescriptor::Draw(DrawStepDescriptor {
             pipeline: self.pipelines()?.post_pipeline,
             resource_sets: gfx_core::resource_set_list([post_set]),
@@ -354,6 +483,18 @@ impl GpuState {
             first_instance: 0,
             scissor: None,
         })];
+        let mut bloom_steps = Vec::with_capacity(1);
+        if let Some(bloom_set) = bloom_set {
+            bloom_steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
+                pipeline: self.pipelines()?.bloom_pipeline,
+                resource_sets: gfx_core::resource_set_list([bloom_set]),
+                vertex_count: 3,
+                first_vertex: 0,
+                instance_count: 1,
+                first_instance: 0,
+                scissor: None,
+            }));
+        }
 
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
         let pipelines = self.pipelines()?;
@@ -391,6 +532,15 @@ impl GpuState {
             }),
             viewport: None,
         };
+        let bloom_pass = TextureRenderStepList {
+            texture_view: targets.bloom_color_view,
+            render_pass: pipelines.bloom_pass,
+            steps: RenderStepList::Render(&bloom_steps),
+            color_load_op: LoadOp::Clear(ClearColor::default()),
+            clear_region: None,
+            depth_attachment: None,
+            viewport: None,
+        };
         let post_pass = TextureRenderStepList {
             texture_view: targets.post_color_view,
             render_pass: pipelines.post_pass,
@@ -401,8 +551,15 @@ impl GpuState {
             viewport: None,
         };
 
+        let mut passes = Vec::with_capacity(4);
+        passes.push(shadow_pass);
+        passes.push(scene_pass);
+        if bloom_enabled {
+            passes.push(bloom_pass);
+        }
+        passes.push(post_pass);
         let submit_started = Instant::now();
-        device.render_step_lists_to_textures_compat(&[shadow_pass, scene_pass, post_pass])?;
+        device.render_step_lists_to_textures_compat(&passes)?;
         statistics.submit_nanos = submit_started.elapsed().as_nanos() as u64;
         statistics.cpu_prepare_nanos = started.elapsed().as_nanos() as u64;
         self.submission_unobserved = true;
@@ -458,7 +615,7 @@ impl GpuState {
                     if let Some(mesh) = self.meshes.remove(&key) {
                         released_bytes += mesh.bytes;
                         evicted_assets += 1;
-                        destroy_mesh(device, mesh)?;
+                        destroy_mesh(device, mesh, &mut self.mesh_pool);
                     }
                 }
                 let stale_textures = self
@@ -483,7 +640,7 @@ impl GpuState {
                     if let Some(mesh) = self.meshes.remove(&key) {
                         released_bytes += mesh.bytes;
                         evicted_assets += 1;
-                        destroy_mesh(device, mesh)?;
+                        destroy_mesh(device, mesh, &mut self.mesh_pool);
                     }
                 }
                 let texture_keys = self.textures.keys().copied().collect::<Vec<_>>();
@@ -502,14 +659,18 @@ impl GpuState {
             self.evictions = self.evictions.saturating_add(evicted_assets);
             self.invalidate_sets(device)?;
             self.resource_epoch = self.resource_epoch.wrapping_add(1);
-            if matches!(level, MemoryTrimLevel::Aggressive) && self.frame_buffers.shrink(device)? {
-                self.resource_epoch = self.resource_epoch.wrapping_add(1);
+            if matches!(level, MemoryTrimLevel::Aggressive) {
+                if self.frame_buffers.shrink(device)? {
+                    self.resource_epoch = self.resource_epoch.wrapping_add(1);
+                }
+                self.staging.shrink();
+                let _ = self.mesh_pool.clear(device)?;
             }
         }
         Ok(())
     }
     pub(crate) fn statistics(&self) -> RendererStatistics {
-        let resident_buffer_bytes = self.frame_buffers.resident_bytes();
+        let resident_buffer_bytes = self.frame_buffers.resident_bytes() + self.mesh_pool.bytes;
         let target_bytes = self.targets.as_ref().map_or(0, Targets::resident_bytes);
         let cached_mesh_bytes = self.meshes.values().map(|mesh| mesh.bytes).sum::<u64>();
         let cached_texture_bytes = self
@@ -524,7 +685,9 @@ impl GpuState {
         RendererStatistics {
             live_meshes: self.meshes.len(),
             live_textures: self.textures.len(),
-            resource_set_count: self.batch_sets.len() + usize::from(self.post_set.is_some()),
+            resource_set_count: self.batch_sets.len()
+                + usize::from(self.post_set.is_some())
+                + usize::from(self.bloom_set.is_some()),
             resident_buffer_bytes,
             resident_texture_bytes: target_bytes + cached_texture_bytes,
             draw_capacity: self.frame_buffers.draw_capacity(),
@@ -545,12 +708,32 @@ impl GpuState {
             evictions: self.evictions,
             tracker_cpu_bytes: self.frame_buffers.cpu_tracker_bytes(),
             memory_budget_bytes: self.memory_budget,
+            cpu_staging_bytes: self.staging.cpu_bytes(),
+            buffer_allocation_count: FRAME_BUFFER_COUNT
+                + self
+                    .meshes
+                    .values()
+                    .map(|mesh| 2 + usize::from(mesh.tangents.is_some()))
+                    .sum::<usize>(),
+            buffer_slack_bytes: self
+                .frame_buffers
+                .capacity_bytes()
+                .saturating_sub(self.frame_buffers.used_bytes())
+                + self
+                    .meshes
+                    .values()
+                    .map(|mesh| mesh.bytes.saturating_sub(mesh.requested_bytes))
+                    .sum::<u64>(),
+            pooled_buffer_bytes: self.mesh_pool.bytes,
+            pooled_buffer_count: self.mesh_pool.entries.len(),
+            buffer_reuses: self.mesh_pool.reuses,
         }
     }
 
     /// Resident GPU bytes owned by this renderer, excluding CPU-side bookkeeping.
     fn resident_bytes(&self) -> u64 {
         self.frame_buffers.resident_bytes()
+            + self.mesh_pool.bytes
             + self.targets.as_ref().map_or(0, Targets::resident_bytes)
             + self
                 .fallback_texture
@@ -584,7 +767,10 @@ impl GpuState {
         let mut released = 0_u64;
         let mut evicted = false;
         loop {
-            if self.resident_bytes() <= budget {
+            // The reuse pool is bounded separately from the asset budget: evicting a mesh only
+            // moves bytes into the pool, so counting it here would make budget pressure churn
+            // allocations instead of shrinking the live working set.
+            if self.budget_resident_bytes() <= budget {
                 break;
             }
             let mesh_candidate = self
@@ -620,7 +806,7 @@ impl GpuState {
                     break;
                 };
                 if let Some(mesh) = self.meshes.remove(&key) {
-                    destroy_mesh(device, mesh)?;
+                    destroy_mesh(device, mesh, &mut self.mesh_pool);
                     released += bytes;
                     self.evictions += 1;
                     evicted = true;
@@ -631,7 +817,18 @@ impl GpuState {
             self.invalidate_sets(device)?;
             self.resource_epoch = self.resource_epoch.wrapping_add(1);
         }
+        // Bound the pool independently and release it once no live asset can reuse it.
+        if self.mesh_pool.bytes > MESH_POOL_LIMIT_BYTES / 2
+            || (self.meshes.is_empty() && self.textures.is_empty() && self.mesh_pool.bytes > 0)
+        {
+            released += self.mesh_pool.clear(device)?;
+        }
         Ok(released)
+    }
+
+    /// Resident bytes counted against the asset budget (excludes the separately-bounded pool).
+    fn budget_resident_bytes(&self) -> u64 {
+        self.resident_bytes().saturating_sub(self.mesh_pool.bytes)
     }
 
     pub(crate) fn destroy<D: Device + TextureTransferDevice + ?Sized>(
@@ -646,9 +843,7 @@ impl GpuState {
         let mesh_keys = self.meshes.keys().copied().collect::<Vec<_>>();
         for key in mesh_keys {
             if let Some(mesh) = self.meshes.remove(&key) {
-                if let Err(error) = destroy_mesh(device, mesh) {
-                    first_error.get_or_insert(error);
-                }
+                destroy_mesh(device, mesh, &mut self.mesh_pool);
             }
         }
         let texture_keys = self.textures.keys().copied().collect::<Vec<_>>();
@@ -676,6 +871,9 @@ impl GpuState {
             if let Err(error) = pipelines.destroy(device) {
                 first_error.get_or_insert(error);
             }
+        }
+        if let Err(error) = self.mesh_pool.clear(device) {
+            first_error.get_or_insert(error);
         }
         match first_error {
             Some(error) => Err(error),
@@ -718,7 +916,7 @@ impl GpuState {
             return Ok(());
         }
         self.mesh_cache_misses = self.mesh_cache_misses.saturating_add(1);
-        let mut resources = create_mesh(device, self.backend, mesh)?;
+        let mut resources = create_mesh(device, self.backend, mesh, &mut self.mesh_pool)?;
         resources.last_used_frame = self.frame_index;
         statistics.mesh_uploads += 1;
         self.meshes.insert(key, resources);
@@ -1018,9 +1216,38 @@ impl GpuState {
                     FRAME_STRIDE,
                     None,
                 ),
+                texture_binding(POST_BLOOM_BINDING, targets.bloom_color_view),
             ],
         })?;
         self.post_set = Some(set);
+        Ok(set)
+    }
+
+    fn ensure_bloom_set<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<ResourceSetId, RenderError> {
+        if let Some(set) = self.bloom_set {
+            return Ok(set);
+        }
+        let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
+        let pipelines = self.pipelines()?;
+        let set = device.create_resource_set(&ResourceSetDescriptor {
+            label: Some("gpui-3d offscreen bloom resource set".into()),
+            layout: pipelines.bloom_layout,
+            bindings: vec![
+                texture_binding(BLOOM_SCENE_BINDING, targets.scene_color_view),
+                sampler_binding(BLOOM_SAMPLER_BINDING, pipelines.post_sampler),
+                buffer_binding(
+                    BLOOM_FRAME_BINDING,
+                    self.frame_buffers.frame.buffer,
+                    0,
+                    FRAME_STRIDE,
+                    None,
+                ),
+            ],
+        })?;
+        self.bloom_set = Some(set);
         Ok(set)
     }
 }
@@ -1030,20 +1257,23 @@ impl GpuState {
 /// The scene-view extension still writes one slot per draw because the host pass has no instanced
 /// batch contract. The offscreen renderer owns batching, so its draw buffer is sized by batch count
 /// and a 200k-instance field keeps a single 512-byte slot instead of 102 MiB of duplicated slots.
-fn encode_batch_draws(prepared: &PreparedScene) -> Result<Vec<u8>, RenderError> {
+fn encode_batch_draws_into(
+    prepared: &PreparedScene,
+    bytes: &mut Vec<u8>,
+) -> Result<(), RenderError> {
     let light_count = u32::try_from(prepared.lights.len())
         .map_err(|_| RenderError::Preparation("GPUI 3D light count exceeds u32".into()))?;
-    let mut bytes = Vec::with_capacity(prepared.draws.len().min(1024) * DRAW_SLOT_STRIDE);
+    let start_len = bytes.len();
     for batch in prepared.draw_batches() {
         let Some(draw) = batch.draws().first() else {
             continue;
         };
-        encode_draw_slot(draw, light_count, &mut bytes).map_err(prepare_error)?;
+        encode_draw_slot(draw, light_count, bytes).map_err(prepare_error)?;
     }
-    if bytes.is_empty() {
+    if bytes.len() == start_len {
         bytes.resize(DRAW_SLOT_STRIDE, 0);
     }
-    Ok(bytes)
+    Ok(())
 }
 
 fn prepared_bounds(prepared: &PreparedScene) -> Option<Aabb> {
@@ -1139,10 +1369,17 @@ fn destroy_batch_sets<D: Device + ?Sized>(
 struct MeshResources {
     vertices: BufferId,
     vertex_bytes: u64,
+    vertex_capacity: u64,
     tangents: Option<BufferId>,
     tangent_bytes: u64,
+    tangent_capacity: u64,
     indices: BufferId,
+    index_capacity: u64,
+    /// Allocated (aligned) buffer bytes.
     bytes: u64,
+    /// Requested payload bytes, used to report allocator slack.
+    requested_bytes: u64,
+    location: MemoryLocation,
     last_used_frame: u64,
 }
 
@@ -1186,7 +1423,7 @@ fn fit_directional_shadow(bounds: Aabb, direction: Vec3) -> Option<Mat4> {
     camera.view_projection(1.0).ok()
 }
 
-fn encode_frame(
+fn encode_frame_into(
     view_projection: Mat4,
     light_view_projection: Mat4,
     camera: Camera,
@@ -1195,21 +1432,18 @@ fn encode_frame(
     target: (u32, u32),
     shadow_enabled: bool,
     shadow_texel: f32,
-) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(FRAME_STRIDE as usize);
-    write_matrix(&mut bytes, view_projection.columns());
-    write_matrix(&mut bytes, light_view_projection.columns());
-    write_vec4(&mut bytes, [camera.eye.x, camera.eye.y, camera.eye.z, 0.0]);
+    bytes: &mut Vec<u8>,
+) {
+    write_matrix(bytes, view_projection.columns());
+    write_matrix(bytes, light_view_projection.columns());
+    write_vec4(bytes, [camera.eye.x, camera.eye.y, camera.eye.z, 0.0]);
     let (direction, color, intensity) =
         directional.unwrap_or((Vec3::new(0.0, -1.0, 0.0), [1.0, 1.0, 1.0], 1.0));
+    write_vec4(bytes, [direction.x, direction.y, direction.z, intensity]);
+    write_vec4(bytes, [color[0], color[1], color[2], 0.0]);
+    write_vec4(bytes, [0.0, 0.0, 0.0, 0.0]);
     write_vec4(
-        &mut bytes,
-        [direction.x, direction.y, direction.z, intensity],
-    );
-    write_vec4(&mut bytes, [color[0], color[1], color[2], 0.0]);
-    write_vec4(&mut bytes, [0.0, 0.0, 0.0, 0.0]);
-    write_vec4(
-        &mut bytes,
+        bytes,
         [
             options.exposure,
             options.tonemap.shader_value() as f32,
@@ -1218,7 +1452,7 @@ fn encode_frame(
         ],
     );
     write_vec4(
-        &mut bytes,
+        bytes,
         [
             shadow_texel,
             shadow_texel,
@@ -1227,7 +1461,7 @@ fn encode_frame(
         ],
     );
     write_vec4(
-        &mut bytes,
+        bytes,
         [
             target.0 as f32,
             target.1 as f32,
@@ -1235,8 +1469,46 @@ fn encode_frame(
             if options.post_process { 1.0 } else { 0.0 },
         ],
     );
-    bytes.resize(FRAME_STRIDE as usize, 0);
-    bytes
+    write_vec4(
+        bytes,
+        [
+            options.bloom.threshold,
+            if options.bloom.enabled {
+                options.bloom.strength.clamp(0.0, 4.0)
+            } else {
+                0.0
+            },
+            options.shadows.softness.clamp(0.2, 8.0),
+            if options.antialias == super::AntialiasMode::Fxaa {
+                1.0
+            } else {
+                0.0
+            },
+        ],
+    );
+    write_vec4(
+        bytes,
+        [
+            options.post_effects.vignette.clamp(0.0, 1.0),
+            options.post_effects.grain.clamp(0.0, 1.0),
+            options.post_effects.dither.clamp(0.0, 1.0),
+            if options.debug_view == super::DebugView::Shaded {
+                0.0
+            } else {
+                1.0
+            },
+        ],
+    );
+    write_vec4(
+        bytes,
+        [
+            options.bloom.radius.clamp(0.5, 4.0),
+            options.bloom.threshold.max(0.0),
+            0.0,
+            0.0,
+        ],
+    );
+    debug_assert_eq!(bytes.len(), FRAME_STRIDE as usize);
 }
 
 fn staging_location(backend: BackendKind) -> MemoryLocation {
@@ -1271,17 +1543,22 @@ fn create_mesh<D: Device + ?Sized>(
     device: &mut D,
     backend: BackendKind,
     mesh: &Mesh,
+    pool: &mut MeshBufferPool,
 ) -> Result<MeshResources, RenderError> {
     let encoded = encode_mesh(mesh).map_err(prepare_error)?;
     let location = staging_location(backend);
     let vertex_bytes = encoded.vertices.len() as u64;
-    let (vertices, vertex_capacity) = create_gpu_buffer(
-        device,
-        "gpui-3d offscreen vertices",
-        vertex_bytes,
-        BufferUsage::STORAGE | BufferUsage::COPY_DST,
-        location,
-    )?;
+    let vertex_usage = BufferUsage::STORAGE | BufferUsage::COPY_DST;
+    let (vertices, vertex_capacity) = match pool.take(vertex_bytes, vertex_usage, location) {
+        Some(buffer) => buffer,
+        None => create_gpu_buffer(
+            device,
+            "gpui-3d offscreen vertices",
+            vertex_bytes,
+            vertex_usage,
+            location,
+        )?,
+    };
     if let Err(error) = device.write_buffer(vertices, 0, &encoded.vertices) {
         device.destroy_buffer(vertices)?;
         return Err(error.into());
@@ -1291,13 +1568,16 @@ fn create_mesh<D: Device + ?Sized>(
         .as_ref()
         .map_or(0_u64, |tangents| tangents.len() as u64);
     let tangents = if let Some(tangent_data) = &encoded.tangents {
-        let (buffer, capacity) = create_gpu_buffer(
-            device,
-            "gpui-3d offscreen tangents",
-            tangent_bytes,
-            BufferUsage::STORAGE | BufferUsage::COPY_DST,
-            location,
-        )?;
+        let (buffer, capacity) = match pool.take(tangent_bytes, vertex_usage, location) {
+            Some(buffer) => buffer,
+            None => create_gpu_buffer(
+                device,
+                "gpui-3d offscreen tangents",
+                tangent_bytes,
+                vertex_usage,
+                location,
+            )?,
+        };
         if let Err(error) = device.write_buffer(buffer, 0, tangent_data) {
             device.destroy_buffer(buffer)?;
             device.destroy_buffer(vertices)?;
@@ -1308,13 +1588,17 @@ fn create_mesh<D: Device + ?Sized>(
         None
     };
     let index_bytes = encoded.indices.len() as u64;
-    let (indices, index_capacity) = create_gpu_buffer(
-        device,
-        "gpui-3d offscreen indices",
-        index_bytes,
-        BufferUsage::INDEX | BufferUsage::COPY_DST,
-        location,
-    )?;
+    let index_usage = BufferUsage::INDEX | BufferUsage::COPY_DST;
+    let (indices, index_capacity) = match pool.take(index_bytes, index_usage, location) {
+        Some(buffer) => buffer,
+        None => create_gpu_buffer(
+            device,
+            "gpui-3d offscreen indices",
+            index_bytes,
+            index_usage,
+            location,
+        )?,
+    };
     if let Err(error) = device.write_buffer(indices, 0, &encoded.indices) {
         device.destroy_buffer(indices)?;
         if let Some((buffer, _)) = tangents {
@@ -1330,10 +1614,15 @@ fn create_mesh<D: Device + ?Sized>(
     Ok(MeshResources {
         vertices,
         vertex_bytes,
+        vertex_capacity,
         tangents: tangents.map(|(buffer, _)| buffer),
         tangent_bytes,
+        tangent_capacity: tangents.map_or(0, |(_, capacity)| capacity),
         indices,
+        index_capacity,
         bytes,
+        requested_bytes: vertex_bytes + index_bytes + tangent_bytes,
+        location,
         last_used_frame: 0,
     })
 }
@@ -1341,13 +1630,42 @@ fn create_mesh<D: Device + ?Sized>(
 fn destroy_mesh<D: Device + ?Sized>(
     device: &mut D,
     mesh: MeshResources,
-) -> Result<(), RenderError> {
-    device.destroy_buffer(mesh.indices)?;
+    pool: &mut MeshBufferPool,
+) {
+    // Recycle instead of destroying so a rebuild can reuse the allocation without a fresh
+    // GPU allocation; the pool is bounded and cleared by aggressive trim/budget pressure.
+    pool.recycle(
+        device,
+        PooledBuffer {
+            buffer: mesh.indices,
+            capacity: mesh.index_capacity,
+            usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+            location: mesh.location,
+        },
+        0,
+    );
     if let Some(tangents) = mesh.tangents {
-        device.destroy_buffer(tangents)?;
+        pool.recycle(
+            device,
+            PooledBuffer {
+                buffer: tangents,
+                capacity: mesh.tangent_capacity,
+                usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+                location: mesh.location,
+            },
+            0,
+        );
     }
-    device.destroy_buffer(mesh.vertices)?;
-    Ok(())
+    pool.recycle(
+        device,
+        PooledBuffer {
+            buffer: mesh.vertices,
+            capacity: mesh.vertex_capacity,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_DST,
+            location: mesh.location,
+        },
+        0,
+    );
 }
 
 fn create_texture<D: Device + ?Sized>(
@@ -1510,13 +1828,20 @@ struct Pipelines {
     shadow_layout: ResourceSetLayoutId,
     scene_layout: ResourceSetLayoutId,
     post_layout: ResourceSetLayoutId,
+    bloom_layout: ResourceSetLayoutId,
     shadow_pass: RenderPassId,
     scene_pass: RenderPassId,
     post_pass: RenderPassId,
+    bloom_pass: RenderPassId,
     shadow_pipeline: RenderPipelineId,
     opaque_pipeline: RenderPipelineId,
     blended_pipeline: RenderPipelineId,
     post_pipeline: RenderPipelineId,
+    bloom_pipeline: RenderPipelineId,
+    shadow_pipeline_layout: PipelineLayoutId,
+    scene_pipeline_layout: PipelineLayoutId,
+    post_pipeline_layout: PipelineLayoutId,
+    bloom_pipeline_layout: PipelineLayoutId,
     material_sampler: SamplerId,
     post_sampler: SamplerId,
     shaders: Vec<ShaderModuleId>,
@@ -1652,9 +1977,35 @@ impl Pipelines {
                     ResourceBindingType::UniformBuffer,
                     ShaderStages::FRAGMENT,
                 ),
+                layout_entry(
+                    POST_BLOOM_BINDING,
+                    ResourceBindingType::SampledTexture,
+                    ShaderStages::FRAGMENT,
+                ),
             ],
         })?;
         scratch.layouts.push(post_layout);
+        let bloom_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+            label: Some("gpui-3d offscreen bloom layout".into()),
+            entries: vec![
+                layout_entry(
+                    BLOOM_SCENE_BINDING,
+                    ResourceBindingType::SampledTexture,
+                    ShaderStages::FRAGMENT,
+                ),
+                layout_entry(
+                    BLOOM_SAMPLER_BINDING,
+                    ResourceBindingType::Sampler,
+                    ShaderStages::FRAGMENT,
+                ),
+                layout_entry(
+                    BLOOM_FRAME_BINDING,
+                    ResourceBindingType::UniformBuffer,
+                    ShaderStages::FRAGMENT,
+                ),
+            ],
+        })?;
+        scratch.layouts.push(bloom_layout);
 
         let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen shadow pipeline layout".into()),
@@ -1671,6 +2022,11 @@ impl Pipelines {
             resource_set_layouts: vec![post_layout],
         })?;
         scratch.pipeline_layouts.push(post_pipeline_layout);
+        let bloom_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("gpui-3d offscreen bloom pipeline layout".into()),
+            resource_set_layouts: vec![bloom_layout],
+        })?;
+        scratch.pipeline_layouts.push(bloom_pipeline_layout);
 
         let shadow_vertex_shader =
             shader_module(device, backend, "vs_shadow_depth", ShaderStage::Vertex)?;
@@ -1688,6 +2044,11 @@ impl Pipelines {
         let post_fragment_shader =
             shader_module(device, backend, "fs_post", ShaderStage::Fragment)?;
         scratch.shaders.push(post_fragment_shader);
+        let bloom_vertex_shader = shader_module(device, backend, "vs_bloom", ShaderStage::Vertex)?;
+        scratch.shaders.push(bloom_vertex_shader);
+        let bloom_fragment_shader =
+            shader_module(device, backend, "fs_bloom", ShaderStage::Fragment)?;
+        scratch.shaders.push(bloom_fragment_shader);
 
         let shadow_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen shadow pass".into()),
@@ -1717,6 +2078,14 @@ impl Pipelines {
             depth_attachment: None,
         })?;
         scratch.passes.push(post_pass);
+        let bloom_pass = device.create_render_pass(&RenderPassDescriptor {
+            label: Some("gpui-3d offscreen bloom pass".into()),
+            color_attachment: ColorAttachmentDescriptor {
+                format: BLOOM_COLOR_FORMAT,
+            },
+            depth_attachment: None,
+        })?;
+        scratch.passes.push(bloom_pass);
 
         let create_pipeline = |device: &mut D,
                                label: &str,
@@ -1818,6 +2187,20 @@ impl Pipelines {
             None,
         )?;
         scratch.pipelines.push(post_pipeline);
+        let bloom_pipeline = create_pipeline(
+            device,
+            "gpui-3d offscreen bloom pipeline",
+            bloom_vertex_shader,
+            "vs_bloom",
+            bloom_fragment_shader,
+            "fs_bloom",
+            bloom_pass,
+            bloom_pipeline_layout,
+            BLOOM_COLOR_FORMAT,
+            BlendMode::Replace,
+            None,
+        )?;
+        scratch.pipelines.push(bloom_pipeline);
 
         let material_sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("gpui-3d offscreen material sampler".into()),
@@ -1844,13 +2227,20 @@ impl Pipelines {
             shadow_layout,
             scene_layout,
             post_layout,
+            bloom_layout,
             shadow_pass,
             scene_pass,
             post_pass,
+            bloom_pass,
             shadow_pipeline,
             opaque_pipeline,
             blended_pipeline,
             post_pipeline,
+            bloom_pipeline,
+            shadow_pipeline_layout,
+            scene_pipeline_layout,
+            post_pipeline_layout,
+            bloom_pipeline_layout,
             material_sampler,
             post_sampler,
             shaders: vec![
@@ -1860,6 +2250,8 @@ impl Pipelines {
                 scene_fragment_shader,
                 post_vertex_shader,
                 post_fragment_shader,
+                bloom_vertex_shader,
+                bloom_fragment_shader,
             ],
         })
     }
@@ -1869,6 +2261,7 @@ impl Pipelines {
         device.destroy_render_pipeline(self.opaque_pipeline)?;
         device.destroy_render_pipeline(self.blended_pipeline)?;
         device.destroy_render_pipeline(self.post_pipeline)?;
+        device.destroy_render_pipeline(self.bloom_pipeline)?;
         device.destroy_sampler(self.material_sampler)?;
         device.destroy_sampler(self.post_sampler)?;
         for shader in self.shaders {
@@ -1877,9 +2270,16 @@ impl Pipelines {
         device.destroy_render_pass(self.shadow_pass)?;
         device.destroy_render_pass(self.scene_pass)?;
         device.destroy_render_pass(self.post_pass)?;
+        device.destroy_render_pass(self.bloom_pass)?;
         device.destroy_resource_set_layout(self.shadow_layout)?;
         device.destroy_resource_set_layout(self.scene_layout)?;
         device.destroy_resource_set_layout(self.post_layout)?;
+        device.destroy_resource_set_layout(self.bloom_layout)?;
+        // Pipeline layouts were previously leaked on every renderer drop/resize.
+        device.destroy_pipeline_layout(self.shadow_pipeline_layout)?;
+        device.destroy_pipeline_layout(self.scene_pipeline_layout)?;
+        device.destroy_pipeline_layout(self.post_pipeline_layout)?;
+        device.destroy_pipeline_layout(self.bloom_pipeline_layout)?;
         Ok(())
     }
 }
@@ -1929,6 +2329,8 @@ struct Targets {
     scene_depth_view: TextureViewId,
     post_color: TextureId,
     post_color_view: TextureViewId,
+    bloom_color: TextureId,
+    bloom_color_view: TextureViewId,
 }
 
 impl Targets {
@@ -1947,6 +2349,8 @@ impl Targets {
             scene_depth_view,
             post_color,
             post_color_view,
+            bloom_color,
+            bloom_color_view,
         ) = match create_scene_targets(device, width, height) {
             Ok(targets) => targets,
             Err(error) => {
@@ -1971,6 +2375,8 @@ impl Targets {
             scene_depth_view,
             post_color,
             post_color_view,
+            bloom_color,
+            bloom_color_view,
         })
     }
 
@@ -1988,6 +2394,8 @@ impl Targets {
             self.scene_depth_view,
             self.post_color,
             self.post_color_view,
+            self.bloom_color,
+            self.bloom_color_view,
         )?;
         let (
             scene_color,
@@ -1996,6 +2404,8 @@ impl Targets {
             scene_depth_view,
             post_color,
             post_color_view,
+            bloom_color,
+            bloom_color_view,
         ) = create_scene_targets(device, width, height)?;
         self.width = width;
         self.height = height;
@@ -2005,6 +2415,8 @@ impl Targets {
         self.scene_depth_view = scene_depth_view;
         self.post_color = post_color;
         self.post_color_view = post_color_view;
+        self.bloom_color = bloom_color;
+        self.bloom_color_view = bloom_color_view;
         Ok(())
     }
 
@@ -2032,9 +2444,10 @@ impl Targets {
 
     fn resident_bytes(&self) -> u64 {
         let pixels = u64::from(self.width) * u64::from(self.height);
+        let bloom_pixels = u64::from((self.width / 2).max(1)) * u64::from((self.height / 2).max(1));
         let shadow_pixels = u64::from(self.shadow_resolution) * u64::from(self.shadow_resolution);
-        // Shadow color (4) + depth (4), scene color (4) + depth (4), post color (4).
-        shadow_pixels * 8 + pixels * 12
+        // Shadow color (4) + depth (4), scene color HDR (8) + depth (4), post color (4), bloom (4).
+        shadow_pixels * 8 + pixels * 16 + bloom_pixels * 4
     }
 
     fn destroy<D: Device + ?Sized>(self, device: &mut D) -> Result<(), RenderError> {
@@ -2046,6 +2459,8 @@ impl Targets {
             self.scene_depth_view,
             self.post_color,
             self.post_color_view,
+            self.bloom_color,
+            self.bloom_color_view,
         )?;
         destroy_shadow_targets(
             device,
@@ -2059,6 +2474,8 @@ impl Targets {
 }
 
 type SceneTargets = (
+    TextureId,
+    TextureViewId,
     TextureId,
     TextureViewId,
     TextureId,
@@ -2106,6 +2523,25 @@ fn create_scene_targets<D: Device + ?Sized>(
             return Err(error);
         }
     };
+    let (bloom_color, bloom_color_view) = match create_color_target(
+        device,
+        "gpui-3d offscreen bloom color",
+        (width / 2).max(1),
+        (height / 2).max(1),
+        BLOOM_COLOR_FORMAT,
+        TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            let _ = device.destroy_texture_view(post_color_view);
+            let _ = device.destroy_texture(post_color);
+            let _ = device.destroy_texture_view(scene_depth_view);
+            let _ = device.destroy_texture(scene_depth);
+            let _ = device.destroy_texture_view(scene_color_view);
+            let _ = device.destroy_texture(scene_color);
+            return Err(error);
+        }
+    };
     Ok((
         scene_color,
         scene_color_view,
@@ -2113,6 +2549,8 @@ fn create_scene_targets<D: Device + ?Sized>(
         scene_depth_view,
         post_color,
         post_color_view,
+        bloom_color,
+        bloom_color_view,
     ))
 }
 
@@ -2124,7 +2562,11 @@ fn destroy_scene_targets<D: Device + ?Sized>(
     scene_depth_view: TextureViewId,
     post_color: TextureId,
     post_color_view: TextureViewId,
+    bloom_color: TextureId,
+    bloom_color_view: TextureViewId,
 ) -> Result<(), RenderError> {
+    device.destroy_texture_view(bloom_color_view)?;
+    device.destroy_texture(bloom_color)?;
     device.destroy_texture_view(post_color_view)?;
     device.destroy_texture(post_color)?;
     device.destroy_texture_view(scene_depth_view)?;
@@ -2540,6 +2982,18 @@ impl FrameBuffers {
             + self.instance.tracker.cpu_bytes()
             + self.light.tracker.cpu_bytes()
             + self.frame.tracker.cpu_bytes()
+    }
+
+    fn capacity_bytes(&self) -> u64 {
+        (self.draw.capacity + self.instance.capacity + self.light.capacity + self.frame.capacity)
+            as u64
+    }
+
+    fn used_bytes(&self) -> u64 {
+        (self.draw.tracker.len * self.draw.stride()
+            + self.instance.tracker.len * self.instance.stride()
+            + self.light.tracker.len * self.light.stride()
+            + self.frame.tracker.len * self.frame.stride()) as u64
     }
 
     fn draw_capacity(&self) -> usize {

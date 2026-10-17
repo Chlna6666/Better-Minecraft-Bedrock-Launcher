@@ -36,6 +36,8 @@ pub(crate) struct RenderRequest<'a> {
     pub memory_budget: Option<u64>,
     /// Optional viewport pixel for CPU and GPU object picking.
     pub pick: Option<(f32, f32)>,
+    /// Per-frame camera yaw delta in degrees; 0 keeps the static frame-reuse path.
+    pub orbit_degrees: f32,
     /// Optional sampled animation clip and absolute clip time.
     pub animation: Option<(&'a [TransformTrack], Duration)>,
 }
@@ -104,6 +106,25 @@ fn descriptor() -> gfx_core::DeviceDescriptor {
     }
 }
 
+fn orbit_camera(base: Camera, yaw_degrees: f32) -> Camera {
+    if yaw_degrees == 0.0 {
+        return base;
+    }
+    let yaw = yaw_degrees.to_radians();
+    let offset = base.eye - base.target;
+    let (sin_yaw, cos_yaw) = yaw.sin_cos();
+    let rotated = gpui_3d::Vec3::new(
+        offset.x * cos_yaw - offset.z * sin_yaw,
+        offset.y,
+        offset.x * sin_yaw + offset.z * cos_yaw,
+    );
+    Camera {
+        eye: base.target + rotated,
+        target: base.target,
+        up: base.up,
+        projection: base.projection,
+    }
+}
 fn run_generic<D>(
     device: &mut D,
     name: &str,
@@ -123,6 +144,7 @@ where
     let mut capture_nanos = 0_u128;
     let frames = request.frames.max(1);
     for frame in 0..frames {
+        let frame_camera = orbit_camera(request.camera, request.orbit_degrees * frame as f32);
         let start = Instant::now();
         let rendered = match request.animation {
             Some((tracks, time)) => renderer.render_animated(
@@ -131,14 +153,14 @@ where
                 tracks,
                 time,
                 request.textures,
-                request.camera,
+                frame_camera,
                 request.options,
             ),
             None => renderer.render(
                 device,
                 request.scene,
                 request.textures,
-                request.camera,
+                frame_camera,
                 request.options,
             ),
         };

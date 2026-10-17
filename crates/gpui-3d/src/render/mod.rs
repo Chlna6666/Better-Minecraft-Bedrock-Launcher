@@ -130,6 +130,11 @@ pub struct ShadowOptions {
     pub normal_bias: f32,
     /// Shadow darkening from 0 (no visible shadow) to 1 (fully occluded).
     pub strength: f32,
+    /// PCF filter radius multiplier; 1 keeps one shadow texel, higher values soften edges.
+    ///
+    /// Softness trades shadow-edge crispness for smoothness. Values above roughly 4 need a
+    /// higher shadow resolution to stay stable.
+    pub softness: f32,
 }
 
 impl Default for ShadowOptions {
@@ -140,7 +145,112 @@ impl Default for ShadowOptions {
             depth_bias: 0.0025,
             normal_bias: 0.0025,
             strength: 1.0,
+            softness: 1.0,
         }
+    }
+}
+
+/// Bloom (light-bleed) settings applied after the HDR scene pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BloomOptions {
+    /// Whether the bloom pass runs and the post pass adds its result.
+    pub enabled: bool,
+    /// Linear HDR luminance above which a pixel contributes to bloom.
+    pub threshold: f32,
+    /// Additive bloom weight in the post pass.
+    pub strength: f32,
+    /// Sample-radius multiplier for the blur.
+    pub radius: f32,
+}
+
+impl Default for BloomOptions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold: 0.85,
+            strength: 0.3,
+            radius: 1.5,
+        }
+    }
+}
+
+/// Display grading applied by the post pass when post processing is enabled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostEffects {
+    /// Darkening toward the frame corners from 0 (off) to 1 (strong).
+    pub vignette: f32,
+    /// Film-grain amplitude in display units from 0 (off) to 1 (strong).
+    pub grain: f32,
+    /// Ordered-dither amplitude in 8-bit steps to hide banding.
+    pub dither: f32,
+}
+
+impl Default for PostEffects {
+    fn default() -> Self {
+        Self {
+            vignette: 0.35,
+            grain: 0.012,
+            dither: 0.75,
+        }
+    }
+}
+
+/// Post-pass edge antialiasing mode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AntialiasMode {
+    /// No antialiasing.
+    None,
+    /// Luma-based FXAA-style edge blend in the post pass.
+    #[default]
+    Fxaa,
+}
+
+/// Coarse quality preset that fills `RenderOptions` with matching defaults.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RenderQuality {
+    /// Minimal shadow map, no bloom or FXAA; for integrated GPUs or tiny viewports.
+    Low,
+    /// 1024 shadow map, modest bloom, FXAA, grading.
+    Medium,
+    /// 2048 shadow map, stronger bloom, FXAA, grading.
+    High,
+    /// 4096 shadow map, strongest bloom, FXAA, grading.
+    Ultra,
+}
+
+impl RenderQuality {
+    /// Returns a complete option set for this quality level.
+    #[must_use]
+    pub fn render_options(self) -> RenderOptions {
+        let mut options = RenderOptions::default();
+        match self {
+            Self::Low => {
+                options.shadows.resolution = 512;
+                options.bloom.enabled = false;
+                options.antialias = AntialiasMode::None;
+                options.post_effects = PostEffects {
+                    vignette: 0.2,
+                    grain: 0.0,
+                    dither: 0.0,
+                };
+            }
+            Self::Medium => {
+                options.shadows.resolution = 1024;
+                options.bloom.strength = 0.25;
+            }
+            Self::High => {
+                options.shadows.resolution = 2048;
+                options.bloom.strength = 0.35;
+                options.post_effects.vignette = 0.35;
+            }
+            Self::Ultra => {
+                options.shadows.resolution = 4096;
+                options.bloom.strength = 0.45;
+                options.post_effects.vignette = 0.4;
+                options.post_effects.grain = 0.02;
+            }
+        }
+        options
     }
 }
 
@@ -155,10 +265,19 @@ pub struct RenderOptions {
     pub tonemap: Tonemap,
     /// Debug output view; [`DebugView::Shaded`] renders the lit surface.
     pub debug_view: DebugView,
-    /// Display-referred clear color for the scene pass (RGBA, 0-1).
+    /// Linear HDR scene clear color (RGBA).
+    ///
+    /// The scene pass writes linear radiance into a 16-bit float target, so this value is tone
+    /// mapped by the post pass instead of being display-referred.
     pub clear_color: [f32; 4],
-    /// Whether the post pass applies vignette grading.
+    /// Whether the post pass applies exposure, tone mapping, bloom, FXAA, and grading.
     pub post_process: bool,
+    /// Bloom (light-bleed) settings.
+    pub bloom: BloomOptions,
+    /// Display grading settings.
+    pub post_effects: PostEffects,
+    /// Post-pass edge antialiasing.
+    pub antialias: AntialiasMode,
 }
 
 impl Default for RenderOptions {
@@ -168,8 +287,11 @@ impl Default for RenderOptions {
             exposure: 1.0,
             tonemap: Tonemap::Aces,
             debug_view: DebugView::Shaded,
-            clear_color: [0.045, 0.055, 0.075, 1.0],
+            clear_color: [0.012, 0.016, 0.025, 1.0],
             post_process: true,
+            bloom: BloomOptions::default(),
+            post_effects: PostEffects::default(),
+            antialias: AntialiasMode::default(),
         }
     }
 }
@@ -251,6 +373,18 @@ pub struct RendererStatistics {
     pub tracker_cpu_bytes: u64,
     /// Current soft GPU memory budget in bytes, when one is configured.
     pub memory_budget_bytes: Option<u64>,
+    /// CPU bytes retained by reusable per-frame staging buffers.
+    pub cpu_staging_bytes: u64,
+    /// Number of live GPU buffers owned by the renderer.
+    pub buffer_allocation_count: usize,
+    /// Allocated-but-unused bytes across renderer-owned GPU buffers.
+    pub buffer_slack_bytes: u64,
+    /// GPU bytes held in the bounded mesh-buffer reuse pool.
+    pub pooled_buffer_bytes: u64,
+    /// Mesh buffers currently held for reuse.
+    pub pooled_buffer_count: usize,
+    /// Mesh buffer allocations that were served from the reuse pool.
+    pub buffer_reuses: u64,
 }
 
 /// GPU-assisted object selection result from [`OffscreenRenderer::pick_object`].

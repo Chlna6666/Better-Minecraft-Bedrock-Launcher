@@ -493,6 +493,11 @@ pub enum Format {
     Rgba8Unorm,
     /// 8-bit RGBA unsigned normalized sRGB format.
     Rgba8UnormSrgb,
+    /// 16-bit half-float RGBA format with linear blending and filtering.
+    ///
+    /// This is the standard interchange format for linear HDR render targets and sampled HDR
+    /// textures; values are not clamped to 0..=1.
+    Rgba16Float,
     /// 32-bit floating-point depth format.
     Depth32Float,
 }
@@ -514,6 +519,7 @@ impl Format {
             | Self::Rgba8Unorm
             | Self::Rgba8UnormSrgb
             | Self::Depth32Float => 4,
+            Self::Rgba16Float => 8,
         }
     }
 }

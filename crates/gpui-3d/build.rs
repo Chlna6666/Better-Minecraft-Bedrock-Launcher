@@ -42,6 +42,13 @@ fn main() {
                 .msl_version(MslVersion::V1_2)
                 .entry("vs_post", ShaderStage::Vertex)
                 .entry("fs_post", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("offscreen_bloom")
+                .wgsl_file("src/render/bloom.wgsl")
+                .msl_version(MslVersion::V1_2)
+                .entry("vs_bloom", ShaderStage::Vertex)
+                .entry("fs_bloom", ShaderStage::Fragment),
         );
 
     if let Err(error) = shaders.emit() {

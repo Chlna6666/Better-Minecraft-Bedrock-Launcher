@@ -6117,6 +6117,7 @@ fn format_to_vk(format: Format) -> vk::Format {
         Format::Bgra8UnormSrgb => vk::Format::B8G8R8A8_SRGB,
         Format::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
         Format::Rgba8UnormSrgb => vk::Format::R8G8B8A8_SRGB,
+        Format::Rgba16Float => vk::Format::R16G16B16A16_SFLOAT,
         Format::Depth32Float => vk::Format::D32_SFLOAT,
     }
 }
@@ -6128,7 +6129,8 @@ fn image_aspect_for_format(format: Format) -> vk::ImageAspectFlags {
         | Format::Bgra8Unorm
         | Format::Bgra8UnormSrgb
         | Format::Rgba8Unorm
-        | Format::Rgba8UnormSrgb => vk::ImageAspectFlags::COLOR,
+        | Format::Rgba8UnormSrgb
+        | Format::Rgba16Float => vk::ImageAspectFlags::COLOR,
     }
 }
 

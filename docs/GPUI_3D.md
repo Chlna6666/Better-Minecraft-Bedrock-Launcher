@@ -9,10 +9,10 @@ The crate now contains two complementary rendering paths over one scene/asset/ma
 1. The GPUI **scene-view** path renders inside the host compositor pass through the generic
    `RendererExtension` contract. It is the in-UI path used by Map Viewer and Skin Pack.
 2. The **offscreen renderer** (`gpui_3d::OffscreenRenderer`) renders a multi-pass GPU frame owned by
-   the application: directional shadow map, linear PBR scene pass, and display-referred post pass,
-   resolved into an offscreen texture that can be read back or handed to a compositor. It uses the
-   public Nova device passed by the caller and never creates a second window renderer, swapchain,
-   cache owner, or render queue.
+   the application: directional shadow map, linear HDR PBR scene pass, half-resolution bloom, and an
+   HDR post resolve (exposure, tone mapping, FXAA, grading), resolved into an offscreen texture that
+   can be read back or handed to a compositor. It uses the public Nova device passed by the caller
+   and never creates a second window renderer, swapchain, cache owner, or render queue.
 
 A glTF 2.0 / GLB importer (`gpui_3d::load_path` / `load_bytes`) converts licensed test models and
 application assets into the same `Scene`, `Mesh`, `Material`, `TextureAsset`, light, camera, and
@@ -52,11 +52,12 @@ feature:
 | --- | --- | --- |
 | Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangents, per-triangle edge masks, five primitives, bounds, BVH queries, automatic indexed instancing; glTF primitives (indexed, non-indexed, morph-target base geometry, skinned bind pose) | GPU skinning/morph deformation, GPU geometry partial updates, compressed mesh extensions |
 | Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF cameras, top-left viewport pick/project helpers, GPU object-id picking that matches the submitted frame | Depth GPU picking and asynchronous readback |
-| Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, exposure, ACES/Reinhard tone mapping | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows |
-| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow pass, PBR scene pass, post pass) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, linear HDR rendering with exposure and ACES/Reinhard tone mapping, bloom, FXAA-style edge filtering, and vignette/film-grain/dither grading | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows, MSAA/TAA |
+| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow, HDR PBR scene, half-resolution bloom, HDR post) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, reusable CPU staging buffers, a bounded mesh-buffer reuse pool, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
 | Scene scale and reuse | Retained draw list with frustum culling, instanced batches, static-frame reuse, camera-only re-cull without a scene walk, per-element hash-tracked uploads, verified 200,000-instance field in one indexed draw | GPU-driven indirect submission, LOD, occlusion culling, GPU-side scene traversal |
 | Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Pose blending/crossfade, skeletal skinning, morph weights, IK |
 | Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
+| Post-processing and quality | RGBA16Float linear HDR scene target, half-resolution bloom, FXAA-style edge blend, exposure/tone-mapping/gamma resolve, vignette, film grain, ordered dithering, Low/Medium/High/Ultra presets; debug and object-id frames bypass grading | MSAA/SSAA, TAA, motion blur, SSAO/SSR, depth of field, LUT color grading |
 | Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
 | Test assets | `test_assets/manifest.toml` + SHA-256 downloader + licenses, offline cache, ignored native tests, GPU pixel matrix | Additional licensed large-scene and animation assets |
 
@@ -356,11 +357,13 @@ resources. Ownership boundaries:
 - The caller creates and owns the Nova `Device`; `gpui-3d` never submits work outside
   `render`/`render_animated`/`capture`, never creates a window surface or swapchain, and never reads
   CPU memory from a texture it did not create.
-- GPU objects created by the renderer: shadow color/depth targets, scene color/depth targets,
-  post color target (readback source), six shader modules, four pipelines (shadow, opaque, blended,
-  post), three render passes, three resource-set layouts, three pipeline layouts, three samplers, a
-  fallback texture, per-mesh vertex/index/tangent buffers, per-texture images, frame uniform/instance/
-  light/draw buffers, and cached per-batch resource sets.
+- GPU objects created by the renderer: shadow color/depth targets, HDR scene color/depth targets,
+  bloom color target, post color target (readback source), eight shader modules, five pipelines
+  (shadow, opaque, blended, bloom, post), four render passes, four resource-set layouts, four
+  pipeline layouts, three samplers, a fallback texture, per-mesh vertex/index/tangent buffers,
+  per-texture images, frame uniform/instance/light/draw buffers, and cached per-batch resource sets.
+  Pipeline layouts are released with the renderer; earlier revisions leaked three layouts on every
+  renderer drop/resize because they were not retained in the pipeline bundle.
 - `destroy` releases every one of those objects; it must run before the device is destroyed.
   `trim(Light|Moderate|Aggressive)` drops cached meshes, textures, and resource sets without touching
   target/pipeline state. `resize` recreates size-dependent targets, pipelines, and resource sets while
@@ -372,12 +375,13 @@ Render graph (three passes recorded into one backend submission through
 | Pass | Color | Depth | Load | Content |
 | --- | --- | --- | --- | --- |
 | Shadow | `Rgba8Unorm` packed 24-bit depth | `Depth32Float` | Clear white / 1.0 | Opaque and masked draws from a light-space orthographic camera fitted to scene bounds |
-| Scene | `Rgba8Unorm` display-referred | `Depth32Float` | Caller clear color / 1.0 | Indexed instanced PBR draws, shadow comparison with 3x3 PCF, debug views |
-| Post | `Rgba8Unorm` + `COPY_SRC` | None | Clear | Fullscreen resolve with optional vignette grading, readback source |
+| Scene | `Rgba16Float` linear HDR | `Depth32Float` | Caller linear clear color / 1.0 | Indexed instanced PBR draws, shadow comparison with 3x3 PCF scaled by softness, linear radiance, debug views |
+| Bloom | `Rgba8Unorm` at half resolution | None | Clear | Thresholded 9-tap bright-pass blur sampled from the HDR scene target |
+| Post | `Rgba8Unorm` + `COPY_SRC` | None | Clear | Fullscreen HDR resolve: exposure, tone mapping, bloom add, FXAA, vignette, grain, dither, gamma; readback source |
 
 Per-frame updates are diffed against the last uploaded bytes: a static scene with an unchanged camera
 uploads 0 bytes and issues no mesh or texture upload after warm-up. Camera-only changes upload the
-240-byte frame uniform (padded to 256). Per-batch resource sets are cached by mesh id/generation, mesh
+288-byte frame uniform. Per-batch resource sets are cached by mesh id/generation, mesh
 part, draw index, instance count, material texture ids, and a target/frame-buffer epoch, so a static
 scene reuses every set without per-frame descriptor creation.
 
@@ -461,6 +465,54 @@ enforces DX11/Vulkan agreement with DX12 numerically.
 | OpenGL 4.5 | Build-time GLSL 4.50 | Verified through scene_lab capture (WGL hidden-window bootstrap) | Verified | Visually matches; not part of the automated matrix test |
 | Metal | Build-time MSL | Not implemented (no texture upload path) | Not supported | Pending |
 
+## HDR post pipeline, bloom, FXAA, and quality presets
+
+The offscreen renderer resolves light in linear HDR. Nova now exposes `Rgba16Float` through the
+format set; DX12, DX11, Vulkan, and OpenGL 4.5 create and sample the HDR scene target (Metal maps the
+format but is untested on this Windows host). The chain is:
+
+1. Shadow pass: packed 24-bit depth in `Rgba8Unorm` plus `Depth32Float`.
+2. Scene pass: linear radiance into `Rgba16Float` with a depth target; no exposure or gamma yet.
+3. Bloom pass (optional): half-resolution `Rgba8Unorm` target, thresholded 9-tap bright-pass blur.
+4. Post pass: full-screen resolve into the readback `Rgba8Unorm` target.
+
+The post shader applies exposure, ACES/Reinhard tone mapping, additive bloom, FXAA-style edge
+blending, vignette, film-grain noise from a stable pixel hash, 4x4 ordered dithering to reduce 8-bit
+banding, and gamma. `RenderOptions::post_process == false` passes the scene bytes through without
+grading (object-id selection depends on that); debug views bypass the HDR resolve for the same
+reason. The post effects are deterministic: there is no frame-time input and no TAA.
+
+| Preset | Shadow map | Bloom | FXAA | Grading |
+| --- | --- | --- | --- | --- |
+| `Low` | 512 | off | off | vignette only, no grain/dither |
+| `Medium` | 1024 | strength 0.25 | on | vignette, grain, dither |
+| `High` | 2048 | strength 0.35 | on | vignette, grain, dither |
+| `Ultra` | 4096 | strength 0.45 | on | stronger vignette/grain |
+
+`RenderOptions::bloom` controls threshold/strength/radius, `RenderOptions::post_effects` controls
+vignette/grain/dither, and `RenderOptions::antialias` selects `None` or `Fxaa`. `RenderQuality::
+render_options` fills a complete option set; callers can still override individual fields.
+`ShadowOptions::softness` scales the PCF comparison radius without changing the shadow-map memory.
+
+Measured on this machine (DX12, 1280x720, 10-frame orbit benchmark; render is CPU frame cost,
+capture includes GPU completion and readback):
+
+| Preset | Resident bytes | Render p50 | Capture p50 |
+| --- | --- | --- | --- |
+| `Low` | 18.1 MiB | 3.60 ms | 5.36 ms |
+| `Medium` | 24.3 MiB | 3.02 ms | 4.38 ms |
+| `High` | 48.8 MiB | 3.16 ms | 4.75 ms |
+| `Ultra` | 147.1 MiB | 3.38 ms | 5.19 ms |
+
+Bloom and FXAA cost on this GPU at 720p is within roughly 1 ms of driver/queue noise in the capture
+timing, while shadow-map resolution dominates both memory and scene-pass fill. The HDR scene target
+adds 4 bytes per pixel versus the previous display-referred target and the half-resolution bloom
+target adds 1 byte per pixel; at 720p that is about 5.5 MiB. GPU timestamp queries are still absent,
+so per-pass GPU time is not reported.
+
+Remaining post-processing gaps: MSAA/SSAA, TAA, motion blur, SSAO/SSR, depth of field, multi-scale
+bloom, and LUT color grading. FXAA is an luma edge heuristic, not a resolved multisample coverage.
+
 ## GPU memory and cache lifecycle
 
 The renderer reports its own allocation accounting through `RendererStatistics`. These are
@@ -500,16 +552,39 @@ Memory defaults and controls:
   least-recently-used assets not referenced by that frame are evicted until the resident total fits.
   `trim_to_budget` forces the same pass on demand.
 - `trim(Light|Moderate|Aggressive)` releases idle assets; Aggressive additionally shrinks
-  over-allocated streaming buffers.
+  over-allocated streaming buffers, clears the mesh-buffer reuse pool, and shrinks CPU staging
+  buffers.
 
-Measured VRAM effects on this machine (engine-logical bytes, 1280x720 studio or 960x540 helmet):
+Allocator churn and fragmentation controls:
+
+- Per-frame draw/instance/light/frame encoding reuses four CPU staging buffer capacities instead of
+  allocating them on every dirty frame (`RendererStatistics::cpu_staging_bytes`).
+- Evicted mesh buffers enter a bounded reuse pool (16 MiB / 64 entries, exact usage matching,
+  at-most-2x waste). A later mesh of the same size class takes the allocation back through
+  `Device::create_buffer`-free reuse, so scene switching and budget trimming do not fragment GPU
+  heaps with repeated create/destroy cycles. The pool is excluded from the soft asset budget,
+  bounded independently (released above half its limit), and cleared by aggressive trim. Metrics:
+  `pooled_buffer_bytes`, `pooled_buffer_count`, `buffer_reuses`, `buffer_allocation_count`,
+  `buffer_slack_bytes`.
+- Pipeline layouts are now retained and destroyed with the pipeline bundle; earlier revisions leaked
+  them on every renderer drop and resize.
+- Streaming buffers grow geometrically and shrink only on explicit aggressive trim, avoiding
+  alternating realloc patterns that fragment heaps.
+
+Measured VRAM effects on this machine (engine-logical bytes):
 
 | Configuration | Resident | Notes |
 | --- | --- | --- |
-| Studio, 720p, shadow map 1024 (default) | 19.8 MiB | targets 18.5 MiB, caches 1.4 MiB |
-| Studio, 720p, shadow map 2048 | 44.3 MiB | shadow targets dominate |
-| DamagedHelmet, 960x540, textures 2048 | 79.8 MiB | 64 MiB texture cache |
-| DamagedHelmet, 960x540, `--max-texture=1024` | 30.7 MiB | 16 MiB texture cache; 49 MiB less VRAM |
+| Studio, 720p, `Low` (512 shadow, no bloom/FXAA) | 18.1 MiB | HDR scene + bloom targets ~17 MiB |
+| Studio, 720p, `Medium` (1024 shadow, bloom, FXAA) | 24.3 MiB | +6.2 MiB for 1024 shadow map |
+| Studio, 720p, `High` (2048 shadow, bloom, FXAA) | 48.8 MiB | shadow targets dominate |
+| Studio, 720p, `Ultra` (4096 shadow) | 147.1 MiB | ~134 MiB shadow targets |
+| DamagedHelmet, 720p, `High`, textures 2048 | 114.7 MiB | 64 MiB textures + 48 MiB targets |
+| DamagedHelmet, 720p, `High`, `--max-texture=1024` | 63.0 MiB | 16 MiB textures; 49 MiB less VRAM |
+
+A cached 720p studio scene reports 17 GPU buffer allocations, 0 bytes of buffer slack, 7 KiB of CPU
+staging capacity, and 0 pooled bytes once all caches are live; a budget-trimmed scene cycles buffers
+through the pool and reports real reuse before aggressive trim releases it to 4 frame buffers.
 
 Upload granularity is tracked per element with a 64-bit content hash per draw slot, instance, light,
 and frame uniform, so there is no retained CPU byte copy of these buffers. An animation frame that
@@ -517,7 +592,7 @@ moves one of 64 instances uploads one 144-byte instance record (asserted in `ren
 than 512 bytes out of a 9 KiB instance table) while the mesh, textures, and draw slots upload
 nothing.
 
-Native memory tests (`tests/renderer_memory.rs`, 8 ignored tests) assert: soft-budget eviction
+Native memory tests (`tests/renderer_memory.rs`, 10 ignored tests) assert: soft-budget eviction
 releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
 cycle stays bounded and aggressive trim clears every cache/resource set; a 60-frame three-scene
 cycling session under a 2 MiB asset budget stays under the resident envelope, keeps resource-set
@@ -526,7 +601,9 @@ targets/caches and the survivor keeps rendering after the other is destroyed; re
 cache warm while retargeting render targets; animation uploads only changed instance ranges; CPU/GPU
 picking agree; a 10,000-instance field keeps one draw slot, reuses unchanged static frames with zero
 uploads, skips the scene walk for camera-only moves, and uploads one instance record for a single
-`node_mut` change.
+`node_mut` change; the HDR/bloom/FXAA path changes output pixels, quality presets apply, and changing
+quality invalidates the retained frame; a bounded mesh-buffer pool reports real reuses and aggressive
+trim releases it.
 
 ## Retained frame reuse and scene scale
 
@@ -539,7 +616,7 @@ Frame statistics expose two additional CPU-side fast paths:
   and zero upload bytes.
 - `FrameStatistics::camera_only_update`: only the camera moved. `PreparedScene::update_camera`
   re-culls and re-sorts the retained candidate draws without re-walking the scene graph, and only
-  the frame uniform is uploaded because draw, instance, and light content hashes are unchanged.
+  the 288-byte frame uniform is uploaded because draw, instance, and light content hashes are unchanged.
 
 `Scene::version` is a monotonic mutation counter bumped by insert, remove, reparent, and
 `node_mut` (conservatively). The renderer validates both the scene's process-unique identity and
@@ -591,9 +668,11 @@ cargo test -p gpui-3d --test renderer_memory -- --ignored --test-threads=1
 cargo test -p gpui-3d -- --ignored --test-threads=1   # test assets + native GPU matrix
 cargo check -p gpui-3d --all-targets --all-features
 cargo clippy -p gpui-3d --all-targets --all-features --no-deps
-cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=3 --shadow-res=2048 --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
-cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
-cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --frames=4 --out=target/scene_lab/instances.png --json=target/scene_lab/instances.json
+cargo run -p gpui-3d --example scene_lab -- --backend=all --width=1280 --height=720 --frames=4 --quality=high --out=target/scene_lab/studio.png --json=target/scene_lab/studio.json
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --frames=8 --quality=high --orbit-degrees=2.0 --json=target/scene_lab/bench.json
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --quality=low --bloom=off --fxaa=off --out=target/scene_lab/plain.png
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --quality=high --exposure=2.0 --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --frames=4 --quality=medium --out=target/scene_lab/instances.png --json=target/scene_lab/instances.json
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and

@@ -1447,6 +1447,7 @@ mod platform {
             Format::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
             Format::Rgba8Unorm => MTLPixelFormat::RGBA8Unorm,
             Format::Rgba8UnormSrgb => MTLPixelFormat::RGBA8Unorm_sRGB,
+            Format::Rgba16Float => MTLPixelFormat::RGBA16Float,
             Format::Depth32Float => MTLPixelFormat::Depth32Float,
         }
     }

@@ -23,7 +23,7 @@
 mod backend;
 mod studio;
 
-use gpui_3d::{DebugView, GltfLoadOptions, RenderOptions, ShadowOptions, Tonemap};
+use gpui_3d::{DebugView, GltfLoadOptions, RenderOptions, RenderQuality, Tonemap};
 use std::collections::HashMap;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -41,7 +41,7 @@ struct Args {
     frames: u32,
     debug: DebugView,
     shadows: bool,
-    shadow_resolution: u32,
+    shadow_resolution: Option<u32>,
     exposure: f32,
     tonemap: Tonemap,
     post_process: bool,
@@ -56,6 +56,10 @@ struct Args {
     max_texture: Option<u32>,
     budget_mb: Option<u64>,
     pick: Option<(f32, f32)>,
+    quality: Option<RenderQuality>,
+    orbit_degrees: f32,
+    bloom: Option<bool>,
+    fxaa: Option<bool>,
     list: bool,
 }
 
@@ -70,7 +74,7 @@ impl Default for Args {
             frames: DEFAULT_FRAMES,
             debug: DebugView::Shaded,
             shadows: true,
-            shadow_resolution: 1024,
+            shadow_resolution: None,
             exposure: 1.0,
             tonemap: Tonemap::Aces,
             post_process: true,
@@ -85,6 +89,10 @@ impl Default for Args {
             max_texture: None,
             budget_mb: None,
             pick: None,
+            quality: None,
+            orbit_degrees: 0.0,
+            bloom: None,
+            fxaa: None,
             list: false,
         }
     }
@@ -199,18 +207,30 @@ fn run() -> Result<(), String> {
             duration.as_secs_f32()
         );
     }
-    let options = RenderOptions {
-        shadows: ShadowOptions {
-            enabled: args.shadows,
-            resolution: args.shadow_resolution,
-            ..ShadowOptions::default()
-        },
-        exposure: args.exposure,
-        tonemap: args.tonemap,
-        debug_view: args.debug,
-        clear_color: [0.035, 0.045, 0.062, 1.0],
-        post_process: args.post_process,
-    };
+    let mut options = args
+        .quality
+        .map_or_else(RenderOptions::default, RenderQuality::render_options);
+    options.shadows.enabled = args.shadows;
+    if let Some(resolution) = args.shadow_resolution {
+        options.shadows.resolution = resolution;
+    }
+    options.exposure = args.exposure;
+    options.tonemap = args.tonemap;
+    options.debug_view = args.debug;
+    options.post_process = args.post_process;
+    if let Some(enabled) = args.bloom {
+        options.bloom.enabled = enabled;
+    }
+    if let Some(enabled) = args.fxaa {
+        options.antialias = if enabled {
+            gpui_3d::AntialiasMode::Fxaa
+        } else {
+            gpui_3d::AntialiasMode::None
+        };
+    }
+    if let Some(quality) = args.quality {
+        println!("quality preset: {quality:?}");
+    }
     let backends = if args.backend == "all" {
         backend::available_backends()
             .iter()
@@ -240,6 +260,7 @@ fn run() -> Result<(), String> {
             frames: args.frames,
             memory_budget: args.budget_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
             pick: args.pick,
+            orbit_degrees: args.orbit_degrees,
             animation: animation
                 .as_ref()
                 .map(|(tracks, time, _, _)| (*tracks, *time)),
@@ -406,7 +427,7 @@ fn parse_args() -> Result<Args, String> {
             "--json" => args.json = Some(required(value, key)?),
             "--frames" => args.frames = parse_number(value, key)?,
             "--shadow" => args.shadows = parse_switch(value, key)?,
-            "--shadow-res" => args.shadow_resolution = parse_number(value, key)?,
+            "--shadow-res" => args.shadow_resolution = Some(parse_number(value, key)?),
             "--exposure" => args.exposure = parse_float(value, key)?,
             "--post" => args.post_process = parse_switch(value, key)?,
             "--yaw" => args.yaw = parse_float(value, key)?,
@@ -414,6 +435,20 @@ fn parse_args() -> Result<Args, String> {
             "--distance" => args.distance = Some(parse_float(value, key)?),
             "--model" => args.model = Some(required(value, key)?),
             "--instances" => args.instances = Some(parse_number(value, key)?),
+            "--bloom" => args.bloom = Some(parse_on_off(value, key)?),
+            "--fxaa" => args.fxaa = Some(parse_on_off(value, key)?),
+            "--orbit-degrees" => args.orbit_degrees = parse_float(value, key)?,
+            "--quality" => {
+                args.quality = Some(match required(value, key)?.as_str() {
+                    "low" => RenderQuality::Low,
+                    "medium" => RenderQuality::Medium,
+                    "high" => RenderQuality::High,
+                    "ultra" => RenderQuality::Ultra,
+                    other => {
+                        return Err(format!("unknown quality '{other}' (low|medium|high|ultra)"));
+                    }
+                });
+            }
             "--animation" => args.animation = Some(required(value, key)?),
             "--animation-time" => args.animation_time = parse_float(value, key)?,
             "--max-texture" => args.max_texture = Some(parse_number(value, key)?),
@@ -472,6 +507,14 @@ fn required(value: Option<&str>, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{key} requires a value"))
 }
 
+fn parse_on_off(value: Option<&str>, key: &str) -> Result<bool, String> {
+    match required(value, key)?.as_str() {
+        "on" | "true" | "1" => Ok(true),
+        "off" | "false" | "0" => Ok(false),
+        other => Err(format!("{key} expects on or off, got '{other}'")),
+    }
+}
+
 fn parse_number<T: std::str::FromStr>(value: Option<&str>, key: &str) -> Result<T, String> {
     required(value, key)?
         .parse()
@@ -504,6 +547,8 @@ fn help_text() -> String {
         "  --yaw=0.62 --pitch=0.30 --distance=11.5 --sun=135,52",
         "  --model=model.glb --animation=clip --animation-time=1.5",
         "  --instances=20000  (procedural instanced cube field)",
+        "  --quality=high|ultra  (shadow map, bloom, FXAA, grading preset)",
+        "  --bloom=on|off --fxaa=on|off --orbit-degrees=3.0",
         "  --max-texture=1024 --budget-mb=256 --pick=640,360",
         "  --list-backends",
     ]
@@ -574,6 +619,15 @@ fn print_report(report: &backend::BackendReport) {
         renderer.draw_capacity,
         renderer.instance_capacity,
         renderer.shadow_resolution,
+    );
+    println!(
+        "buffers: allocations={} slack={}KB staging={}KB pooled={}KB({}) reuses={}",
+        renderer.buffer_allocation_count,
+        renderer.buffer_slack_bytes / 1024,
+        renderer.cpu_staging_bytes / 1024,
+        renderer.pooled_buffer_bytes / 1024,
+        renderer.pooled_buffer_count,
+        renderer.buffer_reuses,
     );
     println!(
         "memory: resident={}KB peak={}KB budget={} upload_total={}KB cache_hits(mesh={},texture={}) misses(mesh={},texture={}) evictions={} tracker_cpu={}KB",
@@ -652,7 +706,7 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
             "  \"first_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
             "  \"steady_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
             "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{}}},\n",
-            "  \"memory\": {{\"target_bytes\":{},\"cached_mesh_bytes\":{},\"cached_texture_bytes\":{},\"resident_bytes\":{},\"peak_resident_bytes\":{},\"upload_bytes_total\":{},\"mesh_cache_hits\":{},\"mesh_cache_misses\":{},\"texture_cache_hits\":{},\"texture_cache_misses\":{},\"evictions\":{},\"tracker_cpu_bytes\":{},\"budget_bytes\":{}}},\n",
+            "  \"memory\": {{\"target_bytes\":{},\"cached_mesh_bytes\":{},\"cached_texture_bytes\":{},\"resident_bytes\":{},\"peak_resident_bytes\":{},\"upload_bytes_total\":{},\"mesh_cache_hits\":{},\"mesh_cache_misses\":{},\"texture_cache_hits\":{},\"texture_cache_misses\":{},\"evictions\":{},\"tracker_cpu_bytes\":{},\"budget_bytes\":{},\"cpu_staging_bytes\":{},\"buffer_allocations\":{},\"buffer_slack_bytes\":{},\"pooled_bytes\":{},\"pooled_buffers\":{},\"buffer_reuses\":{}}},\n",
             "  \"frame_times_nanos\": {{\"render_p50\":{},\"render_p95\":{},\"render_p99\":{},\"capture_p50\":{},\"capture_p95\":{},\"capture_p99\":{}}},\n",
             "  \"cpu_pick\": {},\n",
             "  \"object_pick\": {},\n",
@@ -710,6 +764,12 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
         renderer
             .memory_budget_bytes
             .map_or_else(|| "null".to_string(), |bytes| bytes.to_string()),
+        renderer.cpu_staging_bytes,
+        renderer.buffer_allocation_count,
+        renderer.buffer_slack_bytes,
+        renderer.pooled_buffer_bytes,
+        renderer.pooled_buffer_count,
+        renderer.buffer_reuses,
         percentile_of(report, PercentileKind::Render, 50),
         percentile_of(report, PercentileKind::Render, 95),
         percentile_of(report, PercentileKind::Render, 99),
