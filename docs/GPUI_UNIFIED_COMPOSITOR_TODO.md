@@ -1145,3 +1145,10 @@ Nova-GFX DX11 / DX12 / Vulkan / OpenGL / Metal
 - **安全与成本**：这是无法提供跨物理几何相同纹理空间证明时的有限保守屏障，绝不用于普通 Layout Epoch 或纯 Presentation Tick；修复也不意味着 Win32→GPU 约 20ms 延迟已降低或旧纹理可跨尺寸安全复用。需本地 Rust 编译、四后端 Resize/透明标题栏/Blur/Dropdown/多窗口原生像素与 GPU Frame Trace，未执行不得标记通过。
 
 - **队列真实路径回归**：`render_owner/queue/tests.rs::queued_resize_scene_compaction_keeps_latest_extent_as_damage_authority` 通过 Queue.latest-wins 合并两个实际 `Command::Draw`，确认旧 400×300 Pending Dirty 不会错误控制新 800×600 Scene/Filter。属于源码回归，仍待运行。
+
+### 2026-10-17 Linux Wayland SSD/CSD 侧边拖拽高度增长（待实机验收）
+
+- 用户提供的 Fedora/KDE Wayland 录屏中，Debug 原生标题栏窗口从侧边拖动后窗口高度异常增长；历史 Vulkan extent 出现连续约 16 px 的增量。先前仅移除 resize throttle、提前 viewport.set_destination 的修复未解决此现象，不能标记完成。
+- 本轮纠正协议顺序：`xdg_surface.configure` 必须先 `ack_configure(serial)`，再进入任何可能 `wl_surface.commit()` 的 CSD、几何、Viewport 更新。Wayland 协议明确要求提交针对某个 configure 的 Surface 前确认该 serial。
+- 1:1 比例或已有 `wl_surface.buffer_scale` 的整数缩放不再调用非必要的 `wp_viewport.set_destination(width,height)` 伸缩旧 buffer，改为重置 destination；分数缩放且 buffer_scale=1 时继续保留必要的目标大小。原生 CSD frame 已自行扣除边框时不再叠加 GPUI 隐形 inset。
+- 新增单位回归覆盖 1:1 / integer / fractional viewport 路径和 inset→geometry 的稳定逆变换；尚缺 Fedora/KWin 真实事件流、native Configure serial/viewport/physical extent Trace 及拖拽边缘稳定性像素验证，不能凭编译/源码检查宣称已修复。若仍有高度反馈，下一步将记录 `xdg_toplevel.configure` 原始逻辑尺寸与每次提交的 window geometry，判定 compositor 请求还是应用重复增加高度。

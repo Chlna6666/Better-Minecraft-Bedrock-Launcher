@@ -126,6 +126,7 @@ pub struct WaylandWindowState {
     background_effect: Option<ExtBackgroundEffectSurfaceV1>,
     toplevel: xdg_toplevel::XdgToplevel,
     viewport: Option<wp_viewport::WpViewport>,
+    viewport_destination_active: bool,
     outputs: HashMap<ObjectId, Output>,
     display: Option<(ObjectId, Output)>,
     globals: Globals,
@@ -264,6 +265,7 @@ impl WaylandWindowState {
             background_effect: None,
             toplevel,
             viewport,
+            viewport_destination_active: false,
             globals,
             outputs: HashMap::default(),
             display: None,
@@ -850,6 +852,11 @@ impl WaylandWindowStatePtr {
 
     pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
         if let xdg_surface::Event::Configure { serial } = event {
+            // The configure serial must precede *every* commit made in response
+            // to this event, including commits from CSD or viewport updates.
+            // Acknowledging after set_size_and_scale() is too late: that helper
+            // commits the surface while the old configure is still active.
+            self.state.borrow().xdg_surface.ack_configure(serial);
             {
                 let mut state = self.state.borrow_mut();
                 if let Some(window_controls) = state.in_progress_window_controls.take() {
@@ -877,11 +884,20 @@ impl WaylandWindowStatePtr {
                     state.refresh_client_frame();
                     // Every xdg_surface.configure must be acknowledged. Dropping a
                     // throttled configure here can strand the compositor on a stale size.
+                    let suggested_size = configure.size;
                     if !configure.fullscreen && !configure.maximized {
                         configure.size = if got_unmaximized {
                             Some(state.window_bounds.size)
                         } else {
-                            compute_outer_size(state.inset(), configure.size, state.tiling)
+                            // An external native decoration frame already accounts for
+                            // its borders in subtract_client_frame_borders(). Do not
+                            // apply GPUI's invisible CSD inset on top of that frame.
+                            let inset = if state.client_frame_visible() {
+                                px(0.0)
+                            } else {
+                                state.inset()
+                            };
+                            compute_outer_size(inset, configure.size, state.tiling)
                         };
                         if let Some(size) = configure.size {
                             state.window_bounds = Bounds {
@@ -890,6 +906,17 @@ impl WaylandWindowStatePtr {
                             };
                         }
                     }
+                    log::trace!(
+                        target: "gpui_wayland_resize",
+                        "configure serial={} suggested={:?} content={:?} previous={:?} inset={:?} decorations={:?} scale={}",
+                        serial,
+                        suggested_size,
+                        configure.size,
+                        state.bounds.size,
+                        state.inset(),
+                        state.decorations,
+                        state.scale,
+                    );
                     drop(state);
                     if visibility_changed {
                         self.report_visibility(configure.visibility);
@@ -900,8 +927,6 @@ impl WaylandWindowStatePtr {
                 }
             }
             let mut state = self.state.borrow_mut();
-            state.xdg_surface.ack_configure(serial);
-
             state.refresh_client_frame();
             state.sync_window_geometry();
 
@@ -1171,15 +1196,34 @@ impl WaylandWindowStatePtr {
             state.renderer.update_drawable_size(device_bounds.size);
             state.refresh_client_frame();
             state.sync_window_geometry();
-            // Viewport, geometry and native drawable request must be published in
-            // order before committing a surface; commit-before-viewport stretched
-            // old-sized image content during interactive resize.
+            // wp_viewport.set_destination() actively rescales the *currently
+            // attached* wl_buffer. At 1:1 native scale this is unnecessary and
+            // stretches an old Vulkan image during interactive Configure storms.
+            // Only fractional-scale rendering (or a fractional-scale manager
+            // using a physical scale other than 1) needs a destination override.
+            let needs_destination = requires_wayland_viewport_destination(
+                state.scale,
+                state.globals.fractional_scale_manager.is_some(),
+            );
             if let Some(viewport) = &state.viewport {
-                viewport.set_destination(
-                    state.bounds.size.width.0.ceil().max(1.0) as i32,
-                    state.bounds.size.height.0.ceil().max(1.0) as i32,
-                );
+                if needs_destination {
+                    viewport.set_destination(
+                        state.bounds.size.width.0.ceil().max(1.0) as i32,
+                        state.bounds.size.height.0.ceil().max(1.0) as i32,
+                    );
+                } else if state.viewport_destination_active {
+                    viewport.set_destination(-1, -1);
+                }
             }
+            state.viewport_destination_active = needs_destination;
+            log::trace!(
+                target: "gpui_wayland_resize",
+                "resize logical={:?} physical={:?} scale={} viewport_override={}",
+                state.bounds.size,
+                device_bounds.size,
+                state.scale,
+                needs_destination,
+            );
             state.surface.commit();
             (state.bounds.size, state.scale)
         };
@@ -1187,7 +1231,6 @@ impl WaylandWindowStatePtr {
         if let Some(ref mut fun) = self.callbacks.borrow_mut().resize {
             fun(size, scale);
         }
-
     }
 
     pub fn resize(&self, size: Size<Pixels>) {
@@ -1872,6 +1915,13 @@ impl ResizeEdge {
 /// The configuration event is in terms of the window geometry, which we are constantly
 /// updating to account for the client decorations. But that's not the area we want to render
 /// to, due to our intrusize CSD. So, here we calculate the 'actual' size, by adding back in the insets
+fn requires_wayland_viewport_destination(scale: f32, fractional_scale_manager: bool) -> bool {
+    // Without fractional scaling, wl_surface.buffer_scale already establishes
+    // the pixel-to-surface mapping. With it, only the identity scale can be
+    // represented without a viewport destination (buffer_scale stays at one).
+    fractional_scale_manager && scale != 1.0
+}
+
 fn compute_outer_size(
     inset: Pixels,
     new_size: Option<Size<Pixels>>,
@@ -1932,5 +1982,33 @@ mod client_frame_tests {
             client_frame_cursor_style(CursorIcon::SwResize),
             CursorStyle::ResizeUpRightDownLeft
         );
+    }
+
+    #[test]
+    fn identity_scale_resize_must_not_stretch_existing_wayland_buffer() {
+        assert!(!requires_wayland_viewport_destination(1.0, false));
+        assert!(!requires_wayland_viewport_destination(1.0, true));
+        assert!(!requires_wayland_viewport_destination(2.0, false));
+        assert!(requires_wayland_viewport_destination(1.25, true));
+        assert!(requires_wayland_viewport_destination(2.0, true));
+    }
+
+    #[test]
+    fn client_inset_window_geometry_round_trip_does_not_accumulate_height() {
+        let inset = px(8.0);
+        let requested = size(px(760.0), px(560.0));
+        let tiling = Tiling::default();
+        for _ in 0..64 {
+            let outer = compute_outer_size(inset, Some(requested), tiling).unwrap();
+            let geometry = inset_by_tiling(
+                Bounds {
+                    origin: point(px(0.0), px(0.0)),
+                    size: outer,
+                },
+                inset,
+                tiling,
+            );
+            assert_eq!(geometry.size, requested);
+        }
     }
 }
