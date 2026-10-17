@@ -342,6 +342,11 @@ impl NovaRenderer {
         self.activate_frame_resources(self.current_frame_resource_index)?;
         self.surface_config = surface_config;
         self.current_size = next_size;
+        // Native resize and old-reader fence retirement succeeded. Swap the
+        // separately prepared physical targets as one transaction. These
+        // targets have NO valid retained texels until the subsequent Main
+        // Present publishes the new Root/Filter content versions.
+        self.publish_pending_offscreen_after_resize(next_size);
         self.swapchain_warmup_frames = SWAPCHAIN_WARMUP_FRAME_COUNT;
         let total = resize_started_at.elapsed();
         let resources = total.saturating_sub(submission_wait.saturating_add(swapchain_resize));
@@ -553,6 +558,12 @@ impl NovaRenderer {
         // (same swapchain alpha mode) must never force a cross-window GPU fence
         // wait on the shared device owner.
         self.wait_for_pending_submissions()?;
+        // A WSI format/alpha transition invalidates the assumptions used
+        // to prepare the speculative Root/Filter descriptors. Their GPU
+        // allocations were never submitted and can be discarded independently.
+        if let Some(obsolete) = self.pending_offscreen_targets.take() {
+            self.destroy_obsolete_pending_offscreen(obsolete);
+        }
 
         let config = SurfaceConfig {
             size: Extent2d::new(self.current_size.width, self.current_size.height)?,

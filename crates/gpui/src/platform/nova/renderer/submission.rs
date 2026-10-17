@@ -305,11 +305,28 @@ impl NovaRenderer {
         let height = requested.height;
         let size = crate::size(DevicePixels(width as i32), DevicePixels(height as i32));
         if self.current_size.width == width && self.current_size.height == height {
+            // A live drag may return to its last committed extent before the
+            // previously staged new-size resources were ever submitted.
+            // Those speculative allocations have no GPU readers.
+            if let Some(obsolete) = self.pending_offscreen_targets.take() {
+                self.destroy_obsolete_pending_offscreen(obsolete);
+            }
             return Ok(true);
         }
 
         self.poll_pending_submissions()?;
         if !self.pending_submissions.is_empty() {
+            // Independent GPU allocations can be prepared while the old
+            // Root/Filter resources still have readers. A preparation failure
+            // leaves Active untouched and falls back to the normal allocation
+            // path after the fence completes.
+            if let Err(error) = self.prepare_pending_offscreen(requested) {
+                log::debug!(
+                    target: "gpui::diagnostics",
+                    "nova pending offscreen preparation deferred: backend={} size={}x{} error={error:#}",
+                    self.backend_info.label(), width, height,
+                );
+            }
             return Ok(false);
         }
 

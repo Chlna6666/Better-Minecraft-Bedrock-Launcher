@@ -22,6 +22,7 @@ mod init;
 mod init_state;
 mod memory;
 mod path_mask;
+mod pending_offscreen;
 #[cfg(target_os = "windows")]
 mod preparation;
 use init_state::InitializedRenderer;
@@ -195,6 +196,9 @@ pub(crate) struct NovaRenderer {
     backdrop_blur_resource_set_layout: ResourceSetLayoutId,
     filters: filters::FilterRegistry,
     root_color: root_color::RootColor,
+    /// At most one unsubmitted independent Root/Filter generation.
+    /// Never sampled by Active before the matching resize/present succeeds.
+    pending_offscreen_targets: Option<pending_offscreen::PendingOffscreenTargets>,
     atlas_sampler: SamplerId,
     path_texture: TextureId,
     path_texture_view: TextureViewId,
@@ -1201,6 +1205,13 @@ impl NovaRenderer {
             false
         };
         self.atlas.trim(level);
+        if matches!(level, GpuiMemoryTrimLevel::Moderate | GpuiMemoryTrimLevel::Aggressive) {
+            // Unsubmitted Pending Root/Filter allocations have no GPU readers:
+            // free these first under memory pressure, never the Active versions.
+            if let Some(pending) = self.pending_offscreen_targets.take() {
+                self.destroy_obsolete_pending_offscreen(pending);
+            }
+        }
         if submissions_drained && matches!(level, GpuiMemoryTrimLevel::Moderate) {
             if let Err(error) = self.compact_atlas_page() {
                 log::debug!("failed to compact nova atlas page: {error}");
