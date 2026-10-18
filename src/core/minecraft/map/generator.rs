@@ -13,6 +13,7 @@ mod image;
 mod install;
 mod map_bundle;
 mod map_image;
+mod source_obj_preview;
 mod structure_preview;
 
 pub use image::{
@@ -24,13 +25,14 @@ pub use install::{
     start_map_bundle_install, start_map_frame_grid_preflight,
 };
 pub use map_bundle::start_map_bundle_export;
+pub use source_obj_preview::ObjSourcePreview;
 pub use map_image::{
     MapPreviewOptions, get_map_preview, get_map_preview_frame, release_map_preview,
     start_map_image_preview,
 };
 pub use structure_preview::{
     StructurePreviewKind, StructurePreviewRequest, get_structure_preview,
-    release_structure_preview, start_structure_preview,
+    get_obj_source_preview, release_structure_preview, start_structure_preview,
 };
 
 /// Inputs for one OBJ conversion and Bedrock structure export.
