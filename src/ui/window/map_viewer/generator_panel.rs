@@ -255,11 +255,7 @@ impl MapViewerWindowView {
 }
 
 pub(super) fn generator_section_title(colors: &ThemeColors, title: &'static str) -> Div {
-    div()
-        .text_size(px(12.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors.text_primary)
-        .child(title)
+    crate::ui::components::inspector::inspector_section_title(colors, title)
 }
 
 pub(super) fn generator_choice(
