@@ -17,9 +17,11 @@
 //! (KTX2/Basis) and mesh compression extensions are not decoded. Unknown extensions listed in
 //! extensionsRequired fail the import; optional unknown extensions are reported as warnings.
 
+mod environment;
 mod gltf;
 mod image;
 
+pub use environment::{EnvironmentError, EnvironmentMap};
 pub use gltf::GltfError;
 
 use crate::{Camera, Scene, TextureAsset, TextureAssetId, TransformTrack};

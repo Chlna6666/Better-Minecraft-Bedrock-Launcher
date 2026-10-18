@@ -49,6 +49,13 @@ fn main() {
                 .msl_version(MslVersion::V1_2)
                 .entry("vs_bloom", ShaderStage::Vertex)
                 .entry("fs_bloom", ShaderStage::Fragment),
+        )
+        .shader(
+            Shader::new("offscreen_sky")
+                .wgsl_file("src/render/sky.wgsl")
+                .msl_version(MslVersion::V1_2)
+                .entry("vs_sky", ShaderStage::Vertex)
+                .entry("fs_sky", ShaderStage::Fragment),
         );
 
     if let Err(error) = shaders.emit() {

@@ -1,5 +1,6 @@
 use crate::{
-    AnimationError, AnimationScratch, Light, Material, Mesh, Transform, TransformTrack, Vec2,
+    AnimationError, AnimationScratch, EnvironmentMap, Light, Material, Mesh, Transform,
+    TransformTrack, Vec2,
 };
 use std::{borrow::Cow, collections::HashMap, fmt, sync::Arc, time::Duration};
 
@@ -57,6 +58,8 @@ pub enum NodeError {
     InvalidPixelOffset,
     /// A depth bias is not finite.
     InvalidDepthBias,
+    /// A LOD level distance is not finite or not positive.
+    InvalidLodDistance,
 }
 
 impl fmt::Display for NodeError {
@@ -64,6 +67,7 @@ impl fmt::Display for NodeError {
         formatter.write_str(match self {
             Self::InvalidPixelOffset => "node pixel offset must be finite",
             Self::InvalidDepthBias => "node depth bias must be finite",
+            Self::InvalidLodDistance => "node LOD distance must be finite and positive",
         })
     }
 }
@@ -71,6 +75,45 @@ impl fmt::Display for NodeError {
 impl std::error::Error for NodeError {}
 
 /// Transformable scene node with optional geometry, material, or light.
+/// One distance-selected level in a node's render LOD chain.
+///
+/// LOD affects rendering only: Scene::bounds and ray queries keep using Node::mesh, so callers
+/// should keep the highest-detail mesh on the node for accurate queries.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct LodLevel {
+    /// Mesh drawn at this level.
+    pub mesh: Arc<Mesh>,
+    /// Materials for the level's mesh parts; empty uses the node's materials.
+    pub materials: Vec<Arc<Material>>,
+    /// Maximum camera distance at which this level is selected.
+    pub max_view_distance: f32,
+}
+
+impl LodLevel {
+    /// Creates a LOD level selected while the camera is within max_view_distance.
+    ///
+    /// # Errors
+    ///
+    /// Returns NodeError::InvalidLodDistance when the distance is not finite or not positive.
+    pub fn new(mesh: Arc<Mesh>, max_view_distance: f32) -> Result<Self, NodeError> {
+        if !max_view_distance.is_finite() || max_view_distance <= 0.0 {
+            return Err(NodeError::InvalidLodDistance);
+        }
+        Ok(Self {
+            mesh,
+            materials: Vec::new(),
+            max_view_distance,
+        })
+    }
+
+    /// Assigns materials for this level; an empty list falls back to the node's materials.
+    pub fn with_materials(mut self, materials: impl IntoIterator<Item = Arc<Material>>) -> Self {
+        self.materials = materials.into_iter().collect();
+        self
+    }
+}
+
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Node {
@@ -87,6 +130,12 @@ pub struct Node {
     /// Hidden nodes keep their transforms and children; they are simply skipped by traversal so
     /// toggling visibility never mutates the hierarchy or the prepared layout of visible nodes.
     pub visible: bool,
+    /// Optional render LOD chain ordered from nearest to farthest.
+    ///
+    /// Levels are selected from camera distance; the node's authored mesh/materials remain the
+    /// query (bounds/raycast) representation. LOD selection invalidates the camera-only retained
+    /// preparation fast path so camera moves re-walk the scene.
+    pub lod: Vec<LodLevel>,
     pixel_offset: Vec2,
     depth_bias: f32,
 }
@@ -99,6 +148,7 @@ impl Default for Node {
             materials: Vec::new(),
             light: None,
             visible: true,
+            lod: Vec::new(),
             pixel_offset: Vec2::ZERO,
             depth_bias: 0.0,
         }
@@ -114,6 +164,15 @@ impl Node {
     /// Sets whether this node and its subtree are rendered, shadowed, picked, and included in bounds.
     pub fn with_visible(mut self, visible: bool) -> Self {
         self.visible = visible;
+        self
+    }
+
+    /// Sets a render LOD chain ordered from nearest to farthest.
+    ///
+    /// The authored Node::mesh remains the bounds/raycast representation. The renderer picks the
+    /// first level whose max_view_distance is at least the camera distance, or the last level.
+    pub fn with_lod(mut self, levels: impl IntoIterator<Item = LodLevel>) -> Self {
+        self.lod = levels.into_iter().collect();
         self
     }
 
@@ -200,6 +259,7 @@ pub struct Scene {
     live_nodes: usize,
     version: u64,
     instance_id: u64,
+    environment: Option<Arc<EnvironmentMap>>,
 }
 
 static NEXT_SCENE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -213,6 +273,7 @@ impl Default for Scene {
             live_nodes: 0,
             version: 0,
             instance_id: NEXT_SCENE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            environment: None,
         }
     }
 }
@@ -269,6 +330,18 @@ impl Scene {
     /// recreated scene can never inherit another scene's cached frame.
     pub(crate) fn instance_id(&self) -> u64 {
         self.instance_id
+    }
+
+    /// Environment map used for image-based lighting and the offscreen sky background.
+    #[must_use]
+    pub fn environment(&self) -> Option<&Arc<EnvironmentMap>> {
+        self.environment.as_ref()
+    }
+
+    /// Attaches or clears the environment map and invalidates retained scene snapshots.
+    pub fn set_environment(&mut self, environment: Option<Arc<EnvironmentMap>>) {
+        self.environment = environment;
+        self.bump_version();
     }
 
     /// Evaluates transform tracks without mutating authored scene data.

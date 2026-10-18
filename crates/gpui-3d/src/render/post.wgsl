@@ -26,6 +26,9 @@ struct Frame {
     effects2: vec4<f32>,
     // bloom radius, bloom threshold duplicate, unused, unused
     effects3: vec4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    // intensity, rotation radians, environment mip count, enabled
+    environment: vec4<f32>,
 };
 
 @group(0) @binding(0) var scene_texture: texture_2d<f32>;

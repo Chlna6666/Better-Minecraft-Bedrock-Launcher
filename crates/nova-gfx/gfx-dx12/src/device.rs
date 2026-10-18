@@ -46,22 +46,22 @@ mod platform {
     use gfx_core::{
         AdapterInfo, AddressMode, Backend, BackendCapabilities, BackendKind, BindingResource,
         BlendMode, BufferBinding, BufferDescriptor, BufferId, BufferUploadStats, BufferUsage,
-        BufferWrite, ClearColor,
-        CommandDevice, CommandEncoderDescriptor, CommandEncoderId, CompareFunction,
-        CompositeAlphaMode, DepthState, DeviceDescriptor, DeviceMemoryBudget, DiagnosticsDevice,
-        DrawDescriptor, DrawStepDescriptor, FilterMode, Format, IndexBufferBinding, IndexFormat,
-        LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation, MemoryTrimLevel, PipelineDevice,
-        PipelineLayoutDescriptor, PipelineLayoutId, PowerPreference, PresentMode,
-        PresentationDevice, PrimitiveTopology, RenderPassDepthAttachment, RenderPassDescriptor,
-        RenderPassId, RenderPipelineDescriptor, RenderPipelineId, RenderStepDescriptor,
-        RenderStepList, RenderStepRef, RenderTarget, ResourceBindingType, ResourceDevice,
-        ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutId,
-        ResourceStats, SamplerDescriptor, SamplerId, ScissorRect, ShaderCode,
-        ShaderModuleDescriptor, ShaderModuleId, ShaderStage, ShaderStages, SubmissionDevice,
-        SubmissionId, SubmissionStatus, SurfaceConfig, SurfaceDescriptor, SurfaceDevice, SurfaceId,
-        SwapchainId, TextureDescriptor, TextureDimension, TextureId, TextureReadback,
-        TextureRenderStepList, TextureTransferDevice, TextureUsage, TextureViewDescriptor,
-        TextureViewId, TextureWrite, TextureWriteDescriptor, ThreadingMode, resource_set_list,
+        BufferWrite, ClearColor, CommandDevice, CommandEncoderDescriptor, CommandEncoderId,
+        CompareFunction, CompositeAlphaMode, DepthState, DeviceDescriptor, DeviceMemoryBudget,
+        DiagnosticsDevice, DrawDescriptor, DrawStepDescriptor, FilterMode, Format,
+        IndexBufferBinding, IndexFormat, LoadOp, MemoryAccounting, MemoryBudget, MemoryLocation,
+        MemoryTrimLevel, PipelineDevice, PipelineLayoutDescriptor, PipelineLayoutId,
+        PowerPreference, PresentMode, PresentationDevice, PrimitiveTopology,
+        RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
+        RenderPipelineId, RenderStepDescriptor, RenderStepList, RenderStepRef, RenderTarget,
+        ResourceBindingType, ResourceDevice, ResourceSetDescriptor, ResourceSetId,
+        ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, SamplerDescriptor,
+        SamplerId, ScissorRect, ShaderCode, ShaderModuleDescriptor, ShaderModuleId, ShaderStage,
+        ShaderStages, SubmissionDevice, SubmissionId, SubmissionStatus, SurfaceConfig,
+        SurfaceDescriptor, SurfaceDevice, SurfaceId, SwapchainId, TextureDescriptor,
+        TextureDimension, TextureId, TextureReadback, TextureRenderStepList, TextureTransferDevice,
+        TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+        ThreadingMode, resource_set_list,
     };
     use gfx_memory::{
         DeferredFreeQueue, UploadAllocation, UploadRingAllocator, UploadRingAllocatorDesc,
@@ -151,8 +151,8 @@ mod platform {
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                 DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS,
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-                DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
                 IDXGIFactory4, IDXGIFactory5, IDXGIFactory6, IDXGIOutput, IDXGISwapChain1,
@@ -240,7 +240,7 @@ mod platform {
         /// Returns [`Error`] if Direct3D 12 initialization fails.
         pub fn new(desc: &DeviceDescriptor) -> Result<Self> {
             let started_at = Instant::now();
-        enable_debug_layer();
+            enable_debug_layer();
             let factory = create_factory()?;
             let allow_tearing = factory_supports_tearing(&factory);
             let adapter = pick_adapter(&factory, desc)?;
@@ -1740,7 +1740,9 @@ mod platform {
                 self.poll_cleanup();
             }
 
-            let (allocator, command_list) = if let Some(mut retired) = self.free_command_encoders.pop() {
+            let (allocator, command_list) = if let Some(mut retired) =
+                self.free_command_encoders.pop()
+            {
                 let allocator = retired.allocator.take().ok_or_else(|| {
                     Error::Backend("retired DX12 encoder is missing its allocator".to_string())
                 })?;
@@ -1750,8 +1752,7 @@ mod platform {
                 // SAFETY: poll_cleanup only places encoders here when their queue
                 // fence has completed. Reset clears every previous command so even
                 // the legacy submit path cannot accidentally replay an old frame.
-                unsafe { allocator.Reset() }
-                    .map_err(|error| Error::Backend(error.to_string()))?;
+                unsafe { allocator.Reset() }.map_err(|error| Error::Backend(error.to_string()))?;
                 unsafe { command_list.Reset(&allocator, None) }
                     .map_err(|error| Error::Backend(error.to_string()))?;
                 // New encoders are initially closed; the recording paths reset them
@@ -2050,14 +2051,15 @@ mod platform {
                 depth_attachment,
                 viewport: None,
             }])
+            .map(|_| ())
         }
 
         fn render_step_lists_to_textures(
             &mut self,
             passes: &[TextureRenderStepList<'_>],
-        ) -> Result<()> {
+        ) -> Result<Option<SubmissionId>> {
             if passes.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
 
             let mut target_states =
@@ -2096,18 +2098,20 @@ mod platform {
                     Ok(())
                 })
                 .and_then(|()| self.finish_texture_command_encoder(encoder))
-                .and_then(|()| self.submit_temporary_command_encoder_deferred(encoder));
-            if let Err(error) = result {
-                let submitted = self.command_encoders.get(encoder)?.submitted;
-                self.release_temporary_command_encoder_after_failure(encoder)?;
-                if !submitted {
-                    for (texture_id, state) in &target_states {
-                        self.textures.get_mut(*texture_id)?.state = *state;
+                .and_then(|()| self.submit_temporary_command_encoder_deferred_id(encoder));
+            match result {
+                Ok(submission) => Ok(Some(submission)),
+                Err(error) => {
+                    let submitted = self.command_encoders.get(encoder)?.submitted;
+                    self.release_temporary_command_encoder_after_failure(encoder)?;
+                    if !submitted {
+                        for (texture_id, state) in &target_states {
+                            self.textures.get_mut(*texture_id)?.state = *state;
+                        }
                     }
+                    Err(error)
                 }
-                return Err(error);
             }
-            Ok(())
         }
 
         fn begin_texture_command_encoder(
@@ -2267,16 +2271,15 @@ mod platform {
             &mut self,
             encoder: CommandEncoderId,
         ) -> Result<()> {
-            let fence_value = self.submit_without_wait(encoder)?;
-            let encoder = self.command_encoders.take(encoder)?;
-            self.deferred_command_encoders
-                .push(DeferredDx12CommandEncoder {
-                    fence_value,
-                    _encoder: encoder,
-                });
-            self.submitted_frames = self.submitted_frames.saturating_add(1);
-            self.poll_cleanup();
-            Ok(())
+            self.submit_temporary_command_encoder_deferred_id(encoder)
+                .map(|_| ())
+        }
+
+        fn submit_temporary_command_encoder_deferred_id(
+            &mut self,
+            encoder: CommandEncoderId,
+        ) -> Result<SubmissionId> {
+            self.submit_deferred(encoder)
         }
 
         fn finish_temporary_command_encoder_after_result(
@@ -2674,7 +2677,8 @@ mod platform {
                 0
             };
             self.upload_command_pool.truncate(retained_upload_commands);
-            self.free_command_encoders.truncate(retained_upload_commands);
+            self.free_command_encoders
+                .truncate(retained_upload_commands);
             if matches!(level, MemoryTrimLevel::Aggressive) {
                 self.upload_pages.shrink_to_fit();
                 self.upload_command_pool.shrink_to_fit();
@@ -5045,6 +5049,13 @@ mod platform {
             &mut self,
             passes: &[TextureRenderStepList<'_>],
         ) -> Result<()> {
+            Self::render_step_lists_to_textures(self, passes).map(|_| ())
+        }
+
+        fn render_step_lists_to_textures_deferred(
+            &mut self,
+            passes: &[TextureRenderStepList<'_>],
+        ) -> Result<Option<SubmissionId>> {
             Self::render_step_lists_to_textures(self, passes)
         }
 
@@ -5255,37 +5266,29 @@ mod platform {
         device: &ID3D12Device,
         layouts: &[ResourceSetLayoutDescriptor],
     ) -> Result<ID3D12RootSignature> {
+        // Naga's HLSL backend lowers every sampler to one shared sampler heap plus a per-resource-set
+        // sampler-index buffer. A layout may bind several samplers (for example the material sampler
+        // and the environment sampler), so emit exactly one SAMPLER range and one sampler-index SRV
+        // range per resource-set group instead of one pair per sampler binding.
         let mut ranges = Vec::new();
+        let mut parameters = Vec::new();
         for (group_index, layout) in layouts.iter().enumerate() {
+            let sampler_index_register = sampler_index_buffer_register(group_index)?;
+            let mut sampler_emitted = false;
             for entry in &layout.entries {
-                let sampler_index_register = sampler_index_buffer_register(group_index)?;
-                let range_type = match entry.binding_type {
-                    ResourceBindingType::UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-                    ResourceBindingType::StorageBuffer | ResourceBindingType::SampledTexture => {
-                        D3D12_DESCRIPTOR_RANGE_TYPE_SRV
-                    }
-                    ResourceBindingType::Sampler => D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-                };
-                ranges.push(D3D12_DESCRIPTOR_RANGE {
-                    RangeType: range_type,
-                    NumDescriptors: if entry.binding_type == ResourceBindingType::Sampler {
-                        NAGA_HLSL_SAMPLER_HEAP_SIZE
-                    } else {
-                        1
-                    },
-                    BaseShaderRegister: if entry.binding_type == ResourceBindingType::Sampler {
-                        0
-                    } else {
-                        entry.binding
-                    },
-                    RegisterSpace: if entry.binding_type == ResourceBindingType::Sampler {
-                        0
-                    } else {
-                        PHASE1_RESOURCE_SET_SPACE
-                    },
-                    OffsetInDescriptorsFromTableStart: 0,
-                });
                 if entry.binding_type == ResourceBindingType::Sampler {
+                    if sampler_emitted {
+                        continue;
+                    }
+                    sampler_emitted = true;
+                    ranges.push(D3D12_DESCRIPTOR_RANGE {
+                        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+                        NumDescriptors: NAGA_HLSL_SAMPLER_HEAP_SIZE,
+                        BaseShaderRegister: 0,
+                        RegisterSpace: 0,
+                        OffsetInDescriptorsFromTableStart: 0,
+                    });
+                    parameters.push((ranges.len() - 1, shader_stages_to_dx12(entry.stages)));
                     ranges.push(D3D12_DESCRIPTOR_RANGE {
                         RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
                         NumDescriptors: 1,
@@ -5293,45 +5296,43 @@ mod platform {
                         RegisterSpace: NAGA_HLSL_SAMPLER_INDEX_SPACE,
                         OffsetInDescriptorsFromTableStart: 0,
                     });
+                    parameters.push((ranges.len() - 1, shader_stages_to_dx12(entry.stages)));
+                    continue;
                 }
-            }
-        }
-        let mut parameters = Vec::with_capacity(ranges.len().saturating_add(1));
-        let mut range_index = 0;
-        for layout in layouts {
-            for entry in &layout.entries {
-                parameters.push(D3D12_ROOT_PARAMETER {
-                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-                    Anonymous: D3D12_ROOT_PARAMETER_0 {
-                        DescriptorTable:
-                            windows::Win32::Graphics::Direct3D12::D3D12_ROOT_DESCRIPTOR_TABLE {
-                                NumDescriptorRanges: 1,
-                                pDescriptorRanges: &raw const ranges[range_index],
-                            },
-                    },
-                    ShaderVisibility: shader_stages_to_dx12(entry.stages),
+                let range_type = match entry.binding_type {
+                    ResourceBindingType::UniformBuffer => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+                    ResourceBindingType::StorageBuffer | ResourceBindingType::SampledTexture => {
+                        D3D12_DESCRIPTOR_RANGE_TYPE_SRV
+                    }
+                    ResourceBindingType::Sampler => unreachable!("sampler handled above"),
+                };
+                ranges.push(D3D12_DESCRIPTOR_RANGE {
+                    RangeType: range_type,
+                    NumDescriptors: 1,
+                    BaseShaderRegister: entry.binding,
+                    RegisterSpace: PHASE1_RESOURCE_SET_SPACE,
+                    OffsetInDescriptorsFromTableStart: 0,
                 });
-                range_index += 1;
-                if entry.binding_type == ResourceBindingType::Sampler {
-                    parameters.push(D3D12_ROOT_PARAMETER {
-                        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-                        Anonymous: D3D12_ROOT_PARAMETER_0 {
-                            DescriptorTable:
-                                windows::Win32::Graphics::Direct3D12::D3D12_ROOT_DESCRIPTOR_TABLE {
-                                    NumDescriptorRanges: 1,
-                                    pDescriptorRanges: &raw const ranges[range_index],
-                                },
-                        },
-                        ShaderVisibility: shader_stages_to_dx12(entry.stages),
-                    });
-                    range_index += 1;
-                }
+                parameters.push((ranges.len() - 1, shader_stages_to_dx12(entry.stages)));
             }
         }
-        parameters.push(draw_step_constants_parameter());
-        serialize_root_signature(device, &parameters)
+        let mut root_parameters = Vec::with_capacity(parameters.len().saturating_add(1));
+        for (range_index, visibility) in parameters {
+            root_parameters.push(D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable:
+                        windows::Win32::Graphics::Direct3D12::D3D12_ROOT_DESCRIPTOR_TABLE {
+                            NumDescriptorRanges: 1,
+                            pDescriptorRanges: &raw const ranges[range_index],
+                        },
+                },
+                ShaderVisibility: visibility,
+            });
+        }
+        root_parameters.push(draw_step_constants_parameter());
+        serialize_root_signature(device, &root_parameters)
     }
-
     fn sampler_index_buffer_register(group_index: usize) -> Result<u32> {
         u32::try_from(group_index).map_err(|error| {
             Error::InvalidInput(format!("resource set group index overflow: {error}"))
@@ -5341,15 +5342,21 @@ mod platform {
     fn draw_step_constants_root_index(layouts: &[ResourceSetLayoutDescriptor]) -> Result<u32> {
         let mut root_index = 0_u32;
         for layout in layouts {
+            let mut sampler_emitted = false;
             for entry in &layout.entries {
+                if entry.binding_type == ResourceBindingType::Sampler {
+                    if sampler_emitted {
+                        continue;
+                    }
+                    sampler_emitted = true;
+                    root_index = root_index.checked_add(2).ok_or_else(|| {
+                        Error::InvalidInput("root parameter index overflow".to_string())
+                    })?;
+                    continue;
+                }
                 root_index = root_index.checked_add(1).ok_or_else(|| {
                     Error::InvalidInput("root parameter index overflow".to_string())
                 })?;
-                if entry.binding_type == ResourceBindingType::Sampler {
-                    root_index = root_index.checked_add(1).ok_or_else(|| {
-                        Error::InvalidInput("root parameter index overflow".to_string())
-                    })?;
-                }
             }
         }
         Ok(root_index)
@@ -6179,6 +6186,7 @@ mod platform {
             let set = device.resource_sets.get(*resource_set)?;
             validate_resource_set_layout_id(set_index, *expected_layout, set.layout)?;
             let layout = device.resource_set_layouts.get(*expected_layout)?;
+            let mut sampler_bound = false;
             for entry in &layout.desc.entries {
                 match entry.binding_type {
                     ResourceBindingType::UniformBuffer
@@ -6202,10 +6210,17 @@ mod platform {
                         root_index += 1;
                     }
                     ResourceBindingType::Sampler => {
+                        if sampler_bound {
+                            // All samplers in one resource set share the sampler heap and index
+                            // buffer; only the first sampler entry binds the root parameters.
+                            continue;
+                        }
+                        sampler_bound = true;
                         let table = set
                             .sampler_tables
                             .iter()
                             .find(|table| table.binding == entry.binding)
+                            .or_else(|| set.sampler_tables.first())
                             .ok_or_else(|| {
                                 Error::InvalidInput(format!(
                                     "DX12 resource set is missing sampler binding {}",
@@ -6355,8 +6370,8 @@ mod platform {
     ) -> windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT {
         use windows::Win32::Graphics::Dxgi::Common::{
             DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_D32_FLOAT,
-            DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
         };
         match format {
             Format::R8Unorm => DXGI_FORMAT_R8_UNORM,

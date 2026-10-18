@@ -74,8 +74,8 @@ pub use animation::{
     Vec3Track, blend_transform,
 };
 pub use asset::{
-    GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, GltfStatistics, load_bytes,
-    load_path,
+    EnvironmentError, EnvironmentMap, GltfAnimation, GltfCamera, GltfError, GltfLoadOptions,
+    GltfScene, GltfStatistics, load_bytes, load_path,
 };
 pub use camera::{Camera, CameraError, OrbitCamera, Projection};
 pub use light::{Light, LightError, PreparedLight, SpotCone, SpotLight};
@@ -92,7 +92,7 @@ pub use render::{
     OffscreenRenderer, PickError, PostEffects, RenderError, RenderOptions, RenderQuality,
     RendererStatistics, ShadowOptions, Tonemap, pick, pick_evaluated, project,
 };
-pub use scene::{EvaluatedScene, Node, NodeError, NodeId, Scene, SceneError};
+pub use scene::{EvaluatedScene, LodLevel, Node, NodeError, NodeId, Scene, SceneError};
 pub use scene_view::{
     ProjectionRegion, SceneView, SceneViewConfigError, SceneViewRaycastError,
     SceneViewRaycastScratch, SceneViewTextureError, scene_view,

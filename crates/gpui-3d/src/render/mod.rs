@@ -762,7 +762,8 @@ impl OffscreenRenderer {
             return Ok(statistics);
         }
         let camera_only = self.prepared_key == Some((key.scene_id, key.scene_version))
-            && self.prepared.camera() != Some(camera);
+            && self.prepared.camera() != Some(camera)
+            && !self.prepared.uses_lod();
         if camera_only {
             self.prepared.update_camera(camera, aspect)?;
         } else {
@@ -778,6 +779,7 @@ impl OffscreenRenderer {
             (self.width, self.height),
             started,
             !camera_only,
+            scene.environment(),
         )?;
         statistics.camera_only_update = camera_only;
         self.renderer_statistics = self.gpu.statistics();
@@ -823,6 +825,7 @@ impl OffscreenRenderer {
             (self.width, self.height),
             started,
             true,
+            scene.environment(),
         )?;
         self.renderer_statistics = self.gpu.statistics();
         Ok(statistics)
@@ -882,6 +885,7 @@ impl OffscreenRenderer {
             (self.width, self.height),
             started,
             true,
+            scene.environment(),
         )?;
         self.renderer_statistics = self.gpu.statistics();
         Ok(statistics)
@@ -901,6 +905,27 @@ impl OffscreenRenderer {
         device: &mut D,
     ) -> Result<CapturedImage, RenderError> {
         self.gpu.capture(device)
+    }
+
+    /// Polls full GPU completion of the most recently rendered frame without blocking.
+    ///
+    /// Backends with a deferred offscreen submission path (currently DX12) return
+    /// Ok(Some(false)) while work is still in flight and Ok(Some(true)) once it is done, so a
+    /// caller can overlap CPU work with rendering before calling OffscreenRenderer::capture.
+    /// Backends without that path return Ok(None); capture already waits for them, so callers
+    /// should simply skip polling.
+    ///
+    /// Polling consumes the submission handle on completion; a later capture still reads the
+    /// latest frame and does not wait again.
+    ///
+    /// # Errors
+    ///
+    /// Returns RenderError::Gpu when submission polling reports a device failure.
+    pub fn poll_render<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<Option<bool>, RenderError> {
+        self.gpu.poll_pending_submission(device)
     }
 
     /// Renders one frame and reads it back.

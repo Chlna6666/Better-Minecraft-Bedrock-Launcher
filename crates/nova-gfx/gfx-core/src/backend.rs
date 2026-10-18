@@ -12,8 +12,8 @@ use std::{
 use crate::{
     AsyncCapabilities, BackendKind, BoxFuture, BufferDescriptor, BufferId, BufferUploadStats,
     BufferWrite, ClearColor, CommandEncoderDescriptor, CommandEncoderId, DeviceMemoryBudget,
-    DrawDescriptor, DrawStepDescriptor, Error, Extent2d, LoadOp, MemoryArchitecture, MemoryTrimLevel,
-    PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
+    DrawDescriptor, DrawStepDescriptor, Error, Extent2d, LoadOp, MemoryArchitecture,
+    MemoryTrimLevel, PipelineLayoutDescriptor, PipelineLayoutId, PresentationCapabilities,
     RenderPassDepthAttachment, RenderPassDescriptor, RenderPassId, RenderPipelineDescriptor,
     RenderPipelineId, RenderStepDescriptor, RenderStepList, ResourceSetDescriptor, ResourceSetId,
     ResourceSetLayoutDescriptor, ResourceSetLayoutId, ResourceStats, Result, SamplerDescriptor,
@@ -1216,6 +1216,26 @@ pub trait PresentationDevice {
             )?;
         }
         Ok(())
+    }
+
+    /// Renders offscreen texture passes and returns a deferred submission when available.
+    ///
+    /// A returned [`SubmissionId`] can be polled with
+    /// [`SubmissionDevice::poll_submission`] or waited with
+    /// [`SubmissionDevice::wait_submission`]; callers should poll it before reading the target
+    /// texture to overlap CPU work with GPU execution. Backends without a deferred offscreen
+    /// completion path submit synchronously and return `Ok(None)`; callers must then treat the
+    /// frame as already complete and use the regular readback path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] when any pass cannot be recorded or submitted.
+    fn render_step_lists_to_textures_deferred(
+        &mut self,
+        passes: &[TextureRenderStepList<'_>],
+    ) -> Result<Option<SubmissionId>> {
+        self.render_step_lists_to_textures_compat(passes)?;
+        Ok(None)
     }
 
     /// Draws one non-indexed pipeline with no resource sets and presents it.

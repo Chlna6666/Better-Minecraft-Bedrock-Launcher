@@ -13,9 +13,11 @@ Two rendering paths share one scene/asset model:
 
 - **GPUI scene view**: renders inside the host compositor pass through `RendererExtension`.
 - **Offscreen renderer**: `OffscreenRenderer` renders a directional shadow pass, a linear PBR scene
-  pass, and a display-referred post pass into an offscreen target with readback, resize, trim,
-  debug views, and per-frame statistics. It uses an application-owned Nova device and adds no second
-  window renderer, swapchain, cache owner, or render queue.
+  pass with optional image-based lighting and sky, and a display-referred post pass into an offscreen
+  target with readback, resize, trim, debug views, deferred completion polling, and per-frame
+  statistics. It uses an application-owned Nova device and adds no second window renderer, swapchain,
+  cache owner, or render queue. Distance-selected `LodLevel` chains are resolved during scene
+  preparation.
 
 `load_path` / `load_bytes` import glTF 2.0 and GLB documents into the same scene types, including
 PBR materials, decoded textures with mip chains, node hierarchies, punctual lights, cameras, and
@@ -24,9 +26,10 @@ transform animations. Licensed test models with pinned SHA-256 hashes live in `t
 Verified on this development machine (AMD Radeon RX 7600M XT): DX12, DX11, Vulkan, and OpenGL 4.5
 render the offscreen studio scene and DamagedHelmet.glb with shadows and PBR textures; the DX11 and
 Vulkan pixel outputs agree with DX12 within 1%; steady-state frames upload 0 bytes after warm-up.
-GPU timestamped pass timings, skeletal/morph deformation, IBL, and compositor hand-off of an
-offscreen target without CPU readback remain unimplemented; see `docs/GPUI_3D.md` for the full
-status matrix and measured numbers.
+GPU timestamped pass timings, skeletal/morph deformation, prefiltered cubemap irradiance probes and
+a real BRDF LUT, true asynchronous GPU-to-CPU readback, and compositor hand-off of an offscreen target
+without CPU readback remain unimplemented; see `docs/GPUI_3D.md` for the full status matrix and
+measured numbers.
 
 Memory behavior is measurable and bounded: the renderer reports resident, peak, upload, cache-hit,
 and eviction counters; incremental uploads are tracked per element with content hashes instead of a
@@ -69,7 +72,38 @@ none), debug views (albedo, normal, depth, UV, shadow visibility, object id), th
 post grading. `OffscreenRenderer::with_render_scale` / `set_render_scale` trade HDR resolution for
 fill rate (`0.5`) or supersample it (`2.0`). `render_animated` samples caller-owned
 `TransformTrack`s at a caller-owned clip time and `render_blended` crossfades two such clips;
-`gpui-3d` owns no playback clock.
+`gpui-3d` owns no playback clock. After rendering, `poll_render` reports deferred DX12 GPU completion
+(`Some(true)`/`Some(false)`, or `None` on backends without a handle) so CPU work can overlap before
+`capture`; capture itself stays a synchronous readback.
+
+Image-based lighting is attached to the scene rather than to render options:
+
+```rust
+let environment = std::sync::Arc::new(gpui_3d::EnvironmentMap::procedural_studio());
+scene.set_environment(Some(environment)); // Scene::set_environment(None) restores the analytic fallback
+```
+
+`EnvironmentMap::load_path` accepts an sRGB equirectangular PNG/JPEG, and
+`EnvironmentMap::new(Arc<TextureAsset>, intensity, rotation)` accepts caller-provided linear or sRGB
+texture data (a complete mip chain improves diffuse/roughness filtering). A fullscreen sky triangle
+renders the same map as background; debug and object-id views skip it. Environment textures are
+cached by asset id, included in statistics, invalidated when the map changes, and released by
+aggressive trim.
+
+Render LOD is per node:
+
+```rust
+let near = Arc::new(gpui_3d::Mesh::uv_sphere(0.5, [64, 32])?);
+let far = Arc::new(gpui_3d::Mesh::uv_sphere(0.5, [16, 8])?);
+scene.node_mut(node)?.lod = vec![
+    gpui_3d::LodLevel::new(near.clone(), 12.0)?,
+    gpui_3d::LodLevel::new(far, 120.0)?,
+];
+```
+
+LOD selection uses camera-to-node distance and disables the camera-only retained fast path so moving
+the camera re-walks and re-selects. `Node::mesh` remains the bounds/raycast representation; keep the
+highest-detail mesh there. The lab exposes IBL with `--env-map=studio` or an image path.
 
 ## glTF import quick start
 
@@ -157,11 +191,13 @@ generate frames from UV set zero with `Mesh::generate_tangents()`, or attach imp
 preserving triangle order and returning a source-vertex map.
 
 The GPUI scene-view path does not yet cast shadows or use HDR environment lighting; the offscreen
-renderer does provide directional shadows, linear HDR, bloom, FXAA, and render scale. Still missing:
-IBL/environment maps, point/spot shadows, MSAA/TAA, SSAO/SSR/motion blur/depth of field, LOD groups,
-skeletal/morph deformation, glTF material extensions (clearcoat/transmission/ior/variants), texture
-transforms/UV1, compressed texture/mesh extensions, GPU timestamps, GPU-driven indirect rendering,
-asynchronous readback, and compositor hand-off without CPU readback. Metal texture upload and runtime
+renderer does provide directional shadows, equirectangular mip-prefiltered IBL with a sky background,
+distance LOD, deferred DX12 completion polling, linear HDR, bloom, FXAA, and render scale. Still
+missing: prefiltered cubemap/irradiance probes and a real BRDF LUT, point/spot shadows, MSAA/TAA,
+SSAO/SSR/motion blur/depth of field, screen-space/HLOD and layer/culling masks, skeletal/morph
+deformation, glTF material extensions (clearcoat/transmission/ior/variants), texture transforms/UV1,
+compressed texture/mesh extensions, GPU timestamps, GPU-driven indirect rendering, true asynchronous
+GPU-to-CPU readback, and compositor hand-off without CPU readback. Metal texture upload and runtime
 validation remain unimplemented. Shader compilation and CPU benchmarks do not prove native pixel
 correctness or frame pacing.
 

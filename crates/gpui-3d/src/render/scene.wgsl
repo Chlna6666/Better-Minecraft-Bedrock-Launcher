@@ -68,8 +68,11 @@ struct Frame {
     effects: vec4<f32>,
     // vignette, film grain, dither, debug-view bypass
     effects2: vec4<f32>,
-    // bloom radius, bloom threshold duplicate, unused, unused
+    // bloom radius, bloom threshold duplicate, render width, render height
     effects3: vec4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    // intensity, rotation radians, environment mip count, enabled
+    environment: vec4<f32>,
 };
 
 @group(0) @binding(0) var<storage, read> vertices: array<PackedVertex>;
@@ -84,6 +87,34 @@ struct Frame {
 @group(0) @binding(9) var<uniform> frame: Frame;
 @group(0) @binding(10) var shadow_map_texture: texture_2d<f32>;
 @group(0) @binding(11) var metallic_roughness_texture: texture_2d<f32>;
+@group(0) @binding(12) var environment_texture: texture_2d<f32>;
+@group(0) @binding(13) var environment_sampler: sampler;
+
+fn environment_equirect_uv(direction: vec3<f32>, rotation: f32) -> vec2<f32> {
+    var rotated = direction;
+    let cos_rotation = cos(-rotation);
+    let sin_rotation = sin(-rotation);
+    rotated.x = direction.x * cos_rotation - direction.z * sin_rotation;
+    rotated.z = direction.x * sin_rotation + direction.z * cos_rotation;
+    let u = atan2(rotated.x, rotated.z) * 0.15915494 + 0.5;
+    let v = acos(clamp(rotated.y, -1.0, 1.0)) * 0.31830989;
+    return vec2<f32>(u, v);
+}
+
+fn sample_environment(direction: vec3<f32>, mip_level: f32) -> vec3<f32> {
+    let uv = environment_equirect_uv(direction, frame.environment.y);
+    return textureSampleLevel(environment_texture, environment_sampler, uv, mip_level).rgb;
+}
+
+fn environment_brdf_approx(n_dot_v: f32, roughness: f32, f0: vec3<f32>) -> vec3<f32> {
+    // Karis mobile split-sum approximation; avoids a separate BRDF LUT texture.
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
+}
 
 const ALPHA_MODE_OPAQUE: u32 = 0u;
 const ALPHA_MODE_MASK: u32 = 1u;
@@ -387,27 +418,49 @@ fn fs_scene(input: VertexOutput) -> @location(0) vec4<f32> {
         let occlusion = textureSample(occlusion_texture, material_sampler, input.uv).r;
         occlusion_factor = mix(1.0, occlusion, draw_params.occlusion_strength);
     }
-    // Analytic hemisphere environment: there is no environment map or irradiance probe yet, so
-    // direct lights alone leave metals black. A sky/ground gradient gives ambient diffuse fill,
-    // and a Fresnel-weighted reflection term keeps metal and low-roughness surfaces readable.
-    let sky_color = vec3<f32>(0.4, 0.49, 0.68);
-    let ground_color = vec3<f32>(0.15, 0.13, 0.11);
-    let hemisphere = mix(ground_color, sky_color, clamp(surface_normal.y * 0.5 + 0.5, 0.0, 1.0));
-    let environment_radiance = ambient_radiance + hemisphere * 0.8;
-    let ambient_fresnel = fresnel_schlick(
-        max(dot(surface_normal, view_direction), 0.0),
-        mix(vec3<f32>(0.04), base_color.rgb, metallic),
-    );
+    let n_dot_v = max(dot(surface_normal, view_direction), 0.0);
     let reflection_direction = reflect(-view_direction, surface_normal);
-    let reflected_environment = mix(
-        ground_color,
-        sky_color,
-        clamp(reflection_direction.y * 0.5 + 0.5, 0.0, 1.0),
-    ) * 0.95;
-    let ambient_diffuse = environment_radiance * base_color.rgb * (1.0 - metallic)
-        * occlusion_factor;
-    let ambient_specular = reflected_environment * ambient_fresnel
-        * (1.0 - roughness * 0.75) * 1.3 * occlusion_factor;
+    let environment_mips = max(frame.environment.z, 1.0);
+    let environment_enabled = frame.environment.w > 0.5;
+    var ambient_diffuse: vec3<f32>;
+    var ambient_specular: vec3<f32>;
+    if (environment_enabled) {
+        // Image-based lighting through the environment map's mip chain: a heavily blurred level
+        // approximates diffuse irradiance and roughness selects sharper reflection levels.
+        let diffuse_level = clamp(environment_mips - 2.0, 0.0, environment_mips - 1.0);
+        let specular_level = clamp(roughness * (environment_mips - 1.0), 0.0, environment_mips - 1.0);
+        let environment_diffuse = sample_environment(surface_normal, diffuse_level)
+            * frame.environment.x;
+        let environment_specular = sample_environment(reflection_direction, specular_level)
+            * frame.environment.x;
+        let environment_fresnel = fresnel_schlick(
+            n_dot_v,
+            mix(vec3<f32>(0.04), base_color.rgb, metallic),
+        );
+        ambient_diffuse = (ambient_radiance + environment_diffuse) * base_color.rgb
+            * (1.0 - metallic) * occlusion_factor;
+        ambient_specular = environment_specular
+            * environment_brdf_approx(n_dot_v, roughness, environment_fresnel)
+            * occlusion_factor;
+    } else {
+        // Analytic hemisphere fallback when no environment map is attached: a sky/ground gradient
+        // gives ambient diffuse fill and a Fresnel-weighted reflection keeps metals readable.
+        let sky_color = vec3<f32>(0.4, 0.49, 0.68);
+        let ground_color = vec3<f32>(0.15, 0.13, 0.11);
+        let hemisphere = mix(ground_color, sky_color, clamp(surface_normal.y * 0.5 + 0.5, 0.0, 1.0));
+        let environment_radiance = ambient_radiance + hemisphere * 0.8;
+        let reflected_environment = mix(
+            ground_color,
+            sky_color,
+            clamp(reflection_direction.y * 0.5 + 0.5, 0.0, 1.0),
+        ) * 0.95;
+        ambient_diffuse = environment_radiance * base_color.rgb * (1.0 - metallic)
+            * occlusion_factor;
+        ambient_specular = reflected_environment * fresnel_schlick(
+            n_dot_v,
+            mix(vec3<f32>(0.04), base_color.rgb, metallic),
+        ) * (1.0 - roughness * 0.75) * 1.3 * occlusion_factor;
+    }
     radiance += ambient_diffuse + ambient_specular;
 
     let debug_view = u32(round(frame.post.z));

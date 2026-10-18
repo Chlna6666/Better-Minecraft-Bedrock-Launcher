@@ -22,8 +22,8 @@ use crate::scene_view::{
     DRAW_PARAMS_STRIDE, DRAW_SLOT_STRIDE, INSTANCE_STRIDE, LIGHT_STRIDE, PACKED_VERTEX_STRIDE,
 };
 use crate::{
-    Aabb, AlphaMode, Camera, Mat4, Mesh, MeshId, PreparedLight, PreparedScene, TextureAsset,
-    TextureAssetId, TextureColorSpace, Vec3,
+    Aabb, AlphaMode, Camera, EnvironmentMap, Mat4, Mesh, MeshId, PreparedLight, PreparedScene,
+    TextureAsset, TextureAssetId, TextureColorSpace, Vec3,
 };
 use gfx_core::{
     AddressMode, BackendKind, BindingResource, BlendMode, BufferBinding, BufferDescriptor,
@@ -35,9 +35,10 @@ use gfx_core::{
     RenderPipelineId, RenderStepDescriptor, RenderStepList, ResourceBinding, ResourceBindingType,
     ResourceSetDescriptor, ResourceSetId, ResourceSetLayoutDescriptor, ResourceSetLayoutEntry,
     ResourceSetLayoutId, SamplerBinding, SamplerDescriptor, SamplerId, ShaderModuleDescriptor,
-    ShaderModuleId, ShaderStage, ShaderStages, TextureBinding, TextureDataLayout,
-    TextureDescriptor, TextureDimension, TextureId, TextureRenderStepList, TextureTransferDevice,
-    TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite, TextureWriteDescriptor,
+    ShaderModuleId, ShaderStage, ShaderStages, SubmissionId, SubmissionStatus, TextureBinding,
+    TextureDataLayout, TextureDescriptor, TextureDimension, TextureId, TextureRenderStepList,
+    TextureTransferDevice, TextureUsage, TextureViewDescriptor, TextureViewId, TextureWrite,
+    TextureWriteDescriptor,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -45,13 +46,19 @@ use std::time::Instant;
 
 /// Byte stride of the scene/shadow/post frame uniform buffer.
 ///
-/// The WGSL Frame layout declares exactly these 288 bytes of matrix, vector, and effect fields.
-const FRAME_STRIDE: u64 = 288;
+/// The WGSL Frame layout declares matrices, effect vectors, the inverse view-projection used by the
+/// sky pass, and environment parameters: 368 bytes total.
+const FRAME_STRIDE: u64 = 368;
 const SHADOW_VERTEX_BINDING: u32 = 0;
 const SHADOW_INSTANCE_BINDING: u32 = 1;
 const SHADOW_FRAME_BINDING: u32 = 2;
 const SCENE_SHADOW_MAP_BINDING: u32 = 10;
 const SCENE_METALLIC_ROUGHNESS_BINDING: u32 = 11;
+const SCENE_ENVIRONMENT_BINDING: u32 = 12;
+const SCENE_ENVIRONMENT_SAMPLER_BINDING: u32 = 13;
+const SKY_ENVIRONMENT_BINDING: u32 = 0;
+const SKY_SAMPLER_BINDING: u32 = 1;
+const SKY_FRAME_BINDING: u32 = 2;
 const POST_COLOR_BINDING: u32 = 0;
 const POST_SAMPLER_BINDING: u32 = 1;
 const POST_FRAME_BINDING: u32 = 2;
@@ -196,6 +203,8 @@ pub(crate) struct GpuState {
     used_batch_keys: Vec<BatchKey>,
     post_set: Option<ResourceSetId>,
     bloom_set: Option<ResourceSetId>,
+    sky_set: Option<ResourceSetId>,
+    environment: Option<(TextureAssetId, TextureResources)>,
     resource_epoch: u64,
     frame_index: u64,
     shadow_resolution: u32,
@@ -213,6 +222,9 @@ pub(crate) struct GpuState {
     /// drains the previous frame with the post-pass readback before it overwrites buffers or
     /// destroys GPU resources. Callers that always capture do not pay this extra wait.
     submission_unobserved: bool,
+    /// Deferred completion handle for the most recent offscreen submission, when the backend
+    /// supports it. Polling or waiting consumes the handle.
+    pending_submission: Option<SubmissionId>,
 }
 
 impl GpuState {
@@ -264,6 +276,8 @@ impl GpuState {
             used_batch_keys: Vec::new(),
             post_set: None,
             bloom_set: None,
+            sky_set: None,
+            environment: None,
             resource_epoch: 1,
             frame_index: 0,
             shadow_resolution: DEFAULT_SHADOW_RESOLUTION,
@@ -276,6 +290,7 @@ impl GpuState {
             texture_cache_misses: 0,
             evictions: 0,
             submission_unobserved: false,
+            pending_submission: None,
         })
     }
 
@@ -356,6 +371,9 @@ impl GpuState {
                 destroy_batch_sets(device, sets)?;
             }
         }
+        if let Some(set) = self.sky_set.take() {
+            device.destroy_resource_set(set)?;
+        }
         if let Some(set) = self.bloom_set.take() {
             device.destroy_resource_set(set)?;
         }
@@ -376,9 +394,11 @@ impl GpuState {
         target: (u32, u32),
         started: Instant,
         frame_data_dirty: bool,
+        environment: Option<&Arc<EnvironmentMap>>,
     ) -> Result<FrameStatistics, RenderError> {
         self.ensure_idle(device)?;
         self.frame_index = self.frame_index.wrapping_add(1);
+        self.ensure_environment(device, environment)?;
         let mut statistics = FrameStatistics::default();
         let render_target = self.targets.as_ref().map_or(target, Targets::render_target);
 
@@ -435,6 +455,15 @@ impl GpuState {
         } else {
             options.clear_color
         };
+        let encoded_environment = match environment {
+            Some(map) if self.environment.is_some() => [
+                map.intensity(),
+                map.rotation(),
+                map.texture().mip_level_count() as f32,
+                1.0,
+            ],
+            _ => [0.0, 0.0, 0.0, 0.0],
+        };
         self.staging.frame.clear();
         encode_frame_into(
             prepared.view_projection,
@@ -446,6 +475,7 @@ impl GpuState {
             render_target,
             shadow_enabled,
             shadow_texel,
+            encoded_environment,
             &mut self.staging.frame,
         );
         if frame_data_dirty {
@@ -492,6 +522,20 @@ impl GpuState {
                 statistics.shadow_draw_calls += 1;
             }
             scene_steps.push(batch_steps.scene);
+        }
+        if environment.is_some() && options.debug_view == DebugView::Shaded {
+            if let Some(sky_set) = self.ensure_sky_set(device)? {
+                let sky_pipeline = self.pipelines()?.sky_pipeline;
+                scene_steps.push(RenderStepDescriptor::Draw(DrawStepDescriptor {
+                    pipeline: sky_pipeline,
+                    resource_sets: gfx_core::resource_set_list([sky_set]),
+                    vertex_count: 3,
+                    first_vertex: 0,
+                    instance_count: 1,
+                    first_instance: 0,
+                    scissor: None,
+                }));
+            }
         }
         self.release_unused_batch_sets(device)?;
 
@@ -590,7 +634,7 @@ impl GpuState {
         }
         passes.push(post_pass);
         let submit_started = Instant::now();
-        device.render_step_lists_to_textures_compat(&passes)?;
+        self.pending_submission = device.render_step_lists_to_textures_deferred(&passes)?;
         statistics.submit_nanos = submit_started.elapsed().as_nanos() as u64;
         statistics.cpu_prepare_nanos = started.elapsed().as_nanos() as u64;
         self.submission_unobserved = true;
@@ -603,6 +647,9 @@ impl GpuState {
         device: &mut D,
     ) -> Result<CapturedImage, RenderError> {
         let targets = self.targets.as_ref().ok_or(RenderError::Destroyed)?;
+        if let Some(submission) = self.pending_submission.take() {
+            device.wait_submission(submission)?;
+        }
         let readback = device.read_texture(targets.post_color)?;
         let expected_row = self.width as usize * POST_COLOR_FORMAT.bytes_per_pixel() as usize;
         if readback.size != Extent2d::new(self.width, self.height)?
@@ -696,6 +743,11 @@ impl GpuState {
                 }
                 self.staging.shrink();
                 let _ = self.mesh_pool.clear(device)?;
+                if let Some((_, texture)) = self.environment.take() {
+                    self.evictions = self.evictions.saturating_add(1);
+                    destroy_texture(device, texture)?;
+                }
+                self.sky_set = None;
             }
         }
         Ok(())
@@ -709,16 +761,21 @@ impl GpuState {
             .as_ref()
             .map_or(0, |texture| texture.bytes)
             + self
+                .environment
+                .as_ref()
+                .map_or(0, |(_, texture)| texture.bytes)
+            + self
                 .textures
                 .values()
                 .map(|texture| texture.bytes)
                 .sum::<u64>();
         RendererStatistics {
             live_meshes: self.meshes.len(),
-            live_textures: self.textures.len(),
+            live_textures: self.textures.len() + usize::from(self.environment.is_some()),
             resource_set_count: self.batch_sets.len()
                 + usize::from(self.post_set.is_some())
-                + usize::from(self.bloom_set.is_some()),
+                + usize::from(self.bloom_set.is_some())
+                + usize::from(self.sky_set.is_some()),
             resident_buffer_bytes,
             resident_texture_bytes: target_bytes + cached_texture_bytes,
             draw_capacity: self.frame_buffers.draw_capacity(),
@@ -778,6 +835,10 @@ impl GpuState {
                 .fallback_texture
                 .as_ref()
                 .map_or(0, |texture| texture.bytes)
+            + self
+                .environment
+                .as_ref()
+                .map_or(0, |(_, texture)| texture.bytes)
             + self.meshes.values().map(|mesh| mesh.bytes).sum::<u64>()
             + self
                 .textures
@@ -898,6 +959,11 @@ impl GpuState {
                 first_error.get_or_insert(error);
             }
         }
+        if let Some((_, texture)) = self.environment.take() {
+            if let Err(error) = destroy_texture(device, texture) {
+                first_error.get_or_insert(error);
+            }
+        }
         if let Err(error) = self.frame_buffers.destroy(device) {
             first_error.get_or_insert(error);
         }
@@ -931,11 +997,43 @@ impl GpuState {
             return Ok(());
         }
         self.submission_unobserved = false;
+        if let Some(submission) = self.pending_submission.take() {
+            device.wait_submission(submission)?;
+            return Ok(());
+        }
         let Some(targets) = self.targets.as_ref() else {
             return Ok(());
         };
         device.read_texture(targets.post_color)?;
         Ok(())
+    }
+
+    /// Polls the deferred offscreen submission without blocking.
+    ///
+    /// Returns `Ok(None)` when the backend has no deferred completion handle (or no frame is
+    /// pending), `Ok(Some(false))` while the GPU is still running, and `Ok(Some(true))` once the
+    /// frame is complete. Capture and maintenance operations wait for the same handle, so polling
+    /// is an optimization, not a correctness requirement.
+    pub(crate) fn poll_pending_submission<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<Option<bool>, RenderError> {
+        let Some(submission) = self.pending_submission else {
+            return Ok(None);
+        };
+        match device.poll_submission(submission)? {
+            SubmissionStatus::Pending => Ok(Some(false)),
+            SubmissionStatus::Complete => {
+                self.pending_submission = None;
+                Ok(Some(true))
+            }
+            SubmissionStatus::Failed(message) => {
+                self.pending_submission = None;
+                Err(RenderError::Gpu(gfx_core::Error::Backend(format!(
+                    "offscreen submission failed: {message}"
+                ))))
+            }
+        }
     }
 
     fn pipelines(&self) -> Result<&Pipelines, RenderError> {
@@ -1117,10 +1215,15 @@ impl GpuState {
             .metallic_roughness
             .and_then(|id| self.textures.get(&id))
             .map_or(fallback_view, |texture| texture.view);
+        let environment_view = self
+            .environment
+            .as_ref()
+            .map_or(fallback_view, |(_, texture)| texture.view);
         let pipelines = self.pipelines()?;
         let scene_layout = pipelines.scene_layout;
         let shadow_layout = pipelines.shadow_layout;
         let material_sampler = pipelines.material_sampler;
+        let environment_sampler = pipelines.environment_sampler;
         let shadow_map_view = self
             .targets
             .as_ref()
@@ -1182,6 +1285,8 @@ impl GpuState {
                 ),
                 texture_binding(SCENE_SHADOW_MAP_BINDING, shadow_map_view),
                 texture_binding(SCENE_METALLIC_ROUGHNESS_BINDING, metallic_roughness_view),
+                texture_binding(SCENE_ENVIRONMENT_BINDING, environment_view),
+                sampler_binding(SCENE_ENVIRONMENT_SAMPLER_BINDING, environment_sampler),
             ],
         })?;
         let shadow = match device.create_resource_set(&ResourceSetDescriptor {
@@ -1288,6 +1393,71 @@ impl GpuState {
         })?;
         self.bloom_set = Some(set);
         Ok(set)
+    }
+
+    /// Uploads or reuses the scene environment texture.
+    ///
+    /// Changing the environment destroys the previous texture, invalidates cached resource sets,
+    /// and bumps the resource epoch so batch sets bind the new view.
+    fn ensure_environment<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+        environment: Option<&Arc<EnvironmentMap>>,
+    ) -> Result<(), RenderError> {
+        let Some(environment) = environment else {
+            return Ok(());
+        };
+        if self
+            .environment
+            .as_ref()
+            .is_some_and(|(id, _)| *id == environment.id())
+        {
+            return Ok(());
+        }
+        if let Some((_, texture)) = self.environment.take() {
+            destroy_texture(device, texture)?;
+        }
+        let (texture, view, bytes) = create_texture(device, environment.texture())?;
+        self.environment = Some((
+            environment.id(),
+            TextureResources {
+                texture,
+                view,
+                bytes,
+                last_used_frame: self.frame_index,
+            },
+        ));
+        self.invalidate_sets(device)?;
+        self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        Ok(())
+    }
+
+    fn ensure_sky_set<D: Device + ?Sized>(
+        &mut self,
+        device: &mut D,
+    ) -> Result<Option<ResourceSetId>, RenderError> {
+        if self.sky_set.is_some() {
+            return Ok(self.sky_set);
+        }
+        let Some((_, texture)) = self.environment.as_ref() else {
+            return Ok(None);
+        };
+        let texture_view = texture.view;
+        let pipelines = self.pipelines()?;
+        let layout = pipelines.sky_layout;
+        let environment_sampler = pipelines.environment_sampler;
+        let frame_buffer = self.frame_buffers.frame.buffer;
+        let set = device.create_resource_set(&ResourceSetDescriptor {
+            label: Some("gpui-3d offscreen sky resource set".into()),
+            layout,
+            bindings: vec![
+                texture_binding(SKY_ENVIRONMENT_BINDING, texture_view),
+                sampler_binding(SKY_SAMPLER_BINDING, environment_sampler),
+                buffer_binding(SKY_FRAME_BINDING, frame_buffer, 0, FRAME_STRIDE, None),
+            ],
+        })?;
+        self.sky_set = Some(set);
+        Ok(Some(set))
     }
 }
 
@@ -1472,6 +1642,7 @@ fn encode_frame_into(
     render_target: (u32, u32),
     shadow_enabled: bool,
     shadow_texel: f32,
+    environment: [f32; 4],
     bytes: &mut Vec<u8>,
 ) {
     write_matrix(bytes, view_projection.columns());
@@ -1548,6 +1719,9 @@ fn encode_frame_into(
             render_target.1 as f32,
         ],
     );
+    let inverse_view_projection = view_projection.inverse().unwrap_or(Mat4::IDENTITY);
+    write_matrix(bytes, inverse_view_projection.columns());
+    write_vec4(bytes, environment);
     debug_assert_eq!(bytes.len(), FRAME_STRIDE as usize);
 }
 
@@ -1869,6 +2043,7 @@ struct Pipelines {
     scene_layout: ResourceSetLayoutId,
     post_layout: ResourceSetLayoutId,
     bloom_layout: ResourceSetLayoutId,
+    sky_layout: ResourceSetLayoutId,
     shadow_pass: RenderPassId,
     scene_pass: RenderPassId,
     post_pass: RenderPassId,
@@ -1878,12 +2053,15 @@ struct Pipelines {
     blended_pipeline: RenderPipelineId,
     post_pipeline: RenderPipelineId,
     bloom_pipeline: RenderPipelineId,
+    sky_pipeline: RenderPipelineId,
     shadow_pipeline_layout: PipelineLayoutId,
     scene_pipeline_layout: PipelineLayoutId,
     post_pipeline_layout: PipelineLayoutId,
     bloom_pipeline_layout: PipelineLayoutId,
+    sky_pipeline_layout: PipelineLayoutId,
     material_sampler: SamplerId,
     post_sampler: SamplerId,
+    environment_sampler: SamplerId,
     shaders: Vec<ShaderModuleId>,
 }
 
@@ -1996,6 +2174,16 @@ impl Pipelines {
                     ResourceBindingType::SampledTexture,
                     ShaderStages::FRAGMENT,
                 ),
+                layout_entry(
+                    SCENE_ENVIRONMENT_BINDING,
+                    ResourceBindingType::SampledTexture,
+                    ShaderStages::FRAGMENT,
+                ),
+                layout_entry(
+                    SCENE_ENVIRONMENT_SAMPLER_BINDING,
+                    ResourceBindingType::Sampler,
+                    ShaderStages::FRAGMENT,
+                ),
             ],
         })?;
         scratch.layouts.push(scene_layout);
@@ -2046,6 +2234,27 @@ impl Pipelines {
             ],
         })?;
         scratch.layouts.push(bloom_layout);
+        let sky_layout = device.create_resource_set_layout(&ResourceSetLayoutDescriptor {
+            label: Some("gpui-3d offscreen sky layout".into()),
+            entries: vec![
+                layout_entry(
+                    SKY_ENVIRONMENT_BINDING,
+                    ResourceBindingType::SampledTexture,
+                    ShaderStages::FRAGMENT,
+                ),
+                layout_entry(
+                    SKY_SAMPLER_BINDING,
+                    ResourceBindingType::Sampler,
+                    ShaderStages::FRAGMENT,
+                ),
+                layout_entry(
+                    SKY_FRAME_BINDING,
+                    ResourceBindingType::UniformBuffer,
+                    ShaderStages::FRAGMENT,
+                ),
+            ],
+        })?;
+        scratch.layouts.push(sky_layout);
 
         let shadow_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("gpui-3d offscreen shadow pipeline layout".into()),
@@ -2067,6 +2276,11 @@ impl Pipelines {
             resource_set_layouts: vec![bloom_layout],
         })?;
         scratch.pipeline_layouts.push(bloom_pipeline_layout);
+        let sky_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("gpui-3d offscreen sky pipeline layout".into()),
+            resource_set_layouts: vec![sky_layout],
+        })?;
+        scratch.pipeline_layouts.push(sky_pipeline_layout);
 
         let shadow_vertex_shader =
             shader_module(device, backend, "vs_shadow_depth", ShaderStage::Vertex)?;
@@ -2089,6 +2303,10 @@ impl Pipelines {
         let bloom_fragment_shader =
             shader_module(device, backend, "fs_bloom", ShaderStage::Fragment)?;
         scratch.shaders.push(bloom_fragment_shader);
+        let sky_vertex_shader = shader_module(device, backend, "vs_sky", ShaderStage::Vertex)?;
+        scratch.shaders.push(sky_vertex_shader);
+        let sky_fragment_shader = shader_module(device, backend, "fs_sky", ShaderStage::Fragment)?;
+        scratch.shaders.push(sky_fragment_shader);
 
         let shadow_pass = device.create_render_pass(&RenderPassDescriptor {
             label: Some("gpui-3d offscreen shadow pass".into()),
@@ -2241,6 +2459,23 @@ impl Pipelines {
             None,
         )?;
         scratch.pipelines.push(bloom_pipeline);
+        let sky_pipeline = create_pipeline(
+            device,
+            "gpui-3d offscreen sky pipeline",
+            sky_vertex_shader,
+            "vs_sky",
+            sky_fragment_shader,
+            "fs_sky",
+            scene_pass,
+            sky_pipeline_layout,
+            SCENE_COLOR_FORMAT,
+            BlendMode::Replace,
+            Some(DepthState {
+                compare: CompareFunction::LessEqual,
+                write_enabled: false,
+            }),
+        )?;
+        scratch.pipelines.push(sky_pipeline);
 
         let material_sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("gpui-3d offscreen material sampler".into()),
@@ -2262,12 +2497,23 @@ impl Pipelines {
             address_mode_v: AddressMode::ClampToEdge,
         })?;
         scratch.samplers.push(post_sampler);
+        let environment_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("gpui-3d offscreen environment sampler".into()),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Linear,
+            anisotropic: false,
+            address_mode_u: AddressMode::Repeat,
+            address_mode_v: AddressMode::ClampToEdge,
+        })?;
+        scratch.samplers.push(environment_sampler);
 
         Ok(Self {
             shadow_layout,
             scene_layout,
             post_layout,
             bloom_layout,
+            sky_layout,
             shadow_pass,
             scene_pass,
             post_pass,
@@ -2277,12 +2523,15 @@ impl Pipelines {
             blended_pipeline,
             post_pipeline,
             bloom_pipeline,
+            sky_pipeline,
             shadow_pipeline_layout,
             scene_pipeline_layout,
             post_pipeline_layout,
             bloom_pipeline_layout,
+            sky_pipeline_layout,
             material_sampler,
             post_sampler,
+            environment_sampler,
             shaders: vec![
                 shadow_vertex_shader,
                 shadow_fragment_shader,
@@ -2292,6 +2541,8 @@ impl Pipelines {
                 post_fragment_shader,
                 bloom_vertex_shader,
                 bloom_fragment_shader,
+                sky_vertex_shader,
+                sky_fragment_shader,
             ],
         })
     }
@@ -2302,8 +2553,10 @@ impl Pipelines {
         device.destroy_render_pipeline(self.blended_pipeline)?;
         device.destroy_render_pipeline(self.post_pipeline)?;
         device.destroy_render_pipeline(self.bloom_pipeline)?;
+        device.destroy_render_pipeline(self.sky_pipeline)?;
         device.destroy_sampler(self.material_sampler)?;
         device.destroy_sampler(self.post_sampler)?;
+        device.destroy_sampler(self.environment_sampler)?;
         for shader in self.shaders {
             device.destroy_shader_module(shader)?;
         }
@@ -2315,11 +2568,13 @@ impl Pipelines {
         device.destroy_resource_set_layout(self.scene_layout)?;
         device.destroy_resource_set_layout(self.post_layout)?;
         device.destroy_resource_set_layout(self.bloom_layout)?;
+        device.destroy_resource_set_layout(self.sky_layout)?;
         // Pipeline layouts were previously leaked on every renderer drop/resize.
         device.destroy_pipeline_layout(self.shadow_pipeline_layout)?;
         device.destroy_pipeline_layout(self.scene_pipeline_layout)?;
         device.destroy_pipeline_layout(self.post_pipeline_layout)?;
         device.destroy_pipeline_layout(self.bloom_pipeline_layout)?;
+        device.destroy_pipeline_layout(self.sky_pipeline_layout)?;
         Ok(())
     }
 }

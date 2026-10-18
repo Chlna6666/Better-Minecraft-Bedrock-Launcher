@@ -112,6 +112,7 @@ pub struct PreparedScene {
     candidates: Vec<PreparedDraw>,
     camera: Option<Camera>,
     aspect: Option<f32>,
+    lod_active: bool,
 }
 
 impl PreparedScene {
@@ -125,6 +126,15 @@ impl PreparedScene {
             draws: &self.draws,
             next: 0,
         }
+    }
+
+    /// Whether the retained candidates selected a distance-based LOD mesh.
+    ///
+    /// Camera-only retained updates must re-walk the scene when this is true because LOD selection
+    /// itself depends on the camera pose.
+    #[must_use]
+    pub const fn uses_lod(&self) -> bool {
+        self.lod_active
     }
 
     /// Builds an immutable scene snapshot and culls geometry outside the camera frustum.
@@ -262,6 +272,7 @@ impl PreparedScene {
         self.candidates.clear();
         self.lights.clear();
         self.walk_stack.clear();
+        self.lod_active = false;
         self.walk_stack.extend(
             scene
                 .roots()
@@ -284,7 +295,28 @@ impl PreparedScene {
             if let Some(light) = node.light {
                 self.lights.push(transform_light(light, world));
             }
-            if let Some(mesh) = &node.mesh {
+            let level_materials: &[Arc<crate::Material>];
+            let selected_mesh = if node.lod.is_empty() {
+                level_materials = &node.materials;
+                node.mesh.clone()
+            } else {
+                self.lod_active = true;
+                let world_position = world.transform_point(Vec3::ZERO);
+                let distance = (world_position - camera.eye).length();
+                let level = node
+                    .lod
+                    .iter()
+                    .find(|level| distance <= level.max_view_distance)
+                    .or_else(|| node.lod.last())
+                    .expect("non-empty LOD chain always has a fallback level");
+                level_materials = if level.materials.is_empty() {
+                    &node.materials
+                } else {
+                    &level.materials
+                };
+                Some(level.mesh.clone())
+            };
+            if let Some(mesh) = selected_mesh {
                 for (part_index, part) in mesh.parts().iter().copied().enumerate() {
                     let Some(bounds) = mesh
                         .part_bounds(part_index)
@@ -305,7 +337,7 @@ impl PreparedScene {
                         part,
                         material: usize::try_from(part.material_slot())
                             .ok()
-                            .and_then(|slot| node.materials.get(slot))
+                            .and_then(|slot| level_materials.get(slot))
                             .cloned()
                             .unwrap_or_else(default_material),
                         world,
@@ -523,7 +555,7 @@ fn max_world_scale(world: Mat4) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Node, SpotLight, Transform, Vec2, Vertex};
+    use crate::{LodLevel, Node, SpotLight, Transform, Vec2, Vertex};
 
     fn mesh() -> Arc<Mesh> {
         Arc::new(
@@ -940,6 +972,78 @@ mod tests {
         assert!(evaluated.raycast(ray, &mut scratch).unwrap().is_some());
         assert!(scene.raycast(ray, &mut scratch).unwrap().is_none());
         assert_eq!(scene.node(node).unwrap().transform.translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn lod_levels_select_by_camera_distance_and_work_without_an_authored_mesh() {
+        let near_mesh = mesh();
+        let far_mesh = Arc::new(
+            Mesh::new(
+                vec![
+                    Vertex {
+                        position: Vec3::new(-1.0, -1.0, 0.0),
+                        normal: Vec3::Z,
+                        uv: Vec2::new(0.0, 0.0),
+                        color: [1.0; 4],
+                    },
+                    Vertex {
+                        position: Vec3::new(1.0, -1.0, 0.0),
+                        normal: Vec3::Z,
+                        uv: Vec2::new(1.0, 0.0),
+                        color: [1.0; 4],
+                    },
+                    Vertex {
+                        position: Vec3::new(0.0, 1.0, 0.0),
+                        normal: Vec3::Z,
+                        uv: Vec2::new(0.5, 1.0),
+                        color: [1.0; 4],
+                    },
+                ],
+                vec![0, 1, 2],
+            )
+            .unwrap(),
+        );
+        let mut scene = Scene::new();
+        let node = scene
+            .insert(
+                None,
+                Node::new().with_mesh(near_mesh.clone()).with_lod([
+                    LodLevel::new(near_mesh.clone(), 2.0).unwrap(),
+                    LodLevel::new(far_mesh.clone(), 50.0).unwrap(),
+                ]),
+            )
+            .unwrap();
+        let lod_only = scene
+            .insert(
+                None,
+                Node::new().with_lod([LodLevel::new(far_mesh.clone(), 50.0).unwrap()]),
+            )
+            .unwrap();
+        let camera_at = |z: f32| {
+            Camera::perspective(Vec3::new(0.0, 0.0, z), Vec3::ZERO, Vec3::Y, 1.0, 0.1, 100.0)
+        };
+
+        let prepared = PreparedScene::new(&scene, camera_at(1.5), 1.0).unwrap();
+        assert!(prepared.uses_lod());
+        assert_eq!(prepared.draws.len(), 2);
+        let node_draw = prepared
+            .draws
+            .iter()
+            .find(|draw| draw.node == node)
+            .unwrap();
+        assert_eq!(node_draw.mesh.id(), near_mesh.id());
+
+        let prepared = PreparedScene::new(&scene, camera_at(10.0), 1.0).unwrap();
+        let node_draw = prepared
+            .draws
+            .iter()
+            .find(|draw| draw.node == node)
+            .unwrap();
+        assert_eq!(node_draw.mesh.id(), far_mesh.id());
+        assert!(prepared.draws.iter().any(|draw| draw.node == lod_only));
+
+        assert!(LodLevel::new(near_mesh, 0.0).is_err());
+        assert!(LodLevel::new(far_mesh, f32::NAN).is_err());
     }
 
     #[test]

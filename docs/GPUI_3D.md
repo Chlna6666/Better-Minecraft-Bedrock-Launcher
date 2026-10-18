@@ -51,15 +51,15 @@ feature:
 | Area | Current local API | Remaining 3D work |
 | --- | --- | --- |
 | Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangents, per-triangle edge masks, five primitives, bounds, BVH queries, automatic indexed instancing; glTF primitives (indexed, non-indexed, morph-target base geometry, skinned bind pose) | GPU skinning/morph deformation, GPU geometry partial updates, compressed mesh extensions |
-| Scene graph | Hierarchical generational nodes, mutation versions for retained-frame invalidation, node/subtree visibility respected by rendering, shadows, picking, and bounds | LOD groups, layers/culling masks, user metadata, gizmo/overlay lines |
+| Scene graph | Hierarchical generational nodes, mutation versions for retained-frame invalidation, node/subtree visibility respected by rendering, shadows, picking, and bounds, distance-selected render LOD levels (rendering uses the level mesh; bounds/raycast keep the authored mesh) | Screen-space/HLOD selection, layers/culling masks, user metadata, gizmo/overlay lines |
 | Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF cameras, top-left viewport pick/project helpers, GPU object-id picking that matches the submitted frame | Depth GPU picking and asynchronous readback |
-| Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, linear HDR rendering with exposure and ACES/Reinhard tone mapping, bloom, FXAA-style edge filtering, and vignette/film-grain/dither grading | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows, MSAA/TAA |
-| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow, HDR PBR scene, half-resolution bloom, HDR post) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, reusable CPU staging buffers, a bounded mesh-buffer reuse pool, dynamic resolution/supersampled render scale, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, equirectangular image-based lighting (mip-prefiltered diffuse/specular plus analytic split-sum BRDF), environment sky background, linear HDR rendering with exposure and ACES/Reinhard tone mapping, bloom, FXAA-style edge filtering, and vignette/film-grain/dither grading | Prefiltered cubemap/irradiance probes and a real BRDF LUT, clustered Forward+, point/spot shadows, MSAA/TAA |
+| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow, HDR PBR scene, half-resolution bloom, HDR post) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, reusable CPU staging buffers, a bounded mesh-buffer reuse pool, dynamic resolution/supersampled render scale, deferred GPU-completion polling before capture, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
 | Scene scale and reuse | Retained draw list with frustum culling, instanced batches, static-frame reuse, camera-only re-cull without a scene walk, per-element hash-tracked uploads, verified 200,000-instance field in one indexed draw | GPU-driven indirect submission, LOD, occlusion culling, GPU-side scene traversal |
 | Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, two-clip crossfade blending (`evaluate_blended` / `render_blended`), animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Skeletal skinning, morph weights, multi-layer/synchronized clip graphs, IK |
 | Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
 | Post-processing and quality | RGBA16Float linear HDR scene target, half-resolution bloom, FXAA-style edge blend, exposure/tone-mapping/gamma resolve, vignette, film grain, ordered dithering, Low/Medium/High/Ultra presets, dynamic-resolution and supersampled render scale; debug and object-id frames bypass grading | MSAA, TAA, motion blur, SSAO/SSR, depth of field, LUT color grading |
-| Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
+| Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, deferred submission polling before readback, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | True asynchronous GPU-to-CPU readback and compositor hand-off, multi-frame trace export, GPU timestamped pass timings |
 | Test assets | `test_assets/manifest.toml` + SHA-256 downloader + licenses, offline cache, ignored native tests, GPU pixel matrix | Additional licensed large-scene and animation assets |
 
 These areas follow the feature categories in the [reference branch's crate guide](https://raw.githubusercontent.com/cradiy/gpui/main/crates/gpui_3d/README.md);
@@ -562,13 +562,55 @@ same operation as `OffscreenRenderer::render_blended`. Invalid blend weights, du
 within one clip, stale handles, and invalid authored poses return typed errors. This is CPU clip
 blending; skeletal and morph deformation are still unimplemented.
 
+### Image-based lighting and sky
+
+`EnvironmentMap` wraps an equirectangular texture with an intensity and yaw rotation.
+`EnvironmentMap::new` validates parameters, `load_path` decodes a PNG/JPEG panorama (sRGB,
+downscaled to 4096 max, box-filtered mip chain), and `EnvironmentMap::procedural_studio` builds a
+licensed-asset-free studio panorama. Attach it with `Scene::set_environment` / clear it with
+`None`; the change bumps the scene version so retained frames are not reused.
+
+The scene shader uses the map for both ambient terms: diffuse samples a heavily blurred mip
+(whole-environment average) and specular samples `roughness * (mip_count - 1)` along the
+reflection direction, combined with the Karis analytic split-sum BRDF approximation. A fullscreen
+sky triangle is drawn first in the scene pass with depth comparison but no depth write, so geometry
+overwrites it; debug and object-id passes skip it. This is mip-based prefiltering of an
+equirectangular LDR texture, not a prefiltered cubemap plus irradiance probe and BRDF LUT; very
+glossy metals therefore use an approximation, and HDR radiance is limited to what fits in the
+texture chain. Environment textures are cached by asset id, counted in statistics, invalidated,
+and released by aggressive trim or renderer destruction.
+
+### Distance LOD
+
+`Node::with_lod` accepts `LodLevel` values ordered from nearest to farthest. Each level carries a
+mesh, optional materials, and `max_view_distance`; preparation picks the first level whose distance
+covers the camera-to-node distance, otherwise the last level. A node may consist only of LOD
+levels, while `Node::mesh` remains the bounds/raycast representation so callers should keep the
+highest-detail mesh there for accurate queries. LOD selection depends on the camera, so the
+camera-only retained fast path is disabled whenever preparation used a LOD level; camera moves then
+re-walk and re-select. Screen-space LOD, HLOD, and layer/culling masks are not implemented.
+
+### Deferred GPU-completion polling
+
+Nova's `PresentationDevice` now exposes `render_step_lists_to_textures_deferred`: backends with a
+deferred offscreen path return a Nova `SubmissionId`, and the default returns `None` after the
+synchronous compatibility submission. DX12 implements the deferred path. The offscreen renderer
+stores the handle and exposes `OffscreenRenderer::poll_render`, which reports `Some(false)` while
+in flight, `Some(true)` on completion, and `None` when the backend has no handle. Capture and
+maintenance waits consume the handle, and the common maintenance wait no longer pays a full post
+texture readback just to establish completion. The pixel readback itself is still a synchronous
+copy after completion; mapping a GPU buffer asynchronously and compositing the offscreen target
+without CPU readback remain future work.
+
 ### Tests covering this batch
 
 - Library tests cover hidden-subtree preparation, picking, bounds, transform blending, crossfade
   endpoints/midpoints, fade-to-rest, duplicate/stale/weight errors, and animation-scratch reuse.
-- `renderer_memory` now has 12 native tests: the additions verify that blended poses and visibility
-  change the submitted frame and that render scale keeps the output size while changing target
-  memory/sampling and preserving object-id picking.
+- `renderer_memory` now has 14 native tests: the additions verify that blended poses and visibility
+  change the submitted frame, that render scale keeps the output size while changing target
+  memory/sampling and preserving object-id picking, that an environment map lights the scene and
+  draws the sky with cache/trim lifecycle, and that a deferred submission can be polled to
+  completion before capture.
 
 ## GPU memory and cache lifecycle
 
@@ -649,7 +691,7 @@ moves one of 64 instances uploads one 144-byte instance record (asserted in `ren
 than 512 bytes out of a 9 KiB instance table) while the mesh, textures, and draw slots upload
 nothing.
 
-Native memory tests (`tests/renderer_memory.rs`, 12 ignored tests) assert: soft-budget eviction
+Native memory tests (`tests/renderer_memory.rs`, 14 ignored tests) assert: soft-budget eviction
 releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
 cycle stays bounded and aggressive trim clears every cache/resource set; a 60-frame three-scene
 cycling session under a 2 MiB asset budget stays under the resident envelope, keeps resource-set
@@ -662,7 +704,9 @@ uploads, skips the scene walk for camera-only moves, and uploads one instance re
 quality invalidates the retained frame; a bounded mesh-buffer pool reports real reuses and aggressive
 trim releases it; blended poses and node visibility change the submitted frame; render scale keeps
 the output size while changing HDR target memory and sampling, and object-id picking still decodes
-when the scene is supersampled.
+when the scene is supersampled; an environment map lights the scene, draws the sky, survives
+resource invalidation, and is released by aggressive trim; a deferred submission can be polled to
+completion before capture.
 
 ## Retained frame reuse and scene scale
 
@@ -733,6 +777,7 @@ cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --quality=high --exposure=2.0 --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --frames=4 --quality=medium --out=target/scene_lab/instances.png --json=target/scene_lab/instances.json
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --quality=high --render-scale=2.0 --out=target/scene_lab/ssaa.png
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --quality=high --env-map=studio --out=target/scene_lab/ibl.png
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and
@@ -748,11 +793,11 @@ for each. They are prioritized by user-visible effect first, then API/backend co
 | Area | Missing or unoptimized | Blocker / effort |
 | --- | --- | --- |
 | Rendering effects | MSAA, TAA, motion blur, SSAO, SSR, depth of field, multi-scale bloom, LUT grading | MSAA needs multisample render-pass state in Nova; the rest are new passes/targets plus history buffers. Render scale 2 already provides approximate SSAA. |
-| Lighting | IBL/environment maps, irradiance/prefilter/BRDF LUT, point/spot shadow maps, clustered Forward+ | Shader plus render-graph work; point/spot shadows need cube or atlas targets and multi-light culling. |
+| Lighting | Prefiltered cubemap/irradiance probes and a real BRDF LUT, point/spot shadow maps, clustered Forward+ | The current equirect mip approximation covers IBL; prefiltered probes need cube targets and a convolution pass, and point/spot shadows need atlas targets plus multi-light culling. |
 | Deformation | GPU skeletal skinning, morph targets, pose graphs, IK | Importer already recognizes skinned/morph primitives but keeps base geometry; needs joint/weight vertex attributes, bone buffers, and the skinning pipeline. |
 | glTF completeness | `KHR_texture_transform`, `TEXCOORD_1`, clearcoat/transmission/ior/variants, `KHR_texture_basisu`, Draco/meshopt | Material texture transforms and UV1 need extra draw parameters; compressed extensions need new decoders. |
-| Scene graph | LOD groups, layers/culling masks, user metadata, gizmo/debug line rendering | LOD selection belongs in preparation (screen-space size); lines need a dedicated vertex/pipeline path. |
-| Async/latency | Async readback, compositor hand-off without CPU copy, GPU timestamped pass timings, frame pacing | Nova exposes async device/queue APIs and transfer timestamps, but the offscreen renderer's compatibility readback path is synchronous and has no per-pass query handle. |
+| Scene graph | Screen-space/HLOD selection, layers/culling masks, user metadata, gizmo/debug line rendering | Distance LOD is implemented; screen-space size selection needs projection-aware metrics, and lines need a dedicated vertex/pipeline path. |
+| Async/latency | True asynchronous GPU-to-CPU readback, compositor hand-off without CPU copy, GPU timestamped pass timings, frame pacing | DX12 deferred submission now provides a completion handle and poll/wait path, but the readback copy itself is still synchronous; Nova has transfer timestamps but no per-pass query handle yet. |
 | GPU-driven pipeline | Indirect draws, GPU culling, GPU-side scene traversal, mesh shaders | Nova phase-1 API has no indirect draw descriptor or mesh pipeline. |
 | Memory/perf backlog | Mesh arena/compaction, texture streaming/compression, bindless-style descriptor reuse, parallel scene preparation, shadow-frustum culling, pipeline cache warm start, async uploads | Mostly engine-side work; parallel preparation must not regress deterministic ordering, and arena/shared-buffer designs invalidate per-batch resource sets on growth. |
 | Platform coverage | Metal runtime validation, WebGL backend | Metal cannot be validated on this Windows host; WebGL lacks the storage-buffer/indirect features the renderer uses. |
@@ -760,7 +805,7 @@ for each. They are prioritized by user-visible effect first, then API/backend co
 Already optimized and verified in this phase: HDR target memory, shadow defaults, texture caps and
 downscaling, incremental element uploads, static-frame reuse, camera-only re-cull, per-batch draw
 slots, staging-buffer reuse, bounded mesh-buffer reuse pool, budget-driven eviction, render scale,
-and pipeline-layout lifetime. The next highest-return step is IBL (visual impact, modest graph
+IBL environment caching, distance LOD, deferred completion polling, and pipeline-layout lifetime. The next highest-return step is IBL (visual impact, modest graph
 work), followed by LOD groups (large-scene CPU/GPU cost) and async readback (latency).
 
 ## Completion record
@@ -784,17 +829,20 @@ Delivered in this phase:
   reuse pool, allocation/fragmentation metrics, pipeline-layout leak fix, dynamic-resolution and
   supersampled render scale.
 - Scene graph and animation: node/subtree visibility respected by rendering, shadows, picking, and
-  bounds, plus CPU two-clip crossfade evaluation and `render_blended`.
+  bounds, distance-selected render LOD, plus CPU two-clip crossfade evaluation and `render_blended`.
+- Environment and submission: equirectangular mip-prefiltered IBL with procedural sky background
+  and environment texture lifecycle, plus Nova deferred offscreen submission handles and DX12
+  completion polling before synchronous capture.
 - Verification assets and tooling: SHA-256-pinned licensed test-asset manifest and downloader, four
   backend pixel matrix, 12 native memory/lifecycle tests, scene lab with quality presets, render
   scale, orbit benchmarks, debug views, JSON statistics, and this documentation.
 
 Latest local verification before this record:
 
-- `cargo test -p gpui-3d`: 104 library tests, 8 glTF import tests, 5 CPU picking tests, 2 documentation
+- `cargo test -p gpui-3d`: 107 library tests, 8 glTF import tests, 5 CPU picking tests, 2 documentation
   tests pass.
 - `cargo test -p gpui-3d -- --ignored --test-threads=1`: cached real-model imports, DX12→DX11→Vulkan
-  pixel agreement matrix, and 12 native renderer memory/lifecycle tests pass.
+  pixel agreement matrix, and 14 native renderer memory/lifecycle tests pass.
 - `cargo check --lib` (repository default features) and
   `cargo check -p bmcbl --no-default-features` pass; changed Rust files are rustfmt-clean and add no
   clippy warnings (the repository has a pre-existing formatting baseline unrelated to this work).
@@ -802,8 +850,10 @@ Latest local verification before this record:
   Vulkan, and OpenGL 4.5 backends for the pixel matrix.
 
 Explicitly not implemented in this phase (documented, not claimed): GPU skinning/morph deformation,
-IBL/environment maps, clustered Forward+, point/spot shadow maps, MSAA/TAA, SSAO/SSR/motion blur/
-depth of field, multi-scale bloom, LUT grading, GPU timestamped pass timings, GPU-driven indirect
-submission, LOD groups/layers/occlusion culling, asynchronous readback, compositor hand-off of an
-offscreen target without CPU readback, and Metal runtime validation. Render scale 2 approximates
-supersampling for antialiasing without multisample targets.
+prefiltered cubemap irradiance probes and a real BRDF LUT, clustered Forward+, point/spot shadow
+maps, MSAA/TAA, SSAO/SSR/motion blur/depth of field, multi-scale bloom, LUT grading, GPU timestamped
+pass timings, GPU-driven indirect submission, screen-space/HLOD selection, layer masks, occlusion
+culling, true asynchronous GPU-to-CPU readback, compositor hand-off of an offscreen target without
+CPU readback, and Metal runtime validation. Render scale 2 approximates supersampling and equirect
+mip-based IBL covers environment lighting; distance LOD and DX12 deferred completion polling are
+implemented.

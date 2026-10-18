@@ -958,3 +958,98 @@ fn render_scale_samples_the_scene_without_changing_the_output_size() {
     assert_eq!(object.node, node);
     renderer.destroy(&mut device).expect("destroy renderer");
 }
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn environment_map_lights_the_scene_and_draws_the_sky() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 160, 120).expect("renderer");
+    let textures = HashMap::new();
+    let (mut scene, _) = cube_scene(None);
+    let plain = renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("plain frame");
+    let plain_stats = renderer.statistics();
+    assert_eq!(plain_stats.live_textures, 0);
+
+    scene.set_environment(Some(std::sync::Arc::new(
+        gpui_3d::EnvironmentMap::procedural_studio(),
+    )));
+    let lit = renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("environment frame");
+    let lit_stats = renderer.statistics();
+    assert_eq!(lit_stats.live_textures, 1);
+    assert!(lit_stats.cached_texture_bytes > plain_stats.cached_texture_bytes);
+    assert!(differing_pixels(&plain, &lit) > 100);
+
+    let reused = renderer
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("reused environment frame");
+    assert!(reused.frame_reused);
+    scene.set_environment(Some(std::sync::Arc::new(
+        gpui_3d::EnvironmentMap::procedural_studio(),
+    )));
+    let changed = renderer
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("changed environment frame");
+    assert!(!changed.frame_reused);
+
+    let mut empty = Scene::new();
+    empty.set_environment(Some(std::sync::Arc::new(
+        gpui_3d::EnvironmentMap::procedural_studio(),
+    )));
+    let sky = renderer
+        .render_to_image(&mut device, &empty, &textures, camera(), &options())
+        .expect("sky frame");
+    assert!(differing_pixels(&sky, &lit) > 100);
+
+    renderer
+        .trim(&mut device, gfx_core::MemoryTrimLevel::Aggressive)
+        .expect("aggressive trim");
+    let trimmed = renderer.statistics();
+    assert_eq!(trimmed.live_textures, 0);
+    renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("environment re-upload");
+    renderer.destroy(&mut device).expect("destroy renderer");
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn deferred_submission_can_be_polled_before_capture() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 160, 120).expect("renderer");
+    let textures = HashMap::new();
+    let (scene, _) = cube_scene(None);
+    renderer
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("render");
+    let mut saw_progress = false;
+    let mut completed = None;
+    for _ in 0..200000 {
+        match renderer.poll_render(&mut device).expect("poll") {
+            Some(true) => {
+                completed = Some(true);
+                break;
+            }
+            Some(false) => saw_progress = true,
+            None => {
+                completed = Some(false);
+                break;
+            }
+        }
+        std::thread::yield_now();
+    }
+    assert!(completed.is_some(), "poll never reported a terminal state");
+    if saw_progress {
+        // Waiting for a polled frame must not block or fail; this capture exercises the same path.
+        let image = renderer.capture(&mut device).expect("capture after poll");
+        assert_eq!((image.width(), image.height()), (160, 120));
+    } else {
+        let image = renderer.capture(&mut device).expect("capture");
+        assert_eq!((image.width(), image.height()), (160, 120));
+    }
+    assert_eq!(renderer.poll_render(&mut device).expect("idle poll"), None);
+    renderer.destroy(&mut device).expect("destroy renderer");
+}

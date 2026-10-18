@@ -59,6 +59,7 @@ struct Args {
     quality: Option<RenderQuality>,
     orbit_degrees: f32,
     render_scale: f32,
+    environment: Option<String>,
     bloom: Option<bool>,
     fxaa: Option<bool>,
     list: bool,
@@ -93,6 +94,7 @@ impl Default for Args {
             quality: None,
             orbit_degrees: 0.0,
             render_scale: 1.0,
+            environment: None,
             bloom: None,
             fxaa: None,
             list: false,
@@ -126,7 +128,7 @@ fn run() -> Result<(), String> {
         sun_azimuth_degrees: args.sun.0,
         sun_elevation_degrees: args.sun.1,
     };
-    let field_scene = match args.instances {
+    let mut field_scene = match args.instances {
         Some(count) if args.model.is_none() => Some(
             studio::build_instance_field(count)
                 .map_err(|error| format!("build instance field: {error}"))?,
@@ -134,7 +136,7 @@ fn run() -> Result<(), String> {
         _ => None,
     };
     let field_textures = HashMap::new();
-    let studio_scene = if args.model.is_none() && field_scene.is_none() {
+    let mut studio_scene = if args.model.is_none() && field_scene.is_none() {
         Some(
             studio::build(&studio_options)
                 .map_err(|error| format!("build studio scene: {error}"))?,
@@ -171,6 +173,39 @@ fn run() -> Result<(), String> {
         for warning in &imported.warnings {
             println!("import warning: {warning}");
         }
+    }
+    let environment = match &args.environment {
+        Some(name) if name == "studio" => Some(std::sync::Arc::new(
+            gpui_3d::EnvironmentMap::procedural_studio(),
+        )),
+        Some(path) => Some(std::sync::Arc::new(
+            gpui_3d::EnvironmentMap::load_path(path)
+                .map_err(|error| format!("load environment {path}: {error}"))?,
+        )),
+        None => None,
+    };
+    if let Some(environment) = &environment {
+        if let Some(studio) = studio_scene.as_mut() {
+            studio.scene.set_environment(Some(environment.clone()));
+        }
+        if let Some(imported) = imported.as_mut() {
+            imported.scene.set_environment(Some(environment.clone()));
+        }
+        if let Some((field, _)) = field_scene.as_mut() {
+            field.set_environment(Some(environment.clone()));
+        }
+        println!(
+            "environment: {} texture={}x{} mips={} intensity={:.2}",
+            if args.environment.as_deref() == Some("studio") {
+                "procedural studio"
+            } else {
+                "equirectangular image"
+            },
+            environment.texture().width(),
+            environment.texture().height(),
+            environment.texture().mip_level_count(),
+            environment.intensity()
+        );
     }
     let camera = if let Some((field, radius)) = &field_scene {
         field_camera(field, *radius, &args)
@@ -442,6 +477,7 @@ fn parse_args() -> Result<Args, String> {
             "--fxaa" => args.fxaa = Some(parse_on_off(value, key)?),
             "--orbit-degrees" => args.orbit_degrees = parse_float(value, key)?,
             "--render-scale" => args.render_scale = parse_float(value, key)?,
+            "--env-map" => args.environment = Some(required(value, key)?),
             "--quality" => {
                 args.quality = Some(match required(value, key)?.as_str() {
                     "low" => RenderQuality::Low,
@@ -553,6 +589,7 @@ fn help_text() -> String {
         "  --instances=20000  (procedural instanced cube field)",
         "  --quality=high|ultra  (shadow map, bloom, FXAA, grading preset)",
         "  --bloom=on|off --fxaa=on|off --orbit-degrees=3.0 --render-scale=0.75|2.0",
+        "  --env-map=studio|path/to/equirect.png  (image-based lighting + sky background)",
         "  --max-texture=1024 --budget-mb=256 --pick=640,360",
         "  --list-backends",
     ]
