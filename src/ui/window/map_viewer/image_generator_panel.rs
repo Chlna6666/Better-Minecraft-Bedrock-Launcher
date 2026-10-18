@@ -31,6 +31,8 @@ pub(super) struct ImageGeneratorPanelState {
     pub(super) preview_size: Option<[i32; 3]>,
     pub(super) preview_result_active: bool,
     pub(super) preview_anchor: Option<ChunkPos>,
+    /// Only explicit map interaction or positioning commands authorize confirmation.
+    pub(super) target_selected_by_user: bool,
     fill_picker_open: bool,
     fill_candidates: Vec<String>,
     preview_refresh_task: Option<Task<anyhow::Result<()>>>,
@@ -51,6 +53,7 @@ impl Default for ImageGeneratorPanelState {
             preview_size: None,
             preview_result_active: false,
             preview_anchor: None,
+            target_selected_by_user: false,
             fill_picker_open: false,
             fill_candidates: approved_block_names(),
             preview_refresh_task: None,
@@ -97,6 +100,7 @@ impl MapViewerWindowView {
             return;
         }
         self.image_generator.source = Some(path);
+        self.image_generator.target_selected_by_user = false;
         // Both picker and external drop return to the conversion inspector.
         self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
         self.image_generator.preview_options = None;
