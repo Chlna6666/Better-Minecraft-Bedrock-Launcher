@@ -1822,6 +1822,9 @@ pub struct MapViewerWindowView {
     pub(super) active_layout: RenderLayout,
     pub(super) render_texture_layout: RenderLayout,
     pub(super) viewport: MapViewport,
+    /// Post-layout world canvas bounds inside import-placement workspaces.
+    /// Never infer this rectangle from the whole window or the toolbars' heights.
+    pub(super) import_canvas_bounds: Option<Bounds<Pixels>>,
     pub(super) window_width: f32,
     pub(super) window_height: f32,
     pub(super) cpu_budget: RenderCpuBudget,
