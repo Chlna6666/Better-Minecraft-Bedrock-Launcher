@@ -13,6 +13,7 @@ mod completion_render;
 mod presentation_ownership;
 mod resize;
 mod sampled_animation;
+mod vertical_edges;
 
 #[cfg(test)]
 #[derive(Default)]

@@ -259,6 +259,21 @@ pub enum HorizontalRevealEdge {
 }
 
 impl AnimationProperty {
+    /// Animate a Quad's top and bottom offsets from its final layout, in logical pixels.
+    ///
+    /// Each pair is `[top, bottom]`. Width, corner radii, border widths, ancestor clips,
+    /// child layout and hit targets stay fixed. Crossed edges collapse to zero height.
+    /// Use on a single decoration without children; this is shape geometry, not subtree reveal.
+    /// For bottom-up growth from zero height, use `[height, px(0.)]` to `[px(0.); 2]`.
+    pub fn vertical_edges(from: [Pixels; 2], to: [Pixels; 2]) -> Self {
+        Self {
+            property: TransitionProperty::VerticalEdges,
+            from: [from[0].0, from[1].0, 0.0, 0.0],
+            to: [to[0].0, to[1].0, 0.0, 0.0],
+            capture_subtree: false,
+        }
+    }
+
     /// Animate visual opacity without changing layout.
     pub fn opacity(from: f32, to: f32) -> Self {
         Self {
@@ -449,6 +464,15 @@ impl AnimationProperty {
         visual_scale: f32,
     ) -> ([f32; 4], [f32; 4]) {
         match self.property {
+            TransitionProperty::VerticalEdges => {
+                let scale = scale_factor * visual_scale;
+                let resolve = |mut value: [f32; 4]| {
+                    value[0] *= scale;
+                    value[1] *= scale;
+                    value
+                };
+                (resolve(self.from), resolve(self.to))
+            }
             TransitionProperty::HorizontalEdgeFirst | TransitionProperty::HorizontalEdgeSecond => {
                 let mut from = self.from;
                 let mut to = self.to;
@@ -567,6 +591,18 @@ impl AnimationProperty {
         visual_scale: f32,
     ) -> Bounds<Pixels> {
         match self.property {
+            TransitionProperty::VerticalEdges => {
+                let shape = |value: [f32; 4]| {
+                    let mut result = bounds;
+                    result.origin.y += crate::px(value[0] * visual_scale);
+                    result.size.height = crate::px(
+                        (bounds.size.height.0 + (value[1] - value[0]) * visual_scale).max(0.0),
+                    );
+                    result
+                };
+                // Include the stable endpoint used after completion as well as both targets.
+                bounds.union(&shape(self.from)).union(&shape(self.to))
+            }
             TransitionProperty::Translation
             | TransitionProperty::HorizontalEdgeFirst
             | TransitionProperty::HorizontalEdgeSecond => {
@@ -1345,7 +1381,10 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
             // has registered the exact retained subtree bounds.
             let dirty_bounds = if property.property == TransitionProperty::Translation {
                 Bounds::new(Point::default(), window.viewport_size())
-            } else if property.property == TransitionProperty::FilterBlur {
+            } else if matches!(
+                property.property,
+                TransitionProperty::FilterBlur | TransitionProperty::VerticalEdges
+            ) {
                 property.dirty_bounds_with_visual_scale(
                     window.visual_bounds(bounds),
                     window.visual_scale(),
@@ -1397,6 +1436,8 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                             if state.property == *property
                                 && state.spec == *spec
                                 && state.spring == *spring
+                                && (property.property != TransitionProperty::VerticalEdges
+                                    || state.bounds.size == bounds.size)
                                 && (!matches!(
                                     property.property,
                                     TransitionProperty::HorizontalEdgeFirst
@@ -1789,6 +1830,19 @@ mod tests {
         assert_eq!(property.from, [0.25, 0.0, 0.0, 0.0]);
         assert_eq!(property.to, [0.9, 0.0, 0.0, 0.0]);
         assert_eq!(spec.driver, AnimationDriver::Auto);
+    }
+
+    #[test]
+    fn vertical_edges_resolve_dpi_and_visual_scale_without_layout() {
+        let property = AnimationProperty::vertical_edges(
+            [crate::px(140.), crate::px(-2.)],
+            [crate::px(0.); 2],
+        );
+        assert!(!property.property.affects_layout());
+        assert_eq!(property.property.preferred_driver(), AnimationDriver::Gpu);
+        let (from, to) = property.resolved_values(Bounds::default(), 1.25, 2.);
+        assert_eq!(from, [350., -5., 0., 0.]);
+        assert_eq!(to, [0.; 4]);
     }
 
     #[test]

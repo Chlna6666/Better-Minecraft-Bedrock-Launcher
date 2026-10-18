@@ -5,6 +5,7 @@ use std::sync::Arc;
 mod atlas_damage;
 mod lifecycle;
 mod static_background;
+mod vertical_edges;
 
 const SIDE: usize = 64;
 

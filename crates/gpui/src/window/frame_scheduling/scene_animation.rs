@@ -181,10 +181,18 @@ impl Window {
         to: [f32; 4],
     ) -> bool {
         let scale_factor = self.scale_factor();
-        let base_translation_delta = [
-            (old_bounds.origin.x.0 - new_bounds.origin.x.0) * scale_factor,
-            (old_bounds.origin.y.0 - new_bounds.origin.y.0) * scale_factor,
-        ];
+        let base_translation_delta = if property == TransitionProperty::VerticalEdges {
+            let scale = scale_factor * self.visual_scale();
+            [
+                (old_bounds.top().0 - new_bounds.top().0) * scale,
+                (old_bounds.bottom().0 - new_bounds.bottom().0) * scale,
+            ]
+        } else {
+            [
+                (old_bounds.origin.x.0 - new_bounds.origin.x.0) * scale_factor,
+                (old_bounds.origin.y.0 - new_bounds.origin.y.0) * scale_factor,
+            ]
+        };
         let mut engine = self.animation_engine.borrow_mut();
         let retargeted = engine.retarget_scene_animation(
             element_id,

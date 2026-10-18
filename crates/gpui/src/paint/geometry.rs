@@ -17,6 +17,7 @@ pub(crate) fn animation_sample_is_identity(value: &SceneAnimationValue) -> bool 
                 && (sampled[3] <= 0.5 || sampled[2].clamp(0., 1.) == 1.)
         }
         TransitionProperty::Scale => sampled[0] == 1.,
+        TransitionProperty::VerticalEdges => sampled[0] == 0. && sampled[1] == 0.,
         TransitionProperty::Transform => sampled[0] == 1. && sampled[1].clamp(0., 1.) == 1.,
         TransitionProperty::Rotation => sampled[0] == 0.,
         TransitionProperty::VisualState => {
@@ -186,6 +187,15 @@ pub(crate) fn animation_sampled_bounds(
         return primitive.visual_bounds();
     };
     let sampled = sampled_animation_components(value);
+    if value.property == TransitionProperty::VerticalEdges
+        && let Primitive::Quad(quad) = primitive
+    {
+        let mut bounds = quad.bounds;
+        bounds.origin.y += ScaledPixels(sampled[0]);
+        bounds.size.height =
+            ScaledPixels((bounds.size.height.0 + sampled[1] - sampled[0]).max(0.0));
+        return bounds.intersect(&quad.content_mask.bounds);
+    }
     if matches!(
         value.property,
         TransitionProperty::Translation | TransitionProperty::VisualState

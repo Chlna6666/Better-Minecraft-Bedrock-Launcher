@@ -66,6 +66,10 @@ pub enum TransitionProperty {
     /// Packed horizontal edge offsets, preserving decoration height and corner radii.
     #[doc(hidden)]
     HorizontalEdges,
+    /// Top and bottom offsets from a Quad's stable layout bounds, in device pixels after
+    /// resolution. Changes shape geometry without changing content clips, layout, or hit targets.
+    /// Corner radii and border widths retain their physical size; crossed edges collapse to zero.
+    VerticalEdges,
 }
 
 impl TransitionProperty {
@@ -110,6 +114,7 @@ impl TransitionProperty {
                 | Self::HorizontalEdgeFirst
                 | Self::HorizontalEdgeSecond
                 | Self::HorizontalEdges
+                | Self::VerticalEdges
         )
     }
 }

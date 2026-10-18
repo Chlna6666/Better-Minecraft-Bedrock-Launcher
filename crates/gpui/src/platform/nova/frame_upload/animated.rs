@@ -8,6 +8,9 @@ mod primitive;
 mod tests;
 mod values;
 
+#[cfg(test)]
+pub(in crate::platform::nova) use primitive::apply_value;
+
 use primitive::BackdropBlurAnimationSample;
 pub(super) use primitive::{AnimatedByteMetadata, AnimatedUpload};
 

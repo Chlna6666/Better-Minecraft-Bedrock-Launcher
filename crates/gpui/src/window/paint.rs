@@ -285,6 +285,7 @@ impl Window {
         let opacity = self.element_opacity();
         let animation_id = animation_id.or_else(|| {
             self.scene_animation_id_for(&[
+                crate::TransitionProperty::VerticalEdges,
                 crate::TransitionProperty::Opacity,
                 crate::TransitionProperty::Scale,
                 crate::TransitionProperty::Transform,
@@ -305,7 +306,11 @@ impl Window {
             border_style: quad.border_style,
         };
 
-        if !quad.background.is_transparent() {
+        if !quad.background.is_transparent()
+            || self
+                .scene_animation
+                .is_some_and(|(_, property)| property == crate::TransitionProperty::VerticalEdges)
+        {
             self.next_frame.painter.insert_primitive(quad);
             return;
         }

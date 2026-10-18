@@ -4,6 +4,56 @@ use super::*;
 use crate::{Primitive, SceneAnimationValue, TransitionProperty};
 
 #[test]
+fn vertical_edges_preserve_bottom_width_radii_and_ancestor_clip() {
+    let id = crate::SceneAnimationId(1);
+    let base = Quad {
+        animation_id: Some(id),
+        bounds: crate::bounds(
+            crate::point(crate::ScaledPixels(10.), crate::ScaledPixels(20.)),
+            crate::size(crate::ScaledPixels(30.), crate::ScaledPixels(140.)),
+        ),
+        corner_radii: crate::Corners::all(crate::ScaledPixels(5.)),
+        content_mask: crate::ContentMask {
+            bounds: crate::bounds(
+                crate::point(crate::ScaledPixels(0.), crate::ScaledPixels(50.)),
+                crate::size(crate::ScaledPixels(100.), crate::ScaledPixels(90.)),
+            ),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for progress in [0., 0.25, 0.5, 1., 1.1, -0.1] {
+        let value = SceneAnimationValue {
+            animation_id: id,
+            property: TransitionProperty::VerticalEdges,
+            from: [140., 0., 0., 0.],
+            to: [0.; 4],
+            progress,
+        };
+        let mut primitive = Primitive::Quad(base.clone());
+        apply_value(&mut primitive, &value);
+        let Primitive::Quad(quad) = &primitive else {
+            unreachable!()
+        };
+        assert_eq!(quad.bounds.size.width, base.bounds.size.width);
+        assert_eq!(quad.bounds.origin.x, base.bounds.origin.x);
+        assert_eq!(quad.corner_radii, base.corner_radii);
+        assert_eq!(quad.content_mask, base.content_mask);
+        if progress >= 0. {
+            assert_eq!(quad.bounds.bottom(), base.bounds.bottom());
+        }
+        assert_eq!(
+            crate::paint::animation_sampled_bounds(&Primitive::Quad(base.clone()), Some(&value)),
+            primitive.visual_bounds(),
+        );
+        if progress == 1. {
+            assert_eq!(quad.bounds, base.bounds);
+            assert!(crate::paint::animation_sample_is_identity(&value));
+        }
+    }
+}
+
+#[test]
 fn horizontal_edges_preserve_height_radius_and_crossing_order() {
     for edges in [[-20.0, -5.0], [-5.0, -20.0]] {
         let mut primitive = Primitive::Quad(Quad {

@@ -424,6 +424,9 @@ impl AnimationEngine {
             TransitionProperty::HorizontalEdgeFirst | TransitionProperty::HorizontalEdgeSecond
         ) {
             current[0] += base_translation_delta[0];
+        } else if property == TransitionProperty::VerticalEdges {
+            current[0] += base_translation_delta[0];
+            current[1] += base_translation_delta[1];
         } else if property == TransitionProperty::Translation {
             current[0] += base_translation_delta[0];
             current[1] += base_translation_delta[1];

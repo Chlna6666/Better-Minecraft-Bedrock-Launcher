@@ -743,6 +743,7 @@ mod tests {
         for property in [
             TransitionProperty::Opacity,
             TransitionProperty::HorizontalEdges,
+            TransitionProperty::VerticalEdges,
         ] {
             let started_at = Instant::now();
             let element_id =
@@ -1491,7 +1492,7 @@ impl PresentationPacket {
                 && matches!(property, TransitionProperty::Opacity | TransitionProperty::Translation
                     | TransitionProperty::Scale | TransitionProperty::Transform
                     | TransitionProperty::VisualState | TransitionProperty::Rotation
-                    | TransitionProperty::ClipReveal);
+                    | TransitionProperty::ClipReveal | TransitionProperty::VerticalEdges);
             if !scene_damage_covers_property
                 && let Some(bounds) = timeline.bounds()
             {

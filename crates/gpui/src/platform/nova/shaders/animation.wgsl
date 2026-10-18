@@ -24,6 +24,7 @@ struct VisualAnimation {
     clip_bottom: f32,
     clips_geometry: u32,
     horizontal_edges: vec2<f32>,
+    vertical_edges: vec2<f32>,
 }
 
 fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimation {
@@ -39,6 +40,7 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.clip_bottom = 0.0;
     animation.clips_geometry = 0u;
     animation.horizontal_edges = vec2<f32>(0.0);
+    animation.vertical_edges = vec2<f32>(0.0);
 
     // GlobalParams.pad is renderer-owned in Nova and becomes an ABI feature gate. This keeps the
     // same shader binaries safe for static streams whose first u32 still contains legacy draw order.
@@ -101,6 +103,9 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
         case 10u: {
             animation.horizontal_edges = sampled.xy;
         }
+        case 11u: {
+            animation.vertical_edges = sampled.xy;
+        }
         // Rotation is promoted to a retained subtree composite; raw 2D primitives must not rotate
         // independently. Other transition properties are likewise no-ops in the old CPU path.
         default: {}
@@ -117,6 +122,8 @@ fn animation_bounds(bounds: Bounds, animation: VisualAnimation) -> Bounds {
     result.origin += animation.translation;
     result.origin.x += min(animation.horizontal_edges.x, animation.horizontal_edges.y);
     result.size.x += abs(animation.horizontal_edges.x - animation.horizontal_edges.y);
+    result.origin.y += animation.vertical_edges.x;
+    result.size.y = max(result.size.y + animation.vertical_edges.y - animation.vertical_edges.x, 0.0);
     return result;
 }
 

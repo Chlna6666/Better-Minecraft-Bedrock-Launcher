@@ -321,7 +321,10 @@ fn rotated_bounds(
 }
 
 #[cfg(test)]
-pub(super) fn apply_value(primitive: &mut Primitive, value: &SceneAnimationValue) {
+pub(in crate::platform::nova) fn apply_value(
+    primitive: &mut Primitive,
+    value: &SceneAnimationValue,
+) {
     apply_resolved_value(primitive, ResolvedAnimationValue::new(value));
 }
 
@@ -398,6 +401,14 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
             };
             bounds.origin.x += crate::ScaledPixels(sampled[0].min(sampled[1]));
             bounds.size.width += crate::ScaledPixels((sampled[0] - sampled[1]).abs());
+        }
+        TransitionProperty::VerticalEdges => {
+            if let Primitive::Quad(quad) = primitive {
+                quad.bounds.origin.y += crate::ScaledPixels(sampled[0]);
+                quad.bounds.size.height = crate::ScaledPixels(
+                    (quad.bounds.size.height.0 + sampled[1] - sampled[0]).max(0.0),
+                );
+            }
         }
         _ => {}
     }

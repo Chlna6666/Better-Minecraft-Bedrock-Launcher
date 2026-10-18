@@ -37,6 +37,7 @@ pub(in crate::platform::nova) enum AnimationProperty {
     ClipReveal = 8,
     VisualState = 9,
     HorizontalEdges = 10,
+    VerticalEdges = 11,
 }
 
 impl AnimationProperty {
@@ -55,6 +56,7 @@ impl AnimationProperty {
             crate::TransitionProperty::ClipReveal => Some(Self::ClipReveal),
             crate::TransitionProperty::VisualState => Some(Self::VisualState),
             crate::TransitionProperty::HorizontalEdges => Some(Self::HorizontalEdges),
+            crate::TransitionProperty::VerticalEdges => Some(Self::VerticalEdges),
             crate::TransitionProperty::HorizontalEdgeFirst
             | crate::TransitionProperty::HorizontalEdgeSecond => None,
             crate::TransitionProperty::Width
