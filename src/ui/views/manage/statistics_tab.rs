@@ -1,9 +1,17 @@
 use super::*;
-use crate::ui::animation::{settled_animation, stat_chart_bar_motion};
+use crate::ui::animation::stat_chart_bar_motion;
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
 
-const STAT_NUMBER_DURATION: Duration = Duration::from_millis(360);
+const STAT_NUMBER_DURATION: Duration = Duration::from_millis(420);
+
+fn count_at_progress(target: u64, progress: f32) -> u64 {
+    if progress >= 1.0 {
+        target
+    } else {
+        ((target as f64) * f64::from(progress.clamp(0.0, 1.0))).round() as u64
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatMetricKind {
@@ -43,49 +51,43 @@ impl AnimatedStatValue {
 
 impl RenderOnce for AnimatedStatValue {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let i18n = cx.global::<I18n>();
-        let text = match self.kind {
-            StatMetricKind::Duration => format_duration(i18n, self.target),
-            StatMetricKind::Count => t!("ManagePage.stats_count", count = self.target),
-        };
+        let i18n = cx.global::<I18n>().clone();
         let value = div()
             .w_full()
             .text_size(px(20.))
             .font_weight(FontWeight::BOLD)
-            .text_color(self.colors.text_primary)
-            .child(text);
+            .text_color(self.colors.text_primary);
 
-        let motion = if self.animate {
-            Animation::from_spec(
-                AnimationSpec::new(STAT_NUMBER_DURATION)
-                    .fill_mode(FillMode::Both)
-                    .ease(Easing::OutCubic),
-            )
-            .with_property(AnimationProperty::translation_opacity(
-                point(px(0.0), px(8.0)),
-                Point::default(),
-                0.0,
-                1.0,
-            ))
+        // Numeric content must be sampled on the UI lane; opacity alone leaves the
+        // displayed number at its final value for the entire entrance animation.
+        if self.animate && self.target > 0 {
+            let target = self.target;
+            let kind = self.kind;
+            value
+                .with_animation(
+                    SharedString::from(format!("{}-count-{}", self.id.as_ref(), self.sequence)),
+                    Animation::from_spec(
+                        AnimationSpec::new(STAT_NUMBER_DURATION)
+                            .fill_mode(FillMode::Both)
+                            .ease(Easing::OutCubic),
+                    ),
+                    move |element, progress| {
+                        let current = count_at_progress(target, progress);
+                        let label = match kind {
+                            StatMetricKind::Duration => format_duration(&i18n, current),
+                            StatMetricKind::Count => t!("ManagePage.stats_count", count = current),
+                        };
+                        element.child(label)
+                    },
+                )
+                .into_any_element()
         } else {
-            settled_animation().with_property(AnimationProperty::translation_opacity(
-                Point::default(),
-                Point::default(),
-                1.0,
-                1.0,
-            ))
-        };
-
-        value
-            .with_visual_animation(
-                SharedString::from(format!(
-                    "{}-presentation-{}",
-                    self.id.as_ref(),
-                    self.sequence
-                )),
-                motion,
-            )
-            .expect("animation declares presentation properties")
+            let label = match self.kind {
+                StatMetricKind::Duration => format_duration(&i18n, self.target),
+                StatMetricKind::Count => t!("ManagePage.stats_count", count = self.target),
+            };
+            value.child(label).into_any_element()
+        }
     }
 }
 
@@ -124,84 +126,95 @@ pub(super) fn render_statistics_tab(
 
     div()
         .id("manage-statistics-scroll")
-        .w_full()
-        .h_full()
+        .size_full()
         .min_h(px(0.))
         .min_w(px(0.))
         .overflow_y_scrollbar()
         .track_scroll(scroll_handle)
         .scrollbar_width(px(6.))
-        .flex()
-        .flex_col()
-        .gap(px(14.))
         .child(
             div()
-                .grid()
-                .grid_cols(3)
-                .flex_none()
-                .gap(px(10.))
-                .child(stat_card(
+                .w_full()
+                .min_w(px(0.))
+                .px(px(5.))
+                .pt(px(8.))
+                .pb(px(22.))
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .child(
+                    div()
+                        .grid()
+                        .grid_cols(3)
+                        .flex_none()
+                        .gap(px(10.))
+                        .child(stat_card(
+                            colors,
+                            t!("ManagePage.stats_total_play_time"),
+                            AnimatedStatValue::new(
+                                play_time_id,
+                                state.tab_anim_seq,
+                                info.total_play_time,
+                                StatMetricKind::Duration,
+                                colors,
+                                animate,
+                            ),
+                        ))
+                        .child(stat_card(
+                            colors,
+                            t!("ManagePage.stats_launch_count"),
+                            AnimatedStatValue::new(
+                                launch_count_id,
+                                state.tab_anim_seq,
+                                info.total_sessions,
+                                StatMetricKind::Count,
+                                colors,
+                                animate,
+                            ),
+                        ))
+                        .child(stat_card(
+                            colors,
+                            t!("ManagePage.stats_last_launch"),
+                            stat_text(
+                                colors,
+                                info.last_play_time.map_or_else(
+                                    || t!("ManagePage.stats_never_launched"),
+                                    |time| {
+                                        SharedString::from(
+                                            time.format("%Y-%m-%d\n%H:%M").to_string(),
+                                        )
+                                    },
+                                ),
+                            ),
+                        )),
+                )
+                .child(chart_card(
                     colors,
-                    t!("ManagePage.stats_total_play_time"),
-                    AnimatedStatValue::new(
-                        play_time_id,
-                        state.tab_anim_seq,
-                        info.total_play_time,
-                        StatMetricKind::Duration,
-                        colors,
-                        animate,
-                    ),
+                    t!("ManagePage.stats_daily_launches"),
+                    t!("ManagePage.stats_last_14_days"),
+                    "launches",
+                    state.tab_anim_seq,
+                    animate,
+                    &days,
+                    max_sessions,
+                    |day| day.sessions,
+                    |value| t!("ManagePage.stats_count", count = value),
+                    colors.accent,
                 ))
-                .child(stat_card(
+                .child(chart_card(
                     colors,
-                    t!("ManagePage.stats_launch_count"),
-                    AnimatedStatValue::new(
-                        launch_count_id,
-                        state.tab_anim_seq,
-                        info.total_sessions,
-                        StatMetricKind::Count,
-                        colors,
-                        animate,
-                    ),
+                    t!("ManagePage.stats_daily_play_time"),
+                    t!("ManagePage.stats_last_14_days"),
+                    "play-time",
+                    state.tab_anim_seq,
+                    animate,
+                    &days,
+                    max_play_time,
+                    |day| day.play_time,
+                    |value| format_duration(i18n, value),
+                    colors.stat_green_text,
                 ))
-                .child(stat_card(
-                    colors,
-                    t!("ManagePage.stats_last_launch"),
-                    stat_text(
-                        colors,
-                        info.last_play_time.map_or_else(
-                            || t!("ManagePage.stats_never_launched"),
-                            |time| SharedString::from(time.format("%Y-%m-%d %H:%M").to_string()),
-                        ),
-                    ),
-                )),
         )
-        .child(chart_card(
-            colors,
-            t!("ManagePage.stats_daily_launches"),
-            t!("ManagePage.stats_last_14_days"),
-            "launches",
-            state.tab_anim_seq,
-            animate,
-            &days,
-            max_sessions,
-            |day| day.sessions,
-            |value| t!("ManagePage.stats_count", count = value),
-            colors.accent,
-        ))
-        .child(chart_card(
-            colors,
-            t!("ManagePage.stats_daily_play_time"),
-            t!("ManagePage.stats_last_14_days"),
-            "play-time",
-            state.tab_anim_seq,
-            animate,
-            &days,
-            max_play_time,
-            |day| day.play_time,
-            |value| format_duration(i18n, value),
-            colors.stat_green_text,
-        ))
         .into_any_element()
 }
 
@@ -230,13 +243,14 @@ fn recent_days(info: &crate::core::version::game_info::GameInfo, count: u64) -> 
 
 fn stat_card(colors: &ThemeColors, label: SharedString, value: impl IntoElement) -> Div {
     div()
-        .min_h(px(86.))
-        .p(px(14.))
-        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .min_h(px(102.))
+        .min_w(px(0.))
+        .p(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(colors.border)
         .bg(Hsla {
-            a: 0.42,
+            a: 0.62,
             ..colors.surface
         })
         .flex()
@@ -254,7 +268,7 @@ fn stat_card(colors: &ThemeColors, label: SharedString, value: impl IntoElement)
 fn stat_text(colors: &ThemeColors, value: SharedString) -> Div {
     div()
         .w_full()
-        .text_size(px(20.))
+        .text_size(px(18.))
         .font_weight(FontWeight::BOLD)
         .text_color(colors.text_primary)
         .child(value)
@@ -274,14 +288,19 @@ fn chart_card(
     value_label: impl Fn(u64) -> SharedString,
     color: Hsla,
 ) -> Div {
+    let total = days
+        .iter()
+        .fold(0u64, |sum, day| sum.saturating_add(value(day)));
+
     div()
         .flex_none()
-        .p(px(14.))
-        .rounded(px(crate::ui::theme::tokens::radius::SM))
+        .min_w(px(0.))
+        .p(px(16.))
+        .rounded(px(crate::ui::theme::tokens::radius::MD))
         .border_1()
         .border_color(colors.border)
         .bg(Hsla {
-            a: 0.42,
+            a: 0.58,
             ..colors.surface
         })
         .flex()
@@ -301,12 +320,26 @@ fn chart_card(
                 )
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(colors.text_secondary)
-                        .child(subtitle),
+                        .flex()
+                        .flex_col()
+                        .items_end()
+                        .gap(px(3.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(colors.text_secondary)
+                                .child(subtitle),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .child(value_label(total)),
+                        ),
                 ),
         )
-        .child(div().h(px(180.)).flex().items_end().gap(px(6.)).children(
+        .child(div().h(px(178.)).w_full().flex().items_end().gap(px(6.)).children(
             days.iter().enumerate().map(|(index, day)| {
                 let current = value(day);
                 let height = if current == 0 {
@@ -318,24 +351,26 @@ fn chart_card(
                     .w_full()
                     .max_w(px(30.))
                     .h(px(height))
-                    .rounded_t(px(5.))
-                    .bg(Hsla { a: 0.72, ..color })
-                    .with_visual_animation(
+                    .rounded(px(6.))
+                    .bg(if current == 0 {
+                        Hsla { a: 0.24, ..colors.border }
+                    } else {
+                        Hsla { a: 0.78, ..color }
+                    });
+                // A rectangular reveal cuts the rounded cap during growth.
+                // A bottom-pivot transform retains the rounded shape.
+                let bar = if animate && current > 0 {
+                    bar.with_visual_animation(
                         SharedString::from(format!(
                             "manage-stat-{animation_scope}-{animation_sequence}-{index}"
                         )),
-                        if animate {
-                            stat_chart_bar_motion(index)
-                        } else {
-                            settled_animation().with_property(AnimationProperty::vertical_reveal(
-                                VerticalRevealEdge::Bottom,
-                                1.0,
-                                1.0,
-                            ))
-                        },
+                        stat_chart_bar_motion(index),
                     )
                     .expect("animation declares presentation properties")
-                    .into_any_element();
+                    .into_any_element()
+                } else {
+                    bar.into_any_element()
+                };
 
                 div()
                     .flex_1()
@@ -347,9 +382,14 @@ fn chart_card(
                     .gap(px(5.))
                     .child(
                         div()
+                            .h(px(12.))
                             .text_size(px(9.))
                             .text_color(colors.text_secondary)
-                            .child(value_label(current)),
+                            .child(if current == 0 {
+                                SharedString::from("")
+                            } else {
+                                value_label(current)
+                            }),
                     )
                     .child(bar)
                     .child(
@@ -370,5 +410,18 @@ fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {
         )
     } else {
         t!("ManagePage.stats_minutes", minutes = seconds / 60)
+    }
+}
+
+#[cfg(test)]
+mod statistics_tests {
+    use super::count_at_progress;
+
+    #[test]
+    fn count_animation_bounds_and_exact_terminal_value() {
+        assert_eq!(count_at_progress(81, 0.0), 0);
+        assert_eq!(count_at_progress(81, 0.5), 41);
+        assert_eq!(count_at_progress(81, 1.0), 81);
+        assert_eq!(count_at_progress(u64::MAX, 1.0), u64::MAX);
     }
 }

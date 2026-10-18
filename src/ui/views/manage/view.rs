@@ -1003,7 +1003,14 @@ impl ManagePageView {
             .flex_col()
             .gap(px(12.))
             .child(toolbar)
-            .child(div().flex_1().min_h(px(0.)).child(content))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .min_w(px(0.))
+                    .when(state.tab == ManageTab::Statistics, |this| this.overflow_hidden())
+                    .child(content),
+            )
             .into_any_element()
     }
 }
