@@ -14,7 +14,7 @@ use super::custom_geometry::{
 };
 use super::custom_geometry_animation::CustomGeometryBoneRole;
 use super::geometry::{
-    ColorRun, CuboidSize, FaceGrid, SKIN_MIN_SIZE, SkinTextureScale, SkinVertex,
+    ColorRun, CuboidSize, FaceGrid, SKIN_MIN_SIZE, SkinVertex,
     face_rect_corners, face_region, skin_preview_faces,
 };
 use super::uv::{CuboidUv, TextureRegion, arm_uv, body_uv, head_uv, leg_uv};
