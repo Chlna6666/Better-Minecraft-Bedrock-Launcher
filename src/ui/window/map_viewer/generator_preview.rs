@@ -71,6 +71,15 @@ impl MapViewerWindowView {
         {
             return;
         }
+        // Source OBJ geometry is published before voxelization completes.
+        // This is an immutable CPU/GPU snapshot; checking availability on a
+        // TaskManager progress event performs no disk IO or geometry rebuild.
+        if obj && self.generator.original_preview.is_none()
+            && let Some(original) = get_obj_source_preview(snapshot.id.as_ref())
+        {
+            self.generator.original_preview = Some(original);
+            cx.notify();
+        }
         if !snapshot.is_terminal() {
             return;
         }
