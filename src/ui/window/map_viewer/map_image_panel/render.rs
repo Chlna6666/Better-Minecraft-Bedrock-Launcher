@@ -71,28 +71,31 @@ impl MapViewerWindowView {
                     ))
                     .child(generator_section_title(colors, "02  网格与画面利用率"))
                     .child(
-                        generator_choice(
-                            colors,
-                            "智能行列 · 按图片比例减少留白",
-                            self.map_image.options.auto_fit,
-                        )
-                        .when(self.map_image.source.is_some() && !operation_busy, |button| {
-                            button.on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.enable_grid_auto_fit(cx)
+                        crate::ui::components::inspector::inspector_field_group(colors)
+                            .child(
+                                generator_choice(
+                                    colors,
+                                    "智能行列 · 按图片比例减少留白",
+                                    self.map_image.options.auto_fit,
+                                )
+                                .when(self.map_image.source.is_some() && !operation_busy, |button| {
+                                    button.on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _event, _window, cx| {
+                                            this.enable_grid_auto_fit(cx)
+                                        }),
+                                    )
                                 }),
                             )
-                        }),
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child("自动去除透明外边距，按比例匹配分片；手动修改行列将切换固定网格。"),
+                            )
+                            .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
+                            .child(self.render_grid_axis(GridAxis::Rows, colors, cx)),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_secondary)
-                            .child("智能模式先去除透明外边距，再匹配横纵比例；必要时增加少量地图张数。手动修改列/行即切换固定网格。"),
-                    )
-                    .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
-                    .child(self.render_grid_axis(GridAxis::Rows, colors, cx))
                     .child(generator_section_title(colors, "03  写入目标"))
                     .child(
                         div()
