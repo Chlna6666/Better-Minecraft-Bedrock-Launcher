@@ -632,44 +632,69 @@ impl MapViewerWindowView {
             .justify_start()
             .child(
                 div()
-                    .max_w(px(480.0))
+                    .max_w(px(560.0))
                     .w_full()
                     .mx(px(20.0))
-                    .p(px(20.0))
-                    .rounded(px(12.0))
+                    .p(px(22.0))
+                    .rounded(px(11.0))
                     .border_1()
                     .border_color(colors.border)
                     .bg(colors.surface)
                     .flex()
                     .flex_col()
-                    .items_center()
+                    .items_start()
                     .gap(px(12.0))
                     .child(
                         div()
-                            .text_size(px(17.0))
+                            .px(px(8.0))
+                            .py(px(5.0))
+                            .rounded(px(5.0))
+                            .bg(colors.surface_hover)
+                            .text_size(px(10.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.accent)
+                            .child("01 / SOURCE"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(19.0))
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors.text_primary)
                             .child(title),
                     )
                     .child(
                         div()
                             .text_size(px(12.0))
+                            .line_height(px(20.0))
                             .text_color(colors.text_secondary)
-                            .text_center()
                             .child(description),
                     )
                     .child(
-                        primary_button(colors, "map-import-choose-source", action).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| {
-                                this.choose_import_source_from_workspace(cx);
-                            }),
-                        ),
+                        div()
+                            .w_full()
+                            .h(px(1.0))
+                            .bg(colors.border),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(colors.text_secondary)
-                            .child(drop_hint),
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                primary_button(colors, "map-import-choose-source", action).on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.choose_import_source_from_workspace(cx);
+                                    }),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child(drop_hint),
+                            ),
                     ),
             )
     }
@@ -742,11 +767,29 @@ impl MapViewerWindowView {
 
 pub(super) fn import_preview_label(colors: &ThemeColors, text: impl Into<SharedString>) -> Div {
     div()
-        .px(px(12.0))
-        .py(px(8.0))
-        .text_size(px(12.0))
-        .text_color(colors.text_secondary)
-        .child(text.into())
+        .px(px(10.0))
+        .py(px(9.0))
+        .min_w(px(0.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(colors.border)
+        .child(
+            div()
+                .w(px(3.0))
+                .h(px(13.0))
+                .rounded(px(2.0))
+                .bg(colors.accent),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors.text_primary)
+                .child(text.into()),
+        )
 }
 
 pub(super) fn is_import_source_path_for_panel(
