@@ -50,7 +50,9 @@ impl MapViewerWindowView {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .child(generator_choice(colors, "Y −1", false).on_mouse_down(
+            .child(crate::ui::components::numeric_field::numeric_step_button(
+                colors, "Y −1", true,
+            ).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| this.step_generator_y(-1, cx)),
             ))
@@ -60,7 +62,9 @@ impl MapViewerWindowView {
                     .text_color(colors.text_primary)
                     .child(format!("预览/放置底部 Y {}", self.y_layer)),
             )
-            .child(generator_choice(colors, "Y +1", false).on_mouse_down(
+            .child(crate::ui::components::numeric_field::numeric_step_button(
+                colors, "Y +1", true,
+            ).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _event, _window, cx| this.step_generator_y(1, cx)),
             ))
