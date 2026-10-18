@@ -21,7 +21,7 @@ impl MapViewerWindowView {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(import_preview_label(colors, "源图片 · 转换前素材预览"))
+                    .child(import_preview_label(colors, "源图片 · 原始比例（右侧显示转换结果）"))
                     .when_some(self.image_generator.source.as_ref(), |pane, source| {
                         pane.child(
                             div()
@@ -36,17 +36,9 @@ impl MapViewerWindowView {
                                     img(source.clone())
                                         .w_full()
                                         .h_full()
-                                        .object_fit(
-                                            if self.image_generator.options.fit
-                                                == ImageFit::CenterCrop
-                                            {
-                                                ObjectFit::Cover
-                                            } else {
-                                                // The conversion's Stretch mode fills the output;
-                                                // Contain would falsely promise unmodified aspect.
-                                                ObjectFit::Fill
-                                            },
-                                        ),
+                                        // This is the unmodified source. The output panel
+                                        // displays the actual crop/stretch and block palette.
+                                        .object_fit(ObjectFit::Contain),
                                 ),
                         )
                     }),
