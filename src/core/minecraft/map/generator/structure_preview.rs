@@ -252,6 +252,13 @@ async fn generate_preview(
                 // Reuse the already parsed source; do not read OBJ/MTL twice.
                 // Failure to construct a secondary visual scene must not stop conversion.
                 let original = build_obj_source_preview(&model).ok();
+                // Publish the actual source mesh before the expensive voxelization phase.
+                // A discarded/cancelled task cannot resurrect the old scene.
+                if let Some(scene) = original.as_ref()
+                    && let Ok(mut store) = previews().lock()
+                {
+                    store.insert_original_obj(&worker_id, scene.clone());
+                }
                 let candidates = default_block_candidates();
                 let mut previous = 0;
                 let plan = voxelize_obj_with_progress(
