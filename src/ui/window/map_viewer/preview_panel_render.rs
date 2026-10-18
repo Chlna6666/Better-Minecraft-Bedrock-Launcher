@@ -297,8 +297,15 @@ impl MapViewerWindowView {
             ));
 
         if let Some(mesh) = mesh {
-            let selection_bounds = self.preview_3d.signature.map(|signature| signature.bounds);
-            let world_frame = preview_3d_world_frame(mesh.as_ref(), selection_bounds);
+            // Converted OBJ/image previews must use their own mesh bounds. Reusing
+            // the world's region selection bounds makes imported models microscopic.
+            let importing = self.import_workspace_active();
+            let selection_bounds = if importing {
+                None
+            } else {
+                self.preview_3d.signature.map(|signature| signature.bounds)
+            };
+            let world_frame = preview_3d_world_frame(mesh.as_ref(), selection_bounds, importing);
             match mesh.scene_view_for(
                 camera,
                 world_frame.center,
@@ -327,6 +334,7 @@ impl MapViewerWindowView {
 fn preview_3d_world_frame(
     mesh: &Preview3dMesh,
     selection_bounds: Option<bedrock_world::SlimeChunkBounds>,
+    import_preview: bool,
 ) -> Preview3dWorldFrame {
     let (center_x, center_z, horizontal_span) = selection_bounds.map_or_else(
         || {
@@ -361,7 +369,7 @@ fn preview_3d_world_frame(
 
     Preview3dWorldFrame {
         center: [center_x, center_y, center_z],
-        fit_scale: 1.48 / fitted_span,
+        fit_scale: if import_preview { 2.12 } else { 1.48 } / fitted_span,
     }
 }
 
