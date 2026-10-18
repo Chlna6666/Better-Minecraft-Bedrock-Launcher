@@ -1,7 +1,5 @@
 use super::*;
-use crate::ui::animation::{
-    stat_chart_bar_cap_motion, stat_chart_bar_fill_motion, statistics_entrance_spec,
-};
+use crate::ui::animation::statistics_entrance_spec;
 use chrono::{Days, Utc};
 use std::time::Instant;
 
@@ -11,6 +9,15 @@ fn count_at_progress(target: u64, progress: f32) -> u64 {
     } else {
         ((target as f64) * f64::from(progress.clamp(0.0, 1.0))).round() as u64
     }
+}
+
+/// Keep each column's outer layout at its final height and grow only one rounded
+/// child. A single quad avoids the retained clip/translation phase mismatch
+/// that detached the former animated cap from its body after scrolling.
+fn animated_chart_bar_height(final_height: f32, progress: f32) -> f32 {
+    let height = final_height.max(0.0);
+    let start_height = height.min(2.0);
+    start_height + (height - start_height) * progress.clamp(0.0, 1.0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,10 +350,9 @@ fn chart_card(
                 } else {
                     10.0 + 130.0 * current as f32 / maximum as f32
                 };
-                // Keep the column width fixed. Animate the body and rounded cap together
-                // from the same entrance timeline as the two numerical metrics.
-                // A uniform scale changes the column width; clipping a single
-                // rounded quad exposes square corners mid-animation.
+                // A column is one rounded quad, anchored at the bottom of a
+                // final-height layout slot. The previous split cap/body retained
+                // tracks could acquire different scroll/replay states.
                 let bar = if current == 0 {
                     div()
                         .w_full()
@@ -356,50 +362,38 @@ fn chart_card(
                         .bg(Hsla { a: 0.24, ..colors.border })
                         .into_any_element()
                 } else {
-                    let cap_height = height.min(9.0);
-                    let fill_height = height - cap_height;
-                    let bar_color = Hsla { a: 0.78, ..color };
-                    let cap = div()
+                    let shape = div()
                         .w_full()
-                        .h(px(cap_height))
-                        .flex_none()
-                        .rounded_t(px(5.))
-                        .bg(bar_color);
-                    let fill = div()
-                        .w_full()
-                        .min_h(px(0.))
-                        .flex_1()
-                        .rounded_b(px(5.))
-                        .bg(bar_color);
-                    let (cap, fill) = if animate {
-                        let key = format!(
-                            "manage-stat-{animation_scope}-{animation_sequence}-{index}"
-                        );
-                        (
-                            cap.with_visual_animation(
-                                SharedString::from(format!("{key}-cap")),
-                                stat_chart_bar_cap_motion(fill_height),
+                        .h(px(height))
+                        .rounded(px(6.))
+                        .bg(Hsla { a: 0.78, ..color });
+                    // GPUI currently has no single-axis rounded-quad growth
+                    // presentation property. Animate only this bounded leaf's
+                    // height, never the column slot or surrounding labels.
+                    let shape = if animate {
+                        shape
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                                )),
+                                Animation::from_spec(statistics_entrance_spec()),
+                                move |shape, progress| {
+                                    shape.h(px(animated_chart_bar_height(height, progress)))
+                                },
                             )
-                            .expect("animation declares presentation properties")
-                            .into_any_element(),
-                            fill.with_visual_animation(
-                                SharedString::from(format!("{key}-fill")),
-                                stat_chart_bar_fill_motion(),
-                            )
-                            .expect("animation declares presentation properties")
-                            .into_any_element(),
-                        )
+                            .into_any_element()
                     } else {
-                        (cap.into_any_element(), fill.into_any_element())
+                        shape.into_any_element()
                     };
                     div()
                         .w_full()
                         .max_w(px(30.))
                         .h(px(height))
+                        .flex_none()
                         .flex()
                         .flex_col()
-                        .child(cap)
-                        .child(fill)
+                        .justify_end()
+                        .child(shape)
                         .into_any_element()
                 };
 
@@ -446,7 +440,21 @@ fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {
 
 #[cfg(test)]
 mod statistics_tests {
-    use super::count_at_progress;
+    use super::{animated_chart_bar_height, count_at_progress};
+
+    #[test]
+    fn rounded_bar_remains_single_bottom_anchored_shape() {
+        for height in [10.0, 65.0, 140.0] {
+            assert_eq!(animated_chart_bar_height(height, 0.0), 2.0);
+            assert_eq!(animated_chart_bar_height(height, 1.0), height);
+            assert_eq!(animated_chart_bar_height(height, 2.0), height);
+            let mid = animated_chart_bar_height(height, 0.5);
+            assert!(mid > 2.0 && mid < height);
+            assert!(animated_chart_bar_height(height, 0.25) < mid);
+            // Full-height layout slot is stable; the visible top travels upward.
+            assert_eq!(height - mid, (height - 2.0) * 0.5);
+        }
+    }
 
     #[test]
     fn count_animation_bounds_and_exact_terminal_value() {

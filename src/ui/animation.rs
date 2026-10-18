@@ -1,7 +1,6 @@
 use gpui::{
     Animation, AnimationDriver, AnimationProperty, AnimationSpec, App, Easing, FillMode,
-    HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, VerticalRevealEdge,
-    Window, point, px,
+    HorizontalRevealEdge, RepeatMode, SharedString, Spring, SpringPhysics, Window, point, px,
 };
 use std::time::{Duration, Instant};
 
@@ -184,25 +183,6 @@ pub fn statistics_entrance_spec() -> AnimationSpec {
     AnimationSpec::new(Duration::from_millis(520))
         .fill_mode(FillMode::Both)
         .ease(Easing::OutCubic)
-}
-
-/// Show the bar body bottom-up. This clip is applied only to a rectangular
-/// body; the rounded cap is an independent moving quad.
-pub fn stat_chart_bar_fill_motion() -> Animation {
-    Animation::from_spec(statistics_entrance_spec()).with_property(
-        AnimationProperty::vertical_reveal(VerticalRevealEdge::Bottom, 0.0, 1.0),
-    )
-}
-
-/// Move the rounded cap from the baseline to the final top edge. Both tracks
-/// start on the same frame with no date-dependent delay.
-pub fn stat_chart_bar_cap_motion(fill_height: f32) -> Animation {
-    Animation::from_spec(statistics_entrance_spec()).with_property(
-        AnimationProperty::translation(
-            point(px(0.0), px(fill_height)),
-            point(px(0.0), px(0.0)),
-        ),
-    )
 }
 
 /// Stable transition key helper for state-driven tab/subpage switches.
