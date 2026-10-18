@@ -37,9 +37,18 @@ impl MapViewerWindowView {
                     .child(generator_section_title(colors, "01  素材"))
                     .child(crate::ui::components::inspector::inspector_source_card(
                         colors,
-                        "MAP / 128",
-                        self.map_image.source.as_deref(),
-                        "PNG / JPG / TGA / WebP · 可拖入",
+                        if self.map_image.pending_bundle.is_some() {
+                            "NBT / MAP"
+                        } else {
+                            "MAP / 128"
+                        },
+                        self.map_image.source.as_deref()
+                            .or(self.map_image.pending_bundle.as_deref()),
+                        if self.map_image.pending_bundle.is_some() {
+                            "已暂存 NBT · 可重新选择图片"
+                        } else {
+                            "PNG / JPG / TGA / WebP · 可拖入"
+                        },
                         crate::ui::components::button::secondary_button(
                             colors, "map-image-source", "选择图片…",
                         )
