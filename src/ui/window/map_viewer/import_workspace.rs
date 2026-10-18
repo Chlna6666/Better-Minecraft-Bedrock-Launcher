@@ -47,6 +47,30 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    /// Use the current world viewport as an explicit placement target. This is not
+    /// a write: only the separate confirmation action submits the map edit task.
+    pub(super) fn move_import_preview_to_view_center(&mut self, cx: &mut Context<Self>) {
+        if !self.import_canvas_stage_active() || self.map_write_busy() {
+            return;
+        }
+        let Some(preview) = self.professional.paste_preview.as_ref() else {
+            return;
+        };
+        if preview.is_writing() {
+            return;
+        }
+        let transform = preview.transform;
+        let display_degrees = preview.display_degrees;
+        let target = self.viewport_center_chunk_pos();
+        if self.set_paste_preview(target, transform, display_degrees, None, cx) {
+            self.status = SharedString::from(format!(
+                "已将预览移动到当前视野中心的区块 X {}、Z {}；尚未写入世界",
+                target.x, target.z
+            ));
+            cx.notify();
+        }
+    }
+
     /// Project import snapshots and camera state; interactions schedule conversion separately.
     pub(super) fn render_import_workspace(
         &self,
@@ -88,7 +112,11 @@ impl MapViewerWindowView {
             .when(
                 preview
                     || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
-                    || self.import_task_snapshot().is_some(),
+                    || self.import_task_snapshot().is_some()
+                    || matches!(
+                        self.ui_state.active_right_panel,
+                        MapViewerRightPanel::Generator | MapViewerRightPanel::ImageGenerator
+                    ),
                 |workspace| workspace.child(self.render_import_actions(colors, cx)),
             )
             .child(
