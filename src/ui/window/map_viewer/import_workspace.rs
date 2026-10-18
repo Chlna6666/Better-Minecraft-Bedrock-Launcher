@@ -298,6 +298,33 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    /// External files reuse exactly the same source-change and cancellable preview tasks as
+    /// the picker. Never interpret a dropped image/OBJ as a structure write.
+    pub(super) fn import_source_paths_from_drop(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        cx: &mut Context<Self>,
+    ) {
+        let panel = self.ui_state.active_right_panel;
+        let mut matching = paths.iter().filter(|path| is_import_source_path_for_panel(path, panel));
+        let Some(path) = matching.next().cloned() else {
+            return;
+        };
+        if matching.next().is_some() {
+            self.status = SharedString::from("一次只能导入一个素材，请单独拖入 OBJ 或图片");
+            cx.notify();
+            return;
+        }
+        match panel {
+            MapViewerRightPanel::Generator => self.set_generator_obj_source(path, cx),
+            MapViewerRightPanel::ImageGenerator => self.set_image_generator_source(path, cx),
+            MapViewerRightPanel::MapImage => self.set_map_image_source(path, cx),
+            _ => return,
+        }
+        // A new source always begins in the conversion/inspection stage.
+        self.set_import_workspace_mode(ImportWorkspaceMode::Preview, cx);
+    }
+
     /// Shared entry point for every import mode. The file picker is not buried in settings.
     fn choose_import_source_from_workspace(&mut self, cx: &mut Context<Self>) {
         match self.ui_state.active_right_panel {
@@ -430,4 +457,40 @@ pub(super) fn import_preview_label(colors: &ThemeColors, text: impl Into<SharedS
         .text_size(px(12.0))
         .text_color(colors.text_secondary)
         .child(text.into())
+}
+
+pub(super) fn is_import_source_path_for_panel(
+    path: &std::path::Path,
+    panel: MapViewerRightPanel,
+) -> bool {
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+    match panel {
+        MapViewerRightPanel::Generator => extension.eq_ignore_ascii_case("obj"),
+        MapViewerRightPanel::ImageGenerator | MapViewerRightPanel::MapImage => {
+            ["png", "jpg", "jpeg", "tga", "webp"]
+                .into_iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod import_drop_tests {
+    use super::{is_import_source_path_for_panel, MapViewerRightPanel};
+    use std::path::Path;
+
+    #[test]
+    fn each_import_tool_accepts_only_its_own_source_format() {
+        assert!(is_import_source_path_for_panel(Path::new("avatar.OBJ"), MapViewerRightPanel::Generator));
+        assert!(!is_import_source_path_for_panel(Path::new("avatar.png"), MapViewerRightPanel::Generator));
+        for panel in [MapViewerRightPanel::MapImage, MapViewerRightPanel::ImageGenerator] {
+            assert!(is_import_source_path_for_panel(Path::new("image.PNG"), panel));
+            assert!(is_import_source_path_for_panel(Path::new("image.webp"), panel));
+            assert!(!is_import_source_path_for_panel(Path::new("image.obj"), panel));
+            assert!(!is_import_source_path_for_panel(Path::new("data.mcstructure"), panel));
+        }
+    }
 }
