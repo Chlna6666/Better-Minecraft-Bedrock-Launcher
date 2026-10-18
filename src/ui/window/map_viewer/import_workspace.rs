@@ -211,6 +211,7 @@ impl MapViewerWindowView {
         let body = match self.ui_state.active_right_panel {
             MapViewerRightPanel::MapImage => self.render_map_image_comparison(colors),
             MapViewerRightPanel::ImageGenerator => self.render_image_block_comparison(colors, cx),
+            MapViewerRightPanel::Generator => self.render_obj_source_comparison(colors, cx),
             _ => self.render_import_block_canvas(colors, cx),
         };
         div()
@@ -222,6 +223,120 @@ impl MapViewerWindowView {
             .flex()
             .flex_col()
             .child(body)
+    }
+
+    /// Real OBJ source geometry versus the generated block mesh. Both consume
+    /// immutable GPU scene snapshots; no triangulation or file IO occurs in Paint.
+    fn render_obj_source_comparison(
+        &self,
+        colors: &ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let narrow = self.viewport.width < 680.0;
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .flex()
+            .when(narrow, |pane| pane.flex_col())
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(import_preview_label(colors, "原始 OBJ · 三角形与材质色"))
+                    .when_some(self.generator.original_preview.as_ref(), |panel, original| {
+                        let camera = self.preview_3d.camera;
+                        let distance = 3.4 / camera.zoom.max(0.05);
+                        let x = distance * camera.pitch.cos() * camera.yaw.sin();
+                        let y = distance * camera.pitch.sin();
+                        let z = distance * camera.pitch.cos() * camera.yaw.cos();
+                        let scene = original.scene_view.with_camera(
+                            gpui_3d::Camera::perspective(
+                                gpui_3d::Vec3::new(x, y, z),
+                                gpui_3d::Vec3::ZERO,
+                                gpui_3d::Vec3::Y,
+                                50.0_f32.to_radians(), 0.05, 80.0,
+                            ),
+                        );
+                        panel
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(colors.text_secondary)
+                                    .child(format!(
+                                        "源模型 {} 个三角形；当前显示 {} 个 · 暂以 MTL 材质色显示",
+                                        original.total_triangles, original.displayed_triangles,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_h(px(0.0))
+                                    .rounded(px(7.0))
+                                    .overflow_hidden()
+                                    .child(gpui_3d::scene_view(Arc::new(scene)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+                                            this.preview_3d_begin_drag(
+                                                Preview3dDragMode::OrbitCamera, event.position, cx
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_mouse_move(
+                                        cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                                            if event.pressed_button == Some(MouseButton::Left) {
+                                                this.preview_3d_orbit_camera_to(event.position, cx);
+                                            } else {
+                                                this.release_preview_3d_pointer_capture(
+                                                    "source obj mouse leave", cx
+                                                );
+                                            }
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.release_preview_3d_pointer_capture(
+                                                "source obj mouse up", cx
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    )
+                                    .on_scroll_wheel(
+                                        cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                                            let delta = event.delta.pixel_delta(px(48.0));
+                                            this.preview_3d_zoom_by(
+                                                if delta.y > px(0.0) { 1.12 } else { 0.90 }, cx
+                                            );
+                                            cx.stop_propagation();
+                                        }),
+                                    ),
+                            )
+                    })
+                    .when(self.generator.original_preview.is_none(), |panel| {
+                        panel.child(import_preview_label(
+                            colors,
+                            "正在等待原始 OBJ 网格；转换成功后显示真实三角形，不使用方块模型冒充源模型。",
+                        ))
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .child(self.render_import_block_canvas(colors, cx)),
+            )
     }
 
     /// Commit only complete, valid numeric values. Mid-edit strings never run conversions.
