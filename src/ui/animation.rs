@@ -177,35 +177,32 @@ pub fn tab_underline_motion(from_index: usize, to_index: usize) -> Animation {
     .with_property(AnimationProperty::horizontal_reveal(edge, 0.0, 1.0))
 }
 
-// Both halves share an identical GPU timeline so the cap stays attached to
-// the revealing body throughout the animation, without UI-frame layout work.
-fn stat_chart_bar_timing(index: usize) -> Animation {
-    let delay = Duration::from_millis(index.min(13) as u64 * 32);
-    Animation::from_spec(
-        AnimationSpec::new(Duration::from_millis(520))
-            .delay(delay)
-            .fill_mode(FillMode::Both)
-            .ease(Easing::OutCubic),
+/// The statistics metrics and every nonzero chart bar share one entrance
+/// specification. Index-based delays made data from the final days start after
+/// the numerical counters had already finished animating.
+pub fn statistics_entrance_spec() -> AnimationSpec {
+    AnimationSpec::new(Duration::from_millis(520))
+        .fill_mode(FillMode::Both)
+        .ease(Easing::OutCubic)
+}
+
+/// Show the bar body bottom-up. This clip is applied only to a rectangular
+/// body; the rounded cap is an independent moving quad.
+pub fn stat_chart_bar_fill_motion() -> Animation {
+    Animation::from_spec(statistics_entrance_spec()).with_property(
+        AnimationProperty::vertical_reveal(VerticalRevealEdge::Bottom, 0.0, 1.0),
     )
 }
 
-/// Show the bar body bottom-up. This clip is deliberately applied to a
-/// rectangular body only; the rounded cap has a separate moving quad.
-pub fn stat_chart_bar_fill_motion(index: usize) -> Animation {
-    stat_chart_bar_timing(index).with_property(AnimationProperty::vertical_reveal(
-        VerticalRevealEdge::Bottom,
-        0.0,
-        1.0,
-    ))
-}
-
-/// Move the full-width rounded cap from the baseline to the top of the bar.
-/// The body reveal and this translation have identical timing and geometry.
-pub fn stat_chart_bar_cap_motion(index: usize, fill_height: f32) -> Animation {
-    stat_chart_bar_timing(index).with_property(AnimationProperty::translation(
-        point(px(0.0), px(fill_height)),
-        point(px(0.0), px(0.0)),
-    ))
+/// Move the rounded cap from the baseline to the final top edge. Both tracks
+/// start on the same frame with no date-dependent delay.
+pub fn stat_chart_bar_cap_motion(fill_height: f32) -> Animation {
+    Animation::from_spec(statistics_entrance_spec()).with_property(
+        AnimationProperty::translation(
+            point(px(0.0), px(fill_height)),
+            point(px(0.0), px(0.0)),
+        ),
+    )
 }
 
 /// Stable transition key helper for state-driven tab/subpage switches.
@@ -467,6 +464,15 @@ fn element_motion_from_spec(spec: AnimationSpec) -> Animation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statistics_metrics_and_all_days_start_together() {
+        let spec = statistics_entrance_spec();
+        assert_eq!(spec.delay, Duration::ZERO);
+        assert_eq!(spec.duration, Duration::from_millis(520));
+        assert_eq!(spec.sample_elapsed(Duration::ZERO).eased_progress, 0.0);
+        assert!(spec.sample_elapsed(spec.duration).done);
+    }
 
     #[test]
     fn tab_list_stagger_front_loads_spacing_then_converges() {

@@ -1,9 +1,9 @@
 use super::*;
-use crate::ui::animation::{stat_chart_bar_cap_motion, stat_chart_bar_fill_motion};
+use crate::ui::animation::{
+    stat_chart_bar_cap_motion, stat_chart_bar_fill_motion, statistics_entrance_spec,
+};
 use chrono::{Days, Utc};
-use std::time::{Duration, Instant};
-
-const STAT_NUMBER_DURATION: Duration = Duration::from_millis(420);
+use std::time::Instant;
 
 fn count_at_progress(target: u64, progress: f32) -> u64 {
     if progress >= 1.0 {
@@ -66,11 +66,7 @@ impl RenderOnce for AnimatedStatValue {
             value
                 .with_animation(
                     SharedString::from(format!("{}-count-{}", self.id.as_ref(), self.sequence)),
-                    Animation::from_spec(
-                        AnimationSpec::new(STAT_NUMBER_DURATION)
-                            .fill_mode(FillMode::Both)
-                            .ease(Easing::OutCubic),
-                    ),
+                    Animation::from_spec(statistics_entrance_spec()),
                     move |element, progress| {
                         let current = count_at_progress(target, progress);
                         let label = match kind {
@@ -347,8 +343,8 @@ fn chart_card(
                 } else {
                     10.0 + 130.0 * current as f32 / maximum as f32
                 };
-                // Keep the column width fixed. Animate a rectangular body from the
-                // baseline, while an independent rounded cap follows its top edge.
+                // Keep the column width fixed. Animate the body and rounded cap together
+                // from the same entrance timeline as the two numerical metrics.
                 // A uniform scale changes the column width; clipping a single
                 // rounded quad exposes square corners mid-animation.
                 let bar = if current == 0 {
@@ -382,13 +378,13 @@ fn chart_card(
                         (
                             cap.with_visual_animation(
                                 SharedString::from(format!("{key}-cap")),
-                                stat_chart_bar_cap_motion(index, fill_height),
+                                stat_chart_bar_cap_motion(fill_height),
                             )
                             .expect("animation declares presentation properties")
                             .into_any_element(),
                             fill.with_visual_animation(
                                 SharedString::from(format!("{key}-fill")),
-                                stat_chart_bar_fill_motion(index),
+                                stat_chart_bar_fill_motion(),
                             )
                             .expect("animation declares presentation properties")
                             .into_any_element(),

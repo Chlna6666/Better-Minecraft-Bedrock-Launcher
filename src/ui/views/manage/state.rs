@@ -50,8 +50,9 @@ impl ManagePackSubtype {
     }
 }
 
-// 13 * 32 ms chart stagger + 560 ms reveal needs ~976 ms; keep a safety margin so an
-// unrelated targeted rerender cannot retire the last bars early.
+// Tab-entry animations can contain a spring-based page transition and the statistics
+// counter/chart tracks. Keep the presentation gate alive through completion without
+// introducing calendar-index delays between visible chart bars.
 const TAB_ANIMATION_WINDOW: Duration = Duration::from_millis(1_200);
 const PACK_SUBTYPE_ANIMATION_WINDOW: Duration = Duration::from_millis(800);
 
