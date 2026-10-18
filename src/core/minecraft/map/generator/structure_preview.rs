@@ -12,6 +12,7 @@ use bedrock_voxel::{
 };
 use bedrock_world::{structure::McStructureFile, surface::CancelFlag};
 
+use super::source_obj_preview::{ObjSourcePreview, build_obj_source_preview};
 use super::image::{
     ImageBlockHeight, ImageBlockOptions, decode_image, image_block_plan_with_progress,
 };
@@ -41,6 +42,7 @@ pub struct StructurePreviewRequest {
 struct PreviewStore {
     entries: HashMap<String, (Arc<Vec<u8>>, Instant)>,
     discarded: HashMap<String, Instant>,
+    original_obj: HashMap<String, (Arc<ObjSourcePreview>, Instant)>,
 }
 
 static PREVIEWS: OnceLock<Mutex<PreviewStore>> = OnceLock::new();
@@ -54,6 +56,21 @@ impl PreviewStore {
         self.entries
             .retain(|_, (_, at)| at.elapsed() <= PREVIEW_TTL);
         self.discarded.retain(|_, at| at.elapsed() <= PREVIEW_TTL);
+        self.original_obj.retain(|_, (_, at)| at.elapsed() <= PREVIEW_TTL);
+    }
+
+    fn insert_original_obj(&mut self, id: &str, preview: Arc<ObjSourcePreview>) {
+        self.expire();
+        if self.discarded.contains_key(id) {
+            return;
+        }
+        if self.original_obj.len() >= 2
+            && let Some(old) = self.original_obj.iter()
+                .min_by_key(|(_, (_, at))| at).map(|(key, _)| key.clone())
+        {
+            self.original_obj.remove(&old);
+        }
+        self.original_obj.insert(id.to_owned(), (preview, Instant::now()));
     }
 
     fn insert(&mut self, id: &str, bytes: Vec<u8>) -> Result<(), String> {
@@ -99,10 +116,19 @@ pub fn get_structure_preview(task_id: &str) -> Option<Arc<Vec<u8>>> {
     store.entries.get(task_id).map(|(bytes, _)| bytes.clone())
 }
 
+/// Actual source OBJ geometry, never the voxelized structure.
+#[must_use]
+pub fn get_obj_source_preview(task_id: &str) -> Option<Arc<ObjSourcePreview>> {
+    let mut store = previews().lock().ok()?;
+    store.expire();
+    store.original_obj.get(task_id).map(|(scene, _)| scene.clone())
+}
+
 /// Drops a superseded result and prevents its running task from publishing later.
 pub fn release_structure_preview(task_id: &str) {
     if let Ok(mut store) = previews().lock() {
         store.entries.remove(task_id);
+        store.original_obj.remove(task_id);
         store.discarded.insert(task_id.to_owned(), Instant::now());
     }
 }
@@ -165,7 +191,7 @@ async fn generate_preview(
 ) -> Result<String, String> {
     let worker_id = task_id.to_owned();
     let worker_cancel = cancel.clone();
-    let structure = match request.kind {
+    let (structure, original_obj) = match request.kind {
         StructurePreviewKind::Image(options) => {
             let source = request.source;
             let decoded = runtime::run_io_blocking(move || decode_image(&source)).await??;
@@ -178,7 +204,7 @@ async fn generate_preview(
                 ImageBlockHeight::LuminanceRelief { .. } => "匹配方块并构建亮度阶梯",
             };
             task_manager::reset_progress(task_id, Some(total), Some(stage));
-            runtime::run_cpu(move || {
+            let structure = runtime::run_cpu(move || {
                 let mut previous = 0_u64;
                 let mut previous_total = total;
                 let plan = image_block_plan_with_progress(
@@ -208,7 +234,8 @@ async fn generate_preview(
                 )?;
                 McStructureFile::from_placement_plan(&plan).map_err(|error| error.to_string())
             })
-            .await??
+            .await??;
+            (structure, None)
         }
         StructurePreviewKind::Obj(options) => {
             let source = request.source;
@@ -221,7 +248,10 @@ async fn generate_preview(
                 Some(model.triangles.len() as u64),
                 Some("体素化三角形"),
             );
-            runtime::run_cpu(move || {
+            let result = runtime::run_cpu(move || {
+                // Reuse the already parsed source; do not read OBJ/MTL twice.
+                // Failure to construct a secondary visual scene must not stop conversion.
+                let original = build_obj_source_preview(&model).ok();
                 let candidates = default_block_candidates();
                 let mut previous = 0;
                 let plan = voxelize_obj_with_progress(
@@ -240,9 +270,12 @@ async fn generate_preview(
                     },
                 )
                 .map_err(|error| error.to_string())?;
-                McStructureFile::from_placement_plan(&plan).map_err(|error| error.to_string())
+                let structure = McStructureFile::from_placement_plan(&plan)
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((structure, original))
             })
-            .await??
+            .await??;
+            result
         }
     };
     if cancel.is_cancelled() {
@@ -255,10 +288,12 @@ async fn generate_preview(
         return Err("结构预览已取消".to_owned());
     }
     let size = bytes.len();
-    previews()
-        .lock()
-        .map_err(|_| "结构预览存储不可用".to_owned())?
-        .insert(task_id, bytes)?;
+    let mut store = previews().lock()
+        .map_err(|_| "结构预览存储不可用".to_owned())?;
+    store.insert(task_id, bytes)?;
+    if let Some(original) = original_obj {
+        store.insert_original_obj(task_id, original);
+    }
     task_manager::update_progress(task_id, 1, Some(1), Some("保存预览结果"));
     Ok(format!("方块预览已生成（{} KiB）", size.div_ceil(1024)))
 }
