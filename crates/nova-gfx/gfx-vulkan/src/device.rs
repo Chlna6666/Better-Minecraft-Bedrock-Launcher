@@ -119,6 +119,7 @@ pub fn enumerate_adapter_info() -> Result<Vec<AdapterInfo>> {
 
 /// Generic Vulkan device and resource owner.
 pub struct VulkanDevice {
+    swapchain_maintenance: bool,
     native_pixel_presentation: Option<khr::get_surface_capabilities2::Instance>,
     memory_properties_loader: Option<khr::get_physical_device_properties2::Instance>,
     entry: Entry,
@@ -292,6 +293,7 @@ impl VulkanDevice {
             properties2_supported,
                 &entry,
         )?;
+        let swapchain_maintenance = native_pixel_presentation;
         let native_pixel_presentation = native_pixel_presentation
             .then(|| khr::get_surface_capabilities2::Instance::new(&entry, &instance));
         let memory_properties_loader = memory_budget_supported
@@ -322,6 +324,7 @@ impl VulkanDevice {
         )?;
 
         Ok(Self {
+            swapchain_maintenance,
             native_pixel_presentation,
             memory_properties_loader,
             entry,
@@ -563,8 +566,7 @@ impl VulkanDevice {
             self.swapchains.get_mut(swapchain_id)?.config.size = gfx_core::Extent2d::new(width, height)?;
             return Ok(());
         }
-        // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.retire_swapchain(swapchain_id)?;
         let old_swapchain = self.swapchains.get(swapchain_id)?;
         let mut config = old_swapchain.config;
         config.size = gfx_core::Extent2d::new(width, height)?;
@@ -587,8 +589,7 @@ impl VulkanDevice {
         swapchain_id: gfx_core::SwapchainId,
         config: SurfaceConfig,
     ) -> Result<()> {
-        // SAFETY: Device is valid and waiting before swapchain resource replacement is valid.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.retire_swapchain(swapchain_id)?;
         // Retire queued encoders while their old swapchain fences are still live.
         self.poll_cleanup();
         let old_swapchain = self.swapchains.get(swapchain_id)?;
@@ -2054,8 +2055,10 @@ impl VulkanDevice {
     fn wait_submission(&mut self, submission: SubmissionId) -> Result<()> {
         let fence = self.submissions.get(submission)?.fence;
         // SAFETY: Fence belongs to this device and remains live until its owning resource is destroyed.
-        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
-            .map_err(VulkanError::from)?;
+        if fence != vk::Fence::null() {
+            unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }
+                .map_err(VulkanError::from)?;
+        }
         let _completed = self.submissions.take(submission)?;
         self.poll_cleanup();
         Ok(())
@@ -2230,11 +2233,24 @@ impl VulkanDevice {
         if let Some(present_regions) = present_regions.as_mut() {
             present_info = present_info.push_next(present_regions);
         }
+        let present_fence = if self.swapchain_maintenance {
+            Some(self.swapchains.get_mut(swapchain_id)?.presentation.acquire(&self.device)?)
+        } else {
+            None
+        };
+        let fences = [present_fence.unwrap_or(vk::Fence::null())];
+        let mut fence_info = vk::SwapchainPresentFenceInfoEXT::default().fences(&fences);
+        if present_fence.is_some() {
+            present_info = present_info.push_next(&mut fence_info);
+        }
         // SAFETY: Present queue and swapchain are valid and synchronized by wait_semaphore.
         let present_result = unsafe {
             self.swapchain_loader
                 .queue_present(self.present_queue, &present_info)
         };
+        if let Some(fence) = present_fence {
+            self.swapchains.get_mut(swapchain_id)?.presentation.record(fence, present_result);
+        }
         match present_result {
             Ok(false) => Ok(()),
             Ok(true) | Err(vk::Result::SUBOPTIMAL_KHR)
@@ -2429,8 +2445,7 @@ impl VulkanDevice {
     ///
     /// Returns [`Error`] when the handle is invalid.
     fn destroy_swapchain(&mut self, swapchain_id: gfx_core::SwapchainId) -> Result<()> {
-        // SAFETY: Device is valid and waiting before swapchain resource destruction is valid.
-        unsafe { self.device.device_wait_idle() }.map_err(VulkanError::from)?;
+        self.retire_swapchain(swapchain_id)?;
         let swapchain = self.swapchains.take(swapchain_id)?;
         self.destroy_swapchain_now(swapchain);
         Ok(())
@@ -2622,6 +2637,7 @@ impl VulkanDevice {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
+            presentation: presentation::Retirement::default(),
             frame_index: 0,
             config,
         })
@@ -3373,6 +3389,7 @@ impl VulkanDevice {
         let _ = (swapchain.format, swapchain.images.len());
         // SAFETY: Swapchain resources were created by this device and are destroyed once here.
         unsafe {
+            swapchain.presentation.destroy(&self.device);
             for framebuffer in swapchain.framebuffers {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
@@ -3407,6 +3424,24 @@ impl Backend for VulkanDevice {
 
 impl SurfaceDevice for VulkanDevice {
     type SurfaceTarget = dyn VulkanSurfaceTarget;
+
+    fn prepare_swapchain_resize(&mut self, swapchain: gfx_core::SwapchainId) -> Result<bool> {
+        if !self.swapchain_maintenance {
+            // The native fallback still establishes the presentation-engine boundary.
+            return Ok(true);
+        }
+        let chain = self.swapchains.get_mut(swapchain)?;
+        if !chain.presentation.poll(&self.device)? {
+            return Ok(false);
+        }
+        for fence in chain.in_flight_fences {
+            // SAFETY: these fences remain live until this swapchain is retired.
+            if !unsafe { self.device.get_fence_status(fence) }.map_err(VulkanError::from)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 
     fn create_surface(
         &mut self,
@@ -4527,6 +4562,7 @@ struct VulkanSurface {
 }
 
 struct VulkanSwapchain {
+    presentation: presentation::Retirement,
     native_pixel_scaling: bool,
     scaled_image_extent_range: Option<(vk::Extent2D, vk::Extent2D)>,
     surface: vk::SurfaceKHR,
@@ -4589,6 +4625,9 @@ fn deferred_resource_ready(device: &ash::Device, resource: &DeferredResource) ->
 }
 
 fn fence_is_complete(device: &ash::Device, fence: vk::Fence) -> bool {
+    if fence == vk::Fence::null() {
+        return true;
+    }
     // SAFETY: Fence belongs to this device and remains live until deferred resource destroy.
     match unsafe { device.get_fence_status(fence) } {
         Ok(complete) => complete,

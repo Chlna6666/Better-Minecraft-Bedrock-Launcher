@@ -30,6 +30,7 @@ mod frame_pacing;
 mod platform {
     mod buffer_upload;
     mod relocation;
+    mod surface;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -151,7 +152,7 @@ mod platform {
                 DXGI_ERROR_NOT_FOUND, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
                 DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_PARAMETERS,
-                DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+                DXGI_SCALING_NONE, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
                 DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
                 DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
                 DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1,
@@ -437,8 +438,8 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // During live resize, SetSourceSize selects the current client-sized region from the
-                // retained allocation. Matching source and client extents present at native pixel scale.
+                // CreateSwapChainForComposition requires STRETCH. Its visual uses an
+                // identity transform; the HWND fallback has its own no-scaling descriptor.
                 Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: composite_alpha_to_dxgi(config.alpha_mode),
@@ -514,6 +515,8 @@ mod platform {
                 frame_pacing: FrameLatencyWait::default(),
                 partial_presentation,
                 pending_damage: vec![Dx12BackBufferDamage::Full; BACK_BUFFER_COUNT as usize],
+                generation: 0,
+                resize_retirement: None,
             };
             Self::rebuild_render_targets(&self.device, &mut swapchain)?;
             Ok(swapchain)
@@ -535,11 +538,8 @@ mod platform {
             }
             .map_err(|error| Error::Backend(error.to_string()))?;
             if let Some(composition) = retained_composition {
-                // SAFETY: The retained visual/device still own the live HWND attachment. The old
-                // swapchain remains alive until this replacement is committed and registered.
-                unsafe { composition.visual.SetContent(&swapchain) }
-                    .map_err(|error| Error::Backend(error.to_string()))?;
-                Self::commit_composition(&composition)?;
+                // The visual keeps its active content. Only a successful first Present
+                // may publish this candidate; failed preparation leaves the old tree intact.
                 return Ok((swapchain, Some(composition)));
             }
             // SAFETY: This visual only hosts an external swapchain. Passing no rendering device
@@ -588,17 +588,6 @@ mod platform {
                 composition_visual
                     .SetTransform(&composition_transform)
                     .map_err(|error| Error::Backend(error.to_string()))?;
-                composition_visual.SetContent(&swapchain).map_err(|error| {
-                    Error::Backend(format!("IDCompositionVisual::SetContent failed: {error}"))
-                })?;
-                composition_target
-                    .SetRoot(&composition_visual)
-                    .map_err(|error| {
-                        Error::Backend(format!("IDCompositionTarget::SetRoot failed: {error}"))
-                    })?;
-                composition_device.Commit().map_err(|error| {
-                    Error::Backend(format!("IDCompositionDevice::Commit failed: {error}"))
-                })?;
             }
             Ok((
                 swapchain,
@@ -607,6 +596,8 @@ mod platform {
                     _target: composition_target,
                     visual: composition_visual.into(),
                     transform: composition_transform,
+                    active_content: None,
+                    fallback_hwnd: None,
                 }),
             ))
         }
@@ -634,9 +625,9 @@ mod platform {
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: BACK_BUFFER_COUNT,
-                // During live resize, SetSourceSize selects the current client-sized region from the
-                // retained allocation. Matching source and client extents present at native pixel scale.
-                Scaling: DXGI_SCALING_STRETCH,
+                // Native client geometry may overtake the next Scene/ResizeBuffers.
+                // Do not let DXGI resample the preceding frame's glyph pixels meanwhile.
+                Scaling: DXGI_SCALING_NONE,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: match config.alpha_mode {
                     CompositeAlphaMode::Opaque => DXGI_ALPHA_MODE_IGNORE,
@@ -659,171 +650,6 @@ mod platform {
                 )
             }
             .map_err(|error| Error::Backend(error.to_string()))
-        }
-
-        /// Recreates an existing swapchain.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`Error`] when the swapchain handle is invalid.
-        pub fn resize_swapchain(
-            &mut self,
-            swapchain: SwapchainId,
-            width: u32,
-            height: u32,
-        ) -> Result<()> {
-            if width == 0 || height == 0 {
-                return Ok(());
-            }
-            let mut config = self.swapchains.get(swapchain)?.config;
-            config.size = gfx_core::Extent2d::new(width, height)?;
-            self.reconfigure_swapchain_in_place(swapchain, config)
-        }
-
-        /// Selects the client-sized source rectangle for the next presentation.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`Error`] if the swapchain is invalid or the source extent exceeds its buffers.
-        pub fn set_swapchain_source_extent(
-            &mut self,
-            id: SwapchainId,
-            extent: gfx_core::Extent2d,
-        ) -> Result<()> {
-            let swapchain = self.swapchains.get_mut(id)?;
-            if extent.width() == 0
-                || extent.height() == 0
-                || extent.width() > swapchain.config.size.width()
-                || extent.height() > swapchain.config.size.height()
-            {
-                return Err(Error::InvalidInput(
-                    "DX12 presentation source extent exceeds its swapchain".into(),
-                ));
-            }
-            swapchain.source_extent = extent;
-            Ok(())
-        }
-
-        /// Recreates an existing swapchain with a full surface configuration.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`Error`] when the swapchain handle is invalid or recreation fails.
-        pub fn reconfigure_swapchain(
-            &mut self,
-            swapchain: SwapchainId,
-            config: SurfaceConfig,
-        ) -> Result<()> {
-            self.reconfigure_swapchain_in_place(swapchain, config)
-        }
-
-        /// Recreates an existing swapchain and returns the still-live handle.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`Error`] when the swapchain handle is invalid or recreation fails.
-        pub fn recreate_swapchain(
-            &mut self,
-            swapchain: SwapchainId,
-            config: SurfaceConfig,
-        ) -> Result<SwapchainId> {
-            self.recreate_swapchain_in_place(swapchain, config)?;
-            Ok(swapchain)
-        }
-
-        fn recreate_swapchain_in_place(
-            &mut self,
-            swapchain: SwapchainId,
-            config: SurfaceConfig,
-        ) -> Result<()> {
-            self.swapchains.get_mut(swapchain)?.frame_pacing.reset();
-            self.wait_for_pending_work()?;
-            let (surface, hwnd, composition) = {
-                let swapchain_record = self.swapchains.get(swapchain)?;
-                let surface = swapchain_record.surface;
-                let hwnd = self.surfaces.get(surface)?.hwnd;
-                (surface, hwnd, swapchain_record.composition.clone())
-            };
-
-            let next_swapchain = self.build_swapchain(surface, hwnd, config, composition)?;
-            let old_swapchain = self.swapchains.replace_live(swapchain, next_swapchain)?;
-            // The GPU idled in wait_for_pending_work above; this releases the
-            // old backbuffers and closes its frame-latency waitable handle.
-            self.release_deferred_payload(DeferredDx12Release::Swapchain(old_swapchain));
-            Ok(())
-        }
-
-        fn reconfigure_swapchain_in_place(
-            &mut self,
-            swapchain: SwapchainId,
-            config: SurfaceConfig,
-        ) -> Result<()> {
-            // ResizeBuffers retains this waitable object. Preserve any consumed
-            // readiness credit while cancelling notifications for the old size.
-            self.swapchains.get_mut(swapchain)?.frame_pacing.cancel();
-            self.wait_for_pending_work()?;
-            let device = self.device.clone();
-            let previous_config = self.swapchains.get(swapchain)?.config;
-            if previous_config.alpha_mode != config.alpha_mode {
-                return Err(Error::InvalidInput(format!(
-                    "DX12 swapchain alpha mode cannot be changed after swapchain creation; \
-                     destroy and recreate the swapchain instead: old={:?} new={:?}",
-                    previous_config.alpha_mode, config.alpha_mode
-                )));
-            }
-
-            let swapchain = self.swapchains.get_mut(swapchain)?;
-
-            swapchain.render_targets.clear();
-            swapchain.rtv_heap = None;
-            swapchain.config = config;
-
-            // SAFETY: Swapchain is valid and all references to previous backbuffers were dropped.
-            if let Err(error) = unsafe {
-                swapchain.swapchain.ResizeBuffers(
-                    BACK_BUFFER_COUNT,
-                    config.size.width(),
-                    config.size.height(),
-                    format_to_dxgi(config.format),
-                    DXGI_SWAP_CHAIN_FLAG(swapchain.creation_flags as i32),
-                )
-            } {
-                swapchain.config = previous_config;
-                Self::rebuild_render_targets(&device, swapchain).map_err(|rollback_error| {
-                    Error::Backend(format!(
-                        "DX12 ResizeBuffers failed: {error}; rebuilding previous render targets failed: {rollback_error}"
-                    ))
-                })?;
-                return Err(Error::Backend(error.to_string()));
-            }
-
-            if let Err(error) = Self::rebuild_render_targets(&device, swapchain) {
-                swapchain.config = previous_config;
-                // SAFETY: Swapchain is valid and the failed render-target rebuild left no live
-                // backbuffer references in this registry entry.
-                let rollback = unsafe {
-                    swapchain.swapchain.ResizeBuffers(
-                        BACK_BUFFER_COUNT,
-                        previous_config.size.width(),
-                        previous_config.size.height(),
-                        format_to_dxgi(previous_config.format),
-                        DXGI_SWAP_CHAIN_FLAG(swapchain.creation_flags as i32),
-                    )
-                };
-                if let Err(rollback_error) = rollback {
-                    return Err(Error::Backend(format!(
-                        "DX12 render target rebuild failed after ResizeBuffers: {error}; rollback ResizeBuffers failed: {rollback_error}"
-                    )));
-                }
-                Self::rebuild_render_targets(&device, swapchain).map_err(|rollback_error| {
-                    Error::Backend(format!(
-                        "DX12 render target rebuild failed after ResizeBuffers: {error}; rollback render target rebuild failed: {rollback_error}"
-                    ))
-                })?;
-                return Err(error);
-            }
-
-            Ok(())
         }
 
         fn release_resource_set_descriptors(&mut self, resource_set: &Dx12ResourceSet) {
@@ -1773,6 +1599,7 @@ mod platform {
                 allocator: Some(allocator),
                 command_list: Some(command_list),
                 submitted: false,
+                swapchain: None,
             }))
         }
 
@@ -1811,6 +1638,7 @@ mod platform {
         }
 
         fn submit_without_wait(&mut self, encoder: CommandEncoderId) -> Result<u64> {
+            self.validate_swapchain_submission(encoder)?;
             self.check_device_removed("DX12 submit preflight")?;
             let command_list = {
                 let encoder = self.command_encoders.get(encoder)?;
@@ -2353,6 +2181,7 @@ mod platform {
             damage: Option<ScissorRect>,
         ) -> Result<()> {
             self.check_device_removed("DX12 present preflight")?;
+            self.swapchains.get_mut(swapchain)?.resize_retirement = None;
             let result = {
                 let swapchain = self.swapchains.get_mut(swapchain)?;
                 let supports_tearing =
@@ -2410,9 +2239,19 @@ mod platform {
                     })?;
                 *pending_damage = Dx12BackBufferDamage::Clean;
             }
-            let swapchain = self.swapchains.get_mut(swapchain)?;
-            // SAFETY: Swapchain is valid after a successful Present call.
-            swapchain.frame_index = unsafe { swapchain.swapchain.GetCurrentBackBufferIndex() };
+            let publication = {
+                let record = self.swapchains.get_mut(swapchain)?;
+                // SAFETY: Swapchain is valid after a successful Present call.
+                record.frame_index = unsafe { record.swapchain.GetCurrentBackBufferIndex() };
+                // Present advanced the buffer index even if tree publication fails.
+                Self::publish_composition_content(record)
+            };
+            if let Err(error) = publication {
+                // No frame completion handle reaches the renderer on error. Retire the
+                // already submitted writes before its upload slot can be reused.
+                self.retire_swapchain_for_resize(swapchain)?;
+                return Err(error);
+            }
             Ok(())
         }
 
@@ -2555,6 +2394,14 @@ mod platform {
             // submission does not cover DXGI's later queue work. Signal here
             // to retire presentation as well before releasing native resources.
             let drained = self.wait_for_pending_work();
+            let detached = if let Some(composition) = &swapchain.composition {
+                // SAFETY: this final owner retires the HWND attachment before releasing
+                // the active content and any unpresented candidate.
+                unsafe { composition._target.SetRoot(None).and_then(|()| composition._device.Commit()) }
+                    .map_err(|error| Error::Backend(error.to_string()))
+            } else {
+                Ok(())
+            };
             // Release IDXGISwapChain3, its backbuffer COM references and the
             // DirectComposition attachment *before* returning control to GPUI.
             // On device removal, drop the swapchain even if the wait fails.
@@ -2574,7 +2421,7 @@ mod platform {
                     elapsed.as_micros()
                 );
             }
-            drained
+            drained.and(detached)
         }
 
         /// Destroys a surface.
@@ -2615,6 +2462,7 @@ mod platform {
                         allocator: pending._encoder.allocator.take(),
                         command_list: pending._encoder.command_list.take(),
                         submitted: false,
+                        swapchain: None,
                     });
                 }
                 false
@@ -2877,6 +2725,7 @@ mod platform {
             pipeline_id: RenderPipelineId,
             clear_color: ClearColor,
         ) -> Result<()> {
+            self.bind_swapchain_generation(encoder_id, swapchain_id)?;
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
                 let allocator = encoder.allocator.clone().ok_or_else(|| {
@@ -3072,6 +2921,7 @@ mod platform {
             depth_attachment: Option<RenderPassDepthAttachment>,
             frame_damage: Option<ScissorRect>,
         ) -> Result<()> {
+            self.bind_swapchain_generation(encoder_id, swapchain_id)?;
             let (allocator, command_list) = {
                 let encoder = self.command_encoders.get(encoder_id)?;
                 let allocator = encoder.allocator.clone().ok_or_else(|| {
@@ -3340,6 +3190,7 @@ mod platform {
             clear_region: Option<ScissorRect>,
             viewport: Option<gfx_core::RenderViewport>,
         ) -> Result<()> {
+            self.command_encoders.get_mut(encoder_id)?.swapchain = None;
             // Empty render-step lists are valid for attachment clears. Do not
             // reject the pass before recording its ClearRenderTargetView.
             let command_list = self
@@ -4639,6 +4490,10 @@ mod platform {
             config: SurfaceConfig,
         ) -> Result<SwapchainId> {
             Self::create_swapchain(self, surface, config)
+        }
+
+        fn prepare_swapchain_resize(&mut self, swapchain: SwapchainId) -> Result<bool> {
+            self.poll_swapchain_resize(swapchain)
         }
 
         fn set_swapchain_source_extent(
@@ -6695,6 +6550,7 @@ mod platform {
         allocator: Option<ID3D12CommandAllocator>,
         command_list: Option<ID3D12GraphicsCommandList>,
         submitted: bool,
+        swapchain: Option<(SwapchainId, u64)>,
     }
 
     struct DeferredDx12CommandEncoder {
@@ -6711,9 +6567,12 @@ mod platform {
         _device: IDCompositionDesktopDevice,
         _target: IDCompositionTarget,
         visual: IDCompositionVisual,
-        /// Visual transform used to stretch previous-frame content over a
-        /// pending window resize; identity outside live resizes.
+        /// Presentation transform; resize publication keeps it at identity.
         transform: IDCompositionMatrixTransform,
+        /// Last successfully published content, retained while a candidate is prepared.
+        active_content: Option<IDXGISwapChain3>,
+        /// An HWND-to-composition transition keeps its prior opaque presentation alive.
+        fallback_hwnd: Option<IDXGISwapChain3>,
     }
 
     #[derive(Clone)]
@@ -6768,6 +6627,8 @@ mod platform {
         partial_presentation: bool,
         /// Damage accumulated since each rotating back buffer was last current.
         pending_damage: Vec<Dx12BackBufferDamage>,
+        generation: u64,
+        resize_retirement: Option<u64>,
     }
 
     impl Drop for Dx12Swapchain {

@@ -17,11 +17,8 @@ use windows::{
     core::Interface,
 };
 
-pub(crate) struct Composition {
-    device: IDCompositionDesktopDevice,
-    target: IDCompositionTarget,
-    visual: IDCompositionVisual,
-}
+mod composition;
+use composition::Composition;
 pub(crate) struct Swapchain {
     pub(crate) native: IDXGISwapChain3,
     pub(crate) view: Option<ID3D11RenderTargetView>,
@@ -31,28 +28,8 @@ pub(crate) struct Swapchain {
     composition: Option<Composition>,
     pub(crate) latency: HANDLE,
     pub(crate) pacing: FrameLatencyWait,
-}
-impl Composition {
-    fn detach(&self) -> Result<()> {
-        // SAFETY: target, visual and device are live on their native owner thread.
-        let result = unsafe {
-            self.target
-                .SetRoot(None)
-                .and_then(|()| self.device.Commit())
-        };
-        if let Err(error) = result {
-            // Restore the last committed visual before the caller discards the replacement.
-            if let Err(restore_error) = unsafe {
-                self.target
-                    .SetRoot(&self.visual)
-                    .and_then(|()| self.device.Commit())
-            } {
-                log::warn!("D3D11 composition rollback failed: {restore_error}");
-            }
-            return Err(backend(error));
-        }
-        Ok(())
-    }
+    pub(crate) generation: u64,
+    pub(crate) resize_retirement: Option<SubmissionId>,
 }
 impl Drop for Swapchain {
     fn drop(&mut self) {
@@ -112,9 +89,14 @@ impl SurfaceDevice for Dx11Device {
             },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
-            // During live resize, SetSourceSize selects the current client-sized region from the
-            // retained allocation. Matching source and client extents present at native pixel scale.
-            Scaling: DXGI_SCALING_STRETCH,
+            // An HWND can grow before the matching Scene/ResizeBuffers is ready.
+            // Preserve native glyph pixels in that interval instead of letting DXGI
+            // stretch the last backbuffer. Composition requires STRETCH by contract.
+            Scaling: if composited {
+                DXGI_SCALING_STRETCH
+            } else {
+                DXGI_SCALING_NONE
+            },
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: if composited {
                 DXGI_ALPHA_MODE_PREMULTIPLIED
@@ -155,12 +137,25 @@ impl SurfaceDevice for Dx11Device {
             composition: None,
             latency,
             pacing: FrameLatencyWait::default(),
+            generation: 0,
+            resize_retirement: None,
         };
         if composited {
-            chain.composition = Some(composition(&self.native, hwnd, &chain.native)?);
+            chain.composition = Some(composition::create(&self.native, hwnd)?);
         }
         chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
         Ok(self.swapchains.insert(chain))
+    }
+    fn prepare_swapchain_resize(&mut self, id: SwapchainId) -> Result<bool> {
+        let retirement = match self.swapchains.get(id)?.resize_retirement {
+            Some(retirement) => retirement,
+            None => {
+                let retirement = self.signal()?;
+                self.swapchains.get_mut(id)?.resize_retirement = Some(retirement);
+                retirement
+            }
+        };
+        Ok(SubmissionDevice::poll_submission(self, retirement)? == SubmissionStatus::Complete)
     }
     fn set_swapchain_source_extent(&mut self, id: SwapchainId, extent: Extent2d) -> Result<()> {
         let chain = self.swapchains.get_mut(id)?;
@@ -177,6 +172,9 @@ impl SurfaceDevice for Dx11Device {
         Ok(())
     }
     fn destroy_swapchain(&mut self, id: SwapchainId) -> Result<()> {
+        if let Some(composition) = &self.swapchains.get(id)?.composition {
+            composition.detach()?;
+        }
         // SAFETY: clear context bindings so DXGI resources can be released at this lifecycle barrier.
         unsafe {
             self.context.ClearState();
@@ -209,10 +207,19 @@ impl Dx11Device {
         chain.pacing.ready(chain.latency)
     }
     /// Recreates the backbuffer views for the latest drawable extent.
+    ///
+    /// Call [`SurfaceDevice::prepare_swapchain_resize`] first to poll this window's prior
+    /// rendering/Present work. DXGI still synchronizes the native replacement. Successful
+    /// HWND ResizeBuffers advances the buffer generation and consumes its retirement marker,
+    /// including when subsequent view acquisition fails. Composition prepares an unattached
+    /// candidate and keeps the last published native content until a successful first Present.
     /// # Errors
     /// Returns a native resize error; existing buffers are reacquired on failure.
     pub fn resize_swapchain(&mut self, id: SwapchainId, width: u32, height: u32) -> Result<()> {
         let size = Extent2d::new(width, height)?;
+        if self.swapchains.get(id)?.composition.is_some() {
+            return composition::prepare_resize(self, id, size);
+        }
         let resize_started = std::time::Instant::now();
         let chain = self.swapchains.get_mut(id)?;
         chain.pacing.cancel();
@@ -237,6 +244,10 @@ impl Dx11Device {
         };
         let dxgi_elapsed = resize_started.elapsed()
             .saturating_sub(cancel_elapsed + flush_elapsed);
+        if result.is_ok() {
+            chain.generation = chain.generation.wrapping_add(1);
+            chain.resize_retirement = None;
+        }
         chain.view = Some(backbuffer_view(&self.native, &chain.native)?);
         let view_elapsed = resize_started.elapsed()
             .saturating_sub(cancel_elapsed + flush_elapsed + dxgi_elapsed);
@@ -299,7 +310,13 @@ impl Dx11Device {
         };
         if old.composition.is_some() != next_composited {
             let surface = old.surface;
+            let fallback = old.composition.is_none().then(|| old.native.clone());
             let next = SurfaceDevice::create_swapchain(self, surface, config)?;
+            if let Some(fallback) = fallback {
+                if let Some(composition) = &mut self.swapchains.get_mut(next)?.composition {
+                    composition.retain_hwnd(fallback);
+                }
+            }
             if let Some(composition) = &self.swapchains.get(id)?.composition
                 && let Err(error) = composition.detach()
             {
@@ -370,7 +387,21 @@ impl Dx11Device {
             .ok()
             .map_err(backend)?;
         chain.pacing.consume_ready();
-        self.signal()
+        let publication = if let Some(composition) = &mut chain.composition {
+            composition.publish(&chain.native)
+        } else {
+            Ok(())
+        };
+        let submission = self.signal()?;
+        // This query follows Present, unlike an arbitrary device-wide pending count.
+        self.swapchains.get_mut(id)?.resize_retirement = Some(submission);
+        if let Err(error) = publication {
+            // The renderer receives no submission handle on error. Retire the already
+            // issued GPU writes before it may reuse that failed frame's upload slot.
+            SubmissionDevice::wait_submission(self, submission)?;
+            return Err(error);
+        }
+        Ok(submission)
     }
 }
 
@@ -383,23 +414,4 @@ fn backbuffer_view(
     let mut view = None;
     unsafe { device.CreateRenderTargetView(&buffer, None, Some(&mut view)) }.map_err(backend)?;
     required(view)
-}
-
-fn composition(native: &ID3D11Device, hwnd: HWND, chain: &IDXGISwapChain3) -> Result<Composition> {
-    let dxgi: IDXGIDevice = native.cast().map_err(backend)?;
-    // SAFETY: all COM inputs are live and hwnd outlives this surface/visual.
-    unsafe {
-        let device: IDCompositionDesktopDevice =
-            DCompositionCreateDevice2(&dxgi).map_err(backend)?;
-        let target = device.CreateTargetForHwnd(hwnd, true).map_err(backend)?;
-        let visual = device.CreateVisual().map_err(backend)?;
-        visual.SetContent(chain).map_err(backend)?;
-        target.SetRoot(&visual).map_err(backend)?;
-        device.Commit().map_err(backend)?;
-        Ok(Composition {
-            device,
-            target,
-            visual: visual.into(),
-        })
-    }
 }

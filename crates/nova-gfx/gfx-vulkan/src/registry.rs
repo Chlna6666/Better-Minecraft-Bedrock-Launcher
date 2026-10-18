@@ -103,6 +103,14 @@ impl<T> ResourceRegistry<T> {
         }
     }
 
+    pub(crate) fn for_each_live_mut(&mut self, mut visitor: impl FnMut(&mut T)) {
+        for slot in &mut self.slots {
+            if let Some(value) = slot.value.as_mut() {
+                visitor(value);
+            }
+        }
+    }
+
     pub(crate) fn drain_live(&mut self) -> Vec<(u32, T)> {
         let mut values = Vec::new();
         for (index, slot) in self.slots.iter_mut().enumerate() {

@@ -128,6 +128,26 @@ pub trait SurfaceDevice {
         config: SurfaceConfig,
     ) -> Result<SwapchainId>;
 
+    /// Polls a retirement point for this swapchain's current native buffers.
+    ///
+    /// The first call may enqueue a fence/query after earlier rendering and Present work;
+    /// subsequent calls reuse it. Returns `false` while that work is pending, without waiting
+    /// on the CPU. Later work for another swapchain must not move this retirement point.
+    /// Rendering or presenting to this swapchain invalidates the preparation. A successful
+    /// resize consumes it; destruction also releases it. This does not resize buffers, publish
+    /// geometry, or establish physical scanout completion. Callers must still use matching
+    /// scene geometry and serialize native resize/submit/destroy operations on the device owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unavailable`] when nonblocking resize preparation is unsupported,
+    /// [`Error::InvalidInput`] for a stale/foreign handle, or a backend error on query failure.
+    fn prepare_swapchain_resize(&mut self, _swapchain: SwapchainId) -> Result<bool> {
+        Err(Error::Unavailable(
+            "nonblocking swapchain resize preparation is unsupported".into(),
+        ))
+    }
+
     /// Selects the active render viewport and top-left source rectangle used by the next
     /// swapchain presentation.
     ///

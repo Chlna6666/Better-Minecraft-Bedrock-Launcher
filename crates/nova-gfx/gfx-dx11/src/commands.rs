@@ -106,7 +106,8 @@ impl Dx11Device {
                 swapchain,
                 image_index,
             } => {
-                let chain = self.swapchains.get(swapchain)?;
+                let chain = self.swapchains.get_mut(swapchain)?;
+                chain.resize_retirement = None;
                 if image_index != 0 {
                     return Err(Error::InvalidInput(
                         "D3D11 presents logical backbuffer zero".into(),
