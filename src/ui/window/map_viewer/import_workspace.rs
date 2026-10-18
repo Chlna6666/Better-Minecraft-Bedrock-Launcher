@@ -64,6 +64,7 @@ impl MapViewerWindowView {
             }
             _ => false,
         };
+        let shows_world_canvas = !source_missing && !preview && !inventory_target;
         let body = if source_missing {
             self.render_import_source_empty_state(colors, cx).into_any_element()
         } else if preview {
@@ -99,13 +100,52 @@ impl MapViewerWindowView {
                     .min_h(px(0.0))
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .h_full()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
-                            .child(body),
+                            .child(body)
+                            .when(shows_world_canvas, |stage| {
+                                // Observe the actual post-layout map rectangle after
+                                // conversion controls, rather than subtracting guessed
+                                // toolbar heights from the entire window.
+                                let owner = cx.entity().downgrade();
+                                stage.child(
+                                    gpui::bounds_observer(move |bounds, _window, cx| {
+                                        let Some(view) = owner.upgrade() else {
+                                            return;
+                                        };
+                                        if view.read(cx).import_canvas_bounds == Some(bounds) {
+                                            return;
+                                        }
+                                        let owner = owner.clone();
+                                        // Prepaint may not mutate the owning view directly.
+                                        cx.defer(move |cx| {
+                                            let _ = owner.update(cx, |this, cx| {
+                                                if this.import_canvas_bounds == Some(bounds) {
+                                                    return;
+                                                }
+                                                this.import_canvas_bounds = Some(bounds);
+                                                if this.import_canvas_stage_active()
+                                                    && this.viewport.set_size(bounds.size)
+                                                {
+                                                    this.invalidate_professional_overlay_for_viewport_change();
+                                                    this.ensure_visible_tiles(cx);
+                                                    this.refresh_professional_render_caches(cx);
+                                                }
+                                                let colors = this.theme_colors(cx);
+                                                this.sync_canvas_snapshot(colors, cx);
+                                                cx.notify();
+                                            });
+                                        });
+                                    })
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            }),
                     )
                     .when(
                         !preview
