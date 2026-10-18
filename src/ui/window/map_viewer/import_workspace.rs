@@ -324,7 +324,11 @@ impl MapViewerWindowView {
                     .when(self.generator.original_preview.is_none(), |panel| {
                         panel.child(import_preview_label(
                             colors,
-                            "正在等待原始 OBJ 网格；转换成功后显示真实三角形，不使用方块模型冒充源模型。",
+                            if self.generator.preview_result_active {
+                                "原始 OBJ 网格预览不可用；方块化结果仍可检查，尝试更换素材。"
+                            } else {
+                                "正在准备原始 OBJ 三角形预览，不会以方块模型冒充源模型。"
+                            },
                         ))
                     }),
             )
@@ -425,15 +429,16 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) {
         let panel = self.ui_state.active_right_panel;
-        let mut matching = paths.iter().filter(|path| is_import_source_path_for_panel(path, panel));
-        let Some(path) = matching.next().cloned() else {
-            return;
-        };
-        if matching.next().is_some() {
-            self.status = SharedString::from("一次只能导入一个素材，请单独拖入 OBJ 或图片");
+        if paths.len() != 1 {
+            self.status = SharedString::from("请一次拖入一个素材；多文件或混合格式不会被静默忽略");
             cx.notify();
             return;
         }
+        let path = &paths[0];
+        if !is_import_source_path_for_panel(path, panel) {
+            return;
+        }
+        let path = path.clone();
         match panel {
             MapViewerRightPanel::Generator => self.set_generator_obj_source(path, cx),
             MapViewerRightPanel::ImageGenerator => self.set_image_generator_source(path, cx),
