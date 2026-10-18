@@ -23,6 +23,8 @@ pub(super) struct GeneratorPanelState {
     pub(super) preview_size: Option<[i32; 3]>,
     pub(super) preview_result_active: bool,
     pub(super) preview_anchor: Option<ChunkPos>,
+    /// Only explicit map interaction or positioning commands authorize confirmation.
+    pub(super) target_selected_by_user: bool,
     /// Real OBJ triangle scene retained only while this source is current.
     pub(super) original_preview: Option<Arc<crate::core::minecraft::map::generator::ObjSourcePreview>>,
     preview_options: Option<ObjVoxelOptions>,
@@ -43,6 +45,7 @@ impl Default for GeneratorPanelState {
             preview_size: None,
             preview_result_active: false,
             preview_anchor: None,
+            target_selected_by_user: false,
             original_preview: None,
             preview_options: None,
             preview_refresh_task: None,
@@ -83,6 +86,7 @@ impl MapViewerWindowView {
             return;
         }
         self.generator.source = Some(path);
+        self.generator.target_selected_by_user = false;
         // Both picker and external drop return to the conversion inspector.
         self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
         self.generator.original_preview = None;
