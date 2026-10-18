@@ -14,9 +14,9 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> Div {
         div()
-            .h(px(44.0))
+            .h(px(60.0))
             .flex_none()
-            .px(px(12.0))
+            .px(px(14.0))
             .border_b_1()
             .border_color(colors.border)
             .flex()
@@ -24,10 +24,22 @@ impl MapViewerWindowView {
             .justify_between()
             .child(
                 div()
-                    .text_size(px(13.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(colors.text_primary)
-                    .child(title),
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.0))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(colors.text_secondary)
+                            .child("转换器 / 参数检查器"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.text_primary)
+                            .child(title),
+                    ),
             )
             .child(dock_close_button(colors).on_mouse_down(
                 MouseButton::Left,
