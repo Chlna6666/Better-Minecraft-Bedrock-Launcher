@@ -292,16 +292,8 @@ impl MapViewerWindowView {
                     )
                 }),
             )
-            .when(source_available, |bar| {
-                bar.child(
-                    secondary_button(colors, "map-import-change-source", "更换素材…").on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.choose_import_source_from_workspace(cx)
-                        }),
-                    ),
-                )
-            })
+            // Source replacement lives in the dedicated right inspector card.
+            // Avoid duplicating the same action in a cramped central toolbar.
             .child(div().flex_1())
             .when(is_map_image, |bar| {
                 bar.child(
@@ -331,7 +323,8 @@ impl MapViewerWindowView {
                 )
             })
             .when(
-                preview && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
+                preview && source_available
+                    && self.ui_state.active_right_panel != MapViewerRightPanel::MapImage,
                 |bar| {
                     bar.child(generator_choice(colors, "重置视角", false).on_mouse_down(
                         MouseButton::Left,
