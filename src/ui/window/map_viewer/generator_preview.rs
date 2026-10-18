@@ -9,6 +9,10 @@ use crate::core::minecraft::map::generator::{
 
 impl MapViewerWindowView {
     pub(super) fn clear_live_structure_preview(&mut self, cx: &mut Context<Self>) {
+        // A regenerated mesh or changed color/size may occupy different blocks.
+        // Never carry a previous write confirmation over to a different result.
+        self.generator.target_selected_by_user = false;
+        self.image_generator.target_selected_by_user = false;
         if !self.generator.preview_result_active && !self.image_generator.preview_result_active {
             return;
         }
@@ -120,11 +124,13 @@ impl MapViewerWindowView {
                     Ok(import) => {
                         let size = import.size;
                         if image {
+                            this.image_generator.target_selected_by_user = false;
                             this.image_generator.preview_size = Some([size.x, size.y, size.z]);
                             this.image_generator.preview_result_active = true;
                             this.image_generator.preview_anchor = Some(target);
                             this.generator.preview_result_active = false;
                         } else {
+                            this.generator.target_selected_by_user = false;
                             this.generator.original_preview = original_obj;
                             this.generator.preview_size = Some([size.x, size.y, size.z]);
                             this.generator.preview_result_active = true;
