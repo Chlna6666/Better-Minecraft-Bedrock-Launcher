@@ -23,6 +23,8 @@ pub(super) struct GeneratorPanelState {
     pub(super) preview_size: Option<[i32; 3]>,
     pub(super) preview_result_active: bool,
     pub(super) preview_anchor: Option<ChunkPos>,
+    /// Real OBJ triangle scene retained only while this source is current.
+    pub(super) original_preview: Option<Arc<crate::core::minecraft::map::generator::ObjSourcePreview>>,
     preview_options: Option<ObjVoxelOptions>,
     preview_refresh_task: Option<Task<anyhow::Result<()>>>,
     preview_generation: u64,
@@ -41,6 +43,7 @@ impl Default for GeneratorPanelState {
             preview_size: None,
             preview_result_active: false,
             preview_anchor: None,
+            original_preview: None,
             preview_options: None,
             preview_refresh_task: None,
             preview_generation: 0,
@@ -80,6 +83,7 @@ impl MapViewerWindowView {
             return;
         }
         self.generator.source = Some(path);
+        self.generator.original_preview = None;
         self.generator.preview_options = None;
         self.generator.output = None;
         self.generator.task_id = None;
@@ -162,6 +166,7 @@ impl MapViewerWindowView {
     }
 
     fn clear_obj_live_preview(&mut self, cx: &mut Context<Self>) {
+        self.generator.original_preview = None;
         if let Some(id) = self.generator.preview_task_id.take() {
             task_manager::cancel_task(&id);
             release_structure_preview(&id);
