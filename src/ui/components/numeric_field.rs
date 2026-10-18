@@ -85,6 +85,7 @@ pub(crate) fn numeric_step_button(
         .text_size(px(16.0))
         .text_color(if enabled { colors.text_primary } else { colors.text_secondary })
         .opacity(if enabled { 1.0 } else { 0.45 })
+        .when(enabled, |button| button.cursor_pointer())
         .child(label.into())
 }
 
