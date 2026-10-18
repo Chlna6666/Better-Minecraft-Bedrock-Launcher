@@ -141,6 +141,23 @@ the same color that its view paints.
 
 Later packets enter a latest-wins queue without waiting for encoding or submission. Replaced and backend-deferred packets carry forward every unsubmitted scene and backdrop-source damage region. Resize, transparency and memory trim are command-order barriers; drawable-size acceptance queues an extent, and GPU target recreation happens on the next presentation. The owner processes one command per window dispatch so one busy window cannot monopolize queued work for other windows. A window's destruction waits for its GPU resources to be released; application shutdown drains windows and joins the GPU thread.
 
+Native presentation credit is checked before replacing displayed buffers. The owner distinguishes
+native pacing from resource retirement: pacing arms the backend callback even with a pending resize;
+only resource retirement uses the bounded retry timer. A pending extent alone must not turn a DXGI
+frame-ready wait into exponentially backed-off polling.
+
+Windows coalesces queued Scenes before applying a drawable resize. Once readiness has replaced
+the native buffers, a Scene matching their exact physical extent completes the first full present
+even if newer work arrived during replacement. The first-present obligation survives skipped or
+failed draws and clears only after successful native presentation. Initialized surfaces retain
+latest-wins cancellation; this rule never permits an old-size Scene into a new-size backbuffer.
+
+GPU-owner resource retry reports keep an already armed deadline, including an overdue one.
+Only an attempt consuming a due retry can advance the bounded 1–16ms retry backoff; fresh
+reports cannot push that poll farther into the future. Successful native submission resets this
+backoff before arming any remaining retirement poll. This is resource bookkeeping, independent
+of animation sampling and native display cadence.
+
 Windows queues shared-device and BGRA renderer-core preparation on this GPU owner after resolving
 the backend, before DirectWrite/App/winit initialization on the single Windows HWND/GPUI UI owner. Device,
 shader and pipeline creation overlap native/UI preparation; the window reuses the same device
@@ -235,15 +252,18 @@ Interactive Win32 resize correctness:
   coalesced foreground retry that reads the latest authoritative viewport.
   Each live UI frame also reconciles native content size/scale before layout,
   covering the case where that deferred callback has not run before the frame.
-- Live resize commits scene geometry for the current client extent while the GPU
-  allocation may retain larger capacity in 128-pixel increments. Draw that scene
-  at native client-pixel coordinates in the top-left of the allocation; presentation
-  must select that same client-sized source region and must not scale the complete
-  retained allocation. DXGI uses `SetSourceSize`, OpenGL blits the active region at
-  native size, and Vulkan uses maintenance1 `ONE_TO_ONE` with top/left or native
-  gravity. Pointer release settles to the final exact extent. Retained capacity must
-  fit Vulkan's advertised scaled-image extent limits; unsupported surfaces use
-  exact-size swapchains.
+- Live resize commits scene geometry and the native swapchain at the exact client
+  extent. Do not use presentation-surface headroom or scale the old page to hide
+  uncovered client pixels. Immutable atlas/upload resources can retain capacity
+  independently. A Scene must match both its resize epoch and physical extent.
+- DXGI HWND swapchains use `DXGI_SCALING_NONE`: if native client growth precedes
+  the next matching buffer/Scene, DXGI must preserve the old buffer's native pixel
+  scale instead of resampling its text. This does not initialize the newly exposed
+  region or remove the need for a new-size Present. Composition swapchains retain
+  `DXGI_SCALING_STRETCH`, which CreateSwapChainForComposition requires; their visual
+  transform must remain identity rather than fitting old content to the HWND
+  ([DXGI scaling contract](https://learn.microsoft.com/windows/win32/api/dxgi1_2/ne-dxgi1_2-dxgi_scaling),
+  [composition creation contract](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/nf-dxgi1_2-idxgifactory2-createswapchainforcomposition)).
 - A pure move does not invalidate layout. Resize must ultimately update root
   constraints and GPUI viewport, and render elements at their new layout positions.
 - Submit a changed drawable extent with its matching UI Scene. A retained tick
@@ -256,31 +276,28 @@ Interactive Win32 resize correctness:
   remain latest-wins and preserve accumulated damage.
 - A real client-size change may publish and pump its UI commit in the native
   message turn, before waiting for the next DWM wake. Native size events and DWM
-  dispatch share one per-window cadence. Changed client extents submit immediately;
-  presentation-only wakes honor the display interval and explicit window FPS limit.
+  dispatch share one per-window cadence. The first commit starts immediately; trailing
+  client extents coalesce at the display interval and explicit window FPS limit.
   Merely entering the move/resize loop does not rebuild an old-size scene. Existing DWM
   wakes handle coalesced trailing sizes, without an extra timer.
-- Live resize first attempts the UI frame inline through its normal frame
-  lifecycle; a borrowed UI owner falls back to the coalesced sender. Once its
-  matching scene has been queued, the native size-message path waits at most
-  100ms for its GPU-owner acknowledgment. Only a successful backend Present
-  acknowledges it; readiness deferral does not. A replacing Draw releases the
-  previous caller without acknowledging submission. Deferred retries retain the
-  reply until submission or failure. The wait runs after the frame callback
-  releases renderer/App borrows, waits on a channel and services driver sent messages.
-  Failure, shutdown and the deadline release it. No additional GPU fence is
-  added; the acknowledgment does not establish physical scanout completion.
-  A matching resize Present acknowledges the native thread, which passes the DWM
-  compositor checkpoint outside App/Window/backend borrows before returning the
-  native resize message. The shared GPU owner does not wait for this checkpoint.
-  Native resize diagnostics separate submission and compositor waits. The final
-  extent after exiting the size/move loop uses the same resize transaction.
-  Ordinary frames keep asynchronous presentation. Changed native viewport
-  frames also bypass a configured UI FPS deadline, while presentation-only work
-  remains paced. The native receipt is drained even if a nested dispatch already
-  consumed the pending size slot.
-  A failed retained reconstruction keeps the new drawable extent pending until
-  a completed recovery draw, instead of tagging the old scene as a new-size frame.
+- WM_SIZE/WM_WINDOWPOSCHANGED publish the latest client generation without running
+  Layout/Prepaint on the native message stack. A coalesced modal wake consumes it
+  at the display/configured cadence and queues its matching Resize/Draw. A changed native
+  generation must not independently bypass this producer limit: serial UI work for obsolete
+  intermediate sizes can delay both native event handling and the shared GPU owner.
+  Existing native/Scene/Present traces carry the geometry epoch. Present trace splits
+  pipeline preparation from backend encoding/offscreen/Present-return; GPU extent changes
+  include the command kind, queue wait and owner elapsed time. These are CPU submission
+  observations, not GPU duration or physical scanout measurements.
+  GPU submission remains asynchronous. The modal dispatcher drains reports for
+  every HWND first, then services the dragged window's pending resize before peer
+  UI callbacks; peers still run once and rotate fairly. This avoids placing newly
+  exposed pixels behind a slow companion-window Paint. It does not guarantee that
+  new-size content exists before Windows exposes the enlarged client area.
+  Reentrant state-borrow failures retain a per-HWND retry bit, and gesture exit
+  reconciles the final native extent again. A failed retained reconstruction keeps
+  the new drawable extent pending until recovery rather than stamping an old Scene
+  with the new geometry.
 - Live resize does not mask unpainted strips with an HWND region: doing so can
   disable themed non-client rendering and only masks delayed content. Native
   window chrome remains owned by DWM; the existing old-system corner fallback
@@ -299,10 +316,42 @@ Interactive Win32 resize correctness:
   Its bottom-center object position preserves the bottom of the background at
   wide aspect ratios; other image elements keep their existing default alignment.
 - Poll the renderer's pending submissions before resize on every backend. Vulkan
-  still keeps its driver-level device-idle swapchain replacement barrier. Old blur
+  maintenance1 also polls this swapchain's present fences; devices without that feature retain
+  the native idle replacement barrier. Old blur
   targets retire on resize; new targets are allocated after packing the new Scene,
   using its actual capture topology. Resize phase metrics exclude that subsequent
   blur preparation, so compare resize plus first-frame draw rather than resize alone.
+- OpenGL resize relies on this renderer's already-retired post-SwapBuffers GL syncs and
+  replaces only its own FBO/color attachments. It must not additionally wait for all shared-device
+  submissions from companion windows. Context ownership and final native submission remain on
+  the GPU owner; this is a narrower retirement dependency, not concurrent GL context access.
+- DX11/DX12 implement `SurfaceDevice::prepare_swapchain_resize` as a per-swapchain
+  retirement point. DX11 reuses the EVENT query issued after its last Present;
+  a backbuffer draw without Present invalidates it. DX12 issues one queue fence
+  when preparation starts, after any earlier DXGI Present work, and polls that
+  same fence on subsequent attempts. New rendering/Present to that swapchain
+  invalidates the preparation; another window's later submissions do not.
+  DX12 ResizeBuffers waits only for this saved point and cleans up only completed
+  payloads, preserving unrelated in-flight resources. Recorded DX12 frames carry
+  a native buffer generation; resize/recreation advances it, and stale command
+  lists are rejected before execution. DX11/DX12 composition resizes prepare an independent
+  native candidate. Its visual retains the last published content at native pixel scale until
+  the matching candidate frame successfully Presents and SetContent/Commit succeeds. Failed
+  preparation leaves Active intact; failed publication retains both references and attempts
+  rollback. Superseding an unpresented candidate must retain the last published content.
+  Final destruction detaches the native visual before releasing its content. HWND swapchains
+  retain ResizeBuffers; window destruction remains a native lifecycle boundary.
+  This removes a device-wide readiness dependency, not the time required to
+  produce new UI geometry or the interval between native client growth and its
+  first matching Present. Vulkan maintenance1 tracks both frame and Present fences per chain;
+  only completed Present fences are recycled. Resize/reconfigure/destruction retires that chain's
+  references before destroying its native fences and images. Public completion handles remain
+  queryable after native retirement. Unsupported devices and indeterminate enqueue failures retain
+  the conservative idle boundary. Present fences prove native resource release, not scanout
+  ([Vulkan present fence contract](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainPresentFenceInfoKHR.html)).
+- Windows startup does not purge the process working set after a fixed delay. Rendering hot data
+  remains resident subject to normal OS memory management; explicit memory trimming has its own
+  lifecycle and must not be implemented by a startup timer evicting the entire process.
 - Validate grow/shrink, reentrant WM_SIZE, multi-window modal drag and cross-DPI
   moves; collect viewport, native-client and drawable extents plus frame latencies.
 
@@ -1319,6 +1368,10 @@ Stage durations are CPU wall times: `layout` is the accumulated Taffy compute
 time, `prepaint` includes layout work, and `backend_draw` covers Nova packing,
 uploads, command submission, and presentation. GPU pass time still requires
 PIX or RenderDoc, and frame pacing still requires PresentMon/ETW.
+Detailed Prepaint Trace separates `root_layout_us` (request-layout plus root
+layout) from `root_non_layout_us`; both are subsets of the existing inclusive
+`root_us`. Budget warnings include `prepaint_root_layout_us`. Do not add these
+subset timings to their inclusive parent when computing a frame total.
 
 `static_stream_hits` and `static_stream_misses` count retained upload-mask
 entries, not GPU write calls. A retained-key hit means the complete static
