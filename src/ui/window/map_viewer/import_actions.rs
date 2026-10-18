@@ -68,14 +68,20 @@ impl MapViewerWindowView {
             MapViewerRightPanel::ImageGenerator => self.image_generator.preview_result_active,
             _ => false,
         };
-        let can_commit = valid_source && preview.is_some_and(|preview| !preview.is_writing())
+        let can_position = valid_source && preview.is_some_and(|preview| !preview.is_writing())
             && !self.map_write_busy();
+        let can_commit = can_position && self.converter_target_selected() == Some(true);
         let footprint = preview.map(|preview| preview.targets.len()).unwrap_or_default();
         let anchor_text = preview.map_or_else(
             || "预览尚未准备，完成转换后再选择放置位置".to_owned(),
             |preview| format!(
-                "预览锚点：区块 X {} · Z {}，占用 {} 个区块；可在地图中拖动调整",
+                "预览锚点：区块 X {} · Z {}，占用 {} 个区块 · {}",
                 preview.target_anchor.x, preview.target_anchor.z, footprint,
+                if self.converter_target_selected() == Some(true) {
+                    "已选择放置位置"
+                } else {
+                    "待确认位置：请在地图中拖动预览或选择当前视野中心"
+                },
             ),
         );
 
@@ -97,7 +103,7 @@ impl MapViewerWindowView {
                     .gap(px(7.0))
                     .child(
                         secondary_button(colors, "map-structure-target-center", "放到当前视野中心")
-                            .when(can_commit, |button| {
+                            .when(can_position, |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
@@ -105,7 +111,7 @@ impl MapViewerWindowView {
                                     }),
                                 )
                             })
-                            .opacity(if can_commit { 1.0 } else { 0.45 }),
+                            .opacity(if can_position { 1.0 } else { 0.45 }),
                     )
                     .child(
                         secondary_button(colors, "map-structure-focus-preview", "居中查看预览")
@@ -121,7 +127,7 @@ impl MapViewerWindowView {
                     )
                     .child(
                         secondary_button(colors, "map-structure-rotate-left", "逆时针旋转")
-                            .when(can_commit, |button| {
+                            .when(can_position, |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
@@ -129,11 +135,11 @@ impl MapViewerWindowView {
                                     }),
                                 )
                             })
-                            .opacity(if can_commit { 1.0 } else { 0.45 }),
+                            .opacity(if can_position { 1.0 } else { 0.45 }),
                     )
                     .child(
                         secondary_button(colors, "map-structure-rotate-right", "顺时针旋转")
-                            .when(can_commit, |button| {
+                            .when(can_position, |button| {
                                 button.on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
@@ -141,7 +147,7 @@ impl MapViewerWindowView {
                                     }),
                                 )
                             })
-                            .opacity(if can_commit { 1.0 } else { 0.45 }),
+                            .opacity(if can_position { 1.0 } else { 0.45 }),
                     )
                     .child(
                         primary_button(colors, "map-structure-confirm-placement", "确认写入当前世界")
