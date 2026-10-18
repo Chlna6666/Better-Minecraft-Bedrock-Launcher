@@ -236,6 +236,48 @@ without claiming that GPUI has their full style-transition or property coverage.
 
 ## Current Limitations And Improvement Areas
 
+### Quad shape geometry
+
+`AnimationProperty::vertical_edges([from_top, from_bottom], [to_top, to_bottom])`
+animates a Quad's actual presentation bounds relative to its stable final layout.
+Offsets are logical pixels; resolution applies DPI and the current visual scale once.
+For bottom-up growth, animate `[height, px(0.)]` to `[px(0.); 2]` with forwards fill.
+Width, corner radii, borders, ancestor content masks and child layout stay fixed.
+The existing Quad SDF evaluates the new bounds on each GPU sample; this is not
+`ClipReveal`, which only conceals already-built geometry. Crossed edges collapse
+to zero height. The API is for a single Quad decoration, not a text/image subtree
+or shadow. Border-only decorations keep one Quad instead of the static strip optimization.
+
+The property uses one timeline and one animation ID, existing completion generations,
+and the existing indexed 64-byte GPU value. It adds no Scene, upload or cache owner.
+CPU fallback applies the same top/height arithmetic. Packet damage uses the union
+of previous/current shape bounds intersected with the fixed ancestor mask. Retargeting
+compensates both old/new base edges, including changes to the final layout height.
+Scroll-only movement preserves relative offsets. Completion and retained replay use
+the existing fill and binding-removal protocol.
+
+Regression entry points: `vertical_edges` unit/window tests and ignored native
+`*_vertical_edges_pixels` tests under `renderer/shared_buffers/native_tests/retained_color`.
+The native tests compare full BGRA readbacks against CPU fallback geometry at
+multiple DPI scales, overshoot/reversal samples, and scrolled terminal geometry.
+Hardware tests must be invoked explicitly; their presence does not establish a pass.
+
+### Remaining capability priorities
+
+| Priority | Evidence in current implementation | Next bounded step |
+| --- | --- | --- |
+| P0 | `paint/geometry.rs` has no `HorizontalEdges` shape-bounds branch | Reproduce expanded-edge damage independently; add old/new shape coverage before broader damage optimization. |
+| P1 | `AnimationProperty::uniform_scale`, Nova `VisualAnimation.scale` and CPU `apply_scale` are scalar | Design two-axis transform/pivot and mask/radius semantics together; geometry growth must not use stretched radii as a substitute. |
+| P1 | `AnimationGroup::parallel` accepts only opacity/translation/scale and at most three tracks | Extend packing only with defined composition order and one atomic owner; do not silently nest unrelated owners. |
+| P1 | Driver selection is in `resolve_driver_with_cpu_policy`; existing metrics do not give a complete per-target fallback reason | Add bounded execution-path/reason observations before claiming GPU coverage or performance wins. |
+| P2 | `Transition` stores metadata; computed-style differences do not start tracks | Design style snapshots/diff and interruption semantics separately. |
+| P2 | Statistics numeric content still changes in the UI | Consider retained digit layers only after measuring content/layout cost. |
+
+These are scoped follow-up findings, not changes to those APIs in this geometry patch.
+Windows native pixel tests do not establish macOS Metal or Linux native lifecycle behavior.
+Pixel equivalence also does not establish latency, upload bandwidth, residency or cache-hit
+improvements: those require CPU/GPU trace measurements on the application workload.
+
 The retained presentation path now advances supported visual tracks without
 calling the owning view's `Render`, but the engine remains incomplete in several
 specific areas:
