@@ -342,23 +342,26 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (title, description, action) = match self.ui_state.active_right_panel {
+        let (title, description, action, drop_hint) = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => (
                 "从 OBJ 模型开始",
                 "选择 OBJ 模型。支持关联 MTL 与同目录纹理，转换结果会显示在这里。",
                 "选择 OBJ 模型…",
+                "也可直接将 .obj 文件拖入地图窗口",
             ),
             MapViewerRightPanel::ImageGenerator => (
                 "从图片创建方块模型",
                 "导入 PNG、JPEG、TGA 或 WebP，先预览比例和色彩，再调整目标尺寸。",
                 "选择图片…",
+                "也可直接拖入 PNG / JPEG / TGA / WebP 图片",
             ),
             MapViewerRightPanel::MapImage => (
                 "从图片创建地图物品",
                 "导入图片后可预览每张 128×128 地图、编辑拼图网格，再选择写入目标。",
                 "选择图片…",
+                "也可直接拖入 PNG / JPEG / TGA / WebP 图片",
             ),
-            _ => ("选择源素材", "选择素材以开始转换。", "选择素材…"),
+            _ => ("选择源素材", "选择素材以开始转换。", "选择素材…", "拖入受支持的文件"),
         };
         div()
             .size_full()
@@ -405,6 +408,12 @@ impl MapViewerWindowView {
                                 this.choose_import_source_from_workspace(cx);
                             }),
                         ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child(drop_hint),
                     ),
             )
     }
