@@ -172,7 +172,9 @@ impl MapViewerWindowView {
     }
 
     fn clear_obj_live_preview(&mut self, cx: &mut Context<Self>) {
-        self.generator.original_preview = None;
+        // A parameter change rebuilds voxels, not the input OBJ. Keep its
+        // immutable source scene resident to avoid preview flicker/GPU reupload.
+        // set_generator_obj_source explicitly clears it when the path changes.
         if let Some(id) = self.generator.preview_task_id.take() {
             task_manager::cancel_task(&id);
             release_structure_preview(&id);
