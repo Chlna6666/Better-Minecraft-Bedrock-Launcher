@@ -49,11 +49,6 @@ impl MapViewerWindowView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let busy = self.generator_busy();
-        let selected = self
-            .generator
-            .source
-            .as_ref()
-            .map(|source| source.display().to_string());
 
         div()
             .size_full()
@@ -71,50 +66,34 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(16.0))
-                    .child(generator_section_title(colors, "源模型"))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .line_height(px(18.0))
-                            .text_color(colors.text_secondary)
-                            .child("读取 OBJ/MTL 与模型目录内的纹理；原存档只读。"),
-                    )
-                    .when(busy, |panel| {
-                        panel.child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors.text_secondary)
-                                .child("转换进行中，设置暂时锁定；可在任务页查看和取消。"),
+                    .child(generator_section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::inspector_source_card(
+                        colors,
+                        "OBJ / MTL",
+                        self.generator.source.as_deref(),
+                        "支持拖入 OBJ",
+                        crate::ui::components::button::secondary_button(
+                            colors, "obj-inspector-source", "选择模型…",
                         )
-                    })
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child(selected.unwrap_or_else(|| "尚未选择模型".to_owned())),
-                    )
-                    .child(
-                        generator_choice(colors, "选择 OBJ…", false).when(!busy, |button| {
+                        .when(!busy, |button| {
                             button.on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.choose_generator_obj(cx)
-                                }),
+                                cx.listener(|this, _, _, cx| this.choose_generator_obj(cx)),
                             )
-                        }),
-                    )
+                        })
+                        .opacity(if busy { 0.45 } else { 1.0 }),
+                    ))
+                    .when(busy, |panel| panel.child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(colors.text_secondary)
+                            .child("后台转换中 · 可以在任务面板取消"),
+                    ))
                     .when_some(self.generator.preview_size, |panel, size| {
-                        panel.child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors.text_primary)
-                                .child(format!(
-                                    "当前预览尺寸：{} × {} × {} 方块；瓦片与应用内 3D 面板同步",
-                                    size[0], size[1], size[2]
-                                )),
-                        )
+                        panel.child(crate::ui::components::inspector::inspector_result_summary(
+                            colors, "方块化结果",
+                            format!("{} × {} × {} 方块", size[0], size[1], size[2]),
+                        ))
                     })
                     .child(self.render_obj_parameters(colors, cx)),
             )
