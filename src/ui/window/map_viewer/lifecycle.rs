@@ -455,6 +455,7 @@ impl MapViewerWindowView {
             // and the interaction path never swaps in a blurry intermediate LOD.
             render_texture_layout: initial_layout,
             viewport,
+            import_canvas_bounds: None,
             window_width: window_size.width / px(1.0),
             window_height: window_size.height / px(1.0),
             cpu_budget: RenderCpuBudget::default(),
@@ -597,7 +598,20 @@ impl MapViewerWindowView {
         self.viewport.set_size(self.center_stage_size(window_size))
     }
 
+    pub(super) fn import_canvas_stage_active(&self) -> bool {
+        self.import_workspace_active()
+            && self.ui_state.import_workspace_mode
+                == super::state::ImportWorkspaceMode::Placement
+            && !(self.ui_state.active_right_panel == MapViewerRightPanel::MapImage
+                && self.map_image_installing_to_player())
+    }
+
     pub(super) fn center_stage_size(&self, window_size: Size<Pixels>) -> Size<Pixels> {
+        if self.import_canvas_stage_active() {
+            if let Some(bounds) = self.import_canvas_bounds {
+                return bounds.size;
+            }
+        }
         center_stage_rect_for_layout(
             window_size.width / px(1.0),
             window_size.height / px(1.0),
@@ -613,6 +627,11 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn center_stage_origin(&self) -> Point<Pixels> {
+        if self.import_canvas_stage_active() {
+            if let Some(bounds) = self.import_canvas_bounds {
+                return bounds.origin;
+            }
+        }
         center_stage_rect_for_layout(
             self.window_width,
             self.window_height,
