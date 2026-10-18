@@ -161,17 +161,32 @@ impl MapViewerWindowView {
     }
 
     fn render_external_file_drop_target(&self, cx: &mut Context<Self>) -> Div {
+        let import_panel = self.ui_state.active_right_panel;
+        let import_active = self.import_workspace_active();
         div()
             .absolute()
             .inset_0()
-            .can_drop(|value, _window, _cx| {
-                value
-                    .downcast_ref::<ExternalPaths>()
-                    .is_some_and(external_paths_are_importable)
+            .can_drop(move |value, _window, _cx| {
+                value.downcast_ref::<ExternalPaths>().is_some_and(|paths| {
+                    if import_active {
+                        paths.paths().iter().any(|path| {
+                            super::import_workspace::is_import_source_path_for_panel(
+                                path, import_panel,
+                            )
+                        })
+                    } else {
+                        external_paths_are_importable(paths)
+                    }
+                })
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 let paths = paths.paths().to_vec();
-                this.import_structure_paths_from_drop(&paths, cx);
+                if this.import_workspace_active() {
+                    this.import_source_paths_from_drop(&paths, cx);
+                } else {
+                    this.import_structure_paths_from_drop(&paths, cx);
+                }
+                cx.stop_propagation();
             }))
     }
 }
