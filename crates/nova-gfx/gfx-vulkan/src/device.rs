@@ -54,6 +54,7 @@ mod compact;
 mod buffer_upload;
 mod relocation;
 mod presentation;
+mod descriptors;
 
 const FRAMES_IN_FLIGHT: usize = 2;
 // A transient WSI stall must not discard a prepared compositor frame after only 1 ms.
@@ -150,7 +151,7 @@ pub struct VulkanDevice {
     submissions: ResourceRegistry<VulkanSubmission>,
     surfaces: ResourceRegistry<VulkanSurface>,
     swapchains: ResourceRegistry<VulkanSwapchain>,
-    descriptor_pool: vk::DescriptorPool,
+    descriptor_pools: descriptors::Pools,
     pipeline_cache: vk::PipelineCache,
     pipeline_cache_path: Option<PathBuf>,
     upload_ring: UploadRingAllocator,
@@ -311,7 +312,6 @@ impl VulkanDevice {
             physical_device,
         })?;
         let upload_ring = UploadRingAllocator::new(UploadRingAllocatorDesc::default())?;
-        let descriptor_pool = create_descriptor_pool(&device)?;
         let pipeline_cache_path =
             vulkan_pipeline_cache_path(desc.pipeline_cache_dir.as_deref(), &adapter_properties);
         let pipeline_cache_data = pipeline_cache_path
@@ -355,7 +355,7 @@ impl VulkanDevice {
             submissions: ResourceRegistry::new("submission"),
             surfaces: ResourceRegistry::new("surface"),
             swapchains: ResourceRegistry::new("swapchain"),
-            descriptor_pool,
+            descriptor_pools: descriptors::Pools::default(),
             pipeline_cache,
             pipeline_cache_path,
             upload_ring,
@@ -1055,17 +1055,6 @@ impl VulkanDevice {
         let layout_desc = self.resource_set_layouts.get(desc.layout)?.desc.clone();
         desc.validate_against(&layout_desc)?;
         let layout = self.resource_set_layouts.get(desc.layout)?.layout;
-        let set_layouts = [layout];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.descriptor_pool)
-            .set_layouts(&set_layouts);
-        // SAFETY: Descriptor pool and set layout belong to this device.
-        let descriptor_set = unsafe { self.device.allocate_descriptor_sets(&alloc_info) }
-            .map_err(VulkanError::from)?
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::Backend("failed to allocate descriptor set".to_string()))?;
-
         let mut buffer_infos = Vec::new();
         let mut image_infos = Vec::new();
         let mut pending_writes = Vec::new();
@@ -1121,6 +1110,8 @@ impl VulkanDevice {
                 }
             }
         }
+        // Validate resource handles before consuming pool capacity.
+        let (descriptor_set, descriptor_pool) = self.descriptor_pools.allocate(&self.device, layout)?;
         let writes = pending_writes
             .iter()
             .map(|write| match *write {
@@ -1160,6 +1151,7 @@ impl VulkanDevice {
         }
         Ok(self.resource_sets.insert(VulkanResourceSet {
             descriptor_set,
+            descriptor_pool,
             layout: desc.layout,
             desc: desc.clone(),
         }))
@@ -3244,11 +3236,13 @@ impl VulkanDevice {
 
     fn destroy_resource_set_now(&self, set: &VulkanResourceSet) {
         let _ = set.layout;
-        // SAFETY: Descriptor set was allocated from descriptor_pool and may be freed once.
-        let _ = unsafe {
+        // SAFETY: The set retains its allocating pool; fence retirement completed before this call.
+        if let Err(error) = unsafe {
             self.device
-                .free_descriptor_sets(self.descriptor_pool, &[set.descriptor_set])
-        };
+                .free_descriptor_sets(set.descriptor_pool, &[set.descriptor_set])
+        } {
+            log::warn!("nova-gfx Vulkan descriptor free failed: {error}");
+        }
     }
 
     fn destroy_pipeline_layout_now(&self, layout: &VulkanPipelineLayout) {
@@ -4006,10 +4000,9 @@ impl Drop for VulkanDevice {
         for (_, surface) in self.surfaces.drain_live() {
             self.destroy_surface_now(surface);
         }
-        // SAFETY: Descriptor pool belongs to this device and no descriptor sets remain live.
+        self.descriptor_pools.destroy(&self.device);
+        // SAFETY: Pipeline cache belongs to this device and no pipelines remain live.
         unsafe {
-            self.device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
             self.device
                 .destroy_pipeline_cache(self.pipeline_cache, None);
         }
@@ -4321,6 +4314,7 @@ struct VulkanResourceSetLayout {
 #[derive(Clone)]
 struct VulkanResourceSet {
     descriptor_set: vk::DescriptorSet,
+    descriptor_pool: vk::DescriptorPool,
     layout: ResourceSetLayoutId,
     desc: ResourceSetDescriptor,
 }
@@ -5151,34 +5145,6 @@ fn create_native_render_pass(
         .dependencies(&dependencies);
     // SAFETY: Render pass create info is self-contained and valid.
     unsafe { device.create_render_pass(&render_pass_info, None) }
-        .map_err(|error| VulkanError::from(error).into())
-}
-
-fn create_descriptor_pool(device: &ash::Device) -> Result<vk::DescriptorPool> {
-    let pool_sizes = [
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 256,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 256,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::SAMPLED_IMAGE,
-            descriptor_count: 256,
-        },
-        vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::SAMPLER,
-            descriptor_count: 256,
-        },
-    ];
-    let create_info = vk::DescriptorPoolCreateInfo::default()
-        .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-        .max_sets(256)
-        .pool_sizes(&pool_sizes);
-    // SAFETY: Descriptor pool create info is self-contained and device is valid.
-    unsafe { device.create_descriptor_pool(&create_info, None) }
         .map_err(|error| VulkanError::from(error).into())
 }
 
