@@ -7,11 +7,13 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
+        let compact = self.viewport.width < 720.0;
         div()
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
             .flex()
+            .when(compact, |layout| layout.flex_col())
             .child(
                 div()
                     .flex_1()
@@ -27,14 +29,13 @@ impl MapViewerWindowView {
                                 .min_h(px(0.0))
                                 .p(px(12.0))
                                 .flex()
-                                .items_start()
+                                .items_center()
                                 .justify_center()
                                 .overflow_hidden()
                                 .child(
                                     img(source.clone())
                                         .w_full()
                                         .h_full()
-                                        .max_h(px(520.0))
                                         .object_fit(
                                             if self.image_generator.options.fit
                                                 == ImageFit::CenterCrop
