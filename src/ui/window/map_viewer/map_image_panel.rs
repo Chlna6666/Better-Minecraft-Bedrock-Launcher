@@ -547,12 +547,20 @@ impl MapViewerWindowView {
         if let Some(path) =
             pick_file_path_with_filter("图片", &["png", "jpg", "jpeg", "tga", "webp"])
         {
-            self.map_image.source = Some(PathBuf::from(path));
-            self.map_image.pending_bundle = None;
-            self.map_image.preview_options = None;
-            self.map_image.options.auto_fit = true;
-            self.start_map_preview(cx);
+            self.set_map_image_source(PathBuf::from(path), cx);
         }
+    }
+
+    /// Shared by the picker and external drop. Never writes to the world.
+    pub(super) fn set_map_image_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.map_image_operation_busy() {
+            return;
+        }
+        self.map_image.source = Some(path);
+        self.map_image.pending_bundle = None;
+        self.map_image.preview_options = None;
+        self.map_image.options.auto_fit = true;
+        self.start_map_preview(cx);
     }
 
     pub(super) fn sync_map_grid_numeric_fields(&self, cx: &mut Context<Self>) {
