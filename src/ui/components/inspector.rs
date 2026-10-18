@@ -178,3 +178,18 @@ pub(crate) fn inspector_stage_tab(
                 .child(label),
         )
 }
+
+ /// Surface for a cohesive field set. The owner adds its real inputs as children;
+ /// no duplicate form state or validation lives here.
+pub(crate) fn inspector_field_group(colors: &ThemeColors) -> Div {
+    div()
+        .min_w(px(0.0))
+        .p(px(12.0))
+        .rounded(px(9.0))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.settings_field_bg)
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
+}
