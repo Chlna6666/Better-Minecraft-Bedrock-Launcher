@@ -226,7 +226,8 @@ impl FrameUpload {
         trim_upload_vec(&mut self.resident_quad_spans, 16, multiplier);
     }
 
-    /// Rebuild the set of atlas textures that can feed the earliest blur barrier.
+    /// Rebuild atlas dependencies of every filter barrier, including sprites
+    /// between sequential backdrops. Foreground after the last barrier is excluded.
     ///
     /// The batch stream is static for a retained upload, so this derived dependency set is computed
     /// once after static encode and shared by all renderer/present consumers in subsequent frames.
@@ -236,7 +237,7 @@ impl FrameUpload {
         let tile_sources = Arc::make_mut(&mut self.backdrop_source_atlas_tiles_cache);
         tile_sources.clear();
 
-        let Some(first_blur_batch) = self.batches.iter().position(|batch| {
+        let Some(last_blur_batch) = self.batches.iter().rposition(|batch| {
             matches!(
                 batch,
                 UploadedBatch::BackdropBlurs { .. } | UploadedBatch::CompositeBlur { .. }
@@ -245,7 +246,7 @@ impl FrameUpload {
             return;
         };
 
-        for batch in &self.batches[..first_blur_batch] {
+        for batch in &self.batches[..last_blur_batch] {
             match *batch {
                 UploadedBatch::MonoSprites { texture_id, first, count } => {
                     textures.insert(texture_id);
@@ -278,7 +279,7 @@ impl FrameUpload {
         }
     }
 
-    /// Atlas textures in the prefix that feeds the earliest backdrop barrier.
+    /// Atlas textures in the prefix that feeds any filter barrier.
     ///
     /// Return an Arc clone rather than rebuilding the set. This keeps existing renderer call sites
     /// ownership-friendly while reducing same-frame use to an atomic refcount increment.
@@ -355,7 +356,7 @@ mod atlas_source_dependency_tests {
     use super::*;
 
     #[test]
-    fn blur_source_keeps_only_sprite_tiles_before_first_filter_barrier() {
+    fn blur_source_tracks_each_filter_barrier_but_excludes_later_foreground() {
         let id = AtlasTextureId {
             index: 91,
             kind: AtlasTextureKind::Rgba,
@@ -372,15 +373,19 @@ mod atlas_source_dependency_tests {
         let mut upload = FrameUpload::default();
         upload.mono_atlas_tiles.push(tile(1, 4));
         upload.mono_atlas_tiles.push(tile(2, 50));
+        upload.mono_atlas_tiles.push(tile(3, 90));
         upload.batches.extend([
             UploadedBatch::MonoSprites { texture_id: id, first: 0, count: 1 },
             UploadedBatch::BackdropBlurs { first: 0, count: 1 },
             UploadedBatch::MonoSprites { texture_id: id, first: 1, count: 1 },
+            UploadedBatch::BackdropBlurs { first: 1, count: 1 },
+            UploadedBatch::MonoSprites { texture_id: id, first: 2, count: 1 },
         ]);
         upload.refresh_backdrop_source_atlas_texture_ids();
         let tiles = upload.backdrop_source_atlas_tiles();
-        assert_eq!(tiles.get(&id).expect("source texture").len(), 1);
+        assert_eq!(tiles.get(&id).expect("source texture").len(), 2);
         assert_eq!(tiles[&id][0].tile_id, crate::TileId(1));
+        assert_eq!(tiles[&id][1].tile_id, crate::TileId(2));
         assert!(upload.backdrop_source_atlas_texture_ids().contains(&id));
         upload.batches.clear();
         upload.refresh_backdrop_source_atlas_texture_ids();

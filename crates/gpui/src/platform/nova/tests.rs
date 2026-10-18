@@ -571,8 +571,8 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
         .expect("insert should succeed")
         .expect("image should allocate a tile");
 
-    atlas
-        .upload_pending_rgba_pixels(
+    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+        .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
                 let [write] = writes else {
@@ -604,8 +604,8 @@ fn pending_atlas_upload_borrows_pixels_without_repeating_clean_upload() {
             },
         )
         .expect("initial dirty upload should succeed");
-    atlas
-        .upload_pending_rgba_pixels(
+    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+        .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
                 assert!(writes.is_empty());
@@ -654,8 +654,8 @@ fn pending_atlas_upload_updates_existing_tile_in_place() {
         .expect("second update should succeed");
 
     assert_eq!(atlas.pending_upload_count_for_test(), 1);
-    atlas
-        .upload_pending_rgba_pixels(
+    frame_upload::upload_queue::AtlasUpload::new(&atlas)
+        .upload(
             |_| Ok(TextureId::from_parts(0, 0)),
             |writes| {
                 let [write] = writes else {

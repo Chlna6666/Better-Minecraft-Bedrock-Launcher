@@ -1,5 +1,10 @@
 use super::upload_encoding::{atlas_source_byte_len, encode_atlas_upload_with_padding};
 use super::*;
+mod batch;
+mod damage;
+pub(in crate::platform::nova) use batch::AtlasUpload;
+#[cfg(test)]
+use damage::atlas_upload_touches_tile;
 #[cfg(feature = "bench-support")]
 use crate::{ImageId, ImagePixelFormat, RenderImageParams, size};
 #[cfg(feature = "bench-support")]
@@ -33,6 +38,7 @@ pub(in crate::platform::nova) struct AtlasUploadBatch {
     // Captured under the SAME lock as the queued writes. New pages created
     // after this point belong to the next batch, not the current GPU upload.
     texture_infos: Vec<NovaAtlasTextureInfo>,
+    content_generation: u64,
 }
 
 impl AtlasUploadBatch {
@@ -50,8 +56,8 @@ pub(crate) struct AtlasUploadBenchmarkCore {
 impl AtlasUploadBenchmarkCore {
     pub(crate) fn rgba_tiles(upload_count: usize, tile_size: u32) -> Self {
         let atlas = NovaAtlas::new();
-        atlas
-            .upload_pending_rgba_pixels(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
+        AtlasUpload::new(&atlas)
+            .upload(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
             .expect("fallback atlas uploads must be valid");
 
         let tile_extent = i32::try_from(tile_size).expect("benchmark tile size must fit i32");
@@ -81,25 +87,15 @@ impl AtlasUploadBenchmarkCore {
     }
 
     pub(crate) fn upload(&self) -> (usize, usize) {
-        let stats = self
-            .atlas
-            .upload_pending_rgba_pixels(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
+        let stats = AtlasUpload::new(&self.atlas)
+            .upload(|_| Ok(TextureId::from_parts(0, 0)), |_| Ok(()))
             .expect("benchmark atlas upload must succeed");
         (stats.upload_count, stats.uploaded_bytes)
     }
 }
 
 impl NovaAtlas {
-    pub(in crate::platform::nova) fn upload_pending_rgba_pixels(
-        &self,
-        resolve_texture: impl FnMut(AtlasTextureId) -> Result<TextureId>,
-        upload: impl FnMut(&[TextureWrite<'_>]) -> Result<()>,
-    ) -> Result<AtlasUploadStats> {
-        let batch = self.take_pending_uploads();
-        self.upload_taken_rgba_pixels(batch, resolve_texture, upload)
-    }
-
-    pub(in crate::platform::nova) fn upload_taken_rgba_pixels(
+    fn upload_taken_rgba_pixels(
         &self,
         batch: AtlasUploadBatch,
         mut resolve_texture: impl FnMut(AtlasTextureId) -> Result<TextureId>,
@@ -152,35 +148,7 @@ impl NovaAtlas {
         result.map(|()| stats)
     }
 
-    /// Returns whether queued Atlas uploads can change texels actually sampled by
-    /// the retained backdrop source. A shared atlas page is not a dependency:
-    /// only its resident, painted tile regions are. If tile bookkeeping is
-    /// unavailable, conservatively invalidate rather than reuse stale pixels.
-    pub(in crate::platform::nova) fn pending_uploads_touch_source_tiles(
-        &self,
-        texture_ids: &FxHashSet<AtlasTextureId>,
-        tiles: &FxHashMap<AtlasTextureId, Vec<AtlasTile>>,
-    ) -> bool {
-        if texture_ids.is_empty() {
-            return false;
-        }
-        let state = self.state.lock().expect("nova atlas lock poisoned");
-        state.pending_uploads.iter().any(|upload| {
-            if !texture_ids.contains(&upload.texture_id) {
-                return false;
-            }
-            let Some(used_tiles) = tiles.get(&upload.texture_id) else {
-                return true; // Unknown tile layout: do not trust the cached filter.
-            };
-            used_tiles.is_empty()
-                || used_tiles.iter().any(|tile| {
-                    tile.texture_id != upload.texture_id
-                        || atlas_upload_touches_tile(upload, tile)
-                })
-        })
-    }
-
-    pub(in crate::platform::nova) fn take_pending_uploads(&self) -> AtlasUploadBatch {
+    fn take_pending_uploads(&self) -> AtlasUploadBatch {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
         let pending_ids: FxHashSet<_> = state
             .pending_uploads
@@ -205,6 +173,7 @@ impl NovaAtlas {
             bytes: std::mem::take(&mut state.upload_bytes),
             uploads: std::mem::take(&mut state.pending_uploads),
             texture_infos,
+            content_generation: state.content_generation,
         }
     }
 
@@ -227,15 +196,18 @@ impl NovaAtlas {
         }
     }
 
-    pub(in crate::platform::nova) fn restore_upload_batch(&self, batch: AtlasUploadBatch) {
+    fn restore_upload_batch(&self, mut batch: AtlasUploadBatch) {
         let mut state = self.state.lock().expect("nova atlas lock poisoned");
-        let base_offset = state.upload_bytes.len();
-        state.upload_bytes.extend_from_slice(&batch.bytes);
-        state.pending_uploads.reserve(batch.uploads.len());
-        for mut upload in batch.uploads {
+        // Producers may have queued a newer value while this batch was in
+        // flight. Restore older writes BEFORE those values, preserving order.
+        let base_offset = batch.bytes.len();
+        batch.bytes.append(&mut state.upload_bytes);
+        for upload in &mut state.pending_uploads {
             upload.offset = upload.offset.saturating_add(base_offset);
-            state.pending_uploads.push(upload);
         }
+        batch.uploads.append(&mut state.pending_uploads);
+        state.upload_bytes = batch.bytes;
+        state.pending_uploads = batch.uploads;
     }
 
     #[cfg(test)]
@@ -262,31 +234,6 @@ impl NovaAtlas {
         state.upload_bytes.clear();
         state.pending_uploads.clear();
     }
-}
-
-/// Texture-coordinate overlap, not screen-coordinate dirty bounds. Padding is
-/// included because bilinear sampling may read the replicated edge texels.
-fn atlas_upload_touches_tile(upload: &PendingAtlasUpload, tile: &AtlasTile) -> bool {
-    let bounds = tile.bounds;
-    let left = i64::from(bounds.origin.x.0) - i64::from(tile.padding);
-    let top = i64::from(bounds.origin.y.0) - i64::from(tile.padding);
-    let right = i64::from(bounds.origin.x.0)
-        + i64::from(bounds.size.width.0)
-        + i64::from(tile.padding);
-    let bottom = i64::from(bounds.origin.y.0)
-        + i64::from(bounds.size.height.0)
-        + i64::from(tile.padding);
-    if left >= right || top >= bottom {
-        return true; // Unknown or degenerate placement requires conservative refresh.
-    }
-    let upload_left = i64::from(upload.origin.x);
-    let upload_top = i64::from(upload.origin.y);
-    let upload_right = upload_left + i64::from(upload.size.width());
-    let upload_bottom = upload_top + i64::from(upload.size.height());
-    upload_left < right
-        && upload_right > left
-        && upload_top < bottom
-        && upload_bottom > top
 }
 
 impl NovaAtlasState {
@@ -471,15 +418,15 @@ mod upload_texture_snapshot_tests {
         sources.insert(id);
         let mut tiles = FxHashMap::default();
         tiles.insert(id, vec![tile]);
-        assert!(!atlas.pending_uploads_touch_source_tiles(&sources, &tiles));
+        assert!(!AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles));
         {
             let mut state = atlas.state.lock().expect("test atlas mutex");
             state.pending_uploads.last_mut().expect("test upload").origin =
                 Origin2d { x: 21, y: 22 };
         }
-        assert!(atlas.pending_uploads_touch_source_tiles(&sources, &tiles));
+        assert!(AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles));
         tiles.clear();
-        assert!(atlas.pending_uploads_touch_source_tiles(&sources, &tiles),
+        assert!(AtlasUpload::new(&atlas).touches_source_tiles(&sources, &tiles),
             "missing packed-sprite dependency data must preserve correctness");
     }
 

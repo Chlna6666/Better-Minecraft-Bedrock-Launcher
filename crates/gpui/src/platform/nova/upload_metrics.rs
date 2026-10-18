@@ -1,11 +1,10 @@
 use super::*;
 
-/// Drain pending writes together with their page metadata. GPU texture pages
-/// may be allocated by another thread *after* the renderer's regular texture
-/// synchronization but *before* its upload phase. Preparing from the drained
-/// batch closes that race without holding the atlas mutex during GPU work.
+/// Upload exactly the writes used by this frame's damage plan. The snapshot
+/// includes page metadata, so later atlas allocation cannot change this batch.
+/// An error before consumption automatically restores its queued writes.
 pub(super) fn upload_pending_atlas<D>(
-    atlas: &NovaAtlas,
+    batch: frame_upload::upload_queue::AtlasUpload<'_>,
     device: &mut D,
     gpu_textures: &mut FxHashMap<AtlasTextureId, NovaGpuAtlasTexture>,
     backend_name: &str,
@@ -15,7 +14,6 @@ where
     D: BackendResources,
 {
     let started_at = Instant::now();
-    let batch = atlas.take_pending_uploads();
     let missing_pages: Vec<_> = batch
         .texture_infos()
         .iter()
@@ -28,27 +26,20 @@ where
         .collect();
 
     for info in missing_pages {
-        let new_texture = match create_atlas_texture_resources(
+        let new_texture = create_atlas_texture_resources(
             device,
             backend_name,
             info.id,
             info.size,
             descriptor,
             NovaAtlasResourceSetMode::UsedByTextureKind,
-        ) {
-            Ok(texture) => texture,
-            Err(error) => {
-                atlas.restore_upload_batch(batch);
-                return Err(error);
-            }
-        };
+        )?;
         if let Some(replaced) = gpu_textures.insert(info.id, new_texture) {
             destroy_gpu_atlas_texture(device, replaced, backend_name, info.id);
         }
     }
 
-    let stats = atlas.upload_taken_rgba_pixels(
-        batch,
+    let stats = batch.upload(
         |atlas_id| {
             gpu_textures
                 .get(&atlas_id)

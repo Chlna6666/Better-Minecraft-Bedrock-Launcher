@@ -1347,15 +1347,6 @@ impl NovaRenderer {
         if self.filters.quality != Some(quality) {
             self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
         }
-        if self.frame_upload.backdrop_blurs.is_empty() {
-            return;
-        }
-
-        let source_atlases = self.frame_upload.backdrop_source_atlas_texture_ids();
-        let source_tiles = self.frame_upload.backdrop_source_atlas_tiles();
-        if self.atlas.pending_uploads_touch_source_tiles(&source_atlases, &source_tiles) {
-            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
-        }
     }
 
     fn backdrop_blur_quality(&self, _packet: &PresentationPacket) -> BackdropBlurQuality {

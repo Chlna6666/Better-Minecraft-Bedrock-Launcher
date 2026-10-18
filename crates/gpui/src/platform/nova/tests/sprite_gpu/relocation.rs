@@ -52,7 +52,7 @@ pub(super) fn verify_atlas_compaction<D>(
         )
         .expect("source page");
         upload_pending_atlas(
-            &atlas,
+            frame_upload::upload_queue::AtlasUpload::new(&atlas),
             device,
             &mut textures,
             "compact hardware gate",

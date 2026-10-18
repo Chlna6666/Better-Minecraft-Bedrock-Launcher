@@ -154,7 +154,7 @@ pub(in crate::platform::nova) struct FrameUpload {
     pub(in crate::platform::nova) isolated_blur_source_indices_cache: Vec<u32>,
     pub(in crate::platform::nova) backdrop_source_atlas_texture_ids_cache:
         Arc<FxHashSet<AtlasTextureId>>,
-    /// Exact atlas tile regions painted before the first backdrop barrier.
+    /// Exact atlas tile regions painted before the last filter barrier.
     /// Immutable between scene encodes, shared cheaply with the renderer.
     pub(in crate::platform::nova) backdrop_source_atlas_tiles_cache:
         Arc<FxHashMap<AtlasTextureId, Vec<AtlasTile>>>,

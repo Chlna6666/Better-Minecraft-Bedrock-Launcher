@@ -50,12 +50,8 @@ impl FilterRegistry {
         }
     }
 
-    pub(super) fn refresh_required(
-        &self,
-        quality: BackdropBlurQuality,
-        source_atlas_dirty: bool,
-    ) -> bool {
-        !self.valid || source_atlas_dirty || self.quality != Some(quality)
+    pub(super) fn refresh_required(&self, quality: BackdropBlurQuality) -> bool {
+        !self.valid || self.quality != Some(quality)
     }
 
     pub(super) fn begin_refresh(&mut self) {
@@ -695,15 +691,14 @@ mod tests {
     }
 
     #[test]
-    fn retained_filters_reuse_until_source_quality_or_targets_change() {
+    fn retained_filters_reuse_until_quality_or_targets_change() {
         let mut registry = FilterRegistry::new(None);
-        assert!(registry.refresh_required(BackdropBlurQuality::Full, false));
+        assert!(registry.refresh_required(BackdropBlurQuality::Full));
         registry.record_submission(BackdropBlurQuality::Full, 3);
-        assert!(!registry.refresh_required(BackdropBlurQuality::Full, false));
-        assert!(registry.refresh_required(BackdropBlurQuality::Full, true));
-        assert!(registry.refresh_required(BackdropBlurQuality::Interactive, false));
+        assert!(!registry.refresh_required(BackdropBlurQuality::Full));
+        assert!(registry.refresh_required(BackdropBlurQuality::Interactive));
         registry.invalidate();
-        assert!(registry.refresh_required(BackdropBlurQuality::Full, false));
+        assert!(registry.refresh_required(BackdropBlurQuality::Full));
     }
 
     #[test]
@@ -1186,9 +1181,9 @@ mod tests {
         let mut registry = FilterRegistry::new(None);
         registry.record_submission(BackdropBlurQuality::Full, 3);
         registry.begin_refresh();
-        assert!(registry.refresh_required(BackdropBlurQuality::Full, false));
+        assert!(registry.refresh_required(BackdropBlurQuality::Full));
         registry.record_submission(BackdropBlurQuality::Full, 4);
-        assert!(!registry.refresh_required(BackdropBlurQuality::Full, false));
+        assert!(!registry.refresh_required(BackdropBlurQuality::Full));
         assert_eq!(registry.atlas_generation, 4);
     }
 }

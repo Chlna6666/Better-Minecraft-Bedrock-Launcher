@@ -577,22 +577,32 @@ impl NovaRenderer {
         } else {
             Default::default()
         };
-        let atlas_content_generation = self.atlas.content_generation();
+        let atlas = Arc::clone(&self.atlas);
+        let atlas_upload = frame_upload::upload_queue::AtlasUpload::new(&atlas);
+        let atlas_content_generation = atlas_upload.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
         let backdrop_source_atlas_dirty = has_compositor_descriptors
-            && self
-                .atlas
-                .pending_uploads_touch_source_tiles(
-                    &backdrop_source_atlas_textures,
-                    &backdrop_source_atlas_tiles,
-                );
-        let shared_blur_cache_invalid = has_filters
-            && self
-                .filters
-                .refresh_required(backdrop_blur_quality, backdrop_source_atlas_dirty);
+            && atlas_upload.touches_source_tiles(
+                &backdrop_source_atlas_textures,
+                &backdrop_source_atlas_tiles,
+            );
+        let shared_blur_cache_invalid =
+            has_filters && self.filters.refresh_required(backdrop_blur_quality);
+        let atlas_dirty_layers =
+            if has_element_blurs && atlas_generation_changed && !shared_blur_cache_invalid {
+                atlas_upload.touches_layers(&self.frame_upload)
+            } else {
+                SmallVec::new()
+            };
+        let atlas_source_dirty = backdrop_source_atlas_dirty || !atlas_dirty_layers.is_empty();
+        // Atlas coordinates are independent of window damage. Repaint the
+        // selected sources in full, including ancestors and later backdrops,
+        // without invalidating unrelated retained filter textures.
+        self.draw_step_scratch.force_full_backdrop_blur_refresh |= atlas_source_dirty;
         let backdrop_blur_refresh_required = has_root_backdrop_blurs
             && (packet.force_full_backdrop_blur_refresh
                 || packet.backdrop_blur_damage_plan.refresh_required()
+                || atlas_source_dirty
                 || shared_blur_cache_invalid);
         let mut dirty_element_indices = dirty_element_blur_indices(
             &self.frame_upload,
@@ -603,9 +613,14 @@ impl NovaRenderer {
             // A cached source proof from the old viewport is not sufficient here.
             shared_blur_cache_invalid || packet.force_full_backdrop_blur_refresh,
         );
+        for index in atlas_dirty_layers {
+            if !dirty_element_indices.contains(&index) {
+                dirty_element_indices.push(index);
+            }
+        }
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
         let root_force_full = self.root_color.content_version().is_none()
-            || packet.force_full_backdrop_blur_refresh || backdrop_source_atlas_dirty;
+            || packet.force_full_backdrop_blur_refresh || atlas_source_dirty;
         if let Some(root) = self.frame_upload.root_color
             && (root_force_full
                 || !packet.dirty_region.is_empty()
@@ -985,7 +1000,7 @@ impl NovaRenderer {
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
                     let atlas_stats = upload_pending_atlas(
-                        &self.atlas,
+                        atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
                         backend_label,
@@ -1096,7 +1111,7 @@ impl NovaRenderer {
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
                     let atlas_stats = upload_pending_atlas(
-                        &self.atlas,
+                        atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
                         backend_label,
@@ -1207,7 +1222,7 @@ impl NovaRenderer {
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
                     let atlas_stats = upload_pending_atlas(
-                        &self.atlas,
+                        atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
                         backend_label,
@@ -1311,7 +1326,7 @@ impl NovaRenderer {
                         },
                     )?;
                     let atlas_stats = upload_pending_atlas(
-                        &self.atlas,
+                        atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
                         backend_label,
@@ -1391,7 +1406,7 @@ impl NovaRenderer {
                     let buffer_upload_elapsed_ms = buffer_upload_elapsed.as_millis();
                     let atlas_started = Instant::now();
                     let atlas_stats = upload_pending_atlas(
-                        &self.atlas,
+                        atlas_upload,
                         device,
                         &mut self.gpu_atlas_textures,
                         backend_label,

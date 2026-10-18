@@ -2,6 +2,7 @@
 use super::*;
 use std::sync::Arc;
 
+mod atlas_damage;
 mod lifecycle;
 mod static_background;
 
