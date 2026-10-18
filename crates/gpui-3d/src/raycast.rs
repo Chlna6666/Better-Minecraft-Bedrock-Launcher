@@ -22,7 +22,7 @@ impl std::error::Error for RaycastError {}
 /// Reusable traversal storage for repeated scene ray queries.
 #[derive(Debug, Default)]
 pub struct RaycastScratch {
-    scene_nodes: Vec<(NodeId, Mat4)>,
+    scene_nodes: Vec<(NodeId, Mat4, bool)>,
     mesh_nodes: Vec<u32>,
 }
 
@@ -121,12 +121,20 @@ fn raycast(
     }
     scratch.scene_nodes.clear();
     scratch.mesh_nodes.clear();
-    scratch
-        .scene_nodes
-        .extend(scene.roots().iter().copied().map(|id| (id, Mat4::IDENTITY)));
+    scratch.scene_nodes.extend(
+        scene
+            .roots()
+            .iter()
+            .copied()
+            .map(|id| (id, Mat4::IDENTITY, true)),
+    );
     let mut nearest = None;
-    while let Some((id, parent_world)) = scratch.scene_nodes.pop() {
+    while let Some((id, parent_world, parent_visible)) = scratch.scene_nodes.pop() {
         let Some(node) = scene.node(id) else { continue };
+        // Invisible subtrees are not geometrically pickable, matching rendered visibility.
+        if !parent_visible || !node.visible {
+            continue;
+        }
         let local = transforms
             .and_then(|transforms| transforms.get(&id))
             .copied()
@@ -165,9 +173,13 @@ fn raycast(
             }
         }
         if let Some(children) = scene.children(id) {
-            scratch
-                .scene_nodes
-                .extend(children.iter().rev().copied().map(|child| (child, world)));
+            scratch.scene_nodes.extend(
+                children
+                    .iter()
+                    .rev()
+                    .copied()
+                    .map(|child| (child, world, true)),
+            );
         }
     }
     Ok(nearest)
@@ -472,5 +484,24 @@ mod tests {
             uv: Vec2::new(x + 0.5, y + 0.5),
             color: [1.0; 4],
         }
+    }
+
+    #[test]
+    fn raycast_skips_hidden_nodes_and_subtrees() {
+        let mut scene = Scene::new();
+        let mesh = Arc::new(Mesh::cube());
+        let hidden_parent = scene.insert(None, Node::new().with_visible(false)).unwrap();
+        scene
+            .insert(Some(hidden_parent), Node::new().with_mesh(mesh.clone()))
+            .unwrap();
+        let hidden_leaf = scene
+            .insert(None, Node::new().with_mesh(mesh).with_visible(false))
+            .unwrap();
+        let ray = Ray::new(Vec3::new(0.0, 0.0, 3.0), -Vec3::Z).unwrap();
+        let mut scratch = RaycastScratch::new();
+        assert!(scene.raycast(ray, &mut scratch).unwrap().is_none());
+        scene.set_visible(hidden_parent, true);
+        let hit = scene.raycast(ray, &mut scratch).unwrap().unwrap();
+        assert_ne!(hit.node, hidden_leaf);
     }
 }

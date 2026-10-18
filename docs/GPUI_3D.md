@@ -51,13 +51,14 @@ feature:
 | Area | Current local API | Remaining 3D work |
 | --- | --- | --- |
 | Geometry | Immutable indexed meshes, material parts, area-weighted normals, MikkTSpace tangents, per-triangle edge masks, five primitives, bounds, BVH queries, automatic indexed instancing; glTF primitives (indexed, non-indexed, morph-target base geometry, skinned bind pose) | GPU skinning/morph deformation, GPU geometry partial updates, compressed mesh extensions |
+| Scene graph | Hierarchical generational nodes, mutation versions for retained-frame invalidation, node/subtree visibility respected by rendering, shadows, picking, and bounds | LOD groups, layers/culling masks, user metadata, gizmo/overlay lines |
 | Camera and picking | Perspective/orthographic projection, orbit/pan/zoom, bounds framing, CPU ray queries, glTF cameras, top-left viewport pick/project helpers, GPU object-id picking that matches the submitted frame | Depth GPU picking and asynchronous readback |
 | Materials and lighting | Metallic-roughness and unlit materials, albedo/normal/occlusion/**metallic-roughness** maps, four light kinds, three alpha modes; offscreen path adds directional shadows, hemisphere environment approximation, linear HDR rendering with exposure and ACES/Reinhard tone mapping, bloom, FXAA-style edge filtering, and vignette/film-grain/dither grading | IBL with environment maps, irradiance/prefilter/BRDF LUT, clustered Forward+, point/spot shadows, MSAA/TAA |
-| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow, HDR PBR scene, half-resolution bloom, HDR post) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, reusable CPU staging buffers, a bounded mesh-buffer reuse pool, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
+| Render paths | Retained GPUI scene-view extension; **offscreen multi-pass renderer** (shadow, HDR PBR scene, half-resolution bloom, HDR post) on an application-owned Nova device with mesh/texture caches, resource-set reuse, readback, resize, trim/budget eviction, hash-tracked incremental uploads, reusable CPU staging buffers, a bounded mesh-buffer reuse pool, dynamic resolution/supersampled render scale, and per-frame counters | GPUI compositor hand-off of an offscreen target (no CPU readback), GPU-driven indirect rendering, temporal effects |
 | Scene scale and reuse | Retained draw list with frustum culling, instanced batches, static-frame reuse, camera-only re-cull without a scene walk, per-element hash-tracked uploads, verified 200,000-instance field in one indexed draw | GPU-driven indirect submission, LOD, occlusion culling, GPU-side scene traversal |
-| Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Pose blending/crossfade, skeletal skinning, morph weights, IK |
+| Animation and deformation | Absolute-time TRS tracks, STEP/LINEAR/CUBICSPLINE glTF import, CPU pose evaluation, two-clip crossfade blending (`evaluate_blended` / `render_blended`), animated offscreen frame API (`render_animated`), instancing; animation clip sampling matches the authored hierarchy | Skeletal skinning, morph weights, multi-layer/synchronized clip graphs, IK |
 | Asset pipeline | glTF 2.0 / GLB import with buffers, data URIs, external files, sparse accessors, materials, textures + generated mip chains, node/TRS/matrix transforms, KHR_lights_punctual, KHR_materials_unlit, KHR_materials_emissive_strength factors, cameras, transform animations; limits and path-escape checks | KHR_texture_transform, KHR_materials_clearcoat/transmission/ior/variants shading, KTX2/Basis, Draco/meshopt |
-| Post-processing and quality | RGBA16Float linear HDR scene target, half-resolution bloom, FXAA-style edge blend, exposure/tone-mapping/gamma resolve, vignette, film grain, ordered dithering, Low/Medium/High/Ultra presets; debug and object-id frames bypass grading | MSAA/SSAA, TAA, motion blur, SSAO/SSR, depth of field, LUT color grading |
+| Post-processing and quality | RGBA16Float linear HDR scene target, half-resolution bloom, FXAA-style edge blend, exposure/tone-mapping/gamma resolve, vignette, film grain, ordered dithering, Low/Medium/High/Ultra presets, dynamic-resolution and supersampled render scale; debug and object-id frames bypass grading | MSAA, TAA, motion blur, SSAO/SSR, depth of field, LUT color grading |
 | Output and capture | GPUI scene-view element; offscreen PNG captures through `scene_lab`, readback pixels, scriptable debug views (albedo/normal/depth/UV/shadow/object-id) | Multi-frame trace export and GPU timestamped pass timings |
 | Test assets | `test_assets/manifest.toml` + SHA-256 downloader + licenses, offline cache, ignored native tests, GPU pixel matrix | Additional licensed large-scene and animation assets |
 
@@ -369,8 +370,10 @@ resources. Ownership boundaries:
   target/pipeline state. `resize` recreates size-dependent targets, pipelines, and resource sets while
   keeping mesh and texture caches resident.
 
-Render graph (three passes recorded into one backend submission through
-`render_step_lists_to_textures_compat`):
+Render graph (passes recorded into one backend submission through
+`render_step_lists_to_textures_compat`). Scene and bloom targets use the internal render
+resolution, controlled by the render-scale API; the post target and readback always stay at the
+requested output size:
 
 | Pass | Color | Depth | Load | Content |
 | --- | --- | --- | --- | --- |
@@ -513,6 +516,60 @@ so per-pass GPU time is not reported.
 Remaining post-processing gaps: MSAA/SSAA, TAA, motion blur, SSAO/SSR, depth of field, multi-scale
 bloom, and LUT color grading. FXAA is an luma edge heuristic, not a resolved multisample coverage.
 
+## Render scale, visibility, and animation crossfades
+
+### Render scale (dynamic resolution and supersampling)
+
+`OffscreenRenderer::with_render_scale` / `set_render_scale` render the HDR scene and bloom targets
+at `render_scale * output_size`, while the post target, readback, and viewport stay at the requested
+output size. Accepted scales are `0.25..=2.0`:
+
+- Below 1 reduces scene/bloom fill cost and GPU target memory, then the post pass upsamples with a
+  four-tap footprint filter.
+- Above 1 supersamples the scene and downsamples in the post pass, approximating SSAA for edges,
+  specular highlights, and shadows without multisample render targets.
+- Changing scale recreates size-dependent targets/resource sets and invalidates the retained static
+  frame; meshes/textures stay cached. Debug views and object-id selection read the scene with a
+  single unfiltered texel so ids keep decoding at any scale.
+
+Measured 1280x720 studio, quality Medium, DX12 (post/bloom/shadow included):
+
+| Render scale | Internal HDR size | Target bytes | Resident |
+| --- | --- | --- | --- |
+| 0.5 | 640x360 | 14.4 MiB | 15.1 MiB |
+| 1.0 | 1280x720 | 22.9 MiB | 23.7 MiB |
+| 2.0 | 2560x1440 | 57.2 MiB | 58.0 MiB |
+
+Render scale is the practical alternative to MSAA until Nova exposes multisample targets: scale 2
+costs more fill/memory than MSAA but needs no new backend contract. FXAA remains enabled at scale 1
+by default; combining scale 2 with FXAA is valid but usually unnecessary.
+
+### Node visibility
+
+`Node::visible` defaults to `true`, `Node::with_visible` sets it while building, and
+`Scene::set_visible` toggles it with retained-snapshot invalidation. Hiding a node hides its entire
+subtree: traversal skips it for scene preparation (draws and shadows), CPU ray picking, and scene
+bounds, so a hidden subtree cannot cast shadows or be picked. Visibility does not mutate the
+hierarchy, transforms, or visible siblings' prepared draw order.
+
+### Animation crossfades
+
+`gpui_3d::blend_transform` blends two local poses (linear translation/scale, shortest-arc spherical
+rotation, clamped weight). `Scene::evaluate_blended` / `evaluate_blended_with` sample two clips at
+independent absolute times and blend them per node: `0` is the primary pose, `1` the secondary pose,
+and nodes animated by only one clip fade toward their authored rest pose. The renderer exposes the
+same operation as `OffscreenRenderer::render_blended`. Invalid blend weights, duplicate tracks
+within one clip, stale handles, and invalid authored poses return typed errors. This is CPU clip
+blending; skeletal and morph deformation are still unimplemented.
+
+### Tests covering this batch
+
+- Library tests cover hidden-subtree preparation, picking, bounds, transform blending, crossfade
+  endpoints/midpoints, fade-to-rest, duplicate/stale/weight errors, and animation-scratch reuse.
+- `renderer_memory` now has 12 native tests: the additions verify that blended poses and visibility
+  change the submitted frame and that render scale keeps the output size while changing target
+  memory/sampling and preserving object-id picking.
+
 ## GPU memory and cache lifecycle
 
 The renderer reports its own allocation accounting through `RendererStatistics`. These are
@@ -592,7 +649,7 @@ moves one of 64 instances uploads one 144-byte instance record (asserted in `ren
 than 512 bytes out of a 9 KiB instance table) while the mesh, textures, and draw slots upload
 nothing.
 
-Native memory tests (`tests/renderer_memory.rs`, 10 ignored tests) assert: soft-budget eviction
+Native memory tests (`tests/renderer_memory.rs`, 12 ignored tests) assert: soft-budget eviction
 releases idle meshes and textures and brings resident bytes back under the budget; an 8-scene asset
 cycle stays bounded and aggressive trim clears every cache/resource set; a 60-frame three-scene
 cycling session under a 2 MiB asset budget stays under the resident envelope, keeps resource-set
@@ -603,7 +660,9 @@ picking agree; a 10,000-instance field keeps one draw slot, reuses unchanged sta
 uploads, skips the scene walk for camera-only moves, and uploads one instance record for a single
 `node_mut` change; the HDR/bloom/FXAA path changes output pixels, quality presets apply, and changing
 quality invalidates the retained frame; a bounded mesh-buffer pool reports real reuses and aggressive
-trim releases it.
+trim releases it; blended poses and node visibility change the submitted frame; render scale keeps
+the output size while changing HDR target memory and sampling, and object-id picking still decodes
+when the scene is supersampled.
 
 ## Retained frame reuse and scene scale
 
@@ -673,12 +732,36 @@ cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --quality=low --bloom=off --fxaa=off --out=target/scene_lab/plain.png
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --model=crates/gpui-3d/test_assets/cache/DamagedHelmet.glb --quality=high --exposure=2.0 --max-texture=1024 --budget-mb=160 --pick=640,360 --out=target/scene_lab/helmet.png
 cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --instances=200000 --frames=4 --quality=medium --out=target/scene_lab/instances.png --json=target/scene_lab/instances.json
+cargo run -p gpui-3d --example scene_lab -- --backend=dx12 --width=1280 --height=720 --quality=high --render-scale=2.0 --out=target/scene_lab/ssaa.png
 ```
 
 For a backend change, also launch the `scene_view` example on that backend and inspect pixels and
 frame behavior on a real window. The Metal texture limitation above remains until the backend upload
 implementation changes and is revalidated.
 
+
+## Remaining gap audit and optimization backlog
+
+These are the highest-value items that are still missing or unoptimized, with the concrete blocker
+for each. They are prioritized by user-visible effect first, then API/backend cost.
+
+| Area | Missing or unoptimized | Blocker / effort |
+| --- | --- | --- |
+| Rendering effects | MSAA, TAA, motion blur, SSAO, SSR, depth of field, multi-scale bloom, LUT grading | MSAA needs multisample render-pass state in Nova; the rest are new passes/targets plus history buffers. Render scale 2 already provides approximate SSAA. |
+| Lighting | IBL/environment maps, irradiance/prefilter/BRDF LUT, point/spot shadow maps, clustered Forward+ | Shader plus render-graph work; point/spot shadows need cube or atlas targets and multi-light culling. |
+| Deformation | GPU skeletal skinning, morph targets, pose graphs, IK | Importer already recognizes skinned/morph primitives but keeps base geometry; needs joint/weight vertex attributes, bone buffers, and the skinning pipeline. |
+| glTF completeness | `KHR_texture_transform`, `TEXCOORD_1`, clearcoat/transmission/ior/variants, `KHR_texture_basisu`, Draco/meshopt | Material texture transforms and UV1 need extra draw parameters; compressed extensions need new decoders. |
+| Scene graph | LOD groups, layers/culling masks, user metadata, gizmo/debug line rendering | LOD selection belongs in preparation (screen-space size); lines need a dedicated vertex/pipeline path. |
+| Async/latency | Async readback, compositor hand-off without CPU copy, GPU timestamped pass timings, frame pacing | Nova exposes async device/queue APIs and transfer timestamps, but the offscreen renderer's compatibility readback path is synchronous and has no per-pass query handle. |
+| GPU-driven pipeline | Indirect draws, GPU culling, GPU-side scene traversal, mesh shaders | Nova phase-1 API has no indirect draw descriptor or mesh pipeline. |
+| Memory/perf backlog | Mesh arena/compaction, texture streaming/compression, bindless-style descriptor reuse, parallel scene preparation, shadow-frustum culling, pipeline cache warm start, async uploads | Mostly engine-side work; parallel preparation must not regress deterministic ordering, and arena/shared-buffer designs invalidate per-batch resource sets on growth. |
+| Platform coverage | Metal runtime validation, WebGL backend | Metal cannot be validated on this Windows host; WebGL lacks the storage-buffer/indirect features the renderer uses. |
+
+Already optimized and verified in this phase: HDR target memory, shadow defaults, texture caps and
+downscaling, incremental element uploads, static-frame reuse, camera-only re-cull, per-batch draw
+slots, staging-buffer reuse, bounded mesh-buffer reuse pool, budget-driven eviction, render scale,
+and pipeline-layout lifetime. The next highest-return step is IBL (visual impact, modest graph
+work), followed by LOD groups (large-scene CPU/GPU cost) and async readback (latency).
 
 ## Completion record
 
@@ -698,17 +781,20 @@ Delivered in this phase:
 - Memory and performance: per-element hash-tracked incremental uploads, exponential streaming
   buffers with trim, soft asset budget with LRU eviction, texture caching/downscaling, static-frame
   reuse, camera-only re-cull, per-batch draw slots, reusable CPU staging buffers, bounded mesh-buffer
-  reuse pool, allocation/fragmentation metrics, pipeline-layout leak fix.
+  reuse pool, allocation/fragmentation metrics, pipeline-layout leak fix, dynamic-resolution and
+  supersampled render scale.
+- Scene graph and animation: node/subtree visibility respected by rendering, shadows, picking, and
+  bounds, plus CPU two-clip crossfade evaluation and `render_blended`.
 - Verification assets and tooling: SHA-256-pinned licensed test-asset manifest and downloader, four
-  backend pixel matrix, 10 native memory/lifecycle tests, scene lab with quality presets, orbit
-  benchmarks, debug views, JSON statistics, and this documentation.
+  backend pixel matrix, 12 native memory/lifecycle tests, scene lab with quality presets, render
+  scale, orbit benchmarks, debug views, JSON statistics, and this documentation.
 
 Latest local verification before this record:
 
-- `cargo test -p gpui-3d`: 99 library tests, 8 glTF import tests, 5 CPU picking tests, 2 documentation
+- `cargo test -p gpui-3d`: 104 library tests, 8 glTF import tests, 5 CPU picking tests, 2 documentation
   tests pass.
 - `cargo test -p gpui-3d -- --ignored --test-threads=1`: cached real-model imports, DX12→DX11→Vulkan
-  pixel agreement matrix, and 10 native renderer memory/lifecycle tests pass.
+  pixel agreement matrix, and 12 native renderer memory/lifecycle tests pass.
 - `cargo check --lib` (repository default features) and
   `cargo check -p bmcbl --no-default-features` pass; changed Rust files are rustfmt-clean and add no
   clippy warnings (the repository has a pre-existing formatting baseline unrelated to this work).
@@ -716,7 +802,8 @@ Latest local verification before this record:
   Vulkan, and OpenGL 4.5 backends for the pixel matrix.
 
 Explicitly not implemented in this phase (documented, not claimed): GPU skinning/morph deformation,
-pose blending, IBL/environment maps, clustered Forward+, point/spot shadow maps, MSAA/TAA/SSAA,
-SSAO/SSR/motion blur/depth of field, multi-scale bloom, LUT grading, GPU timestamped pass timings,
-GPU-driven indirect submission, LOD/occlusion culling, asynchronous readback, compositor hand-off of
-an offscreen target without CPU readback, and Metal runtime validation.
+IBL/environment maps, clustered Forward+, point/spot shadow maps, MSAA/TAA, SSAO/SSR/motion blur/
+depth of field, multi-scale bloom, LUT grading, GPU timestamped pass timings, GPU-driven indirect
+submission, LOD groups/layers/occlusion culling, asynchronous readback, compositor hand-off of an
+offscreen target without CPU readback, and Metal runtime validation. Render scale 2 approximates
+supersampling for antialiasing without multisample targets.

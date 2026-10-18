@@ -21,11 +21,19 @@ impl Scene {
         local_transform: impl Fn(NodeId, &Node) -> Transform,
     ) -> Result<Option<Aabb>, SceneError> {
         let mut stack = Vec::with_capacity(self.roots.len());
-        stack.extend(self.roots.iter().copied().map(|id| (id, Mat4::IDENTITY)));
+        stack.extend(
+            self.roots
+                .iter()
+                .copied()
+                .map(|id| (id, Mat4::IDENTITY, true)),
+        );
         let mut scene_bounds: Option<Aabb> = None;
 
-        while let Some((id, parent_world)) = stack.pop() {
+        while let Some((id, parent_world, parent_visible)) = stack.pop() {
             let node = self.node(id).ok_or(SceneError::StaleNode)?;
+            if !parent_visible || !node.visible {
+                continue;
+            }
             let world = parent_world * local_transform(id, node).matrix();
             if !world.is_finite() {
                 return Err(SceneError::InvalidTransform);
@@ -51,7 +59,7 @@ impl Scene {
             }
 
             let children = self.children(id).ok_or(SceneError::StaleNode)?;
-            stack.extend(children.iter().copied().map(|child| (child, world)));
+            stack.extend(children.iter().copied().map(|child| (child, world, true)));
         }
 
         Ok(scene_bounds)
@@ -175,5 +183,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(scene.bounds(), Err(SceneError::InvalidTransform));
+    }
+
+    #[test]
+    fn hidden_nodes_are_excluded_from_bounds() {
+        let mut scene = Scene::new();
+        scene
+            .insert(None, Node::new().with_mesh(Arc::new(Mesh::cube())))
+            .unwrap();
+        let hidden = scene
+            .insert(
+                None,
+                Node::new()
+                    .with_mesh(Arc::new(Mesh::cube()))
+                    .with_visible(false)
+                    .with_transform(Transform {
+                        translation: Vec3::new(100.0, 0.0, 0.0),
+                        ..Transform::IDENTITY
+                    }),
+            )
+            .unwrap();
+        assert_eq!(
+            scene.bounds().unwrap(),
+            Aabb::new(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(0.5, 0.5, 0.5))
+        );
+        scene.set_visible(hidden, true);
+        assert_eq!(
+            scene.bounds().unwrap(),
+            Aabb::new(Vec3::new(-0.5, -0.5, -0.5), Vec3::new(100.5, 0.5, 0.5))
+        );
     }
 }

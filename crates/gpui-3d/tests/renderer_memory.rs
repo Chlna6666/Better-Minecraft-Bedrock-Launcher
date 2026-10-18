@@ -13,6 +13,7 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::doc_markdown,
+    clippy::too_many_lines,
     reason = "Test scene spacing and pixel centers use small integer counts converted to f32; exact rounding is irrelevant to the cache and picking assertions."
 )]
 
@@ -769,5 +770,191 @@ fn mesh_buffer_pool_reuses_allocations_and_releases_on_aggressive_trim() {
     assert_eq!(trimmed.pooled_buffer_bytes, 0);
     assert_eq!(trimmed.pooled_buffer_count, 0);
     assert_eq!(trimmed.buffer_allocation_count, 4);
+    renderer.destroy(&mut device).expect("destroy renderer");
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn blended_animation_and_visibility_change_the_submitted_frame() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 160, 120).expect("renderer");
+    let textures = HashMap::new();
+    let (mut scene, node) = cube_scene(None);
+    let one = Duration::from_secs(1);
+    let left = TransformTrack::new(node).with_translation(
+        Vec3Track::new([
+            Keyframe::new(Duration::ZERO, Vec3::new(-1.0, 0.0, 0.0)),
+            Keyframe::new(one, Vec3::new(-1.0, 0.0, 0.0)),
+        ])
+        .expect("left track"),
+    );
+    let right = TransformTrack::new(node).with_translation(
+        Vec3Track::new([
+            Keyframe::new(Duration::ZERO, Vec3::new(1.0, 0.0, 0.0)),
+            Keyframe::new(one, Vec3::new(1.0, 0.0, 0.0)),
+        ])
+        .expect("right track"),
+    );
+    let left_tracks = [left];
+    let right_tracks = [right];
+
+    let first = renderer
+        .render_blended(
+            &mut device,
+            &scene,
+            &left_tracks,
+            one,
+            &right_tracks,
+            one,
+            0.0,
+            &textures,
+            camera(),
+            &options(),
+        )
+        .expect("primary pose frame");
+    let first_image = renderer.capture(&mut device).expect("primary capture");
+    let second = renderer
+        .render_blended(
+            &mut device,
+            &scene,
+            &left_tracks,
+            one,
+            &right_tracks,
+            one,
+            1.0,
+            &textures,
+            camera(),
+            &options(),
+        )
+        .expect("secondary pose frame");
+    let second_image = renderer.capture(&mut device).expect("secondary capture");
+    let middle = renderer
+        .render_blended(
+            &mut device,
+            &scene,
+            &left_tracks,
+            one,
+            &right_tracks,
+            one,
+            0.5,
+            &textures,
+            camera(),
+            &options(),
+        )
+        .expect("blended pose frame");
+    let middle_image = renderer.capture(&mut device).expect("blended capture");
+    assert_eq!(first.draw_calls, 1);
+    assert_eq!(second.draw_calls, 1);
+    assert_eq!(middle.draw_calls, 1);
+    assert!(differing_pixels(&first_image, &second_image) > 20);
+    assert!(differing_pixels(&first_image, &middle_image) > 5);
+    assert!(differing_pixels(&second_image, &middle_image) > 5);
+    assert!(
+        renderer
+            .render_blended(
+                &mut device,
+                &scene,
+                &left_tracks,
+                one,
+                &right_tracks,
+                one,
+                f32::NAN,
+                &textures,
+                camera(),
+                &options(),
+            )
+            .is_err()
+    );
+
+    scene.set_visible(node, false);
+    let hidden = renderer
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("hidden frame");
+    let hidden_image = renderer.capture(&mut device).expect("hidden capture");
+    assert_eq!(hidden.draw_calls, 0);
+    assert_eq!(hidden.instances, 0);
+    assert!(differing_pixels(&first_image, &hidden_image) > 100);
+    scene.set_visible(node, true);
+    let visible = renderer
+        .render(&mut device, &scene, &textures, camera(), &options())
+        .expect("visible frame");
+    assert_eq!(visible.draw_calls, 1);
+    renderer.destroy(&mut device).expect("destroy renderer");
+}
+
+#[test]
+#[ignore = "requires native DX12 hardware"]
+fn render_scale_samples_the_scene_without_changing_the_output_size() {
+    let mut device = gfx_dx12::Dx12Device::new(&descriptor()).expect("hardware DX12 device");
+    let mut renderer = OffscreenRenderer::new(&mut device, 160, 120).expect("renderer");
+    let textures = HashMap::new();
+    let (scene, node) = cube_scene(None);
+
+    renderer
+        .set_render_scale(&mut device, 0.5)
+        .expect("half scale");
+    let low = renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("half-scale frame");
+    let low_stats = renderer.statistics();
+    assert_eq!((low.width(), low.height()), (160, 120));
+    assert_eq!(
+        (
+            low_stats.render_target_width,
+            low_stats.render_target_height
+        ),
+        (80, 60)
+    );
+
+    renderer
+        .set_render_scale(&mut device, 1.0)
+        .expect("native scale");
+    let normal = renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("native-scale frame");
+    let normal_stats = renderer.statistics();
+    assert_eq!(
+        (
+            normal_stats.render_target_width,
+            normal_stats.render_target_height
+        ),
+        (160, 120)
+    );
+    assert!(normal_stats.target_bytes > low_stats.target_bytes);
+
+    renderer
+        .set_render_scale(&mut device, 2.0)
+        .expect("double scale");
+    let high = renderer
+        .render_to_image(&mut device, &scene, &textures, camera(), &options())
+        .expect("supersampled frame");
+    let high_stats = renderer.statistics();
+    assert_eq!(
+        (
+            high_stats.render_target_width,
+            high_stats.render_target_height
+        ),
+        (320, 240)
+    );
+    assert!(high_stats.target_bytes > normal_stats.target_bytes);
+    assert_eq!((high.width(), high.height()), (160, 120));
+    assert!(differing_pixels(&low, &normal) > 0);
+    assert!(differing_pixels(&normal, &high) > 0);
+
+    assert!(renderer.set_render_scale(&mut device, 0.0).is_err());
+    assert!(renderer.set_render_scale(&mut device, f32::NAN).is_err());
+    assert!((renderer.render_scale() - 2.0).abs() < 1e-5);
+    let object = renderer
+        .pick_object(
+            &mut device,
+            &scene,
+            &textures,
+            camera(),
+            &options(),
+            (80, 60),
+        )
+        .expect("object pick with supersampling")
+        .expect("center instance");
+    assert_eq!(object.node, node);
     renderer.destroy(&mut device).expect("destroy renderer");
 }

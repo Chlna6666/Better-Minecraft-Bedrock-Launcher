@@ -71,7 +71,7 @@ mod scene_view;
 
 pub use animation::{
     AnimationError, AnimationScratch, Interpolation, Keyframe, RotationTrack, TransformTrack,
-    Vec3Track,
+    Vec3Track, blend_transform,
 };
 pub use asset::{
     GltfAnimation, GltfCamera, GltfError, GltfLoadOptions, GltfScene, GltfStatistics, load_bytes,

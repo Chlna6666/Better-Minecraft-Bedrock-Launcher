@@ -71,7 +71,7 @@ impl fmt::Display for NodeError {
 impl std::error::Error for NodeError {}
 
 /// Transformable scene node with optional geometry, material, or light.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[must_use]
 pub struct Node {
     /// Local transform relative to the parent.
@@ -82,14 +82,39 @@ pub struct Node {
     pub materials: Vec<Arc<Material>>,
     /// Optional light attached to this node.
     pub light: Option<Light>,
+    /// Whether this node and its subtree contribute to rendering, shadows, picking, and bounds.
+    ///
+    /// Hidden nodes keep their transforms and children; they are simply skipped by traversal so
+    /// toggling visibility never mutates the hierarchy or the prepared layout of visible nodes.
+    pub visible: bool,
     pixel_offset: Vec2,
     depth_bias: f32,
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            transform: Transform::default(),
+            mesh: None,
+            materials: Vec::new(),
+            light: None,
+            visible: true,
+            pixel_offset: Vec2::ZERO,
+            depth_bias: 0.0,
+        }
+    }
 }
 
 impl Node {
     /// Creates an empty identity node.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets whether this node and its subtree are rendered, shadowed, picked, and included in bounds.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// Attaches immutable mesh geometry.
@@ -291,6 +316,125 @@ impl Scene {
         })
     }
 
+    /// Crossfades two clips without mutating the authored scene.
+    ///
+    /// Allocates transform storage for both sampled poses and the blended result. Use
+    /// [`Scene::evaluate_blended_with`] to retain that storage across samples.
+    ///
+    /// `blend` is the weight of `secondary`: `0` returns the primary pose, `1` the secondary pose,
+    /// and values in between crossfade translation/scale linearly and rotations spherically. Nodes
+    /// animated by only one clip fade toward their authored rest pose, so a clip can be blended in
+    /// from or out to rest. Each clip must itself satisfy the single-track-per-node rule.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AnimationError::InvalidBlendWeight`] for a non-finite weight, and the same track
+    /// and authored-transform errors as [`Scene::evaluate`] for either clip.
+    pub fn evaluate_blended(
+        &self,
+        primary: &[TransformTrack],
+        primary_time: Duration,
+        secondary: &[TransformTrack],
+        secondary_time: Duration,
+        blend: f32,
+    ) -> Result<EvaluatedScene<'_>, AnimationError> {
+        let mut scratch = AnimationScratch::new();
+        self.sample_blended_into(
+            primary,
+            primary_time,
+            secondary,
+            secondary_time,
+            blend,
+            &mut scratch,
+        )?;
+        Ok(EvaluatedScene {
+            source: self,
+            transforms: Cow::Owned(scratch.transforms),
+        })
+    }
+
+    /// Crossfades two clips using caller-owned storage retained across samples.
+    ///
+    /// The returned view borrows both this scene and `scratch`; drop it before reusing the scratch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Scene::evaluate_blended`].
+    pub fn evaluate_blended_with<'a>(
+        &'a self,
+        primary: &[TransformTrack],
+        primary_time: Duration,
+        secondary: &[TransformTrack],
+        secondary_time: Duration,
+        blend: f32,
+        scratch: &'a mut AnimationScratch,
+    ) -> Result<EvaluatedScene<'a>, AnimationError> {
+        self.sample_blended_into(
+            primary,
+            primary_time,
+            secondary,
+            secondary_time,
+            blend,
+            scratch,
+        )?;
+        Ok(EvaluatedScene {
+            source: self,
+            transforms: Cow::Borrowed(&scratch.transforms),
+        })
+    }
+
+    fn sample_blended_into(
+        &self,
+        primary: &[TransformTrack],
+        primary_time: Duration,
+        secondary: &[TransformTrack],
+        secondary_time: Duration,
+        blend: f32,
+        scratch: &mut AnimationScratch,
+    ) -> Result<(), AnimationError> {
+        if !blend.is_finite() {
+            return Err(AnimationError::InvalidBlendWeight);
+        }
+        let weight = blend.clamp(0.0, 1.0);
+        self.sample_transforms(primary, primary_time, &mut scratch.transforms)?;
+        self.sample_transforms(secondary, secondary_time, &mut scratch.secondary_transforms)?;
+        let secondary_ids = scratch
+            .secondary_transforms
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in secondary_ids {
+            let Some(secondary_transform) = scratch.secondary_transforms.get(&id).copied() else {
+                continue;
+            };
+            let base = self.node(id).ok_or(AnimationError::StaleNode)?.transform;
+            let blended = match scratch.transforms.get(&id).copied() {
+                Some(primary_transform) => crate::animation::blend_transform(
+                    primary_transform,
+                    secondary_transform,
+                    weight,
+                )?,
+                None => crate::animation::blend_transform(base, secondary_transform, weight)?,
+            };
+            scratch.transforms.insert(id, blended);
+        }
+        let primary_ids = scratch.transforms.keys().copied().collect::<Vec<_>>();
+        for id in primary_ids {
+            if scratch.secondary_transforms.contains_key(&id) {
+                continue;
+            }
+            let Some(primary_transform) = scratch.transforms.get(&id).copied() else {
+                continue;
+            };
+            let base = self.node(id).ok_or(AnimationError::StaleNode)?.transform;
+            scratch.transforms.insert(
+                id,
+                crate::animation::blend_transform(primary_transform, base, weight)?,
+            );
+        }
+        Ok(())
+    }
+
     fn sample_transforms(
         &self,
         tracks: &[TransformTrack],
@@ -366,6 +510,16 @@ impl Scene {
         self.node_slot(id)?.node.as_ref()?;
         self.bump_version();
         self.node_slot_mut(id)?.node.as_mut()
+    }
+
+    /// Sets one node's visibility and invalidates retained scene snapshots.
+    ///
+    /// Hiding a node hides its whole subtree. Returns `false` for a stale handle.
+    pub fn set_visible(&mut self, id: NodeId, visible: bool) -> bool {
+        self.node_mut(id).is_some_and(|node| {
+            node.visible = visible;
+            true
+        })
     }
 
     /// Returns a node's parent.
@@ -627,5 +781,116 @@ mod tests {
         assert_eq!(first_capacity, second_capacity);
         scratch.trim();
         assert_eq!(scratch.transforms.capacity(), 0);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Crossfade endpoints, midpoint, fade-to-rest, scratch reuse, and error paths are asserted together so each expected pose stays next to the clip that produced it."
+    )]
+    fn evaluate_blended_crossfades_clips_and_fades_unmatched_nodes() {
+        use crate::{Keyframe, Vec3, Vec3Track};
+        let mut scene = Scene::new();
+        let shared = scene.insert(None, Node::new()).unwrap();
+        let primary_only = scene.insert(None, Node::new()).unwrap();
+        let secondary_only = scene.insert(None, Node::new()).unwrap();
+        let linear = |node, start: Vec3, end: Vec3| {
+            TransformTrack::new(node).with_translation(
+                Vec3Track::new([
+                    Keyframe::new(Duration::ZERO, start),
+                    Keyframe::new(Duration::from_secs(1), end),
+                ])
+                .unwrap(),
+            )
+        };
+        let primary = [
+            linear(shared, Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0)),
+            linear(primary_only, Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)),
+        ];
+        let secondary = [
+            linear(shared, Vec3::ZERO, Vec3::new(-10.0, 0.0, 0.0)),
+            linear(secondary_only, Vec3::ZERO, Vec3::new(0.0, 6.0, 0.0)),
+        ];
+        let one = Duration::from_secs(1);
+        let pose = scene
+            .evaluate_blended(&primary, one, &secondary, one, 0.0)
+            .unwrap();
+        assert_eq!(
+            pose.local_transform(shared).unwrap().translation,
+            Vec3::new(10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            pose.local_transform(primary_only).unwrap().translation,
+            Vec3::new(4.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            pose.local_transform(secondary_only).unwrap().translation,
+            Vec3::ZERO
+        );
+        let pose = scene
+            .evaluate_blended(&primary, one, &secondary, one, 1.0)
+            .unwrap();
+        assert_eq!(
+            pose.local_transform(shared).unwrap().translation,
+            Vec3::new(-10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            pose.local_transform(primary_only).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert_eq!(
+            pose.local_transform(secondary_only).unwrap().translation,
+            Vec3::new(0.0, 6.0, 0.0)
+        );
+        let pose = scene
+            .evaluate_blended(&primary, one, &secondary, one, 0.5)
+            .unwrap();
+        assert_eq!(
+            pose.local_transform(shared).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert_eq!(
+            pose.local_transform(primary_only).unwrap().translation,
+            Vec3::new(2.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            pose.local_transform(secondary_only).unwrap().translation,
+            Vec3::new(0.0, 3.0, 0.0)
+        );
+
+        let mut scratch = AnimationScratch::new();
+        let blended = scene
+            .evaluate_blended_with(&primary, one, &secondary, one, 0.5, &mut scratch)
+            .unwrap();
+        assert_eq!(
+            blended.local_transform(shared).unwrap().translation,
+            Vec3::ZERO
+        );
+        drop(blended);
+        scratch.trim();
+        assert_eq!(scratch.transforms.capacity(), 0);
+        assert_eq!(scratch.secondary_transforms.capacity(), 0);
+
+        assert_eq!(
+            scene
+                .evaluate_blended(&primary, one, &secondary, one, f32::NAN)
+                .err(),
+            Some(AnimationError::InvalidBlendWeight)
+        );
+        let duplicate = [TransformTrack::new(shared), TransformTrack::new(shared)];
+        assert!(
+            scene
+                .evaluate_blended(&duplicate, one, &secondary, one, 0.5)
+                .is_err()
+        );
+        let stale = [TransformTrack::new(NodeId {
+            index: u32::MAX,
+            generation: 0,
+        })];
+        assert!(
+            scene
+                .evaluate_blended(&stale, one, &secondary, one, 0.5)
+                .is_err()
+        );
     }
 }

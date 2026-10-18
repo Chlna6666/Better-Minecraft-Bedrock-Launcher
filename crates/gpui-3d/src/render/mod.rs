@@ -347,6 +347,10 @@ pub struct RendererStatistics {
     pub target_width: u32,
     /// Current render target height in pixels.
     pub target_height: u32,
+    /// Internal HDR scene target width; differs from `target_width` when render scale is not 1.
+    pub render_target_width: u32,
+    /// Internal HDR scene target height.
+    pub render_target_height: u32,
     /// Shadow map resolution in texels.
     pub shadow_resolution: u32,
     /// GPU bytes owned by scene, shadow, and post render targets.
@@ -585,6 +589,7 @@ struct FrameReuseKey {
     camera: Camera,
     options: RenderOptions,
     target: (u32, u32),
+    render_scale: f32,
 }
 
 impl OffscreenRenderer {
@@ -619,10 +624,58 @@ impl OffscreenRenderer {
         })
     }
 
+    /// Creates a renderer that renders HDR lighting at a fraction or multiple of the output size.
+    ///
+    /// Render scale below 1 reduces scene/bloom target memory and fill cost, then the post pass
+    /// upscales to the output size. Scale above 1 supersamples the scene and downsamples in the
+    /// post pass, approximating SSAA without multisample targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::InvalidSize`] for an invalid output size or render scale outside
+    /// `0.25..=2.0`, and [`RenderError::Gpu`] when resource creation fails.
+    pub fn with_render_scale<D: Device + TextureTransferDevice + ?Sized>(
+        device: &mut D,
+        width: u32,
+        height: u32,
+        render_scale: f32,
+    ) -> Result<Self, RenderError> {
+        let mut renderer = Self::new(device, width, height)?;
+        renderer.set_render_scale(device, render_scale)?;
+        Ok(renderer)
+    }
+
     /// Backend used by the device this renderer was created with.
     #[must_use]
     pub fn backend(&self) -> BackendKind {
         self.gpu.backend()
+    }
+
+    /// Current internal render scale.
+    #[must_use]
+    pub fn render_scale(&self) -> f32 {
+        self.gpu.render_scale()
+    }
+
+    /// Changes the internal HDR render scale and recreates scene/bloom targets.
+    ///
+    /// The output/post target size, readback size, and CPU picking viewport stay unchanged.
+    /// `0.25..=2.0` is accepted; values below 1 trade sharpness for fill rate and memory, values
+    /// above 1 supersample and downsample in the post pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::InvalidSize`] for a non-finite or out-of-range scale, or
+    /// [`RenderError::Gpu`] when targets or resource sets cannot be recreated.
+    pub fn set_render_scale<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+        render_scale: f32,
+    ) -> Result<(), RenderError> {
+        self.gpu.set_render_scale(device, render_scale)?;
+        self.last_frame = None;
+        self.renderer_statistics = self.gpu.statistics();
+        Ok(())
     }
 
     /// Current render target width in pixels.
@@ -691,6 +744,7 @@ impl OffscreenRenderer {
             camera,
             options: *options,
             target: (self.width, self.height),
+            render_scale: self.gpu.render_scale(),
         };
         if let Some((last_key, last_statistics)) = self.last_frame
             && last_key == key
@@ -757,6 +811,65 @@ impl OffscreenRenderer {
         let evaluated = scene
             .evaluate_with(tracks, animation_time, &mut self.animation_scratch)
             .map_err(|error| RenderError::Preparation(format!("animation evaluation: {error}")))?;
+        self.prepared.update_evaluated(&evaluated, camera, aspect)?;
+        self.prepared_key = None;
+        self.last_frame = None;
+        let statistics = self.gpu.render(
+            device,
+            &self.prepared,
+            textures,
+            camera,
+            options,
+            (self.width, self.height),
+            started,
+            true,
+        )?;
+        self.renderer_statistics = self.gpu.statistics();
+        Ok(statistics)
+    }
+
+    /// Renders one crossfaded animation frame without mutating the authored scene.
+    ///
+    /// Samples two clips at their own absolute clip times and blends them with `blend` as the
+    /// secondary weight (`0` = primary pose, `1` = secondary pose). Nodes animated by only one clip
+    /// fade toward their authored rest pose, so callers can crossfade between locomotion clips and
+    /// idle without an explicit idle track. Reuses the renderer's retained animation storage and
+    /// preparation buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::Preparation`] when clip sampling or blending fails,
+    /// [`RenderError::Scene`] when the camera cannot project the sampled pose, and
+    /// [`RenderError::Gpu`] when submission fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Clip pair, times, blend weight, assets, camera, and options are the complete frame input; splitting them would create a redundant struct for one call site."
+    )]
+    pub fn render_blended<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+        scene: &Scene,
+        primary: &[TransformTrack],
+        primary_time: Duration,
+        secondary: &[TransformTrack],
+        secondary_time: Duration,
+        blend: f32,
+        textures: &HashMap<TextureAssetId, Arc<TextureAsset>>,
+        camera: Camera,
+        options: &RenderOptions,
+    ) -> Result<FrameStatistics, RenderError> {
+        let aspect = self.width as f32 / self.height as f32;
+        let started = Instant::now();
+        let evaluated = scene
+            .evaluate_blended_with(
+                primary,
+                primary_time,
+                secondary,
+                secondary_time,
+                blend,
+                &mut self.animation_scratch,
+            )
+            .map_err(|error| RenderError::Preparation(format!("animation blend: {error}")))?;
         self.prepared.update_evaluated(&evaluated, camera, aspect)?;
         self.prepared_key = None;
         self.last_frame = None;

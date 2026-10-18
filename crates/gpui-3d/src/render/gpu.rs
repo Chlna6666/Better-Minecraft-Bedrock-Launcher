@@ -186,6 +186,7 @@ pub(crate) struct GpuState {
     pipelines: Option<Pipelines>,
     targets: Option<Targets>,
     frame_buffers: FrameBuffers,
+    render_scale: f32,
     staging: StagingBuffers,
     mesh_pool: MeshBufferPool,
     meshes: HashMap<(MeshId, u64), MeshResources>,
@@ -222,7 +223,7 @@ impl GpuState {
     ) -> Result<Self, RenderError> {
         let backend = D::BACKEND_KIND;
         let pipelines = Pipelines::new(device, backend, width, height)?;
-        let targets = match Targets::new(device, width, height, DEFAULT_SHADOW_RESOLUTION) {
+        let targets = match Targets::new(device, width, height, DEFAULT_SHADOW_RESOLUTION, 1.0) {
             Ok(targets) => targets,
             Err(error) => {
                 pipelines.destroy(device)?;
@@ -253,6 +254,7 @@ impl GpuState {
             pipelines: Some(pipelines),
             targets: Some(targets),
             frame_buffers,
+            render_scale: 1.0,
             staging: StagingBuffers::default(),
             mesh_pool: MeshBufferPool::default(),
             meshes: HashMap::new(),
@@ -292,7 +294,7 @@ impl GpuState {
             pipelines.destroy(device)?;
         }
         if let Some(targets) = self.targets.as_mut() {
-            targets.resize_scene(device, width, height)?;
+            targets.resize_scene(device, width, height, self.render_scale)?;
         }
         self.pipelines = Some(Pipelines::new(device, self.backend, width, height)?);
         self.width = width;
@@ -300,6 +302,33 @@ impl GpuState {
         self.invalidate_sets(device)?;
         self.resource_epoch = self.resource_epoch.wrapping_add(1);
         Ok(())
+    }
+
+    pub(crate) fn set_render_scale<D: Device + TextureTransferDevice + ?Sized>(
+        &mut self,
+        device: &mut D,
+        render_scale: f32,
+    ) -> Result<(), RenderError> {
+        if !render_scale.is_finite() || !(0.25..=2.0).contains(&render_scale) {
+            return Err(RenderError::InvalidSize(format!(
+                "render scale {render_scale} outside 0.25..=2.0"
+            )));
+        }
+        if (render_scale - self.render_scale).abs() < 1e-4 {
+            return Ok(());
+        }
+        self.ensure_idle(device)?;
+        if let Some(targets) = self.targets.as_mut() {
+            targets.resize_scene(device, self.width, self.height, render_scale)?;
+        }
+        self.render_scale = render_scale;
+        self.invalidate_sets(device)?;
+        self.resource_epoch = self.resource_epoch.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn render_scale(&self) -> f32 {
+        self.render_scale
     }
 
     fn set_shadow_resolution<D: Device + TextureTransferDevice + ?Sized>(
@@ -351,6 +380,7 @@ impl GpuState {
         self.ensure_idle(device)?;
         self.frame_index = self.frame_index.wrapping_add(1);
         let mut statistics = FrameStatistics::default();
+        let render_target = self.targets.as_ref().map_or(target, Targets::render_target);
 
         let shadow_resolution = options.shadows.resolution.clamp(1, 8192);
         if options.shadows.enabled && shadow_resolution != self.shadow_resolution {
@@ -413,6 +443,7 @@ impl GpuState {
             directional,
             &effective_options,
             target,
+            render_target,
             shadow_enabled,
             shadow_texel,
             &mut self.staging.frame,
@@ -695,6 +726,14 @@ impl GpuState {
             light_capacity: self.frame_buffers.light_capacity(),
             target_width: self.width,
             target_height: self.height,
+            render_target_width: self
+                .targets
+                .as_ref()
+                .map_or(self.width, |targets| targets.render_width),
+            render_target_height: self
+                .targets
+                .as_ref()
+                .map_or(self.height, |targets| targets.render_height),
             shadow_resolution: self.shadow_resolution,
             target_bytes,
             cached_mesh_bytes,
@@ -1430,6 +1469,7 @@ fn encode_frame_into(
     directional: Option<(Vec3, [f32; 3], f32)>,
     options: &RenderOptions,
     target: (u32, u32),
+    render_target: (u32, u32),
     shadow_enabled: bool,
     shadow_texel: f32,
     bytes: &mut Vec<u8>,
@@ -1504,8 +1544,8 @@ fn encode_frame_into(
         [
             options.bloom.radius.clamp(0.5, 4.0),
             options.bloom.threshold.max(0.0),
-            0.0,
-            0.0,
+            render_target.0 as f32,
+            render_target.1 as f32,
         ],
     );
     debug_assert_eq!(bytes.len(), FRAME_STRIDE as usize);
@@ -2316,8 +2356,16 @@ fn shader_module<D: Device + ?Sized>(
 }
 
 struct Targets {
+    /// Output (post/readback) width.
     width: u32,
+    /// Output (post/readback) height.
     height: u32,
+    /// Internal HDR scene width; equals output width when render scale is 1.
+    render_width: u32,
+    /// Internal HDR scene height.
+    render_height: u32,
+    /// Width ratio of the HDR scene target over the output target.
+    render_scale: f32,
     shadow_resolution: u32,
     shadow_color: TextureId,
     shadow_color_view: TextureViewId,
@@ -2339,7 +2387,9 @@ impl Targets {
         width: u32,
         height: u32,
         shadow_resolution: u32,
+        render_scale: f32,
     ) -> Result<Self, RenderError> {
+        let (render_width, render_height) = scaled_extent(width, height, render_scale);
         let (shadow_color, shadow_color_view, shadow_depth, shadow_depth_view) =
             create_shadow_targets(device, shadow_resolution)?;
         let (
@@ -2351,7 +2401,7 @@ impl Targets {
             post_color_view,
             bloom_color,
             bloom_color_view,
-        ) = match create_scene_targets(device, width, height) {
+        ) = match create_scene_targets(device, width, height, render_width, render_height) {
             Ok(targets) => targets,
             Err(error) => {
                 let _ = device.destroy_texture_view(shadow_depth_view);
@@ -2364,6 +2414,9 @@ impl Targets {
         Ok(Self {
             width,
             height,
+            render_width,
+            render_height,
+            render_scale,
             shadow_resolution,
             shadow_color,
             shadow_color_view,
@@ -2385,7 +2438,9 @@ impl Targets {
         device: &mut D,
         width: u32,
         height: u32,
+        render_scale: f32,
     ) -> Result<(), RenderError> {
+        let (render_width, render_height) = scaled_extent(width, height, render_scale);
         destroy_scene_targets(
             device,
             self.scene_color,
@@ -2406,9 +2461,12 @@ impl Targets {
             post_color_view,
             bloom_color,
             bloom_color_view,
-        ) = create_scene_targets(device, width, height)?;
+        ) = create_scene_targets(device, width, height, render_width, render_height)?;
         self.width = width;
         self.height = height;
+        self.render_width = render_width;
+        self.render_height = render_height;
+        self.render_scale = render_scale;
         self.scene_color = scene_color;
         self.scene_color_view = scene_color_view;
         self.scene_depth = scene_depth;
@@ -2443,11 +2501,17 @@ impl Targets {
     }
 
     fn resident_bytes(&self) -> u64 {
-        let pixels = u64::from(self.width) * u64::from(self.height);
-        let bloom_pixels = u64::from((self.width / 2).max(1)) * u64::from((self.height / 2).max(1));
+        let output_pixels = u64::from(self.width) * u64::from(self.height);
+        let render_pixels = u64::from(self.render_width) * u64::from(self.render_height);
+        let bloom_pixels =
+            u64::from((self.render_width / 2).max(1)) * u64::from((self.render_height / 2).max(1));
         let shadow_pixels = u64::from(self.shadow_resolution) * u64::from(self.shadow_resolution);
-        // Shadow color (4) + depth (4), scene color HDR (8) + depth (4), post color (4), bloom (4).
-        shadow_pixels * 8 + pixels * 16 + bloom_pixels * 4
+        // Shadow color (4) + depth (4), HDR scene color (8) + depth (4), post color (4), bloom (4).
+        shadow_pixels * 8 + render_pixels * 12 + bloom_pixels * 4 + output_pixels * 4
+    }
+
+    fn render_target(&self) -> (u32, u32) {
+        (self.render_width, self.render_height)
     }
 
     fn destroy<D: Device + ?Sized>(self, device: &mut D) -> Result<(), RenderError> {
@@ -2484,33 +2548,51 @@ type SceneTargets = (
     TextureViewId,
 );
 
+fn scaled_extent(width: u32, height: u32, render_scale: f32) -> (u32, u32) {
+    let scale = if render_scale.is_finite() {
+        render_scale.clamp(0.25, 2.0)
+    } else {
+        1.0
+    };
+    (
+        ((width as f32 * scale).round() as u32).max(1),
+        ((height as f32 * scale).round() as u32).max(1),
+    )
+}
+
 fn create_scene_targets<D: Device + ?Sized>(
     device: &mut D,
-    width: u32,
-    height: u32,
+    output_width: u32,
+    output_height: u32,
+    render_width: u32,
+    render_height: u32,
 ) -> Result<SceneTargets, RenderError> {
     let (scene_color, scene_color_view) = create_color_target(
         device,
         "gpui-3d offscreen scene color",
-        width,
-        height,
+        render_width,
+        render_height,
         SCENE_COLOR_FORMAT,
         TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
     )?;
-    let (scene_depth, scene_depth_view) =
-        match create_depth_target(device, "gpui-3d offscreen scene depth", width, height) {
-            Ok(targets) => targets,
-            Err(error) => {
-                let _ = device.destroy_texture_view(scene_color_view);
-                let _ = device.destroy_texture(scene_color);
-                return Err(error);
-            }
-        };
+    let (scene_depth, scene_depth_view) = match create_depth_target(
+        device,
+        "gpui-3d offscreen scene depth",
+        render_width,
+        render_height,
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            let _ = device.destroy_texture_view(scene_color_view);
+            let _ = device.destroy_texture(scene_color);
+            return Err(error);
+        }
+    };
     let (post_color, post_color_view) = match create_color_target(
         device,
         "gpui-3d offscreen post color",
-        width,
-        height,
+        output_width,
+        output_height,
         POST_COLOR_FORMAT,
         TextureUsage::COLOR_ATTACHMENT | TextureUsage::COPY_SRC,
     ) {
@@ -2526,8 +2608,8 @@ fn create_scene_targets<D: Device + ?Sized>(
     let (bloom_color, bloom_color_view) = match create_color_target(
         device,
         "gpui-3d offscreen bloom color",
-        (width / 2).max(1),
-        (height / 2).max(1),
+        (render_width / 2).max(1),
+        (render_height / 2).max(1),
         BLOOM_COLOR_FORMAT,
         TextureUsage::COLOR_ATTACHMENT | TextureUsage::SAMPLED,
     ) {
@@ -2553,7 +2635,6 @@ fn create_scene_targets<D: Device + ?Sized>(
         bloom_color_view,
     ))
 }
-
 fn destroy_scene_targets<D: Device + ?Sized>(
     device: &mut D,
     scene_color: TextureId,

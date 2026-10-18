@@ -66,8 +66,10 @@ renderer.destroy(&mut device)?;
 
 `RenderOptions` selects shadows (resolution/bias/strength), exposure, tone mapping (ACES, Reinhard,
 none), debug views (albedo, normal, depth, UV, shadow visibility, object id), the clear color, and
-post grading. `render_animated` samples caller-owned `TransformTrack`s at a caller-owned clip time,
-matching the GPUI scene-view contract: `gpui-3d` owns no playback clock.
+post grading. `OffscreenRenderer::with_render_scale` / `set_render_scale` trade HDR resolution for
+fill rate (`0.5`) or supersample it (`2.0`). `render_animated` samples caller-owned
+`TransformTrack`s at a caller-owned clip time and `render_blended` crossfades two such clips;
+`gpui-3d` owns no playback clock.
 
 ## glTF import quick start
 
@@ -110,7 +112,13 @@ default and run with `cargo test -p gpui-3d -- --ignored --test-threads=1`.
   generation with mirrored-UV seam splitting, optional per-triangle edge
   masks, fixed-topology vertex snapshots through `Mesh::with_vertices`, and cube, plane,
   UV-sphere, cylinder, and cone primitives.
-- Parent/child scene nodes with translation, quaternion rotation, scale, pixel offset, and depth bias.
+- Parent/child scene nodes with translation, quaternion rotation, scale, pixel offset, depth bias, and
+  per-node/subtree visibility that rendering, shadows, picking, and bounds all respect.
+- CPU two-clip animation crossfades through `blend_transform`, `Scene::evaluate_blended`, and
+  `OffscreenRenderer::render_blended`; nodes animated by only one clip fade toward rest.
+- Render-scale control on the offscreen renderer: `0.25..=2.0` internal HDR resolution for dynamic
+  resolution or supersampling while the post target, readback, and picking viewport stay at the
+  requested output size.
 - Ambient, directional, point, and soft-cone spot lights; metallic-roughness and unlit materials;
   sRGB albedo, linear normal, and red-channel occlusion maps; opaque, masked, and premultiplied blend modes.
 - Camera-frustum culling, back-to-front ordering for blended draws, retained per-scene-view GPU mesh
@@ -148,10 +156,14 @@ generate frames from UV set zero with `Mesh::generate_tangents()`, or attach imp
 `Mesh::with_tangents()`. Generation follows MikkTSpace and splits vertices at tangent seams while
 preserving triangle order and returning a source-vertex map.
 
-The crate accepts caller-generated mip chains but does not generate them. It does not yet provide
-shadows or HDR environment lighting. It also lacks custom material programs and mesh passes, IK,
-morph and skin deformation, headless capture, and asynchronous readback. Shader compilation and CPU
-benchmarks do not prove native pixel correctness or frame pacing.
+The GPUI scene-view path does not yet cast shadows or use HDR environment lighting; the offscreen
+renderer does provide directional shadows, linear HDR, bloom, FXAA, and render scale. Still missing:
+IBL/environment maps, point/spot shadows, MSAA/TAA, SSAO/SSR/motion blur/depth of field, LOD groups,
+skeletal/morph deformation, glTF material extensions (clearcoat/transmission/ior/variants), texture
+transforms/UV1, compressed texture/mesh extensions, GPU timestamps, GPU-driven indirect rendering,
+asynchronous readback, and compositor hand-off without CPU readback. Metal texture upload and runtime
+validation remain unimplemented. Shader compilation and CPU benchmarks do not prove native pixel
+correctness or frame pacing.
 
 ## Examples
 

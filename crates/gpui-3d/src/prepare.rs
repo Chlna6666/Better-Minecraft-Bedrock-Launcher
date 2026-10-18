@@ -104,7 +104,7 @@ pub struct PreparedScene {
     pub lights: Vec<PreparedLight>,
     /// Camera view-projection matrix.
     pub view_projection: Mat4,
-    walk_stack: Vec<(NodeId, Mat4)>,
+    walk_stack: Vec<(NodeId, Mat4, bool)>,
     /// Un-culled draws from the last scene walk.
     ///
     /// A camera move keeps this list and only re-culls and re-sorts it, so dragging an orbit camera
@@ -247,12 +247,7 @@ impl PreparedScene {
         scene_transform: Mat4,
         local_transform: impl Fn(NodeId, &Node) -> crate::Transform,
     ) -> Result<(), CameraError> {
-        self.walk(
-            scene,
-            scene_transform,
-            local_transform,
-            camera,
-        )?;
+        self.walk(scene, scene_transform, local_transform, camera)?;
         self.apply_camera(camera, aspect)
     }
 
@@ -272,17 +267,19 @@ impl PreparedScene {
                 .roots()
                 .iter()
                 .copied()
-                .map(|id| (id, scene_transform)),
+                .map(|id| (id, scene_transform, true)),
         );
         let (cull_planes, cull_ready) = match self.aspect {
-            Some(aspect) => (
-                Some(frustum_planes(camera.view_projection(aspect)?)),
-                true,
-            ),
+            Some(aspect) => (Some(frustum_planes(camera.view_projection(aspect)?)), true),
             None => (None, false),
         };
-        while let Some((id, parent_world)) = self.walk_stack.pop() {
+        while let Some((id, parent_world, parent_visible)) = self.walk_stack.pop() {
             let Some(node) = scene.node(id) else { continue };
+            // Hidden nodes hide their whole subtree; skip traversal instead of emitting draws and
+            // lights that the renderer would have to discard later.
+            if !parent_visible || !node.visible {
+                continue;
+            }
             let world = parent_world * local_transform(id, node).matrix();
             if let Some(light) = node.light {
                 self.lights.push(transform_light(light, world));
@@ -320,8 +317,13 @@ impl PreparedScene {
                 }
             }
             if let Some(children) = scene.children(id) {
-                self.walk_stack
-                    .extend(children.iter().rev().copied().map(|child| (child, world)));
+                self.walk_stack.extend(
+                    children
+                        .iter()
+                        .rev()
+                        .copied()
+                        .map(|child| (child, world, true)),
+                );
             }
         }
         Ok(())
@@ -938,5 +940,42 @@ mod tests {
         assert!(evaluated.raycast(ray, &mut scratch).unwrap().is_some());
         assert!(scene.raycast(ray, &mut scratch).unwrap().is_none());
         assert_eq!(scene.node(node).unwrap().transform.translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn hidden_nodes_and_subtrees_are_skipped_and_visibility_toggles_reevaluate() {
+        let mut scene = Scene::new();
+        let hidden_parent = scene.insert(None, Node::new().with_visible(false)).unwrap();
+        scene
+            .insert(Some(hidden_parent), Node::new().with_mesh(mesh()))
+            .unwrap();
+        let hidden_leaf = scene
+            .insert(None, Node::new().with_mesh(mesh()).with_visible(false))
+            .unwrap();
+        let visible = scene.insert(None, Node::new().with_mesh(mesh())).unwrap();
+        let camera = Camera::perspective(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            1.0,
+            0.1,
+            100.0,
+        );
+
+        let prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
+        assert_eq!(prepared.draws.len(), 1);
+        assert_eq!(prepared.draws[0].node, visible);
+        assert!(prepared.lights.is_empty());
+
+        scene.set_visible(hidden_parent, true);
+        let prepared = PreparedScene::new(&scene, camera, 1.0).unwrap();
+        assert_eq!(prepared.draws.len(), 2);
+        assert!(prepared.draws.iter().all(|draw| draw.node != hidden_leaf));
+
+        scene.set_visible(visible, false);
+        assert_eq!(
+            PreparedScene::new(&scene, camera, 1.0).unwrap().draws.len(),
+            1
+        );
     }
 }

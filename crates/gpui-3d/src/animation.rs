@@ -8,6 +8,7 @@ use std::{collections::HashMap, time::Duration};
 #[derive(Debug, Default)]
 pub struct AnimationScratch {
     pub(crate) transforms: HashMap<NodeId, Transform>,
+    pub(crate) secondary_transforms: HashMap<NodeId, Transform>,
 }
 
 impl AnimationScratch {
@@ -17,9 +18,10 @@ impl AnimationScratch {
         Self::default()
     }
 
-    /// Releases retained transform-map capacity after a large clip is no longer sampled.
+    /// Releases retained transform-map capacity after large clips are no longer sampled.
     pub fn trim(&mut self) {
         self.transforms = HashMap::new();
+        self.secondary_transforms = HashMap::new();
     }
 }
 
@@ -100,6 +102,9 @@ pub enum AnimationError {
     /// More than one transform track targets the same scene node.
     #[error("multiple animation tracks target the same scene node")]
     DuplicateNodeTrack,
+    /// A crossfade weight is not finite.
+    #[error("animation blend weight must be finite")]
+    InvalidBlendWeight,
 }
 
 /// Absolute-time keyframes for a vector-valued transform channel.
@@ -264,6 +269,63 @@ impl TransformTrack {
     }
 }
 
+/// Blends two local transforms for animation crossfades.
+///
+/// Translation and scale interpolate linearly; rotation uses shortest-arc spherical interpolation
+/// from `from` to `to`. `weight` is clamped to `0..=1`, so the endpoints return the corresponding
+/// input with its rotation normalized. Either transform may come from a sampled clip or from the
+/// authored scene pose, which makes it possible to fade a clip in from or out to rest.
+///
+/// # Errors
+///
+/// Returns [`AnimationError::InvalidBlendWeight`] for a non-finite weight and
+/// [`AnimationError::InvalidBaseTransform`] when either input contains a non-finite translation,
+/// scale, rotation, or a rotation that cannot be normalized.
+pub fn blend_transform(
+    from: Transform,
+    to: Transform,
+    weight: f32,
+) -> Result<Transform, AnimationError> {
+    if !weight.is_finite() {
+        return Err(AnimationError::InvalidBlendWeight);
+    }
+    let weight = weight.clamp(0.0, 1.0);
+    let from = normalized_transform(from)?;
+    let to = normalized_transform(to)?;
+    let rotation = from
+        .rotation
+        .slerp(to.rotation, weight)
+        .unwrap_or(from.rotation);
+    let blended = Transform {
+        translation: from.translation + (to.translation - from.translation) * weight,
+        rotation,
+        scale: from.scale + (to.scale - from.scale) * weight,
+    };
+    if !blended.translation.is_finite() || !blended.scale.is_finite() {
+        return Err(AnimationError::InvalidBaseTransform);
+    }
+    Ok(blended)
+}
+
+fn normalized_transform(transform: Transform) -> Result<Transform, AnimationError> {
+    if !transform.translation.is_finite()
+        || !transform.scale.is_finite()
+        || !transform.rotation.x.is_finite()
+        || !transform.rotation.y.is_finite()
+        || !transform.rotation.z.is_finite()
+        || !transform.rotation.w.is_finite()
+    {
+        return Err(AnimationError::InvalidBaseTransform);
+    }
+    Ok(Transform {
+        rotation: transform
+            .rotation
+            .normalized()
+            .ok_or(AnimationError::InvalidBaseTransform)?,
+        ..transform
+    })
+}
+
 fn validate_keys<T>(keys: &[Keyframe<T>]) -> Result<(), AnimationError> {
     if keys.is_empty() {
         return Err(AnimationError::EmptyTrack);
@@ -380,6 +442,50 @@ mod tests {
         assert_eq!(
             RotationTrack::new([Keyframe::new(Duration::ZERO, Quat::new(0.0, 0.0, 0.0, 0.0))]),
             Err(AnimationError::InvalidRotation)
+        );
+    }
+
+    #[test]
+    fn transform_blending_interpolates_rotations_and_clamps_weights() {
+        use std::f32::consts::FRAC_PI_2;
+        let from = Transform::IDENTITY;
+        let to = Transform {
+            translation: Vec3::new(10.0, 0.0, 0.0),
+            rotation: Quat::from_axis_angle(Vec3::Z, FRAC_PI_2).unwrap(),
+            scale: Vec3::new(2.0, 2.0, 2.0),
+        };
+        let mid = blend_transform(from, to, 0.5).unwrap();
+        assert!((mid.translation.x - 5.0).abs() < 1e-5);
+        assert!((mid.scale.x - 1.5).abs() < 1e-5);
+        let expected_rotation = Quat::from_axis_angle(Vec3::Z, FRAC_PI_2 * 0.5).unwrap();
+        assert!((mid.rotation.w - expected_rotation.w).abs() < 1e-4);
+        assert!((mid.rotation.z - expected_rotation.z).abs() < 1e-4);
+        assert_eq!(
+            blend_transform(from, to, 0.0).unwrap().translation,
+            Vec3::ZERO
+        );
+        assert_eq!(
+            blend_transform(from, to, 1.0).unwrap().translation,
+            Vec3::new(10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            blend_transform(from, to, 4.0).unwrap().translation,
+            Vec3::new(10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            blend_transform(from, to, f32::NAN).err(),
+            Some(AnimationError::InvalidBlendWeight)
+        );
+        assert!(
+            blend_transform(
+                from,
+                Transform {
+                    translation: Vec3::new(f32::NAN, 0.0, 0.0),
+                    ..from
+                },
+                0.5
+            )
+            .is_err()
         );
     }
 }

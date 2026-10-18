@@ -38,6 +38,8 @@ pub(crate) struct RenderRequest<'a> {
     pub pick: Option<(f32, f32)>,
     /// Per-frame camera yaw delta in degrees; 0 keeps the static frame-reuse path.
     pub orbit_degrees: f32,
+    /// Internal HDR render scale (0.25..=2.0); output/readback size stays the requested size.
+    pub render_scale: f32,
     /// Optional sampled animation clip and absolute clip time.
     pub animation: Option<(&'a [TransformTrack], Duration)>,
 }
@@ -136,6 +138,9 @@ where
     let mut renderer = OffscreenRenderer::new(device, request.width, request.height)
         .map_err(|error| format!("create offscreen renderer: {error}"))?;
     renderer.set_memory_budget(request.memory_budget);
+    renderer
+        .set_render_scale(device, request.render_scale)
+        .map_err(|error| format!("set render scale: {error}"))?;
     let mut first_frame = FrameStatistics::default();
     let mut steady_frame = FrameStatistics::default();
     let mut image = None;

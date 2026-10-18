@@ -53,7 +53,7 @@ fn fs_bloom(input: BloomOutput) -> @location(0) vec4<f32> {
     }
     let threshold = max(frame.effects.x, 0.0);
     let radius = clamp(frame.effects3.x, 0.5, 4.0);
-    let scene_size = max(vec2<f32>(frame.misc.x, frame.misc.y), vec2<f32>(1.0));
+    let scene_size = max(vec2<f32>(frame.effects3.z, frame.effects3.w), vec2<f32>(1.0));
     // The bloom target is half resolution, so one bloom texel covers two scene texels.
     let texel = radius * 2.0 / scene_size;
     let offsets = array<vec2<f32>, 9>(

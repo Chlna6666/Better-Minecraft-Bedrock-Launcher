@@ -58,6 +58,7 @@ struct Args {
     pick: Option<(f32, f32)>,
     quality: Option<RenderQuality>,
     orbit_degrees: f32,
+    render_scale: f32,
     bloom: Option<bool>,
     fxaa: Option<bool>,
     list: bool,
@@ -91,6 +92,7 @@ impl Default for Args {
             pick: None,
             quality: None,
             orbit_degrees: 0.0,
+            render_scale: 1.0,
             bloom: None,
             fxaa: None,
             list: false,
@@ -261,6 +263,7 @@ fn run() -> Result<(), String> {
             memory_budget: args.budget_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
             pick: args.pick,
             orbit_degrees: args.orbit_degrees,
+            render_scale: args.render_scale,
             animation: animation
                 .as_ref()
                 .map(|(tracks, time, _, _)| (*tracks, *time)),
@@ -438,6 +441,7 @@ fn parse_args() -> Result<Args, String> {
             "--bloom" => args.bloom = Some(parse_on_off(value, key)?),
             "--fxaa" => args.fxaa = Some(parse_on_off(value, key)?),
             "--orbit-degrees" => args.orbit_degrees = parse_float(value, key)?,
+            "--render-scale" => args.render_scale = parse_float(value, key)?,
             "--quality" => {
                 args.quality = Some(match required(value, key)?.as_str() {
                     "low" => RenderQuality::Low,
@@ -548,7 +552,7 @@ fn help_text() -> String {
         "  --model=model.glb --animation=clip --animation-time=1.5",
         "  --instances=20000  (procedural instanced cube field)",
         "  --quality=high|ultra  (shadow map, bloom, FXAA, grading preset)",
-        "  --bloom=on|off --fxaa=on|off --orbit-degrees=3.0",
+        "  --bloom=on|off --fxaa=on|off --orbit-degrees=3.0 --render-scale=0.75|2.0",
         "  --max-texture=1024 --budget-mb=256 --pick=640,360",
         "  --list-backends",
     ]
@@ -608,7 +612,7 @@ fn print_report(report: &backend::BackendReport) {
     );
     let renderer = report.renderer;
     println!(
-        "renderer: live_meshes={} live_textures={} resource_sets={} buffers={}KB targets={}KB cached_mesh={}KB cached_texture={}KB draw_capacity={} instance_capacity={} shadow={}",
+        "renderer: live_meshes={} live_textures={} resource_sets={} buffers={}KB targets={}KB cached_mesh={}KB cached_texture={}KB draw_capacity={} instance_capacity={} shadow={} render_target={}x{}",
         renderer.live_meshes,
         renderer.live_textures,
         renderer.resource_set_count,
@@ -619,6 +623,8 @@ fn print_report(report: &backend::BackendReport) {
         renderer.draw_capacity,
         renderer.instance_capacity,
         renderer.shadow_resolution,
+        renderer.render_target_width,
+        renderer.render_target_height,
     );
     println!(
         "buffers: allocations={} slack={}KB staging={}KB pooled={}KB({}) reuses={}",
@@ -705,7 +711,7 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
             "  \"debug_view\": \"{:?}\",\n",
             "  \"first_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
             "  \"steady_frame\": {{\"draw_calls\":{},\"shadow_draw_calls\":{},\"triangles\":{},\"instances\":{},\"mesh_uploads\":{},\"texture_uploads\":{},\"upload_bytes\":{},\"prepare_nanos\":{},\"submit_nanos\":{}}},\n",
-            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{}}},\n",
+            "  \"renderer\": {{\"live_meshes\":{},\"live_textures\":{},\"resource_sets\":{},\"resident_buffer_bytes\":{},\"resident_texture_bytes\":{},\"draw_capacity\":{},\"instance_capacity\":{},\"light_capacity\":{},\"render_scale\":{:.3},\"render_target_width\":{},\"render_target_height\":{}}},\n",
             "  \"memory\": {{\"target_bytes\":{},\"cached_mesh_bytes\":{},\"cached_texture_bytes\":{},\"resident_bytes\":{},\"peak_resident_bytes\":{},\"upload_bytes_total\":{},\"mesh_cache_hits\":{},\"mesh_cache_misses\":{},\"texture_cache_hits\":{},\"texture_cache_misses\":{},\"evictions\":{},\"tracker_cpu_bytes\":{},\"budget_bytes\":{},\"cpu_staging_bytes\":{},\"buffer_allocations\":{},\"buffer_slack_bytes\":{},\"pooled_bytes\":{},\"pooled_buffers\":{},\"buffer_reuses\":{}}},\n",
             "  \"frame_times_nanos\": {{\"render_p50\":{},\"render_p95\":{},\"render_p99\":{},\"capture_p50\":{},\"capture_p95\":{},\"capture_p99\":{}}},\n",
             "  \"cpu_pick\": {},\n",
@@ -749,6 +755,9 @@ fn report_json(report: &backend::BackendReport, options: &RenderOptions) -> Stri
         renderer.draw_capacity,
         renderer.instance_capacity,
         renderer.light_capacity,
+        f64::from(renderer.render_target_width) / f64::from(renderer.target_width.max(1)),
+        renderer.render_target_width,
+        renderer.render_target_height,
         renderer.target_bytes,
         renderer.cached_mesh_bytes,
         renderer.cached_texture_bytes,

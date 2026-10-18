@@ -98,14 +98,35 @@ fn luma(color: vec3<f32>) -> f32 {
     return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
+fn output_texel() -> vec2<f32> {
+    return vec2<f32>(1.0, 1.0) / max(vec2<f32>(frame.misc.x, frame.misc.y), vec2<f32>(1.0));
+}
+
+fn sample_scene(uv: vec2<f32>) -> vec4<f32> {
+    // Render scale 1 samples the HDR target directly. Other scales take four taps across the
+    // output-pixel footprint so supersampled frames downsample and low-resolution frames upscale
+    // without aliasing the scene texture.
+    let scale_ratio = frame.effects3.z / max(frame.misc.x, 1.0);
+    if (abs(scale_ratio - 1.0) <= 0.001) {
+        return textureSample(scene_texture, scene_sampler, uv);
+    }
+    let offset = output_texel() * 0.25;
+    let top_left = textureSample(scene_texture, scene_sampler, uv + vec2<f32>(-offset.x, -offset.y));
+    let top_right = textureSample(scene_texture, scene_sampler, uv + vec2<f32>(offset.x, -offset.y));
+    let bottom_left = textureSample(scene_texture, scene_sampler, uv + vec2<f32>(-offset.x, offset.y));
+    let bottom_right = textureSample(scene_texture, scene_sampler, uv + vec2<f32>(offset.x, offset.y));
+    return (top_left + top_right + bottom_left + bottom_right) * 0.25;
+}
+
 @fragment
 fn fs_post(input: PostOutput) -> @location(0) vec4<f32> {
-    let raw_scene = textureSample(scene_texture, scene_sampler, input.uv);
-    // Debug views and object ids are already display data; never grade them or the encoded
-    // instance id would no longer decode from the readback.
+    // Debug views and object ids are already display data; never grade or filter them, and read
+    // exactly one scene texel so object ids still decode when the scene is supersampled.
     if (frame.misc.w < 0.5 || frame.effects2.w > 0.5) {
-        return vec4<f32>(clamp(raw_scene.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+        let direct_scene = textureSample(scene_texture, scene_sampler, input.uv);
+        return vec4<f32>(clamp(direct_scene.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
     }
+    let raw_scene = sample_scene(input.uv);
 
     // Bloom is accumulated in linear HDR before exposure/tonemapping so highlights keep their head.
     let bloom_sample = textureSample(bloom_texture, scene_sampler, input.uv);
@@ -115,18 +136,18 @@ fn fs_post(input: PostOutput) -> @location(0) vec4<f32> {
         // FXAA-style edge blend: compare luma of the four nearest vertical/horizontal samples and
         // blend the ones on the opposite side of a local edge. The scene target is HDR, so each
         // tap is exposed and tone mapped before comparison.
-        let texel = vec2<f32>(1.0, 1.0) / max(vec2<f32>(frame.misc.x, frame.misc.y), vec2<f32>(1.0));
+        let texel = output_texel();
         let sample_left = resolve_linear(
-            textureSample(scene_texture, scene_sampler, input.uv - vec2<f32>(texel.x, 0.0)).rgb,
+            sample_scene(input.uv - vec2<f32>(texel.x, 0.0)).rgb,
         );
         let sample_right = resolve_linear(
-            textureSample(scene_texture, scene_sampler, input.uv + vec2<f32>(texel.x, 0.0)).rgb,
+            sample_scene(input.uv + vec2<f32>(texel.x, 0.0)).rgb,
         );
         let sample_down = resolve_linear(
-            textureSample(scene_texture, scene_sampler, input.uv - vec2<f32>(0.0, texel.y)).rgb,
+            sample_scene(input.uv - vec2<f32>(0.0, texel.y)).rgb,
         );
         let sample_up = resolve_linear(
-            textureSample(scene_texture, scene_sampler, input.uv + vec2<f32>(0.0, texel.y)).rgb,
+            sample_scene(input.uv + vec2<f32>(0.0, texel.y)).rgb,
         );
         let center_luma = luma(color);
         let contrast = max(
