@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::animation::stat_chart_bar_motion;
+use crate::ui::animation::{stat_chart_bar_cap_motion, stat_chart_bar_fill_motion};
 use chrono::{Days, Utc};
 use std::time::{Duration, Instant};
 
@@ -347,29 +347,64 @@ fn chart_card(
                 } else {
                     10.0 + 130.0 * current as f32 / maximum as f32
                 };
-                let bar = div()
-                    .w_full()
-                    .max_w(px(30.))
-                    .h(px(height))
-                    .rounded(px(6.))
-                    .bg(if current == 0 {
-                        Hsla { a: 0.24, ..colors.border }
-                    } else {
-                        Hsla { a: 0.78, ..color }
-                    });
-                // A rectangular reveal cuts the rounded cap during growth.
-                // A bottom-pivot transform retains the rounded shape.
-                let bar = if animate && current > 0 {
-                    bar.with_visual_animation(
-                        SharedString::from(format!(
-                            "manage-stat-{animation_scope}-{animation_sequence}-{index}"
-                        )),
-                        stat_chart_bar_motion(index),
-                    )
-                    .expect("animation declares presentation properties")
-                    .into_any_element()
+                // Keep the column width fixed. Animate a rectangular body from the
+                // baseline, while an independent rounded cap follows its top edge.
+                // A uniform scale changes the column width; clipping a single
+                // rounded quad exposes square corners mid-animation.
+                let bar = if current == 0 {
+                    div()
+                        .w_full()
+                        .max_w(px(30.))
+                        .h(px(2.))
+                        .rounded(px(2.))
+                        .bg(Hsla { a: 0.24, ..colors.border })
+                        .into_any_element()
                 } else {
-                    bar.into_any_element()
+                    let cap_height = height.min(9.0);
+                    let fill_height = height - cap_height;
+                    let bar_color = Hsla { a: 0.78, ..color };
+                    let cap = div()
+                        .w_full()
+                        .h(px(cap_height))
+                        .flex_none()
+                        .rounded_t(px(5.))
+                        .bg(bar_color);
+                    let fill = div()
+                        .w_full()
+                        .min_h(px(0.))
+                        .flex_1()
+                        .rounded_b(px(5.))
+                        .bg(bar_color);
+                    let (cap, fill) = if animate {
+                        let key = format!(
+                            "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                        );
+                        (
+                            cap.with_visual_animation(
+                                SharedString::from(format!("{key}-cap")),
+                                stat_chart_bar_cap_motion(index, fill_height),
+                            )
+                            .expect("animation declares presentation properties")
+                            .into_any_element(),
+                            fill.with_visual_animation(
+                                SharedString::from(format!("{key}-fill")),
+                                stat_chart_bar_fill_motion(index),
+                            )
+                            .expect("animation declares presentation properties")
+                            .into_any_element(),
+                        )
+                    } else {
+                        (cap.into_any_element(), fill.into_any_element())
+                    };
+                    div()
+                        .w_full()
+                        .max_w(px(30.))
+                        .h(px(height))
+                        .flex()
+                        .flex_col()
+                        .child(cap)
+                        .child(fill)
+                        .into_any_element()
                 };
 
                 div()
