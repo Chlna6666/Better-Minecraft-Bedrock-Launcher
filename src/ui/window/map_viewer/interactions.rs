@@ -1623,6 +1623,16 @@ impl MapViewerWindowView {
     }
 
     pub(super) fn confirm_paste_preview(&mut self, cx: &mut Context<Self>) {
+        // Automatically suggested targets remain read-only until the user explicitly
+        // picks a position. This guard also protects keyboard/overlay confirmation.
+        if self.converter_target_selected() == Some(false) {
+            self.status = SharedString::from(
+                "请先在地图中拖动预览，或点击“放到当前视野中心”明确选择位置",
+            );
+            toast::error(cx, self.status.clone());
+            cx.notify();
+            return;
+        }
         if self.map_write_busy()
             || self
                 .professional
@@ -1687,7 +1697,11 @@ impl MapViewerWindowView {
         let transform = preview.transform;
         let display_degrees = preview.display_degrees;
         let drag = preview.drag;
-        self.set_paste_preview(target, transform, display_degrees, drag, cx)
+        let moved = self.set_paste_preview(target, transform, display_degrees, drag, cx);
+        if moved {
+            self.mark_converter_target_selected();
+        }
+        moved
     }
 
     fn move_paste_preview_to_stage_position(
