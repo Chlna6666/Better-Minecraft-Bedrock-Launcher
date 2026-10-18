@@ -63,6 +63,31 @@ impl NumericField {
     }
 }
 
+/// Shared large hit target for increment/decrement controls. Keep the
+/// clickable area independent of the glyph's visual size and avoid inline
+/// ad-hoc button sizing in individual converter panels.
+pub(crate) fn numeric_step_button(
+    colors: &ThemeColors,
+    label: impl Into<SharedString>,
+    enabled: bool,
+) -> Div {
+    div()
+        .h(px(36.0))
+        .min_w(px(38.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.surface)
+        .text_size(px(16.0))
+        .text_color(if enabled { colors.text_primary } else { colors.text_secondary })
+        .opacity(if enabled { 1.0 } else { 0.45 })
+        .child(label.into())
+}
+
 /// Shared compact dimension editor: one input-first stepper and one independent slider
 /// track. The caller owns range checks and conversion callbacks; the component owns spacing.
 pub(crate) fn numeric_dimension_editor(
