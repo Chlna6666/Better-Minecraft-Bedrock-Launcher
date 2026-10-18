@@ -1,0 +1,12 @@
+
+running 7 tests
+test platform::frame::tests::merging_queued_packet_damage_preserves_both_scenes ... ok
+test platform::frame::tests::presentation_packet_deadline_tracks_successful_submission_and_frame_limit ... ok
+test platform::frame::tests::presentation_packet_keeps_two_horizontal_springs_in_motion ... ok
+test platform::frame::tests::presentation_packet_packs_parallel_tracks_and_keeps_independent_progress ... ok
+test platform::frame::tests::presentation_packet_reports_completion_at_first_sample_after_endpoint ... ok
+test platform::frame::tests::presentation_packet_samples_visual_timeline_without_ui_state ... ok
+test platform::frame::tests::scene_bound_packet_animation_ignores_viewport_timeline_damage ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1329 filtered out; finished in 0.00s
+

@@ -37,7 +37,11 @@ fn vertical_edges_preserve_bottom_width_radii_and_ancestor_clip() {
         };
         assert_eq!(quad.bounds.size.width, base.bounds.size.width);
         assert_eq!(quad.bounds.origin.x, base.bounds.origin.x);
-        assert_eq!(quad.corner_radii, base.corner_radii);
+        assert_eq!(
+            quad.corner_radii,
+            base.corner_radii
+                .clamp_radii_for_quad_size(quad.bounds.size)
+        );
         assert_eq!(quad.content_mask, base.content_mask);
         if progress >= 0. {
             assert_eq!(quad.bounds.bottom(), base.bounds.bottom());

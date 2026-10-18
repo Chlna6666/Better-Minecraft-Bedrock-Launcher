@@ -25,6 +25,7 @@ struct VisualAnimation {
     clips_geometry: u32,
     horizontal_edges: vec2<f32>,
     vertical_edges: vec2<f32>,
+    reshapes_quad: u32,
 }
 
 fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimation {
@@ -41,6 +42,7 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
     animation.clips_geometry = 0u;
     animation.horizontal_edges = vec2<f32>(0.0);
     animation.vertical_edges = vec2<f32>(0.0);
+    animation.reshapes_quad = 0u;
 
     // GlobalParams.pad is renderer-owned in Nova and becomes an ABI feature gate. This keeps the
     // same shader binaries safe for static streams whose first u32 still contains legacy draw order.
@@ -105,6 +107,7 @@ fn resolve_visual_animation(slot_plus_one: u32, bounds: Bounds) -> VisualAnimati
         }
         case 11u: {
             animation.vertical_edges = sampled.xy;
+            animation.reshapes_quad = 1u;
         }
         // Rotation is promoted to a retained subtree composite; raw 2D primitives must not rotate
         // independently. Other transition properties are likewise no-ops in the old CPU path.
@@ -122,6 +125,11 @@ fn animation_bounds(bounds: Bounds, animation: VisualAnimation) -> Bounds {
     result.origin += animation.translation;
     result.origin.x += min(animation.horizontal_edges.x, animation.horizontal_edges.y);
     result.size.x += abs(animation.horizontal_edges.x - animation.horizontal_edges.y);
+    return result;
+}
+
+fn animation_quad_bounds(bounds: Bounds, animation: VisualAnimation) -> Bounds {
+    var result = animation_bounds(bounds, animation);
     result.origin.y += animation.vertical_edges.x;
     result.size.y = max(result.size.y + animation.vertical_edges.y - animation.vertical_edges.x, 0.0);
     return result;
@@ -163,6 +171,20 @@ fn animation_corners(corners: Corners, animation: VisualAnimation) -> Corners {
         result.top_right *= animation.scale;
         result.bottom_right *= animation.scale;
         result.bottom_left *= animation.scale;
+    }
+    return result;
+}
+
+// Shape geometry keeps the nominal radius in the retained Quad. Only the effective
+// SDF radius is bounded for short shapes, matching styled static Quad normalization.
+fn animation_quad_corners(corners: Corners, bounds: Bounds, animation: VisualAnimation) -> Corners {
+    var result = animation_corners(corners, animation);
+    if (animation.reshapes_quad != 0u) {
+        let limit = max(min(bounds.size.x, bounds.size.y) * 0.5, 0.0);
+        result.top_left = min(result.top_left, limit);
+        result.top_right = min(result.top_right, limit);
+        result.bottom_right = min(result.bottom_right, limit);
+        result.bottom_left = min(result.bottom_left, limit);
     }
     return result;
 }

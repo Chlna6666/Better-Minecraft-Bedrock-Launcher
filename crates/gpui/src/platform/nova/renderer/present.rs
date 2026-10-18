@@ -1556,6 +1556,8 @@ impl NovaRenderer {
             self.path_mask_residency.invalidate();
             return Ok(false);
         }
+        #[cfg(test)]
+        { self.draw_step_scratch.submitted_present_damage = present_damage; }
         if path_mask_step_count != 0 {
             self.path_mask_residency.commit(path_mask_key);
             crate::diagnostics::performance_metrics::record_window_path_mask(

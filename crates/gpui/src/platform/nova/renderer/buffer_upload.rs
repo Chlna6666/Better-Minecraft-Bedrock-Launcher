@@ -6,6 +6,12 @@ use crate::diagnostics::performance_metrics::{
 };
 use gfx_core::BufferUploadBatch;
 
+#[cfg(test)]
+thread_local! {
+    // Observe successful Quad writes submitted to the backend, rather than encoded byte equality.
+    pub(super) static TEST_QUAD_UPLOAD_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct FrameBufferTargets {
     global: BufferId,
@@ -51,6 +57,8 @@ pub(super) fn upload_frame_buffers<D: BackendResources>(
     device: &mut D,
     upload: FrameBufferUpload<'_>,
 ) -> Result<()> {
+    #[cfg(test)]
+    TEST_QUAD_UPLOAD_BYTES.set(0);
     let plan_started = Instant::now(); // CPU dirty-range planning, not visual sampling.
     let mut batch = BufferUploadBatch::default();
     // Static presentation and GPU-only animation frames can have no
@@ -73,7 +81,12 @@ pub(super) fn upload_frame_buffers<D: BackendResources>(
     )?;
     plan_animated_buffers(&mut batch, &upload)?;
     record_nova_buffer_upload_time(plan_started.elapsed());
-    upload_buffer_batch(device, &batch)
+    upload_buffer_batch(device, &batch)?;
+    #[cfg(test)]
+    TEST_QUAD_UPLOAD_BYTES.set(batch.writes()
+        .filter(|write| write.descriptor.buffer == upload.buffers.quad)
+        .map(|write| write.data.len()).sum());
+    Ok(())
 }
 
 fn requires_buffer_upload_planning(

@@ -238,11 +238,16 @@ without claiming that GPUI has their full style-transition or property coverage.
 
 ### Quad shape geometry
 
-`AnimationProperty::vertical_edges([from_top, from_bottom], [to_top, to_bottom])`
+`Div::with_vertical_edges_animation(id, animation, [from_top, from_bottom], [to_top, to_bottom])`
 animates a Quad's actual presentation bounds relative to its stable final layout.
+This entry point rejects children, interactive/state styles, shadows and filters with
+`VisualAnimationError::InvalidQuadGeometryTarget`; its opaque result exposes no child/style
+mutation API. Non-Div targets have no such method. The raw property constructor is crate-private.
 Offsets are logical pixels; resolution applies DPI and the current visual scale once.
 For bottom-up growth, animate `[height, px(0.)]` to `[px(0.); 2]` with forwards fill.
-Width, corner radii, borders, ancestor content masks and child layout stay fixed.
+Width, nominal corner radii, borders, ancestor content masks and layout stay fixed.
+For heights smaller than the corner diameter, CPU fallback and the Quad shader limit effective
+radii to half the shortest presented side, matching static styled-Quad normalization.
 The existing Quad SDF evaluates the new bounds on each GPU sample; this is not
 `ClipReveal`, which only conceals already-built geometry. Crossed edges collapse
 to zero height. The API is for a single Quad decoration, not a text/image subtree
@@ -255,6 +260,10 @@ of previous/current shape bounds intersected with the fixed ancestor mask. Retar
 compensates both old/new base edges, including changes to the final layout height.
 Scroll-only movement preserves relative offsets. Completion and retained replay use
 the existing fill and binding-removal protocol.
+
+Successful submission consumes the packet's full-damage mode as well as its damage.
+Later retained samples are eligible for partial presentation; backend capability, alpha,
+backdrop and resize gates still independently select safe full-present fallbacks.
 
 Regression entry points: `vertical_edges` unit/window tests and ignored native
 `*_vertical_edges_pixels` tests under `renderer/shared_buffers/native_tests/retained_color`.

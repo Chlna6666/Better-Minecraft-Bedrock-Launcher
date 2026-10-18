@@ -1,5 +1,6 @@
 //! Compare production indexed geometry against a static geometry reference on each backend.
 use super::*;
+mod scroll;
 
 macro_rules! backend_test {
     ($name:ident, $feature:literal, $backend:ident) => {
@@ -59,6 +60,7 @@ fn page(scale: f32, scroll: f32, reference: Option<f32>) -> Arc<crate::window::P
 }
 
 fn renderer(window: &native_window::Window, backend: RendererBackend) -> NovaRenderer {
+    window.resize(64, 64);
     NovaRenderer::with_atlas(
         window,
         backend,
@@ -85,6 +87,28 @@ fn verify_scale(renderer: &mut NovaRenderer, reference_renderer: &mut NovaRender
             previous,
             [value(progress, scale)],
             stable_quads.is_none(),
+        );
+        let metrics = crate::performance_metrics_snapshot();
+        let quad_writes =
+            crate::platform::nova::renderer::buffer_upload::TEST_QUAD_UPLOAD_BYTES.get();
+        if stable_quads.is_some() {
+            assert_eq!(
+                quad_writes, 0,
+                "animation-only frames must not write static Quads"
+            );
+            if progress != 1. {
+                assert_eq!(
+                    metrics.encoded_scene_primitives, 0,
+                    "animation-only frames reuse encoding"
+                );
+            }
+        }
+        eprintln!(
+            "vertical_edges backend={} scale={scale} progress={progress} quad_write_bytes={quad_writes} encoded={} source_pixels={} native_damage={:?}",
+            renderer.backend_info.label(),
+            metrics.encoded_scene_primitives,
+            metrics.backdrop_blur_source_pixels,
+            renderer.draw_step_scratch.submitted_present_damage
         );
         if let Some(bytes) = &stable_quads {
             assert_eq!(
@@ -158,6 +182,11 @@ fn verify(backend: RendererBackend) {
     let reference_window = native_window::Window::renderer_fixture();
     let mut animated = renderer(&window, backend);
     let mut reference = renderer(&reference_window, backend);
+    eprintln!(
+        "vertical_edges adapter backend={} name={}",
+        animated.backend_info.label(),
+        animated.backend_info.adapter_name()
+    );
     for scale in [1., 1.25, 2.] {
         verify_scale(&mut animated, &mut reference, scale);
     }

@@ -2,6 +2,9 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct DrawStepScratch {
+    /// Actual native damage passed to the most recent successful test submission.
+    #[cfg(test)]
+    pub(super) submitted_present_damage: Option<ScissorRect>,
     draw_steps: Vec<RenderStepDescriptor>,
     draw_step_cache: Vec<DrawStepCacheEntry>,
     prepared_draw_step_slot: Option<usize>,

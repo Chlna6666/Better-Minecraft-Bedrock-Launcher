@@ -408,6 +408,9 @@ fn apply_resolved_value(primitive: &mut Primitive, value: ResolvedAnimationValue
                 quad.bounds.size.height = crate::ScaledPixels(
                     (quad.bounds.size.height.0 + sampled[1] - sampled[0]).max(0.0),
                 );
+                quad.corner_radii = quad
+                    .corner_radii
+                    .clamp_radii_for_quad_size(quad.bounds.size);
             }
         }
         _ => {}

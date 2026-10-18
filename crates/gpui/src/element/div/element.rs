@@ -37,6 +37,40 @@ pub struct Div {
 }
 
 impl Div {
+    /// Animate this leaf decoration's top/bottom presentation offsets in logical pixels.
+    ///
+    /// Each pair is `[top, bottom]` relative to stable final layout. This returns an animation
+    /// wrapper without child/style mutation methods, so the validated shape stays a single Quad.
+    /// Layout, hit targets and ancestor clips do not animate. Nominal corner radii stay fixed;
+    /// effective radii are limited to half the shortest presented side for very short shapes.
+    /// The animation's existing timing, fill and retarget policies apply.
+    ///
+    /// # Errors
+    /// Returns `InvalidQuadGeometryTarget` for children, event/state styles, shadows, filters or
+    /// image-cache hooks; returns `LayoutDrivenProperty` for a layout-driven animation.
+    pub fn with_vertical_edges_animation(
+        self,
+        id: impl Into<ElementId>,
+        animation: crate::Animation,
+        from: [Pixels; 2],
+        to: [Pixels; 2],
+    ) -> Result<impl IntoElement, crate::VisualAnimationError> {
+        use crate::AnimationExt;
+        let style = &self.interactivity.base_style;
+        if !self.children.is_empty()
+            || self.prepaint_listener.is_some()
+            || !self.interactivity_is_reconciliation_transparent()
+            || style.box_shadow.as_ref().is_some_and(|shadows| !shadows.is_empty())
+            || style.background_blur.is_some()
+            || style.filter_blur.is_some()
+        {
+            return Err(crate::VisualAnimationError::InvalidQuadGeometryTarget);
+        }
+        self.with_visual_animation(id, animation.with_property(
+            crate::AnimationProperty::vertical_edges(from, to),
+        ))
+    }
+
     /// Add a listener to be called when the children of this `Div` are prepainted.
     /// This allows you to store the [`Bounds`] of the children for later use.
     pub fn on_children_prepainted(

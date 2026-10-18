@@ -43,6 +43,10 @@ pub(crate) struct TestWindowState {
     frame_result: PlatformFrameResult,
     draw_delay: Duration,
     #[cfg(test)]
+    submitted_packet: Option<crate::PresentationPacket>,
+    #[cfg(test)]
+    capture_submitted_packets: bool,
+    #[cfg(test)]
     owns_scene_animations: bool,
     #[cfg(test)]
     scene_animation_query_count: usize,
@@ -76,6 +80,18 @@ impl HasDisplayHandle for TestWindow {
 }
 
 impl TestWindow {
+    /// Opt into consuming submitted packets in a native integration fixture.
+    #[cfg(test)]
+    pub(crate) fn capture_submitted_packets(&self) {
+        self.0.lock().capture_submitted_packets = true;
+    }
+
+    /// Take the actual packet submitted by the Window, without reconstructing paint or damage.
+    #[cfg(test)]
+    pub(crate) fn take_submitted_packet(&self) -> Option<crate::PresentationPacket> {
+        self.0.lock().submitted_packet.take()
+    }
+
     pub fn new(
         handle: AnyWindowHandle,
         params: WindowParams,
@@ -109,6 +125,10 @@ impl TestWindow {
             present_framebuffer_only_count: Rc::new(Cell::new(0)),
             frame_result: PlatformFrameResult::Submitted,
             draw_delay: Duration::ZERO,
+            #[cfg(test)]
+            submitted_packet: None,
+            #[cfg(test)]
+            capture_submitted_packets: false,
             #[cfg(test)]
             owns_scene_animations: false,
             #[cfg(test)]
@@ -482,6 +502,10 @@ impl PlatformWindow for TestWindow {
 
     fn draw(&self, _packet: crate::PresentationPacket) -> PlatformFrameResult {
         let lock = self.0.lock();
+        #[cfg(test)]
+        let mut lock = lock;
+        #[cfg(test)]
+        { if lock.capture_submitted_packets { lock.submitted_packet = Some(_packet); } }
         lock.draw_count.set(lock.draw_count.get().saturating_add(1));
         let draw_delay = lock.draw_delay;
         let frame_result = lock.frame_result;
@@ -494,6 +518,10 @@ impl PlatformWindow for TestWindow {
 
     fn present_framebuffer_only(&self, _packet: crate::PresentationPacket) -> PlatformFrameResult {
         let lock = self.0.lock();
+        #[cfg(test)]
+        let mut lock = lock;
+        #[cfg(test)]
+        { if lock.capture_submitted_packets { lock.submitted_packet = Some(_packet); } }
         lock.present_framebuffer_only_count
             .set(lock.present_framebuffer_only_count.get() + 1);
         lock.frame_result

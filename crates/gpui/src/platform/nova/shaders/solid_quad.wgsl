@@ -26,7 +26,7 @@ fn vs_solid_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index)
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let quad = b_quads[instance_id];
     let animation = resolve_visual_animation(quad.animation_slot, quad.bounds);
-    let bounds = animation_bounds(quad.bounds, animation);
+    let bounds = animation_quad_bounds(quad.bounds, animation);
     let content_mask = animation_content_mask(quad.content_mask, animation);
 
     var out = SolidQuadVarying();

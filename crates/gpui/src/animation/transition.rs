@@ -68,7 +68,8 @@ pub enum TransitionProperty {
     HorizontalEdges,
     /// Top and bottom offsets from a Quad's stable layout bounds, in device pixels after
     /// resolution. Changes shape geometry without changing content clips, layout, or hit targets.
-    /// Corner radii and border widths retain their physical size; crossed edges collapse to zero.
+    /// Nominal radii and border widths retain their physical size; effective radii fit the new
+    /// shortest side. Crossed edges collapse to zero height.
     VerticalEdges,
 }
 

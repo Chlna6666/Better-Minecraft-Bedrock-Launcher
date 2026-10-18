@@ -204,7 +204,7 @@ fn pixels<const N: usize>(
         Instant::now(),
         damage,
         blur_damage,
-        crate::PartialPresentMode::FullRedraw,
+        if full { crate::PartialPresentMode::FullRedraw } else { crate::PartialPresentMode::Partial },
     );
     packet.force_full_backdrop_blur_refresh = full;
     assert!(

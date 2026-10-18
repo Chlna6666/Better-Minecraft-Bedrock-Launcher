@@ -369,16 +369,13 @@ fn chart_card(
                             .bg(Hsla { a: 0.78, ..color });
                         if animate {
                             shape
-                                .with_visual_animation(
+                                .with_vertical_edges_animation(
                                     SharedString::from(format!(
                                         "manage-stat-{animation_scope}-{animation_sequence}-{index}"
                                     )),
-                                    Animation::from_spec(statistics_entrance_spec()).with_property(
-                                        AnimationProperty::vertical_edges(
-                                            [px(height - 2.0), px(0.)],
-                                            [px(0.); 2],
-                                        ),
-                                    ),
+                                    Animation::from_spec(statistics_entrance_spec()),
+                                    [px(height - 2.0), px(0.)],
+                                    [px(0.); 2],
                                 )
                                 .expect("vertical edges are a presentation property")
                                 .into_any_element()

@@ -1,0 +1,41 @@
+
+running 4 tests
+popup color gate backend=NovaDx11 backdrop=false placement=Sibling viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=400 final_main_draws=1 samples=6
+root lifetime gate backend="nova-dx11" filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true
+root-only gate backend=nova-dx11 filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true
+popup color gate backend=NovaDx11 backdrop=false placement=Nested viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=800 final_main_draws=1 samples=6
+popup color gate backend=NovaDx11 backdrop=false placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=720 largest_depth_clear_pixels=720 largest_total_source_pixels=1440 final_main_draws=1 samples=6
+popup color gate backend=NovaDx11 backdrop=true placement=Sibling viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=4608 final_main_draws=1 samples=6
+popup color gate backend=NovaDx11 backdrop=true placement=Nested viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=5008 final_main_draws=1 samples=6
+popup color gate backend=NovaDx11 backdrop=true placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=3072 largest_depth_clear_pixels=3072 largest_total_source_pixels=6864 final_main_draws=1 samples=6
+test platform::nova::renderer::shared_buffers::native_tests::retained_color::dx11_popup_reversal_preserves_static_color ... ok
+popup color gate backend=NovaDx12 backdrop=false placement=Sibling viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=400 final_main_draws=1 samples=6
+root lifetime gate backend="nova-dx12" filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true
+root-only gate backend=nova-dx12 filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true
+popup color gate backend=NovaDx12 backdrop=false placement=Nested viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=800 final_main_draws=1 samples=6
+popup color gate backend=NovaDx12 backdrop=false placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=720 largest_depth_clear_pixels=720 largest_total_source_pixels=1440 final_main_draws=1 samples=6
+popup color gate backend=NovaDx12 backdrop=true placement=Sibling viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=4608 final_main_draws=1 samples=6
+popup color gate backend=NovaDx12 backdrop=true placement=Nested viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=5008 final_main_draws=1 samples=6
+popup color gate backend=NovaDx12 backdrop=true placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=3072 largest_depth_clear_pixels=3072 largest_total_source_pixels=6864 final_main_draws=1 samples=6
+test platform::nova::renderer::shared_buffers::native_tests::retained_color::dx12_popup_reversal_preserves_static_color ... ok
+popup color gate backend=NovaOpenGl backdrop=false placement=Sibling viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=400 final_main_draws=1 samples=6
+root lifetime gate backend="nova-opengl" filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true
+root-only gate backend=nova-opengl filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true
+popup color gate backend=NovaOpenGl backdrop=false placement=Nested viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=800 final_main_draws=1 samples=6
+popup color gate backend=NovaOpenGl backdrop=false placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=720 largest_depth_clear_pixels=720 largest_total_source_pixels=1440 final_main_draws=1 samples=6
+popup color gate backend=NovaOpenGl backdrop=true placement=Sibling viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=4608 final_main_draws=1 samples=6
+popup color gate backend=NovaOpenGl backdrop=true placement=Nested viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=5008 final_main_draws=1 samples=6
+popup color gate backend=NovaOpenGl backdrop=true placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=3072 largest_depth_clear_pixels=3072 largest_total_source_pixels=6864 final_main_draws=1 samples=6
+test platform::nova::renderer::shared_buffers::native_tests::retained_color::opengl_popup_reversal_preserves_static_color ... ok
+popup color gate backend=NovaVulkan backdrop=false placement=Sibling viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=400 final_main_draws=1 samples=6
+root lifetime gate backend="nova-vulkan" filter_chain_recreated=true root_texture_reallocated=false root_descriptors_rebuilt=false pixels_equal=true
+root-only gate backend=nova-vulkan filter_targets=0 unchanged_source_pixels=0 native_present=full pixels_equal=true
+popup color gate backend=NovaVulkan backdrop=false placement=Nested viewport=512x512 largest_source_scissor_pixels=400 largest_depth_clear_pixels=400 largest_total_source_pixels=800 final_main_draws=1 samples=6
+popup color gate backend=NovaVulkan backdrop=false placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=720 largest_depth_clear_pixels=720 largest_total_source_pixels=1440 final_main_draws=1 samples=6
+popup color gate backend=NovaVulkan backdrop=true placement=Sibling viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=4608 final_main_draws=1 samples=6
+popup color gate backend=NovaVulkan backdrop=true placement=Nested viewport=512x512 largest_source_scissor_pixels=2304 largest_depth_clear_pixels=2304 largest_total_source_pixels=5008 final_main_draws=1 samples=6
+popup color gate backend=NovaVulkan backdrop=true placement=NestedTranslation viewport=512x512 largest_source_scissor_pixels=3072 largest_depth_clear_pixels=3072 largest_total_source_pixels=6864 final_main_draws=1 samples=6
+test platform::nova::renderer::shared_buffers::native_tests::retained_color::vulkan_popup_reversal_preserves_static_color ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1332 filtered out; finished in 6.87s
+

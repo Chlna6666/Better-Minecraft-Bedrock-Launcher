@@ -727,6 +727,7 @@ mod tests {
         assert_eq!(engine.active_count(), 1);
 
         packet.consume_submitted_damage();
+        assert_eq!(packet.partial_present_mode, PartialPresentMode::Partial);
         let completions = packet.sample_animations(started_at + Duration::from_secs(2));
         assert_eq!(completions.len(), 1);
         assert!(packet.presentation_animation_timelines.is_empty());
@@ -803,6 +804,13 @@ mod tests {
                 packet.sample_animations(started_at + Duration::from_millis(elapsed));
                 let expected = if property == TransitionProperty::Opacity {
                     local
+                } else if property == TransitionProperty::VerticalEdges {
+                    // First sample also clears the unanimated base. Later samples damage the
+                    // old/new shape union, rather than the registered viewport fallback.
+                    if elapsed == 250 { local } else {
+                        bounds(crate::point(ScaledPixels(20.), ScaledPixels(20.25)),
+                            size(ScaledPixels(16.), ScaledPixels(15.75)))
+                    }
                 } else {
                     bounds(
                         Point::default(),
@@ -1328,6 +1336,10 @@ impl PresentationPacket {
         self.dirty_region = DirtyRegion::empty();
         self.backdrop_blur_damage_plan = BackdropBlurDamagePlan::default();
         self.force_full_backdrop_blur_refresh = false;
+        // FullRedraw describes the consumed damage, not a permanent surface policy. A retained
+        // timeline's next sample has fresh local damage. Backend/alpha/backdrop safety gates still
+        // decide whether that sample may use a native dirty-rect Present.
+        self.partial_present_mode = PartialPresentMode::Partial;
     }
 
     /// Preserve unsent work when a newer UI scene supersedes a deferred one.

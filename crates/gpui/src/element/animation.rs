@@ -51,6 +51,8 @@ pub struct Animation {
 /// Why an animation cannot use the callback-free visual animation path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VisualAnimationError {
+    /// Quad geometry requires a childless, non-interactive Div without shadows or filters.
+    InvalidQuadGeometryTarget,
     /// A renderer-owned visual property was not declared.
     MissingProperty,
     /// Layout-driven animations need an animator callback and cannot use the presentation lane.
@@ -60,6 +62,9 @@ pub enum VisualAnimationError {
 impl std::fmt::Display for VisualAnimationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidQuadGeometryTarget => formatter.write_str(
+                "quad geometry requires a childless decoration without interactivity, shadows or filters",
+            ),
             Self::MissingProperty => {
                 formatter.write_str("a visual animation must declare its animated property")
             }
@@ -259,13 +264,13 @@ pub enum HorizontalRevealEdge {
 }
 
 impl AnimationProperty {
-    /// Animate a Quad's top and bottom offsets from its final layout, in logical pixels.
+    /// Construct the internal property for the validated Div shape entry point.
     ///
-    /// Each pair is `[top, bottom]`. Width, corner radii, border widths, ancestor clips,
+    /// Each pair is `[top, bottom]`. Width, nominal radii, border widths, ancestor clips,
     /// child layout and hit targets stay fixed. Crossed edges collapse to zero height.
     /// Use on a single decoration without children; this is shape geometry, not subtree reveal.
     /// For bottom-up growth from zero height, use `[height, px(0.)]` to `[px(0.); 2]`.
-    pub fn vertical_edges(from: [Pixels; 2], to: [Pixels; 2]) -> Self {
+    pub(crate) fn vertical_edges(from: [Pixels; 2], to: [Pixels; 2]) -> Self {
         Self {
             property: TransitionProperty::VerticalEdges,
             from: [from[0].0, from[1].0, 0.0, 0.0],
@@ -1843,6 +1848,38 @@ mod tests {
         let (from, to) = property.resolved_values(Bounds::default(), 1.25, 2.);
         assert_eq!(from, [350., -5., 0., 0.]);
         assert_eq!(to, [0.; 4]);
+    }
+
+    #[test]
+    fn vertical_edges_reject_children_and_non_quad_effects() {
+        use crate::{ParentElement, Styled};
+        let motion = || Animation::new(Duration::from_millis(100));
+        for target in [
+            crate::div().child("text"),
+            crate::div().shadow_sm(),
+            crate::div().background_blur(crate::px(2.)),
+        ] {
+            assert!(matches!(
+                target.with_vertical_edges_animation(
+                    "invalid",
+                    motion(),
+                    [crate::px(10.); 2],
+                    [crate::px(0.); 2],
+                ),
+                Err(VisualAnimationError::InvalidQuadGeometryTarget)
+            ));
+        }
+        assert!(
+            crate::div()
+                .bg(crate::white())
+                .with_vertical_edges_animation(
+                    "quad",
+                    motion(),
+                    [crate::px(10.), crate::px(0.)],
+                    [crate::px(0.); 2],
+                )
+                .is_ok()
+        );
     }
 
     #[test]

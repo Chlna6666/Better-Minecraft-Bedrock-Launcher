@@ -39,7 +39,7 @@ fn vs_quad(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index) insta
     let unit_vertex = vec2<f32>(f32(vertex_id & 1u), 0.5 * f32(vertex_id & 2u));
     let quad = b_quads[instance_id];
     let animation = resolve_visual_animation(quad.animation_slot, quad.bounds);
-    let bounds = animation_bounds(quad.bounds, animation);
+    let bounds = animation_quad_bounds(quad.bounds, animation);
     let content_mask = animation_content_mask(quad.content_mask, animation);
 
     var out = QuadVarying();
@@ -87,8 +87,8 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
 
     var quad = b_quads[input.quad_id];
     let animation = resolve_visual_animation(input.animation_slot, quad.bounds);
-    quad.bounds = animation_bounds(quad.bounds, animation);
-    quad.corner_radii = animation_corners(quad.corner_radii, animation);
+    quad.bounds = animation_quad_bounds(quad.bounds, animation);
+    quad.corner_radii = animation_quad_corners(quad.corner_radii, quad.bounds, animation);
     quad.border_widths = animation_edges(quad.border_widths, animation);
 
     var background_color = input.background_solid;
