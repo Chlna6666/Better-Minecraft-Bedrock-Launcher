@@ -2,6 +2,7 @@
 //! The GPUI Input owns the edit buffer: parsers never mutate business state on every keystroke.
 
 use super::input::{Input, InputSize, InputState};
+use gpui::FluentBuilder as _;
 use gpui::{App, AppContext as _, Context, Div, Entity, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
 use crate::ui::theme::colors::ThemeColors;
 use std::{cell::Cell, rc::Rc};
