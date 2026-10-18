@@ -144,3 +144,37 @@ pub(crate) fn inspector_result_summary(
                 .child(value.into()),
         )
 }
+
+ /// A navigable workflow step. The caller provides the actual action, so there
+ /// are no placeholder clicks or state machines inside this presentation primitive.
+pub(crate) fn inspector_stage_tab(
+    colors: &ThemeColors,
+    ordinal: &'static str,
+    label: &'static str,
+    active: bool,
+) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(7.0))
+        .px(px(11.0))
+        .py(px(9.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(if active { colors.accent } else { colors.border })
+        .bg(if active { colors.surface_hover } else { colors.surface })
+        .text_color(if active { colors.accent } else { colors.text_primary })
+        .cursor_pointer()
+        .child(
+            div()
+                .text_size(px(10.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(ordinal),
+        )
+        .child(
+            div()
+                .text_size(px(12.0))
+                .font_weight(if active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
+                .child(label),
+        )
+}
