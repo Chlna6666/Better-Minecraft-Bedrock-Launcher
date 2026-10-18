@@ -70,13 +70,21 @@ impl MapViewerWindowView {
             return;
         }
         if let Some(path) = pick_file_path_with_filter("Wavefront OBJ", &["obj"]) {
-            self.generator.source = Some(PathBuf::from(path));
-            self.generator.preview_options = None;
-            self.generator.output = None;
-            self.generator.task_id = None;
-            self.start_obj_live_preview(cx);
-            cx.notify();
+            self.set_generator_obj_source(PathBuf::from(path), cx);
         }
+    }
+
+    /// Shared by the file picker and the external file-drop workflow.
+    pub(super) fn set_generator_obj_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.generator_busy() {
+            return;
+        }
+        self.generator.source = Some(path);
+        self.generator.preview_options = None;
+        self.generator.output = None;
+        self.generator.task_id = None;
+        self.start_obj_live_preview(cx);
+        cx.notify();
     }
 
     pub(super) fn set_obj_precision_size(
