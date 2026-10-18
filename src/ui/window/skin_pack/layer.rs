@@ -1,9 +1,9 @@
 use super::color::{Face, shade_face_color, shade_layer_edge_color};
 use super::geometry::{
     ColorRun, CuboidSize, FaceGrid, QuadEdgeMask, SkinTextureScale, SkinVertex, color_runs,
-    face_color_rect, face_grid, face_rect_corners, face_region, push_quad_with_edges,
+    face_color_rect, face_grid, face_rect_corners, push_quad_with_edges,
 };
-use super::uv::{CuboidUv, TextureRegion};
+use super::uv::TextureRegion;
 use image::DynamicImage;
 
 const SKIN_LAYER_ALPHA_THRESHOLD: f32 = 0.04;
