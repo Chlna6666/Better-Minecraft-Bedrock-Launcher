@@ -140,7 +140,9 @@ impl MapViewerWindowView {
                             this.generator.preview_result_active = false;
                         } else {
                             this.generator.target_selected_by_user = false;
-                            this.generator.original_preview = original_obj;
+                            if this.generator.original_preview.is_none() {
+                                this.generator.original_preview = original_obj;
+                            }
                             this.generator.preview_size = Some([size.x, size.y, size.z]);
                             this.generator.preview_result_active = true;
                             this.generator.preview_anchor = Some(target);
