@@ -500,6 +500,8 @@ impl NovaRenderer {
         backdrop_blur_quality: BackdropBlurQuality,
         presentation_timing: &mut Option<crate::platform::frame::ActivePresentationTiming>,
     ) -> Result<bool> {
+        #[cfg(target_os = "windows")]
+        let present_pipeline_started_at = Instant::now(); // Profiling, never a visual sample.
         if let Some(timing) = presentation_timing.as_mut() {
             timing.renderer_scene_prepare =
                 Instant::now().saturating_duration_since(timing.frame_started_at);
@@ -952,6 +954,8 @@ impl NovaRenderer {
         // versioned Root/Filter writes. Record this boundary before any backend
         // call; a previous frame's pending fence must never be stamped again.
         let pending_submission_count_before = self.pending_submissions.len();
+        #[cfg(target_os = "windows")]
+        let backend_submit_started_at = Instant::now(); // Includes encoding/offscreen/Present.
         let render_result: Result<(bool, Option<gfx_core::PresentationTimings>)> =
             match &mut *lock_backend(&self.backend) {
                 #[cfg(all(
@@ -1550,7 +1554,7 @@ impl NovaRenderer {
         if crate::diagnostics::gpu_owner::resize_trace_enabled() {
             log::info!(
                 target: "gpui_resize_trace",
-                "gpui_resize stage=present window_id={} target_capacity_px={}x{} scene_px={}x{} scene_revision={} scene_primitives={} dirty_full={}",
+                "gpui_resize stage=present window_id={} target_capacity_px={}x{} scene_px={}x{} scene_revision={} scene_primitives={} dirty_full={} epoch={} prepare_us={} backend_submit_us={}",
                 packet.window_id,
                 self.current_size.width,
                 self.current_size.height,
@@ -1559,6 +1563,13 @@ impl NovaRenderer {
                 packet.paint.scene.revision,
                 packet.paint.scene.len(),
                 packet.dirty_region.is_full(),
+                packet.paint.geometry.layout_epoch,
+                backend_submit_started_at
+                    .saturating_duration_since(present_pipeline_started_at)
+                    .as_micros(),
+                presentation_finished_at
+                    .saturating_duration_since(backend_submit_started_at)
+                    .as_micros(),
             );
         }
         // A composition swapchain may still be stretching the last old-size frame while its

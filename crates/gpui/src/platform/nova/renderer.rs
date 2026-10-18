@@ -141,6 +141,14 @@ impl DrawableSizeRequest {
 #[derive(Clone)]
 pub(crate) struct NovaRendererAtlas(Arc<NovaAtlas>);
 
+/// The owner must distinguish native pacing notifications from resource-retirement retries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PresentReadiness {
+    Ready,
+    NativeFrame,
+    Resources,
+}
+
 impl NovaRendererAtlas {
     pub(crate) fn new() -> Self {
         Self(Arc::new(NovaAtlas::new()))
@@ -431,25 +439,43 @@ impl NovaRenderer {
         self.atlas.clone()
     }
 
-    /// Returns whether the backend can present another frame without parking the caller.
-    ///
-    /// Windows consumes this as a platform-frame preflight. A saturated DXGI queue is therefore a
-    /// deferred presentation rather than synchronous work on GPUI's UI thread.
-    pub(crate) fn can_present_without_wait(
+    /// A replaced native surface needs one successful full present before its Scene can yield
+    /// to newer queued work. Only a Scene in the committed physical coordinate space qualifies.
+    pub(crate) fn needs_initial_present(&self, scene_extent: Option<(u32, u32)>) -> bool {
+        self.swapchain_warmup_frames != 0
+            && scene_extent.is_some_and(|(width, height)| {
+                width.max(1) == self.current_size.width
+                    && height.max(1) == self.current_size.height
+            })
+    }
+
+    /// Checks native pacing before replacing displayed buffers, then resource/geometry readiness.
+    /// Native pacing is resumed by a backend notification; resource retirement uses owner retries.
+    pub(crate) fn presentation_readiness(
         &mut self,
         scene_epoch: Option<u64>,
         scene_extent: Option<(u32, u32)>,
-    ) -> Result<bool> {
+    ) -> Result<PresentReadiness> {
+        // Do not retire the displayed buffers while DXGI/WSI cannot accept the first
+        // replacement frame. Resource preparation may retry, but native resize must
+        // not create an uninitialized surface merely to wait for presentation credit.
+        if !lock_backend(&self.backend).can_present_without_wait(self.swapchain)? {
+            return Ok(PresentReadiness::NativeFrame);
+        }
         if !self.apply_pending_drawable_size(scene_epoch, scene_extent)? {
-            return Ok(false);
+            return Ok(PresentReadiness::Resources);
         }
         if !scene_extent.is_none_or(|(width, height)| {
             width.max(1) == self.current_size.width
                 && height.max(1) == self.current_size.height
         }) {
-            return Ok(false);
+            return Ok(PresentReadiness::Resources);
         }
-        lock_backend(&self.backend).can_present_without_wait(self.swapchain)
+        Ok(if lock_backend(&self.backend).can_present_without_wait(self.swapchain)? {
+            PresentReadiness::Ready
+        } else {
+            PresentReadiness::NativeFrame
+        })
     }
 
     pub(crate) fn arm_swapchain_frame_ready(

@@ -303,10 +303,15 @@ fn redraw_size_move_frame(hwnd: HWND) {
     }
 }
 
-/// Rotate a stable HWND snapshot so every child/main window eventually leads
-/// the shared modal dispatch, regardless of the HashMap's random hash order.
-/// This does not add a timer, duplicate frame requests or mix window epochs.
-fn rotate_modal_window_dispatch<T>(windows: &mut [T], cursor: usize) {
+/// Service the exposed resize geometry first, then rotate its peers fairly.
+/// Every pending window still runs once; no additional timer or frame is created.
+fn rotate_modal_window_dispatch<T>(windows: &mut [T], cursor: usize, resizing: Option<usize>) {
+    let windows = if let Some(index) = resizing {
+        windows[..=index].rotate_right(1);
+        &mut windows[1..]
+    } else {
+        windows
+    };
     if !windows.is_empty() {
         windows.rotate_left(cursor % windows.len());
     }
@@ -344,7 +349,14 @@ fn dispatch_modal_window_updates(
         cursor.set(previous.wrapping_add(1));
         previous
     });
-    rotate_modal_window_dispatch(&mut windows, cursor);
+    let resizing = windows.iter().position(|window| {
+        window.native_hwnd() == Some(hwnd)
+            && window.is_live_resizing()
+            && (window.0.pending_resize.get().is_some()
+                || window.0.pending_renderer_size.get().is_some()
+                || window.0.pending_native_size_retry.get())
+    });
+    rotate_modal_window_dispatch(&mut windows, cursor, resizing);
     for window in windows {
         if !window.has_pending_native_frame() {
             continue;
@@ -2069,7 +2081,7 @@ impl WindowsWindow {
                 actual_client.unwrap_or((physical_size.width, physical_size.height));
             log::info!(
                 target: "gpui_resize_trace",
-                "gpui_resize stage=native window_id={} physical_px={}x{} event_px={}x{} logical_px={:.3}x{:.3} scale={:.5}",
+                "gpui_resize stage=native window_id={} physical_px={}x{} event_px={}x{} logical_px={:.3}x{:.3} scale={:.5} epoch={}",
                 self.0.handle.window_id().data().as_ffi(),
                 native_width,
                 native_height,
@@ -2077,7 +2089,8 @@ impl WindowsWindow {
                 physical_size.height,
                 logical_size.width.0,
                 logical_size.height.0,
-                scale_factor
+                scale_factor,
+                epoch
             );
         }
         self.queue_resize(PendingWindowsResize {
@@ -2967,16 +2980,38 @@ mod tests {
     #[test]
     fn modal_dispatch_rotates_main_and_child_windows_without_starvation() {
         let mut windows = [10, 20, 30];
-        rotate_modal_window_dispatch(&mut windows, 0);
+        rotate_modal_window_dispatch(&mut windows, 0, None);
         assert_eq!(windows, [10, 20, 30]);
         windows = [10, 20, 30];
-        rotate_modal_window_dispatch(&mut windows, 1);
+        rotate_modal_window_dispatch(&mut windows, 1, None);
         assert_eq!(windows, [20, 30, 10]);
         windows = [10, 20, 30];
-        rotate_modal_window_dispatch(&mut windows, 2);
+        rotate_modal_window_dispatch(&mut windows, 2, None);
         assert_eq!(windows, [30, 10, 20]);
         let mut none: [u8; 0] = [];
-        rotate_modal_window_dispatch(&mut none, usize::MAX);
+        rotate_modal_window_dispatch(&mut none, usize::MAX, None);
+    }
+
+    #[test]
+    fn modal_resize_precedes_slow_peers_without_skipping_them() {
+        for index in 0..3 {
+            let original = [10, 20, 30];
+            let peers: Vec<_> = original
+                .iter()
+                .copied()
+                .filter(|id| *id != original[index])
+                .collect();
+            for cursor in 0..4 {
+                let mut windows = original;
+                rotate_modal_window_dispatch(&mut windows, cursor, Some(index));
+                assert_eq!(windows[0], original[index]);
+                assert_eq!(windows[1], peers[cursor % 2]);
+                assert_eq!(windows[2], peers[(cursor + 1) % 2]);
+            }
+        }
+        let mut only = [10];
+        rotate_modal_window_dispatch(&mut only, usize::MAX, Some(0));
+        assert_eq!(only, [10]);
     }
 
     #[test]

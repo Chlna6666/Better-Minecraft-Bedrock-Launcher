@@ -12,7 +12,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use ::util::{ResultExt, paths::SanitizedPath};
@@ -34,12 +34,10 @@ use windows::{
             Power::{
                 PowerClearRequest, PowerCreateRequest, PowerRequestSystemRequired, PowerSetRequest,
             },
-            ProcessStatus::K32EmptyWorkingSet,
             SystemInformation::*,
             SystemServices::POWER_REQUEST_CONTEXT_VERSION,
             Threading::{
-                GetCurrentProcess, POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT,
-                REASON_CONTEXT_0,
+                POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0,
             },
         },
         UI::{
@@ -66,8 +64,6 @@ use crate::window::Decorations;
 use crate::*;
 
 const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSITION";
-const DISABLE_STARTUP_WORKING_SET_TRIM: &str = "GPUI_DISABLE_STARTUP_WORKING_SET_TRIM";
-const STARTUP_WORKING_SET_TRIM_DELAY: Duration = Duration::from_secs(5);
 const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[
     #[cfg(feature = "nova-gfx-dx12")]
     RendererBackend::NovaDx12,
@@ -81,22 +77,6 @@ const WINDOWS_AUTO_RENDERER_BACKEND_ORDER: &[RendererBackend] = &[
 
 pub(super) fn windows_auto_renderer_backend_order() -> &'static [RendererBackend] {
     WINDOWS_AUTO_RENDERER_BACKEND_ORDER
-}
-
-fn startup_working_set_trim_enabled() -> bool {
-    !std::env::var(DISABLE_STARTUP_WORKING_SET_TRIM)
-        .is_ok_and(|value| value == "true" || value == "1")
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_startup_working_set_trim_task() {
-    std::thread::spawn(|| {
-        std::thread::sleep(STARTUP_WORKING_SET_TRIM_DELAY);
-        unsafe {
-            let process = GetCurrentProcess();
-            let _ = K32EmptyWorkingSet(process);
-        }
-    });
 }
 
 thread_local! {
@@ -450,9 +430,6 @@ impl WindowsPlatform {
         let vsync_scheduler = Arc::new(super::vsync::VSyncScheduler::new());
         let (inner, background_executor, foreground_executor, event_loop_proxy) =
             Self::new_common_parts(vsync_scheduler.clone());
-        if startup_working_set_trim_enabled() {
-            spawn_startup_working_set_trim_task();
-        }
         Ok(Self {
             inner,
             background_executor,

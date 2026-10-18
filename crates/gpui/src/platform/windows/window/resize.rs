@@ -86,4 +86,18 @@ mod tests {
         assert!(!cadence.accept(now + Duration::from_millis(6), refresh_240hz));
         assert!(cadence.accept(now + refresh_240hz * 2, refresh_240hz));
     }
+
+    #[test]
+    fn dense_native_size_events_do_not_multiply_scene_builds_between_display_wakes() {
+        let now = Instant::now();
+        let interval = Duration::from_micros(4_167);
+        let mut cadence = Cadence::default();
+        for frame in 0..8 {
+            let frame_start = now + interval * frame;
+            assert!(cadence.accept(frame_start, interval));
+            for elapsed_us in [1, 500, 1_000, 2_000, 4_000] {
+                assert!(!cadence.accept(frame_start + Duration::from_micros(elapsed_us), interval));
+            }
+        }
+    }
 }

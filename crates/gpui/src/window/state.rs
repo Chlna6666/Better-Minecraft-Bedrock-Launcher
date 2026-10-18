@@ -10,6 +10,8 @@ pub(super) struct LayoutCacheFrameMetrics {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct PrepaintWorkBreakdown {
     pub(super) root: Duration,
+    /// Subset of `root`, including request-layout and root layout computation.
+    pub(super) root_layout: Duration,
     pub(super) deferred: Duration,
     pub(super) overlay: Duration,
     pub(super) hit_test: Duration,
@@ -1000,6 +1002,7 @@ mod prepaint_work_breakdown_tests {
     fn phase_totals_account_for_unclassified_overhead_without_underflow() {
         let metrics = PrepaintWorkBreakdown {
             root: Duration::from_micros(350),
+            root_layout: Duration::from_micros(200),
             deferred: Duration::from_micros(140),
             overlay: Duration::from_micros(70),
             hit_test: Duration::from_micros(40),

@@ -72,7 +72,8 @@ fn packet(renderer: &NovaRenderer, blur: bool) -> crate::PresentationPacket {
 
 fn present(renderer: &mut NovaRenderer, blur: bool) {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    while !renderer
+    while renderer.presentation_readiness(None, None).expect("native readiness") != PresentReadiness::Ready
+        || !renderer
         .draw(packet(renderer, blur))
         .expect("native resize draw")
     {
@@ -88,6 +89,13 @@ fn present(renderer: &mut NovaRenderer, blur: bool) {
 }
 
 fn verify(backend: RendererBackend) {
+    verify_alpha(backend, false);
+    if matches!(backend, RendererBackend::NovaDx11 | RendererBackend::NovaDx12) {
+        verify_alpha(backend, true);
+    }
+}
+
+fn verify_alpha(backend: RendererBackend, transparent: bool) {
     let window = native_window::Window::renderer_fixture();
     window.resize(512, 512);
     let mut renderer = NovaRenderer::with_atlas(
@@ -96,7 +104,7 @@ fn verify(backend: RendererBackend) {
         &RendererOptions::default(),
         GpuSubmissionMode::Deferred,
         crate::size(DevicePixels(512), DevicePixels(512)),
-        false,
+        transparent,
         NovaRendererAtlas::new(),
     )
     .expect("native resize renderer");
@@ -155,7 +163,8 @@ fn geometry_packet(extent: (u32, u32)) -> crate::PresentationPacket {
 
 fn present_geometry(renderer: &mut NovaRenderer, extent: (u32, u32)) {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
-    while !renderer
+    while renderer.presentation_readiness(None, Some(extent)).expect("geometry readiness") != PresentReadiness::Ready
+        || !renderer
         .draw(geometry_packet(extent))
         .expect("live geometry draw")
     {
@@ -267,6 +276,7 @@ fn verify_extent(
     blur: bool,
 ) {
     let (width, height) = extent;
+    let previous_extent = renderer.committed_drawable_extent();
     window.resize(width, height);
     let size = crate::size(DevicePixels(width as i32), DevicePixels(height as i32));
     let started = Instant::now();
@@ -283,7 +293,27 @@ fn verify_extent(
         renderer.filters.targets.is_none(),
         "resize must not allocate stale blur topology"
     );
+    assert!(
+        renderer.needs_initial_present(Some(extent)),
+        "new buffers must receive a matching first present before yielding to queued work"
+    );
+    assert!(!renderer.needs_initial_present(Some(previous_extent)));
+    assert!(!renderer.needs_initial_present(None));
+    assert!(
+        !renderer
+            .draw(geometry_packet(previous_extent))
+            .expect("reject old-size scene"),
+        "an old Scene must never paint the newly sized backbuffer"
+    );
+    assert!(
+        renderer.needs_initial_present(Some(extent)),
+        "a skipped draw must not discharge the first-present obligation"
+    );
     present(renderer, blur);
+    assert!(
+        !renderer.needs_initial_present(Some(extent)),
+        "successful present restores latest-wins cancellation"
+    );
     assert_eq!(renderer.committed_drawable_extent(), extent);
     assert_eq!(renderer.filters.targets.is_some(), blur);
     verify_pixels(renderer);

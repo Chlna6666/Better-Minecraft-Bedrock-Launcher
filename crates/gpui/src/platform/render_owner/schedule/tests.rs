@@ -116,14 +116,80 @@ fn deferred_native_acquire_backs_off_and_stops_on_hide_or_completion() {
 
 #[test]
 fn gpu_only_retirement_poll_backs_off_and_stops_without_visual_work() {
-    let now = Instant::now();
+    let mut now = Instant::now();
     let mut schedule = Schedule::default();
     // No UI animation interval, active Scene request or presentation clock.
     for delay_ms in [1, 2, 4, 8, 16, 16] {
         schedule.retry_submission(now, true);
-        assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(delay_ms)));
+        assert_eq!(
+            schedule.deadline(),
+            Some(now + Duration::from_millis(delay_ms))
+        );
+        now = schedule.deadline().expect("armed retirement poll");
+        schedule.begin_submission_retry(now);
     }
+    schedule.retry_submission(now, true);
     schedule.retry_submission(now, false);
     assert!(!schedule.is_retrying_submission());
     assert_eq!(schedule.deadline(), None);
+}
+
+#[test]
+fn new_reports_do_not_postpone_an_existing_submission_retry() {
+    let now = Instant::now();
+    let mut schedule = Schedule::default();
+    schedule.retry_submission(now, true);
+    for elapsed_us in [100, 200, 500, 900] {
+        schedule.retry_submission(now + Duration::from_micros(elapsed_us), true);
+        assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
+    }
+    schedule.retry_submission(now + Duration::from_millis(2), true);
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
+    schedule.begin_submission_retry(now + Duration::from_millis(2));
+    schedule.retry_submission(now + Duration::from_millis(2), true);
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(4)));
+}
+
+#[test]
+fn successful_submission_resets_backoff_before_polling_remaining_retirements() {
+    let mut now = Instant::now();
+    let mut schedule = Schedule::default();
+    for delay_ms in [1, 2, 4, 8, 16] {
+        schedule.retry_submission(now, true);
+        assert_eq!(
+            schedule.deadline(),
+            Some(now + Duration::from_millis(delay_ms))
+        );
+        now = schedule.deadline().expect("pending retry");
+        schedule.begin_submission_retry(now);
+    }
+    schedule.reset_submission_retry();
+    schedule.retry_submission(now, true);
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
+}
+
+#[test]
+fn early_ready_notification_does_not_consume_a_future_retry() {
+    let now = Instant::now();
+    let mut schedule = Schedule::default();
+    schedule.retry_submission(now, true);
+    schedule.begin_submission_retry(now + Duration::from_micros(100));
+    schedule.retry_submission(now + Duration::from_micros(100), true);
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
+}
+
+#[test]
+fn hidden_native_window_cancels_submission_retry_and_resumes_with_fresh_backoff() {
+    let now = Instant::now();
+    let mut schedule = Schedule::default();
+    schedule.set_native_callbacks();
+    schedule.set_native_visible(true);
+    schedule.retry_submission(now, true);
+    assert!(schedule.is_retrying_submission());
+    schedule.set_native_visible(false);
+    schedule.retry_submission(now, true);
+    assert_eq!(schedule.deadline(), None);
+    schedule.set_native_visible(true);
+    schedule.retry_submission(now, true);
+    assert_eq!(schedule.deadline(), Some(now + Duration::from_millis(1)));
 }

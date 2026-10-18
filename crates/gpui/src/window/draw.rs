@@ -365,7 +365,7 @@ impl Window {
                 );
             log::info!(
                 target: "gpui_resize_trace",
-                "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} poly_sprites={} poly_right_px={:.1} poly_bottom_px={:.1} poly_clip_right_px={:.1} poly_clip_bottom_px={:.1} mono_sprites={} mono_right_px={:.1} mono_bottom_px={:.1} mono_clip_right_px={:.1} mono_clip_bottom_px={:.1} force_full_redraw=true",
+                "gpui_resize stage=scene window_id={} physical_px={}x{} scene_primitives={} quads={} quad_right_px={:.1} quad_bottom_px={:.1} poly_sprites={} poly_right_px={:.1} poly_bottom_px={:.1} poly_clip_right_px={:.1} poly_clip_bottom_px={:.1} mono_sprites={} mono_right_px={:.1} mono_bottom_px={:.1} mono_clip_right_px={:.1} mono_clip_bottom_px={:.1} force_full_redraw=true epoch={}",
                 self.handle.window_id().as_u64(),
                 (self.viewport_size.width.0 * self.scale_factor).round() as u32,
                 (self.viewport_size.height.0 * self.scale_factor).round() as u32,
@@ -383,6 +383,7 @@ impl Window {
                 mono_bottom,
                 mono_clip_right,
                 mono_clip_bottom,
+                self.next_frame_epoch,
             );
         }
         // GPU/CPU retained fragments may skip the layout traversal entirely,
@@ -908,8 +909,12 @@ impl Window {
             .cached(StyleRefinement::default().size_full())
             .critical()
             .into_any_element();
-        self.with_critical_draw(|window| {
-            root_element.prepaint_as_root(Point::default(), root_size.into(), window, cx);
+        let root_layout_elapsed = self.with_critical_draw(|window| {
+            let layout_started_at = Instant::now(); // Profiling; visual sampling keeps the frame clock.
+            root_element.layout_as_root(root_size.into(), window, cx);
+            let layout_elapsed = layout_started_at.elapsed();
+            root_element.prepaint_at(Point::default(), window, cx);
+            layout_elapsed
         });
         let root_prepaint_elapsed = root_prepaint_started_at.elapsed();
 
@@ -965,6 +970,7 @@ impl Window {
         let prepaint_time = prepaint_started_at.elapsed();
         self.last_generation_stats.prepaint_breakdown = state::PrepaintWorkBreakdown {
             root: root_prepaint_elapsed,
+            root_layout: root_layout_elapsed,
             deferred: deferred_prepaint_elapsed,
             overlay: overlay_prepaint_elapsed,
             hit_test: hit_test_elapsed,
@@ -978,9 +984,11 @@ impl Window {
         if log::log_enabled!(target: "gpui::diagnostics", log::Level::Trace) {
             log::trace!(
                 target: "gpui::diagnostics",
-                "gpui prepaint work window={} root_us={} deferred_us={} overlay_us={} hit_test_us={} other_us={} total_us={}",
+                "gpui prepaint work window={} root_us={} root_layout_us={} root_non_layout_us={} deferred_us={} overlay_us={} hit_test_us={} other_us={} total_us={}",
                 self.handle.window_id().as_u64(),
                 root_prepaint_elapsed.as_micros(),
+                root_layout_elapsed.as_micros(),
+                root_prepaint_elapsed.saturating_sub(root_layout_elapsed).as_micros(),
                 deferred_prepaint_elapsed.as_micros(),
                 overlay_prepaint_elapsed.as_micros(),
                 hit_test_elapsed.as_micros(),

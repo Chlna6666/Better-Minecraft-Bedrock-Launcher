@@ -496,33 +496,31 @@ impl NovaBackend {
 
     /// Returns whether size-dependent renderer resources cannot be replaced without waiting.
     ///
-    /// DX12 already treats resize as a device-work boundary because its size-dependent resources
-    /// are retired through fence-backed deferred releases. Vulkan must use the same semantic until
-    /// all descriptor sets and image views participate in deferred retirement: otherwise the
-    /// renderer can pass a swapchain-only readiness check and immediately block inside a generic
-    /// `vkDeviceWaitIdle` while destroying path/depth/blur targets. Keeping the readiness query
-    /// global makes both backends coalesce resize events instead of blocking the UI thread.
+    /// DXGI preparation follows this window's rendering/Present and stays fixed while other
+    /// windows submit work. The renderer has already retired its own attachment readers.
+    /// Vulkan maintenance1 follows this chain's WSI present fences as well; render fences
+    /// alone cannot prove presentation-engine release of its images/semaphores.
     pub(super) fn has_pending_resize_work(&mut self, swapchain: SwapchainId) -> Result<bool> {
         match self {
             #[cfg(all(
                 feature = "nova-gfx-opengl",
                 any(target_os = "windows", target_os = "linux")
             ))]
-            Self::OpenGl(device) => Ok(device.has_pending_gpu_work()?),
+            // The renderer has already retired its own post-SwapBuffers GL syncs.
+            // Resize replaces only its FBO/color attachments; unrelated windows'
+            // submissions cannot keep this window waiting for the whole device.
+            Self::OpenGl(_) => Ok(false),
             #[cfg(all(feature = "nova-gfx-dx11", target_os = "windows"))]
-            Self::Dx11(device) => Ok(device.has_pending_gpu_work()?),
+            Self::Dx11(device) => Ok(!device.prepare_swapchain_resize(swapchain)?),
             #[cfg(all(feature = "nova-gfx-dx12", target_os = "windows"))]
-            Self::Dx12(device) => Ok(device.has_pending_gpu_work()?),
+            Self::Dx12(device) => Ok(!device.prepare_swapchain_resize(swapchain)?),
             #[cfg(all(feature = "nova-gfx-metal", target_os = "macos"))]
             Self::Metal(_) => Ok(false),
             #[cfg(all(
                 feature = "nova-gfx-vulkan",
                 any(target_os = "windows", target_os = "linux", target_os = "freebsd")
             ))]
-            Self::Vulkan(device) => {
-                let _ = swapchain;
-                Ok(device.has_pending_gpu_work()?)
-            }
+            Self::Vulkan(device) => Ok(!device.prepare_swapchain_resize(swapchain)?),
             #[cfg(not(any(
                 all(
                     feature = "nova-gfx-opengl",

@@ -71,8 +71,12 @@ impl Schedule {
         #[cfg(any(test, not(target_os = "windows")))]
         let pending = pending && (!self.native_callbacks || self.native_visible);
         if !pending {
-            self.submission_deadline = None;
-            self.submission_retry_delay = Duration::ZERO;
+            self.reset_submission_retry();
+            return;
+        }
+        // Ordinary Draw/Tick reports must not postpone an outstanding poll, even
+        // after it becomes due. Only the consumer of that retry may advance backoff.
+        if self.submission_deadline.is_some() {
             return;
         }
         self.submission_retry_delay = if self.submission_retry_delay.is_zero() {
@@ -81,6 +85,20 @@ impl Schedule {
             (self.submission_retry_delay * 2).min(Duration::from_millis(16))
         };
         self.submission_deadline = Some(now + self.submission_retry_delay);
+    }
+
+    pub(super) fn begin_submission_retry(&mut self, now: Instant) {
+        if self
+            .submission_deadline
+            .is_some_and(|deadline| deadline <= now)
+        {
+            self.submission_deadline = None;
+        }
+    }
+
+    pub(super) fn reset_submission_retry(&mut self) {
+        self.submission_deadline = None;
+        self.submission_retry_delay = Duration::ZERO;
     }
 
     pub(super) fn is_retrying_submission(&self) -> bool {

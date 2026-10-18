@@ -308,7 +308,15 @@ fn viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed(cx: &mut Tes
         let before = renders.get();
         assert!(before > 0, "the initial cached child must be rendered");
         let original = window.viewport_size;
-        let changed = size(original.width + px(180.), original.height + px(90.));
+        // Cross the content's viewport threshold in either initial window size.
+        let changed = size(
+            if original.width > px(1000.) {
+                px(900.)
+            } else {
+                px(1100.)
+            },
+            original.height + px(90.),
+        );
         window.platform_window.as_test().unwrap().0.lock().bounds.size = changed;
         window.content_bounds_changed(cx);
         window.draw(cx).clear();
@@ -316,8 +324,17 @@ fn viewport_reader_rebuilds_even_when_cached_child_bounds_are_fixed(cx: &mut Tes
             renders.get() > before,
             "viewport-dependent cached contents must be rebuilt even with fixed outer bounds"
         );
-        assert!(window.rendered_frame.scene().quads.iter().any(|quad| {
-            quad.bounds.size == changed.scale(window.scale_factor)
-        }));
+        let expected = if changed.width > px(1000.) {
+            crate::black()
+        } else {
+            crate::white()
+        };
+        assert!(
+            window.rendered_frame.scene().quads.iter().any(|quad| {
+                quad.bounds.size == size(px(80.), px(40.)).scale(window.scale_factor)
+                    && quad.background == expected.into()
+            }),
+            "the fixed child must paint its new viewport-dependent color"
+        );
     });
 }

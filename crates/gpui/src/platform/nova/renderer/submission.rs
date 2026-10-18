@@ -306,9 +306,8 @@ impl NovaRenderer {
     ///
     /// All backends first retire this renderer's submissions by polling. A pending
     /// resize prevents new old-size submissions, so animations cannot keep this
-    /// check busy forever. Vulkan retains its driver-level device-idle barrier
-    /// for swapchain replacement; it does not wait for unrelated windows in the
-    /// global readiness predicate, which could starve this window indefinitely.
+    /// check busy forever. Vulkan maintenance1 polls this chain's rendering and
+    /// presentation fences; unsupported devices retain their native idle barrier.
     pub(crate) fn try_resize(&mut self, size: Size<DevicePixels>) -> Result<bool> {
         let requested = DrawableSize {
             width: size.width.0.max(1) as u32,
@@ -355,15 +354,6 @@ impl NovaRenderer {
                 );
             }
             return Ok(false);
-        }
-
-        #[cfg(all(
-            feature = "nova-gfx-vulkan",
-            any(target_os = "windows", target_os = "linux", target_os = "freebsd")
-        ))]
-        if self.backend_info.is_vulkan() {
-            self.resize(size)?;
-            return Ok(true);
         }
 
         if lock_backend(&self.backend).has_pending_resize_work(self.swapchain)? {

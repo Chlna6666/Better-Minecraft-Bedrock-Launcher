@@ -6,6 +6,7 @@ use super::{
 
 use crate::diagnostics::gpu_owner::{self, GpuOwnerJobKind, GpuOwnerJobOutcome, GpuOwnerJobSample};
 use crate::{PresentationPacket, platform::NovaRenderer};
+use crate::platform::nova::PresentReadiness;
 use anyhow::Result;
 use std::{
     collections::HashMap,
@@ -221,13 +222,19 @@ impl Entry {
             if self.last_logged_swapchain_extent != Some(committed) {
                 log::info!(
                     target: "gpui_resize_trace",
-                    "gpui_resize stage=gpu window_id={} owner_id={} physical_px={}x{} target_px={}x{}",
+                    "gpui_resize stage=gpu window_id={} owner_id={} physical_px={}x{} target_px={}x{} requested_epoch={:?} job_kind={:?} queue_wait_us={:?} job_elapsed_us={}",
                     self.window_id.unwrap_or(0),
                     self.id,
                     committed.0,
                     committed.1,
                     self.requested_swapchain_extent.map_or(committed.0, |size| size.0),
-                    self.requested_swapchain_extent.map_or(committed.1, |size| size.1)
+                    self.requested_swapchain_extent.map_or(committed.1, |size| size.1),
+                    self.requested_swapchain_epoch,
+                    kind,
+                    queued.map(|(time, _, _)| {
+                        gpu_owner::micros(started_at.saturating_duration_since(time))
+                    }),
+                    started_at.elapsed().as_micros(),
                 );
                 self.last_logged_swapchain_extent = Some(committed);
             }
@@ -354,6 +361,7 @@ impl Entry {
                     && !self.renderer.has_active_presentation_animations()
                     && self.renderer.has_pollable_offscreen_retirements()
                 {
+                    self.schedule.begin_submission_retry(now);
                     match self.renderer.poll_offscreen_retirements() {
                         Ok(()) => self.schedule.retry_submission(
                             now,
@@ -452,6 +460,9 @@ impl Entry {
         {
             return;
         }
+        // Claim a due retry only after the queue/visibility guards accepted
+        // this attempt. The native-callback guard above still needs to see it.
+        self.schedule.begin_submission_retry(now);
         let mut completions = smallvec::SmallVec::new();
         let result = if self.scene.is_some() {
             self.present_scene()
@@ -523,10 +534,13 @@ impl Entry {
         if !self.ready(scene_epoch, scene_extent)? {
             return Ok(false);
         }
-        // Surface replacement may block while a newer paired size/Scene arrives.
-        // Do not present this now-stale frame into the newly resized HWND.
+        // Readiness may have replaced the native buffers while a newer Scene arrived.
+        // Complete the matching first present before yielding: cancellation here would
+        // leave the new buffers without valid color content throughout a resize burst.
         #[cfg(target_os = "windows")]
-        if self.queue.has_pending_draw() || self.queue.has_pending_resize_draw() {
+        if (self.queue.has_pending_draw() || self.queue.has_pending_resize_draw())
+            && !self.renderer.needs_initial_present(scene_extent)
+        {
             return Ok(false);
         }
         let Some((mut packet, framebuffer_only)) = self.scene.take() else {
@@ -551,23 +565,23 @@ impl Entry {
         scene_epoch: Option<u64>,
         scene_extent: Option<(u32, u32)>,
     ) -> Result<bool> {
-        let can_present =
-            match self.renderer.can_present_without_wait(scene_epoch, scene_extent) {
+        let readiness =
+            match self.renderer.presentation_readiness(scene_epoch, scene_extent) {
             Ok(ready) => ready,
             Err(error) if self.renderer.has_pending_drawable_size() => {
                 // ResizeBuffers / swapchain recreation can transiently fail while
                 // the previous extent is still in use. Keep the newest request
                 // and retry from the GPU owner, not an unrelated DXGI callback.
                 log::debug!("deferring pending drawable resize: {error:#}");
-                false
+                PresentReadiness::Resources
             }
             Err(error) => return Err(error),
         };
-        if can_present {
+        if readiness == PresentReadiness::Ready {
             self.ready_poll_required = false;
             return Ok(true);
         }
-        if self.renderer.has_pending_drawable_size() {
+        if readiness == PresentReadiness::Resources {
             // The size change is still waiting on resources/submission retirement,
             // not on the old swapchain's frame latency event. Such an event may
             // never fire again, especially across a Vulkan swapchain recreation.
@@ -655,6 +669,9 @@ impl Entry {
         };
         let submitted = result.as_ref().is_ok_and(|submitted| *submitted);
         if submitted {
+            // Native submission made progress. Retired targets may still require
+            // a fence poll, but must not carry a preceding failure's 16ms backoff.
+            self.schedule.reset_submission_retry();
             self.ready_registration.store(0, Ordering::Release);
             self.status.submitted.store(true, Ordering::Release);
         }
