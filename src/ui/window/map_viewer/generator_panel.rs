@@ -83,6 +83,8 @@ impl MapViewerWindowView {
             return;
         }
         self.generator.source = Some(path);
+        // Both picker and external drop return to the conversion inspector.
+        self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
         self.generator.original_preview = None;
         self.generator.preview_options = None;
         self.generator.output = None;
