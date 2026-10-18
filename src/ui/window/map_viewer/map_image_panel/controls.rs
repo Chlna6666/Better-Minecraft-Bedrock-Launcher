@@ -48,13 +48,17 @@ impl MapViewerWindowView {
                 tracing::warn!(%error, "could not apply map grid slider");
             }
         });
-        let decrease = generator_choice(colors, "−", false).when(!busy && count > 1, |button| {
+        let decrease = crate::ui::components::numeric_field::numeric_step_button(
+            colors, "−", !busy && count > 1,
+        ).when(!busy && count > 1, |button| {
             button.on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.set_grid_size(axis, count - 1, cx)),
             )
         });
-        let increase = generator_choice(colors, "+", false).when(
+        let increase = crate::ui::components::numeric_field::numeric_step_button(
+            colors, "+", !busy && count < max_count,
+        ).when(
             !busy && count < max_count,
             |button| {
                 button.on_mouse_down(
