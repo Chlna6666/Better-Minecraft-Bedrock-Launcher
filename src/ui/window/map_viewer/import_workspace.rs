@@ -607,7 +607,32 @@ impl MapViewerWindowView {
                 },
             ))
             .when(owner_ready, |panel| {
-                panel.child(import_preview_label(colors, self.preview_3d_status_label()))
+                panel.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(import_preview_label(colors, self.preview_3d_status_label()))
+                        .when(
+                            self.preview_3d.mesh.is_none()
+                                && !self.preview_3d.render_in_flight,
+                            |row| {
+                                row.child(
+                                    secondary_button(
+                                        colors,
+                                        "map-import-rebuild-3d-preview",
+                                        "重新加载 3D 预览",
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            this.refresh_import_preview_3d(cx);
+                                        }),
+                                    ),
+                                )
+                            },
+                        ),
+                )
             })
             .when(owner_ready, |panel| {
                 panel.child(self.render_preview_3d_canvas(
