@@ -11,15 +11,6 @@ fn count_at_progress(target: u64, progress: f32) -> u64 {
     }
 }
 
-/// Keep each column's outer layout at its final height and grow only one rounded
-/// child. A single quad avoids the retained clip/translation phase mismatch
-/// that detached the former animated cap from its body after scrolling.
-fn animated_chart_bar_height(final_height: f32, progress: f32) -> f32 {
-    let height = final_height.max(0.0);
-    let start_height = height.min(2.0);
-    start_height + (height - start_height) * progress.clamp(0.0, 1.0)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StatMetricKind {
     Duration,
@@ -342,89 +333,88 @@ fn chart_card(
                         ),
                 ),
         )
-        .child(div().h(px(178.)).w_full().flex().items_end().gap(px(6.)).children(
-            days.iter().enumerate().map(|(index, day)| {
-                let current = value(day);
-                let height = if current == 0 {
-                    2.0
-                } else {
-                    10.0 + 130.0 * current as f32 / maximum as f32
-                };
-                // A column is one rounded quad, anchored at the bottom of a
-                // final-height layout slot. The previous split cap/body retained
-                // tracks could acquire different scroll/replay states.
-                let bar = if current == 0 {
-                    div()
-                        .w_full()
-                        .max_w(px(30.))
-                        .h(px(2.))
-                        .rounded(px(2.))
-                        .bg(Hsla { a: 0.24, ..colors.border })
-                        .into_any_element()
-                } else {
-                    let shape = div()
-                        .w_full()
-                        .h(px(height))
-                        .rounded(px(6.))
-                        .bg(Hsla { a: 0.78, ..color });
-                    // GPUI currently has no single-axis rounded-quad growth
-                    // presentation property. Animate only this bounded leaf's
-                    // height, never the column slot or surrounding labels.
-                    let shape = if animate {
-                        shape
-                            .with_animation(
-                                SharedString::from(format!(
-                                    "manage-stat-{animation_scope}-{animation_sequence}-{index}"
-                                )),
-                                Animation::from_spec(statistics_entrance_spec()),
-                                move |shape, progress| {
-                                    shape.h(px(animated_chart_bar_height(height, progress)))
-                                },
-                            )
+        .child(
+            div()
+                .h(px(178.))
+                .w_full()
+                .flex()
+                .items_end()
+                .gap(px(6.))
+                .children(days.iter().enumerate().map(|(index, day)| {
+                    let current = value(day);
+                    let height = if current == 0 {
+                        2.0
+                    } else {
+                        10.0 + 130.0 * current as f32 / maximum as f32
+                    };
+                    // Stable final layout; the presentation lane reshapes one rounded Quad.
+                    let bar = if current == 0 {
+                        div()
+                            .w_full()
+                            .max_w(px(30.))
+                            .h(px(2.))
+                            .rounded(px(2.))
+                            .bg(Hsla {
+                                a: 0.24,
+                                ..colors.border
+                            })
                             .into_any_element()
                     } else {
-                        shape.into_any_element()
+                        let shape = div()
+                            .w_full()
+                            .max_w(px(30.))
+                            .h(px(height))
+                            .flex_none()
+                            .rounded(px(6.))
+                            .bg(Hsla { a: 0.78, ..color });
+                        if animate {
+                            shape
+                                .with_visual_animation(
+                                    SharedString::from(format!(
+                                        "manage-stat-{animation_scope}-{animation_sequence}-{index}"
+                                    )),
+                                    Animation::from_spec(statistics_entrance_spec()).with_property(
+                                        AnimationProperty::vertical_edges(
+                                            [px(height - 2.0), px(0.)],
+                                            [px(0.); 2],
+                                        ),
+                                    ),
+                                )
+                                .expect("vertical edges are a presentation property")
+                                .into_any_element()
+                        } else {
+                            shape.into_any_element()
+                        }
                     };
+
                     div()
-                        .w_full()
-                        .max_w(px(30.))
-                        .h(px(height))
-                        .flex_none()
+                        .flex_1()
+                        .h_full()
                         .flex()
                         .flex_col()
+                        .items_center()
                         .justify_end()
-                        .child(shape)
-                        .into_any_element()
-                };
-
-                div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_end()
-                    .gap(px(5.))
-                    .child(
-                        div()
-                            .h(px(12.))
-                            .text_size(px(9.))
-                            .text_color(colors.text_secondary)
-                            .child(if current == 0 {
-                                SharedString::from("")
-                            } else {
-                                value_label(current)
-                            }),
-                    )
-                    .child(bar)
-                    .child(
-                        div()
-                            .text_size(px(9.))
-                            .text_color(colors.text_secondary)
-                            .child(day.date.format("%m/%d").to_string()),
-                    )
-            }),
-        ))
+                        .gap(px(5.))
+                        .child(
+                            div()
+                                .h(px(12.))
+                                .text_size(px(9.))
+                                .text_color(colors.text_secondary)
+                                .child(if current == 0 {
+                                    SharedString::from("")
+                                } else {
+                                    value_label(current)
+                                }),
+                        )
+                        .child(bar)
+                        .child(
+                            div()
+                                .text_size(px(9.))
+                                .text_color(colors.text_secondary)
+                                .child(day.date.format("%m/%d").to_string()),
+                        )
+                })),
+        )
 }
 
 fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {
@@ -440,21 +430,7 @@ fn format_duration(_i18n: &I18n, seconds: u64) -> SharedString {
 
 #[cfg(test)]
 mod statistics_tests {
-    use super::{animated_chart_bar_height, count_at_progress};
-
-    #[test]
-    fn rounded_bar_remains_single_bottom_anchored_shape() {
-        for height in [10.0, 65.0, 140.0] {
-            assert_eq!(animated_chart_bar_height(height, 0.0), 2.0);
-            assert_eq!(animated_chart_bar_height(height, 1.0), height);
-            assert_eq!(animated_chart_bar_height(height, 2.0), height);
-            let mid = animated_chart_bar_height(height, 0.5);
-            assert!(mid > 2.0 && mid < height);
-            assert!(animated_chart_bar_height(height, 0.25) < mid);
-            // Full-height layout slot is stable; the visible top travels upward.
-            assert_eq!(height - mid, (height - 2.0) * 0.5);
-        }
-    }
+    use super::count_at_progress;
 
     #[test]
     fn count_animation_bounds_and_exact_terminal_value() {
