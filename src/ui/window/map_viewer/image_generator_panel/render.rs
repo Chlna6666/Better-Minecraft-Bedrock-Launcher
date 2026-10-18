@@ -97,11 +97,14 @@ impl MapViewerWindowView {
                         ))
                     })
                     .child(generator_section_title(colors, "02  输出尺寸"))
-                    .child(self.render_image_dimension(ImageAxis::Width, colors, cx))
-                    .child(self.render_image_dimension(ImageAxis::Height, colors, cx))
-                    .child(self.render_generator_y_control(colors, cx))
-                    .child(self.render_image_dithering(colors, cx))
-                    .child(self.render_image_depth_controls(colors, cx))
+                    .child(
+                        crate::ui::components::inspector::inspector_field_group(colors)
+                            .child(self.render_image_dimension(ImageAxis::Width, colors, cx))
+                            .child(self.render_image_dimension(ImageAxis::Height, colors, cx))
+                            .child(self.render_generator_y_control(colors, cx))
+                            .child(self.render_image_dithering(colors, cx))
+                            .child(self.render_image_depth_controls(colors, cx)),
+                    )
                     .child(crate::ui::components::inspector::inspector_result_summary(
                         colors, "当前画布",
                         format!(
@@ -111,7 +114,8 @@ impl MapViewerWindowView {
                         ),
                     ))
                     .child(generator_section_title(colors, "03  画面与材质"))
-                    .child(self.render_image_appearance(colors, cx)),
+                    .child(crate::ui::components::inspector::inspector_field_group(colors)
+                        .child(self.render_image_appearance(colors, cx))),
             )
             .into_any_element()
     }
