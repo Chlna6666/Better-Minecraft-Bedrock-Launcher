@@ -169,11 +169,6 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let actions = match self.ui_state.active_right_panel {
-            MapViewerRightPanel::Generator => self.render_obj_import_actions(colors, cx),
-            MapViewerRightPanel::ImageGenerator => self.render_image_import_actions(colors, cx),
-            _ => self.render_map_import_actions(colors, cx),
-        };
         let task = self.import_task_snapshot();
         let placement = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Placement;
         let structure_converter = matches!(
@@ -195,9 +190,19 @@ impl MapViewerWindowView {
             .bg(colors.surface)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .when(
-                self.ui_state.import_workspace_mode == super::state::ImportWorkspaceMode::Preview
-                    || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage,
-                |bar| bar.child(actions),
+                !placement || self.ui_state.active_right_panel == MapViewerRightPanel::MapImage,
+                |bar| {
+                    // Avoid constructing hidden conversion actions (and their event
+                    // handlers) on every world-placement render.
+                    let actions = match self.ui_state.active_right_panel {
+                        MapViewerRightPanel::Generator => self.render_obj_import_actions(colors, cx),
+                        MapViewerRightPanel::ImageGenerator => {
+                            self.render_image_import_actions(colors, cx)
+                        }
+                        _ => self.render_map_import_actions(colors, cx),
+                    };
+                    bar.child(actions)
+                },
             )
             .when(placement && structure_converter, |bar| {
                 bar.child(self.render_structure_placement_commands(colors, cx))
