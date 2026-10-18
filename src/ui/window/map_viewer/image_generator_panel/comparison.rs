@@ -7,11 +7,6 @@ impl MapViewerWindowView {
         colors: &ThemeColors,
         cx: &mut Context<Self>,
     ) -> Div {
-        let aspect =
-            self.image_generator.options.width as f32 / self.image_generator.options.height as f32;
-        let source_width = (self.viewport.width * 0.5 - 24.0)
-            .max(1.0)
-            .min((self.viewport.height - 180.0).max(1.0) * aspect);
         div()
             .flex_1()
             .min_w(px(0.0))
@@ -37,15 +32,16 @@ impl MapViewerWindowView {
                                 .overflow_hidden()
                                 .child(
                                     img(source.clone())
-                                        .w(px(source_width))
-                                        .h(px(source_width / aspect))
+                                        .w_full()
+                                        .h_full()
+                                        .max_h(px(520.0))
                                         .object_fit(
                                             if self.image_generator.options.fit
                                                 == ImageFit::CenterCrop
                                             {
                                                 ObjectFit::Cover
                                             } else {
-                                                ObjectFit::Fill
+                                                ObjectFit::Contain
                                             },
                                         ),
                                 ),
