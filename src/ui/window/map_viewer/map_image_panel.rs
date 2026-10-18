@@ -557,6 +557,8 @@ impl MapViewerWindowView {
             return;
         }
         self.map_image.source = Some(path);
+        // Both picker and external drop return to the conversion inspector.
+        self.set_import_workspace_mode(super::state::ImportWorkspaceMode::Preview, cx);
         self.map_image.pending_bundle = None;
         self.map_image.preview_options = None;
         self.map_image.options.auto_fit = true;
