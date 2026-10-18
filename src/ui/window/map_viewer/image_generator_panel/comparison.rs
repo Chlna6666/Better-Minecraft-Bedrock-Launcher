@@ -21,7 +21,7 @@ impl MapViewerWindowView {
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .child(import_preview_label(colors, "源图片 · 当前裁剪比例"))
+                    .child(import_preview_label(colors, "源图片 · 转换前素材预览"))
                     .when_some(self.image_generator.source.as_ref(), |pane, source| {
                         pane.child(
                             div()
@@ -42,7 +42,9 @@ impl MapViewerWindowView {
                                             {
                                                 ObjectFit::Cover
                                             } else {
-                                                ObjectFit::Contain
+                                                // The conversion's Stretch mode fills the output;
+                                                // Contain would falsely promise unmodified aspect.
+                                                ObjectFit::Fill
                                             },
                                         ),
                                 ),
