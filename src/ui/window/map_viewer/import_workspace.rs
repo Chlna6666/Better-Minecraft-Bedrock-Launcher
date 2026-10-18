@@ -242,7 +242,6 @@ impl MapViewerWindowView {
             .child(
                 div()
                     .flex_1()
-                    .w_full()
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .flex()
