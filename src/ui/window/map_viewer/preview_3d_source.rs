@@ -15,7 +15,7 @@ use bedrock_world::{
     TerrainColumnBiome, World, WorldPipelineOptions, WorldThreadingOptions,
 };
 use gpui::{Pixels, Point, SharedString};
-use gpui_3d::{Camera, Mat4, Mesh, MeshId, Vec2, Vec3, Vertex};
+use gpui_3d::{Camera, Mat4, Mesh, Vec2, Vec3, Vertex};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::borrow::Cow;
