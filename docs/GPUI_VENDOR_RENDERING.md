@@ -870,12 +870,13 @@ populates the whole atlas and is a startup cost, not a recurring one.
 Points that were measured rather than assumed, so that they are not re-opened as
 speculative work:
 
-- The only explicit copy in a frame is the atlas texture upload. The mapped frame
-  upload is a CPU write into host-visible memory
-  (`mapped_frame_upload_is_gpu_copy=false`), so packing scene data into a staging
-  vector and then copying it into the mapped page costs one extra pass over about
-  100 KB in a dense frame, roughly 0.1% of a 60 Hz frame budget. A zero-copy
-  encoder is not worth the backend API it would require.
+- The shared GPUI path distinguishes atlas texture transfers from frame Buffer
+  writes (`mapped_frame_upload_is_gpu_copy=false`). That label does not establish
+  physical zero-copy on every backend: DX11 uses `UpdateSubresource`, OpenGL uses
+  `BufferSubData`, and OpenGL presentation also blits its color FBO to the default
+  framebuffer. DX12/Vulkan CPU-visible Buffer writes avoid a separate explicit
+  device-local Buffer copy in this path. Driver-internal copies, waits and the
+  benefit of changing Buffer placement still require native measurements.
 - The frame path creates no resources: `present.rs`, `draw_steps.rs`, and
   `renderer.rs` call no `create_*` and no descriptor `validate()`, so pipeline
   labels and creation-time validation never run per frame.
@@ -976,16 +977,19 @@ add zero samples. These times can include synchronous backend waits and are not 
 times or display scanout measurements. Existing `path_mask_cache_hit` continues to mean
 DrawStep descriptor reuse; it is not a pixel-residency guarantee.
 
-Nova keeps every rotating back buffer coherent by rendering directly to the
-swapchain. It does not allocate a full-size retained present texture and does
-not run a second full-screen present-copy pass.
+Nova keeps every rotating back buffer coherent by rendering the complete final
+composition. The shared renderer adds no separate full-screen present-copy pass.
+OpenGL's native surface adapter still blits its intermediate color FBO to the
+default framebuffer before `SwapBuffers`; this is separate from Root Color caching.
 
 When the active backend exposes native presentation damage, Nova forwards
 GPUI's unioned dirty region as presentation metadata without scissoring the main
-render pass. DX12 uses `Present1` dirty rectangles for DirectComposition
-`FLIP_SEQUENTIAL` swapchains. Vulkan uses `VK_KHR_incremental_present` when the
-device advertises it. Unsupported swapchains keep the same direct-render path
-and perform a regular full present.
+render pass. DX12 uses `Present1` dirty rectangles for compatible
+`FLIP_SEQUENTIAL` swapchains. DX11, Vulkan and OpenGL currently report native
+partial presentation as unsupported. Vulkan keeps that capability disabled
+until per-image accumulated damage is proven for rotating swapchain images;
+extension availability alone is insufficient. Unsupported swapchains render
+the complete final composition and perform a regular full present.
 
 Backdrop blur remains a source, horizontal filter, vertical filter, and composite
 render pipeline. Those render-target passes are distinct from texture upload copies.
@@ -999,6 +1003,27 @@ pixel uploads, resize, alpha-mode changes,
 and target recreation invalidate it. This preserves the same blur shader and
 quality while avoiding repeated source/downsample/upsample passes for unrelated
 foreground animation.
+
+Atlas invalidation uses the exact upload batch consumed by that frame. The GPU
+owner moves queued pixel bytes, page metadata and their content generation into
+one `AtlasUpload` before planning damage; later producer writes stay queued for
+the next frame. An early return restores unconsumed work. Upload failure restores
+older writes before concurrently queued newer writes, preserving latest-value
+ordering. Successful upload recycles the existing staging allocation without
+cloning its pixel payload. This is CPU ownership reuse, not a claim of kernel or
+GPU zero-copy.
+Batch acquisition now belongs to presentation preparation rather than the later
+atlas-upload timer. Compare complete owner/frame wall time across this change;
+a smaller atlas-upload subset alone does not establish a speedup.
+
+Each isolated Filter checks its packed sprite tile ranges, including nested
+sources. A write refreshes its dependent layers and ancestors while unrelated
+same-page siblings retain their content versions. Missing placement bookkeeping
+fails closed. Shared backdrop dependencies include sprites between sequential
+filter barriers, excluding foreground after the last barrier. Atlas-space changes
+force a complete refresh of the selected sources and conservative Root/backdrop
+recomposition; they do not invalidate all isolated Filter textures. Quality,
+target replacement and explicit full invalidation keep their existing full paths.
 
 ### Ordinary page static/foreground classification (safe fallback)
 

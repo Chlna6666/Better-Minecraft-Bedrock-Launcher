@@ -141,3 +141,118 @@ packet frame identity is also required before claiming WindowId + FrameId attrib
 Map tile event refresh frequency and owner cache invalidation semantics are unchanged;
 only the other windows' forced refresh is removed. Theme RAF, 3D pose/layout animation,
 Import overlay and CurseForge wheel behavior are not silently migrated to the compositor.
+
+## Atlas And Filter Follow-Up (2026-10-18)
+
+The local Windows DX11 log at `target/debug/BMCBL/logs/latest.log` was read without
+starting the application or changing its settings. The captured file was 4,674,244
+bytes, last written at 20:13:25 local time, on AMD Radeon 780M. Its 1,441 Present
+trace entries reported these CPU submission-stage observations:
+
+| Stage | p50 | p95 | Maximum |
+| --- | ---: | ---: | ---: |
+| `prepare_us` | 324 us | 4,653 us | 66,043 us |
+| `backend_submit_us` | 580 us | 1,006 us | 27,298 us |
+
+These are separate stage wall times, not GPU execution or input-to-display latency.
+The log also includes UI generation overruns and live resize, so its aggregate
+values are not a steady-state benchmark. The supplied revision 1085 was absent
+from the available `latest.log` and truncated `previous.log`; no exact replay of
+that original frame is claimed. Zero upload bytes and zero Gaussian refreshes
+can coexist with a complete final swapchain render.
+
+The analyzed log SHA-256 was
+`761923104794084EB695B3AF206872240C62E6B5C689B1E27163D75040AA269D`.
+Percentiles above select the sorted sample at `floor((count - 1) * quantile)`.
+
+The follow-up changes one shared Nova dependency path:
+
+- Atlas uploads invalidate the captured layers that actually sample their tiles,
+  including ancestors, while same-page siblings keep their resident versions.
+  Missing packed tile metadata invalidates conservatively.
+- Backdrop dependencies include sprites between sequential barriers, excluding
+  foreground after the last barrier. Later isolated sources are checked independently.
+- One owned `AtlasUpload` snapshots bytes, page metadata and content generation
+  before damage planning. The same batch is consumed by native upload. Concurrent
+  producer writes remain pending for the next frame, and abandoned/failed work is
+  restored before newer writes. No pixel payload clone is added to successful frames.
+- The obsolete live generation mirror and alternate pending-upload entry point
+  were removed; production, tests and the upload benchmark use the same batch owner.
+
+The native regression compares selective refresh with complete source redraw,
+checks every output byte and verifies the exact set of changed layer versions.
+It covers both sibling updates, nested ancestors and an unreferenced same-page tile.
+Its fixture retains the native window until after renderer destruction, and settles
+the independent Interactive-to-Full quality transition before atlas-only checks.
+
+| Fixture | Selective source pixels | Complete source pixels |
+| --- | ---: | ---: |
+| First sibling tile | 1,764 | 3,948 |
+| Second sibling tile | 2,184 | 3,948 |
+| First nested tile plus Gaussian ancestor | 7,848 | 10,032 |
+| Second nested tile plus Gaussian ancestor | 8,268 | 10,032 |
+| Three Gaussian ancestors, four siblings (changed tile range) | 20,016–20,956 | 27,088 |
+| Six Gaussian ancestors, four siblings (changed tile range) | 38,268–39,208 | 45,340 |
+
+These counts measure source raster footprint in the synthetic native fixture,
+not an application-wide latency improvement. Gaussian quality and output pixels
+are unchanged. Queueing, CPU packing, actual shader time and scanout require
+separate measurements.
+
+The deeper fixture uses nonzero Gaussian blur for every ancestor and updates each
+of four leaf tiles separately. All four native backends preserve every output byte
+and advance exactly the changed leaf plus its ancestors. Six ancestors reduce the
+source footprint by 13.5–15.6%, rather than the 44.7–55.3% of two independent leaves:
+shared ancestors still require raster work. Unreferenced same-page writes preserve
+all source versions at every tested depth. These are tested finite depths, not a
+claim of an unlimited nesting bound.
+
+The six-ancestor case exposed Vulkan's single fixed descriptor pool limit:
+`ERROR_OUT_OF_POOL_MEMORY` before its first successful frame. Device-owned pool
+pages now grow only on pool exhaustion/fragmentation, retain existing sets until
+their fences complete, and free each set back to its allocating page. Freed pages
+are retried before adding capacity. A native Vulkan test allocates and frees 600
+sets over three cycles and verifies that the same three pages are reused. Real
+allocation/device errors still propagate; this does not wait for GPU idle to make
+space. The entire 12-test native retained-color group passes after the fix.
+
+The backend audit distinguishes current native behavior from shared renderer reuse:
+
+| Backend | Ordinary Buffer writes | Native partial Present | Remaining measurement gate |
+| --- | --- | --- | --- |
+| DX11 | `UpdateSubresource`; uniforms use a CPU shadow | Disabled | Driver-internal upload/Present waits |
+| DX12 | CPU-visible upload heap; GpuOnly batches stage and wait separately | Compatible sequential chains use `Present1` | Main/offscreen GPU time and physical pacing |
+| Vulkan | Mapped CPU-visible allocation; device-local writes stage separately | Disabled pending per-image damage proof | GPU timestamps versus WSI availability |
+| OpenGL | `BufferSubData` | Disabled; intermediate color FBO is blitted before swap | Separate draw, blit and SwapBuffers costs |
+
+`mapped_frame_upload_is_gpu_copy=false` does not prove kernel/GPU zero-copy or
+absence of driver synchronization. This follow-up does not change Buffer placement,
+native swapchain policy, event delivery or UI animation ownership. Real-window
+BMCBL before/after profiling, resize/DPI interaction and multiwindow latency remain
+required before claiming that the original application delay is resolved.
+
+Local validation of this follow-up:
+
+- DX11/DX12/Vulkan/OpenGL native retained-color group: 12 passed, none skipped,
+  including the four new atlas-layer cases. Output is in the ignored local
+  `target/gpui-atlas-native.log`.
+- Queue/snapshot/dependency tests: 7 passed; filter residency: 18 passed;
+  per-layer damage: 3 passed; existing pending-upload callers: 2 passed.
+- Windows GPUI no-default baseline check passed with existing warnings.
+  The four-backend `frame_upload` benchmark target check also passed with
+  `bench-support` enabled; its runtime API follows the same batch owner.
+  `cargo build --locked --bin BMCBL` passed with warnings using the default
+  Windows four-backend features, producing `target/debug/BMCBL.exe`. The
+  application was not automatically launched, preserving the captured log baseline.
+  Targeted new-file formatting and `git diff --check` passed. No full workspace
+  test run, physical scanout measurement or BMCBL interaction A/B is claimed.
+
+The next acceptance attempt built both HEAD `81f4e08c` (detached checkout) and
+the optimized application with identical default four-backend dev features.
+Isolated settings and executable hashes are in `target/perf-ab/*/run.json`.
+Before the first measured interaction, Computer Use reported a physical Escape
+stop. Automation stopped, the owned WPR capture was saved as
+`target/perf-ab/ab-interrupted.etl`, and the isolated test process was stopped.
+Consequently no completed BMCBL interaction A/B or kernel/GPU transfer benefit
+is claimed. The lightweight ETW parser has only been exercised on another
+process's Present API events; DMA/QueuePacket attribution remains unvalidated.
