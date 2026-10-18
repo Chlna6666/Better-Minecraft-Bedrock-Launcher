@@ -94,7 +94,8 @@ impl MapViewerWindowView {
                             format!("{} × {} × {} 方块", size[0], size[1], size[2]),
                         ))
                     })
-                    .child(self.render_obj_parameters(colors, cx)),
+                    .child(crate::ui::components::inspector::inspector_field_group(colors)
+                        .child(self.render_obj_parameters(colors, cx))),
             )
             .into_any_element()
     }
