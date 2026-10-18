@@ -277,7 +277,9 @@ impl MapViewerWindowView {
                 field,
                 colors,
                 "方块",
-                generator_choice(colors, "−", false).when(!busy && value > 1, |button| {
+                crate::ui::components::numeric_field::numeric_step_button(
+                    colors, "−", !busy && value > 1,
+                ).when(!busy && value > 1, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -285,7 +287,9 @@ impl MapViewerWindowView {
                         }),
                     )
                 }),
-                generator_choice(colors, "+", false).when(!busy && value < 512, |button| {
+                crate::ui::components::numeric_field::numeric_step_button(
+                    colors, "+", !busy && value < 512,
+                ).when(!busy && value < 512, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
