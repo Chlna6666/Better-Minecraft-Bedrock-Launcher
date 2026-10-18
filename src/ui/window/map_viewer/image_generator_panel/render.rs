@@ -13,7 +13,9 @@ impl MapViewerWindowView {
             .gap(px(8.0))
             .when(self.image_generator.preview_result_active && !busy, |bar| {
                 bar.child(
-                    generator_choice(colors, "选择地图放置位置", true).on_mouse_down(
+                    crate::ui::components::button::primary_button(
+                        colors, "image-workspace-place", "选择放置位置",
+                    ).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.set_import_workspace_mode(
@@ -25,15 +27,12 @@ impl MapViewerWindowView {
                 )
             })
             .child(
-                generator_choice(
+                crate::ui::components::button::secondary_button(
                     colors,
-                    if busy {
-                        "正在处理…"
-                    } else {
-                        "导出 .mcstructure…"
-                    },
-                    false,
+                    "image-workspace-export",
+                    if busy { "处理中…" } else { "导出 .mcstructure…" },
                 )
+                .opacity(if self.image_generator.source.is_some() && !busy { 1.0 } else { 0.45 })
                 .when(self.image_generator.source.is_some() && !busy, |button| {
                     button.on_mouse_down(
                         MouseButton::Left,
