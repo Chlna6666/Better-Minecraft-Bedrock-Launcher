@@ -66,68 +66,52 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(15.0))
-                    .child(generator_section_title(colors, "源图片"))
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child(self.image_generator.source.as_ref().map_or_else(
-                                || "尚未选择图片".to_owned(),
-                                |path| path.display().to_string(),
-                            )),
-                    )
-                    .child(
-                        generator_choice(colors, "选择图片…", false).when(!busy, |button| {
+                    .child(generator_section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::inspector_source_card(
+                        colors,
+                        "IMAGE",
+                        self.image_generator.source.as_deref(),
+                        "PNG / JPG / TGA / WebP · 可拖入",
+                        crate::ui::components::button::secondary_button(
+                            colors, "image-block-source", "更换图片…",
+                        )
+                        .when(!busy, |button| {
                             button.on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.choose_generator_image(cx)
-                                }),
+                                cx.listener(|this, _, _, cx| this.choose_generator_image(cx)),
                             )
-                        }),
-                    )
+                        })
+                        .opacity(if busy { 0.45 } else { 1.0 }),
+                    ))
                     .when(self.image_generator.preview_refresh_pending, |panel| {
                         panel.child(
                             div()
                                 .text_size(px(11.0))
                                 .text_color(colors.text_secondary)
-                                .child("高度设置已更新，正在准备新的 3D 预览…"),
+                                .child("参数已更新 · 后台正在重新生成预览"),
                         )
                     })
                     .when_some(self.image_generator.preview_size, |panel, size| {
-                        panel.child(
-                            div()
-                                .text_size(px(12.0))
-                                .text_color(colors.text_primary)
-                                .child(format!(
-                                    "当前预览尺寸：{} × {} × {} 方块；瓦片与应用内 3D 预览同步",
-                                    size[0], size[1], size[2]
-                                )),
-                        )
+                        panel.child(crate::ui::components::inspector::inspector_result_summary(
+                            colors, "方块化结果",
+                            format!("{} × {} × {} 方块", size[0], size[1], size[2]),
+                        ))
                     })
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_secondary)
-                            .child("支持 PNG、JPEG、TGA、WebP；源图只读。"),
-                    )
+                    .child(generator_section_title(colors, "02  输出尺寸"))
                     .child(self.render_image_dimension(ImageAxis::Width, colors, cx))
                     .child(self.render_image_dimension(ImageAxis::Height, colors, cx))
                     .child(self.render_generator_y_control(colors, cx))
                     .child(self.render_image_dithering(colors, cx))
                     .child(self.render_image_depth_controls(colors, cx))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_secondary)
-                            .child(format!(
-                                "输出 {}×{} 方块；尺寸无需是 128 的倍数。",
-                                self.image_generator.options.width,
-                                self.image_generator.options.height
-                            )),
-                    )
+                    .child(crate::ui::components::inspector::inspector_result_summary(
+                        colors, "当前画布",
+                        format!(
+                            "{} × {} 方块 · 无 128 倍数限制",
+                            self.image_generator.options.width,
+                            self.image_generator.options.height,
+                        ),
+                    ))
+                    .child(generator_section_title(colors, "03  画面与材质"))
                     .child(self.render_image_appearance(colors, cx)),
             )
             .into_any_element()
