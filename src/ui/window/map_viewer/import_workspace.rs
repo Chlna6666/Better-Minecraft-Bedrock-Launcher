@@ -512,8 +512,7 @@ impl MapViewerWindowView {
             MapViewerRightPanel::MapImage => self.set_map_image_source(path, cx),
             _ => return,
         }
-        // A new source always begins in the conversion/inspection stage.
-        self.set_import_workspace_mode(ImportWorkspaceMode::Preview, cx);
+        // All three shared source setters now switch to Preview themselves.
     }
 
     /// Shared entry point for every import mode. The file picker is not buried in settings.
