@@ -3,7 +3,9 @@ use std::sync::Arc;
 use super::mcstructure;
 use super::model::{MapViewerWindowView, PasteRotation, PasteTransform, paste_rotation_degrees};
 use super::prelude::*;
-use crate::core::minecraft::map::generator::{get_structure_preview, release_structure_preview};
+use crate::core::minecraft::map::generator::{
+    get_obj_source_preview, get_structure_preview, release_structure_preview,
+};
 
 impl MapViewerWindowView {
     pub(super) fn clear_live_structure_preview(&mut self, cx: &mut Context<Self>) {
@@ -82,6 +84,7 @@ impl MapViewerWindowView {
             self.status = SharedString::from("结构预览结果已过期，请调整设置重新生成");
             return;
         };
+        let original_obj = if obj { get_obj_source_preview(&task_id) } else { None };
         let remembered_target = if image {
             self.image_generator.preview_anchor
         } else {
@@ -122,6 +125,7 @@ impl MapViewerWindowView {
                             this.image_generator.preview_anchor = Some(target);
                             this.generator.preview_result_active = false;
                         } else {
+                            this.generator.original_preview = original_obj;
                             this.generator.preview_size = Some([size.x, size.y, size.z]);
                             this.generator.preview_result_active = true;
                             this.generator.preview_anchor = Some(target);
