@@ -87,13 +87,21 @@ impl MapViewerWindowView {
         if let Some(path) =
             pick_file_path_with_filter("图片", &["png", "jpg", "jpeg", "tga", "webp"])
         {
-            self.image_generator.source = Some(PathBuf::from(path));
-            self.image_generator.preview_options = None;
-            self.image_generator.output = None;
-            self.image_generator.task_id = None;
-            self.start_image_live_preview(cx);
-            cx.notify();
+            self.set_image_generator_source(PathBuf::from(path), cx);
         }
+    }
+
+    /// Shared by the file picker and the external file-drop workflow.
+    pub(super) fn set_image_generator_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.image_generator_busy() {
+            return;
+        }
+        self.image_generator.source = Some(path);
+        self.image_generator.preview_options = None;
+        self.image_generator.output = None;
+        self.image_generator.task_id = None;
+        self.start_image_live_preview(cx);
+        cx.notify();
     }
 
     pub(super) fn set_image_dimension(&mut self, axis: ImageAxis, size: u32, cx: &mut Context<Self>) {
