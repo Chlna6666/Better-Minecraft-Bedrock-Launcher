@@ -47,6 +47,42 @@ impl MapViewerWindowView {
         cx.notify();
     }
 
+    /// Some(false) means a converted structure has a default, unconfirmed anchor.
+    /// Other workflows keep their own target validation protocols.
+    pub(super) fn converter_target_selected(&self) -> Option<bool> {
+        if !self.import_workspace_active() {
+            return None;
+        }
+        match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator if self.generator.preview_result_active => {
+                Some(self.generator.target_selected_by_user)
+            }
+            MapViewerRightPanel::ImageGenerator
+                if self.image_generator.preview_result_active =>
+            {
+                Some(self.image_generator.target_selected_by_user)
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn mark_converter_target_selected(&mut self) {
+        if !self.import_canvas_stage_active() {
+            return;
+        }
+        match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator if self.generator.preview_result_active => {
+                self.generator.target_selected_by_user = true;
+            }
+            MapViewerRightPanel::ImageGenerator
+                if self.image_generator.preview_result_active =>
+            {
+                self.image_generator.target_selected_by_user = true;
+            }
+            _ => {}
+        }
+    }
+
     /// Use the current world viewport as an explicit placement target. This is not
     /// a write: only the separate confirmation action submits the map edit task.
     pub(super) fn move_import_preview_to_view_center(&mut self, cx: &mut Context<Self>) {
@@ -63,6 +99,7 @@ impl MapViewerWindowView {
         let display_degrees = preview.display_degrees;
         let target = self.viewport_center_chunk_pos();
         if self.set_paste_preview(target, transform, display_degrees, None, cx) {
+            self.mark_converter_target_selected();
             self.status = SharedString::from(format!(
                 "已将预览移动到当前视野中心的区块 X {}、Z {}；尚未写入世界",
                 target.x, target.z
