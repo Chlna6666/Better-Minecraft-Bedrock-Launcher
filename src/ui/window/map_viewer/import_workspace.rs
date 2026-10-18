@@ -94,11 +94,15 @@ impl MapViewerWindowView {
                 div()
                     .flex()
                     .flex_1()
+                    .h_full()
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .child(
                         div()
+                            .flex()
+                            .flex_col()
                             .flex_1()
+                            .h_full()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
                             .child(body),
