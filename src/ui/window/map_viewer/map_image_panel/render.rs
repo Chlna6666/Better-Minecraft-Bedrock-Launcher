@@ -34,27 +34,42 @@ impl MapViewerWindowView {
                     .flex()
                     .flex_col()
                     .gap(px(15.0))
-                    .child(generator_section_title(colors, "源图片"))
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(colors.text_primary)
-                            .child(self.map_image.source.as_ref().map_or_else(
-                                || "尚未选择图片".to_owned(),
-                                |path| path.display().to_string(),
-                            )),
-                    )
-                    .child(generator_choice(colors, "选择图片…", false).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _event, _window, cx| this.choose_map_source(cx)),
-                        ))
-                    .when(operation_busy, |panel| panel.child(
-                        div().text_size(px(12.0)).text_color(colors.text_secondary)
-                            .child("导出或写入期间保留当前参数和目标；可取消当前任务。"),
+                    .child(generator_section_title(colors, "01  素材"))
+                    .child(crate::ui::components::inspector::inspector_source_card(
+                        colors,
+                        "MAP / 128",
+                        self.map_image.source.as_deref(),
+                        "PNG / JPG / TGA / WebP · 可拖入",
+                        crate::ui::components::button::secondary_button(
+                            colors, "map-image-source", "选择图片…",
+                        )
+                        .when(!operation_busy, |button| {
+                            button.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.choose_map_source(cx)),
+                            )
+                        })
+                        .opacity(if operation_busy { 0.45 } else { 1.0 }),
                     ))
-                    .child(generator_section_title(colors, "地图网格与画面利用率"))
+                    .when(operation_busy, |panel| panel.child(
+                        div().text_size(px(11.0)).text_color(colors.text_secondary)
+                            .child("导出或写入中 · 目标与设置暂时锁定"),
+                    ))
+                    .child(crate::ui::components::inspector::inspector_result_summary(
+                        colors, "地图网格",
+                        if grid_resolved {
+                            format!(
+                                "{} × {} · 共 {} 张 · {} × {} px",
+                                self.map_image.options.columns, self.map_image.options.rows,
+                                map_count,
+                                self.map_image.options.columns * 128,
+                                self.map_image.options.rows * 128,
+                            )
+                        } else {
+                            "正在计算最佳分片数".to_owned()
+                        },
+                    ))
+                    .child(generator_section_title(colors, "02  网格与画面利用率"))
                     .child(
                         generator_choice(
                             colors,
@@ -78,7 +93,7 @@ impl MapViewerWindowView {
                     )
                     .child(self.render_grid_axis(GridAxis::Columns, colors, cx))
                     .child(self.render_grid_axis(GridAxis::Rows, colors, cx))
-                    .child(generator_section_title(colors, "目标设置"))
+                    .child(generator_section_title(colors, "03  写入目标"))
                     .child(
                         div()
                             .text_size(px(11.0))
@@ -288,7 +303,7 @@ impl MapViewerWindowView {
                             .text_color(colors.text_secondary)
                             .child("多图按网格编号；写入玩家背包时分组为潜影盒，写入现有箱子时在箱内分组。"),
                     )
-                    .child(generator_section_title(colors, "图片适配方式"))
+                    .child(generator_section_title(colors, "04  图片适配与采样"))
                     .child(div().flex().flex_wrap().gap(px(6.0)).children(
                         [
                             (MapImageFit::Contain, "完整图片 · 等比留边"),
