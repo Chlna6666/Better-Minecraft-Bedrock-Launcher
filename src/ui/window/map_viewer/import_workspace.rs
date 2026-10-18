@@ -225,6 +225,12 @@ impl MapViewerWindowView {
     fn render_import_workspace_toolbar(&self, colors: &ThemeColors, cx: &mut Context<Self>) -> Div {
         let preview = self.ui_state.import_workspace_mode == ImportWorkspaceMode::Preview;
         let is_map_image = self.ui_state.active_right_panel == MapViewerRightPanel::MapImage;
+        let (workspace_kind, workspace_title) = match self.ui_state.active_right_panel {
+            MapViewerRightPanel::Generator => ("3D MODEL", "模型编辑"),
+            MapViewerRightPanel::ImageGenerator => ("IMAGE / BLOCK", "图片建模"),
+            MapViewerRightPanel::MapImage => ("IMAGE / MAP", "地图拼接"),
+            _ => ("IMPORT", "导入编辑"),
+        };
         let source_available = match self.ui_state.active_right_panel {
             MapViewerRightPanel::Generator => self.generator.source.is_some(),
             MapViewerRightPanel::ImageGenerator => self.image_generator.source.is_some(),
@@ -246,21 +252,44 @@ impl MapViewerWindowView {
             .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation()
             })
+            .child(
+                div()
+                    .min_w(px(104.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(colors.text_secondary)
+                            .child(workspace_kind),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors.text_primary)
+                            .child(workspace_title),
+                    ),
+            )
+            .child(div().w(px(1.0)).h(px(28.0)).bg(colors.border))
             .children(
                 [
-                    (ImportWorkspaceMode::Preview, if is_map_image { "1 · 图片转换" } else { "转换预览" }),
-                    (ImportWorkspaceMode::Placement, if is_map_image { "2 · 目标预览" } else { "地图与放置" }),
+                    (ImportWorkspaceMode::Preview, "01", if is_map_image { "分片预览" } else { "转换预览" }),
+                    (ImportWorkspaceMode::Placement, "02", if is_map_image { "选择写入目标" } else { "世界放置" }),
                 ]
                 .into_iter()
-                .map(|(mode, label)| {
-                    generator_choice(colors, label, self.ui_state.import_workspace_mode == mode)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.set_import_workspace_mode(mode, cx);
-                                cx.stop_propagation();
-                            }),
-                        )
+                .map(|(mode, number, label)| {
+                    crate::ui::components::inspector::inspector_stage_tab(
+                        colors, number, label, self.ui_state.import_workspace_mode == mode,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event, _window, cx| {
+                            this.set_import_workspace_mode(mode, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                 }),
             )
             .when(source_available, |bar| {
