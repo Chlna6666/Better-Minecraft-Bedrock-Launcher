@@ -599,6 +599,12 @@ impl RetainedUpload {
             .map(|signature| signature.path_rasterization_vertex)
     }
 
+    /// Text shader parameters affect cached glyph pixels independently of
+    /// their atlas coverage, primitive bytes and physical buffer identity.
+    pub(super) fn text_raster_token(&self) -> Option<StaticStreamToken> {
+        self.static_signature.map(|signature| signature.text_raster)
+    }
+
     pub(super) fn invalidate_slot(&mut self, slot: usize) {
         if let Some(signature) = self.uploaded_slots.get_mut(slot) {
             *signature = None;
@@ -955,8 +961,10 @@ impl NovaRenderer {
             let static_uploads = self
                 .retained_upload
                 .static_upload_mask(self.current_frame_resource_index);
-            log::warn!(
-                "nova-gfx retained upload: scene_revision={} retained_reused={} static_slot_upload={} static_stream_uploads={} element_blurs={} animation_values={}",
+            log::debug!(
+                "nova-gfx retained upload: backend={} frame={} scene_revision={} retained_reused={} static_slot_upload={} static_stream_uploads={} element_blurs={} animation_values={}",
+                self.backend_info.label(),
+                self.submitted_frames.saturating_add(1),
                 scene.revision,
                 reusable,
                 !static_uploads.is_empty(),

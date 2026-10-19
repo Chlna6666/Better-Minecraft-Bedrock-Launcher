@@ -92,7 +92,6 @@ impl NovaRenderer {
         for (action, stream) in actions.iter_mut().zip(BufferStream::ALL) {
             *action = (stream, self.static_version_action(stream)?);
         }
-        let previous = self.frame_resources[slot].buffers.ids();
         self.apply_static_version_actions(&actions)?;
         // Idle aliases may be updated in place. Their old tokens must stop describing the bytes
         // before any upload, including when an upload later fails partway through.
@@ -111,9 +110,8 @@ impl NovaRenderer {
                 }
             }
         }
-        if previous != self.frame_resources[slot].buffers.ids() {
-            self.invalidate_backdrop_blur_cache();
-        }
+        // Rebinding changes descriptors, not retained texture pixels. Source
+        // proofs and submitted text-raster context decide pixel invalidation.
         Ok(())
     }
 

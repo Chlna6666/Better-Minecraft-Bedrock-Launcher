@@ -102,6 +102,7 @@ impl NovaRenderer {
             frame_upload: FrameUpload::default(),
             renderer_registry: extensions::RendererRegistry::default(),
             retained_upload: retained_upload::RetainedUpload::default(),
+            submitted_text_raster: None,
             draw_step_scratch: DrawStepScratch::default(),
             path_mask_residency: path_mask::Residency::default(),
             active_size: current_size,

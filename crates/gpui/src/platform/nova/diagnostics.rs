@@ -24,10 +24,10 @@ impl NovaRenderDiagnostics {
     }
 
     pub(super) fn should_warn_slow_frame(&mut self, elapsed_ms: u128) -> bool {
-        // Detailed frame diagnostics are explicit opt-in. In normal builds only genuinely slow
-        // frames may emit a warning, and those warnings are rate-limited so pointer/scroll redraws
+        // Only genuinely slow frames emit this warning, even with opt-in frame details.
+        // Warnings are rate-limited so pointer/scroll redraws
         // never turn the renderer hot path into synchronous log I/O.
-        if self.enabled || elapsed_ms < DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS {
+        if elapsed_ms < DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS {
             return false;
         }
 
@@ -96,17 +96,14 @@ mod tests {
 
         diagnostics.last_slow_frame_warning_at =
             Some(Instant::now() - DEFAULT_SLOW_FRAME_WARN_INTERVAL);
-        assert!(diagnostics.should_warn_slow_frame(
-            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
-        ));
+        assert!(diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100));
     }
 
     #[test]
-    fn explicit_diagnostics_mode_owns_per_frame_details_without_slow_warn_spam() {
+    fn explicit_diagnostics_preserve_rate_limited_slow_frame_warnings() {
         let mut diagnostics = diagnostics(true);
         assert!(diagnostics.should_log_frame_details());
-        assert!(!diagnostics.should_warn_slow_frame(
-            DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100,
-        ));
+        assert!(diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS + 100));
+        assert!(!diagnostics.should_warn_slow_frame(DEFAULT_SLOW_FRAME_WARN_THRESHOLD_MS));
     }
 }

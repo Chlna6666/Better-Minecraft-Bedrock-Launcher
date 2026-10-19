@@ -581,6 +581,17 @@ impl NovaRenderer {
         let atlas_upload = frame_upload::upload_queue::AtlasUpload::new(&atlas);
         let atlas_content_generation = atlas_upload.content_generation();
         let atlas_generation_changed = self.filters.atlas_generation != atlas_content_generation;
+        let text_raster = self.retained_upload.text_raster_token();
+        let text_raster_changed = self.submitted_text_raster != text_raster;
+        if text_raster_changed {
+            // Shader context can change cached glyph pixels even when the
+            // Scene and atlas are identical, including in-place buffer writes.
+            self.invalidate_backdrop_blur_cache();
+            self.draw_step_scratch.force_full_backdrop_blur_refresh = true;
+            // Glyphs outside local UI damage can change as well. Native
+            // presentation metadata must cover the newly rasterized context.
+            packet.partial_present_mode = PartialPresentMode::FullRedraw;
+        }
         let backdrop_source_atlas_dirty = has_compositor_descriptors
             && atlas_upload.touches_source_tiles(
                 &backdrop_source_atlas_textures,
@@ -620,7 +631,7 @@ impl NovaRenderer {
         }
         let element_blur_refresh_required = has_element_blurs && !dirty_element_indices.is_empty();
         let root_force_full = self.root_color.content_version().is_none()
-            || packet.force_full_backdrop_blur_refresh || atlas_source_dirty;
+            || packet.force_full_backdrop_blur_refresh || atlas_source_dirty || text_raster_changed;
         if let Some(root) = self.frame_upload.root_color
             && (root_force_full
                 || !packet.dirty_region.is_empty()
@@ -843,7 +854,7 @@ impl NovaRenderer {
             );
         }
         if self.diagnostics.enabled {
-            log::warn!(
+            log::debug!(
                 concat!(
                     "nova-gfx frame diagnostics: backend={} alpha_swapchain={:?} ",
                     "alpha_output={:?} premultiplied={} quads={} shadows={} paths={} ",
@@ -1556,6 +1567,7 @@ impl NovaRenderer {
             self.path_mask_residency.invalidate();
             return Ok(false);
         }
+        self.submitted_text_raster = text_raster;
         #[cfg(test)]
         { self.draw_step_scratch.submitted_present_damage = present_damage; }
         if path_mask_step_count != 0 {
@@ -1720,16 +1732,31 @@ impl NovaRenderer {
         );
         crate::diagnostics::performance_metrics::record_present();
         if self.diagnostics.should_log_frame_details() {
-            let blur_render_passes = blur_group_pass_count.saturating_add(element_blur_pass_count);
-            log::warn!(
+            let offscreen_render_passes =
+                blur_group_pass_count.saturating_add(element_blur_pass_count);
+            let gaussian_filter_passes = backdrop_blur_groups
+                .iter()
+                .map(|group| group.filter_passes.len())
+                .sum::<usize>()
+                + element_blur_layers
+                    .iter()
+                    .chain(&root_color_layers)
+                    .map(|layer| {
+                        layer.filter_passes.len()
+                            + layer.source_groups.iter()
+                                .map(|group| group.filter_passes.len())
+                                .sum::<usize>()
+                    })
+                    .sum::<usize>();
+            log::debug!(
                 concat!(
-                    "nova-gfx copy attribution: backend={} frame={} ",
-                    "explicit_copy_source=atlas_texture_upload atlas_texture_regions={} ",
+                    "nova-gfx copy attribution: backend={} frame={} window_id={} scene_revision={} ",
+                    "explicit_upload_source={} atlas_texture_regions={} ",
                     "atlas_texture_bytes={} mapped_frame_upload_bytes={} ",
-                    "mapped_frame_upload_is_gpu_copy=false retained_present_copy_regions={} ",
-                    "path_mask_render_passes={} blur_render_passes={} blur_groups={} ",
+                    "mapped_frame_upload_is_gpu_copy=false static_uploads={:?} native_present_damage_regions={} ",
+                    "path_mask_render_passes={} offscreen_render_passes={} gaussian_filter_passes={} root_color_refreshes={} blur_groups={} ",
                     "element_blur_layers={} backdrop_blur_refresh={} element_blur_refresh={} ",
-                    "blur_source_atlas_dirty={} blur_atlas_generation_changed={} ",
+                    "blur_source_atlas_dirty={} blur_atlas_generation_changed={} text_raster_changed={} ",
                     "blur_source_atlas_textures={} blur_source_pixels={} ",
                     "blur_horizontal_pixels={} blur_final_pixels={} blur_target_pixels={} ",
                     "blur_full_target_pixels={} ",
@@ -1738,18 +1765,29 @@ impl NovaRenderer {
                 ),
                 backend_label,
                 self.submitted_frames.saturating_add(1),
+                packet.window_id,
+                packet.paint.scene.revision,
+                if atlas_texture_upload_bytes == 0 {
+                    "none"
+                } else {
+                    "atlas_texture_upload"
+                },
                 atlas_texture_region_count,
                 atlas_texture_upload_bytes,
                 mapped_upload_bytes,
+                static_uploads,
                 usize::from(present_damage.is_some()),
                 mask_pass_count,
-                blur_render_passes,
+                offscreen_render_passes,
+                gaussian_filter_passes,
+                root_scene_color_refreshes,
                 backdrop_blur_groups.len(),
                 element_blur_layers.len(),
                 backdrop_blur_refreshed,
                 element_blur_refreshed,
                 backdrop_source_atlas_dirty,
                 atlas_generation_changed,
+                text_raster_changed,
                 backdrop_source_atlas_textures.len(),
                 blur_source_pixels,
                 blur_level_pixels[0],

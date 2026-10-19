@@ -192,6 +192,8 @@ fn verify_case(cx: &mut TestAppContext, backend: RendererBackend, backdrop: bool
         assert!(blur_damage.refresh_required());
     }
     let window = native_window::Window::renderer_fixture();
+    // Match the TestApp's committed physical extent before creating the swapchain.
+    window.resize(32, 32);
     let mut renderer = NovaRenderer::with_atlas(
         &window,
         backend,

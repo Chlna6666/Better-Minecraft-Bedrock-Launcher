@@ -218,6 +218,8 @@ pub(crate) struct NovaRenderer {
     frame_upload: FrameUpload,
     renderer_registry: extensions::RendererRegistry,
     retained_upload: retained_upload::RetainedUpload,
+    /// Shader text context represented by successfully submitted retained pixels.
+    submitted_text_raster: Option<retained_upload::StaticStreamToken>,
     draw_step_scratch: DrawStepScratch,
     path_mask_residency: path_mask::Residency,
     active_size: DrawableSize,
@@ -585,8 +587,10 @@ impl NovaRenderer {
         // Track both independently to catch regressions in ClipReveal/Root.
         log::trace!(
             target: "gpui::diagnostics",
-            "GPUI surface damage gate: source=active frame={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
-            self.submitted_frames,
+            "GPUI surface damage gate: source=active frame={} window_id={} scene_revision={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
+            self.submitted_frames.saturating_add(1),
+            packet.window_id,
+            packet.paint.scene.revision,
             self.live_resize_active,
             self.swapchain_warmup_frames,
             self.frame_upload.root_color.is_some(),
@@ -1011,8 +1015,10 @@ impl NovaRenderer {
             self.reconcile_gpu_layer_animation_damage(&mut packet);
             log::trace!(
                 target: "gpui::diagnostics",
-                "GPUI surface damage gate: source=direct frame={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
-                self.submitted_frames,
+                "GPUI surface damage gate: source=direct frame={} window_id={} scene_revision={} live_resize={} swapchain_warmup={} retained_root={} element_sources={} gpu_animation={} timelines={} dirty_full={} dirty_area={} force_filter_refresh={}",
+                self.submitted_frames.saturating_add(1),
+                packet.window_id,
+                packet.paint.scene.revision,
                 self.live_resize_active,
                 self.swapchain_warmup_frames,
                 self.frame_upload.root_color.is_some(),
@@ -1329,6 +1335,15 @@ impl NovaRenderer {
         for bounds in damage {
             packet.dirty_region.push(bounds);
         }
+        // Filter input damage needs the same last-successful-presentation baseline.
+        // A replacement/deferred packet can carry a newer intermediate sample.
+        let filter_damage = crate::paint::backdrop_blur_animation_damage_plan(
+            &packet.paint.scene,
+            self.root_color.animation_values(),
+            &self.frame_upload.sampled_animation_values,
+        );
+        packet.backdrop_blur_damage_plan.merge_from(&filter_damage);
+        self.draw_step_scratch.backdrop_blur_damage_plan = packet.backdrop_blur_damage_plan.clone();
         // The same repaired region must control root source clearing, texture
         // draw-step scissors and swapchain partial eligibility.
         self.draw_step_scratch.backdrop_blur_damage_region = packet.dirty_region.clone();

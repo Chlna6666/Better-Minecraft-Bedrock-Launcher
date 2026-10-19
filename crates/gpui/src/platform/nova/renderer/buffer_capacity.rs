@@ -239,7 +239,8 @@ impl NovaRenderer {
             }
         }
         self.draw_step_scratch.invalidate_draw_steps();
-        self.invalidate_backdrop_blur_cache();
+        // Existing Filter/Root textures survive buffer growth. Their slot
+        // descriptors were rebound transactionally above; no pixels changed.
         release_buffers(
             device,
             old_ids.into_iter().zip(next_ids).filter_map(|(old, new)| {

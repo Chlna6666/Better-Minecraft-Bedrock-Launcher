@@ -1,6 +1,9 @@
 use super::super::blur_damage::{bounds_to_scissor, intersect_scissor_rects};
 use super::*;
 
+mod backdrop;
+use backdrop::{backdrop_damage_for_configs, blur_configs_for_refresh};
+
 pub(super) struct PreparedBackdropBlurGroup {
     /// Scene segment that advances the shared backdrop source from the previous blur barrier to this
     /// group's exact source state. The previous blur batch itself is included in the next segment,
@@ -452,6 +455,7 @@ impl NovaRenderer {
                 self.active_size,
                 damage,
             );
+            let barriers = self.color_barrier_refreshes(*range, damage, layer_force_full);
             // Chromium-style paint invalidation: keep spatially disconnected
             // damage disconnected all the way to the retained GPU color target.
             // Combining a left-hand label and a right-hand cursor into one
@@ -466,13 +470,7 @@ impl NovaRenderer {
                 local_source_damage.is_some(),
                 force_full || layer_force_full,
                 dirty_indices.iter().any(|index| *index != range.index),
-                root_backdrop_barriers_are_clean(
-                    &self.frame_upload,
-                    range.content_start,
-                    range.content_end,
-                    self.active_size,
-                    damage,
-                ),
+                barriers.iter().all(|barrier| barrier.configs_known && barrier.configs.is_empty()),
                 damage,
             );
             // Unchanged nested element filters are safe: their retained GPU
@@ -512,62 +510,37 @@ impl NovaRenderer {
                 (source_texture_view, source_resource_set)
             };
 
-            let barrier_groups: Vec<_> = direct_backdrop_barriers(
-                &self.frame_upload,
-                range.content_start,
-                range.content_end,
-            )
-            .into_iter()
-            .filter_map(|batch_index| {
-                let UploadedBatch::BackdropBlurs { first, count } =
-                    self.frame_upload.batches[batch_index]
-                else {
-                    return None;
-                };
-                let configs = self
-                    .frame_upload
-                    .backdrop_blur_configs_for_range(first, count);
-                (!configs.is_empty()).then_some((batch_index, configs))
-            })
-            .collect();
-            let dirty_barrier_configs: Vec<Vec<BackdropBlurConfig>> = barrier_groups
-                .iter()
-                .map(|(_, configs)| {
-                    blur_configs_for_refresh(configs, self.active_size, damage, layer_force_full)
-                })
-                .collect();
-
             // Every segment contributes to one accumulated scene-color source. For a normal
             // element filter this is isolated scratch storage; for a zero-filter compositor it is
             // the retained final target itself. Zero-filter refreshes use the full tight layer
             // scissor, while nested dirty filters can expand the source halo further if required.
-            let source_scissor = dirty_barrier_configs
+            let source_scissor = barriers
                 .iter()
-                .flat_map(|configs| configs.iter().copied())
-                .filter_map(|nested_config| {
+                .flat_map(|barrier| barrier.configs.iter().map(move |config| (barrier, *config)))
+                .filter_map(|(barrier, nested_config)| {
                     blur_source_scissor_for_refresh(
                         nested_config,
                         self.active_size,
-                        damage,
-                        layer_force_full,
+                        &barrier.damage,
+                        barrier.force_full,
                     )
                 })
                 .fold(outer_source_scissor, union_scissor_rects);
 
-            let mut source_groups = Vec::with_capacity(barrier_groups.len().saturating_add(1));
+            let mut source_groups = Vec::with_capacity(barriers.len().saturating_add(1));
             let mut segment_start = range.content_start;
-            for (group_index, (batch_index, _configs)) in barrier_groups.into_iter().enumerate() {
+            for barrier in barriers.iter().filter(|barrier| barrier.configs_known) {
                 source_groups.push(self.prepare_element_blur_group(
                     segment_start,
-                    batch_index,
-                    &dirty_barrier_configs[group_index],
+                    barrier.batch_index,
+                    &barrier.configs,
                     source_resource_set,
                     targets.expect("backdrop barriers require allocated Filter targets"),
                     source_scissor,
-                    damage,
-                    layer_force_full,
+                    &barrier.damage,
+                    barrier.force_full,
                 ));
-                segment_start = batch_index;
+                segment_start = barrier.batch_index;
             }
 
             let mut final_source_steps = Vec::new();
@@ -832,57 +805,6 @@ fn coalesce_adjacent_instanced_draws(steps: &mut Vec<RenderStepDescriptor>) {
     steps.truncate(written);
 }
 
-/// A zero-radius retained root may replay disconnected source rectangles
-/// across backdrop composite barriers ONLY when every such filtered texture
-/// already contains valid pixels for the current damage. A dirty backdrop
-/// needs its ordered source capture and Gaussian pass to remain contiguous.
-fn root_backdrop_barriers_are_clean(
-    upload: &FrameUpload,
-    batch_start: usize,
-    batch_end: usize,
-    drawable_size: DrawableSize,
-    damage: &DirtyRegion,
-) -> bool {
-    direct_backdrop_barriers(upload, batch_start, batch_end)
-        .into_iter()
-        .all(|batch_index| {
-            let UploadedBatch::BackdropBlurs { first, count } = upload.batches[batch_index] else {
-                return false;
-            };
-            let configs = upload.backdrop_blur_configs_for_range(first, count);
-            // Unknown/empty config bookkeeping must not prove a cached output
-            // valid unless the upload range really has no filters.
-            !configs.is_empty()
-                && configs.into_iter().all(|config| {
-                    blur_damage_scissors(config, drawable_size, damage).is_none()
-                })
-        })
-}
-
-fn backdrop_damage_for_configs(
-    plan: &crate::BackdropBlurDamagePlan,
-    configs: &[BackdropBlurConfig],
-) -> (bool, DirtyRegion) {
-    let Some(first_order) = configs
-        .iter()
-        .map(|config| *config.order_range().start())
-        .min()
-    else {
-        return (false, DirtyRegion::empty());
-    };
-    let last_order = configs
-        .iter()
-        .map(|config| *config.order_range().end())
-        .max()
-        .unwrap_or(first_order);
-    let (full_refresh, damage) = plan.source_damage_for_orders(first_order, last_order);
-    let mut region = DirtyRegion::empty();
-    for bounds in damage {
-        region.push(bounds);
-    }
-    (full_refresh, region)
-}
-
 /// A resident zero-radius child composite may update disjoint patches even when its
 /// parent/root is also dirty: its own immutable source and local animation damage
 /// establish that the pixels between patches remain valid. A synthetic window root
@@ -962,22 +884,6 @@ fn retained_source_damage_patches(
     } else {
         patches
     }
-}
-
-fn blur_configs_for_refresh(
-    configs: &[BackdropBlurConfig],
-    drawable_size: DrawableSize,
-    dirty_region: &DirtyRegion,
-    force_full: bool,
-) -> Vec<BackdropBlurConfig> {
-    if force_full {
-        return configs.to_vec();
-    }
-    configs
-        .iter()
-        .copied()
-        .filter(|config| blur_damage_scissors(*config, drawable_size, dirty_region).is_some())
-        .collect()
 }
 
 /// Independent source changes can be invisible to the *window's* dirty-region

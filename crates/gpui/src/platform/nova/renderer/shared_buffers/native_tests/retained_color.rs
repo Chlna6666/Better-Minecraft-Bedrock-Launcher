@@ -3,6 +3,9 @@ use super::*;
 use std::sync::Arc;
 
 mod atlas_damage;
+mod backdrop;
+mod bindings;
+mod raster;
 mod lifecycle;
 mod static_background;
 mod vertical_edges;
@@ -85,11 +88,23 @@ fn page(
     size: DrawableSize,
     placement: PopupPlacement,
 ) -> Arc<crate::window::Paint> {
+    page_with_source(backdrop, size, placement, None)
+}
+
+fn page_with_source(
+    backdrop: bool,
+    size: DrawableSize,
+    placement: PopupPlacement,
+    source: Option<crate::Quad>,
+) -> Arc<crate::window::Paint> {
     let viewport = bounds(0., 0., size.width as f32, size.height as f32);
     let mut scene = crate::scene::Painter::default();
     // One background plus the settled panel is below two viewport areas,
     // matching the runtime page that the original admission cutoff rejected.
     scene.insert_primitive(quad(viewport, crate::rgb(0x204060)));
+    if let Some(source) = source {
+        scene.insert_primitive(source);
+    }
     if backdrop {
         scene.insert_primitive(crate::PaintBackdropBlur {
             order: 0,
@@ -167,7 +182,9 @@ fn pixels<const N: usize>(
     let previous_values: Vec<_> = values
         .iter()
         .map(|value| {
-            if value.animation_id == crate::SceneAnimationId(1) {
+            // Engine-owned tracks use the presentation namespace; scene-local
+            // settled tracks (such as the panel) keep their own samples.
+            if value.animation_id == crate::SceneAnimationId(1) || value.animation_id.0 >= 1 << 31 {
                 crate::SceneAnimationValue {
                     progress: previous,
                     ..*value
@@ -342,6 +359,11 @@ fn verify(backend: RendererBackend) {
                 let total_source_pixels =
                     crate::diagnostics::performance_metrics::performance_metrics_snapshot()
                         .backdrop_blur_source_pixels;
+                if backdrop {
+                    let filter_pixels = crate::performance_metrics_snapshot().backdrop_blur_target_pixels;
+                    assert_eq!(filter_pixels, 0,
+                        "foreground popup must reuse backdrop Gaussian output: backend={backend:?} placement={placement:?}");
+                }
                 largest_total_source_pixels = largest_total_source_pixels.max(total_source_pixels);
                 assert!(
                     total_source_pixels
