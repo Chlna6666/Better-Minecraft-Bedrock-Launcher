@@ -854,7 +854,22 @@ and its component fields to estimate process startup time.
 ### Measured Frame Cost
 
 `RendererOptions::frame_metrics` enables the per-frame copy attribution line, which
-reports where a frame actually moves bytes and pixels. Measured on BMCBL's main
+reports upload bytes and planned raster regions at Debug level, alongside frame diagnostics.
+These detail lines are not performance warnings. Slow-frame warnings retain their 50 ms
+threshold and five-second rate limit with or without frame metrics enabled.
+`offscreen_render_passes` includes retained Root/Element source rasterization;
+`gaussian_filter_passes` counts only horizontal/vertical filter passes, including those
+inside Root. `root_color_refreshes` reports Root source updates independently of
+`backdrop_blur_refresh`/`element_blur_refresh`. `native_present_damage_regions` is
+presentation metadata, not a count of texture copies. `explicit_upload_source=none`
+means no atlas bytes were uploaded; native/driver presentation copies are outside that field.
+Copy attribution includes `window_id`, `scene_revision` and the post-preparation
+`static_uploads` stream mask. Its one-based attempted frame number matches the
+surface-damage gate. A deferred attempt can reuse a frame number; use window and
+scene identity together rather than matching adjacent log lines by time alone.
+The earlier retained-upload detail is also Debug and describes candidate stream
+misses before slot adoption/allocation, rather than a warning or final upload count.
+Raster pixel counts do not measure GPU shader time. Measured on BMCBL's main
 window plus its debug window:
 
 | Quantity | Steady-state frame | First frame |
@@ -866,6 +881,24 @@ window plus its debug window:
 
 The steady-state figures are the ones to optimize against; the first frame
 populates the whole atlas and is a startup cost, not a recurring one.
+
+The 2026-10-19 retained-Root native regression reduced a foreground popup sample's
+Gaussian target work from 1,188 pixels to zero. DX11/DX12/Vulkan/OpenGL all pass
+full-redraw pixel comparisons for foreground reversal, upstream source animation,
+explicit filter invalidation and repaired presentation samples. The complete native
+group passes 37 tests (including atlas, resize and in-flight resources); 13 focused
+diagnostic/draw-step tests also pass. These fixtures prove reduced planned filter
+work and pixel equivalence, not a measured BMCBL Release frame-time/FPS improvement.
+
+The subsequent buffer-rebinding regression first reproduced cache invalidation in
+eight DX11/DX12/Vulkan/OpenGL cases. After correction, static-buffer rebinding and
+animation-buffer growth preserve identical readback pixels with zero source/filter
+work (the full-redraw reference plans 196,608 Gaussian target pixels). Four additional
+native cases change glyph contrast in place, covering both direct Root and isolated
+captures, and verify refreshed pixels outside local popup damage against full redraw.
+The expanded native group passes 49 tests; 32 retained-upload and four capacity unit
+tests also pass. These checks do not establish a reduction in the reported 50,400-byte
+application upload or measure Release GPU time.
 
 Points that were measured rather than assumed, so that they are not re-opened as
 speculative work:
@@ -1003,6 +1036,26 @@ pixel uploads, resize, alpha-mode changes,
 and target recreation invalidate it. This preserves the same blur shader and
 quality while avoiding repeated source/downsample/upsample passes for unrelated
 foreground animation.
+
+Retained Root uses the same per-draw-order backdrop source-damage plan as direct
+backdrop rendering. Foreground-only damage still repaints Root's affected color
+pixels, while unchanged backdrop Gaussian textures are sampled without new filter
+passes. Dirty backdrop inputs expand Root's replay region by their sampling halo;
+their own source damage controls Gaussian output scissors. Isolated captures retain
+their local-coordinate damage path. Atlas writes, quality/target invalidation and
+forced refresh override this reuse. Replaced/deferred animation packets reconcile
+filter input damage against Root's last successfully submitted animation samples.
+
+Frame-buffer version changes and capacity growth rebind the selected fence-safe
+slot transactionally without clearing independent Filter/Root texture contents.
+Actual source changes retain their source/animation/atlas invalidation paths.
+Text raster shader parameters are a separate pixel dependency: Nova compares
+their content token with the last successful submission across slots. A gamma,
+contrast or subpixel-setting change refreshes Filter and Root sources and forces
+full native presentation, even with unchanged primitive bytes or an in-place
+uniform update. Failed/deferred presents preserve the old parameter baseline;
+unchanged parameters do not trigger subsequent refreshes. Resize, alpha, target
+replacement, quality and explicit invalidation keep their existing full paths.
 
 Atlas invalidation uses the exact upload batch consumed by that frame. The GPU
 owner moves queued pixel bytes, page metadata and their content generation into
